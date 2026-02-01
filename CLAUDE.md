@@ -1,3 +1,28 @@
+# PJangler
+
+My opinionated project bootstrapper, tuned to my personal development ecosystem.
+
+## Features
+
+- Architected as a command pattern for easy extension (using recipes to chain commands)
+- Accompanying Claude Skill for easy agent integration
+- Idempotent operations (safe to re-run)
+- Supports multiple project types (Node.js, Python, Go, Rust, etc.)
+- Dry run first with validation before making changes (i.e. mutually exclusive recipes issues warning)
+
+## Typer Interface
+```bash
+pjangler [OPTIONS] COMMAND [ARGS]...
+pjangler recipe list # Lists available recipes
+pj recipe describe [RECIPE_NAME] # Lists commands in recipe
+pj recipe run [RECIPE_NAME] [--dry-run] # Runs specified recipe
+pj command list [--group] # Lists available commands
+pj command describe [COMMAND_NAME] # Describes specified command
+pj command create [COMMAND_NAME] [PROMPT] [--template TEMPLATE_NAME] [--model=OPENROUTER_MODEL]# Creates new command from template
+pj describe # Runs a prompt to describe current project with output matching a template for consistency
+```
+
+## Basic Package Management
 
 Default to using Bun instead of Node.js.
 
@@ -8,99 +33,3 @@ Default to using Bun instead of Node.js.
 - Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
 - Bun automatically loads .env, so don't use dotenv.
 
-## APIs
-
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
-
-## Testing
-
-Use `bun test` to run tests.
-
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
-```
-
-## Frontend
-
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
-
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
-
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
-
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-
-// import .css files directly and it works
-import './index.css';
-
-import { createRoot } from "react-dom/client";
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
-
-```sh
-bun --hot ./index.ts
-```
-
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
