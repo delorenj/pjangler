@@ -22,7 +22,7 @@ workflow_status:
     phase: 2
 
   - workflow: "tech-spec"
-    status: "required"
+    status: "docs/tech-spec-pjangler-2026-02-01.md"
     description: "Technical specification"
     phase: 2
 
@@ -48,4 +48,4 @@ workflow_status:
     description: "Develop user stories"
     phase: 4
 
-current_phase: 2
+current_phase: 4
