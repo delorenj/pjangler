@@ -7,6 +7,7 @@ export interface InvokeResult {
 export interface CommandContext {
   targetDir: string;
   force?: boolean;
+  dryRun?: boolean;
 }
 
 export abstract class Command {
@@ -18,6 +19,13 @@ export abstract class Command {
 
   abstract invoke(): Promise<InvokeResult>;
 
+  /**
+   * Format message with [DRY RUN] prefix if in dry-run mode
+   */
+  protected formatMessage(message: string): string {
+    return this.context.dryRun ? `[DRY RUN] ${message}` : message;
+  }
+
   protected fileExists(filePath: string): boolean {
     const { existsSync } = require("fs");
     const { join } = require("path");
@@ -26,20 +34,30 @@ export abstract class Command {
   }
 
   protected writeFile(filePath: string, content: string): void {
+    // Skip file writing in dry-run mode
+    if (this.context.dryRun) {
+      return;
+    }
+
     const { writeFileSync, mkdirSync } = require("fs");
     const { join, dirname } = require("path");
-    
+
     const fullPath = join(this.context.targetDir, filePath);
     const dir = dirname(fullPath);
-    
+
     mkdirSync(dir, { recursive: true });
     writeFileSync(fullPath, content);
   }
 
   protected createDirectory(dirPath: string): void {
+    // Skip directory creation in dry-run mode
+    if (this.context.dryRun) {
+      return;
+    }
+
     const { mkdirSync } = require("fs");
     const { join } = require("path");
-    
+
     const fullPath = join(this.context.targetDir, dirPath);
     mkdirSync(fullPath, { recursive: true });
   }

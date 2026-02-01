@@ -7,7 +7,7 @@ export class AddDockerfile extends Command {
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  Dockerfile already exists",
+        message: this.formatMessage("⚠️  Dockerfile already exists"),
         filePath
       };
     }
@@ -31,7 +31,7 @@ CMD ["bun", "run", "start"]
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created Dockerfile",
+      message: this.formatMessage(this.context.dryRun ? "Would create Dockerfile" : "✅ Created Dockerfile"),
       filePath
     };
   }

@@ -7,7 +7,7 @@ export class AddDockerCompose extends Command {
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  docker-compose.yml already exists",
+        message: this.formatMessage("⚠️  docker-compose.yml already exists"),
         filePath
       };
     }
@@ -40,7 +40,7 @@ volumes:
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created docker-compose.yml",
+      message: this.formatMessage(this.context.dryRun ? "Would create docker-compose.yml" : "✅ Created docker-compose.yml"),
       filePath
     };
   }
