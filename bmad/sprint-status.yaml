@@ -16,18 +16,20 @@ sprints:
     end_date: "2026-02-15"
     capacity_points: 40
     committed_points: 38
-    completed_points: 0
-    status: "not_started"
+    completed_points: 3
+    status: "in_progress"
     goal: "Deliver enhanced pjangler CLI with dry-run validation, project detection, Python/Rust support, comprehensive testing, and AI integration"
 
     stories:
       - story_id: "STORY-001"
         title: "Enhance CLI Interface"
         points: 3
-        status: "not_started"
-        assigned_to: null
+        status: "completed"
+        assigned_to: "developer"
         epic: "Core Enhancement"
         priority: "must-have"
+        completion_date: "2026-02-01"
+        actual_points: 3
 
       - story_id: "STORY-002"
         title: "Implement Dry-Run Mode"
