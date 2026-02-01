@@ -6,7 +6,8 @@
   "module": "src/index.ts",
   "type": "module",
   "bin": {
-    "pjangler": "src/index.ts"
+    "pjangler": "src/index.ts",
+    "pj": "src/index.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",
