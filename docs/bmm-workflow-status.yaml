@@ -6,7 +6,7 @@ project_level: 1
 workflow_status:
   # Phase 1: Analysis (Optional for Level 1)
   - workflow: "product-brief"
-    status: "optional"
+    status: "docs/product-brief-pjangler-2026-02-01.md"
     description: "Business case and problem definition"
     phase: 1
 
@@ -48,4 +48,4 @@ workflow_status:
     description: "Develop user stories"
     phase: 4
 
-current_phase: 1
+current_phase: 2
