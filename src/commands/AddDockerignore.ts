@@ -1,13 +1,14 @@
-import { Command, InvokeResult, CommandContext } from "./Command";
+import type { InvokeResult } from "./Command";
+import { Command } from "./Command";
 
 export class AddDockerignore extends Command {
   async invoke(): Promise<InvokeResult> {
     const filePath = ".dockerignore";
-    
+
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  .dockerignore already exists",
+        message: this.formatMessage("⚠️  .dockerignore already exists"),
         filePath
       };
     }
@@ -24,7 +25,7 @@ build
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created .dockerignore",
+      message: this.formatMessage(this.context.dryRun ? "Would create .dockerignore" : "✅ Created .dockerignore"),
       filePath
     };
   }

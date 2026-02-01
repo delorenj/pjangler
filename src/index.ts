@@ -27,10 +27,13 @@ program
   .command("init")
   .argument("<subsystem>", "Subsystem to initialize")
   .description("Initialize a project subsystem")
-  .action(async (subsystem: string) => {
+  .option("--dry-run", "Preview changes without writing files")
+  .option("-f, --force", "Overwrite existing files")
+  .action(async (subsystem: string, options) => {
     const context: CommandContext = {
       targetDir: process.cwd(),
-      force: false
+      force: options.force || false,
+      dryRun: options.dryRun || false
     };
 
     try {
@@ -128,10 +131,13 @@ recipeCmd
   .command("run")
   .argument("<name>", "Recipe name")
   .description("Execute a specific recipe")
-  .action(async (name: string) => {
+  .option("--dry-run", "Preview changes without writing files")
+  .option("-f, --force", "Overwrite existing files")
+  .action(async (name: string, options) => {
     const context: CommandContext = {
       targetDir: process.cwd(),
-      force: false
+      force: options.force || false,
+      dryRun: options.dryRun || false
     };
 
     try {
@@ -142,7 +148,8 @@ recipeCmd
         process.exit(1);
       }
 
-      console.log(`🚀 Running recipe: ${name}`);
+      const dryRunPrefix = context.dryRun ? "[DRY RUN] " : "";
+      console.log(`${dryRunPrefix}🚀 Running recipe: ${name}`);
       console.log("");
       await recipe.execute();
     } catch (error) {

@@ -7,7 +7,7 @@ export class AddDotenv extends Command {
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  .env already exists",
+        message: this.formatMessage("⚠️  .env already exists"),
         filePath
       };
     }
@@ -21,7 +21,7 @@ SECRET_KEY=""
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created .env",
+      message: this.formatMessage(this.context.dryRun ? "Would create .env" : "✅ Created .env"),
       filePath
     };
   }

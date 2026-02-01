@@ -1,13 +1,14 @@
-import { Command, InvokeResult, CommandContext } from "./Command";
+import type { InvokeResult } from "./Command";
+import { Command } from "./Command";
 
 export class AddMiseBaseToml extends Command {
   async invoke(): Promise<InvokeResult> {
     const filePath = ".mise/tasks/base.toml";
-    
+
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  .mise/tasks/base.toml already exists",
+        message: this.formatMessage("⚠️  .mise/tasks/base.toml already exists"),
         filePath
       };
     }
@@ -29,7 +30,7 @@ description = "Initialize development environment"
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created .mise/tasks/base.toml",
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise/tasks/base.toml" : "✅ Created .mise/tasks/base.toml"),
       filePath
     };
   }

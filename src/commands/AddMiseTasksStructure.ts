@@ -1,12 +1,13 @@
-import { Command, InvokeResult, CommandContext } from "./Command";
+import type { InvokeResult } from "./Command";
+import { Command } from "./Command";
 
 export class AddMiseTasksStructure extends Command {
   async invoke(): Promise<InvokeResult> {
     this.createDirectory(".mise/tasks/scripts");
-    
+
     return {
       success: true,
-      message: "✅ Created .mise directory structure",
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise directory structure" : "✅ Created .mise directory structure"),
       filePath: ".mise/tasks/scripts"
     };
   }

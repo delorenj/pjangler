@@ -7,7 +7,7 @@ export class AddMiseToml extends Command {
     if (this.fileExists(filePath) && !this.context.force) {
       return {
         success: false,
-        message: "⚠️  mise.toml already exists",
+        message: this.formatMessage("⚠️  mise.toml already exists"),
         filePath
       };
     }
@@ -24,7 +24,7 @@ NODE_ENV = "development"
     this.writeFile(filePath, content);
     return {
       success: true,
-      message: "✅ Created mise.toml",
+      message: this.formatMessage(this.context.dryRun ? "Would create mise.toml" : "✅ Created mise.toml"),
       filePath
     };
   }
