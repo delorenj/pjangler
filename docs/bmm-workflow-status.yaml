@@ -34,7 +34,7 @@ workflow_status:
 
   # Phase 4: Implementation (Required)
   - workflow: "sprint-planning"
-    status: "required"
+    status: "docs/sprint-plan-pjangler-2026-02-01.md"
     description: "Sprint planning and story breakdown"
     phase: 4
 
