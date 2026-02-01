@@ -1,0 +1,51 @@
+timestamp: "2026-02-01T00:00:00Z"
+project_name: "pjangler"
+project_type: "library"
+project_level: 1
+
+workflow_status:
+  # Phase 1: Analysis (Optional for Level 1)
+  - workflow: "product-brief"
+    status: "optional"
+    description: "Business case and problem definition"
+    phase: 1
+
+  - workflow: "research"
+    status: "optional"
+    description: "Market research and competitive analysis"
+    phase: 1
+
+  # Phase 2: Planning (Required for Level 1)
+  - workflow: "prd"
+    status: "recommended"
+    description: "Product requirements document"
+    phase: 2
+
+  - workflow: "tech-spec"
+    status: "required"
+    description: "Technical specification"
+    phase: 2
+
+  # Phase 3: Solutioning (Optional for Level 1)
+  - workflow: "architecture"
+    status: "optional"
+    description: "System architecture design"
+    phase: 3
+
+  # Phase 4: Implementation (Required)
+  - workflow: "sprint-planning"
+    status: "required"
+    description: "Sprint planning and story breakdown"
+    phase: 4
+
+  - workflow: "create-story"
+    status: "required"
+    description: "Create user stories"
+    phase: 4
+
+  - workflow: "dev-story"
+    status: "required"
+    description: "Develop user stories"
+    phase: 4
+
+current_phase: 1
