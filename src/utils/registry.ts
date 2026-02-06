@@ -24,6 +24,7 @@ import { AddMiseComponentsManifest } from "../commands/AddMiseComponentsManifest
 import { AddMiseConsoleScript } from "../commands/AddMiseConsoleScript";
 import { AddDotenv } from "../commands/AddDotenv";
 import { SyncDocs } from "../commands/SyncDocs";
+import { Doctor } from "../commands/Doctor";
 
 export interface RecipeInfo {
   name: string;
@@ -48,6 +49,20 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
   mise: {
     name: "mise",
     description: "Mise task runner and environment setup",
+    class: MiseRecipe,
+    commands: [
+      "AddMiseToml",
+      "AddDotenv",
+      "AddMiseTasksStructure",
+      "AddMiseComponentsManifest",
+      "AddMiseConsoleScript",
+      "AddMiseBaseToml",
+      "AddMiseBaseScript"
+    ]
+  },
+  misebase: {
+    name: "misebase",
+    description: "Alias for mise bootstrap scaffolding (manifest + dispatcher + base tasks)",
     class: MiseRecipe,
     commands: [
       "AddMiseToml",
@@ -143,6 +158,14 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     group: "docs",
     class: SyncDocs,
     aliases: ["syncDocs"],
+    runnable: true
+  },
+  doctor: {
+    name: "doctor",
+    description: "Validate misebase scaffolding health in the current directory",
+    group: "mise",
+    class: Doctor,
+    aliases: ["check", "health"],
     runnable: true
   }
 };
