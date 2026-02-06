@@ -1,0 +1,5 @@
+# Mise configuration
+
+[env]
+_.file = [".env", ".plane.env"]
+NODE_ENV = "development"

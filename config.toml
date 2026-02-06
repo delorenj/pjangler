@@ -1,0 +1,9 @@
+[features]
+unified_exec = true
+shell_snapshot = true
+steer = true
+apps = true
+personality = true
+
+[notice]
+hide_full_access_warning = true

@@ -8,6 +8,7 @@ export interface CommandContext {
   targetDir: string;
   force?: boolean;
   dryRun?: boolean;
+  args?: Record<string, unknown>;
 }
 
 export abstract class Command {
