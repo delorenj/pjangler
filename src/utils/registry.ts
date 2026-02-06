@@ -20,7 +20,10 @@ import { AddMiseToml } from "../commands/AddMiseToml";
 import { AddMiseBaseToml } from "../commands/AddMiseBaseToml";
 import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
 import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
+import { AddMiseComponentsManifest } from "../commands/AddMiseComponentsManifest";
+import { AddMiseConsoleScript } from "../commands/AddMiseConsoleScript";
 import { AddDotenv } from "../commands/AddDotenv";
+import { SyncDocs } from "../commands/SyncDocs";
 
 export interface RecipeInfo {
   name: string;
@@ -34,6 +37,8 @@ export interface CommandInfo {
   description: string;
   group: string;
   class: new (context: CommandContext) => Cmd;
+  aliases?: string[];
+  runnable?: boolean;
 }
 
 /**
@@ -44,7 +49,15 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     name: "mise",
     description: "Mise task runner and environment setup",
     class: MiseRecipe,
-    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript"]
+    commands: [
+      "AddMiseToml",
+      "AddDotenv",
+      "AddMiseTasksStructure",
+      "AddMiseComponentsManifest",
+      "AddMiseConsoleScript",
+      "AddMiseBaseToml",
+      "AddMiseBaseScript"
+    ]
   },
   docker: {
     name: "docker",
@@ -100,6 +113,18 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     group: "mise",
     class: AddMiseTasksStructure
   },
+  AddMiseComponentsManifest: {
+    name: "AddMiseComponentsManifest",
+    description: "Create components.toml manifest for component delegation",
+    group: "mise",
+    class: AddMiseComponentsManifest
+  },
+  AddMiseConsoleScript: {
+    name: "AddMiseConsoleScript",
+    description: "Create .mise/tasks/console.py dispatcher",
+    group: "mise",
+    class: AddMiseConsoleScript
+  },
   AddMiseBaseScript: {
     name: "AddMiseBaseScript",
     description: "Create base mise task scripts",
@@ -111,6 +136,14 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     description: "Create .env.example file",
     group: "environment",
     class: AddDotenv
+  },
+  "sync-docs": {
+    name: "sync-docs",
+    description: "Sync recently modified markdown docs to DeLoDocs destination",
+    group: "docs",
+    class: SyncDocs,
+    aliases: ["syncDocs"],
+    runnable: true
   }
 };
 
@@ -136,10 +169,42 @@ export function getCommandNames(): string[] {
 }
 
 /**
+ * Get all runnable command names
+ */
+export function getRunnableCommandNames(): string[] {
+  return Object.values(COMMAND_REGISTRY)
+    .filter((cmd) => cmd.runnable)
+    .map((cmd) => cmd.name);
+}
+
+/**
  * Get command info by name
  */
 export function getCommandInfo(name: string): CommandInfo | null {
   return COMMAND_REGISTRY[name] || null;
+}
+
+/**
+ * Get command info by runnable name or alias
+ */
+export function getRunnableCommandInfo(name: string): CommandInfo | null {
+  const normalized = name.trim().toLowerCase();
+
+  for (const info of Object.values(COMMAND_REGISTRY)) {
+    if (!info.runnable) {
+      continue;
+    }
+
+    if (info.name.toLowerCase() === normalized) {
+      return info;
+    }
+
+    if (info.aliases?.some((alias) => alias.toLowerCase() === normalized)) {
+      return info;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -163,6 +228,15 @@ export function getCommandsByGroup(): Record<string, CommandInfo[]> {
  */
 export function createRecipe(name: string, context: CommandContext): Recipe | null {
   const info = getRecipeInfo(name);
+  if (!info) return null;
+  return new info.class(context);
+}
+
+/**
+ * Create runnable command instance by name/alias
+ */
+export function createRunnableCommand(name: string, context: CommandContext): Cmd | null {
+  const info = getRunnableCommandInfo(name);
   if (!info) return null;
   return new info.class(context);
 }

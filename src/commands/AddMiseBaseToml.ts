@@ -14,17 +14,25 @@ export class AddMiseBaseToml extends Command {
     }
 
     const content = `# Base tasks configuration
-[tasks.setup]
-run = "python scripts/base.py"
-description = "Setup base environment"
+
+[tasks."component:list"]
+run = "./.mise/tasks/console.py list"
+description = "List components from components.toml"
+
+[tasks."component:run"]
+run = "./.mise/tasks/console.py run"
+description = "Run component task: mise run component:run -- <component> <task> [-- args]"
+raw = true
+
+# Example delegated wrappers (copy/expand for your components)
+[tasks."core:build"]
+run = "./.mise/tasks/console.py delegate"
+description = "Delegated build wrapper for component 'core'"
+raw = true
 
 [tasks.clean]
 run = "rm -rf node_modules dist build"
 description = "Clean build artifacts"
-
-[tasks.dev]
-run = "mise run setup"
-description = "Initialize development environment"
 `;
 
     this.writeFile(filePath, content);
