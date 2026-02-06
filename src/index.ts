@@ -7,9 +7,12 @@ import {
   getRecipeNames,
   getRecipeInfo,
   getCommandNames,
+  getRunnableCommandNames,
+  getRunnableCommandInfo,
   getCommandInfo,
   getCommandsByGroup,
-  createRecipe
+  createRecipe,
+  createRunnableCommand
 } from "./utils/registry";
 
 const program = new Command();
@@ -69,8 +72,67 @@ program
     console.log("");
     console.log("Usage examples:");
     console.log("  pjangler init mise");
+    console.log("  pjangler init misebase");
     console.log("  pjangler init docker");
     console.log("  pjangler init node");
+    console.log("  pjangler run doctor");
+    console.log("  pjangler run onboarding-prompt --force");
+    console.log("  pjangler run sync-docs --since \"24 hours ago\"");
+  });
+
+// ============================================================================
+// RUN COMMAND
+// ============================================================================
+
+program
+  .command("run")
+  .argument("<name>", "Runnable command name")
+  .description("Execute a standalone runnable command")
+  .option("-s, --since <time>", "Optional window for commands that support time filters (e.g. sync-docs)")
+  .option("--flat", "Optional flag for commands that support flat copy mode (e.g. sync-docs)")
+  .option("-c, --component <name>", "Component/repo label for prompt-style commands")
+  .option("-o, --output <path>", "Output path for file-generating runnable commands")
+  .option("-f, --force", "Overwrite existing generated files when supported")
+  .option("--dry-run", "Preview changes without writing files")
+  .action(async (name: string, options) => {
+    const runnableInfo = getRunnableCommandInfo(name);
+    const args: Record<string, unknown> = {};
+    if (runnableInfo?.name === "sync-docs") {
+      args.since = options.since ?? "24 hours ago";
+      args.flat = options.flat || false;
+    }
+
+    if (runnableInfo?.name === "onboarding-prompt") {
+      args.component = options.component;
+      args.output = options.output;
+    }
+
+    const context: CommandContext = {
+      targetDir: process.cwd(),
+      force: options.force || false,
+      dryRun: options.dryRun || false,
+      args
+    };
+
+    try {
+      const command = createRunnableCommand(name, context);
+      if (!command) {
+        console.error(`❌ Runnable command not found: ${name}`);
+        console.log(`Available runnable commands: ${getRunnableCommandNames().join(", ")}`);
+        process.exit(1);
+      }
+
+      const result = await command.invoke();
+      if (!result.success) {
+        console.error(result.message);
+        process.exit(1);
+      }
+
+      console.log(result.message);
+    } catch (error) {
+      console.error(`❌ Error running command ${name}:`, error);
+      process.exit(1);
+    }
   });
 
 // ============================================================================
@@ -180,7 +242,8 @@ commandCmd
       for (const [group, commands] of Object.entries(grouped)) {
         console.log(`  ${group.toUpperCase()}:`);
         for (const cmd of commands) {
-          console.log(`    ${cmd.name.padEnd(30)} - ${cmd.description}`);
+          const runnableTag = cmd.runnable ? " [runnable]" : "";
+          console.log(`    ${cmd.name.padEnd(30)} - ${cmd.description}${runnableTag}`);
         }
         console.log("");
       }
@@ -189,7 +252,8 @@ commandCmd
       console.log("");
 
       for (const [name, info] of Object.entries(COMMAND_REGISTRY)) {
-        console.log(`  ${name.padEnd(30)} - ${info.description}`);
+        const runnableTag = info.runnable ? " [runnable]" : "";
+        console.log(`  ${name.padEnd(30)} - ${info.description}${runnableTag}`);
       }
       console.log("");
     }
@@ -217,15 +281,27 @@ commandCmd
     console.log(`Description: ${info.description}`);
     console.log(`Group: ${info.group}`);
     console.log("");
-    console.log("This command is used in recipes:");
-    for (const [recipeName, recipeInfo] of Object.entries(RECIPE_REGISTRY)) {
-      if (recipeInfo.commands.includes(name)) {
-        console.log(`  - ${recipeName}`);
+    if (info.runnable) {
+      console.log("This command can be run directly:");
+      console.log(`  - pjangler run ${info.name}`);
+      if (info.aliases?.length) {
+        console.log(`Aliases: ${info.aliases.join(", ")}`);
+      }
+    } else {
+      console.log("This command is used in recipes:");
+      for (const [recipeName, recipeInfo] of Object.entries(RECIPE_REGISTRY)) {
+        if (recipeInfo.commands.includes(name)) {
+          console.log(`  - ${recipeName}`);
+        }
       }
     }
     console.log("");
     console.log("Usage:");
-    console.log(`  Part of recipe execution (not run directly)`);
+    if (info.runnable) {
+      console.log(`  pjangler run ${info.name}`);
+    } else {
+      console.log("  Part of recipe execution (not run directly)");
+    }
   });
 
 commandCmd

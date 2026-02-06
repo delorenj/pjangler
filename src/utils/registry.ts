@@ -25,6 +25,7 @@ import { AddMiseConsoleScript } from "../commands/AddMiseConsoleScript";
 import { AddDotenv } from "../commands/AddDotenv";
 import { SyncDocs } from "../commands/SyncDocs";
 import { Doctor } from "../commands/Doctor";
+import { OnboardingPrompt } from "../commands/OnboardingPrompt";
 
 export interface RecipeInfo {
   name: string;
@@ -166,6 +167,14 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     group: "mise",
     class: Doctor,
     aliases: ["check", "health"],
+    runnable: true
+  },
+  "onboarding-prompt": {
+    name: "onboarding-prompt",
+    description: "Generate a copy/paste LLM onboarding prompt artifact for the current repo",
+    group: "mise",
+    class: OnboardingPrompt,
+    aliases: ["onboard", "prompt"],
     runnable: true
   }
 };
