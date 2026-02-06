@@ -15,6 +15,9 @@ bun run src/index.ts list
 Quick onboarding helpers:
 
 ```bash
+# one-time: install pjangler agent skill + pjangler:bootstrap command
+bun run src/index.ts init
+
 # scaffold misebase (manifest + dispatcher + base tasks)
 bun run src/index.ts init misebase
 

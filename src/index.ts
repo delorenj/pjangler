@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import type { CommandContext } from "./commands/Command";
 import {
@@ -17,6 +19,97 @@ import {
 
 const program = new Command();
 
+interface InstallOptions {
+  force: boolean;
+  dryRun: boolean;
+}
+
+interface FileInstallResult {
+  path: string;
+  status: "created" | "updated" | "skipped";
+}
+
+function writeManagedFile(filePath: string, content: string, options: InstallOptions): FileInstallResult {
+  const alreadyExists = existsSync(filePath);
+  if (alreadyExists && !options.force) {
+    return { path: filePath, status: "skipped" };
+  }
+
+  if (!options.dryRun) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+  }
+
+  return { path: filePath, status: alreadyExists ? "updated" : "created" };
+}
+
+function installAgentBootstrap(options: InstallOptions): {
+  skillResult: FileInstallResult;
+  commandResult: FileInstallResult;
+  commandTargetType: "agents" | "claude";
+} {
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error("HOME is not set; cannot install agent integration files");
+  }
+
+  const skillPath = join(home, ".agents", "skills", "pjangler", "SKILL.md");
+  const agentsCommandRoot = join(home, ".agents", "commands");
+  const useAgentsCommands = existsSync(agentsCommandRoot);
+  const commandRoot = useAgentsCommands
+    ? agentsCommandRoot
+    : join(home, ".claude", "commands");
+  const commandPath = join(commandRoot, "pjangler", "bootstrap.md");
+
+  const skillContent = `---
+name: pjangler
+summary: Bootstrap repos with pjangler task scaffolding (misebase + doctor checks).
+---
+
+# Pjangler Skill
+
+When asked to bootstrap this repo with pjangler:
+
+1. Run \`pjangler init misebase --force\`
+2. Run \`pjangler run doctor\`
+3. Run \`mise tasks\`
+4. Report:
+   - files changed
+   - doctor result
+   - any follow-up TODOs
+`;
+
+  const commandContent = `# pjangler:bootstrap
+
+Bootstrap the current repository using pjangler.
+
+## Steps
+1. \`pjangler init misebase --force\`
+2. \`pjangler run doctor\`
+3. \`mise tasks\`
+
+## Output format
+- Changes made
+- Validation output
+- Follow-up TODOs (if any)
+`;
+
+  const skillResult = writeManagedFile(skillPath, skillContent, options);
+  const commandResult = writeManagedFile(commandPath, commandContent, options);
+
+  return {
+    skillResult,
+    commandResult,
+    commandTargetType: useAgentsCommands ? "agents" : "claude",
+  };
+}
+
+function prettyStatus(result: FileInstallResult): string {
+  if (result.status === "created") return "✅ created";
+  if (result.status === "updated") return "♻️  updated";
+  return "⏭️  kept";
+}
+
 program
   .name("pjangler")
   .description("Project subsystem bootstrapper CLI")
@@ -28,11 +121,37 @@ program
 
 program
   .command("init")
-  .argument("<subsystem>", "Subsystem to initialize")
-  .description("Initialize a project subsystem")
+  .argument("[subsystem]", "Subsystem to initialize")
+  .description("Initialize agent bootstrap (default) or a specific project subsystem")
   .option("--dry-run", "Preview changes without writing files")
   .option("-f, --force", "Overwrite existing files")
-  .action(async (subsystem: string, options) => {
+  .action(async (subsystem: string | undefined, options) => {
+    if (!subsystem) {
+      try {
+        const installResult = installAgentBootstrap({
+          force: options.force || false,
+          dryRun: options.dryRun || false,
+        });
+
+        const dryRunPrefix = options.dryRun ? "[DRY RUN] " : "";
+        console.log(`${dryRunPrefix}🧰 pjangler agent bootstrap initialized`);
+        console.log("");
+        console.log(`${prettyStatus(installResult.skillResult)}  skill:   ${installResult.skillResult.path}`);
+        console.log(`${prettyStatus(installResult.commandResult)}  command: ${installResult.commandResult.path}`);
+        console.log("");
+        if (installResult.commandTargetType === "claude") {
+          console.log("ℹ️  ~/.agents/commands was not found; installed command to ~/.claude/commands fallback.");
+          console.log("");
+        }
+        console.log("Next step:");
+        console.log("  Run `pjangler:bootstrap` in your coding agent to finish repo installation.");
+        return;
+      } catch (error) {
+        console.error("❌ Error initializing pjangler agent bootstrap:", error);
+        process.exit(1);
+      }
+    }
+
     const context: CommandContext = {
       targetDir: process.cwd(),
       force: options.force || false,
@@ -71,6 +190,7 @@ program
 
     console.log("");
     console.log("Usage examples:");
+    console.log("  pjangler init                     # install agent skill + bootstrap command");
     console.log("  pjangler init mise");
     console.log("  pjangler init misebase");
     console.log("  pjangler init docker");
