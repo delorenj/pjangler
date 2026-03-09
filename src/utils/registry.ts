@@ -11,6 +11,7 @@ import { Command as Cmd } from "../commands/Command";
 import { MiseRecipe } from "../recipes/MiseRecipe";
 import { DockerRecipe } from "../recipes/DockerRecipe";
 import { NodeRecipe } from "../recipes/NodeRecipe";
+import { ThirtyThreeGodRecipe } from "../recipes/ThirtyThreeGodRecipe";
 
 // Import all commands
 import { AddDockerfile } from "../commands/AddDockerfile";
@@ -26,6 +27,7 @@ import { AddDotenv } from "../commands/AddDotenv";
 import { SyncDocs } from "../commands/SyncDocs";
 import { Doctor } from "../commands/Doctor";
 import { OnboardingPrompt } from "../commands/OnboardingPrompt";
+import { AddThirtyThreeGodSkeleton } from "../commands/AddThirtyThreeGodSkeleton";
 
 export interface RecipeInfo {
   name: string;
@@ -86,6 +88,12 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     description: "Node.js project template",
     class: NodeRecipe,
     commands: ["NodeCommands"]  // Placeholder - actual commands in NodeCommands.ts
+  },
+  "33god": {
+    name: "33god",
+    description: "33GOD ecosystem project skeleton and Plane integration",
+    class: ThirtyThreeGodRecipe,
+    commands: ["AddThirtyThreeGodSkeleton"]
   }
 };
 
@@ -93,6 +101,12 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
  * Registry of all available commands
  */
 export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
+  AddThirtyThreeGodSkeleton: {
+    name: "AddThirtyThreeGodSkeleton",
+    description: "Create 33GOD project skeleton and initialize Plane project",
+    group: "33god",
+    class: AddThirtyThreeGodSkeleton
+  },
   AddDockerfile: {
     name: "AddDockerfile",
     description: "Create Dockerfile for containerization",
