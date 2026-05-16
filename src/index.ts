@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import type { CommandContext } from "./commands/Command";
+import type { HermesAgentContext } from "./commands/hermes/types";
+import { SOUL_TONES } from "./commands/hermes/types";
 import {
   RECIPE_REGISTRY,
   COMMAND_REGISTRY,
@@ -249,6 +251,61 @@ commandCmd
     console.log("");
     console.log("This feature will be implemented in the Template Generation System story.");
     console.log("For now, manually create commands in src/commands/");
+  });
+
+// ============================================================================
+// HERMES-AGENT COMMAND (provision a Hermes agent role into this repo)
+// ============================================================================
+
+program
+  .command("hermes-agent")
+  .alias("hermes")
+  .description("Provision a Hermes agent role into the current repo (TUI; --yes for non-interactive)")
+  .option("-y, --yes", "Non-interactive: accept all defaults (skips Telegram + email)")
+  .option("--target-repo <name>", "Target repo name (default: basename of cwd)")
+  .option("--role <role>", "Agent role (pm | dev | review | ops | qa | ci | ...)")
+  .option("--purpose <text>", "One-line agent purpose")
+  .option(`--tone <tone>`, `Personality tone (${SOUL_TONES.join(" | ")})`)
+  .option("--model-provider <name>", 'Inference provider override ("" = inherit global)')
+  .option("--model-name <name>", 'Model name override ("" = inherit global)')
+  .option("--skip-telegram", "Skip BotFather token capture step")
+  .option("--skip-email", "Skip Cloudflare Email Routing step")
+  .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
+  .option("--skip-plane", "Skip creating the Plane project")
+  .option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer")
+  .option("--skip-systemd", "Skip installing systemd --user units")
+  .option("--dry-run", "Preview what would run; don't execute copier")
+  .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")
+  .action(async (options) => {
+    const context: HermesAgentContext = {
+      targetDir: process.cwd(),
+      force: options.force ?? false,
+      dryRun: options.dryRun ?? false,
+      yes: options.yes ?? false,
+      targetRepo: options.targetRepo,
+      role: options.role,
+      agentPurpose: options.purpose,
+      soulTone: options.tone,
+      modelProvider: options.modelProvider,
+      modelName: options.modelName,
+      skipTelegram: options.skipTelegram,
+      skipEmail: options.skipEmail,
+      skipRuntimeRepo: options.skipRuntimeRepo,
+      skipPlane: options.skipPlane,
+      skipBloodbank: options.skipBloodbank,
+      skipSystemd: options.skipSystemd,
+    };
+    try {
+      const recipe = createRecipe("hermes-agent", context);
+      if (!recipe) {
+        console.error("❌ hermes-agent recipe not registered");
+        process.exit(1);
+      }
+      await recipe.execute();
+    } catch (err) {
+      console.error("❌ hermes-agent failed:", err);
+      process.exit(1);
+    }
   });
 
 // ============================================================================

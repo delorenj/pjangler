@@ -11,6 +11,7 @@ import { Command as Cmd } from "../commands/Command";
 import { MiseRecipe } from "../recipes/MiseRecipe";
 import { DockerRecipe } from "../recipes/DockerRecipe";
 import { NodeRecipe } from "../recipes/NodeRecipe";
+import { HermesAgentRecipe } from "../recipes/HermesAgentRecipe";
 
 // Import all commands
 import { AddDockerfile } from "../commands/AddDockerfile";
@@ -57,6 +58,18 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     description: "Node.js project template",
     class: NodeRecipe,
     commands: ["NodeCommands"]  // Placeholder - actual commands in NodeCommands.ts
+  },
+  "hermes-agent": {
+    name: "hermes-agent",
+    description: "Add a Hermes agent role to this repo (copier + BotFather + CF email + submodule)",
+    class: HermesAgentRecipe,
+    commands: [
+      "PromptForAgentConfig",
+      "RunCopierTemplate",
+      "WireTelegram",
+      "WireEmail",
+      "PrintHermesSummary",
+    ]
   }
 };
 
