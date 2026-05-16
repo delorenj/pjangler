@@ -1,19 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
 
 /**
- * Walks the user through BotFather + captures the token + wires it into the
- * runtime profile.  Most of the heavy lifting lives in the copier template's
- * `.scripts/30-telegram.sh` — we just invoke it with TELEGRAM_BOT_TOKEN
- * pre-populated from a clack secret prompt (so the token doesn't echo).
+ * BotFather token wire-up for a per-(repo, role) Hermes bot.
  *
- * Skipped when:
- *   - ctx.skipTelegram === true (CLI flag or interactive "no")
- *   - dryRun
+ * Token resolution order:
+ *   1. $TELEGRAM_BOT_TOKEN
+ *   2. op://DeLoSecrets/<vaultTitle>/token
+ *   3. BotFather walkthrough + clack secret prompt, then offer to persist
+ *      back to 1Password so future runs skip the prompt entirely.
+ *
+ * The vault item is per-bot (Telegram-Hermes-<repo>-<role>) because each
+ * bot has its own token — unlike WireEmail's shared CF account credential.
  */
 export class WireTelegram extends Command {
   async invoke(): Promise<InvokeResult> {
@@ -32,33 +34,73 @@ export class WireTelegram extends Command {
 
     const botHandle = `${targetRepo.toLowerCase().replace(/-/g, "_")}_${role.toLowerCase()}_bot`;
     const displayName = `${cap(targetRepo)} ${role.length <= 3 ? role.toUpperCase() : cap(role)}`;
+    const vaultTitle = `Telegram-Hermes-${targetRepo.toLowerCase()}-${role.toLowerCase()}`;
+    const vaultRef = `op://DeLoSecrets/${vaultTitle}/token`;
 
-    p.log.step("BotFather steps");
-    p.log.info(
-      [
-        "  1. Open Telegram, message @BotFather",
-        "  2. /newbot",
-        `  3. Display name:   ${displayName}`,
-        `  4. Username:       ${botHandle}   (must end in _bot)`,
-        "  5. Copy the HTTP API token from the reply.",
-        "  6. /setjoingroups Disable",
-        "  7. /setprivacy    Disable",
-      ].join("\n")
-    );
+    let token = process.env.TELEGRAM_BOT_TOKEN;
+    let source: "env" | "op" | "prompt" | null = token ? "env" : null;
 
-    const tokenAnswer = await p.password({
-      message: `Paste the bot token for @${botHandle}`,
-      mask: "•",
-      validate: (v) => {
-        const s = String(v ?? "").trim();
-        if (!s) return "required";
-        if (!/^[0-9]+:.+/.test(s)) return "expected '<digits>:<secret>' shape";
-      },
-    });
-    if (p.isCancel(tokenAnswer)) {
-      return { success: false, message: "✗ Aborted; Telegram step deferred." };
+    if (!token) {
+      const tryOp = spawnSync("op", ["read", vaultRef], { encoding: "utf8" });
+      if (tryOp.status === 0) {
+        token = tryOp.stdout.trim();
+        source = "op";
+        p.log.info(`✓ Telegram token loaded from ${vaultRef}`);
+      }
     }
-    const token = String(tokenAnswer).trim();
+
+    if (!token) {
+      p.log.step("BotFather steps");
+      p.log.info(
+        [
+          "  1. Open Telegram, message @BotFather",
+          "  2. /newbot",
+          `  3. Display name:   ${displayName}`,
+          `  4. Username:       ${botHandle}   (must end in _bot)`,
+          "  5. Copy the HTTP API token from the reply.",
+          "  6. /setjoingroups Disable",
+          "  7. /setprivacy    Disable",
+        ].join("\n")
+      );
+
+      const tokenAnswer = await p.password({
+        message: `Paste the bot token for @${botHandle}`,
+        mask: "•",
+        validate: (v) => {
+          const s = String(v ?? "").trim();
+          if (!s) return "required";
+          if (!/^[0-9]+:.+/.test(s)) return "expected '<digits>:<secret>' shape";
+        },
+      });
+      if (p.isCancel(tokenAnswer)) {
+        return { success: true, message: "→ Telegram skipped (no token).  Re-run later." };
+      }
+      token = String(tokenAnswer).trim();
+      source = "prompt";
+
+      const persist = await p.confirm({
+        message: `Save to ${vaultRef} for next time?`,
+        initialValue: true,
+      });
+      if (!p.isCancel(persist) && persist) {
+        const create = spawnSync(
+          "op",
+          [
+            "item",
+            "create",
+            "--category=API Credential",
+            "--vault=DeLoSecrets",
+            `--title=${vaultTitle}`,
+            `token=${token}`,
+            `bot_handle=${botHandle}`,
+          ],
+          { stdio: "inherit" }
+        );
+        if (create.status !== 0) {
+          p.log.warn("Could not store in 1Password — token is still set for this run.");
+        }
+      }
+    }
 
     const allowedAnswer = await p.text({
       message: "Your Telegram user id (allow-list for this bot)",
@@ -79,12 +121,8 @@ export class WireTelegram extends Command {
       };
     }
 
-    // Drop the .done marker so the script re-runs cleanly
     const marker = join(roleDir, ".scripts", ".done-30-telegram");
-    try {
-      const { unlinkSync } = require("node:fs");
-      if (existsSync(marker)) unlinkSync(marker);
-    } catch { /* ignore */ }
+    if (existsSync(marker)) unlinkSync(marker);
 
     const spinner = p.spinner();
     spinner.start("Verifying token + wiring profile");
@@ -104,7 +142,8 @@ export class WireTelegram extends Command {
       return { success: false, message: "Telegram wire-up failed.  See output above." };
     }
 
-    return { success: true, message: `✓ Telegram: @${botHandle} ready` };
+    const sourceLabel = source === "env" ? " (token: env)" : source === "op" ? " (token: op)" : "";
+    return { success: true, message: `✓ Telegram: @${botHandle} ready${sourceLabel}` };
   }
 }
 
