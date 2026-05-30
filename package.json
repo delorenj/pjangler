@@ -7,12 +7,15 @@
   "type": "module",
   "bin": {
     "pjangler": "src/index.ts",
-    "pj": "src/index.ts"
+    "pj": "src/index.ts",
+    "pjangler-mcp": "src/mcp-server.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
-    "build": "bun build ./src/index.ts --outdir ./dist --target node"
+    "mcp": "bun run src/mcp-server.ts",
+    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "build:mcp": "bun build ./src/mcp-server.ts --outdir ./dist --target node"
   },
   "keywords": ["cli", "bootstrap", "project-setup", "mise", "docker"],
   "author": "delorenj",
@@ -25,6 +28,8 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
-    "commander": "^14.0.2"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^14.0.2",
+    "zod": "^4.4.3"
   }
 }

@@ -1,15 +1,34 @@
 # pjangler
 
-To install dependencies:
+Project subsystem bootstrapper CLI + MCP server.
+
+## Install
 
 ```bash
 bun install
 ```
 
-To run:
+## CLI usage
 
 ```bash
-bun run index.ts
+bun run src/index.ts --help
+# or if installed globally
+pjangler --help
 ```
 
-This project was created using `bun init` in bun v1.2.22. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+## MCP server usage
+
+Run over stdio:
+
+```bash
+bun run mcp
+# or
+pjangler-mcp
+```
+
+Exposed tools:
+
+- `pjangler_list_capabilities`
+- `pjangler_describe_recipe`
+- `pjangler_run_recipe`
+- `pjangler_deploy_hermes_agent`
