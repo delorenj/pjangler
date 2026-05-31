@@ -1,6 +1,6 @@
 {
   "name": "pjangler",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Project subsystem bootstrapper CLI",
   "main": "src/index.ts",
   "module": "src/index.ts",
@@ -17,12 +17,16 @@
     "build": "bun build ./src/index.ts --outdir ./dist --target node",
     "build:mcp": "bun build ./src/mcp-server.ts --outdir ./dist --target node"
   },
-  "keywords": ["cli", "bootstrap", "project-setup", "mise", "docker"],
+  "keywords": [
+    "cli",
+    "bootstrap",
+    "project-setup",
+    "mise",
+    "docker"
+  ],
   "author": "delorenj",
   "license": "MIT",
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
+  "devDependencies": {},
   "peerDependencies": {
     "typescript": "^5"
   },

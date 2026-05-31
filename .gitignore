@@ -1,41 +1,16 @@
-# dependencies (bun install)
+**/.claude/settings.local.json
+~/DevCloud/.gitignore_global
 node_modules
+*.mp4
+*.mp3
+*.zip
+*.aab
+.lastagent
 
-# output
-out
-dist
-*.tgz
-
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-
-# dotenv environment variable files
+# --- secrets: never commit (auto-commit checkpoint hook respects these for untracked files) ---
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# Claude Code shell snapshots (capture full shell env including exported secrets — never commit)
+.env.*
+!.env.example
+.env.op
 shell_snapshots/
-
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
-
-# IntelliJ based IDEs
-.idea
-
-# Finder (MacOS) folder config
-.DS_Store
-
-# Operator-local clipboard/scratch dumps (have contained live API keys — never commit)
-/d
-/wl-copy
+*.shell_snapshot
