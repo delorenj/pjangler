@@ -18,6 +18,8 @@ export interface HermesAgentContext extends CommandContext {
 
   // --- behavior toggles ---
   yes?: boolean;              // non-interactive; accept all defaults
+  local?: boolean;            // local-only: skip runtime repo / Plane / Bloodbank / systemd
+  forceConfig?: boolean;      // regenerate ~/.config/hermes-agent-template/config.toml
   skipTelegram?: boolean;
   skipEmail?: boolean;
   skipRuntimeRepo?: boolean;
@@ -36,5 +38,5 @@ export const HERMES_AGENT_TEMPLATE = "gh:delorenj/hermes-agent-template";
 export const SOUL_TONES = ["direct", "playful", "formal", "terse"] as const;
 
 export function deriveAgentId(repo: string, role: string): string {
-  return `${repo}-${role}`;
+  return `${repo}-${role}`.toLowerCase();
 }

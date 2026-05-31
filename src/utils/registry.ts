@@ -64,6 +64,7 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     description: "Add a Hermes agent role to this repo (copier + BotFather + CF email + submodule)",
     class: HermesAgentRecipe,
     commands: [
+      "EnsureTemplateConfig",
       "PromptForAgentConfig",
       "RunCopierTemplate",
       "WireTelegram",

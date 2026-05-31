@@ -35,3 +35,7 @@ shell_snapshots/
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Operator-local clipboard/scratch dumps (have contained live API keys — never commit)
+/d
+/wl-copy

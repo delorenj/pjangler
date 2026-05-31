@@ -1,0 +1,52 @@
+#!/bin/sh
+# pjangler — friendly launcher for the pjangler provisioner.
+#
+# Installed at ~/.local/bin/pjangler on a provisioned machine. It hands off to a
+# self-contained engine binary (bundled Bun runtime — no node/bun install
+# required) and takes care of the two things a non-technical operator shouldn't
+# have to think about:
+#
+#   1. PATH — copier / gh / git / hermes live in ~/.local/bin and the mise
+#      shims dir; a bare non-interactive shell won't have them. We prepend both.
+#   2. Config — the host config (~/.config/hermes-agent-template/config.toml) is
+#      bootstrapped on first run so provisioning never trips over a missing file.
+#
+# Override the engine location with PJANGLER_ENGINE if you keep it elsewhere.
+set -eu
+
+ENGINE="${PJANGLER_ENGINE:-$HOME/.local/libexec/pjangler-engine}"
+
+PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+export PATH
+
+if [ ! -x "$ENGINE" ]; then
+  echo "pjangler: engine not found at $ENGINE" >&2
+  echo "  Re-run the installer, or set PJANGLER_ENGINE to the pjangler binary." >&2
+  exit 1
+fi
+
+# First run on a machine: make sure the host config exists (idempotent no-op
+# afterwards). Never let this block the actual command.
+"$ENGINE" config bootstrap >/dev/null 2>&1 || true
+
+if [ "$#" -eq 0 ]; then
+  cat <<'EOF'
+pjangler — project + Hermes-agent provisioner
+
+  Provision a Hermes agent into a project (local-only, non-interactive):
+    cd <your-project>
+    pjangler hermes --yes --local
+
+  Other commands:
+    pjangler list                 # available subsystems (mise, docker, node, hermes-agent)
+    pjangler config bootstrap     # (re)create the host config file
+    pjangler --help               # full help
+
+  "--local" keeps everything on this machine: it will NOT create GitHub repos,
+  Plane projects, or systemd units. Drop it (and pass --provision flags) only
+  when you intend to create those cloud resources.
+EOF
+  exit 0
+fi
+
+exec "$ENGINE" "$@"

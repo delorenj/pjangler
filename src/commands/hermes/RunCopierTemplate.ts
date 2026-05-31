@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import * as p from "@clack/prompts";
@@ -41,18 +42,24 @@ export class RunCopierTemplate extends Command {
       };
     }
 
-    // Idempotency: if role.yaml already exists, the copier copy will refuse to
-    // overwrite without --force.  We let the user know rather than crash later.
+    // Idempotency: if role.yaml already exists, copier will refuse to
+    // overwrite without --force.  In --yes mode we automatically re-render
+    // (idempotent refresh); otherwise we ask.
     if (existsSync(join(roleDir, "role.yaml")) && !ctx.force) {
-      const proceed = await p.confirm({
-        message: `${role}/role.yaml already exists — re-render with --overwrite?`,
-        initialValue: false,
-      });
-      if (p.isCancel(proceed) || !proceed) {
-        return {
-          success: false,
-          message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`,
-        };
+      if (ctx.yes) {
+        ctx.force = true;
+      } else {
+        const proceed = await p.confirm({
+          message: `${role}/role.yaml already exists — re-render with --overwrite?`,
+          initialValue: false,
+        });
+        if (p.isCancel(proceed) || !proceed) {
+          return {
+            success: false,
+            message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`,
+          };
+        }
+        ctx.force = true;
       }
     }
 
@@ -69,9 +76,19 @@ export class RunCopierTemplate extends Command {
       SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0",
     };
 
+    // Prefer a local template checkout (if present) so fixes propagate
+    // immediately without waiting for a GitHub push. Resolve against $HOME so
+    // this works on any operator's machine (e.g. a friend's Mac), not just the
+    // box this was authored on. PJANGLER_HERMES_TEMPLATE overrides; otherwise
+    // fall back to the published gh: template.
+    const LOCAL_TEMPLATE = join(homedir(), "code", "hermes-agent-template");
+    const templateSrc =
+      process.env.PJANGLER_HERMES_TEMPLATE ||
+      (existsSync(join(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+
     const args = [
       "copy",
-      HERMES_AGENT_TEMPLATE,
+      templateSrc,
       roleDir,
       "--data", `target_repo=${targetRepo}`,
       "--data", `role=${role}`,

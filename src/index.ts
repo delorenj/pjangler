@@ -3,6 +3,7 @@ import { Command } from "commander";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
 import { SOUL_TONES } from "./commands/hermes/types";
+import { EnsureTemplateConfig } from "./commands/hermes/EnsureTemplateConfig";
 import {
   RECIPE_REGISTRY,
   COMMAND_REGISTRY,
@@ -274,14 +275,20 @@ program
   .option("--skip-plane", "Skip creating the Plane project")
   .option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer")
   .option("--skip-systemd", "Skip installing systemd --user units")
+  .option("--local", "Local-only: skip runtime repo, Plane, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
+  .option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists")
   .option("--dry-run", "Preview what would run; don't execute copier")
   .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")
   .action(async (options) => {
+    const isDarwin = process.platform === "darwin";
+    const local: boolean = options.local ?? false;
     const context: HermesAgentContext = {
       targetDir: process.cwd(),
       force: options.force ?? false,
       dryRun: options.dryRun ?? false,
       yes: options.yes ?? false,
+      local,
+      forceConfig: options.forceConfig ?? false,
       targetRepo: options.targetRepo,
       role: options.role,
       agentPurpose: options.purpose,
@@ -290,10 +297,15 @@ program
       modelName: options.modelName,
       skipTelegram: options.skipTelegram,
       skipEmail: options.skipEmail,
-      skipRuntimeRepo: options.skipRuntimeRepo,
-      skipPlane: options.skipPlane,
-      skipBloodbank: options.skipBloodbank,
-      skipSystemd: options.skipSystemd,
+      // --local (and macOS, for systemd) flip the heavy/irreversible steps off
+      // by default so a non-technical operator can't accidentally create cloud
+      // resources under the wrong account or hit systemd on a Mac. An explicit
+      // --skip-* still forces the skip; passing neither + not --local keeps the
+      // full provisioning behavior for the authoring machine.
+      skipRuntimeRepo: options.skipRuntimeRepo ?? local,
+      skipPlane: options.skipPlane ?? local,
+      skipBloodbank: options.skipBloodbank ?? local,
+      skipSystemd: options.skipSystemd ?? (local || isDarwin),
     };
     try {
       const recipe = createRecipe("hermes-agent", context);
@@ -304,6 +316,32 @@ program
       await recipe.execute();
     } catch (err) {
       console.error("❌ hermes-agent failed:", err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// CONFIG COMMAND (bootstrap host config for the hermes-agent template)
+// ============================================================================
+
+const configCmd = program
+  .command("config")
+  .description("Manage host/provisioner configuration");
+
+configCmd
+  .command("bootstrap")
+  .description("Create ~/.config/hermes-agent-template/config.toml with host-correct defaults if missing")
+  .option("--force", "Overwrite an existing config file")
+  .option("--dry-run", "Show what would be written without writing")
+  .action(async (options) => {
+    const ctx: HermesAgentContext = {
+      targetDir: process.cwd(),
+      dryRun: options.dryRun ?? false,
+      forceConfig: options.force ?? false,
+    };
+    const result = await new EnsureTemplateConfig(ctx).invoke();
+    if (!result.success) {
+      if (result.message) console.error(result.message);
       process.exit(1);
     }
   });
