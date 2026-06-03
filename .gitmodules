@@ -1,0 +1,6 @@
+[submodule "templates/commonproject"]
+	path = templates/commonproject
+	url = git@github.com:delorenj/CommonProject.git
+[submodule "templates/hermes-agent"]
+	path = templates/hermes-agent
+	url = git@github.com:delorenj/hermes-agent-template.git

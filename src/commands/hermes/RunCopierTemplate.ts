@@ -1,10 +1,35 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, type HermesAgentContext } from "./types";
+
+/**
+ * Resolve a vendored copier template that ships with pjangler as a git
+ * submodule under templates/<name>/. Walks up from this module's directory so
+ * it works both when run from source (src/commands/hermes/) and from a repo
+ * checkout. Returns undefined when not found (e.g. a bundled single-file
+ * install), letting callers fall back to ~/code or the published gh: template.
+ */
+function resolveVendoredTemplate(name: string): string | undefined {
+  let dir: string;
+  try {
+    dir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return undefined;
+  }
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, "templates", name);
+    if (existsSync(join(candidate, "copier.yml"))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
 
 /**
  * Invokes `copier copy gh:delorenj/hermes-agent-template ./agents/hermes/<role>`
@@ -18,6 +43,10 @@ export class RunCopierTemplate extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
     const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
+    const ticketProvider = ctx.ticketProvider ?? "plane";
+    // with_scrum_master is a pm-only copier question; passing it for other
+    // roles is harmless (copier ignores it via its `when:` guard).
+    const withScrumMaster = role === "pm" && ctx.withScrumMaster === true;
 
     if (!targetRepo || !role) {
       return {
@@ -81,9 +110,15 @@ export class RunCopierTemplate extends Command {
     // this works on any operator's machine (e.g. a friend's Mac), not just the
     // box this was authored on. PJANGLER_HERMES_TEMPLATE overrides; otherwise
     // fall back to the published gh: template.
+    // Resolution order: explicit env override → vendored submodule (the
+    // version-locked default) → a ~/code dev checkout → the published gh:
+    // template. PJANGLER_HERMES_TEMPLATE stays the escape hatch for pointing at
+    // a live ~/code checkout during template development.
     const LOCAL_TEMPLATE = join(homedir(), "code", "hermes-agent-template");
+    const vendored = resolveVendoredTemplate("hermes-agent");
     const templateSrc =
       process.env.PJANGLER_HERMES_TEMPLATE ||
+      vendored ||
       (existsSync(join(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
 
     const args = [
@@ -96,6 +131,8 @@ export class RunCopierTemplate extends Command {
       "--data", `model_provider=${modelProvider ?? ""}`,
       "--data", `model_name=${modelName ?? ""}`,
       "--data", `soul_tone=${soulTone ?? "direct"}`,
+      "--data", `ticket_provider=${ticketProvider}`,
+      "--data", `with_scrum_master=${withScrumMaster}`,
       "--trust",
       "--vcs-ref=HEAD",
     ];

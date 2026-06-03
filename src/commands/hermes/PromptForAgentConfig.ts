@@ -1,8 +1,25 @@
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { readFileSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
-import type { HermesAgentContext } from "./types";
-import { SOUL_TONES, deriveAgentId } from "./types";
+import type { HermesAgentContext, TicketProvider } from "./types";
+import { SOUL_TONES, ROLE_CHOICES, TICKET_PROVIDERS, deriveAgentId } from "./types";
+
+/**
+ * Synergy with CommonProject: if this repo was bootstrapped by the base
+ * template, its board provider already lives in .project.json. Read it so the
+ * recipe defaults to the SAME provider the repo's board was created in, rather
+ * than blindly defaulting to plane.
+ */
+function detectTicketProvider(targetDir: string): TicketProvider | undefined {
+  try {
+    const t = JSON.parse(readFileSync(join(targetDir, ".project.json"), "utf8"))
+      ?.ticket_provider?.type;
+    return t === "plane" || t === "linear" || t === "trello" ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * First step of the hermes-agent recipe. Either:
@@ -32,6 +49,11 @@ export class PromptForAgentConfig extends Command {
       ctx.soulTone ??= "direct";
       ctx.modelProvider ??= "";
       ctx.modelName ??= "";
+      // Board provider: honor an explicit flag, else inherit the repo's
+      // existing .project.json provider, else plane.
+      ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
+      // A bare `pm` provision does not auto-add the sentinel unless asked.
+      ctx.withScrumMaster ??= false;
       // In --yes mode we always skip the human-input pieces (BotFather, CF).
       ctx.skipTelegram ??= true;
       ctx.skipEmail ??= true;
@@ -60,17 +82,40 @@ export class PromptForAgentConfig extends Command {
     }
 
     if (!ctx.role) {
-      const answer = await p.text({
+      const answer = await p.select({
         message: "Role",
-        placeholder: "pm",
+        options: ROLE_CHOICES.map((r) => ({ value: r.value, label: r.label, hint: r.hint })),
         initialValue: defaultRole,
-        validate: (v) =>
-          /^[a-z][a-z0-9_-]*$/.test(String(v).trim())
-            ? undefined
-            : "lowercase alphanumerics, may include - or _",
       });
       if (p.isCancel(answer)) return this.cancelled();
       ctx.role = String(answer).trim();
+    }
+
+    if (ctx.ticketProvider === undefined) {
+      const detected = detectTicketProvider(ctx.targetDir);
+      const answer = await p.select({
+        message: "Ticket board provider",
+        options: TICKET_PROVIDERS.map((t) => ({
+          value: t.value,
+          label: t.label,
+          hint: t.value === detected ? `${t.hint} — current .project.json` : t.hint,
+        })),
+        initialValue: detected ?? "plane",
+      });
+      if (p.isCancel(answer)) return this.cancelled();
+      ctx.ticketProvider = answer as TicketProvider;
+    }
+
+    // A PM owns the repo board; the Scrum Master is its continuous ticket
+    // sentinel on the SAME board. Offer to provision both in one shot so the
+    // pair is created together (identical end state to two separate runs).
+    if (ctx.role === "pm" && ctx.withScrumMaster === undefined) {
+      const answer = await p.confirm({
+        message: "Also provision the paired Scrum Master (Ticket Sentinel) for this repo?",
+        initialValue: true,
+      });
+      if (p.isCancel(answer)) return this.cancelled();
+      ctx.withScrumMaster = answer === true;
     }
 
     if (!ctx.agentPurpose) {
