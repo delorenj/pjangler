@@ -14,6 +14,7 @@ import {
   getCommandsByGroup,
   createRecipe
 } from "./utils/registry";
+import { runAudit, runMigration, formatAuditReport, formatMigrationReport } from "./parity/index";
 
 const program = new Command();
 
@@ -252,6 +253,68 @@ commandCmd
     console.log("");
     console.log("This feature will be implemented in the Template Generation System story.");
     console.log("For now, manually create commands in src/commands/");
+  });
+
+// ============================================================================
+// AUDIT COMMAND
+// ============================================================================
+
+program
+  .command("audit")
+  .argument("[repo]", "Path to repo to audit (default: cwd)")
+  .description("Deterministic parity audit against 33god project standard")
+  .option("--json", "Output machine-parseable JSON")
+  .action((repo: string | undefined, options) => {
+    try {
+      const report = runAudit(repo);
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatAuditReport(report));
+      }
+      process.exit(report.ok ? 0 : 1);
+    } catch (err) {
+      console.error("❌ audit failed:", err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// MIGRATE COMMAND
+// ============================================================================
+
+program
+  .command("migrate")
+  .argument("[rule-id]", "Rule ID to migrate (omit with --all to apply all)")
+  .argument("[repo]", "Path to repo (default: cwd)")
+  .description("Idempotent migration recipe for a parity rule (or --all)")
+  .option("--all", "Apply every migration recipe in order")
+  .option("--dry-run", "Preview changes without writing files")
+  .option("--json", "Output machine-parseable JSON")
+  .action((ruleId: string | undefined, repo: string | undefined, options) => {
+    try {
+      const all = options.all ?? false;
+      if (!all && !ruleId) {
+        console.error("❌ Provide a rule-id or use --all");
+        process.exit(1);
+      }
+      // When --all is used, any positional argument is the repo path, not a rule-id.
+      let actualRuleId = all ? undefined : ruleId;
+      let actualRepo = repo;
+      if (all && ruleId && !actualRepo) {
+        actualRepo = ruleId;
+      }
+      const report = runMigration(actualRuleId, actualRepo, options.dryRun ?? false, all);
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatMigrationReport(report));
+      }
+      process.exit(report.ok ? 0 : 1);
+    } catch (err) {
+      console.error("❌ migrate failed:", err);
+      process.exit(1);
+    }
   });
 
 // ============================================================================

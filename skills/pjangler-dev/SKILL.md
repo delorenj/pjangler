@@ -11,7 +11,18 @@ description: |
 
 # Pjangler Development
 
+This skill is about **developing pjangler** (authoring Commands/Recipes). For _using_ pjangler
+to create a project — bootstrapping CommonProject, provisioning a Hermes PM or Ticket
+Sentinel (scrum master), the `.project.json` file, and bmad initialization.
+
 Pjangler uses a Command Pattern architecture where Commands are atomic operations and Recipes compose Commands into subsystem bootstrappers.
+
+> **Vendored templates:** the copier templates pjangler deploys are git submodules under
+> `templates/commonproject` and `templates/hermes-agent`. `RunCopierTemplate` resolves the
+> hermes template as: `PJANGLER_HERMES_TEMPLATE` env → vendored `templates/hermes-agent` →
+> `~/code/hermes-agent-template` → `gh:delorenj/hermes-agent-template`. The `hermes-agent`
+> recipe passes `ticket_provider` + `with_scrum_master` and the template binds agents to the
+> repo's one board recorded in `.project.json` (it does not mint role-suffixed boards).
 
 ## Architecture Overview
 
@@ -46,7 +57,7 @@ export class Add<Name> extends Command {
       return {
         success: false,
         message: "⚠️  <file> already exists",
-        filePath
+        filePath,
       };
     }
 
@@ -56,7 +67,7 @@ export class Add<Name> extends Command {
     return {
       success: true,
       message: "✅ Created <file>",
-      filePath
+      filePath,
     };
   }
 }
@@ -65,6 +76,7 @@ export class Add<Name> extends Command {
 ### Available Helpers
 
 The Command base class provides:
+
 - `this.context.targetDir` - Target directory path
 - `this.context.force` - Whether to overwrite existing files
 - `this.fileExists(path)` - Check if file exists relative to targetDir
@@ -74,6 +86,7 @@ The Command base class provides:
 ### Command Patterns
 
 **File creation** (most common):
+
 ```typescript
 async invoke(): Promise<InvokeResult> {
   const filePath = "config.json";
@@ -86,6 +99,7 @@ async invoke(): Promise<InvokeResult> {
 ```
 
 **Directory creation**:
+
 ```typescript
 async invoke(): Promise<InvokeResult> {
   this.createDirectory("src/components");
@@ -94,6 +108,7 @@ async invoke(): Promise<InvokeResult> {
 ```
 
 **Multiple files** (export multiple classes from one file):
+
 ```typescript
 export class AddPackageJson extends Command { ... }
 export class AddReadme extends Command { ... }
@@ -149,11 +164,11 @@ Update the list command output to include the new subsystem.
 
 ## File Naming Conventions
 
-| Type | Pattern | Example |
-|------|---------|---------|
-| Command | `Add<Target>.ts` | `AddDockerfile.ts` |
-| Recipe | `<Subsystem>Recipe.ts` | `DockerRecipe.ts` |
-| Multi-command file | `<Domain>Commands.ts` | `NodeCommands.ts` |
+| Type               | Pattern                | Example            |
+| ------------------ | ---------------------- | ------------------ |
+| Command            | `Add<Target>.ts`       | `AddDockerfile.ts` |
+| Recipe             | `<Subsystem>Recipe.ts` | `DockerRecipe.ts`  |
+| Multi-command file | `<Domain>Commands.ts`  | `NodeCommands.ts`  |
 
 ## Testing Commands
 
@@ -169,5 +184,6 @@ Check generated files match expectations.
 ## Reference
 
 For detailed interfaces and examples, see:
+
 - [references/command-interface.md](references/command-interface.md) - Full Command interface
 - [references/recipe-interface.md](references/recipe-interface.md) - Full Recipe interface
