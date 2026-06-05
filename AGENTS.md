@@ -8,10 +8,13 @@ Source of truth for agent instructions. `CLAUDE.md` and `GEMINI.md` are symlinks
 
 ## Ticket Management (MANDATORY)
 
-No code changes without an active Plane ticket.
+No code changes without an active Plane ticket. The board binding is the
+`ticket_provider` block in `.project.json` (the single source of truth); the
+PM agent owns it and the Scrum Master (Ticket Sentinel) watches the same board.
 
 ```
-Board: https://plane.delo.sh/33god/
+Board:  pjangler (PJAN)
+Plane:  https://plane.delo.sh/33god/projects/18a79832-00fb-4146-b054-d88528f9fef3/issues/
 ```
 
 - Move ticket to "In Progress" before first code change

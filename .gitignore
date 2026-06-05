@@ -14,3 +14,7 @@ node_modules
 .env.op
 shell_snapshots/
 *.shell_snapshot
+skills/
+.codegraph/
+commands/
+
