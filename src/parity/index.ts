@@ -46,6 +46,7 @@ interface RoleMeta {
   roleYamlPath: string;
   repo: string;
   agentId: string;
+  profileName: string;
   displayName: string;
   purpose: string;
   botHandle: string;
@@ -259,6 +260,7 @@ function discoverRoles(repoRoot: string): RoleMeta[] {
         roleYamlPath,
         repo: yamlGet(text, "repo"),
         agentId: yamlGet(text, "agent_id"),
+        profileName: yamlGet(text, "profile") || yamlGet(text, "agent_id"),
         displayName: yamlGet(text, "display_name"),
         purpose: yamlGet(text, "purpose"),
         botHandle: yamlGet(text, "telegram.bot_username"),
@@ -429,18 +431,18 @@ function renderSoul(role: RoleMeta): string {
       ? `You own the continuous-ticket sentinel. You watch the ticket board, enforce workflow policy, and keep work moving without inventing requirements.`
       : `You operate as the ${role.role} agent for this repo.`;
   const runtimeOwner = role.runtimeOwner || "delorenj";
-  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`).\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
+  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME resolves through the named profile \`${role.profileName || role.agentId}\`, which is symlinked to the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`). Your \`config.yaml\` inherits shared non-secret defaults from the fleet default profile; secrets, SOUL, memories, skills, sessions, gateway state, and runtime files remain local to this profile.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
 
 function renderHermesWrapper(role: RoleMeta): string {
   return `#!/usr/bin/env bash
-# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule
-# and execs the shared fleet Hermes binary configured in ~/.hermes/fleet.env.
+# Launcher for ${role.agentId}. Resolves HERMES_HOME through the fleet profile
+# when available, then falls back to the local runtime submodule.
 
 set -euo pipefail
 
 ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
-HERMES_HOME="$ROLE_DIR/runtime"
+RUNTIME_HOME="$ROLE_DIR/runtime"
 
 FLEET_ENV="{HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
 if [[ -f "$FLEET_ENV" ]]; then
@@ -452,8 +454,17 @@ HERMES_BIN="{HERMES_BIN:-{HERMES_FLEET_BIN:-/home/delorenj/code/hermes-agent/.
 HERMES_OAUTH_FILE="{HERMES_OAUTH_FILE:-{HERMES_FLEET_OAUTH_FILE:-$HOME/.hermes/auth.json}}"
 CODEX_HOME="{CODEX_HOME:-{HERMES_FLEET_CODEX_HOME:-$HOME/.codex}}"
 
-if [[ ! -d "$HERMES_HOME" ]]; then
-  echo "hermes: runtime submodule not initialized at $HERMES_HOME" >&2
+FLEET_HOME="{HERMES_FLEET_HOME:-$HOME/.hermes}"
+PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
+PROFILE_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
+if [[ -d "$PROFILE_HOME" ]]; then
+  HERMES_HOME="$PROFILE_HOME"
+else
+  HERMES_HOME="$RUNTIME_HOME"
+fi
+
+if [[ ! -d "$RUNTIME_HOME" ]]; then
+  echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
   echo "  fix: git submodule update --init --recursive" >&2
   exit 1
 fi
@@ -501,8 +512,58 @@ function upsertRegistryEntry(role: RoleMeta, homeDir: string, changedFiles: stri
   const path = registryPath(homeDir);
   const current = safeReadText(path) ?? "# Hermes agent fleet registry.\n# One entry per provisioned agent. Managed by hermes-agent-template/.scripts/80-registry.sh.\nschema_version: 1\nagents: {}\n";
   if (current.includes(`${role.agentId}:`)) return null;
-  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      checkpoint_timer: hermes-${role.agentId}-checkpoint.timer\n`;
+  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      checkpoint_timer: hermes-${role.agentId}-checkpoint.timer\n`;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:\n${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
+  changedFiles.push(path);
+  if (!dryRun) writeText(path, next);
+  return path;
+}
+
+function profileMetaInheritsDefault(path: string): boolean {
+  const text = safeReadText(path);
+  return Boolean(
+    text &&
+      /^config:\s*$/m.test(text) &&
+      /^\s+inherit_from:\s*default\s*$/m.test(text) &&
+      /^\s+save_mode:\s*delta\s*$/m.test(text)
+  );
+}
+
+function upsertInheritedProfileMeta(path: string, changedFiles: string[], dryRun: boolean): string | null {
+  const current = safeReadText(path) ?? "";
+  const lines = current.split("\n");
+  let next: string;
+  const start = lines.findIndex((line) => /^config:\s*$/.test(line));
+
+  if (!current.trim()) {
+    next = "config:\n  inherit_from: default\n  save_mode: delta\n";
+  } else if (start === -1) {
+    next = `${current.replace(/\s*$/, "\n")}config:\n  inherit_from: default\n  save_mode: delta\n`;
+  } else {
+    let end = start + 1;
+    while (end < lines.length && !/^[^#\s][^:]*:\s*/.test(lines[end] ?? "")) end++;
+
+    let hasInherit = false;
+    let hasSave = false;
+    for (let idx = start + 1; idx < end; idx++) {
+      if (/^\s+inherit_from:\s*/.test(lines[idx] ?? "")) {
+        lines[idx] = "  inherit_from: default";
+        hasInherit = true;
+      } else if (/^\s+save_mode:\s*/.test(lines[idx] ?? "")) {
+        lines[idx] = "  save_mode: delta";
+        hasSave = true;
+      }
+    }
+
+    const inserts: string[] = [];
+    if (!hasInherit) inserts.push("  inherit_from: default");
+    if (!hasSave) inserts.push("  save_mode: delta");
+    if (inserts.length) lines.splice(end, 0, ...inserts);
+    next = lines.join("\n");
+    if (!next.endsWith("\n")) next += "\n";
+  }
+
+  if (next === current) return null;
   changedFiles.push(path);
   if (!dryRun) writeText(path, next);
   return path;
@@ -782,7 +843,7 @@ const RULES: Rule[] = [
         }
         if (project?.project_description) {
           const descMatch = text.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
-          const yamlDesc = descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "";
+          const yamlDesc = descMatch?.[1]?.replace(/\n\s+/g, " ").trim() ?? "";
           if (yamlDesc !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
         }
       }
@@ -864,6 +925,9 @@ const RULES: Rule[] = [
       }
       const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
       if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing pm runtime submodule entry");
+      if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) {
+        details.push("runtime/profile.yaml missing inherited default config metadata");
+      }
       const registry = safeReadText(registryPath(ctx.homeDir));
       if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
       return {
@@ -890,6 +954,8 @@ const RULES: Rule[] = [
       copyMissingRecursive(join(templateRoleDir, ".runtime-scaffold"), join(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
       copyMissingRecursive(join(templateRoleDir, ".scripts"), join(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+      if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
       if (registryUpdated) details.push(`updated ${registryUpdated}`);
       return {
@@ -917,6 +983,9 @@ const RULES: Rule[] = [
       }
       const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
       if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing scrum-master runtime submodule entry");
+      if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) {
+        details.push("runtime/profile.yaml missing inherited default config metadata");
+      }
       const registry = safeReadText(registryPath(ctx.homeDir));
       if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
       return {
@@ -952,6 +1021,8 @@ const RULES: Rule[] = [
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+      if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
       if (registryUpdated) details.push(`updated ${registryUpdated}`);
       return {

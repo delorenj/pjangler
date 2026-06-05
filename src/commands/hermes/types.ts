@@ -31,6 +31,7 @@ export interface HermesAgentContext extends CommandContext {
 
   // --- derived after copier runs ---
   agentId?: string;           // <targetRepo>-<role>
+  profileName?: string;       // named Hermes profile, conventionally <targetRepo>-<role>
   roleDir?: string;           // <projectRoot>/agents/hermes/<role>
   runtimeRepo?: string;       // delorenj/agent-hm-<repo>-<role>
 }
@@ -67,4 +68,8 @@ export const TICKET_PROVIDERS = [
 
 export function deriveAgentId(repo: string, role: string): string {
   return `${repo}-${role}`.toLowerCase();
+}
+
+export function deriveProfileName(repo: string, role: string): string {
+  return deriveAgentId(repo, role);
 }

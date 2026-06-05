@@ -14,7 +14,13 @@ node_modules
 .env.op
 shell_snapshots/
 *.shell_snapshot
-skills/
+# Anchored to repo root on purpose: unanchored `commands/`/`skills/` stripped
+# src/commands/** out of the published npm tarball and would strip template
+# content (PJAN-2). Agent-tool dirs are listed explicitly instead.
+/skills/
 .codegraph/
-commands/
+/commands/
+/.agents/
+/.opencode/
+.claude/skills/
 

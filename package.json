@@ -2,20 +2,26 @@
   "name": "@delorenj/pjangler",
   "version": "1.1.2",
   "description": "Project subsystem bootstrapper CLI",
-  "main": "src/index.ts",
-  "module": "src/index.ts",
   "type": "module",
+  "main": "dist/index.js",
   "bin": {
-    "pjangler": "src/index.ts",
-    "pj": "src/index.ts",
-    "pjangler-mcp": "src/mcp-server.ts"
+    "pjangler": "dist/index.js",
+    "pj": "dist/index.js",
+    "pjangler-mcp": "dist/mcp-server.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch src/index.ts",
-    "mcp": "bun run src/mcp-server.ts",
-    "build": "bun build ./src/index.ts --outdir ./dist --target node",
-    "build:mcp": "bun build ./src/mcp-server.ts --outdir ./dist --target node"
+    "build": "esbuild src/index.ts src/mcp-server.ts --bundle --packages=external --platform=node --format=esm --outdir=dist",
+    "start": "node dist/index.js",
+    "mcp": "node dist/mcp-server.js",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "cli",
@@ -26,14 +32,15 @@
   ],
   "author": "delorenj",
   "license": "MIT",
-  "devDependencies": {},
-  "peerDependencies": {
-    "typescript": "^5"
-  },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5"
   }
 }

@@ -61,6 +61,7 @@ export function renderHostConfig(): string {
 # Resolution precedence per value: env var > ~/.hermes/fleet.env > this file > fallback.
 
 [fleet]
+home = "~/.hermes"
 hermes_bin = "${hermesBin}"
 hermes_repo = "${hermesRepo}"
 runtime_scaffold_dir = "${scaffoldDir}"

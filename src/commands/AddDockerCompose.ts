@@ -1,4 +1,4 @@
-import { Command, InvokeResult, CommandContext } from "./Command";
+import { Command, type InvokeResult, type CommandContext } from "./Command";
 
 export class AddDockerCompose extends Command {
   async invoke(): Promise<InvokeResult> {

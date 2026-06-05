@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext, TicketProvider } from "./types";
-import { SOUL_TONES, ROLE_CHOICES, TICKET_PROVIDERS, deriveAgentId } from "./types";
+import {
+  SOUL_TONES,
+  ROLE_CHOICES,
+  TICKET_PROVIDERS,
+  deriveAgentId,
+  deriveProfileName,
+} from "./types";
 
 /**
  * Synergy with CommonProject: if this repo was bootstrapped by the base
@@ -58,10 +64,11 @@ export class PromptForAgentConfig extends Command {
       ctx.skipTelegram ??= true;
       ctx.skipEmail ??= true;
       ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
+      ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
       return {
         success: true,
         message: this.formatMessage(
-          `✓ Non-interactive mode — using defaults  (repo=${ctx.targetRepo}, role=${ctx.role})`
+          `✓ Non-interactive mode — using defaults  (repo=${ctx.targetRepo}, role=${ctx.role}, profile=${ctx.profileName})`
         ),
       };
     }
@@ -151,7 +158,7 @@ export class PromptForAgentConfig extends Command {
 
     if (ctx.modelProvider === undefined) {
       const answer = await p.text({
-        message: "Provider override (empty = inherit global)",
+        message: "Provider override (empty = inherit shared default profile)",
         placeholder: "",
       });
       if (p.isCancel(answer)) return this.cancelled();
@@ -160,7 +167,7 @@ export class PromptForAgentConfig extends Command {
 
     if (ctx.modelName === undefined) {
       const answer = await p.text({
-        message: "Model name override (empty = inherit global)",
+        message: "Model name override (empty = inherit shared default profile)",
         placeholder: "",
       });
       if (p.isCancel(answer)) return this.cancelled();
@@ -186,9 +193,12 @@ export class PromptForAgentConfig extends Command {
     }
 
     ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
+    ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
     return {
       success: true,
-      message: this.formatMessage(`✓ Collected agent config  (agent_id=${ctx.agentId})`),
+      message: this.formatMessage(
+        `✓ Collected agent config  (agent_id=${ctx.agentId}, profile=${ctx.profileName})`
+      ),
     };
   }
 

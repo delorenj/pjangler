@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { resolve } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -179,7 +179,7 @@ server.registerTool(
   {
     title: "Deploy Hermes agent",
     description:
-      "Provision a Hermes agent role in a target repo directory, with optional integrations (Telegram, email, runtime repo, Plane, Bloodbank, systemd).",
+      "Provision a Hermes agent role with an inherited named profile and optional integrations (Telegram, email, runtime repo, Plane, Bloodbank, systemd).",
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string(),

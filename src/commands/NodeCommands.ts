@@ -1,4 +1,4 @@
-import { Command, InvokeResult, CommandContext } from "../commands/Command";
+import { Command, type InvokeResult, type CommandContext } from "../commands/Command";
 
 export class AddPackageJson extends Command {
   async invoke(): Promise<InvokeResult> {

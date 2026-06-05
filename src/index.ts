@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { Command } from "commander";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
@@ -330,8 +330,8 @@ program
   .option("--role <role>", "Agent role (pm | dev | review | ops | qa | ci | ...)")
   .option("--purpose <text>", "One-line agent purpose")
   .option(`--tone <tone>`, `Personality tone (${SOUL_TONES.join(" | ")})`)
-  .option("--model-provider <name>", 'Inference provider override ("" = inherit global)')
-  .option("--model-name <name>", 'Model name override ("" = inherit global)')
+  .option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)')
+  .option("--model-name <name>", 'Model name override ("" = inherit shared default profile)')
   .option("--skip-telegram", "Skip BotFather token capture step")
   .option("--skip-email", "Skip Cloudflare Email Routing step")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")

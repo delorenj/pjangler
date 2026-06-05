@@ -55,13 +55,32 @@ description = "Force every versioned file up to the highest version"
 run = "{{config_root}}/.mise/scripts/versioning.sh sync"
 # <<< mise-versioning <<<
 
+# --- npm lifecycle wrappers (plain node package; npm is the only PM here) ---
+
+[tasks.install]
+description = "Install dependencies with npm (the only package manager for this repo)"
+run = "npm install"
+
 # Version-aware build: bump patch once, then build BOTH shipped artifacts
 # (the pjangler CLI and the MCP server) so they stay on the same version.
-# Use `mise run build` instead of `bun run build` to get the bump + git tag.
+# Use `mise run build` instead of `npm run build` to get the bump + git tag.
 [tasks.build]
-description = "Bump patch, then build the CLI and MCP server bundles"
+description = "Bump patch, then build the CLI and MCP server bundles (esbuild via npm)"
 depends = ["version:bump-patch"]
+run = "npm run build"
+
+[tasks.typecheck]
+description = "Type-check the source with tsc --noEmit"
+run = "npm run typecheck"
+
+[tasks.publish]
+description = "Bump + build (via depends), verify templates, publish to npm"
+depends = ["build"]
 run = [
-  "bun build ./src/index.ts --outdir ./dist --target node",
-  "bun build ./src/mcp-server.ts --outdir ./dist --target node",
+  "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
+  "npm publish --access public",
 ]
+
+[tasks.mcp]
+description = "Run the pjangler MCP server from the built bundle"
+run = "npm run mcp"

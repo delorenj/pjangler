@@ -36,7 +36,7 @@ export class HermesAgentRecipe extends Recipe {
 
   // Override execute() to suppress the base class's per-command logging since
   // our commands already render their own UI via @clack/prompts.
-  async execute(): Promise<void> {
+  override async execute(): Promise<void> {
     for (const command of this.ingredients) {
       const result = await command.invoke();
       // Short-circuit on hard failure (e.g. user cancelled prompt). The Recipe

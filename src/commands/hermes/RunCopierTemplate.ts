@@ -5,7 +5,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
-import { HERMES_AGENT_TEMPLATE, type HermesAgentContext } from "./types";
+import { HERMES_AGENT_TEMPLATE, deriveProfileName, type HermesAgentContext } from "./types";
 
 /**
  * Resolve a vendored copier template that ships with pjangler as a git
@@ -44,6 +44,8 @@ export class RunCopierTemplate extends Command {
     const ctx = this.context as HermesAgentContext;
     const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
     const ticketProvider = ctx.ticketProvider ?? "plane";
+    const profileName =
+      ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : undefined);
     // with_scrum_master is a pm-only copier question; passing it for other
     // roles is harmless (copier ignores it via its `when:` guard).
     const withScrumMaster = role === "pm" && ctx.withScrumMaster === true;
@@ -130,6 +132,7 @@ export class RunCopierTemplate extends Command {
       "--data", `agent_purpose=${agentPurpose ?? ""}`,
       "--data", `model_provider=${modelProvider ?? ""}`,
       "--data", `model_name=${modelName ?? ""}`,
+      "--data", `profile_name=${profileName ?? ""}`,
       "--data", `soul_tone=${soulTone ?? "direct"}`,
       "--data", `ticket_provider=${ticketProvider}`,
       "--data", `with_scrum_master=${withScrumMaster}`,

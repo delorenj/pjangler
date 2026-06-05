@@ -1,0 +1,7 @@
+# This file exists as a firewall: when .npmignore is present, npm/bun/pnpm
+# packing IGNORES .gitignore entirely. Without it, gitignore edits can silently
+# strip runtime files from the published tarball (PJAN-2: unanchored
+# `commands/` removed src/commands/** from 1.1.2).
+# The `files` allowlist in package.json controls what ships: dist/ + templates/.
+*.tgz
+node_modules
