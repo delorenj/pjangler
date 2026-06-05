@@ -15,13 +15,14 @@ import {
   createRecipe
 } from "./utils/registry";
 import { runAudit, runMigration, formatAuditReport, formatMigrationReport } from "./parity/index";
+import { PJANGLER_VERSION } from "./utils/version";
 
 const program = new Command();
 
 program
   .name("pjangler")
   .description("Project subsystem bootstrapper CLI")
-  .version("1.0.0");
+  .version(PJANGLER_VERSION);
 
 // ============================================================================
 // INIT COMMAND

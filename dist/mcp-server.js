@@ -27,8 +27,8 @@ var Command = class {
   }
   fileExists(filePath) {
     const { existsSync: existsSync6 } = __require("fs");
-    const { join: join6 } = __require("path");
-    const fullPath = join6(this.context.targetDir, filePath);
+    const { join: join7 } = __require("path");
+    const fullPath = join7(this.context.targetDir, filePath);
     return existsSync6(fullPath);
   }
   writeFile(filePath, content) {
@@ -36,9 +36,9 @@ var Command = class {
       return;
     }
     const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync3 } = __require("fs");
-    const { join: join6, dirname: dirname3 } = __require("path");
-    const fullPath = join6(this.context.targetDir, filePath);
-    const dir = dirname3(fullPath);
+    const { join: join7, dirname: dirname4 } = __require("path");
+    const fullPath = join7(this.context.targetDir, filePath);
+    const dir = dirname4(fullPath);
     mkdirSync3(dir, { recursive: true });
     writeFileSync2(fullPath, content);
   }
@@ -47,8 +47,8 @@ var Command = class {
       return;
     }
     const { mkdirSync: mkdirSync3 } = __require("fs");
-    const { join: join6 } = __require("path");
-    const fullPath = join6(this.context.targetDir, dirPath);
+    const { join: join7 } = __require("path");
+    const fullPath = join7(this.context.targetDir, dirPath);
     mkdirSync3(fullPath, { recursive: true });
   }
 };
@@ -1248,10 +1248,32 @@ function createRecipe(name, context) {
   return new info.class(context);
 }
 
+// src/utils/version.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { dirname as dirname3, join as join6 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var PJANGLER_VERSION = (() => {
+  try {
+    let dir = dirname3(fileURLToPath2(import.meta.url));
+    for (let i = 0; i < 4; i++) {
+      try {
+        const raw = readFileSync2(join6(dir, "package.json"), "utf8");
+        return JSON.parse(raw).version ?? "0.0.0";
+      } catch {
+        const parent = dirname3(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  } catch {
+  }
+  return "0.0.0";
+})();
+
 // src/mcp-server.ts
 var server = new McpServer({
   name: "pjangler-mcp",
-  version: "1.0.0"
+  version: PJANGLER_VERSION
 });
 function resolveTargetDir(targetDir) {
   const dir = resolve(targetDir ?? process.cwd());

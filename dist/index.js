@@ -55,8 +55,8 @@ var Command = class {
   }
   fileExists(filePath) {
     const { existsSync: existsSync6 } = __require("fs");
-    const { join: join7 } = __require("path");
-    const fullPath = join7(this.context.targetDir, filePath);
+    const { join: join8 } = __require("path");
+    const fullPath = join8(this.context.targetDir, filePath);
     return existsSync6(fullPath);
   }
   writeFile(filePath, content) {
@@ -64,9 +64,9 @@ var Command = class {
       return;
     }
     const { writeFileSync: writeFileSync3, mkdirSync: mkdirSync4 } = __require("fs");
-    const { join: join7, dirname: dirname4 } = __require("path");
-    const fullPath = join7(this.context.targetDir, filePath);
-    const dir = dirname4(fullPath);
+    const { join: join8, dirname: dirname5 } = __require("path");
+    const fullPath = join8(this.context.targetDir, filePath);
+    const dir = dirname5(fullPath);
     mkdirSync4(dir, { recursive: true });
     writeFileSync3(fullPath, content);
   }
@@ -75,8 +75,8 @@ var Command = class {
       return;
     }
     const { mkdirSync: mkdirSync4 } = __require("fs");
-    const { join: join7 } = __require("path");
-    const fullPath = join7(this.context.targetDir, dirPath);
+    const { join: join8 } = __require("path");
+    const fullPath = join8(this.context.targetDir, dirPath);
     mkdirSync4(fullPath, { recursive: true });
   }
 };
@@ -2363,9 +2363,31 @@ function formatMigrationReport(report) {
 `;
 }
 
+// src/utils/version.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname4, join as join7 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+var PJANGLER_VERSION = (() => {
+  try {
+    let dir = dirname4(fileURLToPath3(import.meta.url));
+    for (let i = 0; i < 4; i++) {
+      try {
+        const raw = readFileSync3(join7(dir, "package.json"), "utf8");
+        return JSON.parse(raw).version ?? "0.0.0";
+      } catch {
+        const parent = dirname4(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  } catch {
+  }
+  return "0.0.0";
+})();
+
 // src/index.ts
 var program = new Command3();
-program.name("pjangler").description("Project subsystem bootstrapper CLI").version("1.0.0");
+program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
 program.command("init").argument("<subsystem>", "Subsystem to initialize").description("Initialize a project subsystem").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (subsystem, options) => {
   const context = {
     targetDir: process.cwd(),

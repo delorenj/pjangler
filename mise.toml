@@ -74,11 +74,12 @@ description = "Type-check the source with tsc --noEmit"
 run = "npm run typecheck"
 
 [tasks.publish]
-description = "Bump + build (via depends), verify templates, publish to npm"
+description = "Bump + build (via depends), verify templates, publish to npm (fresh 1Password TOTP)"
 depends = ["build"]
 run = [
   "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
-  "npm publish --access public",
+  # --otp resolved at publish time; a TOTP can't be injected statically via env/.npmrc
+  "npm publish --access public --otp=\"$(op item get NPM --vault DeLoSecrets --otp)\"",
 ]
 
 [tasks.mcp]

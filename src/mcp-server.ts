@@ -7,10 +7,11 @@ import { z } from "zod";
 import { createRecipe, getRecipeInfo, getRecipeNames, COMMAND_REGISTRY, RECIPE_REGISTRY } from "./utils/registry";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
+import { PJANGLER_VERSION } from "./utils/version";
 
 const server = new McpServer({
   name: "pjangler-mcp",
-  version: "1.0.0",
+  version: PJANGLER_VERSION,
 });
 
 function resolveTargetDir(targetDir?: string): string {
