@@ -1,6 +1,6 @@
 {
   "name": "@delorenj/pjangler",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Project subsystem bootstrapper CLI",
   "main": "src/index.ts",
   "module": "src/index.ts",

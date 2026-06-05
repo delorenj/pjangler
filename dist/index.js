@@ -34,7 +34,7 @@ var __toESM = (mod, isNodeMode, target) => {
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
-// node_modules/commander/lib/error.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/error.js
 var require_error = __commonJS((exports) => {
   class CommanderError extends Error {
     constructor(exitCode, code, message) {
@@ -58,7 +58,7 @@ var require_error = __commonJS((exports) => {
   exports.InvalidArgumentError = InvalidArgumentError;
 });
 
-// node_modules/commander/lib/argument.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/argument.js
 var require_argument = __commonJS((exports) => {
   var { InvalidArgumentError } = require_error();
 
@@ -138,7 +138,7 @@ var require_argument = __commonJS((exports) => {
   exports.humanReadableArgName = humanReadableArgName;
 });
 
-// node_modules/commander/lib/help.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/help.js
 var require_help = __commonJS((exports) => {
   var { humanReadableArgName } = require_argument();
 
@@ -495,7 +495,7 @@ ${itemIndentStr}`);
   exports.stripColor = stripColor;
 });
 
-// node_modules/commander/lib/option.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/option.js
 var require_option = __commonJS((exports) => {
   var { InvalidArgumentError } = require_error();
 
@@ -679,7 +679,7 @@ var require_option = __commonJS((exports) => {
   exports.DualOptions = DualOptions;
 });
 
-// node_modules/commander/lib/suggestSimilar.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/suggestSimilar.js
 var require_suggestSimilar = __commonJS((exports) => {
   var maxDistance = 3;
   function editDistance(a, b) {
@@ -752,7 +752,7 @@ var require_suggestSimilar = __commonJS((exports) => {
   exports.suggestSimilar = suggestSimilar;
 });
 
-// node_modules/commander/lib/command.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/lib/command.js
 var require_command = __commonJS((exports) => {
   var EventEmitter = __require("node:events").EventEmitter;
   var childProcess = __require("node:child_process");
@@ -2107,7 +2107,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
   exports.useColor = useColor;
 });
 
-// node_modules/commander/index.js
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/index.js
 var require_commander = __commonJS((exports) => {
   var { Argument } = require_argument();
   var { Command } = require_command();
@@ -2127,7 +2127,7 @@ var require_commander = __commonJS((exports) => {
   exports.InvalidOptionArgumentError = InvalidArgumentError;
 });
 
-// node_modules/sisteransi/src/index.js
+// node_modules/.pnpm/sisteransi@1.0.5/node_modules/sisteransi/src/index.js
 var require_src = __commonJS((exports, module) => {
   var ESC2 = "\x1B";
   var CSI2 = `${ESC2}[`;
@@ -2185,7 +2185,7 @@ var require_src = __commonJS((exports, module) => {
   module.exports = { cursor, scroll, erase, beep };
 });
 
-// node_modules/commander/esm.mjs
+// node_modules/.pnpm/commander@14.0.3/node_modules/commander/esm.mjs
 var import__ = __toESM(require_commander(), 1);
 var {
   program,
@@ -2204,41 +2204,10 @@ var {
 // src/commands/hermes/types.ts
 var SOUL_TONES = ["direct", "playful", "formal", "terse"];
 
-// src/recipes/Recipe.ts
-class Recipe {
-  context;
-  ingredients = [];
-  constructor(context) {
-    this.context = context;
-  }
-  addIngredient(CommandClass) {
-    this.ingredients.push(new CommandClass(this.context));
-    return this;
-  }
-  async execute() {
-    const dryRunPrefix = this.context.dryRun ? "[DRY RUN] " : "";
-    console.log(`${dryRunPrefix}\uD83D\uDE80 Initializing ${this.constructor.name.replace("Recipe", "").toLowerCase()} subsystem...`);
-    if (this.context.dryRun) {
-      console.log("⚠️  Dry-run mode: No files will be modified");
-      console.log("");
-    }
-    for (const command of this.ingredients) {
-      const result = await command.invoke();
-      if (result.success) {
-        console.log(result.message);
-      } else {
-        console.log(result.message);
-      }
-    }
-    if (!this.context.dryRun) {
-      this.printNextSteps();
-    } else {
-      console.log("");
-      console.log("✓ Dry-run complete - no files were modified");
-      console.log("  Remove --dry-run flag to apply changes");
-    }
-  }
-}
+// src/commands/hermes/EnsureTemplateConfig.ts
+import { homedir, platform } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 
 // src/commands/Command.ts
 class Command2 {
@@ -2274,6 +2243,134 @@ class Command2 {
     const { join } = __require("path");
     const fullPath = join(this.context.targetDir, dirPath);
     mkdirSync(fullPath, { recursive: true });
+  }
+}
+
+// src/commands/hermes/EnsureTemplateConfig.ts
+function resolveTemplateConfigPath() {
+  const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim())
+    return fromEnv.trim();
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join(homedir(), ".config");
+  return join(base, "hermes-agent-template", "config.toml");
+}
+function detectHermesBin(home) {
+  const candidates = [
+    join(home, "code", "hermes-agent", "venv", "bin", "hermes"),
+    join(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
+    join(home, ".local", "bin", "hermes")
+  ];
+  for (const c of candidates) {
+    if (existsSync(c))
+      return c;
+  }
+  return candidates[0];
+}
+function renderHostConfig() {
+  const home = homedir();
+  const hermesBin = detectHermesBin(home);
+  const hermesRepo = join(home, "code", "hermes-agent");
+  const scaffoldDir = join(home, "code", "hermes-agent-template", "runtime-scaffold");
+  const skillsDir = join(home, ".agents", "skills");
+  return `# hermes-agent-template — host configuration
+# Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
+#
+# [fleet] paths below were derived from THIS machine. The identity values in
+# [github]/[plane]/[bloodbank] are intentionally left to be confirmed before a
+# CLOUD provision (\`pjangler hermes\` without --local); they are unused by the
+# default local-only provision.
+#
+# Resolution precedence per value: env var > ~/.hermes/fleet.env > this file > fallback.
+
+[fleet]
+hermes_bin = "${hermesBin}"
+hermes_repo = "${hermesRepo}"
+runtime_scaffold_dir = "${scaffoldDir}"
+fleet_env = "~/.hermes/fleet.env"
+registry_file = "~/.hermes/agents-registry.yaml"
+canonical_skills_dir = "${skillsDir}"
+symlinked_runtime_skills = []
+
+[github]
+# Owner of the per-agent runtime repos (creates <owner>/agent-hm-<repo>-<role>).
+# REQUIRED before a cloud provision. Leave empty for local-only runs.
+runtime_repo_owner = ""
+
+[plane]
+# Plane instance + workspace (one project per agent). Confirm before cloud provision.
+base = "https://plane.delo.sh"
+workspace = "33god"
+
+[bloodbank]
+# NATS endpoint the consumer connects to. For a remote fleet node, point this at
+# the bloodbank host over Tailscale rather than localhost.
+nats_host = "127.0.0.1"
+nats_port = 4222
+compose_dir = "~/code/33GOD/bloodbank"
+`;
+}
+
+class EnsureTemplateConfig extends Command2 {
+  async invoke() {
+    const ctx = this.context;
+    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
+    const path = resolveTemplateConfigPath();
+    const exists = existsSync(path);
+    if (exists && !force) {
+      console.log(`✓ Config present: ${path}`);
+      return { success: true, message: "" };
+    }
+    if (ctx.dryRun) {
+      console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
+      return { success: true, message: "" };
+    }
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, renderHostConfig());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, message: `✗ Failed to write ${path}: ${msg}` };
+    }
+    console.log(`✓ Bootstrapped config: ${path}`);
+    console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
+    return { success: true, message: "" };
+  }
+}
+
+// src/recipes/Recipe.ts
+class Recipe {
+  context;
+  ingredients = [];
+  constructor(context) {
+    this.context = context;
+  }
+  addIngredient(CommandClass) {
+    this.ingredients.push(new CommandClass(this.context));
+    return this;
+  }
+  async execute() {
+    const dryRunPrefix = this.context.dryRun ? "[DRY RUN] " : "";
+    console.log(`${dryRunPrefix}\uD83D\uDE80 Initializing ${this.constructor.name.replace("Recipe", "").toLowerCase()} subsystem...`);
+    if (this.context.dryRun) {
+      console.log("⚠️  Dry-run mode: No files will be modified");
+      console.log("");
+    }
+    for (const command of this.ingredients) {
+      const result = await command.invoke();
+      if (result.success) {
+        console.log(result.message);
+      } else {
+        console.log(result.message);
+      }
+    }
+    if (!this.context.dryRun) {
+      this.printNextSteps();
+    } else {
+      console.log("");
+      console.log("✓ Dry-run complete - no files were modified");
+      console.log("  Remove --dry-run flag to apply changes");
+    }
   }
 }
 
@@ -2648,16 +2745,112 @@ class NodeRecipe extends Recipe {
   }
 }
 
-// src/commands/hermes/PromptForAgentConfig.ts
-import { basename } from "node:path";
+// src/commands/hermes/EnsureTemplateConfig.ts
+import { homedir as homedir2, platform as platform2 } from "node:os";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join2, dirname as dirname2 } from "node:path";
+function resolveTemplateConfigPath2() {
+  const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim())
+    return fromEnv.trim();
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join2(homedir2(), ".config");
+  return join2(base, "hermes-agent-template", "config.toml");
+}
+function detectHermesBin2(home) {
+  const candidates = [
+    join2(home, "code", "hermes-agent", "venv", "bin", "hermes"),
+    join2(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
+    join2(home, ".local", "bin", "hermes")
+  ];
+  for (const c of candidates) {
+    if (existsSync2(c))
+      return c;
+  }
+  return candidates[0];
+}
+function renderHostConfig2() {
+  const home = homedir2();
+  const hermesBin = detectHermesBin2(home);
+  const hermesRepo = join2(home, "code", "hermes-agent");
+  const scaffoldDir = join2(home, "code", "hermes-agent-template", "runtime-scaffold");
+  const skillsDir = join2(home, ".agents", "skills");
+  return `# hermes-agent-template — host configuration
+# Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform2()}).
+#
+# [fleet] paths below were derived from THIS machine. The identity values in
+# [github]/[plane]/[bloodbank] are intentionally left to be confirmed before a
+# CLOUD provision (\`pjangler hermes\` without --local); they are unused by the
+# default local-only provision.
+#
+# Resolution precedence per value: env var > ~/.hermes/fleet.env > this file > fallback.
 
-// node_modules/@clack/core/dist/index.mjs
+[fleet]
+hermes_bin = "${hermesBin}"
+hermes_repo = "${hermesRepo}"
+runtime_scaffold_dir = "${scaffoldDir}"
+fleet_env = "~/.hermes/fleet.env"
+registry_file = "~/.hermes/agents-registry.yaml"
+canonical_skills_dir = "${skillsDir}"
+symlinked_runtime_skills = []
+
+[github]
+# Owner of the per-agent runtime repos (creates <owner>/agent-hm-<repo>-<role>).
+# REQUIRED before a cloud provision. Leave empty for local-only runs.
+runtime_repo_owner = ""
+
+[plane]
+# Plane instance + workspace (one project per agent). Confirm before cloud provision.
+base = "https://plane.delo.sh"
+workspace = "33god"
+
+[bloodbank]
+# NATS endpoint the consumer connects to. For a remote fleet node, point this at
+# the bloodbank host over Tailscale rather than localhost.
+nats_host = "127.0.0.1"
+nats_port = 4222
+compose_dir = "~/code/33GOD/bloodbank"
+`;
+}
+
+class EnsureTemplateConfig2 extends Command2 {
+  async invoke() {
+    const ctx = this.context;
+    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
+    const path = resolveTemplateConfigPath2();
+    const exists = existsSync2(path);
+    if (exists && !force) {
+      console.log(`✓ Config present: ${path}`);
+      return { success: true, message: "" };
+    }
+    if (ctx.dryRun) {
+      console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
+      return { success: true, message: "" };
+    }
+    try {
+      mkdirSync2(dirname2(path), { recursive: true });
+      writeFileSync2(path, renderHostConfig2());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, message: `✗ Failed to write ${path}: ${msg}` };
+    }
+    console.log(`✓ Bootstrapped config: ${path}`);
+    console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
+    return { success: true, message: "" };
+  }
+}
+
+// src/commands/hermes/PromptForAgentConfig.ts
+import { basename, join as join3 } from "node:path";
+import { readFileSync } from "node:fs";
+
+// node_modules/.pnpm/@clack+core@1.4.0/node_modules/@clack/core/dist/index.mjs
 import { styleText as v } from "node:util";
 import { stdout as x, stdin as D } from "node:process";
 import * as b from "node:readline";
-import E from "node:readline";
+import G from "node:readline";
 
-// node_modules/fast-string-truncated-width/dist/utils.js
+// node_modules/.pnpm/fast-string-truncated-width@3.0.3/node_modules/fast-string-truncated-width/dist/utils.js
 var getCodePointsLength = (() => {
   const SURROGATE_PAIR_RE = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g;
   return (input) => {
@@ -2676,7 +2869,7 @@ var isWideNotCJKTNotEmoji = (x) => {
   return x === 8987 || x === 9001 || x >= 12272 && x <= 12287 || x >= 12289 && x <= 12350 || x >= 12441 && x <= 12543 || x >= 12549 && x <= 12591 || x >= 12593 && x <= 12686 || x >= 12688 && x <= 12771 || x >= 12783 && x <= 12830 || x >= 12832 && x <= 12871 || x >= 12880 && x <= 19903 || x >= 65040 && x <= 65049 || x >= 65072 && x <= 65106 || x >= 65108 && x <= 65126 || x >= 65128 && x <= 65131 || x >= 127488 && x <= 127490 || x >= 127504 && x <= 127547 || x >= 127552 && x <= 127560 || x >= 131072 && x <= 196605 || x >= 196608 && x <= 262141;
 };
 
-// node_modules/fast-string-truncated-width/dist/index.js
+// node_modules/.pnpm/fast-string-truncated-width@3.0.3/node_modules/fast-string-truncated-width/dist/index.js
 var ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]|\u001b\]8;[^;]*;.*?(?:\u0007|\u001b\u005c)/y;
 var CONTROL_RE = /[\x00-\x08\x0A-\x1F\x7F-\x9F]{1,1000}/y;
 var CJKT_WIDE_RE = /(?:(?![\uFF61-\uFF9F\uFF00-\uFFEF])[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Tangut}]){1,1000}/yu;
@@ -2775,7 +2968,7 @@ var getStringTruncatedWidth = (input, truncationOptions = {}, widthOptions = {})
 };
 var dist_default = getStringTruncatedWidth;
 
-// node_modules/fast-string-width/dist/index.js
+// node_modules/.pnpm/fast-string-width@3.0.2/node_modules/fast-string-width/dist/index.js
 var NO_TRUNCATION2 = {
   limit: Infinity,
   ellipsis: "",
@@ -2786,7 +2979,7 @@ var fastStringWidth = (input, options = {}) => {
 };
 var dist_default2 = fastStringWidth;
 
-// node_modules/fast-wrap-ansi/lib/main.js
+// node_modules/.pnpm/fast-wrap-ansi@0.2.2/node_modules/fast-wrap-ansi/lib/main.js
 var ESC = "\x1B";
 var CSI = "";
 var END_CODE = 39;
@@ -2998,7 +3191,7 @@ function wrapAnsi(string, columns, options) {
 `);
 }
 
-// node_modules/@clack/core/dist/index.mjs
+// node_modules/.pnpm/@clack+core@1.4.0/node_modules/@clack/core/dist/index.mjs
 var import_sisteransi = __toESM(require_src(), 1);
 import { ReadStream as O } from "node:tty";
 function f(r, t, s) {
@@ -3026,9 +3219,9 @@ function I(r, t, s, e) {
     u += i[a].length + 1;
   return u + o;
 }
-var G = ["up", "down", "left", "right", "space", "enter", "cancel"];
-var K = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-var h = { actions: new Set(G), aliases: new Map([["k", "up"], ["j", "down"], ["h", "left"], ["l", "right"], ["\x03", "cancel"], ["escape", "cancel"]]), messages: { cancel: "Canceled", error: "Something went wrong" }, withGuide: true, date: { monthNames: [...K], messages: { required: "Please enter a valid date", invalidMonth: "There are only 12 months in a year", invalidDay: (r, t) => `There are only ${r} days in ${t}`, afterMin: (r) => `Date must be on or after ${r.toISOString().slice(0, 10)}`, beforeMax: (r) => `Date must be on or before ${r.toISOString().slice(0, 10)}` } } };
+var K = ["up", "down", "left", "right", "space", "enter", "cancel"];
+var j = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+var h = { actions: new Set(K), aliases: new Map([["k", "up"], ["j", "down"], ["h", "left"], ["l", "right"], ["\x03", "cancel"], ["escape", "cancel"]]), messages: { cancel: "Canceled", error: "Something went wrong" }, withGuide: true, date: { monthNames: [...j], messages: { required: "Please enter a valid date", invalidMonth: "There are only 12 months in a year", invalidDay: (r, t) => `There are only ${r} days in ${t}`, afterMin: (r) => `Date must be on or after ${r.toISOString().slice(0, 10)}`, beforeMax: (r) => `Date must be on or before ${r.toISOString().slice(0, 10)}` } } };
 function C(r, t) {
   if (typeof r == "string")
     return h.aliases.get(r) === t;
@@ -3037,7 +3230,7 @@ function C(r, t) {
       return true;
   return false;
 }
-function z(r, t) {
+function Y(r, t) {
   if (r === t)
     return;
   const s = r.split(`
@@ -3047,16 +3240,16 @@ function z(r, t) {
     s[o] !== e[o] && n.push(o);
   return { lines: n, numLinesBefore: s.length, numLinesAfter: e.length, numLines: i };
 }
-var Y = globalThis.process.platform.startsWith("win");
+var q = globalThis.process.platform.startsWith("win");
 var k = Symbol("clack:cancel");
-function q(r) {
+function R(r) {
   return r === k;
 }
 function w(r, t) {
   const s = r;
   s.isTTY && s.setRawMode(t);
 }
-function R({ input: r = D, output: t = x, overwrite: s = true, hideCursor: e = true } = {}) {
+function W({ input: r = D, output: t = x, overwrite: s = true, hideCursor: e = true } = {}) {
   const i = b.createInterface({ input: r, output: t, prompt: "", tabSize: 1 });
   b.emitKeypressEvents(r, i), r instanceof O && r.isTTY && r.setRawMode(true);
   const n = (o, { name: u, sequence: a }) => {
@@ -3075,12 +3268,12 @@ function R({ input: r = D, output: t = x, overwrite: s = true, hideCursor: e = t
     });
   };
   return e && t.write(import_sisteransi.cursor.hide), r.once("keypress", n), () => {
-    r.off("keypress", n), e && t.write(import_sisteransi.cursor.show), r instanceof O && r.isTTY && !Y && r.setRawMode(false), i.terminal = false, i.close();
+    r.off("keypress", n), e && t.write(import_sisteransi.cursor.show), r instanceof O && r.isTTY && !q && r.setRawMode(false), i.terminal = false, i.close();
   };
 }
 var A = (r) => ("columns" in r) && typeof r.columns == "number" ? r.columns : 80;
 var L = (r) => ("rows" in r) && typeof r.rows == "number" ? r.rows : 20;
-function W(r, t, s, e = s, i = s, n) {
+function B(r, t, s, e = s, i = s, n) {
   const o = A(r ?? x);
   return wrapAnsi(t, o - s.length, { hard: true, trim: false }).split(`
 `).map((u, a, l) => {
@@ -3089,7 +3282,17 @@ function W(r, t, s, e = s, i = s, n) {
   }).join(`
 `);
 }
-var m = class {
+function P(r, t) {
+  if ("~standard" in r) {
+    const s = r["~standard"].validate(t);
+    if (s instanceof Promise)
+      throw new TypeError("Schema validation must be synchronous. Update `validate()` and remove any asynchronous logic.");
+    return s.issues?.at(0)?.message;
+  }
+  return r(t);
+}
+
+class m {
   input;
   output;
   _abortSignal;
@@ -3137,7 +3340,7 @@ var m = class {
           this.state = "cancel", this.close();
         }, { once: true });
       }
-      this.rl = E.createInterface({ input: this.input, tabSize: 2, prompt: "", escapeCodeTimeout: 50, terminal: true }), this.rl.prompt(), this.opts.initialUserInput !== undefined && this._setUserInput(this.opts.initialUserInput, true), this.input.on("keypress", this.onKeypress), w(this.input, true), this.output.on("resize", this.render), this.render(), this.once("submit", () => {
+      this.rl = G.createInterface({ input: this.input, tabSize: 2, prompt: "", escapeCodeTimeout: 50, terminal: true }), this.rl.prompt(), this.opts.initialUserInput !== undefined && this._setUserInput(this.opts.initialUserInput, true), this.input.on("keypress", this.onKeypress), w(this.input, true), this.output.on("resize", this.render), this.render(), this.once("submit", () => {
         this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), w(this.input, false), t(this.value);
       }), this.once("cancel", () => {
         this.output.write(import_sisteransi.cursor.show), this.output.off("resize", this.render), w(this.input, false), t(k);
@@ -3160,9 +3363,9 @@ var m = class {
     this.rl?.write(null, { ctrl: true, name: "u" }), this._setUserInput("");
   }
   onKeypress(t, s) {
-    if (this._track && s.name !== "return" && (s.name && this._isActionKey(t, s) && this.rl?.write(null, { ctrl: true, name: "h" }), this._cursor = this.rl?.cursor ?? 0, this._setUserInput(this.rl?.line)), this.state === "error" && (this.state = "active"), s?.name && (!this._track && h.aliases.has(s.name) && this.emit("cursor", h.aliases.get(s.name)), h.actions.has(s.name) && this.emit("cursor", s.name)), t && (t.toLowerCase() === "y" || t.toLowerCase() === "n") && this.emit("confirm", t.toLowerCase() === "y"), this.emit("key", t?.toLowerCase(), s), s?.name === "return" && this._shouldSubmit(t, s)) {
+    if (this._track && s.name !== "return" && (s.name && this._isActionKey(t, s) && this.rl?.write(null, { ctrl: true, name: "h" }), this._cursor = this.rl?.cursor ?? 0, this._setUserInput(this.rl?.line)), this.state === "error" && (this.state = "active"), s?.name && (!this._track && h.aliases.has(s.name) && this.emit("cursor", h.aliases.get(s.name)), h.actions.has(s.name) && this.emit("cursor", s.name)), t && (t.toLowerCase() === "y" || t.toLowerCase() === "n") && this.emit("confirm", t.toLowerCase() === "y"), this.emit("key", t, s), s?.name === "return" && this._shouldSubmit(t, s)) {
       if (this.opts.validate) {
-        const e = this.opts.validate(this.value);
+        const e = P(this.opts.validate, this.value);
         e && (this.error = e instanceof Error ? e.message : e, this.state = "error", this.rl?.write(this.userInput));
       }
       this.state !== "error" && (this.state = "submit");
@@ -3184,7 +3387,7 @@ var m = class {
       if (this.state === "initial")
         this.output.write(import_sisteransi.cursor.hide);
       else {
-        const s = z(this._prevFrame, t), e = L(this.output);
+        const s = Y(this._prevFrame, t), e = L(this.output);
         if (this.restoreCursor(), s) {
           const i = Math.max(0, s.numLinesAfter - e), n = Math.max(0, s.numLinesBefore - e);
           let o = s.lines.find((u) => u >= i);
@@ -3218,21 +3421,21 @@ var m = class {
       this.output.write(t), this.state === "initial" && (this.state = "active"), this._prevFrame = t;
     }
   }
-};
-function B(r, t) {
+}
+function J(r, t) {
   if (r === undefined || t.length === 0)
     return 0;
   const s = t.findIndex((e) => e.value === r);
   return s !== -1 ? s : 0;
 }
-function J(r, t) {
+function H(r, t) {
   return (t.label ?? String(t.value)).toLowerCase().includes(r.toLowerCase());
 }
-function H(r, t) {
+function Q(r, t) {
   if (t)
     return r ? t : t[0];
 }
-var Q = class extends m {
+var X = class extends m {
   filteredOptions;
   multiple;
   isNavigating = false;
@@ -3260,7 +3463,7 @@ var Q = class extends m {
   constructor(t) {
     super(t), this.#n = t.options, this.#u = t.placeholder;
     const s = this.options;
-    this.filteredOptions = [...s], this.multiple = t.multiple === true, this.#t = typeof t.options == "function" ? t.filter : t.filter ?? J;
+    this.filteredOptions = [...s], this.multiple = t.multiple === true, this.#t = typeof t.options == "function" ? t.filter : t.filter ?? H;
     let e;
     if (t.initialValue && Array.isArray(t.initialValue) ? this.multiple ? e = t.initialValue : e = t.initialValue.slice(0, 1) : !this.multiple && this.options.length > 0 && (e = [this.options[0].value]), e)
       for (const i of e) {
@@ -3278,7 +3481,7 @@ var Q = class extends m {
       this.userInput === "\t" && this._clearUserInput(), this._setUserInput(u, true), this.isNavigating = false;
       return;
     }
-    e || i ? (this.#s = f(this.#s, e ? -1 : 1, this.filteredOptions), this.focusedValue = this.filteredOptions[this.#s]?.value, this.multiple || (this.selectedValues = [this.focusedValue]), this.isNavigating = true) : n ? this.value = H(this.multiple, this.selectedValues) : this.multiple ? this.focusedValue !== undefined && (s.name === "tab" || this.isNavigating && s.name === "space") ? this.toggleSelected(this.focusedValue) : this.isNavigating = false : (this.focusedValue && (this.selectedValues = [this.focusedValue]), this.isNavigating = false);
+    e || i ? (this.#s = f(this.#s, e ? -1 : 1, this.filteredOptions), this.focusedValue = this.filteredOptions[this.#s]?.value, this.multiple || (this.selectedValues = [this.focusedValue]), this.isNavigating = true) : n ? this.value = Q(this.multiple, this.selectedValues) : this.multiple ? this.focusedValue !== undefined && (s.name === "tab" || this.isNavigating && s.name === "space") ? this.toggleSelected(this.focusedValue) : this.isNavigating = false : (this.focusedValue && (this.selectedValues = [this.focusedValue]), this.isNavigating = false);
   }
   deselectAll() {
     this.selectedValues = [];
@@ -3291,7 +3494,7 @@ var Q = class extends m {
       this.#r = t;
       const s = this.options;
       t && this.#t ? this.filteredOptions = s.filter((n) => this.#t?.(t, n)) : this.filteredOptions = [...s];
-      const e = B(this.focusedValue, this.filteredOptions);
+      const e = J(this.focusedValue, this.filteredOptions);
       this.#s = f(e, 0, this.filteredOptions);
       const i = this.filteredOptions[this.#s];
       i && !i.disabled ? this.focusedValue = i.value : this.focusedValue = undefined, this.multiple || (this.focusedValue !== undefined ? this.toggleSelected(this.focusedValue) : this.deselectAll());
@@ -3299,7 +3502,7 @@ var Q = class extends m {
   }
 };
 
-class X extends m {
+class Z extends m {
   get cursor() {
     return this.value ? 0 : 1;
   }
@@ -3316,11 +3519,11 @@ class X extends m {
     });
   }
 }
-var Z = { Y: { type: "year", len: 4 }, M: { type: "month", len: 2 }, D: { type: "day", len: 2 } };
-function P(r) {
-  return [...r].map((t) => Z[t]);
+var tt = { Y: { type: "year", len: 4 }, M: { type: "month", len: 2 }, D: { type: "day", len: 2 } };
+function F(r) {
+  return [...r].map((t) => tt[t]);
 }
-function tt(r) {
+function st(r) {
   const t = new Intl.DateTimeFormat(r, { year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(2000, 0, 15)), s = [];
   let e = "/";
   for (const i of t)
@@ -3336,7 +3539,7 @@ function S(r) {
 function U(r, t) {
   return new Date(r || 2001, t || 1, 0).getDate();
 }
-function F(r) {
+function N(r) {
   const { year: t, month: s, day: e } = S(r);
   if (!t || t < 0 || t > 9999 || !s || s < 1 || s > 12 || !e || e < 1)
     return;
@@ -3344,16 +3547,16 @@ function F(r) {
   if (!(i.getUTCFullYear() !== t || i.getUTCMonth() !== s - 1 || i.getUTCDate() !== e))
     return { year: t, month: s, day: e };
 }
-function N(r) {
-  const t = F(r);
+function E(r) {
+  const t = N(r);
   return t ? new Date(Date.UTC(t.year, t.month - 1, t.day)) : undefined;
 }
-function st(r, t, s, e) {
+function et(r, t, s, e) {
   const i = s ? { year: s.getUTCFullYear(), month: s.getUTCMonth() + 1, day: s.getUTCDate() } : null, n = e ? { year: e.getUTCFullYear(), month: e.getUTCMonth() + 1, day: e.getUTCDate() } : null;
   return r === "year" ? { min: i?.year ?? 1, max: n?.year ?? 9999 } : r === "month" ? { min: i && t.year === i.year ? i.month : 1, max: n && t.year === n.year ? n.month : 12 } : { min: i && t.year === i.year && t.month === i.month ? i.day : 1, max: n && t.year === n.year && t.month === n.month ? n.day : U(t.year, t.month) };
 }
 
-class et extends m {
+class it extends m {
   #s;
   #r;
   #t;
@@ -3382,10 +3585,10 @@ class et extends m {
     return this.#s.map((s) => t[s.type]).join(this.#r);
   }
   #a() {
-    this._setUserInput(this.#c(this.#t)), this._setValue(N(this.#t) ?? undefined);
+    this._setUserInput(this.#c(this.#t)), this._setValue(E(this.#t) ?? undefined);
   }
   constructor(t) {
-    const s = t.format ? { segments: P(t.format), separator: t.separator ?? "/" } : tt(t.locale), e = t.separator ?? s.separator, i = t.format ? P(t.format) : s.segments, n = t.initialValue ?? t.defaultValue, o = n ? { year: String(n.getUTCFullYear()).padStart(4, "0"), month: String(n.getUTCMonth() + 1).padStart(2, "0"), day: String(n.getUTCDate()).padStart(2, "0") } : { year: "____", month: "__", day: "__" }, u = i.map((a) => o[a.type]).join(e);
+    const s = t.format ? { segments: F(t.format), separator: t.separator ?? "/" } : st(t.locale), e = t.separator ?? s.separator, i = t.format ? F(t.format) : s.segments, n = t.initialValue ?? t.defaultValue, o = n ? { year: String(n.getUTCFullYear()).padStart(4, "0"), month: String(n.getUTCMonth() + 1).padStart(2, "0"), day: String(n.getUTCDate()).padStart(2, "0") } : { year: "____", month: "__", day: "__" }, u = i.map((a) => o[a.type]).join(e);
     super({ ...t, initialUserInput: u }, false), this.#s = i, this.#r = e, this.#t = o, this.#n = t.minDate, this.#u = t.maxDate, this.#a(), this.on("cursor", (a) => this.#d(a)), this.on("key", (a, l) => this.#f(a, l)), this.on("finalize", () => this.#g(t));
   }
   #h() {
@@ -3402,7 +3605,7 @@ class et extends m {
     const s = this.#h();
     if (!s)
       return;
-    const { segment: e } = s, i = this.#t[e.type], n = !i || i.replace(/_/g, "") === "", o = Number.parseInt((i || "0").replace(/_/g, "0"), 10) || 0, u = st(e.type, S(this.#t), this.#n, this.#u);
+    const { segment: e } = s, i = this.#t[e.type], n = !i || i.replace(/_/g, "") === "", o = Number.parseInt((i || "0").replace(/_/g, "0"), 10) || 0, u = et(e.type, S(this.#t), this.#n, this.#u);
     let a;
     n ? a = t === 1 ? u.min : u.max : a = Math.max(Math.min(u.max, o + t), u.min), this.#t = { ...this.#t, [e.type]: a.toString().padStart(e.len, "0") }, this.#i = true, this.#o = null, this.#a();
   }
@@ -3472,7 +3675,7 @@ class et extends m {
         }
       }
       this.inlineError = "", this.#t[i.type] = l;
-      const y = l.includes("_") ? undefined : F(this.#t);
+      const y = l.includes("_") ? undefined : N(this.#t);
       if (y) {
         const { year: d, month: g } = y, _ = U(d, g);
         this.#t = { year: String(Math.max(0, Math.min(9999, d))).padStart(4, "0"), month: String(Math.max(1, Math.min(12, g))).padStart(2, "0"), day: String(Math.max(1, Math.min(_, y.day))).padStart(2, "0") };
@@ -3495,11 +3698,10 @@ class et extends m {
       const n = U(s, e);
       this.#t = { ...this.#t, day: String(Math.min(i, n)).padStart(2, "0") };
     }
-    this.value = N(this.#t) ?? t.defaultValue ?? undefined;
+    this.value = E(this.#t) ?? t.defaultValue ?? undefined;
   }
 }
-
-class it extends m {
+var rt = class extends m {
   options;
   cursor = 0;
   #s;
@@ -3545,9 +3747,10 @@ class it extends m {
       }
     });
   }
-}
+};
+var nt = new Set(["up", "down", "left", "right"]);
 
-class rt extends m {
+class ot extends m {
   #s = false;
   #r;
   focused = "editor";
@@ -3600,7 +3803,7 @@ ${i}` : `${s}${v("inverse", e)}${i}`;
   }
   constructor(t) {
     super(t, false), this.#r = t.showSubmit ?? false, this.on("key", (s, e) => {
-      if (e?.name && h.actions.has(e.name)) {
+      if (e?.name && nt.has(e.name)) {
         this.#n(e.name);
         return;
       }
@@ -3626,7 +3829,7 @@ ${i}` : `${s}${v("inverse", e)}${i}`;
     });
   }
 }
-class ot extends m {
+class at extends m {
   _mask = "•";
   get cursor() {
     return this._cursor;
@@ -3653,7 +3856,7 @@ class ot extends m {
   }
 }
 
-class ut extends m {
+class ht extends m {
   options;
   cursor = 0;
   get _selectedValue() {
@@ -3680,7 +3883,7 @@ class ut extends m {
     });
   }
 }
-class ht extends m {
+class ct extends m {
   get userInputWithCursor() {
     if (this.state === "submit")
       return this.userInput;
@@ -3702,55 +3905,55 @@ class ht extends m {
   }
 }
 
-// node_modules/@clack/prompts/dist/index.mjs
-import { styleText as e, stripVTControlCharacters as nt2 } from "node:util";
+// node_modules/.pnpm/@clack+prompts@1.5.0/node_modules/@clack/prompts/dist/index.mjs
+import { styleText as e, stripVTControlCharacters as ot2 } from "node:util";
 import V2 from "node:process";
 var import_sisteransi2 = __toESM(require_src(), 1);
-function ee() {
+function se() {
   return V2.platform !== "win32" ? V2.env.TERM !== "linux" : !!V2.env.CI || !!V2.env.WT_SESSION || !!V2.env.TERMINUS_SUBLIME || V2.env.ConEmuTask === "{cmd::Cmder}" || V2.env.TERM_PROGRAM === "Terminus-Sublime" || V2.env.TERM_PROGRAM === "vscode" || V2.env.TERM === "xterm-256color" || V2.env.TERM === "alacritty" || V2.env.TERMINAL_EMULATOR === "JetBrains-JediTerm";
 }
-var tt2 = ee();
-var ot2 = () => process.env.CI === "true";
+var tt2 = se();
+var at2 = () => process.env.CI === "true";
 var w2 = (t, i) => tt2 ? t : i;
-var Tt = w2("◆", "*");
-var at2 = w2("■", "x");
-var ut2 = w2("▲", "x");
+var _t = w2("◆", "*");
+var ut2 = w2("■", "x");
+var lt2 = w2("▲", "x");
 var H2 = w2("◇", "o");
-var lt = w2("┌", "T");
+var ct2 = w2("┌", "T");
 var $2 = w2("│", "|");
 var x2 = w2("└", "—");
-var _t = w2("┐", "T");
-var xt = w2("┘", "—");
+var xt = w2("┐", "T");
+var Et = w2("┘", "—");
 var z2 = w2("●", ">");
 var U2 = w2("○", " ");
 var et2 = w2("◻", "[•]");
 var K2 = w2("◼", "[+]");
 var Y2 = w2("◻", "[ ]");
-var Et = w2("▪", "•");
+var Gt = w2("▪", "•");
 var st2 = w2("─", "-");
-var ct = w2("╮", "+");
-var Gt = w2("├", "+");
-var $t = w2("╯", "+");
-var dt = w2("╰", "+");
-var Mt = w2("╭", "+");
-var ht2 = w2("●", "•");
-var pt = w2("◆", "*");
-var mt = w2("▲", "!");
-var gt = w2("■", "x");
+var $t = w2("╮", "+");
+var Mt = w2("├", "+");
+var dt = w2("╯", "+");
+var ht2 = w2("╰", "+");
+var Ot = w2("╭", "+");
+var pt = w2("●", "•");
+var mt = w2("◆", "*");
+var gt = w2("▲", "!");
+var yt = w2("■", "x");
 var P2 = (t) => {
   switch (t) {
     case "initial":
     case "active":
-      return e("cyan", Tt);
+      return e("cyan", _t);
     case "cancel":
-      return e("red", at2);
+      return e("red", ut2);
     case "error":
-      return e("yellow", ut2);
+      return e("yellow", lt2);
     case "submit":
       return e("green", H2);
   }
 };
-var yt = (t) => {
+var ft = (t) => {
   switch (t) {
     case "initial":
     case "active":
@@ -3763,7 +3966,7 @@ var yt = (t) => {
       return e("green", $2);
   }
 };
-var Ot = (t, i, s, r, u, n = false) => {
+var Pt = (t, i, s, r, u, n = false) => {
   let a = i, c = 0;
   if (n)
     for (let o = r - 1;o >= s && (a -= t[o].length, c++, !(a <= u)); o--)
@@ -3791,7 +3994,7 @@ var F2 = ({ cursor: t, options: i, style: s, output: r = process.stdout, maxItem
     let b2 = 0, G2 = 0, M = y;
     const N2 = t - v2;
     let O2 = d;
-    const j2 = () => Ot(m2, M, 0, N2, O2), k2 = () => Ot(m2, M, N2 + 1, m2.length, O2, true);
+    const j2 = () => Pt(m2, M, 0, N2, O2), k2 = () => Pt(m2, M, N2 + 1, m2.length, O2, true);
     f2 ? ({ lineCount: M, removals: b2 } = j2(), M > O2 && (h2 || (O2 -= 1), { lineCount: M, removals: G2 } = k2())) : (h2 || (O2 -= 1), { lineCount: M, removals: G2 } = k2(), M > O2 && (O2 -= 1, { lineCount: M, removals: b2 } = j2())), b2 > 0 && (f2 = true, m2.splice(0, b2)), G2 > 0 && (h2 = true, m2.splice(m2.length - G2, G2));
   }
   const S2 = [];
@@ -3801,10 +4004,10 @@ var F2 = ({ cursor: t, options: i, style: s, output: r = process.stdout, maxItem
       S2.push(G2);
   return h2 && S2.push(l), S2;
 };
-var ue = (t) => {
+var le = (t) => {
   const i = t.active ?? "Yes", s = t.inactive ?? "No";
-  return new X({ active: i, inactive: s, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue ?? true, render() {
-    const r = t.withGuide ?? h.withGuide, u = `${P2(this.state)}  `, n = r ? `${e("gray", $2)}  ` : "", a = W(t.output, t.message, n, u), c = `${r ? `${e("gray", $2)}
+  return new Z({ active: i, inactive: s, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue ?? true, render() {
+    const r = t.withGuide ?? h.withGuide, u = `${P2(this.state)}  `, n = r ? `${e("gray", $2)}  ` : "", a = B(t.output, t.message, n, u), c = `${r ? `${e("gray", $2)}
 ` : ""}${a}
 `, o = this.value ? i : s;
     switch (this.state) {
@@ -3844,56 +4047,56 @@ var R2 = { message: (t = [], { symbol: i = e("gray", $2), secondarySymbol: s = e
 `)}
 `);
 }, info: (t, i) => {
-  R2.message(t, { ...i, symbol: e("blue", ht2) });
+  R2.message(t, { ...i, symbol: e("blue", pt) });
 }, success: (t, i) => {
-  R2.message(t, { ...i, symbol: e("green", pt) });
+  R2.message(t, { ...i, symbol: e("green", mt) });
 }, step: (t, i) => {
   R2.message(t, { ...i, symbol: e("green", H2) });
 }, warn: (t, i) => {
-  R2.message(t, { ...i, symbol: e("yellow", mt) });
+  R2.message(t, { ...i, symbol: e("yellow", gt) });
 }, warning: (t, i) => {
   R2.warn(t, i);
 }, error: (t, i) => {
-  R2.message(t, { ...i, symbol: e("red", gt) });
+  R2.message(t, { ...i, symbol: e("red", yt) });
 } };
-var me = (t = "", i) => {
+var ge = (t = "", i) => {
   const s = i?.output ?? process.stdout, r = i?.withGuide ?? h.withGuide ? `${e("gray", x2)}  ` : "";
   s.write(`${r}${e("red", t)}
 
 `);
 };
-var ge = (t = "", i) => {
-  const s = i?.output ?? process.stdout, r = i?.withGuide ?? h.withGuide ? `${e("gray", lt)}  ` : "";
+var ye = (t = "", i) => {
+  const s = i?.output ?? process.stdout, r = i?.withGuide ?? h.withGuide ? `${e("gray", ct2)}  ` : "";
   s.write(`${r}${t}
 `);
 };
-var ye = (t = "", i) => {
+var fe = (t = "", i) => {
   const s = i?.output ?? process.stdout, r = i?.withGuide ?? h.withGuide ? `${e("gray", $2)}
 ${e("gray", x2)}  ` : "";
   s.write(`${r}${t}
 
 `);
 };
-var we = (t) => e("dim", t);
-var be = (t, i, s) => {
+var be = (t) => e("dim", t);
+var Se = (t, i, s) => {
   const r = { hard: true, trim: false }, u = wrapAnsi(t, i, r).split(`
 `), n = u.reduce((o, l) => Math.max(dist_default2(l), o), 0), a = u.map(s).reduce((o, l) => Math.max(dist_default2(l), o), 0), c = i - (a - n);
   return wrapAnsi(t, c, r);
 };
-var Se = (t = "", i = "", s) => {
-  const r = s?.output ?? V2.stdout, u = s?.withGuide ?? h.withGuide, n = s?.format ?? we, a = ["", ...be(t, A(r) - 6, n).split(`
+var Ce = (t = "", i = "", s) => {
+  const r = s?.output ?? V2.stdout, u = s?.withGuide ?? h.withGuide, n = s?.format ?? be, a = ["", ...Se(t, A(r) - 6, n).split(`
 `).map(n), ""], c = dist_default2(i), o = Math.max(a.reduce((p2, f2) => {
     const h2 = dist_default2(f2);
     return h2 > p2 ? h2 : p2;
   }, 0), c) + 2, l = a.map((p2) => `${e("gray", $2)}  ${p2}${" ".repeat(o - dist_default2(p2))}${e("gray", $2)}`).join(`
 `), d = u ? `${e("gray", $2)}
-` : "", g = u ? Gt : dt;
-  r.write(`${d}${e("green", H2)}  ${e("reset", i)} ${e("gray", st2.repeat(Math.max(o - c - 1, 1)) + ct)}
+` : "", g = u ? Mt : ht2;
+  r.write(`${d}${e("green", H2)}  ${e("reset", i)} ${e("gray", st2.repeat(Math.max(o - c - 1, 1)) + $t)}
 ${l}
-${e("gray", g + st2.repeat(o + 2) + $t)}
+${e("gray", g + st2.repeat(o + 2) + dt)}
 `);
 };
-var Ce = (t) => new ot({ validate: t.validate, mask: t.mask ?? Et, signal: t.signal, input: t.input, output: t.output, render() {
+var Ie = (t) => new at({ validate: t.validate, mask: t.mask ?? Gt, signal: t.signal, input: t.input, output: t.output, render() {
   const i = t.withGuide ?? h.withGuide, s = `${i ? `${e("gray", $2)}
 ` : ""}${P2(this.state)}  ${t.message}
 `, r = this.userInputWithCursor, u = this.masked;
@@ -3922,11 +4125,11 @@ ${a}
     }
   }
 } }).prompt();
-var Te = (t) => e("magenta", t);
-var ft = ({ indicator: t = "dots", onCancel: i, output: s = process.stdout, cancelMessage: r, errorMessage: u, frames: n = tt2 ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"], delay: a = tt2 ? 80 : 120, signal: c, ...o } = {}) => {
-  const l = ot2();
+var _e = (t) => e("magenta", t);
+var vt = ({ indicator: t = "dots", onCancel: i, output: s = process.stdout, cancelMessage: r, errorMessage: u, frames: n = tt2 ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"], delay: a = tt2 ? 80 : 120, signal: c, ...o } = {}) => {
+  const l = at2();
   let d, g, p2 = false, f2 = false, h2 = "", I2, m2 = performance.now();
-  const y = A(s), v2 = o?.styleFrame ?? Te, C2 = (_) => {
+  const y = A(s), v2 = o?.styleFrame ?? _e, C2 = (_) => {
     const A2 = _ > 1 ? u ?? h.messages.error : r ?? h.messages.cancel;
     f2 = _ === 1, p2 && (W2(A2, _), f2 && typeof i == "function" && i());
   }, S2 = () => C2(2), b2 = () => C2(1), G2 = () => {
@@ -3945,7 +4148,7 @@ var ft = ({ indicator: t = "dots", onCancel: i, output: s = process.stdout, canc
     const A2 = (performance.now() - _) / 1000, L2 = Math.floor(A2 / 60), D2 = Math.floor(A2 % 60);
     return L2 > 0 ? `[${L2}m ${D2}s]` : `[${D2}s]`;
   }, k2 = o.withGuide ?? h.withGuide, rt2 = (_ = "") => {
-    p2 = true, d = R({ output: s }), h2 = O2(_), m2 = performance.now(), k2 && s.write(`${e("gray", $2)}
+    p2 = true, d = W({ output: s }), h2 = O2(_), m2 = performance.now(), k2 && s.write(`${e("gray", $2)}
 `);
     let A2 = 0, L2 = 0;
     G2(), g = setInterval(() => {
@@ -3959,17 +4162,17 @@ var ft = ({ indicator: t = "dots", onCancel: i, output: s = process.stdout, canc
       else if (t === "timer")
         Z2 = `${D2}  ${h2} ${j2(m2)}`;
       else {
-        const kt = ".".repeat(Math.floor(L2)).slice(0, 3);
-        Z2 = `${D2}  ${h2}${kt}`;
+        const Lt = ".".repeat(Math.floor(L2)).slice(0, 3);
+        Z2 = `${D2}  ${h2}${Lt}`;
       }
-      const Bt = wrapAnsi(Z2, y, { hard: true, trim: false });
-      s.write(Bt), A2 = A2 + 1 < n.length ? A2 + 1 : 0, L2 = L2 < 4 ? L2 + 0.125 : 0;
+      const kt = wrapAnsi(Z2, y, { hard: true, trim: false });
+      s.write(kt), A2 = A2 + 1 < n.length ? A2 + 1 : 0, L2 = L2 < 4 ? L2 + 0.125 : 0;
     }, a);
   }, W2 = (_ = "", A2 = 0, L2 = false) => {
     if (!p2)
       return;
     p2 = false, clearInterval(g), N2();
-    const D2 = A2 === 0 ? e("green", H2) : A2 === 1 ? e("red", at2) : e("red", ut2);
+    const D2 = A2 === 0 ? e("green", H2) : A2 === 1 ? e("red", ut2) : e("red", lt2);
     h2 = _ ?? h2, L2 || (t === "timer" ? s.write(`${D2}  ${h2} ${j2(m2)}
 `) : s.write(`${D2}  ${h2}
 `)), M(), d();
@@ -3980,12 +4183,12 @@ var ft = ({ indicator: t = "dots", onCancel: i, output: s = process.stdout, canc
     return f2;
   } };
 };
-var jt = { light: w2("─", "-"), heavy: w2("━", "="), block: w2("█", "#") };
+var Nt = { light: w2("─", "-"), heavy: w2("━", "="), block: w2("█", "#") };
 var it2 = (t, i) => t.includes(`
 `) ? t.split(`
 `).map((s) => i(s)).join(`
 `) : i(t);
-var xe = (t) => {
+var Ee = (t) => {
   const i = (s, r) => {
     const u = s.label ?? String(s.value);
     switch (r) {
@@ -4001,17 +4204,17 @@ var xe = (t) => {
         return `${e("dim", U2)} ${it2(u, (n) => e("dim", n))}`;
     }
   };
-  return new ut({ options: t.options, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue, render() {
-    const s = t.withGuide ?? h.withGuide, r = `${P2(this.state)}  `, u = `${yt(this.state)}  `, n = W(t.output, t.message, u, r), a = `${s ? `${e("gray", $2)}
+  return new ht({ options: t.options, signal: t.signal, input: t.input, output: t.output, initialValue: t.initialValue, render() {
+    const s = t.withGuide ?? h.withGuide, r = `${P2(this.state)}  `, u = `${ft(this.state)}  `, n = B(t.output, t.message, u, r), a = `${s ? `${e("gray", $2)}
 ` : ""}${n}
 `;
     switch (this.state) {
       case "submit": {
-        const c = s ? `${e("gray", $2)}  ` : "", o = W(t.output, i(this.options[this.cursor], "selected"), c);
+        const c = s ? `${e("gray", $2)}  ` : "", o = B(t.output, i(this.options[this.cursor], "selected"), c);
         return `${a}${o}`;
       }
       case "cancel": {
-        const c = s ? `${e("gray", $2)}  ` : "", o = W(t.output, i(this.options[this.cursor], "cancelled"), c);
+        const c = s ? `${e("gray", $2)}  ` : "", o = B(t.output, i(this.options[this.cursor], "cancelled"), c);
         return `${a}${o}${s ? `
 ${e("gray", $2)}` : ""}`;
       }
@@ -4026,8 +4229,8 @@ ${o}
     }
   } }).prompt();
 };
-var Nt = `${e("gray", $2)}  `;
-var Pe = (t) => new ht({ validate: t.validate, placeholder: t.placeholder, defaultValue: t.defaultValue, initialValue: t.initialValue, output: t.output, signal: t.signal, input: t.input, render() {
+var Bt = `${e("gray", $2)}  `;
+var Re = (t) => new ct({ validate: t.validate, placeholder: t.placeholder, defaultValue: t.defaultValue, initialValue: t.initialValue, output: t.output, signal: t.signal, input: t.input, render() {
   const i = t?.withGuide ?? h.withGuide, s = `${`${i ? `${e("gray", $2)}
 ` : ""}${P2(this.state)}  `}${t.message}
 `, r = t.placeholder ? e("inverse", t.placeholder[0]) + e("dim", t.placeholder.slice(1)) : e(["inverse", "hidden"], "_"), u = this.userInput ? this.userInputWithCursor : r, n = this.value ?? "";
@@ -4060,11 +4263,37 @@ ${c}
 // src/commands/hermes/types.ts
 var HERMES_AGENT_TEMPLATE = "gh:delorenj/hermes-agent-template";
 var SOUL_TONES2 = ["direct", "playful", "formal", "terse"];
+var ROLE_CHOICES = [
+  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship" },
+  {
+    value: "scrum-master",
+    label: "Scrum Master (Ticket Sentinel)",
+    hint: "continuous ticket sentinel + autonomous delegated review"
+  },
+  { value: "dev", label: "Developer (dev)", hint: "implements tickets" },
+  { value: "review", label: "Reviewer (review)", hint: "adversarial code review" },
+  { value: "ops", label: "Ops (ops)", hint: "deploy / infra" },
+  { value: "qa", label: "QA (qa)", hint: "test authorship + verification" }
+];
+var TICKET_PROVIDERS = [
+  { value: "plane", label: "Plane", hint: "self-hosted at plane.delo.sh (default)" },
+  { value: "linear", label: "Linear", hint: "team board (created in Linear UI)" },
+  { value: "trello", label: "Trello", hint: "board = project" }
+];
 function deriveAgentId(repo, role) {
   return `${repo}-${role}`.toLowerCase();
 }
 
 // src/commands/hermes/PromptForAgentConfig.ts
+function detectTicketProvider(targetDir) {
+  try {
+    const t = JSON.parse(readFileSync(join3(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
+    return t === "plane" || t === "linear" || t === "trello" ? t : undefined;
+  } catch {
+    return;
+  }
+}
+
 class PromptForAgentConfig extends Command2 {
   async invoke() {
     const ctx = this.context;
@@ -4077,6 +4306,8 @@ class PromptForAgentConfig extends Command2 {
       ctx.soulTone ??= "direct";
       ctx.modelProvider ??= "";
       ctx.modelName ??= "";
+      ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
+      ctx.withScrumMaster ??= false;
       ctx.skipTelegram ??= true;
       ctx.skipEmail ??= true;
       ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
@@ -4085,41 +4316,64 @@ class PromptForAgentConfig extends Command2 {
         message: this.formatMessage(`✓ Non-interactive mode — using defaults  (repo=${ctx.targetRepo}, role=${ctx.role})`)
       };
     }
-    ge("⚕  hermes-agent  ·  add a new agent role to this repo");
+    ye("⚕  hermes-agent  ·  add a new agent role to this repo");
     if (!ctx.targetRepo) {
-      const answer = await Pe({
+      const answer = await Re({
         message: "Target repo name",
         placeholder: defaultRepo,
         initialValue: defaultRepo,
         validate: (v2) => v2 && v2.trim() ? undefined : "required"
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.targetRepo = String(answer).trim().toLowerCase();
     }
     if (!ctx.role) {
-      const answer = await Pe({
+      const answer = await Ee({
         message: "Role",
-        placeholder: "pm",
-        initialValue: defaultRole,
-        validate: (v2) => /^[a-z][a-z0-9_-]*$/.test(String(v2).trim()) ? undefined : "lowercase alphanumerics, may include - or _"
+        options: ROLE_CHOICES.map((r) => ({ value: r.value, label: r.label, hint: r.hint })),
+        initialValue: defaultRole
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.role = String(answer).trim();
     }
+    if (ctx.ticketProvider === undefined) {
+      const detected = detectTicketProvider(ctx.targetDir);
+      const answer = await Ee({
+        message: "Ticket board provider",
+        options: TICKET_PROVIDERS.map((t) => ({
+          value: t.value,
+          label: t.label,
+          hint: t.value === detected ? `${t.hint} — current .project.json` : t.hint
+        })),
+        initialValue: detected ?? "plane"
+      });
+      if (R(answer))
+        return this.cancelled();
+      ctx.ticketProvider = answer;
+    }
+    if (ctx.role === "pm" && ctx.withScrumMaster === undefined) {
+      const answer = await le({
+        message: "Also provision the paired Scrum Master (Ticket Sentinel) for this repo?",
+        initialValue: true
+      });
+      if (R(answer))
+        return this.cancelled();
+      ctx.withScrumMaster = answer === true;
+    }
     if (!ctx.agentPurpose) {
-      const answer = await Pe({
+      const answer = await Re({
         message: "One-line purpose",
         placeholder: `${ctx.role} agent for ${ctx.targetRepo}`,
         initialValue: `${ctx.role} agent for ${ctx.targetRepo}`
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.agentPurpose = String(answer).trim();
     }
     if (!ctx.soulTone) {
-      const answer = await xe({
+      const answer = await Ee({
         message: "Personality tone",
         options: SOUL_TONES2.map((t) => ({
           value: t,
@@ -4128,43 +4382,43 @@ class PromptForAgentConfig extends Command2 {
         })),
         initialValue: "direct"
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.soulTone = answer;
     }
     if (ctx.modelProvider === undefined) {
-      const answer = await Pe({
+      const answer = await Re({
         message: "Provider override (empty = inherit global)",
         placeholder: ""
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.modelProvider = String(answer).trim();
     }
     if (ctx.modelName === undefined) {
-      const answer = await Pe({
+      const answer = await Re({
         message: "Model name override (empty = inherit global)",
         placeholder: ""
       });
-      if (q(answer))
+      if (R(answer))
         return this.cancelled();
       ctx.modelName = String(answer).trim();
     }
     if (ctx.skipTelegram === undefined) {
-      const wire = await ue({
+      const wire = await le({
         message: `Wire up the Telegram bot (@${ctx.targetRepo}_${ctx.role}_bot) now?`,
         initialValue: true
       });
-      if (q(wire))
+      if (R(wire))
         return this.cancelled();
       ctx.skipTelegram = !wire;
     }
     if (ctx.skipEmail === undefined) {
-      const wire = await ue({
+      const wire = await le({
         message: `Provision the delo.sh email address (${ctx.targetRepo}-${ctx.role}@delo.sh) now?`,
         initialValue: true
       });
-      if (q(wire))
+      if (R(wire))
         return this.cancelled();
       ctx.skipEmail = !wire;
     }
@@ -4175,26 +4429,49 @@ class PromptForAgentConfig extends Command2 {
     };
   }
   cancelled() {
-    me("Aborted by user.");
+    ge("Aborted by user.");
     return { success: false, message: "Aborted by user." };
   }
 }
 
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join4, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3 } from "node:fs";
+import { fileURLToPath } from "node:url";
+function resolveVendoredTemplate(name) {
+  let dir;
+  try {
+    dir = dirname3(fileURLToPath(import.meta.url));
+  } catch {
+    return;
+  }
+  for (let i = 0;i < 8; i++) {
+    const candidate = join4(dir, "templates", name);
+    if (existsSync3(join4(candidate, "copier.yml")))
+      return candidate;
+    const parent = dirname3(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return;
+}
+
 class RunCopierTemplate extends Command2 {
   async invoke() {
     const ctx = this.context;
     const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
+    const ticketProvider = ctx.ticketProvider ?? "plane";
+    const withScrumMaster = role === "pm" && ctx.withScrumMaster === true;
     if (!targetRepo || !role) {
       return {
         success: false,
         message: "PromptForAgentConfig must run before RunCopierTemplate (targetRepo/role unset)"
       };
     }
-    const roleDir = join(ctx.targetDir, "agents", "hermes", role);
+    const roleDir = join4(ctx.targetDir, "agents", "hermes", role);
     ctx.roleDir = roleDir;
     ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${role}`;
     const which = spawnSync("which", ["copier"], { encoding: "utf8" });
@@ -4204,15 +4481,15 @@ class RunCopierTemplate extends Command2 {
         message: "✗ copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
       };
     }
-    if (existsSync(join(roleDir, "role.yaml")) && !ctx.force) {
+    if (existsSync3(join4(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
         ctx.force = true;
       } else {
-        const proceed = await ue({
+        const proceed = await le({
           message: `${role}/role.yaml already exists — re-render with --overwrite?`,
           initialValue: false
         });
-        if (q(proceed) || !proceed) {
+        if (R(proceed) || !proceed) {
           return {
             success: false,
             message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`
@@ -4230,8 +4507,9 @@ class RunCopierTemplate extends Command2 {
       SKIP_BLOODBANK: ctx.skipBloodbank ? "1" : "0",
       SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
     };
-    const LOCAL_TEMPLATE = "/home/delorenj/code/hermes-agent-template";
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || (existsSync(join(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const LOCAL_TEMPLATE = join4(homedir3(), "code", "hermes-agent-template");
+    const vendored = resolveVendoredTemplate("hermes-agent");
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync3(join4(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -4248,6 +4526,10 @@ class RunCopierTemplate extends Command2 {
       `model_name=${modelName ?? ""}`,
       "--data",
       `soul_tone=${soulTone ?? "direct"}`,
+      "--data",
+      `ticket_provider=${ticketProvider}`,
+      "--data",
+      `with_scrum_master=${withScrumMaster}`,
       "--trust",
       "--vcs-ref=HEAD"
     ];
@@ -4259,8 +4541,8 @@ class RunCopierTemplate extends Command2 {
         message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
       };
     }
-    mkdirSync(join(ctx.targetDir, "agents", "hermes"), { recursive: true });
-    const spinner = ft();
+    mkdirSync3(join4(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    const spinner = vt();
     spinner.start(`Running copier copy  (target: agents/hermes/${role})`);
     const result = spawnSync("copier", args, {
       stdio: "inherit",
@@ -4283,8 +4565,8 @@ class RunCopierTemplate extends Command2 {
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { join as join2 } from "node:path";
-import { existsSync as existsSync2, unlinkSync } from "node:fs";
+import { join as join5 } from "node:path";
+import { existsSync as existsSync4, unlinkSync } from "node:fs";
 class WireTelegram extends Command2 {
   async invoke() {
     const ctx = this.context;
@@ -4324,7 +4606,7 @@ class WireTelegram extends Command2 {
         "  7. /setprivacy    Disable"
       ].join(`
 `));
-      const tokenAnswer = await Ce({
+      const tokenAnswer = await Ie({
         message: `Paste the bot token for @${botHandle}`,
         mask: "•",
         validate: (v2) => {
@@ -4335,16 +4617,16 @@ class WireTelegram extends Command2 {
             return "expected '<digits>:<secret>' shape";
         }
       });
-      if (q(tokenAnswer)) {
+      if (R(tokenAnswer)) {
         return { success: true, message: "→ Telegram skipped (no token).  Re-run later." };
       }
       token = String(tokenAnswer).trim();
       source = "prompt";
-      const persist = await ue({
+      const persist = await le({
         message: `Save to ${vaultRef} for next time?`,
         initialValue: true
       });
-      if (!q(persist) && persist) {
+      if (!R(persist) && persist) {
         const create = spawnSync2("op", [
           "item",
           "create",
@@ -4359,26 +4641,26 @@ class WireTelegram extends Command2 {
         }
       }
     }
-    const allowedAnswer = await Pe({
+    const allowedAnswer = await Re({
       message: "Your Telegram user id (allow-list for this bot)",
       placeholder: process.env.TELEGRAM_ALLOWED_USERS ?? "",
       initialValue: process.env.TELEGRAM_ALLOWED_USERS ?? "",
       validate: (v2) => /^[0-9](?:[0-9,]*[0-9])?$/.test(String(v2).trim()) ? undefined : "comma-separated numeric ids"
     });
-    if (q(allowedAnswer)) {
+    if (R(allowedAnswer)) {
       return { success: false, message: "✗ Aborted; Telegram step deferred." };
     }
-    const script = join2(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync2(script)) {
+    const script = join5(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync4(script)) {
       return {
         success: false,
         message: `✗ ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
       };
     }
-    const marker = join2(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync2(marker))
+    const marker = join5(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync4(marker))
       unlinkSync(marker);
-    const spinner = ft();
+    const spinner = vt();
     spinner.start("Verifying token + wiring profile");
     const result = spawnSync2("bash", [script], {
       stdio: "inherit",
@@ -4404,8 +4686,8 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { join as join3 } from "node:path";
-import { existsSync as existsSync3, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join6 } from "node:path";
+import { existsSync as existsSync5, unlinkSync as unlinkSync2 } from "node:fs";
 class WireEmail extends Command2 {
   async invoke() {
     const ctx = this.context;
@@ -4419,8 +4701,8 @@ class WireEmail extends Command2 {
     if (!targetRepo || !role || !roleDir) {
       return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
     }
-    const script = join3(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync3(script)) {
+    const script = join6(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync5(script)) {
       return { success: false, message: `✗ ${script} not found` };
     }
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -4439,27 +4721,27 @@ class WireEmail extends Command2 {
         "Create at: https://dash.cloudflare.com/profile/api-tokens"
       ].join(`
 `));
-      const provideNow = await ue({
+      const provideNow = await le({
         message: "Paste a token now?  (skipping leaves email unwired until you re-run.)",
         initialValue: false
       });
-      if (q(provideNow) || !provideNow) {
+      if (R(provideNow) || !provideNow) {
         return { success: true, message: "→ Email skipped (no token).  Re-run later." };
       }
-      const tokenAnswer = await Ce({
+      const tokenAnswer = await Ie({
         message: "CF token (will be passed via env, not stored)",
         mask: "•",
         validate: (v2) => String(v2 ?? "").trim() ? undefined : "required"
       });
-      if (q(tokenAnswer)) {
+      if (R(tokenAnswer)) {
         return { success: true, message: "→ Email skipped (cancelled)" };
       }
       token = String(tokenAnswer).trim();
-      const persist = await ue({
+      const persist = await le({
         message: "Save to op://DeLoSecrets/Cloudflare-EmailRouting/token for next time?",
         initialValue: true
       });
-      if (!q(persist) && persist) {
+      if (!R(persist) && persist) {
         const create = spawnSync3("op", [
           "item",
           "create",
@@ -4473,10 +4755,10 @@ class WireEmail extends Command2 {
         }
       }
     }
-    const marker = join3(roleDir, ".scripts", ".done-50-email");
-    if (existsSync3(marker))
+    const marker = join6(roleDir, ".scripts", ".done-50-email");
+    if (existsSync5(marker))
       unlinkSync2(marker);
-    const spinner = ft();
+    const spinner = vt();
     spinner.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync3("bash", [script], {
       stdio: "inherit",
@@ -4530,9 +4812,9 @@ class PrintHermesSummary extends Command2 {
       if (skipEmail)
         lines.push("  pjangler hermes-agent --skip-email=false      # wire just email");
     }
-    Se(lines.join(`
+    Ce(lines.join(`
 `), `Provisioned ${agentId}`);
-    ye("Done.");
+    fe("Done.");
     return { success: true, message: "" };
   }
 }
@@ -4541,7 +4823,7 @@ class PrintHermesSummary extends Command2 {
 class HermesAgentRecipe extends Recipe {
   constructor(context) {
     super(context);
-    this.addIngredient(PromptForAgentConfig).addIngredient(RunCopierTemplate).addIngredient(WireTelegram).addIngredient(WireEmail).addIngredient(PrintHermesSummary);
+    this.addIngredient(EnsureTemplateConfig2).addIngredient(PromptForAgentConfig).addIngredient(RunCopierTemplate).addIngredient(WireTelegram).addIngredient(WireEmail).addIngredient(PrintHermesSummary);
   }
   async execute() {
     for (const command of this.ingredients) {
@@ -4585,6 +4867,7 @@ var RECIPE_REGISTRY = {
     description: "Add a Hermes agent role to this repo (copier + BotFather + CF email + submodule)",
     class: HermesAgentRecipe,
     commands: [
+      "EnsureTemplateConfig",
       "PromptForAgentConfig",
       "RunCopierTemplate",
       "WireTelegram",
@@ -4670,6 +4953,1138 @@ function createRecipe(name, context) {
   if (!info)
     return null;
   return new info.class(context);
+}
+
+// src/parity/index.ts
+import { existsSync as existsSync6, lstatSync, mkdirSync as mkdirSync4, readFileSync as readFileSync2, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, chmodSync, copyFileSync } from "node:fs";
+import { dirname as dirname4, join as join7, relative, resolve } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { homedir as homedir4 } from "node:os";
+import { spawnSync as spawnSync4 } from "node:child_process";
+var LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
+# agent files to the main AGENTS.md file.
+#
+# TODO: Ensure this works for all levels of nesting.
+# i.e. All linked agent files MUST be siblings at
+# any given level of nesting.
+[hooks]
+enter = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+]
+
+[[watch_files]]
+patterns = ["AGENTS.md"]
+task = "link-agentfiles"
+
+[tasks.link-agentfiles]
+description = "Symlink all agent files to AGENTS.md"
+run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+var VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
+[tasks."version"]
+description = "Print the current version (vX.Y.Z)"
+run = "{{config_root}}/.mise/scripts/versioning.sh current"
+
+[tasks."version:bump"]
+description = "Bump patch version: vX.Y.Z -> vX.Y.(Z+1)"
+alias = "version:bump-patch"
+run = "{{config_root}}/.mise/scripts/versioning.sh bump patch"
+
+[tasks."version:bump-minor"]
+description = "Bump minor version: vX.Y.Z -> vX.(Y+1).0"
+run = "{{config_root}}/.mise/scripts/versioning.sh bump minor"
+
+[tasks."version:bump-major"]
+description = "Bump major version: vX.Y.Z -> v(X+1).0.0"
+run = "{{config_root}}/.mise/scripts/versioning.sh bump major"
+
+[tasks."version:check"]
+description = "Verify every versioned file is in parity"
+run = "{{config_root}}/.mise/scripts/versioning.sh check"
+
+[tasks."version:sync"]
+description = "Force every versioned file up to the highest version"
+run = "{{config_root}}/.mise/scripts/versioning.sh sync"
+# <<< mise-versioning <<<`;
+function resolvePjanglerRoot() {
+  let dir = dirname4(fileURLToPath2(import.meta.url));
+  while (dir !== dirname4(dir)) {
+    if (existsSync6(join7(dir, "package.json")) && existsSync6(join7(dir, "templates", "commonproject", "copier.yml"))) {
+      return dir;
+    }
+    dir = dirname4(dir);
+  }
+  throw new Error("Unable to resolve pjangler root");
+}
+function normalizeNewlines(value) {
+  return value.replace(/\r\n/g, `
+`);
+}
+function readText(path) {
+  return normalizeNewlines(readFileSync2(path, "utf8"));
+}
+function safeReadText(path) {
+  return existsSync6(path) ? readText(path) : null;
+}
+function ensureParent(path) {
+  mkdirSync4(dirname4(path), { recursive: true });
+}
+function writeText(path, content) {
+  ensureParent(path);
+  writeFileSync3(path, content);
+}
+function tryParseJson(text) {
+  if (!text)
+    return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+function slugifyRepoName(name) {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+function titleCaseSlug(slug) {
+  return slug.split(/[-_]/g).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+function readSymlinkTarget(path) {
+  if (!existsSync6(path))
+    return null;
+  try {
+    return readlinkSync(path);
+  } catch {
+    return null;
+  }
+}
+function ensureSymlink(path, target, dryRun) {
+  if (existsSync6(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) {
+      const current = readSymlinkTarget(path);
+      if (current === target)
+        return { changed: false };
+      if (!dryRun) {
+        unlinkSync3(path);
+        symlinkSync(target, path);
+      }
+      return { changed: true };
+    }
+    return { changed: false, blocked: `${relative(process.cwd(), path) || path} exists and is not a symlink` };
+  }
+  if (!dryRun)
+    symlinkSync(target, path);
+  return { changed: true };
+}
+function yamlGet(text, keyPath) {
+  const parts = keyPath.split(".");
+  const lines = text.split(`
+`);
+  let start = 0;
+  let indent = 0;
+  for (let idx = 0;idx < parts.length; idx += 1) {
+    const key = parts[idx];
+    let found = false;
+    for (let i = start;i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line.trim() || line.trim().startsWith("#"))
+        continue;
+      const match = line.match(/^(\s*)([^:#]+):\s*(.*)$/);
+      if (!match)
+        continue;
+      const currentIndent = match[1].length;
+      const currentKey = match[2].trim();
+      const rest = match[3].trim();
+      if (idx > 0 && currentIndent < indent)
+        break;
+      if (currentIndent !== indent || currentKey !== key)
+        continue;
+      found = true;
+      if (idx === parts.length - 1) {
+        return rest.replace(/^['"]|['"]$/g, "").trim();
+      }
+      start = i + 1;
+      indent = currentIndent + 2;
+      break;
+    }
+    if (!found)
+      return "";
+  }
+  return "";
+}
+function discoverRoles(repoRoot) {
+  const rolesDir = join7(repoRoot, "agents", "hermes");
+  if (!existsSync6(rolesDir))
+    return [];
+  return readdirSync(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
+    const roleDir = join7(rolesDir, entry.name);
+    const roleYamlPath = join7(roleDir, "role.yaml");
+    if (!existsSync6(roleYamlPath))
+      return null;
+    const text = readText(roleYamlPath);
+    const runtimeRepoRaw = yamlGet(text, "runtime.github_repo");
+    return {
+      role: yamlGet(text, "role") || entry.name,
+      roleDir,
+      roleYamlPath,
+      repo: yamlGet(text, "repo"),
+      agentId: yamlGet(text, "agent_id"),
+      displayName: yamlGet(text, "display_name"),
+      purpose: yamlGet(text, "purpose"),
+      botHandle: yamlGet(text, "telegram.bot_username"),
+      runtimeRepo: runtimeRepoRaw.includes("/") ? runtimeRepoRaw.split("/").slice(-1)[0] ?? runtimeRepoRaw : runtimeRepoRaw,
+      runtimeOwner: yamlGet(text, "runtime.github_owner"),
+      planeWorkspace: yamlGet(text, "ticket_provider.workspace") || yamlGet(text, "plane.workspace"),
+      ticketProviderName: yamlGet(text, "ticket_provider.name"),
+      ticketProviderBoardId: yamlGet(text, "ticket_provider.board_id"),
+      ticketProviderBoardUrl: yamlGet(text, "ticket_provider.board_url"),
+      ticketProviderIdentifier: yamlGet(text, "plane.identifier")
+    };
+  }).filter((value) => Boolean(value));
+}
+function registryPath(homeDir) {
+  return join7(homeDir, ".hermes", "agents-registry.yaml");
+}
+function systemctlUser(args) {
+  const result = spawnSync4("systemctl", ["--user", ...args], { encoding: "utf8" });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim()
+  };
+}
+function templateVersioningScript(ctx) {
+  return readText(join7(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh"));
+}
+function templateVersionFilesConf(ctx, repoRoot) {
+  const packageJson = join7(repoRoot, "package.json");
+  return existsSync6(packageJson) ? `# mise-versioning manifest: <type> <path>
+# types: json toml cargo csproj gradle plain gittag
+json package.json
+gittag .
+` : `# mise-versioning manifest: <type> <path>
+# types: json toml cargo csproj gradle plain gittag
+gittag .
+`;
+}
+function replaceOrAppendManagedBlock(text, startMarker, block, beforePattern) {
+  if (startMarker.test(text)) {
+    return text.replace(/# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</, block);
+  }
+  if (beforePattern) {
+    const match = text.match(beforePattern);
+    if (match && typeof match.index === "number") {
+      return `${text.slice(0, match.index).replace(/\s*$/, `
+
+`)}${block}
+
+${text.slice(match.index)}`;
+    }
+  }
+  return `${text.replace(/\s*$/, "")}
+
+${block}
+`;
+}
+function upsertLinkAgentfilesBlock(text) {
+  const existing = /# This block will handle the linking of[\s\S]*?\[tasks\.link-agentfiles\][\s\S]*?run = "\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh"/;
+  if (existing.test(text)) {
+    return text.replace(existing, LINK_AGENTFILES_BLOCK);
+  }
+  const versioningIndex = text.indexOf("# >>> mise-versioning >>>");
+  if (versioningIndex >= 0) {
+    return `${text.slice(0, versioningIndex).replace(/\s*$/, `
+
+`)}${LINK_AGENTFILES_BLOCK}
+
+${text.slice(versioningIndex)}`;
+  }
+  return `${text.replace(/\s*$/, "")}
+
+${LINK_AGENTFILES_BLOCK}
+`;
+}
+function readProjectJson(ctx) {
+  return tryParseJson(safeReadText(join7(ctx.repoRoot, ".project.json")));
+}
+function canonicalProjectJson(ctx) {
+  const roles = discoverRoles(ctx.repoRoot);
+  const existing = readProjectJson(ctx) ?? {};
+  const slug = String(existing.project_slug ?? slugifyRepoName(dirname4(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const firstRole = roles[0];
+  const ticketProvider = {
+    type: String((existing.ticket_provider?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
+    workspace: String((existing.ticket_provider?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
+    identifier: String((existing.ticket_provider?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
+    board_id: String((existing.ticket_provider?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
+    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || "")
+  };
+  return {
+    project_name: String(existing.project_name ?? titleCaseSlug(slug)),
+    project_description: String(existing.project_description ?? ""),
+    project_slug: slug,
+    repo_path: ctx.repoRoot,
+    ticket_provider: ticketProvider,
+    agents: Object.fromEntries(roles.map((role) => [
+      role.agentId || `${slug}-${role.role}`,
+      {
+        role: role.role,
+        role_dir: relative(ctx.repoRoot, role.roleDir)
+      }
+    ]))
+  };
+}
+function projectJsonFinding(ctx) {
+  const projectPath = join7(ctx.repoRoot, ".project.json");
+  const planeJsonPath = join7(ctx.repoRoot, ".plane.json");
+  const details = [];
+  const data = readProjectJson(ctx);
+  const roles = discoverRoles(ctx.repoRoot);
+  if (!existsSync6(projectPath)) {
+    return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json missing", details: [], fixable: true };
+  }
+  if (!data) {
+    return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json is not valid JSON", details: [], fixable: true };
+  }
+  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents"]) {
+    if (!(key in data))
+      details.push(`missing key: ${key}`);
+  }
+  if (data.repo_path !== ctx.repoRoot)
+    details.push(`repo_path should be ${ctx.repoRoot}`);
+  const agents = data.agents ?? {};
+  for (const role of roles) {
+    const agent = agents[role.agentId];
+    if (!agent) {
+      details.push(`agents.${role.agentId} missing`);
+      continue;
+    }
+    if (agent.role !== role.role)
+      details.push(`agents.${role.agentId}.role should be ${role.role}`);
+    if (agent.role_dir !== relative(ctx.repoRoot, role.roleDir)) {
+      details.push(`agents.${role.agentId}.role_dir should be ${relative(ctx.repoRoot, role.roleDir)}`);
+    }
+  }
+  const ticketProvider = data.ticket_provider ?? {};
+  for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
+    if (!(key in ticketProvider))
+      details.push(`ticket_provider.${key} missing`);
+  }
+  if (existsSync6(planeJsonPath))
+    details.push(".plane.json should not exist once .project.json is canonical");
+  return {
+    id: "sot.project-json",
+    title: "Canonical .project.json",
+    status: details.length === 0 ? "pass" : "fail",
+    summary: details.length === 0 ? ".project.json matches canonical parity contract" : `${details.length} parity issue(s) detected`,
+    details,
+    fixable: true
+  };
+}
+function renderSoul(role) {
+  const telegram = role.botHandle ? `@${role.botHandle}` : "(unwired)";
+  const tone = role.role === "pm" ? `Direct and brief. Decision-forward. No throat-clearing, no apologies, no "I'll help you with that" preambles.` : role.role === "scrum-master" ? "Operational, skeptical, and schedule-aware. Prefer explicit next actions, evidence, and status transitions." : "Direct and brief.";
+  const roleSpecific = role.role === "pm" ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code.` : role.role === "scrum-master" ? `You own the continuous-ticket sentinel. You watch the ticket board, enforce workflow policy, and keep work moving without inventing requirements.` : `You operate as the ${role.role} agent for this repo.`;
+  const runtimeOwner = role.runtimeOwner || "delorenj";
+  return `# ${role.displayName || role.agentId}
+
+You are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the
+\`${role.repo}\` repository.
+
+## Identity
+
+| | |
+| --- | --- |
+| Agent ID | \`${role.agentId}\` |
+| Repo | \`${role.repo}\` |
+| Role | \`${role.role}\` |
+| Telegram | \`${telegram}\` |
+| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |
+
+## Scope
+
+You operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`).
+
+## Tone
+
+${tone}
+
+## Role-specific behavior
+
+${roleSpecific}
+
+## Memory hygiene
+
+Your memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.
+`;
+}
+function renderHermesWrapper(role) {
+  return `#!/usr/bin/env bash
+# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule
+# and execs the shared fleet Hermes binary configured in ~/.hermes/fleet.env.
+
+set -euo pipefail
+
+ROLE_DIR="$(cd "$(dirname "$0")" && pwd)"
+HERMES_HOME="$ROLE_DIR/runtime"
+
+FLEET_ENV="\x10{HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
+if [[ -f "$FLEET_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$FLEET_ENV"
+fi
+
+HERMES_BIN="\x10{HERMES_BIN:-\x10{HERMES_FLEET_BIN:-/home/delorenj/code/hermes-agent/.venv/bin/hermes}}"
+HERMES_OAUTH_FILE="\x10{HERMES_OAUTH_FILE:-\x10{HERMES_FLEET_OAUTH_FILE:-$HOME/.hermes/auth.json}}"
+CODEX_HOME="\x10{CODEX_HOME:-\x10{HERMES_FLEET_CODEX_HOME:-$HOME/.codex}}"
+
+if [[ ! -d "$HERMES_HOME" ]]; then
+  echo "hermes: runtime submodule not initialized at $HERMES_HOME" >&2
+  echo "  fix: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
+exec env HERMES_HOME="$HERMES_HOME" HERMES_FLEET_ENV="$FLEET_ENV"   HERMES_OAUTH_FILE="$HERMES_OAUTH_FILE" CODEX_HOME="$CODEX_HOME"   "$HERMES_BIN" "$@"
+`.replace(/\u0010/g, "$");
+}
+function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
+  if (!existsSync6(sourceDir))
+    return;
+  mkdirSync4(targetDir, { recursive: true });
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = join7(sourceDir, entry.name);
+    if (skip?.(sourcePath))
+      continue;
+    const targetPath = join7(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      copyMissingRecursive(sourcePath, targetPath, changedFiles, dryRun, skip);
+      continue;
+    }
+    if (existsSync6(targetPath))
+      continue;
+    changedFiles.push(targetPath);
+    if (!dryRun) {
+      ensureParent(targetPath);
+      copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+function upsertSubmodule(repoRoot, role, changedFiles, dryRun) {
+  const gitmodulesPath = join7(repoRoot, ".gitmodules");
+  const repoName = role.runtimeRepo || `agent-hm-${role.repo}-${role.role}`;
+  const owner = role.runtimeOwner || "delorenj";
+  const block = `[submodule "agents/hermes/${role.role}/runtime"]
+	path = agents/hermes/${role.role}/runtime
+	url = git@github.com:${owner}/${repoName}.git
+`;
+  const current = safeReadText(gitmodulesPath) ?? "";
+  const header = `[submodule "agents/hermes/${role.role}/runtime"]`;
+  if (current.includes(header))
+    return [];
+  changedFiles.push(gitmodulesPath);
+  if (!dryRun)
+    writeText(gitmodulesPath, `${current.replace(/\s*$/, "")}${current.trim() ? `
+` : ""}${block}`);
+  return [gitmodulesPath];
+}
+function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
+  const path = registryPath(homeDir);
+  const current = safeReadText(path) ?? `# Hermes agent fleet registry.
+# One entry per provisioned agent. Managed by hermes-agent-template/.scripts/80-registry.sh.
+schema_version: 1
+agents: {}
+`;
+  if (current.includes(`${role.agentId}:`))
+    return null;
+  const block = `  ${role.agentId}:
+    repo: ${role.repo}
+    role: ${role.role}
+    display_name: ${JSON.stringify(role.displayName || role.agentId)}
+    project_path: ${ctxEscape(role.roleDir ? dirname4(dirname4(dirname4(role.roleDir))) : "")}
+    role_dir: ${ctxEscape(role.roleDir)}
+    profile_name: ${role.agentId}
+    telegram:
+      bot_username: ${ctxEscape(role.botHandle)}
+    plane:
+      workspace: ${ctxEscape(role.planeWorkspace)}
+      project_id: ${ctxEscape(role.ticketProviderBoardId)}
+      identifier: ${ctxEscape(role.ticketProviderIdentifier)}
+    runtime_repo: ${ctxEscape(role.runtimeRepo)}
+    systemd:
+      gateway_unit: hermes-${role.agentId}-gateway.service
+      consumer_unit: hermes-${role.agentId}-consumer.service
+      checkpoint_timer: hermes-${role.agentId}-checkpoint.timer
+`;
+  const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:
+${block}`) : `${current.replace(/\s*$/, `
+`)}${block}`;
+  changedFiles.push(path);
+  if (!dryRun)
+    writeText(path, next);
+  return path;
+}
+function ctxEscape(value) {
+  return JSON.stringify(value || "");
+}
+function checkUnit(unit) {
+  const enabled = systemctlUser(["is-enabled", unit]).ok;
+  const active = systemctlUser(["is-active", unit]).ok;
+  return { enabled, active };
+}
+var RULES = [
+  {
+    id: "mise.config-root",
+    title: "mise config_root + AGENTS link hooks",
+    audit: (ctx) => {
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      if (!existsSync6(misePath)) {
+        return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
+      }
+      const text = readText(misePath);
+      const details = [];
+      if (!text.includes('_.path = [".mise/scripts", "agents/hermes/pm"]'))
+        details.push("[env]._.path should include .mise/scripts and agents/hermes/pm");
+      if (!text.includes('"{{config_root}}/.mise/scripts/link-agentfiles.sh"'))
+        details.push("link-agentfiles must use raw {{config_root}} guard");
+      if (!text.includes("op inject -i .env.op > .env"))
+        details.push("[hooks].enter must materialize .env from .env.op");
+      if (!text.includes('patterns = ["AGENTS.md"]'))
+        details.push("watch_files must monitor AGENTS.md");
+      if (!text.includes('task = "link-agentfiles"'))
+        details.push("watch_files must dispatch link-agentfiles task");
+      return {
+        id: "mise.config-root",
+        title: "mise config_root + AGENTS link hooks",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "mise AGENTS-linking parity verified" : `${details.length} issue(s) detected in mise AGENTS-linking contract`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const path = join7(ctx.repoRoot, "mise.toml");
+      const changedFiles = [];
+      if (!existsSync6(path)) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
+      }
+      let text = readText(path);
+      const next = upsertLinkAgentfilesBlock(text);
+      if (next !== text) {
+        changedFiles.push(path);
+        if (!ctx.dryRun)
+          writeText(path, next);
+        text = next;
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
+        changedFiles,
+        details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block"] : []
+      };
+    }
+  },
+  {
+    id: "mise.versioning",
+    title: "managed mise versioning block",
+    audit: (ctx) => {
+      const details = [];
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      const versioningPath = join7(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const manifestPath = join7(ctx.repoRoot, ".mise", "version-files.conf");
+      const text = safeReadText(misePath);
+      if (!text?.includes("# >>> mise-versioning >>>"))
+        details.push("mise versioning managed block missing");
+      if (!existsSync6(versioningPath))
+        details.push(".mise/scripts/versioning.sh missing");
+      if (!existsSync6(manifestPath))
+        details.push(".mise/version-files.conf missing");
+      return {
+        id: "mise.versioning",
+        title: "managed mise versioning block",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "mise versioning parity verified" : `${details.length} versioning issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      if (!existsSync6(misePath)) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; cannot inject versioning block", changedFiles, details: [] };
+      }
+      const currentMise = readText(misePath);
+      const nextMise = replaceOrAppendManagedBlock(currentMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
+      if (nextMise !== currentMise) {
+        changedFiles.push(misePath);
+        if (!ctx.dryRun)
+          writeText(misePath, nextMise);
+      }
+      const versioningPath = join7(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const expectedScript = templateVersioningScript(ctx);
+      if (safeReadText(versioningPath) !== expectedScript) {
+        changedFiles.push(versioningPath);
+        if (!ctx.dryRun) {
+          writeText(versioningPath, expectedScript);
+          chmodSync(versioningPath, 493);
+        }
+      }
+      const manifestPath = join7(ctx.repoRoot, ".mise", "version-files.conf");
+      const expectedManifest = templateVersionFilesConf(ctx, ctx.repoRoot);
+      if (safeReadText(manifestPath) !== expectedManifest) {
+        changedFiles.push(manifestPath);
+        if (!ctx.dryRun)
+          writeText(manifestPath, expectedManifest);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
+        changedFiles,
+        details: []
+      };
+    }
+  },
+  {
+    id: "sot.agent-symlinks",
+    title: "AGENTS/CLAUDE/GEMINI symlink contract",
+    audit: (ctx) => {
+      const agentsPath = join7(ctx.repoRoot, "AGENTS.md");
+      if (!existsSync6(agentsPath)) {
+        return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
+      }
+      const details = [];
+      for (const file of ["CLAUDE.md", "GEMINI.md"]) {
+        const full = join7(ctx.repoRoot, file);
+        const target = readSymlinkTarget(full);
+        if (target !== "AGENTS.md")
+          details.push(`${file} should be a symlink to AGENTS.md`);
+      }
+      return {
+        id: "sot.agent-symlinks",
+        title: "AGENTS/CLAUDE/GEMINI symlink contract",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Agent documentation symlinks are in parity" : `${details.length} symlink issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const details = [];
+      if (!existsSync6(join7(ctx.repoRoot, "AGENTS.md"))) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot wire symlinks", changedFiles, details: [] };
+      }
+      for (const file of ["CLAUDE.md", "GEMINI.md"]) {
+        const full = join7(ctx.repoRoot, file);
+        const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
+        if (result.blocked)
+          details.push(result.blocked);
+        if (result.changed)
+          changedFiles.push(full);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
+        summary: details.length ? "One or more files could not be replaced safely" : changedFiles.length ? "Symlink contract repaired" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "sot.project-json",
+    title: "Canonical .project.json",
+    audit: projectJsonFinding,
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const details = [];
+      const path = join7(ctx.repoRoot, ".project.json");
+      const existing = readProjectJson(ctx) ?? {};
+      const canonical = canonicalProjectJson(ctx);
+      const merged = { ...existing, ...canonical };
+      const expected = `${JSON.stringify(merged, null, 2)}
+`;
+      if (safeReadText(path) !== expected) {
+        changedFiles.push(path);
+        if (!ctx.dryRun)
+          writeText(path, expected);
+      }
+      const planeJson = join7(ctx.repoRoot, ".plane.json");
+      if (existsSync6(planeJson)) {
+        const backup = `${planeJson}.migrated-backup`;
+        if (existsSync6(backup)) {
+          details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
+        } else {
+          changedFiles.push(backup);
+          if (!ctx.dryRun)
+            renameSync(planeJson, backup);
+        }
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
+        summary: details.length ? "Project SOT partially blocked" : changedFiles.length ? "Canonical .project.json written" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "secrets.env-op",
+    title: ".env.op + gitignore secrets contract",
+    audit: (ctx) => {
+      const details = [];
+      const envOp = safeReadText(join7(ctx.repoRoot, ".env.op"));
+      const gitignore = safeReadText(join7(ctx.repoRoot, ".gitignore"));
+      if (!envOp) {
+        details.push(".env.op missing");
+      } else {
+        const invalidLines = envOp.split(`
+`).map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && line.includes("=")).filter((line) => {
+          const value = line.slice(line.indexOf("=") + 1).trim();
+          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value);
+        });
+        if (invalidLines.length)
+          details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
+      }
+      if (!gitignore?.includes(`.env
+`) && !gitignore?.includes(`.env\r
+`))
+        details.push(".gitignore should ignore .env");
+      if (!gitignore?.includes(".env.*"))
+        details.push(".gitignore should ignore .env.*");
+      if (!gitignore?.includes("!.env.op"))
+        details.push(".gitignore should unignore .env.op");
+      return {
+        id: "secrets.env-op",
+        title: ".env.op + gitignore secrets contract",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Secret reference file and ignore rules are in parity" : `${details.length} env parity issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const details = [];
+      const envOpPath = join7(ctx.repoRoot, ".env.op");
+      if (!existsSync6(envOpPath)) {
+        changedFiles.push(envOpPath);
+        if (!ctx.dryRun)
+          writeText(envOpPath, readText(join7(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
+      }
+      const gitignorePath = join7(ctx.repoRoot, ".gitignore");
+      const gitignore = safeReadText(gitignorePath) ?? "";
+      const requiredBlock = `# Secrets — .env is materialized by \`op inject -i .env.op > .env\` on mise enter.
+# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
+.env
+.env.*
+!.env.op
+`;
+      if (!gitignore.includes("!.env.op") || !gitignore.includes(".env.*")) {
+        changedFiles.push(gitignorePath);
+        if (!ctx.dryRun)
+          writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? `
+
+` : ""}${requiredBlock}`);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
+        summary: details.length ? "Manual cleanup still required" : changedFiles.length ? "Wrote .env.op/gitignore parity files" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "provenance.copier",
+    title: ".copier-answers.yml provenance + drift report",
+    audit: (ctx) => {
+      const details = [];
+      const path = join7(ctx.repoRoot, ".copier-answers.yml");
+      const text = safeReadText(path);
+      const project = readProjectJson(ctx);
+      if (!text) {
+        details.push(".copier-answers.yml missing");
+      } else {
+        if (!text.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY"))
+          details.push("missing Copier overwrite warning header");
+        if (!text.includes("_src_path:"))
+          details.push("_src_path missing");
+        if (project?.project_name) {
+          const nameMatch = text.match(/project_name:\s*(.+)/);
+          if (!nameMatch || nameMatch[1]?.trim() !== String(project.project_name))
+            details.push("project_name drift between .copier-answers.yml and .project.json");
+        }
+        if (project?.project_description) {
+          const descMatch = text.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
+          const yamlDesc = descMatch ? descMatch[1].replace(/\n\s+/g, " ").trim() : "";
+          if (yamlDesc !== String(project.project_description))
+            details.push("project_description drift between .copier-answers.yml and .project.json");
+        }
+      }
+      return {
+        id: "provenance.copier",
+        title: ".copier-answers.yml provenance + drift report",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Copier provenance is in parity" : `${details.length} provenance issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const project = canonicalProjectJson(ctx);
+      const text = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_src_path: ${join7(ctx.pjanglerRoot, "templates", "commonproject")}
+project_description: ${String(project.project_description)}
+project_name: ${String(project.project_name)}
+ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
+`;
+      const path = join7(ctx.repoRoot, ".copier-answers.yml");
+      if (safeReadText(path) !== text) {
+        changedFiles.push(path);
+        if (!ctx.dryRun)
+          writeText(path, text);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Copier provenance file refreshed" : "No changes required",
+        changedFiles,
+        details: []
+      };
+    }
+  },
+  {
+    id: "bmad.scaffold",
+    title: "BMAD modules/docs scaffold",
+    audit: (ctx) => {
+      const sourceRoot = join7(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
+      const targetRoot = join7(ctx.repoRoot, "_bmad");
+      const sentinels = [
+        join7("core", "config.yaml"),
+        join7("custom", "config.yaml"),
+        join7("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
+        join7("bmm", "workflows", "workflow-status", "workflow.yaml")
+      ];
+      const missing = sentinels.filter((file) => existsSync6(join7(sourceRoot, file)) && !existsSync6(join7(targetRoot, file)));
+      return {
+        id: "bmad.scaffold",
+        title: "BMAD modules/docs scaffold",
+        status: missing.length === 0 ? "pass" : "fail",
+        summary: missing.length === 0 ? "BMAD scaffold parity verified" : `${missing.length} BMAD sentinel file(s) missing`,
+        details: missing.map((file) => `_bmad/${file}`),
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      copyMissingRecursive(join7(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join7(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Copied missing BMAD scaffold files" : "No changes required",
+        changedFiles,
+        details: []
+      };
+    }
+  },
+  {
+    id: "hermes.pm-scaffold",
+    title: "Hermes PM scaffold parity",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const role = roles.find((item) => item.role === "pm");
+      if (!role) {
+        return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
+      }
+      const details = [];
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+        if (!existsSync6(join7(role.roleDir, rel)))
+          details.push(`missing ${relative(ctx.repoRoot, join7(role.roleDir, rel))}`);
+      }
+      const gitmodules = safeReadText(join7(ctx.repoRoot, ".gitmodules")) ?? "";
+      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`))
+        details.push(".gitmodules missing pm runtime submodule entry");
+      const registry = safeReadText(registryPath(ctx.homeDir));
+      if (!registry?.includes(`${role.agentId}:`))
+        details.push(`fleet registry missing ${role.agentId}`);
+      return {
+        id: "hermes.pm-scaffold",
+        title: "Hermes PM scaffold parity",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "PM scaffold parity verified" : `${details.length} PM scaffold issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "pm");
+      const changedFiles = [];
+      const details = [];
+      if (!role) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
+      }
+      const templateRoleDir = join7(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      writeIfDifferent(join7(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+      writeIfDifferent(join7(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+      writeIfDifferent(join7(role.roleDir, ".gitignore"), readText(join7(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".scripts"), join7(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
+      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
+      if (registryUpdated)
+        details.push(`updated ${registryUpdated}`);
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "hermes.scrum-master-scaffold",
+    title: "Hermes scrum-master scaffold parity",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const role = roles.find((item) => item.role === "scrum-master");
+      if (!role) {
+        return { id: "hermes.scrum-master-scaffold", title: "Hermes scrum-master scaffold parity", status: "skip", summary: "No scrum-master role present", details: [], fixable: false };
+      }
+      const details = [];
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/75-scrum-master.sh", ".scripts/scrum-master/continuous-ticket-sentinel.sh", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+        if (!existsSync6(join7(role.roleDir, rel)))
+          details.push(`missing ${relative(ctx.repoRoot, join7(role.roleDir, rel))}`);
+      }
+      const gitmodules = safeReadText(join7(ctx.repoRoot, ".gitmodules")) ?? "";
+      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`))
+        details.push(".gitmodules missing scrum-master runtime submodule entry");
+      const registry = safeReadText(registryPath(ctx.homeDir));
+      if (!registry?.includes(`${role.agentId}:`))
+        details.push(`fleet registry missing ${role.agentId}`);
+      return {
+        id: "hermes.scrum-master-scaffold",
+        title: "Hermes scrum-master scaffold parity",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "scrum-master scaffold parity verified" : `${details.length} scrum-master scaffold issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "scrum-master");
+      const changedFiles = [];
+      const details = [];
+      if (!role) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "No scrum-master role present", changedFiles, details: [] };
+      }
+      const templateRoleDir = join7(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      writeIfDifferent(join7(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+      writeIfDifferent(join7(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+      writeIfDifferent(join7(role.roleDir, ".gitignore"), readText(join7(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".scripts"), join7(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
+      const promptSource = join7(templateRoleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md.jinja");
+      const promptTarget = join7(role.roleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md");
+      if (!existsSync6(promptTarget)) {
+        const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo);
+        writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
+      }
+      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
+      if (registryUpdated)
+        details.push(`updated ${registryUpdated}`);
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "scrum-master scaffold normalized" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "systemd.sentinel",
+    title: "Hermes systemd/sentinel units enabled + active",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const probe = systemctlUser(["is-system-running"]);
+      if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+        return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "warn", summary: "systemd --user unavailable; unit state not auditable here", details: [], fixable: false };
+      }
+      const details = [];
+      for (const role of roles) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`]) {
+          const state = checkUnit(unit);
+          if (!state.enabled || !state.active)
+            details.push(`${unit} should be enabled+active`);
+        }
+        if (role.role === "scrum-master") {
+          const state = checkUnit(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
+          if (!state.enabled || !state.active)
+            details.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer should be enabled+active`);
+        }
+      }
+      return {
+        id: "systemd.sentinel",
+        title: "Hermes systemd/sentinel units enabled + active",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Hermes user units are enabled and active" : `${details.length} systemd parity issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const changedFiles = [];
+      const details = [];
+      if (!roles.length) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "No Hermes roles present", changedFiles, details };
+      }
+      const probe = systemctlUser(["is-system-running"]);
+      if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
+      }
+      for (const role of roles) {
+        const sysDir = join7(ctx.homeDir, ".config", "systemd", "user");
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`];
+        if (role.role === "scrum-master")
+          units.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
+        const allUnitsPresent = units.every((unit) => existsSync6(join7(sysDir, unit)));
+        if (allUnitsPresent) {
+          if (ctx.dryRun) {
+            details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
+          } else {
+            systemctlUser(["daemon-reload"]);
+            for (const unit of units) {
+              systemctlUser(["enable", "--now", unit]);
+            }
+          }
+          continue;
+        }
+        for (const script of [join7(role.roleDir, ".scripts", "70-systemd.sh"), role.role === "scrum-master" ? join7(role.roleDir, ".scripts", "75-scrum-master.sh") : ""]) {
+          if (!script || !existsSync6(script))
+            continue;
+          if (ctx.dryRun) {
+            details.push(`would run: bash ${script}`);
+          } else {
+            const result = spawnSync4("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
+            if (result.status !== 0)
+              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+          }
+        }
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: details.some((detail) => detail.includes("failed:")) ? "blocked" : details.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+        summary: details.length ? ctx.dryRun ? "Planned systemd remediation commands" : "Attempted systemd remediation" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  }
+];
+function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
+  const normalized = content.endsWith(`
+`) ? content : `${content}
+`;
+  if (safeReadText(path) === normalized)
+    return;
+  changedFiles.push(path);
+  if (!dryRun) {
+    writeText(path, normalized);
+    if (mode)
+      chmodSync(path, mode);
+  }
+}
+function runAudit(repoArg) {
+  const pjanglerRoot = resolvePjanglerRoot();
+  const ctx = {
+    repoRoot: resolve(repoArg ?? process.cwd()),
+    dryRun: true,
+    pjanglerRoot,
+    homeDir: homedir4()
+  };
+  const rules = RULES.map((rule) => rule.audit(ctx));
+  return {
+    repo: ctx.repoRoot,
+    ok: rules.every((rule) => rule.status === "pass" || rule.status === "skip"),
+    auditedAt: new Date().toISOString(),
+    rules
+  };
+}
+function runMigration(selector, repoArg, dryRun, all) {
+  const pjanglerRoot = resolvePjanglerRoot();
+  const ctx = {
+    repoRoot: resolve(repoArg ?? process.cwd()),
+    dryRun,
+    pjanglerRoot,
+    homeDir: homedir4()
+  };
+  const selected = all ? RULES : RULES.filter((rule) => rule.id === selector);
+  if (!selected.length) {
+    throw new Error(`Unknown parity rule: ${selector}`);
+  }
+  const results = selected.map((rule) => rule.migrate(ctx, rule.audit(ctx)));
+  const changedFiles = Array.from(new Set(results.flatMap((result) => result.changedFiles))).sort();
+  return {
+    repo: ctx.repoRoot,
+    dryRun,
+    ok: results.every((result) => result.status !== "blocked"),
+    selectedRules: selected.map((rule) => rule.id),
+    results,
+    changedFiles
+  };
+}
+function formatAuditReport(report) {
+  const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
+  for (const rule of report.rules) {
+    lines.push(`- ${rule.id} [${rule.status}] ${rule.summary}`);
+    for (const detail of rule.details)
+      lines.push(`    - ${detail}`);
+  }
+  return `${lines.join(`
+`)}
+`;
+}
+function formatMigrationReport(report) {
+  const lines = [`repo: ${report.repo}`, `dry_run: ${report.dryRun}`, `ok: ${report.ok}`, `selected_rules: ${report.selectedRules.join(", ")}`, "results:"];
+  for (const result of report.results) {
+    lines.push(`- ${result.id} [${result.status}] ${result.summary}`);
+    for (const detail of result.details)
+      lines.push(`    - ${detail}`);
+    for (const file of result.changedFiles)
+      lines.push(`    - changed: ${file}`);
+  }
+  if (report.changedFiles.length) {
+    lines.push("changed_files:");
+    for (const file of report.changedFiles)
+      lines.push(`- ${file}`);
+  }
+  return `${lines.join(`
+`)}
+`;
 }
 
 // src/index.ts
@@ -4824,12 +6239,54 @@ commandCmd.command("create").argument("<name>", "Command name").argument("<promp
   console.log("This feature will be implemented in the Template Generation System story.");
   console.log("For now, manually create commands in src/commands/");
 });
-program2.command("hermes-agent").alias("hermes").description("Provision a Hermes agent role into the current repo (TUI; --yes for non-interactive)").option("-y, --yes", "Non-interactive: accept all defaults (skips Telegram + email)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role (pm | dev | review | ops | qa | ci | ...)").option("--purpose <text>", "One-line agent purpose").option(`--tone <tone>`, `Personality tone (${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit global)').option("--model-name <name>", 'Model name override ("" = inherit global)').option("--skip-telegram", "Skip BotFather token capture step").option("--skip-email", "Skip Cloudflare Email Routing step").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating the Plane project").option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer").option("--skip-systemd", "Skip installing systemd --user units").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
+program2.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--json", "Output machine-parseable JSON").action((repo, options) => {
+  try {
+    const report = runAudit(repo);
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(formatAuditReport(report));
+    }
+    process.exit(report.ok ? 0 : 1);
+  } catch (err) {
+    console.error("\u274C audit failed:", err);
+    process.exit(1);
+  }
+});
+program2.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit with --all to apply all)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or --all)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action((ruleId, repo, options) => {
+  try {
+    const all = options.all ?? false;
+    if (!all && !ruleId) {
+      console.error("\u274C Provide a rule-id or use --all");
+      process.exit(1);
+    }
+    let actualRuleId = all ? undefined : ruleId;
+    let actualRepo = repo;
+    if (all && ruleId && !actualRepo) {
+      actualRepo = ruleId;
+    }
+    const report = runMigration(actualRuleId, actualRepo, options.dryRun ?? false, all);
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(formatMigrationReport(report));
+    }
+    process.exit(report.ok ? 0 : 1);
+  } catch (err) {
+    console.error("\u274C migrate failed:", err);
+    process.exit(1);
+  }
+});
+program2.command("hermes-agent").alias("hermes").description("Provision a Hermes agent role into the current repo (TUI; --yes for non-interactive)").option("-y, --yes", "Non-interactive: accept all defaults (skips Telegram + email)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role (pm | dev | review | ops | qa | ci | ...)").option("--purpose <text>", "One-line agent purpose").option(`--tone <tone>`, `Personality tone (${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit global)').option("--model-name <name>", 'Model name override ("" = inherit global)').option("--skip-telegram", "Skip BotFather token capture step").option("--skip-email", "Skip Cloudflare Email Routing step").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating the Plane project").option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, Plane, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
+  const isDarwin = process.platform === "darwin";
+  const local = options.local ?? false;
   const context = {
     targetDir: process.cwd(),
     force: options.force ?? false,
     dryRun: options.dryRun ?? false,
     yes: options.yes ?? false,
+    local,
+    forceConfig: options.forceConfig ?? false,
     targetRepo: options.targetRepo,
     role: options.role,
     agentPurpose: options.purpose,
@@ -4838,10 +6295,10 @@ program2.command("hermes-agent").alias("hermes").description("Provision a Hermes
     modelName: options.modelName,
     skipTelegram: options.skipTelegram,
     skipEmail: options.skipEmail,
-    skipRuntimeRepo: options.skipRuntimeRepo,
-    skipPlane: options.skipPlane,
-    skipBloodbank: options.skipBloodbank,
-    skipSystemd: options.skipSystemd
+    skipRuntimeRepo: options.skipRuntimeRepo ?? local,
+    skipPlane: options.skipPlane ?? local,
+    skipBloodbank: options.skipBloodbank ?? local,
+    skipSystemd: options.skipSystemd ?? (local || isDarwin)
   };
   try {
     const recipe = createRecipe("hermes-agent", context);
@@ -4852,6 +6309,20 @@ program2.command("hermes-agent").alias("hermes").description("Provision a Hermes
     await recipe.execute();
   } catch (err) {
     console.error("\u274C hermes-agent failed:", err);
+    process.exit(1);
+  }
+});
+var configCmd = program2.command("config").description("Manage host/provisioner configuration");
+configCmd.command("bootstrap").description("Create ~/.config/hermes-agent-template/config.toml with host-correct defaults if missing").option("--force", "Overwrite an existing config file").option("--dry-run", "Show what would be written without writing").action(async (options) => {
+  const ctx = {
+    targetDir: process.cwd(),
+    dryRun: options.dryRun ?? false,
+    forceConfig: options.force ?? false
+  };
+  const result = await new EnsureTemplateConfig(ctx).invoke();
+  if (!result.success) {
+    if (result.message)
+      console.error(result.message);
     process.exit(1);
   }
 });
