@@ -1,6 +1,6 @@
 {
   "name": "@delorenj/pjangler",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Project subsystem bootstrapper CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -11,7 +11,8 @@
   },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    ".mise/scripts/versioning.sh"
   ],
   "engines": {
     "node": ">=20"

@@ -297,8 +297,11 @@ function relativeRepo(repoRoot: string, path: string): string {
   return relative(repoRoot, path) || ".";
 }
 
-function templateVersioningScript(ctx: Context): string {
-  return readText(join(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh"));
+function templateVersioningScript(ctx: Context): string | undefined {
+  // Shipped in the npm tarball via the package.json files allowlist (PJAN-3);
+  // soft-return so a broken install blocks one finding instead of the run.
+  const source = join(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh");
+  return existsSync(source) ? readText(source) : undefined;
 }
 
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
@@ -662,6 +665,9 @@ const RULES: Rule[] = [
       }
       const versioningPath = join(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const expectedScript = templateVersioningScript(ctx);
+      if (expectedScript === undefined) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh — update @delorenj/pjangler (broken package)", changedFiles, details: [] };
+      }
       if (safeReadText(versioningPath) !== expectedScript) {
         changedFiles.push(versioningPath);
         if (!ctx.dryRun) {
@@ -1159,7 +1165,22 @@ export function runMigration(selector: string | undefined, repoArg: string | und
   if (!selected.length) {
     throw new Error(`Unknown parity rule: ${selector}`);
   }
-  const results = selected.map((rule) => rule.migrate(ctx, rule.audit(ctx)));
+  // One throwing rule must not kill the whole migration (PJAN-3: an ENOENT in
+  // templateVersioningScript aborted every other step) — degrade to "blocked".
+  const results = selected.map((rule) => {
+    try {
+      return rule.migrate(ctx, rule.audit(ctx));
+    } catch (err) {
+      return {
+        id: rule.id,
+        title: rule.title,
+        status: "blocked" as const,
+        summary: `migrate threw: ${err instanceof Error ? err.message : String(err)}`,
+        changedFiles: [],
+        details: [],
+      };
+    }
+  });
   const changedFiles = Array.from(new Set(results.flatMap((result) => result.changedFiles))).sort();
   return {
     repo: ctx.repoRoot,

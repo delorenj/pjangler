@@ -1447,7 +1447,8 @@ function systemctlUser(args) {
   };
 }
 function templateVersioningScript(ctx) {
-  return readText(join6(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh"));
+  const source = join6(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh");
+  return existsSync5(source) ? readText(source) : void 0;
 }
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join6(repoRoot, "package.json");
@@ -1834,6 +1835,9 @@ var RULES = [
       }
       const versioningPath = join6(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const expectedScript = templateVersioningScript(ctx);
+      if (expectedScript === void 0) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
+      }
       if (safeReadText(versioningPath) !== expectedScript) {
         changedFiles.push(versioningPath);
         if (!ctx.dryRun) {
@@ -2328,7 +2332,20 @@ function runMigration(selector, repoArg, dryRun, all) {
   if (!selected.length) {
     throw new Error(`Unknown parity rule: ${selector}`);
   }
-  const results = selected.map((rule) => rule.migrate(ctx, rule.audit(ctx)));
+  const results = selected.map((rule) => {
+    try {
+      return rule.migrate(ctx, rule.audit(ctx));
+    } catch (err) {
+      return {
+        id: rule.id,
+        title: rule.title,
+        status: "blocked",
+        summary: `migrate threw: ${err instanceof Error ? err.message : String(err)}`,
+        changedFiles: [],
+        details: []
+      };
+    }
+  });
   const changedFiles = Array.from(new Set(results.flatMap((result) => result.changedFiles))).sort();
   return {
     repo: ctx.repoRoot,
