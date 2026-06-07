@@ -12,7 +12,8 @@
   "files": [
     "dist",
     "templates",
-    ".mise/scripts/versioning.sh"
+    ".mise/scripts/versioning.sh",
+    ".mise/scripts/link-agentfiles.sh"
   ],
   "engines": {
     "node": ">=20"

@@ -1,0 +1,16 @@
+❌ migrate failed: Error: ENOENT: no such file or directory, open '/home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/.mise/scripts/versioning.sh'
+    at readFileSync (node:fs:441:20)
+    at readText (file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:1328:28)
+    at templateVersioningScript (file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:1450:10)
+    at Object.migrate (file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:1836:30)
+    at file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:2331:47
+    at Array.map (<anonymous>)
+    at runMigration (file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:2331:28)
+    at Command.<anonymous> (file:///home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/dist/index.js:2544:20)
+    at Command.listener [as _actionHandler] (/home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/node_modules/commander/lib/command.js:568:17)
+    at /home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/node_modules/commander/lib/command.js:1604:14 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/delorenj/.local/share/mise/installs/node/24.15.0/lib/node_modules/@delorenj/pjangler/.mise/scripts/versioning.sh'
+}

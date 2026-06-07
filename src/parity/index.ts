@@ -212,6 +212,33 @@ function ensureSymlink(path: string, target: string, dryRun: boolean): { changed
   return { changed: true };
 }
 
+function bootstrapAgentsFile(repoRoot: string, dryRun: boolean): { changedFiles: string[]; details: string[]; blocked?: string } {
+  const agentsPath = join(repoRoot, "AGENTS.md");
+  if (existsSync(agentsPath)) return { changedFiles: [], details: [] };
+
+  for (const file of ["CLAUDE.md", "GEMINI.md"]) {
+    const source = join(repoRoot, file);
+    if (!existsSync(source)) continue;
+    const stat = lstatSync(source);
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isFile()) {
+      if (!dryRun) renameSync(source, agentsPath);
+      return { changedFiles: [agentsPath], details: [`Moved ${file} to AGENTS.md before wiring agent-file symlinks`] };
+    }
+    return { changedFiles: [], details: [], blocked: `${file} exists but is not a regular file; cannot promote to AGENTS.md` };
+  }
+
+  const readmePath = join(repoRoot, "README.md");
+  if (existsSync(readmePath)) {
+    const stat = lstatSync(readmePath);
+    if (!stat.isFile()) return { changedFiles: [], details: [], blocked: "README.md exists but is not a regular file; cannot copy to AGENTS.md" };
+    if (!dryRun) copyFileSync(readmePath, agentsPath);
+    return { changedFiles: [agentsPath], details: ["Copied README.md to AGENTS.md before wiring agent-file symlinks"] };
+  }
+
+  return { changedFiles: [], details: [], blocked: "AGENTS.md missing and no CLAUDE.md, GEMINI.md, or README.md source exists" };
+}
+
 function yamlGet(text: string, keyPath: string): string {
   const parts = keyPath.split(".");
   const lines = text.split("\n");
@@ -297,11 +324,19 @@ function relativeRepo(repoRoot: string, path: string): string {
   return relative(repoRoot, path) || ".";
 }
 
-function templateVersioningScript(ctx: Context): string | undefined {
+function templateScript(ctx: Context, name: string): string | undefined {
   // Shipped in the npm tarball via the package.json files allowlist (PJAN-3);
   // soft-return so a broken install blocks one finding instead of the run.
-  const source = join(ctx.pjanglerRoot, ".mise", "scripts", "versioning.sh");
+  const source = join(ctx.pjanglerRoot, ".mise", "scripts", name);
   return existsSync(source) ? readText(source) : undefined;
+}
+
+function templateVersioningScript(ctx: Context): string | undefined {
+  return templateScript(ctx, "versioning.sh");
+}
+
+function templateLinkAgentfilesScript(ctx: Context): string | undefined {
+  return templateScript(ctx, "link-agentfiles.sh");
 }
 
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
@@ -324,16 +359,53 @@ function replaceOrAppendManagedBlock(text: string, startMarker: RegExp, block: s
   return `${text.replace(/\s*$/, "")}\n\n${block}\n`;
 }
 
-function upsertLinkAgentfilesBlock(text: string): string {
+const BASE_MISE_PATH_ENTRIES = [".mise/scripts", "agents/hermes/pm"];
+const CONDITIONAL_HERMES_PATHS = ["agents/hermes/pm/hermes", "agent/hermes/pm/hermes"];
+
+function requiredMisePathEntries(ctx: Context): string[] {
+  const required = [...BASE_MISE_PATH_ENTRIES];
+  for (const candidate of CONDITIONAL_HERMES_PATHS) {
+    if (existsSync(join(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
+  }
+  return required;
+}
+
+function upsertMisePath(text: string, required = BASE_MISE_PATH_ENTRIES): string {
+  const render = (values: string[]) => `_.path = [${values.map((value) => JSON.stringify(value)).join(", ")}]`;
+  const envMatch = text.match(/(^|\n)(\[env\][\s\S]*?)(?=\n\[[^\]]+\]|$)/);
+  if (!envMatch || typeof envMatch.index !== "number") {
+    return `[env]\n${render(required)}\n\n${text.replace(/^\s+/, "")}`;
+  }
+
+  const prefix = text.slice(0, envMatch.index + envMatch[1]!.length);
+  const section = envMatch[2]!;
+  const suffix = text.slice(envMatch.index + envMatch[1]!.length + section.length);
+  const pathLine = section.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
+  if (!pathLine) {
+    return `${prefix}${section.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
+  }
+
+  const current = [...pathLine[1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+  const merged = [...current];
+  for (const value of required) {
+    if (!merged.includes(value)) merged.push(value);
+  }
+  const nextLine = render(merged);
+  if (pathLine[0] === nextLine) return text;
+  return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
+}
+
+function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
+  const withPath = upsertMisePath(text, requiredMisePathEntries(ctx));
   const existing = /# This block will handle the linking of[\s\S]*?\[tasks\.link-agentfiles\][\s\S]*?run = "\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh"/;
-  if (existing.test(text)) {
-    return text.replace(existing, LINK_AGENTFILES_BLOCK);
+  if (existing.test(withPath)) {
+    return withPath.replace(existing, LINK_AGENTFILES_BLOCK);
   }
-  const versioningIndex = text.indexOf("# >>> mise-versioning >>>");
+  const versioningIndex = withPath.indexOf("# >>> mise-versioning >>>");
   if (versioningIndex >= 0) {
-    return `${text.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${LINK_AGENTFILES_BLOCK}\n\n${text.slice(versioningIndex)}`;
+    return `${withPath.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${LINK_AGENTFILES_BLOCK}\n\n${withPath.slice(versioningIndex)}`;
   }
-  return `${text.replace(/\s*$/, "")}\n\n${LINK_AGENTFILES_BLOCK}\n`;
+  return `${withPath.replace(/\s*$/, "")}\n\n${LINK_AGENTFILES_BLOCK}\n`;
 }
 
 function readProjectJson(ctx: Context): Record<string, unknown> | null {
@@ -593,7 +665,11 @@ const RULES: Rule[] = [
       }
       const text = readText(misePath);
       const details: string[] = [];
-      if (!text.includes("_.path = [\".mise/scripts\", \"agents/hermes/pm\"]")) details.push("[env]._.path should include .mise/scripts and agents/hermes/pm");
+      const linkAgentfilesPath = join(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      if (!existsSync(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
+      const pathValues = [...(text.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
+      if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("\"{{config_root}}/.mise/scripts/link-agentfiles.sh\"")) details.push("link-agentfiles must use raw {{config_root}} guard");
       if (!text.includes("op inject -i .env.op > .env")) details.push("[hooks].enter must materialize .env from .env.op");
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
@@ -614,11 +690,23 @@ const RULES: Rule[] = [
         return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
       }
       let text = readText(path);
-      const next = upsertLinkAgentfilesBlock(text);
+      const next = upsertLinkAgentfilesBlock(text, ctx);
       if (next !== text) {
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, next);
         text = next;
+      }
+      const linkAgentfilesPath = join(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      const expectedScript = templateLinkAgentfilesScript(ctx);
+      if (expectedScript === undefined) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh — update @delorenj/pjangler (broken package)", changedFiles, details: [] };
+      }
+      if (safeReadText(linkAgentfilesPath) !== expectedScript) {
+        changedFiles.push(linkAgentfilesPath);
+        if (!ctx.dryRun) {
+          writeText(linkAgentfilesPath, expectedScript);
+          chmodSync(linkAgentfilesPath, 0o755);
+        }
       }
       return {
         id: finding.id,
@@ -626,7 +714,7 @@ const RULES: Rule[] = [
         status: changedFiles.length ? "applied" : "noop",
         summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
         changedFiles,
-        details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block"] : [],
+        details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block and script"] : [],
       };
     },
   },
@@ -697,7 +785,18 @@ const RULES: Rule[] = [
     audit: (ctx) => {
       const agentsPath = join(ctx.repoRoot, "AGENTS.md");
       if (!existsSync(agentsPath)) {
-        return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
+        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync(join(ctx.repoRoot, file)));
+        if (fallbackSources.length === 0) {
+          return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
+        }
+        return {
+          id: "sot.agent-symlinks",
+          title: "AGENTS/CLAUDE/GEMINI symlink contract",
+          status: "fail",
+          summary: "AGENTS.md missing but can be derived from existing project documentation",
+          details: [`AGENTS.md can be created from ${fallbackSources[0]}`],
+          fixable: true,
+        };
       }
       const details: string[] = [];
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
@@ -717,22 +816,26 @@ const RULES: Rule[] = [
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
       const details: string[] = [];
-      if (!existsSync(join(ctx.repoRoot, "AGENTS.md"))) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot wire symlinks", changedFiles, details: [] };
+      const blockedDetails: string[] = [];
+      const bootstrap = bootstrapAgentsFile(ctx.repoRoot, ctx.dryRun);
+      changedFiles.push(...bootstrap.changedFiles);
+      details.push(...bootstrap.details);
+      if (bootstrap.blocked) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot derive canonical agent file", changedFiles, details: [bootstrap.blocked] };
       }
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
         const full = join(ctx.repoRoot, file);
         const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
-        if (result.blocked) details.push(result.blocked);
+        if (result.blocked) blockedDetails.push(result.blocked);
         if (result.changed) changedFiles.push(full);
       }
       return {
         id: finding.id,
         title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "One or more files could not be replaced safely" : changedFiles.length ? "Symlink contract repaired" : "No changes required",
+        status: blockedDetails.length ? "blocked" : changedFiles.length ? "applied" : "noop",
+        summary: blockedDetails.length ? "One or more files could not be replaced safely" : changedFiles.length ? "Symlink contract repaired" : "No changes required",
         changedFiles,
-        details,
+        details: [...details, ...blockedDetails],
       };
     },
   },
