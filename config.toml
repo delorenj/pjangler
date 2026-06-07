@@ -1,0 +1,11 @@
+[projects."/home/delorenj/code/pjangler"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 1
+
+[features]
+terminal_resize_reflow = true
+memories = true
+external_migration = true
+prevent_idle_sleep = true
