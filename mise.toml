@@ -23,6 +23,14 @@ task = "link-agentfiles"
 description = "Symlink all agent files to AGENTS.md"
 run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"
 
+[tasks."fleet:check"]
+description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
+run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"
+
+[tasks."fleet:sync"]
+description = "Reconcile every deployed Hermes agent with the current template + fleet contract"
+run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh --apply"
+
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
