@@ -1,21 +1,35 @@
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
+import { existsSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { InvokeResult } from "./Command";
 import { Command } from "./Command";
 
 /**
  * Resolve the CommonProject copier template root (which vendors the generic
- * agent-hooks tree). The installed pjangler `dist/` does not ship templates, so
- * we resolve against, in order: an env override, the source-tree layout, and the
- * canonical ~/code/pjangler checkout.
+ * agent-hooks tree under template/.agents/hooks). Walks up from this module's
+ * directory so it works both from source (src/commands/) and from the bundled
+ * ESM dist (dist/index.js) — the npm package ships templates/ at its root. Falls
+ * back to an env override and the canonical ~/code/pjangler checkout.
  */
 function resolveTemplateRoot(): string {
-  const { existsSync } = require("fs");
-  const { join } = require("path");
-  const os = require("os");
-  const candidates = [
-    process.env.PJANGLER_COMMONPROJECT_TEMPLATE,
-    join(__dirname, "..", "..", "templates", "commonproject", "template"),
-    join(os.homedir(), "code", "pjangler", "templates", "commonproject", "template"),
-  ].filter(Boolean) as string[];
+  const candidates: string[] = [];
+  if (process.env.PJANGLER_COMMONPROJECT_TEMPLATE) {
+    candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
+  }
+  try {
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 8; i++) {
+      candidates.push(join(dir, "templates", "commonproject", "template"));
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* import.meta.url unavailable — rely on the other candidates */
+  }
+  candidates.push(join(homedir(), "code", "pjangler", "templates", "commonproject", "template"));
+
   for (const c of candidates) {
     if (existsSync(join(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
@@ -33,9 +47,6 @@ function resolveTemplateRoot(): string {
  */
 export class CopyAgentHooksTree extends Command {
   async invoke(): Promise<InvokeResult> {
-    const { existsSync, cpSync, mkdirSync } = require("fs");
-    const { join } = require("path");
-
     let templateRoot: string;
     try {
       templateRoot = resolveTemplateRoot();
@@ -43,7 +54,7 @@ export class CopyAgentHooksTree extends Command {
       return { success: false, message: `⚠️  ${(e as Error).message}` };
     }
 
-    // src(relative) -> dest(relative). Directories are copied recursively.
+    // relative path -> whether it's a directory (copied recursively)
     const items: Array<{ rel: string; dir: boolean }> = [
       { rel: ".agents/hooks", dir: true },
       { rel: ".agents/local.example.json", dir: false },
@@ -63,10 +74,8 @@ export class CopyAgentHooksTree extends Command {
         continue;
       }
       if (!this.context.dryRun) {
-        const { dirname } = require("path");
         mkdirSync(dirname(dest), { recursive: true });
-        // preserves mode (exec bits) and copies recursively for dirs
-        cpSync(src, dest, { recursive: dir, force: true });
+        cpSync(src, dest, { recursive: dir, force: true }); // preserves mode (exec bits)
       }
       created.push(rel);
     }
@@ -92,8 +101,6 @@ export class WireMiseAgentHooks extends Command {
   private static CR = "{{config_root}}"; // mise's own runtime var — emitted literally
 
   async invoke(): Promise<InvokeResult> {
-    const { existsSync, readFileSync, writeFileSync } = require("fs");
-    const { join } = require("path");
     const misePath = join(this.context.targetDir, "mise.toml");
 
     if (!existsSync(misePath)) {
@@ -127,7 +134,7 @@ export class WireMiseAgentHooks extends Command {
         const sep = /[,[]\s*$/.test(head) ? "" : ","; // add a comma only if needed
         return `${head}${sep}\n${enterAdds}${close}`;
       });
-      // Ensure a leave array too: extend it, or add one right after the [hooks] enter close.
+      // Ensure a leave array too: extend it, or add one right after the enter close.
       const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
@@ -135,7 +142,6 @@ export class WireMiseAgentHooks extends Command {
           return `${head}${sep}\n  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",\n  "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
-        // add a leave array immediately after the enter array's closing ]
         content = content.replace(enterRe, (m) => `${m}\n${leaveBlock}`);
       }
       wiredHooks = true;

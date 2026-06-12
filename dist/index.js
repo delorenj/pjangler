@@ -54,30 +54,30 @@ var Command = class {
     return this.context.dryRun ? `[DRY RUN] ${message}` : message;
   }
   fileExists(filePath) {
-    const { existsSync: existsSync6 } = __require("fs");
-    const { join: join8 } = __require("path");
-    const fullPath = join8(this.context.targetDir, filePath);
-    return existsSync6(fullPath);
+    const { existsSync: existsSync7 } = __require("fs");
+    const { join: join9 } = __require("path");
+    const fullPath = join9(this.context.targetDir, filePath);
+    return existsSync7(fullPath);
   }
   writeFile(filePath, content) {
     if (this.context.dryRun) {
       return;
     }
-    const { writeFileSync: writeFileSync3, mkdirSync: mkdirSync4 } = __require("fs");
-    const { join: join8, dirname: dirname5 } = __require("path");
-    const fullPath = join8(this.context.targetDir, filePath);
-    const dir = dirname5(fullPath);
-    mkdirSync4(dir, { recursive: true });
-    writeFileSync3(fullPath, content);
+    const { writeFileSync: writeFileSync4, mkdirSync: mkdirSync5 } = __require("fs");
+    const { join: join9, dirname: dirname6 } = __require("path");
+    const fullPath = join9(this.context.targetDir, filePath);
+    const dir = dirname6(fullPath);
+    mkdirSync5(dir, { recursive: true });
+    writeFileSync4(fullPath, content);
   }
   createDirectory(dirPath) {
     if (this.context.dryRun) {
       return;
     }
-    const { mkdirSync: mkdirSync4 } = __require("fs");
-    const { join: join8 } = __require("path");
-    const fullPath = join8(this.context.targetDir, dirPath);
-    mkdirSync4(fullPath, { recursive: true });
+    const { mkdirSync: mkdirSync5 } = __require("fs");
+    const { join: join9 } = __require("path");
+    const fullPath = join9(this.context.targetDir, dirPath);
+    mkdirSync5(fullPath, { recursive: true });
   }
 };
 
@@ -1147,6 +1147,193 @@ var HermesAgentRecipe = class extends Recipe {
   }
 };
 
+// src/commands/AgentHooksCommands.ts
+import { homedir as homedir3 } from "node:os";
+import { join as join6, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync5, cpSync, mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+function resolveTemplateRoot() {
+  const candidates = [];
+  if (process.env.PJANGLER_COMMONPROJECT_TEMPLATE) {
+    candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
+  }
+  try {
+    let dir = dirname3(fileURLToPath2(import.meta.url));
+    for (let i = 0; i < 8; i++) {
+      candidates.push(join6(dir, "templates", "commonproject", "template"));
+      const parent = dirname3(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+  }
+  candidates.push(join6(homedir3(), "code", "pjangler", "templates", "commonproject", "template"));
+  for (const c of candidates) {
+    if (existsSync5(join6(c, ".agents", "hooks", "hooks.master.json"))) return c;
+  }
+  throw new Error(
+    "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
+  );
+}
+var CopyAgentHooksTree = class extends Command {
+  async invoke() {
+    let templateRoot;
+    try {
+      templateRoot = resolveTemplateRoot();
+    } catch (e) {
+      return { success: false, message: `\u26A0\uFE0F  ${e.message}` };
+    }
+    const items = [
+      { rel: ".agents/hooks", dir: true },
+      { rel: ".agents/local.example.json", dir: false },
+      { rel: ".mise/scripts/link-project-skills-to-clis.sh", dir: false },
+      { rel: ".mise/scripts/unlink-project-skills-from-clis.sh", dir: false },
+      { rel: ".mise/scripts/hindsight-setup.sh", dir: false }
+    ];
+    const created = [];
+    const skipped = [];
+    for (const { rel, dir } of items) {
+      const src = join6(templateRoot, rel);
+      const dest = join6(this.context.targetDir, rel);
+      if (!existsSync5(src)) continue;
+      if (existsSync5(dest) && !this.context.force) {
+        skipped.push(rel);
+        continue;
+      }
+      if (!this.context.dryRun) {
+        mkdirSync3(dirname3(dest), { recursive: true });
+        cpSync(src, dest, { recursive: dir, force: true });
+      }
+      created.push(rel);
+    }
+    const verb = this.context.dryRun ? "Would copy" : "Copied";
+    const tail = skipped.length ? ` (${skipped.length} already present \u2014 use --force to overwrite)` : "";
+    return {
+      success: created.length > 0,
+      message: this.formatMessage(`\u2705 ${verb} ${created.length} agent-hooks path(s)${tail}`)
+    };
+  }
+};
+var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
+  static MARKER = "# pjangler:agent-hooks";
+  static CR = "{{config_root}}";
+  // mise's own runtime var — emitted literally
+  async invoke() {
+    const misePath = join6(this.context.targetDir, "mise.toml");
+    if (!existsSync5(misePath)) {
+      return {
+        success: false,
+        message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pjangler init mise` first, then re-run."
+      };
+    }
+    let content = readFileSync2(misePath, "utf8");
+    if (content.includes(_WireMiseAgentHooks.MARKER)) {
+      return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for agent-hooks") };
+    }
+    const cr = _WireMiseAgentHooks.CR;
+    const enterAdds = [
+      `  "${cr}/.mise/scripts/link-project-skills-to-clis.sh",`,
+      `  "${cr}/.agents/hooks/sync.py --install --quiet",`
+    ].join("\n");
+    const leaveBlock = [
+      "leave = [",
+      `  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",`,
+      `  "${cr}/.agents/hooks/sync.py --uninstall --quiet",`,
+      "]"
+    ].join("\n");
+    let wiredHooks = false;
+    const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
+    if (enterRe.test(content)) {
+      content = content.replace(enterRe, (_m, head, close) => {
+        const sep = /[,[]\s*$/.test(head) ? "" : ",";
+        return `${head}${sep}
+${enterAdds}${close}`;
+      });
+      const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
+      if (leaveRe.test(content)) {
+        content = content.replace(leaveRe, (_m, head, close) => {
+          const sep = /[,[]\s*$/.test(head) ? "" : ",";
+          return `${head}${sep}
+  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",
+  "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
+        });
+      } else {
+        content = content.replace(enterRe, (m) => `${m}
+${leaveBlock}`);
+      }
+      wiredHooks = true;
+    }
+    const appended = [
+      "",
+      _WireMiseAgentHooks.MARKER + " (generated \u2014 see .agents/hooks/README.md)",
+      "[[watch_files]]",
+      'patterns = [".agents/hooks/hooks.master.json"]',
+      'task = "hooks-sync"',
+      "",
+      "[tasks.hooks-sync]",
+      'description = "Fan out hooks.master.json to each agent CLI (claude/codex/kimi/hermes)"',
+      `run = "${cr}/.agents/hooks/sync.py --install"`,
+      "",
+      "[tasks.hooks-check]",
+      'description = "Drift gate: verify generated hook configs match hooks.master.json"',
+      `run = "${cr}/.agents/hooks/sync.py --check"`,
+      "",
+      "[tasks.hooks-uninstall]",
+      'description = "Remove per-user agent-hook injections (codex/kimi/hermes)"',
+      `run = "${cr}/.agents/hooks/sync.py --uninstall"`,
+      "",
+      "[tasks.link-project-skills-to-clis]",
+      'description = "Fan .agents/skills out to each agent CLI (honors local.json)"',
+      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
+      "",
+      "[tasks.unlink-project-skills-from-clis]",
+      'description = "Remove project skill symlinks from shared per-CLI dirs"',
+      `run = "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh"`,
+      "",
+      "[tasks.skills-relink]",
+      'description = "Re-fan the project skill set to all CLIs"',
+      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
+      "",
+      "[tasks.hindsight-setup]",
+      `description = "Provision this dev's shared project Hindsight key from 1Password into .env"`,
+      `run = "${cr}/.mise/scripts/hindsight-setup.sh"`,
+      "",
+      _WireMiseAgentHooks.MARKER + ":end",
+      ""
+    ].join("\n");
+    content = content.replace(/\n*$/, "\n") + appended;
+    if (!this.context.dryRun) writeFileSync2(misePath, content);
+    if (wiredHooks) {
+      return { success: true, message: this.formatMessage("\u2705 Wired mise.toml ([hooks] enter/leave + tasks)") };
+    }
+    return {
+      success: true,
+      message: this.formatMessage(
+        `\u2705 Added agent-hooks tasks to mise.toml.
+   \u26A0\uFE0F  Could not find a [hooks].enter array to extend \u2014 add these to your [hooks] block manually:
+     enter += "${cr}/.mise/scripts/link-project-skills-to-clis.sh", "${cr}/.agents/hooks/sync.py --install --quiet"
+     leave += "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh", "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
+      )
+    };
+  }
+};
+
+// src/recipes/AgentHooksRecipe.ts
+var AgentHooksRecipe = class extends Recipe {
+  constructor(context) {
+    super(context);
+    this.addIngredient(CopyAgentHooksTree).addIngredient(WireMiseAgentHooks);
+  }
+  printNextSteps() {
+    console.log("\u{1FA9D} Agent-hooks layer installed!");
+    console.log("   Next steps:");
+    console.log("   1. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
+    console.log("   2. git add .claude/settings.json .agents/hooks && commit (codex/kimi/hermes are per-dev)");
+    console.log("   3. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
+    console.log(`   4. If you run a global agent system: echo '{"skills":{"defer_to_global":true}}' > .agents/local.json`);
+  }
+};
+
 // src/utils/registry.ts
 var RECIPE_REGISTRY = {
   mise: {
@@ -1180,9 +1367,27 @@ var RECIPE_REGISTRY = {
       "WireEmail",
       "PrintHermesSummary"
     ]
+  },
+  "agent-hooks": {
+    name: "agent-hooks",
+    description: "Retrofit the project-scoped agent-hooks + skill fan-out layer (Claude/Codex/Kimi/Hermes hooks via mise enter/leave)",
+    class: AgentHooksRecipe,
+    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"]
   }
 };
 var COMMAND_REGISTRY = {
+  CopyAgentHooksTree: {
+    name: "CopyAgentHooksTree",
+    description: "Copy the generic agent-hooks tree (hooks SSOT + sync engine + scripts) from the CommonProject template",
+    group: "agent-hooks",
+    class: CopyAgentHooksTree
+  },
+  WireMiseAgentHooks: {
+    name: "WireMiseAgentHooks",
+    description: "Merge agent-hooks enter/leave + tasks into an existing mise.toml (idempotent)",
+    group: "agent-hooks",
+    class: WireMiseAgentHooks
+  },
   AddDockerfile: {
     name: "AddDockerfile",
     description: "Create Dockerfile for containerization",
@@ -1261,10 +1466,10 @@ function createRecipe(name, context) {
 }
 
 // src/parity/index.ts
-import { existsSync as existsSync5, lstatSync, mkdirSync as mkdirSync3, readFileSync as readFileSync2, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync2, chmodSync, copyFileSync } from "node:fs";
-import { dirname as dirname3, join as join6, relative, resolve } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { homedir as homedir3 } from "node:os";
+import { existsSync as existsSync6, lstatSync, mkdirSync as mkdirSync4, readFileSync as readFileSync3, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, chmodSync, copyFileSync } from "node:fs";
+import { dirname as dirname4, join as join7, relative, resolve } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { homedir as homedir4 } from "node:os";
 import { spawnSync as spawnSync4 } from "node:child_process";
 var LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
@@ -1312,12 +1517,12 @@ description = "Force every versioned file up to the highest version"
 run = "{{config_root}}/.mise/scripts/versioning.sh sync"
 # <<< mise-versioning <<<`;
 function resolvePjanglerRoot() {
-  let dir = dirname3(fileURLToPath2(import.meta.url));
-  while (dir !== dirname3(dir)) {
-    if (existsSync5(join6(dir, "package.json")) && existsSync5(join6(dir, "templates", "commonproject", "copier.yml"))) {
+  let dir = dirname4(fileURLToPath3(import.meta.url));
+  while (dir !== dirname4(dir)) {
+    if (existsSync6(join7(dir, "package.json")) && existsSync6(join7(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
-    dir = dirname3(dir);
+    dir = dirname4(dir);
   }
   throw new Error("Unable to resolve pjangler root");
 }
@@ -1325,17 +1530,17 @@ function normalizeNewlines(value) {
   return value.replace(/\r\n/g, "\n");
 }
 function readText(path) {
-  return normalizeNewlines(readFileSync2(path, "utf8"));
+  return normalizeNewlines(readFileSync3(path, "utf8"));
 }
 function safeReadText(path) {
-  return existsSync5(path) ? readText(path) : null;
+  return existsSync6(path) ? readText(path) : null;
 }
 function ensureParent(path) {
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
 }
 function writeText(path, content) {
   ensureParent(path);
-  writeFileSync2(path, content);
+  writeFileSync3(path, content);
 }
 function tryParseJson(text3) {
   if (!text3) return null;
@@ -1352,7 +1557,7 @@ function titleCaseSlug(slug) {
   return slug.split(/[-_]/g).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 function readSymlinkTarget(path) {
-  if (!existsSync5(path)) return null;
+  if (!existsSync6(path)) return null;
   try {
     return readlinkSync(path);
   } catch {
@@ -1360,7 +1565,7 @@ function readSymlinkTarget(path) {
   }
 }
 function ensureSymlink(path, target, dryRun) {
-  if (existsSync5(path)) {
+  if (existsSync6(path)) {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) {
       const current = readSymlinkTarget(path);
@@ -1377,11 +1582,11 @@ function ensureSymlink(path, target, dryRun) {
   return { changed: true };
 }
 function bootstrapAgentsFile(repoRoot, dryRun) {
-  const agentsPath = join6(repoRoot, "AGENTS.md");
-  if (existsSync5(agentsPath)) return { changedFiles: [], details: [] };
+  const agentsPath = join7(repoRoot, "AGENTS.md");
+  if (existsSync6(agentsPath)) return { changedFiles: [], details: [] };
   for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-    const source = join6(repoRoot, file);
-    if (!existsSync5(source)) continue;
+    const source = join7(repoRoot, file);
+    if (!existsSync6(source)) continue;
     const stat = lstatSync(source);
     if (stat.isSymbolicLink()) continue;
     if (stat.isFile()) {
@@ -1390,8 +1595,8 @@ function bootstrapAgentsFile(repoRoot, dryRun) {
     }
     return { changedFiles: [], details: [], blocked: `${file} exists but is not a regular file; cannot promote to AGENTS.md` };
   }
-  const readmePath = join6(repoRoot, "README.md");
-  if (existsSync5(readmePath)) {
+  const readmePath = join7(repoRoot, "README.md");
+  if (existsSync6(readmePath)) {
     const stat = lstatSync(readmePath);
     if (!stat.isFile()) return { changedFiles: [], details: [], blocked: "README.md exists but is not a regular file; cannot copy to AGENTS.md" };
     if (!dryRun) copyFileSync(readmePath, agentsPath);
@@ -1430,12 +1635,12 @@ function yamlGet(text3, keyPath) {
   return "";
 }
 function discoverRoles(repoRoot) {
-  const rolesDir = join6(repoRoot, "agents", "hermes");
-  if (!existsSync5(rolesDir)) return [];
+  const rolesDir = join7(repoRoot, "agents", "hermes");
+  if (!existsSync6(rolesDir)) return [];
   return readdirSync(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
-    const roleDir = join6(rolesDir, entry.name);
-    const roleYamlPath = join6(roleDir, "role.yaml");
-    if (!existsSync5(roleYamlPath)) return null;
+    const roleDir = join7(rolesDir, entry.name);
+    const roleYamlPath = join7(roleDir, "role.yaml");
+    if (!existsSync6(roleYamlPath)) return null;
     const text3 = readText(roleYamlPath);
     const runtimeRepoRaw = yamlGet(text3, "runtime.github_repo");
     return {
@@ -1459,7 +1664,7 @@ function discoverRoles(repoRoot) {
   }).filter((value) => Boolean(value));
 }
 function registryPath(homeDir) {
-  return join6(homeDir, ".hermes", "agents-registry.yaml");
+  return join7(homeDir, ".hermes", "agents-registry.yaml");
 }
 function systemctlUser(args) {
   const result = spawnSync4("systemctl", ["--user", ...args], { encoding: "utf8" });
@@ -1470,8 +1675,8 @@ function systemctlUser(args) {
   };
 }
 function templateScript(ctx, name) {
-  const source = join6(ctx.pjanglerRoot, ".mise", "scripts", name);
-  return existsSync5(source) ? readText(source) : void 0;
+  const source = join7(ctx.pjanglerRoot, ".mise", "scripts", name);
+  return existsSync6(source) ? readText(source) : void 0;
 }
 function templateVersioningScript(ctx) {
   return templateScript(ctx, "versioning.sh");
@@ -1480,8 +1685,8 @@ function templateLinkAgentfilesScript(ctx) {
   return templateScript(ctx, "link-agentfiles.sh");
 }
 function templateVersionFilesConf(ctx, repoRoot) {
-  const packageJson = join6(repoRoot, "package.json");
-  return existsSync5(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
+  const packageJson = join7(repoRoot, "package.json");
+  return existsSync6(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
 }
 function replaceOrAppendManagedBlock(text3, startMarker, block, beforePattern) {
   if (startMarker.test(text3)) {
@@ -1505,7 +1710,7 @@ var CONDITIONAL_HERMES_PATHS = ["agents/hermes/pm/hermes", "agent/hermes/pm/herm
 function requiredMisePathEntries(ctx) {
   const required = [...BASE_MISE_PATH_ENTRIES];
   for (const candidate of CONDITIONAL_HERMES_PATHS) {
-    if (existsSync5(join6(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
+    if (existsSync6(join7(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
   }
   return required;
 }
@@ -1552,12 +1757,12 @@ ${LINK_AGENTFILES_BLOCK}
 `;
 }
 function readProjectJson(ctx) {
-  return tryParseJson(safeReadText(join6(ctx.repoRoot, ".project.json")));
+  return tryParseJson(safeReadText(join7(ctx.repoRoot, ".project.json")));
 }
 function canonicalProjectJson(ctx) {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname3(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = String(existing.project_slug ?? slugifyRepoName(dirname4(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String((existing.ticket_provider?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -1584,12 +1789,12 @@ function canonicalProjectJson(ctx) {
   };
 }
 function projectJsonFinding(ctx) {
-  const projectPath = join6(ctx.repoRoot, ".project.json");
-  const planeJsonPath = join6(ctx.repoRoot, ".plane.json");
+  const projectPath = join7(ctx.repoRoot, ".project.json");
+  const planeJsonPath = join7(ctx.repoRoot, ".plane.json");
   const details = [];
   const data = readProjectJson(ctx);
   const roles = discoverRoles(ctx.repoRoot);
-  if (!existsSync5(projectPath)) {
+  if (!existsSync6(projectPath)) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json missing", details: [], fixable: true };
   }
   if (!data) {
@@ -1615,7 +1820,7 @@ function projectJsonFinding(ctx) {
   for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
-  if (existsSync5(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
+  if (existsSync6(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
   return {
     id: "sot.project-json",
     title: "Canonical .project.json",
@@ -1702,17 +1907,17 @@ exec env HERMES_HOME="$HERMES_HOME" HERMES_FLEET_ENV="$FLEET_ENV"   HERMES_OAUTH
 `.replace(/\u0010/g, "$");
 }
 function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
-  if (!existsSync5(sourceDir)) return;
-  mkdirSync3(targetDir, { recursive: true });
+  if (!existsSync6(sourceDir)) return;
+  mkdirSync4(targetDir, { recursive: true });
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-    const sourcePath = join6(sourceDir, entry.name);
+    const sourcePath = join7(sourceDir, entry.name);
     if (skip?.(sourcePath)) continue;
-    const targetPath = join6(targetDir, entry.name);
+    const targetPath = join7(targetDir, entry.name);
     if (entry.isDirectory()) {
       copyMissingRecursive(sourcePath, targetPath, changedFiles, dryRun, skip);
       continue;
     }
-    if (existsSync5(targetPath)) continue;
+    if (existsSync6(targetPath)) continue;
     changedFiles.push(targetPath);
     if (!dryRun) {
       ensureParent(targetPath);
@@ -1721,7 +1926,7 @@ function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) 
   }
 }
 function upsertSubmodule(repoRoot, role, changedFiles, dryRun) {
-  const gitmodulesPath = join6(repoRoot, ".gitmodules");
+  const gitmodulesPath = join7(repoRoot, ".gitmodules");
   const repoName = role.runtimeRepo || `agent-hm-${role.repo}-${role.role}`;
   const owner = role.runtimeOwner || "delorenj";
   const block = `[submodule "agents/hermes/${role.role}/runtime"]
@@ -1743,7 +1948,7 @@ function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
     repo: ${role.repo}
     role: ${role.role}
     display_name: ${JSON.stringify(role.displayName || role.agentId)}
-    project_path: ${ctxEscape(role.roleDir ? dirname3(dirname3(dirname3(role.roleDir))) : "")}
+    project_path: ${ctxEscape(role.roleDir ? dirname4(dirname4(dirname4(role.roleDir))) : "")}
     role_dir: ${ctxEscape(role.roleDir)}
     profile_name: ${role.profileName || role.agentId}
     telegram:
@@ -1821,14 +2026,14 @@ var RULES = [
     id: "mise.config-root",
     title: "mise config_root + AGENTS link hooks",
     audit: (ctx) => {
-      const misePath = join6(ctx.repoRoot, "mise.toml");
-      if (!existsSync5(misePath)) {
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      if (!existsSync6(misePath)) {
         return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
       }
       const text3 = readText(misePath);
       const details = [];
-      const linkAgentfilesPath = join6(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
-      if (!existsSync5(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
+      const linkAgentfilesPath = join7(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      if (!existsSync6(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
       const pathValues = [...(text3.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
@@ -1846,9 +2051,9 @@ var RULES = [
       };
     },
     migrate: (ctx, finding) => {
-      const path = join6(ctx.repoRoot, "mise.toml");
+      const path = join7(ctx.repoRoot, "mise.toml");
       const changedFiles = [];
-      if (!existsSync5(path)) {
+      if (!existsSync6(path)) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
       }
       let text3 = readText(path);
@@ -1858,7 +2063,7 @@ var RULES = [
         if (!ctx.dryRun) writeText(path, next);
         text3 = next;
       }
-      const linkAgentfilesPath = join6(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      const linkAgentfilesPath = join7(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       const expectedScript = templateLinkAgentfilesScript(ctx);
       if (expectedScript === void 0) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
@@ -1885,13 +2090,13 @@ var RULES = [
     title: "managed mise versioning block",
     audit: (ctx) => {
       const details = [];
-      const misePath = join6(ctx.repoRoot, "mise.toml");
-      const versioningPath = join6(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
-      const manifestPath = join6(ctx.repoRoot, ".mise", "version-files.conf");
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      const versioningPath = join7(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const manifestPath = join7(ctx.repoRoot, ".mise", "version-files.conf");
       const text3 = safeReadText(misePath);
       if (!text3?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
-      if (!existsSync5(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
-      if (!existsSync5(manifestPath)) details.push(".mise/version-files.conf missing");
+      if (!existsSync6(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
+      if (!existsSync6(manifestPath)) details.push(".mise/version-files.conf missing");
       return {
         id: "mise.versioning",
         title: "managed mise versioning block",
@@ -1903,8 +2108,8 @@ var RULES = [
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      const misePath = join6(ctx.repoRoot, "mise.toml");
-      if (!existsSync5(misePath)) {
+      const misePath = join7(ctx.repoRoot, "mise.toml");
+      if (!existsSync6(misePath)) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; cannot inject versioning block", changedFiles, details: [] };
       }
       const currentMise = readText(misePath);
@@ -1913,7 +2118,7 @@ var RULES = [
         changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
-      const versioningPath = join6(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const versioningPath = join7(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const expectedScript = templateVersioningScript(ctx);
       if (expectedScript === void 0) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
@@ -1925,7 +2130,7 @@ var RULES = [
           chmodSync(versioningPath, 493);
         }
       }
-      const manifestPath = join6(ctx.repoRoot, ".mise", "version-files.conf");
+      const manifestPath = join7(ctx.repoRoot, ".mise", "version-files.conf");
       const expectedManifest = templateVersionFilesConf(ctx, ctx.repoRoot);
       if (safeReadText(manifestPath) !== expectedManifest) {
         changedFiles.push(manifestPath);
@@ -1945,9 +2150,9 @@ var RULES = [
     id: "sot.agent-symlinks",
     title: "AGENTS/CLAUDE/GEMINI symlink contract",
     audit: (ctx) => {
-      const agentsPath = join6(ctx.repoRoot, "AGENTS.md");
-      if (!existsSync5(agentsPath)) {
-        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync5(join6(ctx.repoRoot, file)));
+      const agentsPath = join7(ctx.repoRoot, "AGENTS.md");
+      if (!existsSync6(agentsPath)) {
+        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync6(join7(ctx.repoRoot, file)));
         if (fallbackSources.length === 0) {
           return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
         }
@@ -1962,7 +2167,7 @@ var RULES = [
       }
       const details = [];
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join6(ctx.repoRoot, file);
+        const full = join7(ctx.repoRoot, file);
         const target = readSymlinkTarget(full);
         if (target !== "AGENTS.md") details.push(`${file} should be a symlink to AGENTS.md`);
       }
@@ -1986,7 +2191,7 @@ var RULES = [
         return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot derive canonical agent file", changedFiles, details: [bootstrap.blocked] };
       }
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join6(ctx.repoRoot, file);
+        const full = join7(ctx.repoRoot, file);
         const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
         if (result.blocked) blockedDetails.push(result.blocked);
         if (result.changed) changedFiles.push(full);
@@ -2008,7 +2213,7 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const details = [];
-      const path = join6(ctx.repoRoot, ".project.json");
+      const path = join7(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
       const merged = { ...existing, ...canonical };
@@ -2018,10 +2223,10 @@ var RULES = [
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, expected);
       }
-      const planeJson = join6(ctx.repoRoot, ".plane.json");
-      if (existsSync5(planeJson)) {
+      const planeJson = join7(ctx.repoRoot, ".plane.json");
+      if (existsSync6(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
-        if (existsSync5(backup)) {
+        if (existsSync6(backup)) {
           details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
@@ -2043,8 +2248,8 @@ var RULES = [
     title: ".env.op + gitignore secrets contract",
     audit: (ctx) => {
       const details = [];
-      const envOp = safeReadText(join6(ctx.repoRoot, ".env.op"));
-      const gitignore = safeReadText(join6(ctx.repoRoot, ".gitignore"));
+      const envOp = safeReadText(join7(ctx.repoRoot, ".env.op"));
+      const gitignore = safeReadText(join7(ctx.repoRoot, ".gitignore"));
       if (!envOp) {
         details.push(".env.op missing");
       } else {
@@ -2069,12 +2274,12 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const details = [];
-      const envOpPath = join6(ctx.repoRoot, ".env.op");
-      if (!existsSync5(envOpPath)) {
+      const envOpPath = join7(ctx.repoRoot, ".env.op");
+      if (!existsSync6(envOpPath)) {
         changedFiles.push(envOpPath);
-        if (!ctx.dryRun) writeText(envOpPath, readText(join6(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
+        if (!ctx.dryRun) writeText(envOpPath, readText(join7(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
       }
-      const gitignorePath = join6(ctx.repoRoot, ".gitignore");
+      const gitignorePath = join7(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
       const requiredBlock = `# Secrets \u2014 .env is materialized by \`op inject -i .env.op > .env\` on mise enter.
 # NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
@@ -2101,7 +2306,7 @@ var RULES = [
     title: ".copier-answers.yml provenance + drift report",
     audit: (ctx) => {
       const details = [];
-      const path = join6(ctx.repoRoot, ".copier-answers.yml");
+      const path = join7(ctx.repoRoot, ".copier-answers.yml");
       const text3 = safeReadText(path);
       const project = readProjectJson(ctx);
       if (!text3) {
@@ -2132,12 +2337,12 @@ var RULES = [
       const changedFiles = [];
       const project = canonicalProjectJson(ctx);
       const text3 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_src_path: ${join6(ctx.pjanglerRoot, "templates", "commonproject")}
+_src_path: ${join7(ctx.pjanglerRoot, "templates", "commonproject")}
 project_description: ${String(project.project_description)}
 project_name: ${String(project.project_name)}
 ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
 `;
-      const path = join6(ctx.repoRoot, ".copier-answers.yml");
+      const path = join7(ctx.repoRoot, ".copier-answers.yml");
       if (safeReadText(path) !== text3) {
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, text3);
@@ -2156,15 +2361,15 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
-      const sourceRoot = join6(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
-      const targetRoot = join6(ctx.repoRoot, "_bmad");
+      const sourceRoot = join7(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
+      const targetRoot = join7(ctx.repoRoot, "_bmad");
       const sentinels = [
-        join6("core", "config.yaml"),
-        join6("custom", "config.yaml"),
-        join6("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
-        join6("bmm", "workflows", "workflow-status", "workflow.yaml")
+        join7("core", "config.yaml"),
+        join7("custom", "config.yaml"),
+        join7("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
+        join7("bmm", "workflows", "workflow-status", "workflow.yaml")
       ];
-      const missing = sentinels.filter((file) => existsSync5(join6(sourceRoot, file)) && !existsSync5(join6(targetRoot, file)));
+      const missing = sentinels.filter((file) => existsSync6(join7(sourceRoot, file)) && !existsSync6(join7(targetRoot, file)));
       return {
         id: "bmad.scaffold",
         title: "BMAD modules/docs scaffold",
@@ -2176,7 +2381,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      copyMissingRecursive(join6(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join6(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join7(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
       return {
         id: finding.id,
         title: finding.title,
@@ -2198,11 +2403,11 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const details = [];
       for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
-        if (!existsSync5(join6(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join6(role.roleDir, rel))}`);
+        if (!existsSync6(join7(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join7(role.roleDir, rel))}`);
       }
-      const gitmodules = safeReadText(join6(ctx.repoRoot, ".gitmodules")) ?? "";
+      const gitmodules = safeReadText(join7(ctx.repoRoot, ".gitmodules")) ?? "";
       if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing pm runtime submodule entry");
-      if (!profileMetaInheritsDefault(join6(role.roleDir, "runtime", "profile.yaml"))) {
+      if (!profileMetaInheritsDefault(join7(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
       const registry = safeReadText(registryPath(ctx.homeDir));
@@ -2223,15 +2428,15 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       if (!role) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
       }
-      const templateRoleDir = join6(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join6(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join6(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
-      writeIfDifferent(join6(role.roleDir, ".gitignore"), readText(join6(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join6(templateRoleDir, ".runtime-scaffold"), join6(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join6(templateRoleDir, ".runtime-scaffold"), join6(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join6(templateRoleDir, ".scripts"), join6(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
+      const templateRoleDir = join7(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      writeIfDifferent(join7(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+      writeIfDifferent(join7(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+      writeIfDifferent(join7(role.roleDir, ".gitignore"), readText(join7(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".scripts"), join7(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      const profileMetaUpdated = upsertInheritedProfileMeta(join6(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+      const profileMetaUpdated = upsertInheritedProfileMeta(join7(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
       if (registryUpdated) details.push(`updated ${registryUpdated}`);
@@ -2256,11 +2461,11 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const details = [];
       for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/75-scrum-master.sh", ".scripts/scrum-master/continuous-ticket-sentinel.sh", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
-        if (!existsSync5(join6(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join6(role.roleDir, rel))}`);
+        if (!existsSync6(join7(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join7(role.roleDir, rel))}`);
       }
-      const gitmodules = safeReadText(join6(ctx.repoRoot, ".gitmodules")) ?? "";
+      const gitmodules = safeReadText(join7(ctx.repoRoot, ".gitmodules")) ?? "";
       if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing scrum-master runtime submodule entry");
-      if (!profileMetaInheritsDefault(join6(role.roleDir, "runtime", "profile.yaml"))) {
+      if (!profileMetaInheritsDefault(join7(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
       const registry = safeReadText(registryPath(ctx.homeDir));
@@ -2281,21 +2486,21 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       if (!role) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No scrum-master role present", changedFiles, details: [] };
       }
-      const templateRoleDir = join6(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join6(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join6(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
-      writeIfDifferent(join6(role.roleDir, ".gitignore"), readText(join6(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join6(templateRoleDir, ".runtime-scaffold"), join6(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join6(templateRoleDir, ".runtime-scaffold"), join6(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join6(templateRoleDir, ".scripts"), join6(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
-      const promptSource = join6(templateRoleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md.jinja");
-      const promptTarget = join6(role.roleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md");
-      if (!existsSync5(promptTarget)) {
+      const templateRoleDir = join7(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      writeIfDifferent(join7(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+      writeIfDifferent(join7(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+      writeIfDifferent(join7(role.roleDir, ".gitignore"), readText(join7(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".runtime-scaffold"), join7(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join7(templateRoleDir, ".scripts"), join7(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
+      const promptSource = join7(templateRoleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md.jinja");
+      const promptTarget = join7(role.roleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md");
+      if (!existsSync6(promptTarget)) {
         const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      const profileMetaUpdated = upsertInheritedProfileMeta(join6(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+      const profileMetaUpdated = upsertInheritedProfileMeta(join7(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
       if (registryUpdated) details.push(`updated ${registryUpdated}`);
@@ -2353,10 +2558,10 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         return { id: finding.id, title: finding.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
       }
       for (const role of roles) {
-        const sysDir = join6(ctx.homeDir, ".config", "systemd", "user");
+        const sysDir = join7(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`];
         if (role.role === "scrum-master") units.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
-        const allUnitsPresent = units.every((unit) => existsSync5(join6(sysDir, unit)));
+        const allUnitsPresent = units.every((unit) => existsSync6(join7(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
@@ -2368,8 +2573,8 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           }
           continue;
         }
-        for (const script of [join6(role.roleDir, ".scripts", "70-systemd.sh"), role.role === "scrum-master" ? join6(role.roleDir, ".scripts", "75-scrum-master.sh") : ""]) {
-          if (!script || !existsSync5(script)) continue;
+        for (const script of [join7(role.roleDir, ".scripts", "70-systemd.sh"), role.role === "scrum-master" ? join7(role.roleDir, ".scripts", "75-scrum-master.sh") : ""]) {
+          if (!script || !existsSync6(script)) continue;
           if (ctx.dryRun) {
             details.push(`would run: bash ${script}`);
           } else {
@@ -2405,7 +2610,7 @@ function runAudit(repoArg) {
     repoRoot: resolve(repoArg ?? process.cwd()),
     dryRun: true,
     pjanglerRoot,
-    homeDir: homedir3()
+    homeDir: homedir4()
   };
   const rules = RULES.map((rule) => rule.audit(ctx));
   return {
@@ -2421,7 +2626,7 @@ function runMigration(selector, repoArg, dryRun, all) {
     repoRoot: resolve(repoArg ?? process.cwd()),
     dryRun,
     pjanglerRoot,
-    homeDir: homedir3()
+    homeDir: homedir4()
   };
   const selected = all ? RULES : RULES.filter((rule) => rule.id === selector);
   if (!selected.length) {
@@ -2476,18 +2681,18 @@ function formatMigrationReport(report) {
 }
 
 // src/utils/version.ts
-import { readFileSync as readFileSync3 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { readFileSync as readFileSync4 } from "node:fs";
+import { dirname as dirname5, join as join8 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname4(fileURLToPath3(import.meta.url));
+    let dir = dirname5(fileURLToPath4(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync3(join7(dir, "package.json"), "utf8");
+        const raw = readFileSync4(join8(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname4(dir);
+        const parent = dirname5(dir);
         if (parent === dir) break;
         dir = parent;
       }
