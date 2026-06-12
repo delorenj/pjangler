@@ -30,3 +30,9 @@ auth.json
 plugins/cache/
 plugins/.remote-plugin-install-staging/
 
+
+# Codex / agent runtime artifacts — never commit (auto-checkpoints swept these in)
+tmp/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
