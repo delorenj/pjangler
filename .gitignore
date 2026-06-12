@@ -25,3 +25,8 @@ shell_snapshots/
 .claude/skills/
 
 auth.json
+
+# --- generated plugin cache / staging ---
+plugins/cache/
+plugins/.remote-plugin-install-staging/
+
