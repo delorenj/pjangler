@@ -12,8 +12,10 @@ import { MiseRecipe } from "../recipes/MiseRecipe";
 import { DockerRecipe } from "../recipes/DockerRecipe";
 import { NodeRecipe } from "../recipes/NodeRecipe";
 import { HermesAgentRecipe } from "../recipes/HermesAgentRecipe";
+import { AgentHooksRecipe } from "../recipes/AgentHooksRecipe";
 
 // Import all commands
+import { CopyAgentHooksTree, WireMiseAgentHooks } from "../commands/AgentHooksCommands";
 import { AddDockerfile } from "../commands/AddDockerfile";
 import { AddDockerCompose } from "../commands/AddDockerCompose";
 import { AddDockerignore } from "../commands/AddDockerignore";
@@ -71,6 +73,12 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
       "WireEmail",
       "PrintHermesSummary",
     ]
+  },
+  "agent-hooks": {
+    name: "agent-hooks",
+    description: "Retrofit the project-scoped agent-hooks + skill fan-out layer (Claude/Codex/Kimi/Hermes hooks via mise enter/leave)",
+    class: AgentHooksRecipe,
+    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"]
   }
 };
 
@@ -78,6 +86,18 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
  * Registry of all available commands
  */
 export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
+  CopyAgentHooksTree: {
+    name: "CopyAgentHooksTree",
+    description: "Copy the generic agent-hooks tree (hooks SSOT + sync engine + scripts) from the CommonProject template",
+    group: "agent-hooks",
+    class: CopyAgentHooksTree
+  },
+  WireMiseAgentHooks: {
+    name: "WireMiseAgentHooks",
+    description: "Merge agent-hooks enter/leave + tasks into an existing mise.toml (idempotent)",
+    group: "agent-hooks",
+    class: WireMiseAgentHooks
+  },
   AddDockerfile: {
     name: "AddDockerfile",
     description: "Create Dockerfile for containerization",

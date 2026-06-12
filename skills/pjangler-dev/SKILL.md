@@ -181,6 +181,55 @@ bun /home/delorenj/code/pjangler/src/index.ts init <subsystem>
 
 Check generated files match expectations.
 
+## Worked target: a project-scoped agent-hooks recipe
+
+The per-dev, committed **agent hooks + skill fan-out** layer (Claude/Codex/Hermes/Kimi hooks +
+skills installed via `mise enter/leave`) is currently hand-adopted in **CoachingAgentFramework**
+(`~/code/CoachingAgentFramework/.agents/hooks/` + `.mise/scripts/`) and is a prime recipe
+candidate. Source of truth for *what it does* + the adopt-checklist: the **`33god-projects`**
+skill → `references/project-scoped-hooks.md`; for the generic master→dialect mechanics (incl. the
+worked Kimi dialect): the **`ssot-fanout`** skill.
+
+Author Commands that drop the CAF files (parameterize the project name / pinned Hindsight bank),
+then a Recipe composing them that also patches `mise.toml`:
+
+```typescript
+// commands/AgentHooksCommands.ts — one file, several Commands
+export class AddHooksMaster extends Command {}        // .agents/hooks/hooks.master.json (SSOT)
+export class AddHookSyncEngine extends Command {}     // .agents/hooks/sync.py + lib/{local-config,hook-guard}.sh
+export class AddHindsightHooks extends Command {}     // .agents/hooks/hindsight/* + hermes/hindsight-hook.sh (adapter)
+export class AddSkillLinker extends Command {}        // .mise/scripts/link-project-skills-to-clis.sh (+ unlink)
+export class AddHindsightSetup extends Command {}     // .mise/scripts/hindsight-setup.sh
+export class AddLocalConfigExample extends Command {} // .agents/local.example.json + .gitignore entries
+export class WireMiseAgentHooks extends Command {}    // patch mise.toml enter/leave/watch_files/tasks (MERGE, not overwrite)
+
+// recipes/AgentHooksRecipe.ts
+export class AgentHooksRecipe extends Recipe {
+  constructor(ctx: CommandContext) {
+    super(ctx);
+    this.addIngredient(AddHooksMaster)
+        .addIngredient(AddHookSyncEngine)
+        .addIngredient(AddHindsightHooks)
+        .addIngredient(AddSkillLinker)
+        .addIngredient(AddHindsightSetup)
+        .addIngredient(AddLocalConfigExample)
+        .addIngredient(WireMiseAgentHooks);
+  }
+  protected printNextSteps(): void {
+    console.log("🪝 Agent-hooks layer wired. Next: `mise run hooks-sync`, commit .claude/settings.json,");
+    console.log("   `mise run hindsight-setup`, and (if you run a global agent system) set");
+    console.log("   .agents/local.json { skills: { defer_to_global: true } }.");
+  }
+}
+```
+
+`WireMiseAgentHooks` is the only non-drop-a-file Command — it must **merge** into an existing
+`mise.toml` idempotently (append to `[hooks].enter/leave`, add the `watch_files` + tasks) rather
+than overwrite. Keep every dropped file's bank/project-name references parameterized off
+`context` so the recipe is project-agnostic. The supported per-CLI dialects (committed Claude
+settings, injected Codex `hooks.json`, injected Kimi `config.toml` `[[hooks]]`, Hermes adapter)
+are all driven by the one `hooks.master.json` + `sync.py`, so the recipe just drops them verbatim.
+
 ## Reference
 
 For detailed interfaces and examples, see:
