@@ -58,8 +58,6 @@ export class PromptForAgentConfig extends Command {
       // Board provider: honor an explicit flag, else inherit the repo's
       // existing .project.json provider, else plane.
       ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
-      // A bare `pm` provision does not auto-add the sentinel unless asked.
-      ctx.withScrumMaster ??= false;
       // In --yes mode we always skip the human-input pieces (BotFather, CF).
       ctx.skipTelegram ??= true;
       ctx.skipEmail ??= true;
@@ -111,18 +109,6 @@ export class PromptForAgentConfig extends Command {
       });
       if (p.isCancel(answer)) return this.cancelled();
       ctx.ticketProvider = answer as TicketProvider;
-    }
-
-    // A PM owns the repo board; the Scrum Master is its continuous ticket
-    // sentinel on the SAME board. Offer to provision both in one shot so the
-    // pair is created together (identical end state to two separate runs).
-    if (ctx.role === "pm" && ctx.withScrumMaster === undefined) {
-      const answer = await p.confirm({
-        message: "Also provision the paired Scrum Master (Ticket Sentinel) for this repo?",
-        initialValue: true,
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.withScrumMaster = answer === true;
     }
 
     if (!ctx.agentPurpose) {

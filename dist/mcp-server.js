@@ -562,12 +562,7 @@ import * as p from "@clack/prompts";
 var HERMES_AGENT_TEMPLATE = "gh:delorenj/hermes-agent-template";
 var SOUL_TONES = ["direct", "playful", "formal", "terse"];
 var ROLE_CHOICES = [
-  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship" },
-  {
-    value: "scrum-master",
-    label: "Scrum Master (Ticket Sentinel)",
-    hint: "continuous ticket sentinel + autonomous delegated review"
-  },
+  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship, board reconciliation" },
   { value: "dev", label: "Developer (dev)", hint: "implements tickets" },
   { value: "review", label: "Reviewer (review)", hint: "adversarial code review" },
   { value: "ops", label: "Ops (ops)", hint: "deploy / infra" },
@@ -607,7 +602,6 @@ var PromptForAgentConfig = class extends Command {
       ctx.modelProvider ??= "";
       ctx.modelName ??= "";
       ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
-      ctx.withScrumMaster ??= false;
       ctx.skipTelegram ??= true;
       ctx.skipEmail ??= true;
       ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
@@ -652,14 +646,6 @@ var PromptForAgentConfig = class extends Command {
       });
       if (p.isCancel(answer)) return this.cancelled();
       ctx.ticketProvider = answer;
-    }
-    if (ctx.role === "pm" && ctx.withScrumMaster === void 0) {
-      const answer = await p.confirm({
-        message: "Also provision the paired Scrum Master (Ticket Sentinel) for this repo?",
-        initialValue: true
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.withScrumMaster = answer === true;
     }
     if (!ctx.agentPurpose) {
       const answer = await p.text({
@@ -759,7 +745,6 @@ var RunCopierTemplate = class extends Command {
     const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
     const ticketProvider = ctx.ticketProvider ?? "plane";
     const profileName = ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : void 0);
-    const withScrumMaster = role === "pm" && ctx.withScrumMaster === true;
     if (!targetRepo || !role) {
       return {
         success: false,
@@ -826,8 +811,6 @@ var RunCopierTemplate = class extends Command {
       `soul_tone=${soulTone ?? "direct"}`,
       "--data",
       `ticket_provider=${ticketProvider}`,
-      "--data",
-      `with_scrum_master=${withScrumMaster}`,
       "--trust",
       "--vcs-ref=HEAD"
     ];
@@ -1096,7 +1079,7 @@ var PrintHermesSummary = class extends Command {
     const email = `${targetRepo}-${role}@delo.sh`;
     const gw = `hermes-${agentId}-gateway.service`;
     const csm = `hermes-${agentId}-consumer.service`;
-    const ckpt = `hermes-${agentId}-checkpoint.timer`;
+    const hb = `hermes-${agentId}-heartbeat.timer`;
     const lines = [];
     lines.push(`agent_id     ${agentId}`);
     lines.push(`role dir     ${ctx.roleDir}`);
@@ -1106,7 +1089,7 @@ var PrintHermesSummary = class extends Command {
     lines.push("");
     lines.push("Start daemons:");
     lines.push(`  systemctl --user start ${csm}`);
-    lines.push(`  systemctl --user start ${ckpt}`);
+    lines.push(`  systemctl --user start ${hb}`);
     if (!skipTelegram) {
       lines.push(`  systemctl --user start ${gw}`);
     } else {
@@ -1844,8 +1827,8 @@ function projectJsonFinding(ctx) {
 }
 function renderSoul(role) {
   const telegram = role.botHandle ? `@${role.botHandle}` : "(unwired)";
-  const tone = role.role === "pm" ? `Direct and brief. Decision-forward. No throat-clearing, no apologies, no "I'll help you with that" preambles.` : role.role === "scrum-master" ? "Operational, skeptical, and schedule-aware. Prefer explicit next actions, evidence, and status transitions." : "Direct and brief.";
-  const roleSpecific = role.role === "pm" ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code.` : role.role === "scrum-master" ? `You own the continuous-ticket sentinel. You watch the ticket board, enforce workflow policy, and keep work moving without inventing requirements.` : `You operate as the ${role.role} agent for this repo.`;
+  const tone = role.role === "pm" ? `Direct and brief. Decision-forward. No throat-clearing, no apologies, no "I'll help you with that" preambles.` : "Direct and brief.";
+  const roleSpecific = role.role === "pm" ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, sourced from cron) \u2014 that pass is you wearing your sentinel hat; its session memory stays separate from your interactive work.` : `You operate as the ${role.role} agent for this repo.`;
   const runtimeOwner = role.runtimeOwner || "delorenj";
   return `# ${role.displayName || role.agentId}
 
@@ -1865,7 +1848,7 @@ You are **${role.displayName || role.agentId}** \u2014 a Hermes agent provisione
 
 ## Scope
 
-You operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME resolves through the named profile \`${role.profileName || role.agentId}\`, which is symlinked to the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`). Your \`config.yaml\` inherits shared non-secret defaults from the fleet default profile; secrets, SOUL, memories, skills, sessions, gateway state, and runtime files remain local to this profile.
+You operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`); Hermes loads its \`config.yaml\` directly. Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files all live local to that runtime.
 
 ## Tone
 
@@ -1882,8 +1865,7 @@ Your memory is the submodule at \`./runtime/memories/\`. Use durable memory deli
 }
 function renderHermesWrapper(role) {
   return `#!/usr/bin/env bash
-# Launcher for ${role.agentId}. Resolves HERMES_HOME through the fleet profile
-# when available, then falls back to the local runtime submodule.
+# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule.
 
 set -euo pipefail
 
@@ -1902,12 +1884,7 @@ CODEX_HOME="{CODEX_HOME:-{HERMES_FLEET_CODEX_HOME:-$HOME/.codex}}"
 
 FLEET_HOME="{HERMES_FLEET_HOME:-$HOME/.hermes}"
 PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
-PROFILE_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
-if [[ -d "$PROFILE_HOME" ]]; then
-  HERMES_HOME="$PROFILE_HOME"
-else
-  HERMES_HOME="$RUNTIME_HOME"
-fi
+HERMES_HOME="$RUNTIME_HOME"
 
 if [[ ! -d "$RUNTIME_HOME" ]]; then
   echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
@@ -1973,7 +1950,7 @@ function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
     systemd:
       gateway_unit: hermes-${role.agentId}-gateway.service
       consumer_unit: hermes-${role.agentId}-consumer.service
-      checkpoint_timer: hermes-${role.agentId}-checkpoint.timer
+      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer
 `;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:
 ${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
@@ -2414,7 +2391,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
       }
       const details = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
         if (!existsSync6(join8(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join8(role.roleDir, rel))}`);
       }
       const gitmodules = safeReadText(join8(ctx.repoRoot, ".gitmodules")) ?? "";
@@ -2446,69 +2423,11 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       writeIfDifferent(join8(role.roleDir, ".gitignore"), readText(join8(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
       copyMissingRecursive(join8(templateRoleDir, ".runtime-scaffold"), join8(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
       copyMissingRecursive(join8(templateRoleDir, ".runtime-scaffold"), join8(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join8(templateRoleDir, ".scripts"), join8(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
-      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      const profileMetaUpdated = upsertInheritedProfileMeta(join8(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
-      if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
-      const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
-      if (registryUpdated) details.push(`updated ${registryUpdated}`);
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "hermes.scrum-master-scaffold",
-    title: "Hermes scrum-master scaffold parity",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const role = roles.find((item) => item.role === "scrum-master");
-      if (!role) {
-        return { id: "hermes.scrum-master-scaffold", title: "Hermes scrum-master scaffold parity", status: "skip", summary: "No scrum-master role present", details: [], fixable: false };
-      }
-      const details = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/75-scrum-master.sh", ".scripts/scrum-master/continuous-ticket-sentinel.sh", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
-        if (!existsSync6(join8(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join8(role.roleDir, rel))}`);
-      }
-      const gitmodules = safeReadText(join8(ctx.repoRoot, ".gitmodules")) ?? "";
-      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing scrum-master runtime submodule entry");
-      if (!profileMetaInheritsDefault(join8(role.roleDir, "runtime", "profile.yaml"))) {
-        details.push("runtime/profile.yaml missing inherited default config metadata");
-      }
-      const registry = safeReadText(registryPath(ctx.homeDir));
-      if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
-      return {
-        id: "hermes.scrum-master-scaffold",
-        title: "Hermes scrum-master scaffold parity",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "scrum-master scaffold parity verified" : `${details.length} scrum-master scaffold issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "scrum-master");
-      const changedFiles = [];
-      const details = [];
-      if (!role) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "No scrum-master role present", changedFiles, details: [] };
-      }
-      const templateRoleDir = join8(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join8(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join8(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
-      writeIfDifferent(join8(role.roleDir, ".gitignore"), readText(join8(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join8(templateRoleDir, ".runtime-scaffold"), join8(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join8(templateRoleDir, ".runtime-scaffold"), join8(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join8(templateRoleDir, ".scripts"), join8(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
-      const promptSource = join8(templateRoleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md.jinja");
-      const promptTarget = join8(role.roleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md");
-      if (!existsSync6(promptTarget)) {
-        const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo);
+      copyMissingRecursive(join8(templateRoleDir, ".scripts"), join8(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
+      const promptSource = join8(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
+      const promptTarget = join8(role.roleDir, ".scripts", "sentinel.prompt.md");
+      if (existsSync6(promptSource) && !existsSync6(promptTarget)) {
+        const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo).replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
@@ -2520,7 +2439,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         id: finding.id,
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "scrum-master scaffold normalized" : "No changes required",
+        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
         changedFiles,
         details
       };
@@ -2540,13 +2459,9 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const details = [];
       for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`]) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
           const state = checkUnit(unit);
           if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
-        }
-        if (role.role === "scrum-master") {
-          const state = checkUnit(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
-          if (!state.enabled || !state.active) details.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer should be enabled+active`);
         }
       }
       return {
@@ -2571,8 +2486,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       for (const role of roles) {
         const sysDir = join8(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`];
-        if (role.role === "scrum-master") units.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync6(join8(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
@@ -2585,7 +2499,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           }
           continue;
         }
-        for (const script of [join8(role.roleDir, ".scripts", "70-systemd.sh"), role.role === "scrum-master" ? join8(role.roleDir, ".scripts", "75-scrum-master.sh") : ""]) {
+        for (const script of [join8(role.roleDir, ".scripts", "70-systemd.sh")]) {
           if (!script || !existsSync6(script)) continue;
           if (ctx.dryRun) {
             details.push(`would run: bash ${script}`);
@@ -3074,7 +2988,7 @@ server.registerTool(
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string().optional(),
-      role: z.string(),
+      role: z.enum(["pm", "dev", "review", "ops", "qa"]),
       agentPurpose: z.string().optional(),
       soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
       modelProvider: z.string().optional(),

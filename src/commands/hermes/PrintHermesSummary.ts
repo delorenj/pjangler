@@ -14,7 +14,7 @@ export class PrintHermesSummary extends Command {
     const email = `${targetRepo}-${role}@delo.sh`;
     const gw = `hermes-${agentId}-gateway.service`;
     const csm = `hermes-${agentId}-consumer.service`;
-    const ckpt = `hermes-${agentId}-checkpoint.timer`;
+    const hb = `hermes-${agentId}-heartbeat.timer`;
 
     const lines: string[] = [];
     lines.push(`agent_id     ${agentId}`);
@@ -25,7 +25,7 @@ export class PrintHermesSummary extends Command {
     lines.push("");
     lines.push("Start daemons:");
     lines.push(`  systemctl --user start ${csm}`);
-    lines.push(`  systemctl --user start ${ckpt}`);
+    lines.push(`  systemctl --user start ${hb}`);
     if (!skipTelegram) {
       lines.push(`  systemctl --user start ${gw}`);
     } else {

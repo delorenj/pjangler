@@ -46,9 +46,6 @@ export class RunCopierTemplate extends Command {
     const ticketProvider = ctx.ticketProvider ?? "plane";
     const profileName =
       ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : undefined);
-    // with_scrum_master is a pm-only copier question; passing it for other
-    // roles is harmless (copier ignores it via its `when:` guard).
-    const withScrumMaster = role === "pm" && ctx.withScrumMaster === true;
 
     if (!targetRepo || !role) {
       return {
@@ -135,7 +132,6 @@ export class RunCopierTemplate extends Command {
       "--data", `profile_name=${profileName ?? ""}`,
       "--data", `soul_tone=${soulTone ?? "direct"}`,
       "--data", `ticket_provider=${ticketProvider}`,
-      "--data", `with_scrum_master=${withScrumMaster}`,
       "--trust",
       "--vcs-ref=HEAD",
     ];

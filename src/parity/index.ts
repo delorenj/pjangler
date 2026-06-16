@@ -497,22 +497,17 @@ function renderSoul(role: RoleMeta): string {
   const telegram = role.botHandle ? `@${role.botHandle}` : "(unwired)";
   const tone = role.role === "pm"
     ? "Direct and brief. Decision-forward. No throat-clearing, no apologies, no \"I'll help you with that\" preambles."
-    : role.role === "scrum-master"
-      ? "Operational, skeptical, and schedule-aware. Prefer explicit next actions, evidence, and status transitions."
-      : "Direct and brief.";
+    : "Direct and brief.";
   const roleSpecific = role.role === "pm"
-    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code.`
-    : role.role === "scrum-master"
-      ? `You own the continuous-ticket sentinel. You watch the ticket board, enforce workflow policy, and keep work moving without inventing requirements.`
-      : `You operate as the ${role.role} agent for this repo.`;
+    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`reconcile.enabled\` in role.yaml), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
+    : `You operate as the ${role.role} agent for this repo.`;
   const runtimeOwner = role.runtimeOwner || "delorenj";
-  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME resolves through the named profile \`${role.profileName || role.agentId}\`, which is symlinked to the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`). Your \`config.yaml\` inherits shared non-secret defaults from the fleet default profile; secrets, SOUL, memories, skills, sessions, gateway state, and runtime files remain local to this profile.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
+  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`); Hermes loads its \`config.yaml\` directly. Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files all live local to that runtime.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
 
 function renderHermesWrapper(role: RoleMeta): string {
   return `#!/usr/bin/env bash
-# Launcher for ${role.agentId}. Resolves HERMES_HOME through the fleet profile
-# when available, then falls back to the local runtime submodule.
+# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule.
 
 set -euo pipefail
 
@@ -531,12 +526,7 @@ CODEX_HOME="{CODEX_HOME:-{HERMES_FLEET_CODEX_HOME:-$HOME/.codex}}"
 
 FLEET_HOME="{HERMES_FLEET_HOME:-$HOME/.hermes}"
 PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
-PROFILE_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
-if [[ -d "$PROFILE_HOME" ]]; then
-  HERMES_HOME="$PROFILE_HOME"
-else
-  HERMES_HOME="$RUNTIME_HOME"
-fi
+HERMES_HOME="$RUNTIME_HOME"
 
 if [[ ! -d "$RUNTIME_HOME" ]]; then
   echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
@@ -587,7 +577,7 @@ function upsertRegistryEntry(role: RoleMeta, homeDir: string, changedFiles: stri
   const path = registryPath(homeDir);
   const current = safeReadText(path) ?? "# Hermes agent fleet registry.\n# One entry per provisioned agent. Managed by hermes-agent-template/.scripts/80-registry.sh.\nschema_version: 1\nagents: {}\n";
   if (current.includes(`${role.agentId}:`)) return null;
-  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      checkpoint_timer: hermes-${role.agentId}-checkpoint.timer\n`;
+  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer\n`;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:\n${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
   changedFiles.push(path);
   if (!dryRun) writeText(path, next);
@@ -1029,7 +1019,7 @@ const RULES: Rule[] = [
         return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
       }
       const details: string[] = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
         if (!existsSync(join(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
       }
       const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
@@ -1061,72 +1051,16 @@ const RULES: Rule[] = [
       writeIfDifferent(join(role.roleDir, ".gitignore"), readText(join(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
       copyMissingRecursive(join(templateRoleDir, ".runtime-scaffold"), join(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
       copyMissingRecursive(join(templateRoleDir, ".runtime-scaffold"), join(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join(templateRoleDir, ".scripts"), join(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
-      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
-      if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
-      const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
-      if (registryUpdated) details.push(`updated ${registryUpdated}`);
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
-        changedFiles,
-        details,
-      };
-    },
-  },
-  {
-    id: "hermes.scrum-master-scaffold",
-    title: "Hermes scrum-master scaffold parity",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const role = roles.find((item) => item.role === "scrum-master");
-      if (!role) {
-        return { id: "hermes.scrum-master-scaffold", title: "Hermes scrum-master scaffold parity", status: "skip", summary: "No scrum-master role present", details: [], fixable: false };
-      }
-      const details: string[] = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/75-scrum-master.sh", ".scripts/scrum-master/continuous-ticket-sentinel.sh", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
-        if (!existsSync(join(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
-      }
-      const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
-      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing scrum-master runtime submodule entry");
-      if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) {
-        details.push("runtime/profile.yaml missing inherited default config metadata");
-      }
-      const registry = safeReadText(registryPath(ctx.homeDir));
-      if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
-      return {
-        id: "hermes.scrum-master-scaffold",
-        title: "Hermes scrum-master scaffold parity",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "scrum-master scaffold parity verified" : `${details.length} scrum-master scaffold issue(s) detected`,
-        details,
-        fixable: true,
-      };
-    },
-    migrate: (ctx, finding) => {
-      const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "scrum-master");
-      const changedFiles: string[] = [];
-      const details: string[] = [];
-      if (!role) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "No scrum-master role present", changedFiles, details: [] };
-      }
-      const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 0o755);
-      writeIfDifferent(join(role.roleDir, ".gitignore"), readText(join(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join(templateRoleDir, ".runtime-scaffold"), join(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join(templateRoleDir, ".runtime-scaffold"), join(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join(templateRoleDir, ".scripts"), join(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("continuous-ticket-sentinel.prompt.md.jinja"));
-      const promptSource = join(templateRoleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md.jinja");
-      const promptTarget = join(role.roleDir, ".scripts", "scrum-master", "continuous-ticket-sentinel.prompt.md");
-      if (!existsSync(promptTarget)) {
+      copyMissingRecursive(join(templateRoleDir, ".scripts"), join(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
+      // Render the heartbeat sentinel prompt (copyMissingRecursive skips the .jinja).
+      const promptSource = join(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
+      const promptTarget = join(role.roleDir, ".scripts", "sentinel.prompt.md");
+      if (existsSync(promptSource) && !existsSync(promptTarget)) {
         const prompt = readText(promptSource)
           .replace(/\{\{ agent_id \}\}/g, role.agentId)
           .replace(/\{\{ role \}\}/g, role.role)
-          .replace(/\{\{ target_repo \}\}/g, role.repo);
+          .replace(/\{\{ target_repo \}\}/g, role.repo)
+          .replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
@@ -1138,7 +1072,7 @@ const RULES: Rule[] = [
         id: finding.id,
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "scrum-master scaffold normalized" : "No changes required",
+        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
         changedFiles,
         details,
       };
@@ -1158,13 +1092,9 @@ const RULES: Rule[] = [
       }
       const details: string[] = [];
       for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`]) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
           const state = checkUnit(unit);
           if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
-        }
-        if (role.role === "scrum-master") {
-          const state = checkUnit(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
-          if (!state.enabled || !state.active) details.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer should be enabled+active`);
         }
       }
       return {
@@ -1189,8 +1119,7 @@ const RULES: Rule[] = [
       }
       for (const role of roles) {
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-checkpoint.timer`];
-        if (role.role === "scrum-master") units.push(`hermes-${role.agentId}-continuous-ticket-sentinel.timer`);
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync(join(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
@@ -1203,7 +1132,7 @@ const RULES: Rule[] = [
           }
           continue;
         }
-        for (const script of [join(role.roleDir, ".scripts", "70-systemd.sh"), role.role === "scrum-master" ? join(role.roleDir, ".scripts", "75-scrum-master.sh") : ""]) {
+        for (const script of [join(role.roleDir, ".scripts", "70-systemd.sh")]) {
           if (!script || !existsSync(script)) continue;
           if (ctx.dryRun) {
             details.push(`would run: bash ${script}`);

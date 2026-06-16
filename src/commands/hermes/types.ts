@@ -16,7 +16,6 @@ export interface HermesAgentContext extends CommandContext {
   modelProvider?: string;
   modelName?: string;
   ticketProvider?: TicketProvider;  // "plane" by default — board lives here
-  withScrumMaster?: boolean;        // pm only: also provision the paired Ticket Sentinel
 
   // --- behavior toggles ---
   yes?: boolean;              // non-interactive; accept all defaults
@@ -46,12 +45,7 @@ export const SOUL_TONES = ["direct", "playful", "formal", "terse"] as const;
  * `label`/`hint` drive the Clack select.
  */
 export const ROLE_CHOICES = [
-  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship" },
-  {
-    value: "scrum-master",
-    label: "Scrum Master (Ticket Sentinel)",
-    hint: "continuous ticket sentinel + autonomous delegated review",
-  },
+  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship, board reconciliation" },
   { value: "dev", label: "Developer (dev)", hint: "implements tickets" },
   { value: "review", label: "Reviewer (review)", hint: "adversarial code review" },
   { value: "ops", label: "Ops (ops)", hint: "deploy / infra" },

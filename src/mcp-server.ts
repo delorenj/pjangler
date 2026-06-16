@@ -448,7 +448,7 @@ server.registerTool(
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string().optional(),
-      role: z.string(),
+      role: z.enum(["pm", "dev", "review", "ops", "qa"]),
       agentPurpose: z.string().optional(),
       soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
       modelProvider: z.string().optional(),
