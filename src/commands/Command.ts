@@ -1,3 +1,6 @@
+import { existsSync, writeFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+
 export interface InvokeResult {
   success: boolean;
   message: string;
@@ -27,8 +30,6 @@ export abstract class Command {
   }
 
   protected fileExists(filePath: string): boolean {
-    const { existsSync } = require("fs");
-    const { join } = require("path");
     const fullPath = join(this.context.targetDir, filePath);
     return existsSync(fullPath);
   }
@@ -38,9 +39,6 @@ export abstract class Command {
     if (this.context.dryRun) {
       return;
     }
-
-    const { writeFileSync, mkdirSync } = require("fs");
-    const { join, dirname } = require("path");
 
     const fullPath = join(this.context.targetDir, filePath);
     const dir = dirname(fullPath);
@@ -54,9 +52,6 @@ export abstract class Command {
     if (this.context.dryRun) {
       return;
     }
-
-    const { mkdirSync } = require("fs");
-    const { join } = require("path");
 
     const fullPath = join(this.context.targetDir, dirPath);
     mkdirSync(fullPath, { recursive: true });
