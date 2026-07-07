@@ -23,6 +23,7 @@
     "start": "node dist/index.js",
     "mcp": "node dist/mcp-server.js",
     "typecheck": "tsc --noEmit",
+    "test": "node tests/parity-migrate-regressions.mjs && node tests/mcp-catalog-regressions.mjs && node tests/mcp-server-regressions.mjs && node tests/project-registry-regressions.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -38,6 +39,7 @@
     "@clack/prompts": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

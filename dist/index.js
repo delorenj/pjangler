@@ -1438,9 +1438,12 @@ function createRecipe(name, context) {
   return new info.class(context);
 }
 
+// src/index.ts
+import { multiselect, isCancel as isCancel5 } from "@clack/prompts";
+
 // src/parity/index.ts
 import { existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync5, readFileSync as readFileSync3, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4, chmodSync, copyFileSync } from "node:fs";
-import { dirname as dirname5, join as join8, relative, resolve } from "node:path";
+import { basename as basename2, dirname as dirname5, join as join8, relative, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import { homedir as homedir4 } from "node:os";
 import { spawnSync as spawnSync4 } from "node:child_process";
@@ -1457,6 +1460,28 @@ enter = [
 ]
 
 [[watch_files]]
+patterns = ["AGENTS.md"]
+task = "link-agentfiles"
+
+[tasks.link-agentfiles]
+description = "Symlink all agent files to AGENTS.md"
+run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+var LINK_AGENTFILES_HOOK_ENTRIES = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env"
+];
+var LINK_AGENTFILES_HOOKS_BLOCK = `# This block will handle the linking of
+# agent files to the main AGENTS.md file.
+#
+# TODO: Ensure this works for all levels of nesting.
+# i.e. All linked agent files MUST be siblings at
+# any given level of nesting.
+[hooks]
+enter = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+]`;
+var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
@@ -1657,6 +1682,22 @@ function templateVersioningScript(ctx) {
 function templateLinkAgentfilesScript(ctx) {
   return templateScript(ctx, "link-agentfiles.sh");
 }
+function renderGeneratedProjectMiseToml(ctx, template) {
+  const project = readProjectJson(ctx);
+  const projectName = String(project?.project_name ?? basename2(ctx.repoRoot) ?? "project");
+  return template.replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1").replace(/\{\{\s*project_name\s*\}\}/g, projectName);
+}
+function ensureMiseTomlFromTemplate(ctx, changedFiles) {
+  const targetPath = join8(ctx.repoRoot, "mise.toml");
+  if (existsSync7(targetPath)) return false;
+  const sourcePath = join8(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
+  if (!existsSync7(sourcePath)) return false;
+  changedFiles.push(targetPath);
+  if (!ctx.dryRun) {
+    writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
+  }
+  return true;
+}
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join8(repoRoot, "package.json");
   return existsSync7(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
@@ -1712,22 +1753,124 @@ ${text3.replace(/^\s+/, "")}`;
   if (pathLine[0] === nextLine) return text3;
   return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
 }
+function removeTomlSection(text3, headerPattern, marker, options) {
+  const lines = text3.split("\n");
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!headerPattern.test(lines[i])) continue;
+    if (marker) {
+      let hasMarker = false;
+      for (let j = i + 1; j < lines.length && !/^\[[^\]]+\]/.test(lines[j]); j++) {
+        if (marker.test(lines[j])) {
+          hasMarker = true;
+          break;
+        }
+      }
+      if (!hasMarker) continue;
+    }
+    start = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^\[[^\]]+\]/.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    if (end === -1) end = lines.length;
+    break;
+  }
+  if (start === -1) return text3;
+  if (options?.includePrecedingComments) {
+    while (start > 0 && lines[start - 1].trim().startsWith("#")) {
+      start--;
+    }
+  }
+  const result = lines.slice(0, start).concat(lines.slice(end)).join("\n");
+  return result.replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+function insertTomlBlockBeforeVersioning(text3, block) {
+  const versioningIndex = text3.indexOf("# >>> mise-versioning >>>");
+  if (versioningIndex >= 0) {
+    return `${text3.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${block}
+
+${text3.slice(versioningIndex)}`;
+  }
+  return `${text3.replace(/\s*$/, "")}
+
+${block}
+`;
+}
+function extractTomlStrings(text3) {
+  const values = [];
+  const stringPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'/g;
+  for (const match of text3.matchAll(stringPattern)) {
+    if (match[1] !== void 0) {
+      try {
+        values.push(JSON.parse(`"${match[1]}"`));
+      } catch {
+        values.push(match[1]);
+      }
+    } else if (match[2] !== void 0) {
+      values.push(match[2]);
+    }
+  }
+  return values;
+}
+function isManagedHookEntry(value) {
+  const trimmed = value.trim();
+  return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
+}
+function renderHookEntries(entries, indent = "") {
+  return [
+    `${indent}enter = [`,
+    ...entries.map((entry) => `${indent}  ${JSON.stringify(entry)},`),
+    `${indent}]`
+  ];
+}
+function upsertLinkAgentfilesHooks(text3) {
+  const lines = text3.split("\n");
+  const hooksStart = lines.findIndex((line) => /^\[hooks\]$/.test(line.trim()));
+  if (hooksStart === -1) return insertTomlBlockBeforeVersioning(text3, LINK_AGENTFILES_HOOKS_BLOCK);
+  let hooksEnd = lines.length;
+  for (let i = hooksStart + 1; i < lines.length; i++) {
+    if (/^\[[^\]]+\]/.test(lines[i].trim())) {
+      hooksEnd = i;
+      break;
+    }
+  }
+  let enterStart = -1;
+  let enterEnd = -1;
+  for (let i = hooksStart + 1; i < hooksEnd; i++) {
+    if (!/^\s*enter\s*=/.test(lines[i])) continue;
+    enterStart = i;
+    enterEnd = i + 1;
+    const afterEquals = lines[i].slice(lines[i].indexOf("=") + 1);
+    if (afterEquals.includes("[") && !afterEquals.includes("]")) {
+      while (enterEnd < hooksEnd && !lines[enterEnd].includes("]")) enterEnd++;
+      if (enterEnd < hooksEnd) enterEnd++;
+    }
+    break;
+  }
+  const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";
+  const preserved = extractTomlStrings(existingBlock).filter((entry) => !isManagedHookEntry(entry));
+  const merged = [...LINK_AGENTFILES_HOOK_ENTRIES];
+  for (const entry of preserved) {
+    if (!merged.includes(entry)) merged.push(entry);
+  }
+  const indent = enterStart >= 0 ? lines[enterStart].match(/^\s*/)?.[0] ?? "" : "";
+  const rendered = renderHookEntries(merged, indent);
+  if (enterStart >= 0) {
+    return lines.slice(0, enterStart).concat(rendered, lines.slice(enterEnd)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  }
+  return lines.slice(0, hooksStart + 1).concat(rendered, lines.slice(hooksStart + 1)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
 function upsertLinkAgentfilesBlock(text3, ctx) {
   const withPath = upsertMisePath(text3, requiredMisePathEntries(ctx));
-  const existing = /# This block will handle the linking of[\s\S]*?\[tasks\.link-agentfiles\][\s\S]*?run = "\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh"/;
-  if (existing.test(withPath)) {
-    return withPath.replace(existing, LINK_AGENTFILES_BLOCK);
-  }
-  const versioningIndex = withPath.indexOf("# >>> mise-versioning >>>");
-  if (versioningIndex >= 0) {
-    return `${withPath.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${LINK_AGENTFILES_BLOCK}
-
-${withPath.slice(versioningIndex)}`;
-  }
-  return `${withPath.replace(/\s*$/, "")}
-
-${LINK_AGENTFILES_BLOCK}
-`;
+  if (withPath.includes(LINK_AGENTFILES_BLOCK)) return withPath;
+  let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
+  cleaned = upsertLinkAgentfilesHooks(cleaned);
+  return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
 function readProjectJson(ctx) {
   return tryParseJson(safeReadText(join8(ctx.repoRoot, ".project.json")));
@@ -2020,13 +2163,20 @@ var RULES = [
     migrate: (ctx, finding) => {
       const path = join8(ctx.repoRoot, "mise.toml");
       const changedFiles = [];
+      const details = [];
       if (!existsSync7(path)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
       let text3 = readText(path);
       const next = upsertLinkAgentfilesBlock(text3, ctx);
       if (next !== text3) {
-        changedFiles.push(path);
+        if (!changedFiles.includes(path)) changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, next);
         text3 = next;
       }
@@ -2075,14 +2225,21 @@ var RULES = [
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
+      const details = [];
       const misePath = join8(ctx.repoRoot, "mise.toml");
       if (!existsSync7(misePath)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; cannot inject versioning block", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
       const currentMise = readText(misePath);
       const nextMise = replaceOrAppendManagedBlock(currentMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
       if (nextMise !== currentMise) {
-        changedFiles.push(misePath);
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
       const versioningPath = join8(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
@@ -2508,6 +2665,9 @@ function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
     if (mode) chmodSync(path, mode);
   }
 }
+function getParityRuleIds() {
+  return RULES.map((rule) => rule.id);
+}
 function runAudit(repoArg) {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx = {
@@ -2524,7 +2684,7 @@ function runAudit(repoArg) {
     rules
   };
 }
-function runMigration(selector, repoArg, dryRun, all) {
+function runMigrationForRules(ruleIds, repoArg, dryRun) {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx = {
     repoRoot: resolve(repoArg ?? process.cwd()),
@@ -2532,9 +2692,9 @@ function runMigration(selector, repoArg, dryRun, all) {
     pjanglerRoot,
     homeDir: homedir4()
   };
-  const selected = all ? RULES : RULES.filter((rule) => rule.id === selector);
+  const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
-    throw new Error(`Unknown parity rule: ${selector}`);
+    throw new Error(`Unknown parity rules: ${ruleIds.join(", ")}`);
   }
   const results = selected.map((rule) => {
     try {
@@ -2560,6 +2720,10 @@ function runMigration(selector, repoArg, dryRun, all) {
     changedFiles
   };
 }
+function runMigration(selector, repoArg, dryRun, all) {
+  const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
+  return runMigrationForRules(ruleIds, repoArg, dryRun);
+}
 function formatAuditReport(report) {
   const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
   for (const rule of report.rules) {
@@ -2584,19 +2748,383 @@ function formatMigrationReport(report) {
 `;
 }
 
+// src/project/index.ts
+import { spawnSync as spawnSync5 } from "node:child_process";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync4, renameSync as renameSync2, statSync, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { basename as basename3, dirname as dirname6, join as join9, resolve as resolve2 } from "node:path";
+import YAML from "yaml";
+var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
+var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
+var KNOWN_SKILL_ROOTS = [
+  "/home/delorenj/code/skillex/all-skills",
+  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
+  "/home/delorenj/code/pjangler/.agents/skills",
+  join9(homedir5(), ".codex", "skills")
+];
+function projectRegistryPath(env = process.env) {
+  return expandHome(env[PROJECT_REGISTRY_ENV] || join9(homedir5(), ".config", "pjangler", "projects.yaml"));
+}
+function emptyProjectRegistry() {
+  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
+}
+function loadProjectRegistry(path = projectRegistryPath()) {
+  if (!existsSync8(path)) return emptyProjectRegistry();
+  const raw = YAML.parse(readFileSync4(path, "utf8"));
+  if (raw == null) return emptyProjectRegistry();
+  if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
+  const registry = raw;
+  const normalized = {
+    schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
+    projects: isRecord(registry.projects) ? registry.projects : {}
+  };
+  validateProjectRegistry(normalized);
+  return normalized;
+}
+function saveProjectRegistry(registry, path = projectRegistryPath()) {
+  validateProjectRegistry(registry);
+  mkdirSync6(dirname6(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync5(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
+  renameSync2(temp, path);
+}
+function validateProjectRegistry(registry) {
+  if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION) {
+    throw new Error(`Unsupported project registry schema_version: ${registry.schema_version}`);
+  }
+  if (!isRecord(registry.projects)) throw new Error("Project registry projects must be a mapping");
+  const slugs = /* @__PURE__ */ new Set();
+  const repoPaths = /* @__PURE__ */ new Map();
+  const identifiers = /* @__PURE__ */ new Map();
+  for (const [slug, project] of Object.entries(registry.projects)) {
+    validateProjectRecord(project, slug);
+    if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
+    slugs.add(project.slug);
+    const repoKey = resolve2(project.repo_path);
+    const existingRepoSlug = repoPaths.get(repoKey);
+    if (existingRepoSlug && existingRepoSlug !== slug) {
+      throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
+    }
+    repoPaths.set(repoKey, slug);
+    const identifier = project.ticket_provider.identifier?.toUpperCase();
+    if (identifier) {
+      const existingIdentifierSlug = identifiers.get(identifier);
+      if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
+        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+      }
+      identifiers.set(identifier, slug);
+    }
+  }
+}
+function slugifyProjectName(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+function deriveProjectIdentifier(value) {
+  const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const identifier = compact.slice(0, 4) || "PROJ";
+  return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
+}
+function defaultProjectTargetDir(name, cwd = process.cwd()) {
+  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
+  return resolve2(dirname6(resolve2(cwd)), compactName);
+}
+function resolveSourceSkillPath(sourceSkill) {
+  if (!sourceSkill) return void 0;
+  const expanded = expandHome(sourceSkill);
+  const direct = resolve2(expanded);
+  if (existsSync8(direct)) return direct;
+  const name = basename3(sourceSkill);
+  for (const root of KNOWN_SKILL_ROOTS) {
+    const candidate = join9(root, name);
+    if (existsSync8(candidate)) return candidate;
+  }
+  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
+  const hint = existsSync8(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
+  throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
+}
+function planProjectInit(input) {
+  if (!input.name.trim()) throw new Error("Project name is required");
+  const registryPath2 = resolve2(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registry = loadProjectRegistry(registryPath2);
+  const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  const slug = input.projectSlug ?? slugifyProjectName(input.name);
+  const targetDir = resolve2(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const existing = registry.projects[slug];
+  const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
+  const overwrite = input.overwrite ?? input.force ?? false;
+  const project = {
+    name: input.name,
+    slug,
+    repo_path: targetDir,
+    description: input.description ?? "",
+    status: "planned",
+    source_artifacts: sourceSkillPath ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }] : [],
+    template: {
+      commonproject: {
+        enabled: true,
+        primary_language: input.primaryLanguage ?? "python"
+      }
+    },
+    ticket_provider: {
+      type: input.ticketProvider ?? "plane",
+      workspace: input.planeWorkspace ?? "33god",
+      identifier,
+      board_id: input.planeProjectId ?? "",
+      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
+      state: input.live ? "planned" : "planned"
+    },
+    agents: {
+      pm: {
+        role: "pm",
+        provisioning_state: input.provisionAgent ? "planned" : "planned"
+      }
+    },
+    created_at: existing?.created_at ?? now,
+    updated_at: now
+  };
+  validateNoDuplicateProject(registry, project, overwrite);
+  const pjanglerRoot = resolve2(input.pjanglerRoot ?? resolvePjanglerRoot2());
+  const manifest = projectManifestFromRegistryProject(project);
+  const apply = input.apply ?? false;
+  const live = input.live ?? false;
+  const actions = [
+    { kind: "registry.upsert", registryPath: registryPath2, slug, project },
+    buildCommonProjectCopierAction({
+      pjanglerRoot,
+      targetDir,
+      projectName: project.name,
+      projectDescription: project.description,
+      projectSlug: project.slug,
+      ticketProvider: project.ticket_provider.type,
+      planeWorkspace: project.ticket_provider.workspace ?? "33god",
+      planeProjectId: project.ticket_provider.board_id ?? "",
+      projectIdentifier: identifier,
+      primaryLanguage: project.template.commonproject.primary_language,
+      overwrite
+    }),
+    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
+    {
+      kind: "plane.create-or-link",
+      enabled: live,
+      live,
+      workspace: project.ticket_provider.workspace ?? "33god",
+      identifier,
+      state: live ? "planned" : "planned",
+      reason: live ? void 0 : "network/cloud actions require --live"
+    },
+    {
+      kind: "hermes.provision-agent",
+      enabled: input.provisionAgent ?? false,
+      local: !live,
+      targetDir,
+      targetRepo: slug,
+      role: "pm",
+      context: {
+        skipRuntimeRepo: !live,
+        skipPlane: !live,
+        skipBloodbank: !live,
+        skipSystemd: !live || process.platform === "darwin"
+      }
+    }
+  ];
+  return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
+}
+function executeProjectInitPlan(plan) {
+  const logs = [];
+  const errors = [];
+  const changedFiles = [];
+  if (!plan.apply) return { ok: true, plan, logs, errors, changedFiles };
+  const registry = loadProjectRegistry(plan.registryPath);
+  let pendingRegistryAction;
+  for (const action of plan.actions) {
+    if (action.kind === "copier.copy.commonproject") {
+      const which = spawnSync5("which", ["copier"], { encoding: "utf8" });
+      if (which.status !== 0) {
+        errors.push("copier not found on PATH. Install with: uv tool install copier or pip install copier");
+        continue;
+      }
+      mkdirSync6(dirname6(action.targetDir), { recursive: true });
+      const result = spawnSync5(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      if (result.stdout.trim()) logs.push(result.stdout.trim());
+      if (result.stderr.trim()) logs.push(result.stderr.trim());
+      if (result.status !== 0) errors.push(`copier exited with status ${result.status}`);
+      changedFiles.push(action.targetDir);
+    } else if (action.kind === "project.write-manifest") {
+      mkdirSync6(dirname6(action.path), { recursive: true });
+      writeFileSync5(action.path, `${JSON.stringify(action.manifest, null, 2)}
+`, "utf8");
+      changedFiles.push(action.path);
+    } else if (action.kind === "registry.upsert") {
+      pendingRegistryAction = action;
+    } else if (action.kind === "plane.create-or-link") {
+      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "hermes.provision-agent") {
+      logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
+    }
+  }
+  if (pendingRegistryAction && errors.length === 0) {
+    registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
+    saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+    changedFiles.push(pendingRegistryAction.registryPath);
+  }
+  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
+}
+function projectManifestFromRegistryProject(project) {
+  const agents = Object.fromEntries(
+    Object.entries(project.agents).map(([name, agent]) => [
+      `${project.slug}-${name}`,
+      {
+        role: agent.role,
+        role_dir: agent.role_dir,
+        provisioning_state: agent.provisioning_state
+      }
+    ])
+  );
+  return {
+    project_name: project.name,
+    project_description: project.description,
+    project_slug: project.slug,
+    repo_path: project.repo_path,
+    ticket_provider: {
+      type: project.ticket_provider.type,
+      workspace: project.ticket_provider.workspace ?? "",
+      identifier: project.ticket_provider.identifier ?? "",
+      board_id: project.ticket_provider.board_id ?? "",
+      board_url: project.ticket_provider.board_url ?? "",
+      state: project.ticket_provider.state
+    },
+    agents
+  };
+}
+function formatProjectInitPlan(plan) {
+  const lines = [
+    `${plan.dryRun ? "[DRY RUN] " : ""}Project init plan: ${plan.project.name} (${plan.project.slug})`,
+    `Registry: ${plan.registryPath}`,
+    `Target: ${plan.project.repo_path}`,
+    "Actions:"
+  ];
+  for (const action of plan.actions) {
+    lines.push(`  - ${action.kind}`);
+    if (action.kind === "copier.copy.commonproject") lines.push(`    target: ${action.targetDir}`);
+    if (action.kind === "project.write-manifest") lines.push(`    path: ${action.path}`);
+    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`    note: ${action.reason}`);
+  }
+  return lines.join("\n");
+}
+function formatProjectList(registry) {
+  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
+  if (!projects.length) return "No projects registered.";
+  return projects.map((project) => `${project.slug.padEnd(18)} ${String(project.ticket_provider.identifier ?? "").padEnd(6)} ${project.status.padEnd(8)} ${project.repo_path}`).join("\n");
+}
+function getProject(registry, slug) {
+  const project = registry.projects[slug];
+  if (!project) throw new Error(`Project not found in registry: ${slug}`);
+  return project;
+}
+function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
+  const issues = [];
+  const registry = loadProjectRegistry(registryPath2);
+  const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
+  for (const [projectSlug, project] of projects) {
+    if (!existsSync8(project.repo_path)) {
+      issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
+    } else if (!statSync(project.repo_path).isDirectory()) {
+      issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
+    } else {
+      const manifestPath = join9(project.repo_path, ".project.json");
+      if (!existsSync8(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+    }
+    for (const artifact of project.source_artifacts) {
+      if (artifact.path && !existsSync8(artifact.path)) {
+        issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
+      }
+    }
+  }
+  return {
+    ok: !issues.some((issue) => issue.level === "error"),
+    registryPath: registryPath2,
+    checkedProjects: projects.map(([projectSlug]) => projectSlug),
+    issues
+  };
+}
+function buildCommonProjectCopierAction(input) {
+  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
+  const data = {
+    project_name: input.projectName,
+    project_description: input.projectDescription ?? "",
+    project_slug: input.projectSlug,
+    ticket_provider: input.ticketProvider,
+    plane_workspace: input.planeWorkspace,
+    plane_project_id: input.planeProjectId ?? "",
+    project_identifier: input.projectIdentifier,
+    primary_language: input.primaryLanguage
+  };
+  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
+  for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
+  if (input.overwrite) command.push("--overwrite");
+  return {
+    kind: "copier.copy.commonproject",
+    cwd: input.pjanglerRoot,
+    command,
+    targetDir: input.targetDir,
+    data,
+    overwrite: input.overwrite
+  };
+}
+function resolvePjanglerRoot2() {
+  let dir = dirname6(new URL(import.meta.url).pathname);
+  while (dir !== dirname6(dir)) {
+    if (existsSync8(join9(dir, "package.json")) && existsSync8(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname6(dir);
+  }
+  return resolve2(process.cwd());
+}
+function validateNoDuplicateProject(registry, project, overwrite) {
+  const existingSameSlug = registry.projects[project.slug];
+  if (existingSameSlug && !overwrite) throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  for (const [slug, existing] of Object.entries(registry.projects)) {
+    if (slug === project.slug) continue;
+    if (resolve2(existing.repo_path) === resolve2(project.repo_path)) {
+      throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
+    }
+    if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
+      throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
+    }
+  }
+}
+function validateProjectRecord(project, key) {
+  if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
+  if (!project.name) throw new Error(`Project ${key} missing name`);
+  if (!project.slug) throw new Error(`Project ${key} missing slug`);
+  if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
+  if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
+  if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
+  if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+}
+function expandHome(path) {
+  if (path === "~") return homedir5();
+  if (path.startsWith("~/")) return join9(homedir5(), path.slice(2));
+  return path;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/utils/version.ts
-import { readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { readFileSync as readFileSync5 } from "node:fs";
+import { dirname as dirname7, join as join10 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname6(fileURLToPath4(import.meta.url));
+    let dir = dirname7(fileURLToPath4(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync4(join9(dir, "package.json"), "utf8");
+        const raw = readFileSync5(join10(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname6(dir);
+        const parent = dirname7(dir);
         if (parent === dir) break;
         dir = parent;
       }
@@ -2607,6 +3135,33 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/index.ts
+function printMigrationReport(report, asJson) {
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatMigrationReport(report));
+  }
+}
+async function promptForRuleIds(rules) {
+  const options = rules.filter((rule) => rule.fixable).map((rule) => ({
+    value: rule.id,
+    label: `${rule.id} [${rule.status}] ${rule.title}`,
+    hint: rule.summary
+  }));
+  if (!options.length) {
+    return [];
+  }
+  const initialValues = rules.filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => rule.id);
+  const selected = await multiselect({
+    message: "Select parity rules to apply (space to toggle, enter to confirm):",
+    options,
+    initialValues
+  });
+  if (isCancel5(selected)) {
+    return [];
+  }
+  return selected;
+}
 var program = new Command3();
 program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
 program.command("init").argument("<subsystem>", "Subsystem to initialize").description("Initialize a project subsystem").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (subsystem, options) => {
@@ -2639,6 +3194,89 @@ program.command("list").description("List available subsystems").action(() => {
   console.log("  pjangler init mise");
   console.log("  pjangler init docker");
   console.log("  pjangler init node");
+});
+var projectCmd = program.command("project").description("Manage the pjangler project registry");
+projectCmd.command("init").argument("<name>", "Project display name").description("Plan or apply a registry-backed CommonProject initialization").requiredOption("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("--json", "Output machine-parseable JSON").action((name, options) => {
+  try {
+    const apply = Boolean(options.apply && !options.dryRun);
+    const plan = planProjectInit({
+      name,
+      description: options.description,
+      targetDir: options.targetDir,
+      sourceSkill: options.sourceSkill,
+      primaryLanguage: options.primaryLanguage,
+      provisionAgent: options.provisionAgent ?? false,
+      apply,
+      live: options.live ?? false,
+      projectSlug: options.slug,
+      projectIdentifier: options.identifier,
+      registryPath: options.registry,
+      force: options.force ?? false,
+      overwrite: options.force ?? false,
+      cwd: process.cwd()
+    });
+    if (!apply) {
+      if (options.json) console.log(JSON.stringify(plan, null, 2));
+      else console.log(formatProjectInitPlan(plan));
+      return;
+    }
+    const result = executeProjectInitPlan(plan);
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(formatProjectInitPlan(plan));
+      for (const line of result.logs) console.log(line);
+      for (const line of result.errors) console.error(line);
+      if (result.ok) console.log(`Project registered: ${plan.project.slug}`);
+    }
+    process.exit(result.ok ? 0 : 1);
+  } catch (err) {
+    if (options.json) {
+      console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
+    } else {
+      console.error("\u274C project init failed:", err instanceof Error ? err.message : err);
+    }
+    process.exit(1);
+  }
+});
+projectCmd.command("list").description("List projects in the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((options) => {
+  try {
+    const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
+    if (options.json) console.log(JSON.stringify(registry, null, 2));
+    else console.log(formatProjectList(registry));
+  } catch (err) {
+    console.error("\u274C project list failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+});
+projectCmd.command("show").argument("<slug>", "Project slug").description("Show one project from the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((slug, options) => {
+  try {
+    const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
+    if (options.json) console.log(JSON.stringify(project, null, 2));
+    else console.log(`${project.name} (${project.slug})
+${project.repo_path}
+${project.description}`);
+  } catch (err) {
+    console.error("\u274C project show failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+});
+projectCmd.command("doctor").argument("[slug]", "Optional project slug").description("Validate the project registry and local projections").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((slug, options) => {
+  try {
+    const report = doctorProjectRegistry(options.registry ?? projectRegistryPath(), slug);
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else if (!report.issues.length) {
+      console.log(`Project registry OK: ${report.registryPath}`);
+    } else {
+      console.log(`Project registry issues: ${report.registryPath}`);
+      for (const issue of report.issues) console.log(`  [${issue.level}] ${issue.slug ?? "registry"}: ${issue.message}`);
+    }
+    process.exit(report.ok ? 0 : 1);
+  } catch (err) {
+    console.error("\u274C project doctor failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
 });
 var recipeCmd = program.command("recipe").description("Manage pjangler recipes");
 recipeCmd.command("list").description("List all available recipes").action(() => {
@@ -2772,24 +3410,50 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
     process.exit(1);
   }
 });
-program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit with --all to apply all)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or --all)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action((ruleId, repo, options) => {
+program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or open the rule selector)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
   try {
     const all = options.all ?? false;
-    if (!all && !ruleId) {
-      console.error("\u274C Provide a rule-id or use --all");
+    const dryRun = options.dryRun ?? false;
+    if (all) {
+      let actualRepo = repo;
+      if (ruleId && !actualRepo) {
+        actualRepo = ruleId;
+      }
+      const report2 = runMigration(void 0, actualRepo, dryRun, true);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (ruleId && repo) {
+      if (!getParityRuleIds().includes(ruleId)) {
+        console.error(`\u274C Unknown parity rule: ${ruleId}`);
+        process.exit(1);
+      }
+      const report2 = runMigration(ruleId, repo, dryRun, false);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (ruleId && getParityRuleIds().includes(ruleId)) {
+      const report2 = runMigration(ruleId, void 0, dryRun, false);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (options.json) {
+      console.error("\u274C JSON output requires a rule-id or --all");
       process.exit(1);
     }
-    let actualRuleId = all ? void 0 : ruleId;
-    let actualRepo = repo;
-    if (all && ruleId && !actualRepo) {
-      actualRepo = ruleId;
+    if (!process.stdin.isTTY) {
+      console.error("\u274C Provide a rule-id, use --all, or run in an interactive terminal");
+      process.exit(1);
     }
-    const report = runMigration(actualRuleId, actualRepo, options.dryRun ?? false, all);
-    if (options.json) {
-      console.log(JSON.stringify(report, null, 2));
-    } else {
-      console.log(formatMigrationReport(report));
+    const targetRepo = ruleId ?? repo;
+    const audit = runAudit(targetRepo);
+    const ruleIds = await promptForRuleIds(audit.rules);
+    if (!ruleIds.length) {
+      console.log("No rules selected; nothing to migrate.");
+      process.exit(0);
     }
+    const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
+    printMigrationReport(report, false);
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
     console.error("\u274C migrate failed:", err);

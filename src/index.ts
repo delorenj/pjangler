@@ -14,8 +14,58 @@ import {
   getCommandsByGroup,
   createRecipe
 } from "./utils/registry";
-import { runAudit, runMigration, formatAuditReport, formatMigrationReport } from "./parity/index";
+import { multiselect, isCancel } from "@clack/prompts";
+import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, getParityRuleIds, type AuditFinding } from "./parity/index";
+import {
+  doctorProjectRegistry,
+  executeProjectInitPlan,
+  formatProjectInitPlan,
+  formatProjectList,
+  getProject,
+  loadProjectRegistry,
+  planProjectInit,
+  projectRegistryPath,
+} from "./project/index";
 import { PJANGLER_VERSION } from "./utils/version";
+import type { MigrationReport } from "./parity/index";
+
+function printMigrationReport(report: MigrationReport, asJson: boolean): void {
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatMigrationReport(report));
+  }
+}
+
+async function promptForRuleIds(rules: AuditFinding[]): Promise<string[]> {
+  const options = rules
+    .filter((rule) => rule.fixable)
+    .map((rule) => ({
+      value: rule.id,
+      label: `${rule.id} [${rule.status}] ${rule.title}`,
+      hint: rule.summary,
+    }));
+
+  if (!options.length) {
+    return [];
+  }
+
+  const initialValues = rules
+    .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
+    .map((rule) => rule.id);
+
+  const selected = await multiselect<string>({
+    message: "Select parity rules to apply (space to toggle, enter to confirm):",
+    options,
+    initialValues,
+  });
+
+  if (isCancel(selected)) {
+    return [];
+  }
+
+  return selected;
+}
 
 const program = new Command();
 
@@ -76,6 +126,134 @@ program
     console.log("  pjangler init mise");
     console.log("  pjangler init docker");
     console.log("  pjangler init node");
+  });
+
+// ============================================================================
+// PROJECT REGISTRY COMMANDS
+// ============================================================================
+
+const projectCmd = program
+  .command("project")
+  .description("Manage the pjangler project registry");
+
+projectCmd
+  .command("init")
+  .argument("<name>", "Project display name")
+  .description("Plan or apply a registry-backed CommonProject initialization")
+  .requiredOption("--description <text>", "Project description")
+  .option("--target-dir <path>", "Target repo path")
+  .option("--source-skill <path>", "Source skill/template provenance path")
+  .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
+  .option("--provision-agent", "Plan local Hermes PM agent provisioning")
+  .option("--apply", "Write the registry and render the repo scaffold")
+  .option("--dry-run", "Preview changes without writing files (default)")
+  .option("--live", "Allow live/network/cloud provisioning actions")
+  .option("--slug <slug>", "Project registry slug override")
+  .option("--identifier <identifier>", "Ticket identifier override")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
+  .option("--json", "Output machine-parseable JSON")
+  .action((name: string, options) => {
+    try {
+      const apply = Boolean(options.apply && !options.dryRun);
+      const plan = planProjectInit({
+        name,
+        description: options.description,
+        targetDir: options.targetDir,
+        sourceSkill: options.sourceSkill,
+        primaryLanguage: options.primaryLanguage,
+        provisionAgent: options.provisionAgent ?? false,
+        apply,
+        live: options.live ?? false,
+        projectSlug: options.slug,
+        projectIdentifier: options.identifier,
+        registryPath: options.registry,
+        force: options.force ?? false,
+        overwrite: options.force ?? false,
+        cwd: process.cwd(),
+      });
+
+      if (!apply) {
+        if (options.json) console.log(JSON.stringify(plan, null, 2));
+        else console.log(formatProjectInitPlan(plan));
+        return;
+      }
+
+      const result = executeProjectInitPlan(plan);
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(formatProjectInitPlan(plan));
+        for (const line of result.logs) console.log(line);
+        for (const line of result.errors) console.error(line);
+        if (result.ok) console.log(`Project registered: ${plan.project.slug}`);
+      }
+      process.exit(result.ok ? 0 : 1);
+    } catch (err) {
+      if (options.json) {
+        console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
+      } else {
+        console.error("❌ project init failed:", err instanceof Error ? err.message : err);
+      }
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("list")
+  .description("List projects in the pjangler registry")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((options) => {
+    try {
+      const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
+      if (options.json) console.log(JSON.stringify(registry, null, 2));
+      else console.log(formatProjectList(registry));
+    } catch (err) {
+      console.error("❌ project list failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("show")
+  .argument("<slug>", "Project slug")
+  .description("Show one project from the pjangler registry")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((slug: string, options) => {
+    try {
+      const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
+      if (options.json) console.log(JSON.stringify(project, null, 2));
+      else console.log(`${project.name} (${project.slug})\n${project.repo_path}\n${project.description}`);
+    } catch (err) {
+      console.error("❌ project show failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("doctor")
+  .argument("[slug]", "Optional project slug")
+  .description("Validate the project registry and local projections")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((slug: string | undefined, options) => {
+    try {
+      const report = doctorProjectRegistry(options.registry ?? projectRegistryPath(), slug);
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else if (!report.issues.length) {
+        console.log(`Project registry OK: ${report.registryPath}`);
+      } else {
+        console.log(`Project registry issues: ${report.registryPath}`);
+        for (const issue of report.issues) console.log(`  [${issue.level}] ${issue.slug ?? "registry"}: ${issue.message}`);
+      }
+      process.exit(report.ok ? 0 : 1);
+    } catch (err) {
+      console.error("❌ project doctor failed:", err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
   });
 
 // ============================================================================
@@ -286,31 +464,68 @@ program
 
 program
   .command("migrate")
-  .argument("[rule-id]", "Rule ID to migrate (omit with --all to apply all)")
+  .argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)")
   .argument("[repo]", "Path to repo (default: cwd)")
-  .description("Idempotent migration recipe for a parity rule (or --all)")
+  .description("Idempotent migration recipe for a parity rule (or open the rule selector)")
   .option("--all", "Apply every migration recipe in order")
   .option("--dry-run", "Preview changes without writing files")
   .option("--json", "Output machine-parseable JSON")
-  .action((ruleId: string | undefined, repo: string | undefined, options) => {
+  .action(async (ruleId: string | undefined, repo: string | undefined, options) => {
     try {
       const all = options.all ?? false;
-      if (!all && !ruleId) {
-        console.error("❌ Provide a rule-id or use --all");
+      const dryRun = options.dryRun ?? false;
+
+      if (all) {
+        // When --all is used, any positional argument is the repo path, not a rule-id.
+        let actualRepo = repo;
+        if (ruleId && !actualRepo) {
+          actualRepo = ruleId;
+        }
+        const report = runMigration(undefined, actualRepo, dryRun, true);
+        printMigrationReport(report, options.json);
+        process.exit(report.ok ? 0 : 1);
+      }
+
+      // Explicit rule-id + repo.
+      if (ruleId && repo) {
+        if (!getParityRuleIds().includes(ruleId)) {
+          console.error(`❌ Unknown parity rule: ${ruleId}`);
+          process.exit(1);
+        }
+        const report = runMigration(ruleId, repo, dryRun, false);
+        printMigrationReport(report, options.json);
+        process.exit(report.ok ? 0 : 1);
+      }
+
+      // Single valid rule-id applies to cwd.
+      if (ruleId && getParityRuleIds().includes(ruleId)) {
+        const report = runMigration(ruleId, undefined, dryRun, false);
+        printMigrationReport(report, options.json);
+        process.exit(report.ok ? 0 : 1);
+      }
+
+      // Non-interactive JSON mode cannot show the TUI.
+      if (options.json) {
+        console.error("❌ JSON output requires a rule-id or --all");
         process.exit(1);
       }
-      // When --all is used, any positional argument is the repo path, not a rule-id.
-      let actualRuleId = all ? undefined : ruleId;
-      let actualRepo = repo;
-      if (all && ruleId && !actualRepo) {
-        actualRepo = ruleId;
+
+      // Non-TTY environments cannot show the TUI.
+      if (!process.stdin.isTTY) {
+        console.error("❌ Provide a rule-id, use --all, or run in an interactive terminal");
+        process.exit(1);
       }
-      const report = runMigration(actualRuleId, actualRepo, options.dryRun ?? false, all);
-      if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
-      } else {
-        console.log(formatMigrationReport(report));
+
+      // No rule-id (or a lone positional that isn't a valid rule-id) opens the TUI.
+      const targetRepo = ruleId ?? repo;
+      const audit = runAudit(targetRepo);
+      const ruleIds = await promptForRuleIds(audit.rules);
+      if (!ruleIds.length) {
+        console.log("No rules selected; nothing to migrate.");
+        process.exit(0);
       }
+      const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
+      printMigrationReport(report, false);
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
       console.error("❌ migrate failed:", err);
