@@ -75,6 +75,7 @@ export interface ProjectInitInput {
   sourceSkill?: string;
   primaryLanguage?: string;
   provisionAgent?: boolean;
+  agentRole?: string;
   apply?: boolean;
   live?: boolean;
   registryPath?: string;
@@ -86,6 +87,7 @@ export interface ProjectInitInput {
   planeProjectId?: string;
   pjanglerRoot?: string;
   cwd?: string;
+  scaffold?: boolean;
   force?: boolean;
   overwrite?: boolean;
   now?: Date;
@@ -237,6 +239,21 @@ export function deriveProjectIdentifier(value: string): string {
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
 }
 
+export function normalizeAgentRole(value?: string): string {
+  return value?.trim() || "pm";
+}
+
+function jsonStable(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function projectRecordEquivalent(a: ProjectRecord | undefined, b: ProjectRecord): boolean {
+  if (!a) return false;
+  const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
+  const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
+  return jsonStable(aComparable) === jsonStable(bComparable);
+}
+
 export function defaultProjectTargetDir(name: string, cwd = process.cwd()): string {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
   return resolve(dirname(resolve(cwd)), compactName);
@@ -270,8 +287,18 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const existing = registry.projects[slug];
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
+  const agentRole = normalizeAgentRole(input.agentRole);
+  const agents: Record<string, ProjectAgentRecord> = input.provisionAgent
+    ? {
+        [agentRole]: {
+          role: agentRole,
+          provisioning_state: "planned",
+        },
+      }
+    : existing?.agents ?? {};
+  const scaffold = input.scaffold ?? true;
 
-  const project: ProjectRecord = {
+  const candidateProject: ProjectRecord = {
     name: input.name,
     slug,
     repo_path: targetDir,
@@ -294,14 +321,13 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
       state: input.live ? "planned" : "planned",
     },
-    agents: {
-      pm: {
-        role: "pm",
-        provisioning_state: input.provisionAgent ? "planned" : "planned",
-      },
-    },
+    agents,
     created_at: existing?.created_at ?? now,
     updated_at: now,
+  };
+  const project: ProjectRecord = {
+    ...candidateProject,
+    updated_at: projectRecordEquivalent(existing, candidateProject) ? existing!.updated_at : now,
   };
 
   validateNoDuplicateProject(registry, project, overwrite);
@@ -312,7 +338,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const live = input.live ?? false;
   const actions: ProjectInitAction[] = [
     { kind: "registry.upsert", registryPath, slug, project },
-    buildCommonProjectCopierAction({
+  ];
+  if (scaffold) {
+    actions.push(buildCommonProjectCopierAction({
       pjanglerRoot,
       targetDir,
       projectName: project.name,
@@ -324,7 +352,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       overwrite,
-    }),
+    }));
+  }
+  actions.push(
     { kind: "project.write-manifest", path: join(targetDir, ".project.json"), manifest },
     {
       kind: "plane.create-or-link",
@@ -341,15 +371,15 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       local: !live,
       targetDir,
       targetRepo: slug,
-      role: "pm",
+      role: agentRole,
       context: {
         skipRuntimeRepo: !live,
         skipPlane: !live,
         skipBloodbank: !live,
         skipSystemd: !live || process.platform === "darwin",
       },
-    },
-  ];
+    }
+  );
 
   return { ok: true, apply, dryRun: !apply, live, registryPath, project, manifest, actions };
 }
@@ -364,21 +394,33 @@ export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecut
   let pendingRegistryAction: Extract<ProjectInitAction, { kind: "registry.upsert" }> | undefined;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
-      const which = spawnSync("which", ["copier"], { encoding: "utf8" });
-      if (which.status !== 0) {
-        errors.push("copier not found on PATH. Install with: uv tool install copier or pip install copier");
-        continue;
-      }
       mkdirSync(dirname(action.targetDir), { recursive: true });
       const result = spawnSync(action.command[0]!, action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
-      if (result.stdout.trim()) logs.push(result.stdout.trim());
-      if (result.stderr.trim()) logs.push(result.stderr.trim());
-      if (result.status !== 0) errors.push(`copier exited with status ${result.status}`);
+      if (result.stdout?.trim()) logs.push(result.stdout.trim());
+      if (result.stderr?.trim()) logs.push(result.stderr.trim());
+      if (result.error) {
+        const code = (result.error as NodeJS.ErrnoException).code;
+        errors.push(
+          code === "ENOENT"
+            ? "copier not found on PATH. Install with: uv tool install copier or pip install copier"
+            : `copier failed: ${result.error.message}`
+        );
+        break;
+      }
+      if (result.status !== 0) {
+        errors.push(`copier exited with status ${result.status ?? "unknown"}`);
+        if (existsSync(action.targetDir)) changedFiles.push(action.targetDir);
+        break;
+      }
       changedFiles.push(action.targetDir);
     } else if (action.kind === "project.write-manifest") {
       mkdirSync(dirname(action.path), { recursive: true });
-      writeFileSync(action.path, `${JSON.stringify(action.manifest, null, 2)}\n`, "utf8");
-      changedFiles.push(action.path);
+      const next = `${JSON.stringify(action.manifest, null, 2)}\n`;
+      const current = existsSync(action.path) ? readFileSync(action.path, "utf8") : undefined;
+      if (current !== next) {
+        writeFileSync(action.path, next, "utf8");
+        changedFiles.push(action.path);
+      }
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "plane.create-or-link") {
@@ -389,9 +431,11 @@ export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecut
   }
 
   if (pendingRegistryAction && errors.length === 0) {
-    registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
-    saveProjectRegistry(registry, pendingRegistryAction.registryPath);
-    changedFiles.push(pendingRegistryAction.registryPath);
+    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+      registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
+      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+      changedFiles.push(pendingRegistryAction.registryPath);
+    }
   }
 
   return { ok: errors.length === 0, plan, logs, errors, changedFiles };
@@ -530,7 +574,9 @@ export function resolvePjanglerRoot(): string {
 
 function validateNoDuplicateProject(registry: ProjectRegistry, project: ProjectRecord, overwrite: boolean): void {
   const existingSameSlug = registry.projects[project.slug];
-  if (existingSameSlug && !overwrite) throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  if (existingSameSlug && !overwrite && resolve(existingSameSlug.repo_path) !== resolve(project.repo_path)) {
+    throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
     if (resolve(existing.repo_path) === resolve(project.repo_path)) {

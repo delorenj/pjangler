@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { Command } from "commander";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
@@ -14,7 +17,7 @@ import {
   getCommandsByGroup,
   createRecipe
 } from "./utils/registry";
-import { multiselect, isCancel } from "@clack/prompts";
+import { cancel, multiselect, text, isCancel } from "@clack/prompts";
 import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, getParityRuleIds, type AuditFinding } from "./parity/index";
 import {
   doctorProjectRegistry,
@@ -28,6 +31,32 @@ import {
 } from "./project/index";
 import { PJANGLER_VERSION } from "./utils/version";
 import type { MigrationReport } from "./parity/index";
+
+type JsonObject = Record<string, unknown>;
+
+interface ProjectInitCliOptions {
+  description?: string;
+  targetDir?: string;
+  sourceSkill?: string;
+  primaryLanguage?: string;
+  provisionAgent?: boolean;
+  agentRole?: string;
+  apply?: boolean;
+  dryRun?: boolean;
+  live?: boolean;
+  slug?: string;
+  identifier?: string;
+  registry?: string;
+  force?: boolean;
+  yes?: boolean;
+  tui?: boolean;
+  json?: boolean;
+}
+
+interface ProjectInitSelection {
+  selectedOperations: string[];
+  selectedParityRules: string[];
+}
 
 function printMigrationReport(report: MigrationReport, asJson: boolean): void {
   if (asJson) {
@@ -65,6 +94,196 @@ async function promptForRuleIds(rules: AuditFinding[]): Promise<string[]> {
   }
 
   return selected;
+}
+
+function readJson(path: string): JsonObject | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as JsonObject) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function findGitRoot(cwd: string): string | undefined {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  if (result.status !== 0) return undefined;
+  return resolve(result.stdout.trim());
+}
+
+function packageNameToProjectName(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const name = value.split("/").pop() ?? value;
+  return name
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim();
+}
+
+function deriveProjectDefaults(targetDir: string): { name: string; description: string; slug?: string; identifier?: string } {
+  const manifest = readJson(join(targetDir, ".project.json"));
+  const pkg = readJson(join(targetDir, "package.json"));
+  const name =
+    String(manifest?.project_name ?? "").trim() ||
+    packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : undefined) ||
+    packageNameToProjectName(basename(targetDir)) ||
+    "Project";
+  const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? (manifest.ticket_provider as JsonObject) : {};
+  return {
+    name,
+    description: String(manifest?.project_description ?? pkg?.description ?? ""),
+    slug: typeof manifest?.project_slug === "string" ? manifest.project_slug : undefined,
+    identifier: typeof ticketProvider.identifier === "string" ? ticketProvider.identifier : undefined,
+  };
+}
+
+function isInteractiveProjectInit(options: ProjectInitCliOptions): boolean {
+  return !options.json && !options.yes && options.tui !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function promptTextValue(message: string, initialValue?: string): Promise<string> {
+  const value = await text({
+    message,
+    initialValue,
+    validate: (input) => input?.trim() ? undefined : "Required",
+  });
+  if (isCancel(value)) {
+    cancel("project init cancelled");
+    process.exit(1);
+  }
+  return value.trim();
+}
+
+function projectInitActionLabel(kind: string): string {
+  switch (kind) {
+    case "registry.upsert":
+      return "Register/update project registry entry";
+    case "copier.copy.commonproject":
+      return "Render CommonProject scaffold";
+    case "project.write-manifest":
+      return "Write repo-local .project.json projection";
+    case "plane.create-or-link":
+      return "Create/link ticket provider project";
+    case "hermes.provision-agent":
+      return "Provision Hermes agent";
+    default:
+      return kind;
+  }
+}
+
+function registryNeedsUpsert(plan: ReturnType<typeof planProjectInit>): boolean {
+  const registry = loadProjectRegistry(plan.registryPath);
+  const existing = registry.projects[plan.project.slug];
+  if (!existing) return true;
+  const { created_at: _existingCreated, updated_at: _existingUpdated, ...existingComparable } = existing;
+  const { created_at: _projectCreated, updated_at: _projectUpdated, ...projectComparable } = plan.project;
+  return JSON.stringify(existingComparable) !== JSON.stringify(projectComparable);
+}
+
+function actionNeedsRun(plan: ReturnType<typeof planProjectInit>, kind: string, syncMode: boolean): boolean {
+  if (kind === "registry.upsert") return registryNeedsUpsert(plan);
+  if (kind === "project.write-manifest") {
+    const action = plan.actions.find((item) => item.kind === "project.write-manifest");
+    if (!action || action.kind !== "project.write-manifest") return false;
+    if (syncMode) return !existsSync(action.path);
+    const next = `${JSON.stringify(action.manifest, null, 2)}\n`;
+    return !existsSync(action.path) || readFileSync(action.path, "utf8") !== next;
+  }
+  if (kind === "copier.copy.commonproject") return true;
+  if (kind === "plane.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  if (kind === "hermes.provision-agent") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  return true;
+}
+
+async function selectProjectInitOperations(input: {
+  plan: ReturnType<typeof planProjectInit>;
+  auditRules: AuditFinding[];
+  syncMode: boolean;
+  options: ProjectInitCliOptions;
+}): Promise<ProjectInitSelection> {
+  const planOperations = input.plan.actions
+    .filter((action) => actionNeedsRun(input.plan, action.kind, input.syncMode))
+    .map((action) => ({
+      value: action.kind,
+      label: projectInitActionLabel(action.kind),
+      hint: action.kind === "registry.upsert" ? input.plan.registryPath : action.kind,
+    }));
+  const parityOperations = input.auditRules
+    .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
+    .map((rule) => ({
+      value: `parity:${rule.id}`,
+      label: `${rule.title}`,
+      hint: `${rule.id}: ${rule.summary}`,
+    }));
+  const operations = [...planOperations, ...parityOperations];
+  const all = operations.map((operation) => operation.value);
+  if (input.options.yes || (input.options.apply && !isInteractiveProjectInit(input.options))) {
+    return {
+      selectedOperations: all,
+      selectedParityRules: parityOperations.map((operation) => operation.value.replace(/^parity:/, "")),
+    };
+  }
+  if (input.options.dryRun || !isInteractiveProjectInit(input.options)) {
+    return { selectedOperations: [], selectedParityRules: [] };
+  }
+  if (!operations.length) return { selectedOperations: [], selectedParityRules: [] };
+  const selected = await multiselect<string>({
+    message: "Select project init operations to run:",
+    options: operations,
+    initialValues: all,
+  });
+  if (isCancel(selected)) {
+    cancel("project init cancelled");
+    process.exit(1);
+  }
+  return {
+    selectedOperations: selected,
+    selectedParityRules: selected.filter((value) => value.startsWith("parity:")).map((value) => value.replace(/^parity:/, "")),
+  };
+}
+
+async function resolveProjectInitTarget(name: string | undefined, options: ProjectInitCliOptions): Promise<{ name: string; targetDir: string; description: string; syncMode: boolean; slug?: string; identifier?: string }> {
+  const interactive = isInteractiveProjectInit(options);
+  const cwd = process.cwd();
+  const cwdGitRoot = findGitRoot(cwd);
+  let targetDir = options.targetDir ? resolve(options.targetDir) : undefined;
+
+  if (!targetDir && cwdGitRoot) {
+    targetDir = cwdGitRoot;
+  }
+
+  if (!targetDir && interactive) {
+    const defaultName = name ?? basename(cwd);
+    const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
+    const defaultDir = join(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = await promptTextValue("Project directory", defaultDir);
+    name = promptedName;
+  }
+
+  if (!targetDir) {
+    if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
+    targetDir = resolve(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+  }
+
+  const targetExists = existsSync(targetDir);
+  if (targetExists && !statSync(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  const targetGitRoot = targetExists ? findGitRoot(targetDir) : undefined;
+  const syncMode = Boolean(targetGitRoot && resolve(targetGitRoot) === resolve(targetDir));
+
+  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename(targetDir)) ?? "Project", description: "" };
+  if (!name && interactive && !syncMode) {
+    name = await promptTextValue("Project name", defaults.name);
+  }
+
+  return {
+    name: name ?? defaults.name,
+    targetDir,
+    description: options.description ?? defaults.description,
+    syncMode,
+    slug: options.slug ?? defaults.slug,
+    identifier: options.identifier ?? defaults.identifier,
+  };
 }
 
 const program = new Command();
@@ -138,13 +357,14 @@ const projectCmd = program
 
 projectCmd
   .command("init")
-  .argument("<name>", "Project display name")
-  .description("Plan or apply a registry-backed CommonProject initialization")
-  .requiredOption("--description <text>", "Project description")
+  .argument("[name]", "Project display name")
+  .description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync")
+  .option("--description <text>", "Project description")
   .option("--target-dir <path>", "Target repo path")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
   .option("--provision-agent", "Plan local Hermes PM agent provisioning")
+  .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
   .option("--apply", "Write the registry and render the repo scaffold")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow live/network/cloud provisioning actions")
@@ -152,43 +372,110 @@ projectCmd
   .option("--identifier <identifier>", "Ticket identifier override")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
+  .option("-y, --yes", "Apply every proposed operation without prompting")
+  .option("--no-tui", "Disable interactive prompts")
   .option("--json", "Output machine-parseable JSON")
-  .action((name: string, options) => {
+  .action(async (name: string | undefined, options: ProjectInitCliOptions) => {
     try {
-      const apply = Boolean(options.apply && !options.dryRun);
+      const target = await resolveProjectInitTarget(name, options);
+      const interactive = isInteractiveProjectInit(options);
+      const apply = Boolean(!options.dryRun && (options.yes || options.apply || interactive));
       const plan = planProjectInit({
-        name,
-        description: options.description,
-        targetDir: options.targetDir,
+        name: target.name,
+        description: target.description,
+        targetDir: target.targetDir,
         sourceSkill: options.sourceSkill,
         primaryLanguage: options.primaryLanguage,
         provisionAgent: options.provisionAgent ?? false,
+        agentRole: options.agentRole,
         apply,
         live: options.live ?? false,
-        projectSlug: options.slug,
-        projectIdentifier: options.identifier,
+        projectSlug: target.slug,
+        projectIdentifier: target.identifier,
         registryPath: options.registry,
         force: options.force ?? false,
         overwrite: options.force ?? false,
         cwd: process.cwd(),
+        scaffold: !target.syncMode,
       });
+      const audit = target.syncMode ? runAudit(target.targetDir) : undefined;
+      const selection = await selectProjectInitOperations({
+        plan,
+        auditRules: audit?.rules ?? [],
+        syncMode: target.syncMode,
+        options,
+      });
+      const selectedPlanActionKinds = new Set(selection.selectedOperations.filter((value) => !value.startsWith("parity:")));
+      const selectedPlan = {
+        ...plan,
+        apply,
+        dryRun: !apply,
+        actions: apply ? plan.actions.filter((action) => selectedPlanActionKinds.has(action.kind)) : plan.actions,
+      };
 
       if (!apply) {
-        if (options.json) console.log(JSON.stringify(plan, null, 2));
-        else console.log(formatProjectInitPlan(plan));
+        const payload = {
+          ...plan,
+          mode: target.syncMode ? "sync" : "create",
+          audit,
+          proposedOperations: [
+            ...plan.actions
+              .filter((action) => actionNeedsRun(plan, action.kind, target.syncMode))
+              .map((action) => action.kind),
+            ...(audit?.rules ?? [])
+              .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
+              .map((rule) => `parity:${rule.id}`),
+          ],
+        };
+        if (options.json) console.log(JSON.stringify(payload, null, 2));
+        else {
+          console.log(formatProjectInitPlan(plan));
+          if (payload.proposedOperations.length) {
+            console.log("Proposed sync operations:");
+            for (const operation of payload.proposedOperations) console.log(`  - ${operation}`);
+          } else {
+            console.log("Project is already in parity.");
+          }
+        }
         return;
       }
 
-      const result = executeProjectInitPlan(plan);
+      const initResult = selectedPlan.actions.length
+        ? executeProjectInitPlan(selectedPlan)
+        : { ok: true, plan: selectedPlan, logs: [], errors: [], changedFiles: [] };
+      const migrationReport = selection.selectedParityRules.length
+        ? runMigrationForRules(selection.selectedParityRules, target.targetDir, false)
+        : undefined;
+      const migrationErrors = migrationReport?.results
+        .filter((result) => result.status === "blocked")
+        .map((result) => `${result.id}: ${result.summary}`) ?? [];
+      const changedFiles = Array.from(new Set([
+        ...initResult.changedFiles,
+        ...(migrationReport?.changedFiles ?? []),
+      ])).sort();
+      const result = {
+        ok: initResult.ok && (migrationReport?.ok ?? true),
+        mode: target.syncMode ? "sync" : "create",
+        plan: selectedPlan,
+        audit,
+        selectedOperations: selection.selectedOperations,
+        selectedParityRules: selection.selectedParityRules,
+        logs: initResult.logs,
+        errors: [...initResult.errors, ...migrationErrors],
+        changedFiles,
+        migrationReport,
+      };
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
-        console.log(formatProjectInitPlan(plan));
+        console.log(formatProjectInitPlan(selectedPlan));
         for (const line of result.logs) console.log(line);
         for (const line of result.errors) console.error(line);
-        if (result.ok) console.log(`Project registered: ${plan.project.slug}`);
+        if (migrationReport) console.log(formatMigrationReport(migrationReport));
+        if (result.ok && changedFiles.length) console.log(`Project synchronized: ${plan.project.slug}`);
+        if (result.ok && changedFiles.length === 0) console.log(`Project already in parity: ${plan.project.slug}`);
       }
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     } catch (err) {
       if (options.json) {
         console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));

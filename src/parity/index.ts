@@ -1054,7 +1054,8 @@ const RULES: Rule[] = [
           .filter((line) => line && !line.startsWith("#") && line.includes("="))
           .filter((line) => {
             const value = line.slice(line.indexOf("=") + 1).trim();
-            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value);
+            const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
         if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
       }

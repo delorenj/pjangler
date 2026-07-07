@@ -2387,7 +2387,8 @@ var RULES = [
       } else {
         const invalidLines = envOp.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && line.includes("=")).filter((line) => {
           const value = line.slice(line.indexOf("=") + 1).trim();
-          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value);
+          const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
         });
         if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
       }
@@ -2818,6 +2819,18 @@ function deriveProjectIdentifier(value) {
   const identifier = compact.slice(0, 4) || "PROJ";
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
 }
+function normalizeAgentRole(value) {
+  return value?.trim() || "pm";
+}
+function jsonStable(value) {
+  return JSON.stringify(value);
+}
+function projectRecordEquivalent(a, b) {
+  if (!a) return false;
+  const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
+  const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
+  return jsonStable(aComparable) === jsonStable(bComparable);
+}
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
   return resolve2(dirname7(resolve2(cwd)), compactName);
@@ -2847,7 +2860,15 @@ function planProjectInit(input) {
   const existing = registry.projects[slug];
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
-  const project = {
+  const agentRole = normalizeAgentRole(input.agentRole);
+  const agents = input.provisionAgent ? {
+    [agentRole]: {
+      role: agentRole,
+      provisioning_state: "planned"
+    }
+  } : existing?.agents ?? {};
+  const scaffold = input.scaffold ?? true;
+  const candidateProject = {
     name: input.name,
     slug,
     repo_path: targetDir,
@@ -2868,14 +2889,13 @@ function planProjectInit(input) {
       board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
       state: input.live ? "planned" : "planned"
     },
-    agents: {
-      pm: {
-        role: "pm",
-        provisioning_state: input.provisionAgent ? "planned" : "planned"
-      }
-    },
+    agents,
     created_at: existing?.created_at ?? now,
     updated_at: now
+  };
+  const project = {
+    ...candidateProject,
+    updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
   const pjanglerRoot = resolve2(input.pjanglerRoot ?? resolvePjanglerRoot2());
@@ -2883,8 +2903,10 @@ function planProjectInit(input) {
   const apply = input.apply ?? false;
   const live = input.live ?? false;
   const actions = [
-    { kind: "registry.upsert", registryPath: registryPath2, slug, project },
-    buildCommonProjectCopierAction({
+    { kind: "registry.upsert", registryPath: registryPath2, slug, project }
+  ];
+  if (scaffold) {
+    actions.push(buildCommonProjectCopierAction({
       pjanglerRoot,
       targetDir,
       projectName: project.name,
@@ -2896,7 +2918,9 @@ function planProjectInit(input) {
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       overwrite
-    }),
+    }));
+  }
+  actions.push(
     { kind: "project.write-manifest", path: join10(targetDir, ".project.json"), manifest },
     {
       kind: "plane.create-or-link",
@@ -2913,7 +2937,7 @@ function planProjectInit(input) {
       local: !live,
       targetDir,
       targetRepo: slug,
-      role: "pm",
+      role: agentRole,
       context: {
         skipRuntimeRepo: !live,
         skipPlane: !live,
@@ -2921,7 +2945,7 @@ function planProjectInit(input) {
         skipSystemd: !live || process.platform === "darwin"
       }
     }
-  ];
+  );
   return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
 }
 function executeProjectInitPlan(plan) {
@@ -2933,22 +2957,32 @@ function executeProjectInitPlan(plan) {
   let pendingRegistryAction;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
-      const which = spawnSync5("which", ["copier"], { encoding: "utf8" });
-      if (which.status !== 0) {
-        errors.push("copier not found on PATH. Install with: uv tool install copier or pip install copier");
-        continue;
-      }
       mkdirSync6(dirname7(action.targetDir), { recursive: true });
       const result = spawnSync5(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
-      if (result.stdout.trim()) logs.push(result.stdout.trim());
-      if (result.stderr.trim()) logs.push(result.stderr.trim());
-      if (result.status !== 0) errors.push(`copier exited with status ${result.status}`);
+      if (result.stdout?.trim()) logs.push(result.stdout.trim());
+      if (result.stderr?.trim()) logs.push(result.stderr.trim());
+      if (result.error) {
+        const code = result.error.code;
+        errors.push(
+          code === "ENOENT" ? "copier not found on PATH. Install with: uv tool install copier or pip install copier" : `copier failed: ${result.error.message}`
+        );
+        break;
+      }
+      if (result.status !== 0) {
+        errors.push(`copier exited with status ${result.status ?? "unknown"}`);
+        if (existsSync8(action.targetDir)) changedFiles.push(action.targetDir);
+        break;
+      }
       changedFiles.push(action.targetDir);
     } else if (action.kind === "project.write-manifest") {
       mkdirSync6(dirname7(action.path), { recursive: true });
-      writeFileSync5(action.path, `${JSON.stringify(action.manifest, null, 2)}
-`, "utf8");
-      changedFiles.push(action.path);
+      const next = `${JSON.stringify(action.manifest, null, 2)}
+`;
+      const current = existsSync8(action.path) ? readFileSync5(action.path, "utf8") : void 0;
+      if (current !== next) {
+        writeFileSync5(action.path, next, "utf8");
+        changedFiles.push(action.path);
+      }
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "plane.create-or-link") {
@@ -2958,9 +2992,11 @@ function executeProjectInitPlan(plan) {
     }
   }
   if (pendingRegistryAction && errors.length === 0) {
-    registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
-    saveProjectRegistry(registry, pendingRegistryAction.registryPath);
-    changedFiles.push(pendingRegistryAction.registryPath);
+    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+      registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
+      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+      changedFiles.push(pendingRegistryAction.registryPath);
+    }
   }
   return { ok: errors.length === 0, plan, logs, errors, changedFiles };
 }
@@ -3030,7 +3066,9 @@ function resolvePjanglerRoot2() {
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = registry.projects[project.slug];
-  if (existingSameSlug && !overwrite) throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  if (existingSameSlug && !overwrite && resolve2(existingSameSlug.repo_path) !== resolve2(project.repo_path)) {
+    throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
     if (resolve2(existing.repo_path) === resolve2(project.repo_path)) {
@@ -3297,6 +3335,7 @@ server.registerTool(
         sourceSkill: input.sourceSkill,
         primaryLanguage: input.primaryLanguage ?? "python",
         provisionAgent: input.provisionAgent ?? false,
+        agentRole: input.agentRole ?? "pm",
         apply: !dryRun,
         live: input.live ?? false,
         registryPath: input.registryPath,
@@ -3350,6 +3389,7 @@ server.registerTool(
       sourceSkill: z.string().optional(),
       primaryLanguage: z.string().optional(),
       provisionAgent: z.boolean().optional(),
+      agentRole: z.string().optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
       slug: z.string().optional(),
@@ -3367,6 +3407,7 @@ server.registerTool(
         sourceSkill: input.sourceSkill,
         primaryLanguage: input.primaryLanguage,
         provisionAgent: input.provisionAgent ?? false,
+        agentRole: input.agentRole,
         apply: input.apply ?? false,
         live: input.live ?? false,
         projectSlug: input.slug,

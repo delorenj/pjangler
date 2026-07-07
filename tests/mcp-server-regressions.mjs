@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -8,6 +8,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const root = resolve(import.meta.dirname, "..");
 const serverPath = resolve(root, "dist", "mcp-server.js");
 const mcpTmp = mkdtempSync(join(tmpdir(), "pjangler-mcp-registry-"));
+const sourceSkill = join(mcpTmp, "skills", "civilwar-letterifier");
+mkdirSync(sourceSkill, { recursive: true });
+writeFileSync(join(sourceSkill, "SKILL.md"), "---\nname: civilwar-letterifier\n---\n# Civil War Letterifier\n", "utf8");
 
 const transport = new StdioClientTransport({
   command: "node",
@@ -42,13 +45,14 @@ try {
 
   const dryRun = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
-    arguments: { parentDir: tmpdir(), projectName: "MCP Smoke Project", dryRun: true, provisionAgent: true },
+    arguments: { parentDir: tmpdir(), projectName: "MCP Smoke Project", dryRun: true, provisionAgent: true, agentRole: "dev" },
   });
   const dryRunPayload = JSON.parse(dryRun.content[0].text);
   assert.equal(dryRunPayload.ok, true);
   assert.equal(dryRunPayload.dryRun, true);
+  assert.equal(dryRunPayload.project.agents.dev.role, "dev");
   assert.ok(dryRunPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
-  assert.ok(dryRunPayload.actions.some((action) => action.kind === "hermes.provision-agent"));
+  assert.ok(dryRunPayload.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "dev"));
 
   const projectDryRun = await client.callTool({
     name: "pjangler_project_init",
@@ -56,7 +60,7 @@ try {
       name: "SlowBurns",
       description: "Civil War letterification experiments",
       targetDir: join(mcpTmp, "SlowBurns"),
-      sourceSkill: "/home/delorenj/code/skillex/all-skills/civilwar-letterifier",
+      sourceSkill,
     },
   });
   const projectPayload = JSON.parse(projectDryRun.content[0].text);

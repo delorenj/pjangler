@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,36 +7,56 @@ import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const sourceSkill = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
 
-function run(args, env) {
-  const result = spawnSync("node", [cli, ...args], {
-    cwd: root,
+function spawnCli(args, env, cwd = root) {
+  return spawnSync(process.execPath, [cli, ...args], {
+    cwd,
     encoding: "utf8",
     env: { ...process.env, ...env },
+    maxBuffer: 10 * 1024 * 1024,
   });
+}
+
+function run(args, env, cwd = root) {
+  const result = spawnCli(args, env, cwd);
   if (result.status !== 0) {
-    throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    throw new Error(`command failed: ${process.execPath} ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
   return result.stdout;
 }
 
 function runExpectFailure(args, env) {
-  const result = spawnSync("node", [cli, ...args], {
-    cwd: root,
-    encoding: "utf8",
-    env: { ...process.env, ...env },
-  });
+  const result = spawnCli(args, env);
   if (result.status === 0) {
-    throw new Error(`expected failure: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
+    throw new Error(`expected failure: ${process.execPath} ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
   }
+  return result;
+}
+
+function failureOutput(result) {
   return `${result.stdout}\n${result.stderr}`;
+}
+
+function createSkillFixture(baseDir) {
+  const skillDir = join(baseDir, "skills", "civilwar-letterifier");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, "SKILL.md"), "---\nname: civilwar-letterifier\n---\n# Civil War Letterifier\n", "utf8");
+  return skillDir;
+}
+
+function git(args, cwd) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  }
+  return result.stdout;
 }
 
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-project-registry-"));
 try {
   const registryPath = join(tmp, "projects.yaml");
   const targetDir = join(tmp, "SlowBurns");
+  const sourceSkill = createSkillFixture(tmp);
   const env = { PJ_PROJECT_REGISTRY: registryPath };
 
   const dryRun = JSON.parse(run([
@@ -55,11 +75,32 @@ try {
   assert.equal(dryRun.project.slug, "slowburns");
   assert.equal(dryRun.project.ticket_provider.identifier, "SLOW");
   assert.equal(dryRun.project.source_artifacts[0].path, sourceSkill);
+  assert.deepEqual(dryRun.project.agents, {}, "default dry-run must not record a planned agent");
   assert.ok(dryRun.actions.some((action) => action.kind === "registry.upsert"));
   assert.ok(dryRun.actions.some((action) => action.kind === "copier.copy.commonproject"));
   assert.ok(dryRun.actions.some((action) => action.kind === "project.write-manifest"));
   assert.equal(existsSync(registryPath), false, "dry-run must not write the registry");
   assert.equal(existsSync(targetDir), false, "dry-run must not render the project");
+
+  const nonGitParent = join(tmp, "non-git-parent");
+  mkdirSync(nonGitParent);
+  const nonGitTarget = join(nonGitParent, "FreshProject");
+  const nonGitPlan = JSON.parse(run([
+    "project",
+    "init",
+    "FreshProject",
+    "--description",
+    "Created from outside a git repo",
+    "--target-dir",
+    nonGitTarget,
+    "--registry",
+    join(tmp, "non-git-projects.yaml"),
+    "--json",
+  ], {}, nonGitParent));
+  assert.equal(nonGitPlan.mode, "create");
+  assert.equal(nonGitPlan.project.repo_path, nonGitTarget);
+  assert.ok(nonGitPlan.actions.some((action) => action.kind === "copier.copy.commonproject"));
+  assert.equal(existsSync(nonGitTarget), false, "non-git dry-run must not create the target directory");
 
   const applied = JSON.parse(run([
     "project",
@@ -84,11 +125,32 @@ try {
   assert.equal(registry.projects.slowburns.name, "SlowBurns");
   assert.equal(registry.projects.slowburns.repo_path, targetDir);
   assert.equal(registry.projects.slowburns.ticket_provider.state, "planned");
+  assert.deepEqual(registry.projects.slowburns.agents, {}, "default apply must not register a planned agent");
 
   const manifest = JSON.parse(readFileSync(join(targetDir, ".project.json"), "utf8"));
   assert.equal(manifest.project_slug, "slowburns");
   assert.equal(manifest.ticket_provider.identifier, "SLOW");
   assert.equal(manifest.ticket_provider.state, "planned");
+  assert.deepEqual(manifest.agents, {}, "default apply must not write a planned agent projection");
+
+  const agentPlan = JSON.parse(run([
+    "project",
+    "init",
+    "ReviewBot",
+    "--description",
+    "Reviewer agent role coverage",
+    "--target-dir",
+    join(tmp, "ReviewBot"),
+    "--provision-agent",
+    "--agent-role",
+    "review",
+    "--registry",
+    join(tmp, "agent-role.yaml"),
+    "--json",
+  ], env));
+  assert.equal(agentPlan.project.agents.review.role, "review");
+  assert.equal(agentPlan.project.agents.review.provisioning_state, "planned");
+  assert.equal(agentPlan.actions.find((action) => action.kind === "hermes.provision-agent").role, "review");
 
   const listed = JSON.parse(run(["project", "list", "--json"], env));
   assert.equal(listed.projects.slowburns.repo_path, targetDir);
@@ -100,6 +162,71 @@ try {
   assert.equal(doctor.ok, true);
   assert.deepEqual(doctor.checkedProjects, ["slowburns"]);
 
+  const legacyRepo = join(tmp, "LegacyRepo");
+  mkdirSync(legacyRepo);
+  git(["init"], legacyRepo);
+  writeFileSync(join(legacyRepo, "package.json"), JSON.stringify({ name: "legacy-repo", description: "Pre-pjangler repo" }, null, 2), "utf8");
+  writeFileSync(join(legacyRepo, "AGENTS.md"), "# Legacy agent notes\n", "utf8");
+  const legacyRegistry = join(tmp, "legacy-projects.yaml");
+  const legacyEnv = { PJ_PROJECT_REGISTRY: legacyRegistry };
+  const legacySync = JSON.parse(run([
+    "project",
+    "init",
+    "--yes",
+    "--apply",
+    "--json",
+  ], legacyEnv, legacyRepo));
+  assert.equal(legacySync.ok, true, JSON.stringify(legacySync.errors));
+  assert.equal(legacySync.mode, "sync");
+  assert.equal(legacySync.plan.project.slug, "legacy-repo");
+  assert.ok(!legacySync.plan.actions.some((action) => action.kind === "copier.copy.commonproject"), "legacy sync must not render the CommonProject copier over an existing repo");
+  assert.ok(legacySync.selectedOperations.includes("registry.upsert"), "legacy sync should register the repo");
+  assert.ok(legacySync.selectedParityRules.includes("sot.project-json"), "legacy sync should select .project.json parity");
+  assert.equal(existsSync(join(legacyRepo, ".project.json")), true, "legacy sync must write .project.json");
+  assert.equal(existsSync(legacyRegistry), true, "legacy sync must write the registry");
+
+  const legacyRegistryData = YAML.parse(readFileSync(legacyRegistry, "utf8"));
+  assert.equal(legacyRegistryData.projects["legacy-repo"].repo_path, legacyRepo);
+  const legacyManifest = JSON.parse(readFileSync(join(legacyRepo, ".project.json"), "utf8"));
+  assert.equal(legacyManifest.project_name, "Legacy Repo");
+  assert.equal(legacyManifest.project_description, "Pre-pjangler repo");
+
+  const legacySyncAgain = JSON.parse(run([
+    "project",
+    "init",
+    "--yes",
+    "--apply",
+    "--json",
+  ], legacyEnv, legacyRepo));
+  assert.equal(legacySyncAgain.ok, true, JSON.stringify(legacySyncAgain.errors));
+  assert.equal(legacySyncAgain.mode, "sync");
+  assert.deepEqual(legacySyncAgain.changedFiles, [], "legacy sync must be idempotent");
+  assert.deepEqual(legacySyncAgain.selectedOperations, [], "idempotent sync should have no selected work when already in parity");
+
+  const emptyBin = join(tmp, "empty-bin");
+  mkdirSync(emptyBin);
+  const failedRegistryPath = join(tmp, "failed-apply.yaml");
+  const failedTarget = join(tmp, "FailedApply");
+  const failedApply = JSON.parse(runExpectFailure([
+    "project",
+    "init",
+    "FailedApply",
+    "--description",
+    "Copier failure should stop dependent writes",
+    "--target-dir",
+    failedTarget,
+    "--source-skill",
+    sourceSkill,
+    "--registry",
+    failedRegistryPath,
+    "--apply",
+    "--json",
+  ], { PATH: emptyBin }).stdout);
+  assert.equal(failedApply.ok, false);
+  assert.match(failedApply.errors.join("\n"), /copier not found/);
+  assert.equal(existsSync(failedRegistryPath), false, "failed apply must not save the registry");
+  assert.equal(existsSync(join(failedTarget, ".project.json")), false, "failed apply must not write the repo-local projection");
+
   const duplicate = runExpectFailure([
     "project",
     "init",
@@ -110,7 +237,7 @@ try {
     join(tmp, "OtherSlowBurns"),
     "--json",
   ], env);
-  assert.match(duplicate, /Project slug already exists/);
+  assert.match(failureOutput(duplicate), /Project slug already exists/);
 
   const missingSkill = runExpectFailure([
     "project",
@@ -124,8 +251,8 @@ try {
     join(tmp, "civilwar-letterifer"),
     "--json",
   ], { PJ_PROJECT_REGISTRY: join(tmp, "missing-skill.yaml") });
-  assert.match(missingSkill, /Source skill not found/);
-  assert.match(missingSkill, /civilwar-letterifier/);
+  assert.match(failureOutput(missingSkill), /Source skill not found/);
+  assert.match(failureOutput(missingSkill), /civilwar-letterifer/);
 
   console.log("project registry regressions passed");
 } finally {
