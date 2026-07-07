@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import YAML from "yaml";
+import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
@@ -471,27 +472,40 @@ export function projectManifestFromRegistryProject(project: ProjectRecord): Proj
 }
 
 export function formatProjectInitPlan(plan: ProjectInitPlan): string {
-  const lines = [
-    `${plan.dryRun ? "[DRY RUN] " : ""}Project init plan: ${plan.project.name} (${plan.project.slug})`,
-    `Registry: ${plan.registryPath}`,
-    `Target: ${plan.project.repo_path}`,
-    "Actions:",
-  ];
+  const lines = [""];
+  const title = `${bold(plan.project.name)} ${dim(`(${plan.project.slug})`)}`;
+  lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+  lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
+  lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  lines.push("");
+  lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
+  if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
   for (const action of plan.actions) {
-    lines.push(`  - ${action.kind}`);
-    if (action.kind === "copier.copy.commonproject") lines.push(`    target: ${action.targetDir}`);
-    if (action.kind === "project.write-manifest") lines.push(`    path: ${action.path}`);
-    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`    note: ${action.reason}`);
+    lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
+    if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
+    if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
+    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
   }
+  lines.push("");
   return lines.join("\n");
 }
 
 export function formatProjectList(registry: ProjectRegistry): string {
   const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
-  if (!projects.length) return "No projects registered.";
-  return projects
-    .map((project) => `${project.slug.padEnd(18)} ${String(project.ticket_provider.identifier ?? "").padEnd(6)} ${project.status.padEnd(8)} ${project.repo_path}`)
-    .join("\n");
+  if (!projects.length) return `\n  ${dim("No projects registered.")}\n`;
+  const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
+  const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
+  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
+
+  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
+  for (const project of projects) {
+    const slug = bold(project.slug.padEnd(slugWidth));
+    const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
+    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
+    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function getProject(registry: ProjectRegistry, slug: string): ProjectRecord {

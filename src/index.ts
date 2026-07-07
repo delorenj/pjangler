@@ -30,7 +30,11 @@ import {
   projectRegistryPath,
 } from "./project/index";
 import { PJANGLER_VERSION } from "./utils/version";
+import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
+
+/** Red ✖ prefix for user-facing error lines. */
+const xmark = `${red(glyph.fail)}`;
 
 type JsonObject = Record<string, unknown>;
 
@@ -312,14 +316,14 @@ program
     try {
       const recipe = createRecipe(subsystem, context);
       if (!recipe) {
-        console.error(`❌ Unknown subsystem: ${subsystem}`);
-        console.log(`Available subsystems: ${getRecipeNames().join(", ")}`);
+        console.error(`${xmark} Unknown subsystem: ${bold(subsystem)}`);
+        console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
         process.exit(1);
       }
 
       await recipe.execute();
     } catch (error) {
-      console.error(`❌ Error initializing ${subsystem}:`, error);
+      console.error(`${xmark} Error initializing ${bold(subsystem)}:`, error);
       process.exit(1);
     }
   });
@@ -332,18 +336,19 @@ program
   .command("list")
   .description("List available subsystems")
   .action(() => {
-    console.log("Available subsystems:");
+    const width = Object.keys(RECIPE_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
     console.log("");
-
+    console.log(`  ${heading("Available subsystems")}`);
+    console.log("");
     for (const [name, info] of Object.entries(RECIPE_REGISTRY)) {
-      console.log(`  ${name.padEnd(10)} - ${info.description}`);
+      console.log(`  ${cyan(name.padEnd(width))}  ${dim(info.description)}`);
     }
-
     console.log("");
-    console.log("Usage examples:");
-    console.log("  pjangler init mise");
-    console.log("  pjangler init docker");
-    console.log("  pjangler init node");
+    console.log(`  ${dim("Examples")}`);
+    for (const example of ["pj init mise", "pj init docker", "pj init node"]) {
+      console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
+    }
+    console.log("");
   });
 
 // ============================================================================
@@ -430,11 +435,12 @@ projectCmd
         else {
           console.log(formatProjectInitPlan(plan));
           if (payload.proposedOperations.length) {
-            console.log("Proposed sync operations:");
-            for (const operation of payload.proposedOperations) console.log(`  - ${operation}`);
+            console.log(`  ${bold("Proposed operations")} ${dim(`(${payload.proposedOperations.length})`)}`);
+            for (const operation of payload.proposedOperations) console.log(`     ${cyan(glyph.bullet)} ${operation}`);
           } else {
-            console.log("Project is already in parity.");
+            console.log(`  ${green(glyph.pass)} ${dim("Project is already in parity.")}`);
           }
+          console.log("");
         }
         return;
       }
@@ -469,17 +475,17 @@ projectCmd
       } else {
         console.log(formatProjectInitPlan(selectedPlan));
         for (const line of result.logs) console.log(line);
-        for (const line of result.errors) console.error(line);
+        for (const line of result.errors) console.error(`  ${xmark} ${line}`);
         if (migrationReport) console.log(formatMigrationReport(migrationReport));
-        if (result.ok && changedFiles.length) console.log(`Project synchronized: ${plan.project.slug}`);
-        if (result.ok && changedFiles.length === 0) console.log(`Project already in parity: ${plan.project.slug}`);
+        if (result.ok && changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
+        if (result.ok && changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
       }
       process.exitCode = result.ok ? 0 : 1;
     } catch (err) {
       if (options.json) {
         console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
       } else {
-        console.error("❌ project init failed:", err instanceof Error ? err.message : err);
+        console.error(`${xmark} project init failed:`, err instanceof Error ? err.message : err);
       }
       process.exit(1);
     }
@@ -496,7 +502,7 @@ projectCmd
       if (options.json) console.log(JSON.stringify(registry, null, 2));
       else console.log(formatProjectList(registry));
     } catch (err) {
-      console.error("❌ project list failed:", err instanceof Error ? err.message : err);
+      console.error(`${xmark} project list failed:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
@@ -510,10 +516,17 @@ projectCmd
   .action((slug: string, options) => {
     try {
       const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
-      if (options.json) console.log(JSON.stringify(project, null, 2));
-      else console.log(`${project.name} (${project.slug})\n${project.repo_path}\n${project.description}`);
+      if (options.json) {
+        console.log(JSON.stringify(project, null, 2));
+      } else {
+        console.log("");
+        console.log(`  ${heading(project.name)} ${dim(`(${project.slug})`)}`);
+        console.log(`  ${dim(project.repo_path)}`);
+        if (project.description) console.log(`  ${project.description}`);
+        console.log("");
+      }
     } catch (err) {
-      console.error("❌ project show failed:", err instanceof Error ? err.message : err);
+      console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
@@ -530,14 +543,22 @@ projectCmd
       if (options.json) {
         console.log(JSON.stringify(report, null, 2));
       } else if (!report.issues.length) {
-        console.log(`Project registry OK: ${report.registryPath}`);
+        console.log("");
+        console.log(`  ${green(glyph.pass)} ${bold("Project registry OK")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+        console.log("");
       } else {
-        console.log(`Project registry issues: ${report.registryPath}`);
-        for (const issue of report.issues) console.log(`  [${issue.level}] ${issue.slug ?? "registry"}: ${issue.message}`);
+        console.log("");
+        console.log(`  ${red(glyph.fail)} ${bold("Project registry issues")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+        console.log("");
+        for (const issue of report.issues) {
+          const mark = issue.level === "error" ? red(glyph.fail) : yellow(glyph.warn);
+          console.log(`  ${mark}  ${bold(issue.slug ?? "registry")}  ${issue.message}`);
+        }
+        console.log("");
       }
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
-      console.error("❌ project doctor failed:", err instanceof Error ? err.message : err);
+      console.error(`${xmark} project doctor failed:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
@@ -554,19 +575,19 @@ recipeCmd
   .command("list")
   .description("List all available recipes")
   .action(() => {
-    console.log("📦 Available Recipes:");
     console.log("");
-
+    console.log(`  ${heading("Recipes")}`);
+    console.log("");
     for (const [name, info] of Object.entries(RECIPE_REGISTRY)) {
-      console.log(`  ${name}`);
-      console.log(`    ${info.description}`);
-      console.log(`    Commands: ${info.commands.join(", ")}`);
+      console.log(`  ${cyan(bold(name))}`);
+      console.log(`     ${dim(info.description)}`);
+      console.log(`     ${dim("commands")}  ${info.commands.map((command) => cyan(command)).join(dim(", "))}`);
       console.log("");
     }
-
-    console.log("Usage:");
-    console.log("  pjangler recipe run <name>");
-    console.log("  pjangler recipe describe <name>");
+    console.log(`  ${dim("Usage")}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim("pj recipe run <name>")}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim("pj recipe describe <name>")}`);
+    console.log("");
   });
 
 recipeCmd
@@ -577,23 +598,22 @@ recipeCmd
     const info = getRecipeInfo(name);
 
     if (!info) {
-      console.error(`❌ Recipe not found: ${name}`);
-      console.log(`Available recipes: ${getRecipeNames().join(", ")}`);
+      console.error(`${xmark} Recipe not found: ${bold(name)}`);
+      console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
 
-    console.log(`📦 Recipe: ${info.name}`);
     console.log("");
-    console.log(`Description: ${info.description}`);
+    console.log(`  ${heading(info.name)}`);
+    console.log(`  ${dim(info.description)}`);
     console.log("");
-    console.log("Commands:");
-    for (const cmd of info.commands) {
-      console.log(`  - ${cmd}`);
-    }
+    console.log(`  ${bold("Commands")}`);
+    for (const command of info.commands) console.log(`     ${cyan(glyph.bullet)} ${command}`);
     console.log("");
-    console.log("Usage:");
-    console.log(`  pjangler recipe run ${name}`);
-    console.log(`  pjangler init ${name}`);
+    console.log(`  ${dim("Usage")}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim(`pj recipe run ${name}`)}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim(`pj init ${name}`)}`);
+    console.log("");
   });
 
 recipeCmd
@@ -612,17 +632,14 @@ recipeCmd
     try {
       const recipe = createRecipe(name, context);
       if (!recipe) {
-        console.error(`❌ Recipe not found: ${name}`);
-        console.log(`Available recipes: ${getRecipeNames().join(", ")}`);
+        console.error(`${xmark} Recipe not found: ${bold(name)}`);
+        console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
         process.exit(1);
       }
 
-      const dryRunPrefix = context.dryRun ? "[DRY RUN] " : "";
-      console.log(`${dryRunPrefix}🚀 Running recipe: ${name}`);
-      console.log("");
       await recipe.execute();
     } catch (error) {
-      console.error(`❌ Error running recipe ${name}:`, error);
+      console.error(`${xmark} Error running recipe ${bold(name)}:`, error);
       process.exit(1);
     }
   });
@@ -641,31 +658,32 @@ commandCmd
   .description("List all available commands")
   .option("-g, --group", "Group commands by category")
   .action((options) => {
+    console.log("");
     if (options.group) {
-      console.log("⚙️  Available Commands (Grouped):");
-      console.log("");
-
-      const grouped = getCommandsByGroup();
-      for (const [group, commands] of Object.entries(grouped)) {
-        console.log(`  ${group.toUpperCase()}:`);
-        for (const cmd of commands) {
-          console.log(`    ${cmd.name.padEnd(30)} - ${cmd.description}`);
-        }
+      console.log(`  ${heading("Commands by category")}`);
+      for (const [group, commands] of Object.entries(getCommandsByGroup())) {
+        const width = commands.reduce((max, command) => Math.max(max, command.name.length), 0);
         console.log("");
+        console.log(`  ${bold(group.toUpperCase())}`);
+        for (const command of commands) {
+          console.log(`     ${cyan(command.name.padEnd(width))}  ${dim(command.description)}`);
+        }
       }
-    } else {
-      console.log("⚙️  Available Commands:");
       console.log("");
-
+    } else {
+      const width = Object.keys(COMMAND_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
+      console.log(`  ${heading("Commands")}`);
+      console.log("");
       for (const [name, info] of Object.entries(COMMAND_REGISTRY)) {
-        console.log(`  ${name.padEnd(30)} - ${info.description}`);
+        console.log(`  ${cyan(name.padEnd(width))}  ${dim(info.description)}`);
       }
       console.log("");
     }
 
-    console.log("Usage:");
-    console.log("  pj command list --group    # Group by category");
-    console.log("  pj command describe <name> # Show command details");
+    console.log(`  ${dim("Usage")}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim("pj command list --group")}     ${dim("# group by category")}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim("pj command describe <name>")}  ${dim("# command details")}`);
+    console.log("");
   });
 
 commandCmd
@@ -676,25 +694,24 @@ commandCmd
     const info = getCommandInfo(name);
 
     if (!info) {
-      console.error(`❌ Command not found: ${name}`);
-      console.log(`Available commands: ${getCommandNames().join(", ")}`);
+      console.error(`${xmark} Command not found: ${bold(name)}`);
+      console.error(`  ${dim("Available:")} ${getCommandNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
 
-    console.log(`⚙️  Command: ${info.name}`);
+    const usedIn = Object.entries(RECIPE_REGISTRY)
+      .filter(([, recipeInfo]) => recipeInfo.commands.includes(name))
+      .map(([recipeName]) => recipeName);
+
     console.log("");
-    console.log(`Description: ${info.description}`);
-    console.log(`Group: ${info.group}`);
+    console.log(`  ${heading(info.name)}`);
+    console.log(`  ${dim(info.description)}`);
     console.log("");
-    console.log("This command is used in recipes:");
-    for (const [recipeName, recipeInfo] of Object.entries(RECIPE_REGISTRY)) {
-      if (recipeInfo.commands.includes(name)) {
-        console.log(`  - ${recipeName}`);
-      }
-    }
+    console.log(`  ${dim("group".padEnd(7))} ${cyan(info.group)}`);
+    console.log(`  ${dim("recipes".padEnd(7))} ${usedIn.length ? usedIn.map((recipeName) => cyan(recipeName)).join(dim(", ")) : dim("(none)")}`);
     console.log("");
-    console.log("Usage:");
-    console.log(`  Part of recipe execution (not run directly)`);
+    console.log(`  ${dim("Part of recipe execution (not run directly).")}`);
+    console.log("");
   });
 
 commandCmd
@@ -705,19 +722,16 @@ commandCmd
   .option("-t, --template <type>", "Template type (toml, json, yaml, dockerfile)")
   .option("-m, --model <model>", "LLM model to use (OpenRouter)")
   .action((name: string, prompt: string, options) => {
-    console.log("🚧 Command generation coming in STORY-005!");
     console.log("");
-    console.log("Planned features:");
-    console.log(`  - Generate ${name} from prompt: "${prompt}"`);
-    if (options.template) {
-      console.log(`  - Template type: ${options.template}`);
-    }
-    if (options.model) {
-      console.log(`  - LLM model: ${options.model}`);
-    }
+    console.log(`  ${yellow(glyph.warn)} ${bold("Command generation coming in STORY-005")}`);
     console.log("");
-    console.log("This feature will be implemented in the Template Generation System story.");
-    console.log("For now, manually create commands in src/commands/");
+    console.log(`  ${dim("Planned")}`);
+    console.log(`     ${cyan(glyph.bullet)} Generate ${bold(name)} from prompt: ${dim(`"${prompt}"`)}`);
+    if (options.template) console.log(`     ${cyan(glyph.bullet)} Template type: ${cyan(options.template)}`);
+    if (options.model) console.log(`     ${cyan(glyph.bullet)} LLM model: ${cyan(options.model)}`);
+    console.log("");
+    console.log(`  ${dim("For now, manually create commands in src/commands/")}`);
+    console.log("");
   });
 
 // ============================================================================
@@ -739,7 +753,7 @@ program
       }
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
-      console.error("❌ audit failed:", err);
+      console.error(`${xmark} audit failed:`, err);
       process.exit(1);
     }
   });
@@ -775,7 +789,7 @@ program
       // Explicit rule-id + repo.
       if (ruleId && repo) {
         if (!getParityRuleIds().includes(ruleId)) {
-          console.error(`❌ Unknown parity rule: ${ruleId}`);
+          console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
           process.exit(1);
         }
         const report = runMigration(ruleId, repo, dryRun, false);
@@ -792,13 +806,13 @@ program
 
       // Non-interactive JSON mode cannot show the TUI.
       if (options.json) {
-        console.error("❌ JSON output requires a rule-id or --all");
+        console.error(`${xmark} JSON output requires a rule-id or --all`);
         process.exit(1);
       }
 
       // Non-TTY environments cannot show the TUI.
       if (!process.stdin.isTTY) {
-        console.error("❌ Provide a rule-id, use --all, or run in an interactive terminal");
+        console.error(`${xmark} Provide a rule-id, use --all, or run in an interactive terminal`);
         process.exit(1);
       }
 
@@ -807,14 +821,14 @@ program
       const audit = runAudit(targetRepo);
       const ruleIds = await promptForRuleIds(audit.rules);
       if (!ruleIds.length) {
-        console.log("No rules selected; nothing to migrate.");
+        console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
         process.exit(0);
       }
       const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
       printMigrationReport(report, false);
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
-      console.error("❌ migrate failed:", err);
+      console.error(`${xmark} migrate failed:`, err);
       process.exit(1);
     }
   });
@@ -875,12 +889,12 @@ program
     try {
       const recipe = createRecipe("hermes-agent", context);
       if (!recipe) {
-        console.error("❌ hermes-agent recipe not registered");
+        console.error(`${xmark} hermes-agent recipe not registered`);
         process.exit(1);
       }
       await recipe.execute();
     } catch (err) {
-      console.error("❌ hermes-agent failed:", err);
+      console.error(`${xmark} hermes-agent failed:`, err);
       process.exit(1);
     }
   });
@@ -919,15 +933,16 @@ program
   .command("describe")
   .description("Describe the current project (for AI context)")
   .action(() => {
-    console.log("🔍 Project Description (placeholder for future enhancement)");
     console.log("");
-    console.log("This command will analyze the project and provide:");
-    console.log("  - Detected project type");
-    console.log("  - Installed subsystems");
-    console.log("  - Configuration files present");
-    console.log("  - Suggested next steps");
+    console.log(`  ${heading("Project description")} ${dim("(placeholder)")}`);
     console.log("");
-    console.log("Coming soon!");
+    console.log(`  ${dim("Will analyze the project and report:")}`);
+    for (const item of ["Detected project type", "Installed subsystems", "Configuration files present", "Suggested next steps"]) {
+      console.log(`     ${cyan(glyph.bullet)} ${item}`);
+    }
+    console.log("");
+    console.log(`  ${dim("Coming soon.")}`);
+    console.log("");
   });
 
 program.parse();

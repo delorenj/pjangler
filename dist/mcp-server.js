@@ -44,6 +44,63 @@ var Command = class {
   }
 };
 
+// src/utils/style.ts
+var env = process.env;
+function detectColor() {
+  if ("NO_COLOR" in env && env.NO_COLOR !== "") return false;
+  const force = env.FORCE_COLOR;
+  if (force === "0" || force === "false") return false;
+  if (force !== void 0 && force !== "") return true;
+  if (env.TERM === "dumb") return false;
+  return Boolean(process.stdout.isTTY);
+}
+var colorEnabled = detectColor();
+function sgr(open, close) {
+  const prefix = `\x1B[${open}m`;
+  const suffix = `\x1B[${close}m`;
+  return (value) => colorEnabled ? `${prefix}${value}${suffix}` : String(value);
+}
+var bold = sgr(1, 22);
+var dim = sgr(2, 22);
+var italic = sgr(3, 23);
+var underline = sgr(4, 24);
+var red = sgr(31, 39);
+var green = sgr(32, 39);
+var yellow = sgr(33, 39);
+var blue = sgr(34, 39);
+var magenta = sgr(35, 39);
+var cyan = sgr(36, 39);
+var gray = sgr(90, 39);
+var glyph = {
+  pass: "\u2714",
+  fail: "\u2716",
+  warn: "\u26A0",
+  skip: "\u25CB",
+  info: "\u2139",
+  arrow: "\u21B3",
+  bullet: "\u2022",
+  dot: "\xB7",
+  add: "+",
+  chevron: "\u25B8",
+  pointer: "\u276F"
+};
+var STATUS_STYLES = {
+  pass: { glyph: glyph.pass, color: green, label: "pass" },
+  fail: { glyph: glyph.fail, color: red, label: "fail" },
+  warn: { glyph: glyph.warn, color: yellow, label: "warn" },
+  skip: { glyph: glyph.skip, color: gray, label: "skip" },
+  applied: { glyph: glyph.pass, color: green, label: "applied" },
+  noop: { glyph: glyph.skip, color: gray, label: "noop" },
+  blocked: { glyph: glyph.fail, color: red, label: "blocked" },
+  skipped: { glyph: glyph.skip, color: gray, label: "skipped" }
+};
+function statusStyle(status) {
+  return STATUS_STYLES[status] ?? { glyph: glyph.dot, color: dim, label: status };
+}
+function joinDot(fragments) {
+  return fragments.join(dim(` ${glyph.dot} `));
+}
+
 // src/recipes/Recipe.ts
 var Recipe = class {
   context;
@@ -56,26 +113,22 @@ var Recipe = class {
     return this;
   }
   async execute() {
-    const dryRunPrefix = this.context.dryRun ? "[DRY RUN] " : "";
-    console.log(`${dryRunPrefix}\u{1F680} Initializing ${this.constructor.name.replace("Recipe", "").toLowerCase()} subsystem...`);
-    if (this.context.dryRun) {
-      console.log("\u26A0\uFE0F  Dry-run mode: No files will be modified");
-      console.log("");
-    }
+    const subsystem = this.constructor.name.replace("Recipe", "").toLowerCase();
+    const dryRun = this.context.dryRun;
+    console.log("");
+    console.log(`  ${cyan(bold(glyph.chevron))} ${bold(`Initializing ${subsystem} subsystem`)}${dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+    console.log("");
     for (const command of this.ingredients) {
       const result = await command.invoke();
-      if (result.success) {
-        console.log(result.message);
-      } else {
-        console.log(result.message);
-      }
+      console.log(result.message.split("\n").map((line) => line ? `  ${line}` : line).join("\n"));
     }
-    if (!this.context.dryRun) {
+    if (!dryRun) {
       this.printNextSteps();
     } else {
       console.log("");
-      console.log("\u2713 Dry-run complete - no files were modified");
-      console.log("  Remove --dry-run flag to apply changes");
+      console.log(`  ${green(glyph.pass)} ${dim("Dry-run complete \u2014 no files were modified.")}`);
+      console.log(`  ${dim("Remove --dry-run to apply changes.")}`);
+      console.log("");
     }
   }
 };
@@ -767,7 +820,7 @@ var RunCopierTemplate = class extends Command {
         ctx.force = true;
       }
     }
-    const env = {
+    const env2 = {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
@@ -816,7 +869,7 @@ var RunCopierTemplate = class extends Command {
     const result = spawnSync("copier", args, {
       stdio: "inherit",
       // pass the interactive output through; copier prints its own progress
-      env,
+      env: env2,
       cwd: ctx.targetDir
     });
     spinner4.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
@@ -2745,14 +2798,31 @@ function runMigration(selector, repoArg, dryRun, all) {
   const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
   return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
+function prettyTimestamp(iso) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return match ? `${match[1]} ${match[2]} UTC` : iso;
+}
 function formatAuditReport(report) {
-  const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
+  const counts = {};
+  for (const rule of report.rules) counts[rule.status] = (counts[rule.status] ?? 0) + 1;
+  const idWidth = report.rules.reduce((width, rule) => Math.max(width, rule.id.length), 0);
+  const tally = [];
+  if (counts.pass) tally.push(green(`${counts.pass} passed`));
+  if (counts.fail) tally.push(red(`${counts.fail} failed`));
+  if (counts.warn) tally.push(yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`));
+  if (counts.skip) tally.push(gray(`${counts.skip} skipped`));
+  const overall = report.ok ? `${green(glyph.pass)} ${bold("Parity audit passed")}` : `${red(glyph.fail)} ${bold("Parity audit failed")}`;
+  const lines = [""];
+  lines.push(`  ${overall}${tally.length ? `  ${dim(glyph.dot)}  ${joinDot(tally)}` : ""}`);
+  lines.push(`  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(prettyTimestamp(report.auditedAt))}`);
+  lines.push("");
   for (const rule of report.rules) {
-    lines.push(`- ${rule.id} [${rule.status}] ${rule.summary}`);
-    for (const detail of rule.details) lines.push(`    - ${detail}`);
+    const style = statusStyle(rule.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(rule.id.padEnd(idWidth))}  ${rule.summary}`);
+    for (const detail of rule.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
   }
-  return `${lines.join("\n")}
-`;
+  lines.push("");
+  return lines.join("\n");
 }
 
 // src/project/index.ts
@@ -2769,8 +2839,8 @@ var KNOWN_SKILL_ROOTS = [
   "/home/delorenj/code/pjangler/.agents/skills",
   join10(homedir5(), ".codex", "skills")
 ];
-function projectRegistryPath(env = process.env) {
-  return expandHome(env[PROJECT_REGISTRY_ENV] || join10(homedir5(), ".config", "pjangler", "projects.yaml"));
+function projectRegistryPath(env2 = process.env) {
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join10(homedir5(), ".config", "pjangler", "projects.yaml"));
 }
 function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };

@@ -7,17 +7,9 @@
     "type": "plane",
     "workspace": "33god",
     "identifier": "PJAN",
-    "board_id": "18a79832-00fb-4146-b054-d88528f9fef3",
-    "board_url": "https://plane.delo.sh/33god/projects/18a79832-00fb-4146-b054-d88528f9fef3/issues/"
+    "board_id": "",
+    "board_url": "",
+    "state": "planned"
   },
-  "agents": {
-    "pjangler-pm": {
-      "role": "pm",
-      "role_dir": "agents/hermes/pm"
-    },
-    "pjangler-scrum-master": {
-      "role": "scrum-master",
-      "role_dir": "agents/hermes/scrum-master"
-    }
-  }
+  "agents": {}
 }

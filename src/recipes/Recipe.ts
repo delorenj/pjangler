@@ -1,5 +1,6 @@
 import { Command } from "../commands/Command";
 import type { CommandContext } from "../commands/Command";
+import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
 
 export interface AddIngredient<T extends Command = Command> {
   new (context: CommandContext): T;
@@ -19,30 +20,25 @@ export abstract class Recipe {
   }
 
   async execute(): Promise<void> {
-    const dryRunPrefix = this.context.dryRun ? "[DRY RUN] " : "";
-    console.log(`${dryRunPrefix}🚀 Initializing ${this.constructor.name.replace('Recipe', '').toLowerCase()} subsystem...`);
-
-    if (this.context.dryRun) {
-      console.log("⚠️  Dry-run mode: No files will be modified");
-      console.log("");
-    }
+    const subsystem = this.constructor.name.replace("Recipe", "").toLowerCase();
+    const dryRun = this.context.dryRun;
+    console.log("");
+    console.log(`  ${cyan(bold(glyph.chevron))} ${bold(`Initializing ${subsystem} subsystem`)}${dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+    console.log("");
 
     for (const command of this.ingredients) {
       const result = await command.invoke();
-
-      if (result.success) {
-        console.log(result.message);
-      } else {
-        console.log(result.message);
-      }
+      // Indent each line so ingredient output aligns under the banner frame.
+      console.log(result.message.split("\n").map((line) => (line ? `  ${line}` : line)).join("\n"));
     }
 
-    if (!this.context.dryRun) {
+    if (!dryRun) {
       this.printNextSteps();
     } else {
       console.log("");
-      console.log("✓ Dry-run complete - no files were modified");
-      console.log("  Remove --dry-run flag to apply changes");
+      console.log(`  ${green(glyph.pass)} ${dim("Dry-run complete — no files were modified.")}`);
+      console.log(`  ${dim("Remove --dry-run to apply changes.")}`);
+      console.log("");
     }
   }
 

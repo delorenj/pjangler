@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 
 export type RuleStatus = "pass" | "fail" | "warn" | "skip";
 
@@ -1414,25 +1415,63 @@ export function runMigration(selector: string | undefined, repoArg: string | und
   return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
 
+function prettyTimestamp(iso: string): string {
+  // 2026-07-07T09:59:00.989Z -> 2026-07-07 09:59:00 UTC
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return match ? `${match[1]} ${match[2]} UTC` : iso;
+}
+
 export function formatAuditReport(report: AuditReport): string {
-  const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
+  const counts: Record<string, number> = {};
+  for (const rule of report.rules) counts[rule.status] = (counts[rule.status] ?? 0) + 1;
+  const idWidth = report.rules.reduce((width, rule) => Math.max(width, rule.id.length), 0);
+
+  const tally: string[] = [];
+  if (counts.pass) tally.push(green(`${counts.pass} passed`));
+  if (counts.fail) tally.push(red(`${counts.fail} failed`));
+  if (counts.warn) tally.push(yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`));
+  if (counts.skip) tally.push(gray(`${counts.skip} skipped`));
+
+  const overall = report.ok
+    ? `${green(glyph.pass)} ${bold("Parity audit passed")}`
+    : `${red(glyph.fail)} ${bold("Parity audit failed")}`;
+
+  const lines = [""];
+  lines.push(`  ${overall}${tally.length ? `  ${dim(glyph.dot)}  ${joinDot(tally)}` : ""}`);
+  lines.push(`  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(prettyTimestamp(report.auditedAt))}`);
+  lines.push("");
   for (const rule of report.rules) {
-    lines.push(`- ${rule.id} [${rule.status}] ${rule.summary}`);
-    for (const detail of rule.details) lines.push(`    - ${detail}`);
+    const style = statusStyle(rule.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(rule.id.padEnd(idWidth))}  ${rule.summary}`);
+    for (const detail of rule.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
   }
-  return `${lines.join("\n")}\n`;
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function formatMigrationReport(report: MigrationReport): string {
-  const lines = [`repo: ${report.repo}`, `dry_run: ${report.dryRun}`, `ok: ${report.ok}`, `selected_rules: ${report.selectedRules.join(", ")}`, "results:"];
+  const idWidth = report.results.reduce((width, result) => Math.max(width, result.id.length), 0);
+
+  const overall = report.ok
+    ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}`
+    : `${red(glyph.fail)} ${bold("Migration finished with blockers")}`;
+
+  const lines = [""];
+  lines.push(`  ${overall}${report.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+  lines.push(`  ${dim(report.repo)}`);
+  if (report.selectedRules.length) lines.push(`  ${dim(`rules: ${report.selectedRules.join(", ")}`)}`);
+  lines.push("");
   for (const result of report.results) {
-    lines.push(`- ${result.id} [${result.status}] ${result.summary}`);
-    for (const detail of result.details) lines.push(`    - ${detail}`);
-    for (const file of result.changedFiles) lines.push(`    - changed: ${file}`);
+    const style = statusStyle(result.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(result.id.padEnd(idWidth))}  ${result.summary}  ${dim(`[${style.label}]`)}`);
+    for (const detail of result.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
+    for (const file of result.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
   }
   if (report.changedFiles.length) {
-    lines.push("changed_files:");
-    for (const file of report.changedFiles) lines.push(`- ${file}`);
+    lines.push("");
+    lines.push(`  ${bold(`Changed files (${report.changedFiles.length})`)}`);
+    for (const file of report.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
   }
-  return `${lines.join("\n")}\n`;
+  lines.push("");
+  return lines.join("\n");
 }

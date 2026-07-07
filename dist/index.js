@@ -159,6 +159,78 @@ var EnsureTemplateConfig = class extends Command {
   }
 };
 
+// src/utils/style.ts
+var env = process.env;
+function detectColor() {
+  if ("NO_COLOR" in env && env.NO_COLOR !== "") return false;
+  const force = env.FORCE_COLOR;
+  if (force === "0" || force === "false") return false;
+  if (force !== void 0 && force !== "") return true;
+  if (env.TERM === "dumb") return false;
+  return Boolean(process.stdout.isTTY);
+}
+var colorEnabled = detectColor();
+function sgr(open, close) {
+  const prefix = `\x1B[${open}m`;
+  const suffix = `\x1B[${close}m`;
+  return (value) => colorEnabled ? `${prefix}${value}${suffix}` : String(value);
+}
+var bold = sgr(1, 22);
+var dim = sgr(2, 22);
+var italic = sgr(3, 23);
+var underline = sgr(4, 24);
+var red = sgr(31, 39);
+var green = sgr(32, 39);
+var yellow = sgr(33, 39);
+var blue = sgr(34, 39);
+var magenta = sgr(35, 39);
+var cyan = sgr(36, 39);
+var gray = sgr(90, 39);
+var glyph = {
+  pass: "\u2714",
+  fail: "\u2716",
+  warn: "\u26A0",
+  skip: "\u25CB",
+  info: "\u2139",
+  arrow: "\u21B3",
+  bullet: "\u2022",
+  dot: "\xB7",
+  add: "+",
+  chevron: "\u25B8",
+  pointer: "\u276F"
+};
+var STATUS_STYLES = {
+  pass: { glyph: glyph.pass, color: green, label: "pass" },
+  fail: { glyph: glyph.fail, color: red, label: "fail" },
+  warn: { glyph: glyph.warn, color: yellow, label: "warn" },
+  skip: { glyph: glyph.skip, color: gray, label: "skip" },
+  applied: { glyph: glyph.pass, color: green, label: "applied" },
+  noop: { glyph: glyph.skip, color: gray, label: "noop" },
+  blocked: { glyph: glyph.fail, color: red, label: "blocked" },
+  skipped: { glyph: glyph.skip, color: gray, label: "skipped" }
+};
+function statusStyle(status) {
+  return STATUS_STYLES[status] ?? { glyph: glyph.dot, color: dim, label: status };
+}
+function projectStatusColor(status) {
+  switch (status) {
+    case "active":
+      return green;
+    case "planned":
+      return yellow;
+    case "archived":
+      return gray;
+    default:
+      return cyan;
+  }
+}
+function heading(title, marker = glyph.chevron) {
+  return `${cyan(bold(marker))} ${bold(title)}`;
+}
+function joinDot(fragments) {
+  return fragments.join(dim(` ${glyph.dot} `));
+}
+
 // src/recipes/Recipe.ts
 var Recipe = class {
   context;
@@ -171,26 +243,22 @@ var Recipe = class {
     return this;
   }
   async execute() {
-    const dryRunPrefix = this.context.dryRun ? "[DRY RUN] " : "";
-    console.log(`${dryRunPrefix}\u{1F680} Initializing ${this.constructor.name.replace("Recipe", "").toLowerCase()} subsystem...`);
-    if (this.context.dryRun) {
-      console.log("\u26A0\uFE0F  Dry-run mode: No files will be modified");
-      console.log("");
-    }
+    const subsystem = this.constructor.name.replace("Recipe", "").toLowerCase();
+    const dryRun = this.context.dryRun;
+    console.log("");
+    console.log(`  ${cyan(bold(glyph.chevron))} ${bold(`Initializing ${subsystem} subsystem`)}${dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+    console.log("");
     for (const command of this.ingredients) {
       const result = await command.invoke();
-      if (result.success) {
-        console.log(result.message);
-      } else {
-        console.log(result.message);
-      }
+      console.log(result.message.split("\n").map((line) => line ? `  ${line}` : line).join("\n"));
     }
-    if (!this.context.dryRun) {
+    if (!dryRun) {
       this.printNextSteps();
     } else {
       console.log("");
-      console.log("\u2713 Dry-run complete - no files were modified");
-      console.log("  Remove --dry-run flag to apply changes");
+      console.log(`  ${green(glyph.pass)} ${dim("Dry-run complete \u2014 no files were modified.")}`);
+      console.log(`  ${dim("Remove --dry-run to apply changes.")}`);
+      console.log("");
     }
   }
 };
@@ -765,7 +833,7 @@ var RunCopierTemplate = class extends Command {
         ctx.force = true;
       }
     }
-    const env = {
+    const env2 = {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
@@ -814,7 +882,7 @@ var RunCopierTemplate = class extends Command {
     const result = spawnSync("copier", args, {
       stdio: "inherit",
       // pass the interactive output through; copier prints its own progress
-      env,
+      env: env2,
       cwd: ctx.targetDir
     });
     spinner4.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
@@ -2740,28 +2808,53 @@ function runMigration(selector, repoArg, dryRun, all) {
   const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
   return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
+function prettyTimestamp(iso) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return match ? `${match[1]} ${match[2]} UTC` : iso;
+}
 function formatAuditReport(report) {
-  const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
+  const counts = {};
+  for (const rule of report.rules) counts[rule.status] = (counts[rule.status] ?? 0) + 1;
+  const idWidth = report.rules.reduce((width, rule) => Math.max(width, rule.id.length), 0);
+  const tally = [];
+  if (counts.pass) tally.push(green(`${counts.pass} passed`));
+  if (counts.fail) tally.push(red(`${counts.fail} failed`));
+  if (counts.warn) tally.push(yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`));
+  if (counts.skip) tally.push(gray(`${counts.skip} skipped`));
+  const overall = report.ok ? `${green(glyph.pass)} ${bold("Parity audit passed")}` : `${red(glyph.fail)} ${bold("Parity audit failed")}`;
+  const lines = [""];
+  lines.push(`  ${overall}${tally.length ? `  ${dim(glyph.dot)}  ${joinDot(tally)}` : ""}`);
+  lines.push(`  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(prettyTimestamp(report.auditedAt))}`);
+  lines.push("");
   for (const rule of report.rules) {
-    lines.push(`- ${rule.id} [${rule.status}] ${rule.summary}`);
-    for (const detail of rule.details) lines.push(`    - ${detail}`);
+    const style = statusStyle(rule.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(rule.id.padEnd(idWidth))}  ${rule.summary}`);
+    for (const detail of rule.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
   }
-  return `${lines.join("\n")}
-`;
+  lines.push("");
+  return lines.join("\n");
 }
 function formatMigrationReport(report) {
-  const lines = [`repo: ${report.repo}`, `dry_run: ${report.dryRun}`, `ok: ${report.ok}`, `selected_rules: ${report.selectedRules.join(", ")}`, "results:"];
+  const idWidth = report.results.reduce((width, result) => Math.max(width, result.id.length), 0);
+  const overall = report.ok ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}` : `${red(glyph.fail)} ${bold("Migration finished with blockers")}`;
+  const lines = [""];
+  lines.push(`  ${overall}${report.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+  lines.push(`  ${dim(report.repo)}`);
+  if (report.selectedRules.length) lines.push(`  ${dim(`rules: ${report.selectedRules.join(", ")}`)}`);
+  lines.push("");
   for (const result of report.results) {
-    lines.push(`- ${result.id} [${result.status}] ${result.summary}`);
-    for (const detail of result.details) lines.push(`    - ${detail}`);
-    for (const file of result.changedFiles) lines.push(`    - changed: ${file}`);
+    const style = statusStyle(result.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(result.id.padEnd(idWidth))}  ${result.summary}  ${dim(`[${style.label}]`)}`);
+    for (const detail of result.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
+    for (const file of result.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
   }
   if (report.changedFiles.length) {
-    lines.push("changed_files:");
-    for (const file of report.changedFiles) lines.push(`- ${file}`);
+    lines.push("");
+    lines.push(`  ${bold(`Changed files (${report.changedFiles.length})`)}`);
+    for (const file of report.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
   }
-  return `${lines.join("\n")}
-`;
+  lines.push("");
+  return lines.join("\n");
 }
 
 // src/project/index.ts
@@ -2778,8 +2871,8 @@ var KNOWN_SKILL_ROOTS = [
   "/home/delorenj/code/pjangler/.agents/skills",
   join9(homedir5(), ".codex", "skills")
 ];
-function projectRegistryPath(env = process.env) {
-  return expandHome(env[PROJECT_REGISTRY_ENV] || join9(homedir5(), ".config", "pjangler", "projects.yaml"));
+function projectRegistryPath(env2 = process.env) {
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join9(homedir5(), ".config", "pjangler", "projects.yaml"));
 }
 function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
@@ -3050,24 +3143,40 @@ function projectManifestFromRegistryProject(project) {
   };
 }
 function formatProjectInitPlan(plan) {
-  const lines = [
-    `${plan.dryRun ? "[DRY RUN] " : ""}Project init plan: ${plan.project.name} (${plan.project.slug})`,
-    `Registry: ${plan.registryPath}`,
-    `Target: ${plan.project.repo_path}`,
-    "Actions:"
-  ];
+  const lines = [""];
+  const title = `${bold(plan.project.name)} ${dim(`(${plan.project.slug})`)}`;
+  lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+  lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
+  lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  lines.push("");
+  lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
+  if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
   for (const action of plan.actions) {
-    lines.push(`  - ${action.kind}`);
-    if (action.kind === "copier.copy.commonproject") lines.push(`    target: ${action.targetDir}`);
-    if (action.kind === "project.write-manifest") lines.push(`    path: ${action.path}`);
-    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`    note: ${action.reason}`);
+    lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
+    if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
+    if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
+    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
   }
+  lines.push("");
   return lines.join("\n");
 }
 function formatProjectList(registry) {
   const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
-  if (!projects.length) return "No projects registered.";
-  return projects.map((project) => `${project.slug.padEnd(18)} ${String(project.ticket_provider.identifier ?? "").padEnd(6)} ${project.status.padEnd(8)} ${project.repo_path}`).join("\n");
+  if (!projects.length) return `
+  ${dim("No projects registered.")}
+`;
+  const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
+  const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
+  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
+  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
+  for (const project of projects) {
+    const slug = bold(project.slug.padEnd(slugWidth));
+    const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
+    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
+    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 function getProject(registry, slug) {
   const project = registry.projects[slug];
@@ -3189,6 +3298,7 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/index.ts
+var xmark = `${red(glyph.fail)}`;
 function printMigrationReport(report, asJson) {
   if (asJson) {
     console.log(JSON.stringify(report, null, 2));
@@ -3384,27 +3494,30 @@ program.command("init").argument("<subsystem>", "Subsystem to initialize").descr
   try {
     const recipe = createRecipe(subsystem, context);
     if (!recipe) {
-      console.error(`\u274C Unknown subsystem: ${subsystem}`);
-      console.log(`Available subsystems: ${getRecipeNames().join(", ")}`);
+      console.error(`${xmark} Unknown subsystem: ${bold(subsystem)}`);
+      console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
     await recipe.execute();
   } catch (error) {
-    console.error(`\u274C Error initializing ${subsystem}:`, error);
+    console.error(`${xmark} Error initializing ${bold(subsystem)}:`, error);
     process.exit(1);
   }
 });
 program.command("list").description("List available subsystems").action(() => {
-  console.log("Available subsystems:");
+  const width = Object.keys(RECIPE_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
+  console.log("");
+  console.log(`  ${heading("Available subsystems")}`);
   console.log("");
   for (const [name, info] of Object.entries(RECIPE_REGISTRY)) {
-    console.log(`  ${name.padEnd(10)} - ${info.description}`);
+    console.log(`  ${cyan(name.padEnd(width))}  ${dim(info.description)}`);
   }
   console.log("");
-  console.log("Usage examples:");
-  console.log("  pjangler init mise");
-  console.log("  pjangler init docker");
-  console.log("  pjangler init node");
+  console.log(`  ${dim("Examples")}`);
+  for (const example of ["pj init mise", "pj init docker", "pj init node"]) {
+    console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
+  }
+  console.log("");
 });
 var projectCmd = program.command("project").description("Manage the pjangler project registry");
 projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
@@ -3458,11 +3571,12 @@ projectCmd.command("init").argument("[name]", "Project display name").descriptio
       else {
         console.log(formatProjectInitPlan(plan));
         if (payload.proposedOperations.length) {
-          console.log("Proposed sync operations:");
-          for (const operation of payload.proposedOperations) console.log(`  - ${operation}`);
+          console.log(`  ${bold("Proposed operations")} ${dim(`(${payload.proposedOperations.length})`)}`);
+          for (const operation of payload.proposedOperations) console.log(`     ${cyan(glyph.bullet)} ${operation}`);
         } else {
-          console.log("Project is already in parity.");
+          console.log(`  ${green(glyph.pass)} ${dim("Project is already in parity.")}`);
         }
+        console.log("");
       }
       return;
     }
@@ -3490,17 +3604,19 @@ projectCmd.command("init").argument("[name]", "Project display name").descriptio
     } else {
       console.log(formatProjectInitPlan(selectedPlan));
       for (const line of result.logs) console.log(line);
-      for (const line of result.errors) console.error(line);
+      for (const line of result.errors) console.error(`  ${xmark} ${line}`);
       if (migrationReport) console.log(formatMigrationReport(migrationReport));
-      if (result.ok && changedFiles.length) console.log(`Project synchronized: ${plan.project.slug}`);
-      if (result.ok && changedFiles.length === 0) console.log(`Project already in parity: ${plan.project.slug}`);
+      if (result.ok && changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
+`);
+      if (result.ok && changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
+`);
     }
     process.exitCode = result.ok ? 0 : 1;
   } catch (err) {
     if (options.json) {
       console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
     } else {
-      console.error("\u274C project init failed:", err instanceof Error ? err.message : err);
+      console.error(`${xmark} project init failed:`, err instanceof Error ? err.message : err);
     }
     process.exit(1);
   }
@@ -3511,19 +3627,24 @@ projectCmd.command("list").description("List projects in the pjangler registry")
     if (options.json) console.log(JSON.stringify(registry, null, 2));
     else console.log(formatProjectList(registry));
   } catch (err) {
-    console.error("\u274C project list failed:", err instanceof Error ? err.message : err);
+    console.error(`${xmark} project list failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
   }
 });
 projectCmd.command("show").argument("<slug>", "Project slug").description("Show one project from the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((slug, options) => {
   try {
     const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
-    if (options.json) console.log(JSON.stringify(project, null, 2));
-    else console.log(`${project.name} (${project.slug})
-${project.repo_path}
-${project.description}`);
+    if (options.json) {
+      console.log(JSON.stringify(project, null, 2));
+    } else {
+      console.log("");
+      console.log(`  ${heading(project.name)} ${dim(`(${project.slug})`)}`);
+      console.log(`  ${dim(project.repo_path)}`);
+      if (project.description) console.log(`  ${project.description}`);
+      console.log("");
+    }
   } catch (err) {
-    console.error("\u274C project show failed:", err instanceof Error ? err.message : err);
+    console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
   }
 });
@@ -3533,50 +3654,59 @@ projectCmd.command("doctor").argument("[slug]", "Optional project slug").descrip
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));
     } else if (!report.issues.length) {
-      console.log(`Project registry OK: ${report.registryPath}`);
+      console.log("");
+      console.log(`  ${green(glyph.pass)} ${bold("Project registry OK")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+      console.log("");
     } else {
-      console.log(`Project registry issues: ${report.registryPath}`);
-      for (const issue of report.issues) console.log(`  [${issue.level}] ${issue.slug ?? "registry"}: ${issue.message}`);
+      console.log("");
+      console.log(`  ${red(glyph.fail)} ${bold("Project registry issues")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+      console.log("");
+      for (const issue of report.issues) {
+        const mark = issue.level === "error" ? red(glyph.fail) : yellow(glyph.warn);
+        console.log(`  ${mark}  ${bold(issue.slug ?? "registry")}  ${issue.message}`);
+      }
+      console.log("");
     }
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
-    console.error("\u274C project doctor failed:", err instanceof Error ? err.message : err);
+    console.error(`${xmark} project doctor failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
   }
 });
 var recipeCmd = program.command("recipe").description("Manage pjangler recipes");
 recipeCmd.command("list").description("List all available recipes").action(() => {
-  console.log("\u{1F4E6} Available Recipes:");
+  console.log("");
+  console.log(`  ${heading("Recipes")}`);
   console.log("");
   for (const [name, info] of Object.entries(RECIPE_REGISTRY)) {
-    console.log(`  ${name}`);
-    console.log(`    ${info.description}`);
-    console.log(`    Commands: ${info.commands.join(", ")}`);
+    console.log(`  ${cyan(bold(name))}`);
+    console.log(`     ${dim(info.description)}`);
+    console.log(`     ${dim("commands")}  ${info.commands.map((command) => cyan(command)).join(dim(", "))}`);
     console.log("");
   }
-  console.log("Usage:");
-  console.log("  pjangler recipe run <name>");
-  console.log("  pjangler recipe describe <name>");
+  console.log(`  ${dim("Usage")}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim("pj recipe run <name>")}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim("pj recipe describe <name>")}`);
+  console.log("");
 });
 recipeCmd.command("describe").argument("<name>", "Recipe name").description("Show detailed information about a recipe").action((name) => {
   const info = getRecipeInfo(name);
   if (!info) {
-    console.error(`\u274C Recipe not found: ${name}`);
-    console.log(`Available recipes: ${getRecipeNames().join(", ")}`);
+    console.error(`${xmark} Recipe not found: ${bold(name)}`);
+    console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
     process.exit(1);
   }
-  console.log(`\u{1F4E6} Recipe: ${info.name}`);
   console.log("");
-  console.log(`Description: ${info.description}`);
+  console.log(`  ${heading(info.name)}`);
+  console.log(`  ${dim(info.description)}`);
   console.log("");
-  console.log("Commands:");
-  for (const cmd of info.commands) {
-    console.log(`  - ${cmd}`);
-  }
+  console.log(`  ${bold("Commands")}`);
+  for (const command of info.commands) console.log(`     ${cyan(glyph.bullet)} ${command}`);
   console.log("");
-  console.log("Usage:");
-  console.log(`  pjangler recipe run ${name}`);
-  console.log(`  pjangler init ${name}`);
+  console.log(`  ${dim("Usage")}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim(`pj recipe run ${name}`)}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim(`pj init ${name}`)}`);
+  console.log("");
 });
 recipeCmd.command("run").argument("<name>", "Recipe name").description("Execute a specific recipe").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (name, options) => {
   const context = {
@@ -3587,80 +3717,73 @@ recipeCmd.command("run").argument("<name>", "Recipe name").description("Execute 
   try {
     const recipe = createRecipe(name, context);
     if (!recipe) {
-      console.error(`\u274C Recipe not found: ${name}`);
-      console.log(`Available recipes: ${getRecipeNames().join(", ")}`);
+      console.error(`${xmark} Recipe not found: ${bold(name)}`);
+      console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
-    const dryRunPrefix = context.dryRun ? "[DRY RUN] " : "";
-    console.log(`${dryRunPrefix}\u{1F680} Running recipe: ${name}`);
-    console.log("");
     await recipe.execute();
   } catch (error) {
-    console.error(`\u274C Error running recipe ${name}:`, error);
+    console.error(`${xmark} Error running recipe ${bold(name)}:`, error);
     process.exit(1);
   }
 });
 var commandCmd = program.command("command").alias("cmd").description("Manage pjangler commands");
 commandCmd.command("list").description("List all available commands").option("-g, --group", "Group commands by category").action((options) => {
+  console.log("");
   if (options.group) {
-    console.log("\u2699\uFE0F  Available Commands (Grouped):");
-    console.log("");
-    const grouped = getCommandsByGroup();
-    for (const [group, commands] of Object.entries(grouped)) {
-      console.log(`  ${group.toUpperCase()}:`);
-      for (const cmd of commands) {
-        console.log(`    ${cmd.name.padEnd(30)} - ${cmd.description}`);
-      }
+    console.log(`  ${heading("Commands by category")}`);
+    for (const [group, commands] of Object.entries(getCommandsByGroup())) {
+      const width = commands.reduce((max, command) => Math.max(max, command.name.length), 0);
       console.log("");
+      console.log(`  ${bold(group.toUpperCase())}`);
+      for (const command of commands) {
+        console.log(`     ${cyan(command.name.padEnd(width))}  ${dim(command.description)}`);
+      }
     }
+    console.log("");
   } else {
-    console.log("\u2699\uFE0F  Available Commands:");
+    const width = Object.keys(COMMAND_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
+    console.log(`  ${heading("Commands")}`);
     console.log("");
     for (const [name, info] of Object.entries(COMMAND_REGISTRY)) {
-      console.log(`  ${name.padEnd(30)} - ${info.description}`);
+      console.log(`  ${cyan(name.padEnd(width))}  ${dim(info.description)}`);
     }
     console.log("");
   }
-  console.log("Usage:");
-  console.log("  pj command list --group    # Group by category");
-  console.log("  pj command describe <name> # Show command details");
+  console.log(`  ${dim("Usage")}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim("pj command list --group")}     ${dim("# group by category")}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim("pj command describe <name>")}  ${dim("# command details")}`);
+  console.log("");
 });
 commandCmd.command("describe").argument("<name>", "Command name").description("Show detailed information about a command").action((name) => {
   const info = getCommandInfo(name);
   if (!info) {
-    console.error(`\u274C Command not found: ${name}`);
-    console.log(`Available commands: ${getCommandNames().join(", ")}`);
+    console.error(`${xmark} Command not found: ${bold(name)}`);
+    console.error(`  ${dim("Available:")} ${getCommandNames().map((available) => cyan(available)).join(dim(", "))}`);
     process.exit(1);
   }
-  console.log(`\u2699\uFE0F  Command: ${info.name}`);
+  const usedIn = Object.entries(RECIPE_REGISTRY).filter(([, recipeInfo]) => recipeInfo.commands.includes(name)).map(([recipeName]) => recipeName);
   console.log("");
-  console.log(`Description: ${info.description}`);
-  console.log(`Group: ${info.group}`);
+  console.log(`  ${heading(info.name)}`);
+  console.log(`  ${dim(info.description)}`);
   console.log("");
-  console.log("This command is used in recipes:");
-  for (const [recipeName, recipeInfo] of Object.entries(RECIPE_REGISTRY)) {
-    if (recipeInfo.commands.includes(name)) {
-      console.log(`  - ${recipeName}`);
-    }
-  }
+  console.log(`  ${dim("group".padEnd(7))} ${cyan(info.group)}`);
+  console.log(`  ${dim("recipes".padEnd(7))} ${usedIn.length ? usedIn.map((recipeName) => cyan(recipeName)).join(dim(", ")) : dim("(none)")}`);
   console.log("");
-  console.log("Usage:");
-  console.log(`  Part of recipe execution (not run directly)`);
+  console.log(`  ${dim("Part of recipe execution (not run directly).")}`);
+  console.log("");
 });
 commandCmd.command("create").argument("<name>", "Command name").argument("<prompt>", "Description of what the command should do").description("Create a new command from template (placeholder for STORY-005)").option("-t, --template <type>", "Template type (toml, json, yaml, dockerfile)").option("-m, --model <model>", "LLM model to use (OpenRouter)").action((name, prompt, options) => {
-  console.log("\u{1F6A7} Command generation coming in STORY-005!");
   console.log("");
-  console.log("Planned features:");
-  console.log(`  - Generate ${name} from prompt: "${prompt}"`);
-  if (options.template) {
-    console.log(`  - Template type: ${options.template}`);
-  }
-  if (options.model) {
-    console.log(`  - LLM model: ${options.model}`);
-  }
+  console.log(`  ${yellow(glyph.warn)} ${bold("Command generation coming in STORY-005")}`);
   console.log("");
-  console.log("This feature will be implemented in the Template Generation System story.");
-  console.log("For now, manually create commands in src/commands/");
+  console.log(`  ${dim("Planned")}`);
+  console.log(`     ${cyan(glyph.bullet)} Generate ${bold(name)} from prompt: ${dim(`"${prompt}"`)}`);
+  if (options.template) console.log(`     ${cyan(glyph.bullet)} Template type: ${cyan(options.template)}`);
+  if (options.model) console.log(`     ${cyan(glyph.bullet)} LLM model: ${cyan(options.model)}`);
+  console.log("");
+  console.log(`  ${dim("For now, manually create commands in src/commands/")}`);
+  console.log("");
 });
 program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--json", "Output machine-parseable JSON").action((repo, options) => {
   try {
@@ -3672,7 +3795,7 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
     }
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
-    console.error("\u274C audit failed:", err);
+    console.error(`${xmark} audit failed:`, err);
     process.exit(1);
   }
 });
@@ -3691,7 +3814,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
     }
     if (ruleId && repo) {
       if (!getParityRuleIds().includes(ruleId)) {
-        console.error(`\u274C Unknown parity rule: ${ruleId}`);
+        console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
         process.exit(1);
       }
       const report2 = runMigration(ruleId, repo, dryRun, false);
@@ -3704,25 +3827,25 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
       process.exit(report2.ok ? 0 : 1);
     }
     if (options.json) {
-      console.error("\u274C JSON output requires a rule-id or --all");
+      console.error(`${xmark} JSON output requires a rule-id or --all`);
       process.exit(1);
     }
     if (!process.stdin.isTTY) {
-      console.error("\u274C Provide a rule-id, use --all, or run in an interactive terminal");
+      console.error(`${xmark} Provide a rule-id, use --all, or run in an interactive terminal`);
       process.exit(1);
     }
     const targetRepo = ruleId ?? repo;
     const audit = runAudit(targetRepo);
     const ruleIds = await promptForRuleIds(audit.rules);
     if (!ruleIds.length) {
-      console.log("No rules selected; nothing to migrate.");
+      console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
       process.exit(0);
     }
     const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
     printMigrationReport(report, false);
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
-    console.error("\u274C migrate failed:", err);
+    console.error(`${xmark} migrate failed:`, err);
     process.exit(1);
   }
 });
@@ -3757,12 +3880,12 @@ program.command("hermes-agent").alias("hermes").description("Provision a Hermes 
   try {
     const recipe = createRecipe("hermes-agent", context);
     if (!recipe) {
-      console.error("\u274C hermes-agent recipe not registered");
+      console.error(`${xmark} hermes-agent recipe not registered`);
       process.exit(1);
     }
     await recipe.execute();
   } catch (err) {
-    console.error("\u274C hermes-agent failed:", err);
+    console.error(`${xmark} hermes-agent failed:`, err);
     process.exit(1);
   }
 });
@@ -3780,14 +3903,15 @@ configCmd.command("bootstrap").description("Create ~/.config/hermes-agent-templa
   }
 });
 program.command("describe").description("Describe the current project (for AI context)").action(() => {
-  console.log("\u{1F50D} Project Description (placeholder for future enhancement)");
   console.log("");
-  console.log("This command will analyze the project and provide:");
-  console.log("  - Detected project type");
-  console.log("  - Installed subsystems");
-  console.log("  - Configuration files present");
-  console.log("  - Suggested next steps");
+  console.log(`  ${heading("Project description")} ${dim("(placeholder)")}`);
   console.log("");
-  console.log("Coming soon!");
+  console.log(`  ${dim("Will analyze the project and report:")}`);
+  for (const item of ["Detected project type", "Installed subsystems", "Configuration files present", "Suggested next steps"]) {
+    console.log(`     ${cyan(glyph.bullet)} ${item}`);
+  }
+  console.log("");
+  console.log(`  ${dim("Coming soon.")}`);
+  console.log("");
 });
 program.parse();
