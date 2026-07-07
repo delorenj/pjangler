@@ -135,11 +135,23 @@ mode="DRY RUN (nothing written) — pass --apply to register"
 rule_label="$REGISTER_RULE"
 [[ $FULL -eq 1 ]] && rule_label="all parity rules (--full)"
 
+# --plane only takes effect with --apply; be explicit rather than silently
+# reporting "plane: yes" and then doing nothing.
+plane_label="no"
+if [[ $PLANE -eq 1 ]]; then
+  if [[ $APPLY -eq 1 ]]; then
+    plane_label="yes"
+  else
+    plane_label="requested (no effect without --apply)"
+    echo "backfill-projects: note: --plane is ignored without --apply; no Plane changes will be made." >&2
+  fi
+fi
+
 echo "pjangler backfill"
 echo "  root:     $ROOT"
 echo "  repos:    ${#repos[@]}"
 echo "  register: $rule_label"
-echo "  plane:    $([[ $PLANE -eq 1 ]] && echo yes || echo no)"
+echo "  plane:    $plane_label"
 echo "  mode:     $mode"
 echo
 
@@ -183,6 +195,10 @@ for repo in "${repos[@]}"; do
 done
 
 if [[ $APPLY -eq 0 ]]; then
-  echo "Dry run complete. Re-run with --apply to register${PLANE:+ (and --plane to also register in Plane)}."
+  if [[ $PLANE -eq 1 ]]; then
+    echo "Dry run complete. Re-run with --apply to register (Plane registration will run too)."
+  else
+    echo "Dry run complete. Re-run with --apply to register (add --plane to also register in Plane)."
+  fi
 fi
 exit $fail
