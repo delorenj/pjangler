@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -11,6 +10,13 @@ import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext, TicketProvider } from "./commands/hermes/types";
 import { PJANGLER_VERSION } from "./utils/version";
 import { formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
+import {
+  executeProjectInitPlan,
+  getProject,
+  loadProjectRegistry,
+  planProjectInit,
+  projectRegistryPath,
+} from "./project/index";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -117,39 +123,6 @@ async function runRecipeWithCapture(recipeName: string, context: CommandContext)
   }
 }
 
-function buildCommonProjectCopierAction(input: {
-  templateDir: string;
-  targetDir: string;
-  projectName: string;
-  projectDescription?: string;
-  projectSlug: string;
-  ticketProvider: string;
-  planeWorkspace: string;
-  planeProjectId?: string;
-  projectIdentifier: string;
-  primaryLanguage: string;
-  overwrite: boolean;
-}) {
-  const data: Record<string, string> = {
-    project_name: input.projectName,
-    project_description: input.projectDescription ?? "",
-    project_slug: input.projectSlug,
-    ticket_provider: input.ticketProvider,
-    plane_workspace: input.planeWorkspace,
-    plane_project_id: input.planeProjectId ?? "",
-    project_identifier: input.projectIdentifier,
-    primary_language: input.primaryLanguage,
-  };
-  const args = ["copy", "--trust", input.templateDir, input.targetDir, "--defaults"];
-  for (const [key, value] of Object.entries(data)) args.push("--data", `${key}=${value}`);
-  if (input.overwrite) args.push("--overwrite");
-  return {
-    kind: "copier.copy.commonproject",
-    command: ["copier", ...args],
-    data,
-  };
-}
-
 server.registerTool(
   "pjangler_list_capabilities",
   {
@@ -172,7 +145,7 @@ server.registerTool(
       parityRules: getParityRuleIds(),
       recommendedWorkflows: {
         existingProject: ["pjangler_audit_project", "pjangler_migrate_project"],
-        new33godProject: ["pjangler_bootstrap_33god_project", "pjangler_audit_project"],
+        new33godProject: ["pjangler_project_init", "pjangler_bootstrap_33god_project", "pjangler_audit_project"],
         hermesAgentProvisioning: ["pjangler_deploy_hermes_agent", "pjangler_audit_project"],
       },
       skillSynergy: parityGuidance(),
@@ -272,6 +245,9 @@ server.registerTool(
       force: z.boolean().optional(),
       overwrite: z.boolean().optional(),
       dryRun: z.boolean().optional(),
+      registryPath: z.string().optional(),
+      sourceSkill: z.string().optional(),
+      live: z.boolean().optional(),
     },
   },
   async (input) => {
@@ -289,60 +265,34 @@ server.registerTool(
       if (!skipPlane && !planeProjectId) {
         throw new Error("planeProjectId is required when skipPlane=false; keep skipPlane=true for safe local bootstrap");
       }
-      if (existsSync(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
+      if (!dryRun && existsSync(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
 
-      const templateDir = join(pjanglerRoot, "templates", "commonproject");
-      const copierAction = buildCommonProjectCopierAction({
-        templateDir,
+      const plan = planProjectInit({
+        name: input.projectName,
+        description: input.projectDescription,
         targetDir,
-        projectName: input.projectName,
-        projectDescription: input.projectDescription,
         projectSlug,
+        sourceSkill: input.sourceSkill,
+        primaryLanguage: input.primaryLanguage ?? "python",
+        provisionAgent: input.provisionAgent ?? false,
+        agentRole: input.agentRole ?? "pm",
+        apply: !dryRun,
+        live: input.live ?? false,
+        registryPath: input.registryPath,
+        projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
         ticketProvider: input.ticketProvider ?? "plane",
         planeWorkspace: input.planeWorkspace ?? "33god",
         planeProjectId,
-        projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
-        primaryLanguage: input.primaryLanguage ?? "python",
+        pjanglerRoot,
         overwrite,
       });
-      const actions: unknown[] = [
-        { kind: "ensure.parent", path: dirname(targetDir) },
-        copierAction,
-      ];
-      if (input.provisionAgent) {
-        actions.push({
-          kind: "pjangler.recipe.hermes-agent",
-          targetDir,
-          context: {
-            targetRepo: projectSlug,
-            role: input.agentRole ?? "pm",
-            agentPurpose: input.agentPurpose ?? `Project manager for ${input.projectName}`,
-            local,
-            dryRun,
-            force: overwrite,
-            skipTelegram: true,
-            skipEmail: true,
-            skipRuntimeRepo: local,
-            skipPlane: skipPlane || local,
-            skipBloodbank: local,
-            skipSystemd: local || process.platform === "darwin",
-          },
-        });
-      }
 
       if (dryRun) {
-        return asText({ ok: true, dryRun, targetDir, projectSlug, actions, guidance: parityGuidance() });
+        return asText({ ...plan, guidance: parityGuidance() });
       }
 
-      const which = spawnSync("which", ["copier"], { encoding: "utf8" });
-      if (which.status !== 0) throw new Error("copier not found on PATH. Install with: uv tool install copier or pip install copier");
-      mkdirSync(dirname(targetDir), { recursive: true });
-      const result = spawnSync(copierAction.command[0]!, copierAction.command.slice(1), { encoding: "utf8", cwd: pjanglerRoot });
-      const logs = [result.stdout.trim()].filter(Boolean);
-      const errors = [result.stderr.trim()].filter(Boolean);
-      if (result.status !== 0) {
-        return asText({ ok: false, dryRun, targetDir, actions, logs, errors, exitCode: result.status });
-      }
+      const result = executeProjectInitPlan(plan);
+      if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
 
       let agentResult: Awaited<ReturnType<typeof runRecipeWithCapture>> | undefined;
       if (input.provisionAgent) {
@@ -365,7 +315,85 @@ server.registerTool(
         agentResult = await runRecipeWithCapture("hermes-agent", context);
       }
 
-      return asText({ ok: !agentResult || agentResult.success, dryRun, targetDir, projectSlug, actions, logs, errors, agentResult });
+      return asText({ ...result, ok: result.ok && (!agentResult || agentResult.success), agentResult, guidance: parityGuidance() });
+    } catch (err) {
+      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+);
+
+server.registerTool(
+  "pjangler_project_init",
+  {
+    title: "Initialize a pjangler project",
+    description: "Plan or apply a registry-backed CommonProject project init. Dry-run is the default; writes require apply=true and live actions require live=true.",
+    inputSchema: {
+      name: z.string(),
+      description: z.string().optional(),
+      targetDir: z.string().optional(),
+      sourceSkill: z.string().optional(),
+      primaryLanguage: z.string().optional(),
+      provisionAgent: z.boolean().optional(),
+      agentRole: z.string().optional(),
+      apply: z.boolean().optional(),
+      live: z.boolean().optional(),
+      slug: z.string().optional(),
+      identifier: z.string().optional(),
+      registryPath: z.string().optional(),
+      force: z.boolean().optional(),
+    },
+  },
+  async (input) => {
+    try {
+      const plan = planProjectInit({
+        name: input.name,
+        description: input.description,
+        targetDir: input.targetDir,
+        sourceSkill: input.sourceSkill,
+        primaryLanguage: input.primaryLanguage,
+        provisionAgent: input.provisionAgent ?? false,
+        agentRole: input.agentRole,
+        apply: input.apply ?? false,
+        live: input.live ?? false,
+        projectSlug: input.slug,
+        projectIdentifier: input.identifier,
+        registryPath: input.registryPath,
+        force: input.force ?? false,
+        overwrite: input.force ?? false,
+      });
+      if (!input.apply) return asText(plan);
+      return asText(executeProjectInitPlan(plan));
+    } catch (err) {
+      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+);
+
+server.registerTool(
+  "pjangler_project_list",
+  {
+    title: "List pjangler registry projects",
+    description: "Return projects from the pjangler central registry.",
+    inputSchema: {
+      registryPath: z.string().optional(),
+    },
+  },
+  async ({ registryPath }) => asText(loadProjectRegistry(registryPath ?? projectRegistryPath()))
+);
+
+server.registerTool(
+  "pjangler_project_show",
+  {
+    title: "Show a pjangler registry project",
+    description: "Return one project by slug from the pjangler central registry.",
+    inputSchema: {
+      slug: z.string(),
+      registryPath: z.string().optional(),
+    },
+  },
+  async ({ slug, registryPath }) => {
+    try {
+      return asText(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }

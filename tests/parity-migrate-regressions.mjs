@@ -23,9 +23,23 @@ function runAllowFailure(args, cwd = root) {
   return result.stdout;
 }
 
+function runExpectError(args, cwd = root) {
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+  if (result.status === 0) {
+    throw new Error(`expected command to fail: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
+  }
+  return result.stderr;
+}
+
 function makeRepo(name) {
   const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
   writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
+  writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
+  return repo;
+}
+
+function makeRepoWithoutMiseToml(name) {
+  const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
   writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
   return repo;
 }
@@ -79,6 +93,88 @@ try {
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
     assert.equal(finding.status, "pass", JSON.stringify(finding));
+  }
+
+  {
+    const repo = makeRepo("preserve-hooks");
+    repos.push(repo);
+    writeFileSync(join(repo, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+
+[hooks]
+enter = [
+  ".mise/scripts/link-agentfiles.sh",
+  "custom-enter-hook",
+]
+leave = [
+  "custom-leave-hook",
+]
+
+[tasks.other]
+run = "echo still here"
+`);
+    run(["migrate", "mise.config-root", repo, "--json"]);
+
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.equal((mise.match(/^\[hooks\]$/gm) ?? []).length, 1, "migrate should keep a single [hooks] table");
+    assert.match(mise, /"custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
+    assert.match(mise, /"custom-leave-hook"/, "migrate must preserve unrelated leave hooks");
+    assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
+    assert.match(mise, /"{{config_root}}\/\.mise\/scripts\/link-agentfiles\.sh"/, "migrate should install canonical link-agentfiles hook");
+    assert.match(mise, /"op inject -i \.env\.op > \.env"/, "migrate should install canonical dotenv hook");
+  }
+
+  {
+    const repo = makeRepoWithoutMiseToml("missing-mise-toml");
+    repos.push(repo);
+    run(["migrate", "mise.config-root", repo, "--json"]);
+
+    assert.equal(existsSync(join(repo, "mise.toml")), true, "migrate must create mise.toml when missing");
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml from template should contain link-agentfiles task");
+    assert.match(mise, /op inject -i \.env\.op > \.env/, "mise.toml should be normalized to current AGENTS-linking contract");
+    assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
+    assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
+    assert.doesNotMatch(mise, /\{% raw %\}/, "bootstrap should render Jinja raw markers out of the generated-project template");
+    assert.match(mise, /\[tasks\.hooks-sync\]/, "bootstrap should use the generated-project mise template");
+
+    const script = join(repo, ".mise", "scripts", "link-agentfiles.sh");
+    assert.equal(existsSync(script), true, "migrate must copy .mise/scripts/link-agentfiles.sh");
+
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
+    assert.equal(finding.status, "pass", JSON.stringify(finding));
+  }
+
+  {
+    const repo = makeRepoWithoutMiseToml("missing-mise-toml-dry-run");
+    repos.push(repo);
+    const report = JSON.parse(run(["migrate", "mise.config-root", repo, "--dry-run", "--json"]));
+    const result = report.results.find((r) => r.id === "mise.config-root");
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.equal(existsSync(join(repo, "mise.toml")), false, "dry-run must not create mise.toml");
+    assert.ok(result.changedFiles.some((f) => f.endsWith("mise.toml")), "dry-run should report mise.toml would be created");
+  }
+
+  {
+    const repo = makeRepo("all-rules");
+    repos.push(repo);
+    const report = JSON.parse(runAllowFailure(["migrate", "--all", repo, "--json"]));
+    assert.ok(report.selectedRules.length > 1, "--all should select more than one rule");
+    assert.ok(report.results.length === report.selectedRules.length, "results should match selected rules");
+    assert.ok(report.results.some((r) => r.status === "applied"), "at least one rule should be applied");
+  }
+
+  {
+    const repo = makeRepo("unknown-rule");
+    repos.push(repo);
+    const stderr = runExpectError(["migrate", "not-a-real-rule", repo]);
+    assert.match(stderr, /Unknown parity rule/);
+  }
+
+  {
+    const stderr = runExpectError(["migrate"]);
+    assert.match(stderr, /interactive terminal/);
   }
 
   console.log("parity migrate regressions passed");

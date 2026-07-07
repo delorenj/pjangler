@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 // src/index.ts
+import { spawnSync as spawnSync6 } from "node:child_process";
+import { existsSync as existsSync9, readFileSync as readFileSync6, statSync as statSync2 } from "node:fs";
+import { basename as basename4, join as join11, resolve as resolve3 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -1438,9 +1441,12 @@ function createRecipe(name, context) {
   return new info.class(context);
 }
 
+// src/index.ts
+import { cancel as cancel2, multiselect, text as text3, isCancel as isCancel5 } from "@clack/prompts";
+
 // src/parity/index.ts
 import { existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync5, readFileSync as readFileSync3, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4, chmodSync, copyFileSync } from "node:fs";
-import { dirname as dirname5, join as join8, relative, resolve } from "node:path";
+import { basename as basename2, dirname as dirname5, join as join8, relative, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import { homedir as homedir4 } from "node:os";
 import { spawnSync as spawnSync4 } from "node:child_process";
@@ -1457,6 +1463,28 @@ enter = [
 ]
 
 [[watch_files]]
+patterns = ["AGENTS.md"]
+task = "link-agentfiles"
+
+[tasks.link-agentfiles]
+description = "Symlink all agent files to AGENTS.md"
+run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+var LINK_AGENTFILES_HOOK_ENTRIES = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env"
+];
+var LINK_AGENTFILES_HOOKS_BLOCK = `# This block will handle the linking of
+# agent files to the main AGENTS.md file.
+#
+# TODO: Ensure this works for all levels of nesting.
+# i.e. All linked agent files MUST be siblings at
+# any given level of nesting.
+[hooks]
+enter = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+]`;
+var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
@@ -1515,10 +1543,10 @@ function writeText(path, content) {
   ensureParent(path);
   writeFileSync4(path, content);
 }
-function tryParseJson(text3) {
-  if (!text3) return null;
+function tryParseJson(text4) {
+  if (!text4) return null;
   try {
-    return JSON.parse(text3);
+    return JSON.parse(text4);
   } catch {
     return null;
   }
@@ -1577,9 +1605,9 @@ function bootstrapAgentsFile(repoRoot, dryRun) {
   }
   return { changedFiles: [], details: [], blocked: "AGENTS.md missing and no CLAUDE.md, GEMINI.md, or README.md source exists" };
 }
-function yamlGet(text3, keyPath) {
+function yamlGet(text4, keyPath) {
   const parts = keyPath.split(".");
-  const lines = text3.split("\n");
+  const lines = text4.split("\n");
   let start = 0;
   let indent = 0;
   for (let idx = 0; idx < parts.length; idx += 1) {
@@ -1614,25 +1642,25 @@ function discoverRoles(repoRoot) {
     const roleDir = join8(rolesDir, entry.name);
     const roleYamlPath = join8(roleDir, "role.yaml");
     if (!existsSync7(roleYamlPath)) return null;
-    const text3 = readText(roleYamlPath);
-    const runtimeRepoRaw = yamlGet(text3, "runtime.github_repo");
+    const text4 = readText(roleYamlPath);
+    const runtimeRepoRaw = yamlGet(text4, "runtime.github_repo");
     return {
-      role: yamlGet(text3, "role") || entry.name,
+      role: yamlGet(text4, "role") || entry.name,
       roleDir,
       roleYamlPath,
-      repo: yamlGet(text3, "repo"),
-      agentId: yamlGet(text3, "agent_id"),
-      profileName: yamlGet(text3, "profile") || yamlGet(text3, "agent_id"),
-      displayName: yamlGet(text3, "display_name"),
-      purpose: yamlGet(text3, "purpose"),
-      botHandle: yamlGet(text3, "telegram.bot_username"),
+      repo: yamlGet(text4, "repo"),
+      agentId: yamlGet(text4, "agent_id"),
+      profileName: yamlGet(text4, "profile") || yamlGet(text4, "agent_id"),
+      displayName: yamlGet(text4, "display_name"),
+      purpose: yamlGet(text4, "purpose"),
+      botHandle: yamlGet(text4, "telegram.bot_username"),
       runtimeRepo: runtimeRepoRaw.includes("/") ? runtimeRepoRaw.split("/").slice(-1)[0] ?? runtimeRepoRaw : runtimeRepoRaw,
-      runtimeOwner: yamlGet(text3, "runtime.github_owner"),
-      planeWorkspace: yamlGet(text3, "ticket_provider.workspace") || yamlGet(text3, "plane.workspace"),
-      ticketProviderName: yamlGet(text3, "ticket_provider.name"),
-      ticketProviderBoardId: yamlGet(text3, "ticket_provider.board_id"),
-      ticketProviderBoardUrl: yamlGet(text3, "ticket_provider.board_url"),
-      ticketProviderIdentifier: yamlGet(text3, "plane.identifier")
+      runtimeOwner: yamlGet(text4, "runtime.github_owner"),
+      planeWorkspace: yamlGet(text4, "ticket_provider.workspace") || yamlGet(text4, "plane.workspace"),
+      ticketProviderName: yamlGet(text4, "ticket_provider.name"),
+      ticketProviderBoardId: yamlGet(text4, "ticket_provider.board_id"),
+      ticketProviderBoardUrl: yamlGet(text4, "ticket_provider.board_url"),
+      ticketProviderIdentifier: yamlGet(text4, "plane.identifier")
     };
   }).filter((value) => Boolean(value));
 }
@@ -1657,23 +1685,39 @@ function templateVersioningScript(ctx) {
 function templateLinkAgentfilesScript(ctx) {
   return templateScript(ctx, "link-agentfiles.sh");
 }
+function renderGeneratedProjectMiseToml(ctx, template) {
+  const project = readProjectJson(ctx);
+  const projectName = String(project?.project_name ?? basename2(ctx.repoRoot) ?? "project");
+  return template.replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1").replace(/\{\{\s*project_name\s*\}\}/g, projectName);
+}
+function ensureMiseTomlFromTemplate(ctx, changedFiles) {
+  const targetPath = join8(ctx.repoRoot, "mise.toml");
+  if (existsSync7(targetPath)) return false;
+  const sourcePath = join8(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
+  if (!existsSync7(sourcePath)) return false;
+  changedFiles.push(targetPath);
+  if (!ctx.dryRun) {
+    writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
+  }
+  return true;
+}
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join8(repoRoot, "package.json");
   return existsSync7(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
 }
-function replaceOrAppendManagedBlock(text3, startMarker, block, beforePattern) {
-  if (startMarker.test(text3)) {
-    return text3.replace(/# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</, block);
+function replaceOrAppendManagedBlock(text4, startMarker, block, beforePattern) {
+  if (startMarker.test(text4)) {
+    return text4.replace(/# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</, block);
   }
   if (beforePattern) {
-    const match = text3.match(beforePattern);
+    const match = text4.match(beforePattern);
     if (match && typeof match.index === "number") {
-      return `${text3.slice(0, match.index).replace(/\s*$/, "\n\n")}${block}
+      return `${text4.slice(0, match.index).replace(/\s*$/, "\n\n")}${block}
 
-${text3.slice(match.index)}`;
+${text4.slice(match.index)}`;
     }
   }
-  return `${text3.replace(/\s*$/, "")}
+  return `${text4.replace(/\s*$/, "")}
 
 ${block}
 `;
@@ -1687,18 +1731,18 @@ function requiredMisePathEntries(ctx) {
   }
   return required;
 }
-function upsertMisePath(text3, required = BASE_MISE_PATH_ENTRIES) {
+function upsertMisePath(text4, required = BASE_MISE_PATH_ENTRIES) {
   const render = (values) => `_.path = [${values.map((value) => JSON.stringify(value)).join(", ")}]`;
-  const envMatch = text3.match(/(^|\n)(\[env\][\s\S]*?)(?=\n\[[^\]]+\]|$)/);
+  const envMatch = text4.match(/(^|\n)(\[env\][\s\S]*?)(?=\n\[[^\]]+\]|$)/);
   if (!envMatch || typeof envMatch.index !== "number") {
     return `[env]
 ${render(required)}
 
-${text3.replace(/^\s+/, "")}`;
+${text4.replace(/^\s+/, "")}`;
   }
-  const prefix = text3.slice(0, envMatch.index + envMatch[1].length);
+  const prefix = text4.slice(0, envMatch.index + envMatch[1].length);
   const section = envMatch[2];
-  const suffix = text3.slice(envMatch.index + envMatch[1].length + section.length);
+  const suffix = text4.slice(envMatch.index + envMatch[1].length + section.length);
   const pathLine = section.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
   if (!pathLine) {
     return `${prefix}${section.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
@@ -1709,25 +1753,127 @@ ${text3.replace(/^\s+/, "")}`;
     if (!merged.includes(value)) merged.push(value);
   }
   const nextLine = render(merged);
-  if (pathLine[0] === nextLine) return text3;
+  if (pathLine[0] === nextLine) return text4;
   return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
 }
-function upsertLinkAgentfilesBlock(text3, ctx) {
-  const withPath = upsertMisePath(text3, requiredMisePathEntries(ctx));
-  const existing = /# This block will handle the linking of[\s\S]*?\[tasks\.link-agentfiles\][\s\S]*?run = "\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh"/;
-  if (existing.test(withPath)) {
-    return withPath.replace(existing, LINK_AGENTFILES_BLOCK);
+function removeTomlSection(text4, headerPattern, marker, options) {
+  const lines = text4.split("\n");
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!headerPattern.test(lines[i])) continue;
+    if (marker) {
+      let hasMarker = false;
+      for (let j = i + 1; j < lines.length && !/^\[[^\]]+\]/.test(lines[j]); j++) {
+        if (marker.test(lines[j])) {
+          hasMarker = true;
+          break;
+        }
+      }
+      if (!hasMarker) continue;
+    }
+    start = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^\[[^\]]+\]/.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    if (end === -1) end = lines.length;
+    break;
   }
-  const versioningIndex = withPath.indexOf("# >>> mise-versioning >>>");
+  if (start === -1) return text4;
+  if (options?.includePrecedingComments) {
+    while (start > 0 && lines[start - 1].trim().startsWith("#")) {
+      start--;
+    }
+  }
+  const result = lines.slice(0, start).concat(lines.slice(end)).join("\n");
+  return result.replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+function insertTomlBlockBeforeVersioning(text4, block) {
+  const versioningIndex = text4.indexOf("# >>> mise-versioning >>>");
   if (versioningIndex >= 0) {
-    return `${withPath.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${LINK_AGENTFILES_BLOCK}
+    return `${text4.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${block}
 
-${withPath.slice(versioningIndex)}`;
+${text4.slice(versioningIndex)}`;
   }
-  return `${withPath.replace(/\s*$/, "")}
+  return `${text4.replace(/\s*$/, "")}
 
-${LINK_AGENTFILES_BLOCK}
+${block}
 `;
+}
+function extractTomlStrings(text4) {
+  const values = [];
+  const stringPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'/g;
+  for (const match of text4.matchAll(stringPattern)) {
+    if (match[1] !== void 0) {
+      try {
+        values.push(JSON.parse(`"${match[1]}"`));
+      } catch {
+        values.push(match[1]);
+      }
+    } else if (match[2] !== void 0) {
+      values.push(match[2]);
+    }
+  }
+  return values;
+}
+function isManagedHookEntry(value) {
+  const trimmed = value.trim();
+  return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
+}
+function renderHookEntries(entries, indent = "") {
+  return [
+    `${indent}enter = [`,
+    ...entries.map((entry) => `${indent}  ${JSON.stringify(entry)},`),
+    `${indent}]`
+  ];
+}
+function upsertLinkAgentfilesHooks(text4) {
+  const lines = text4.split("\n");
+  const hooksStart = lines.findIndex((line) => /^\[hooks\]$/.test(line.trim()));
+  if (hooksStart === -1) return insertTomlBlockBeforeVersioning(text4, LINK_AGENTFILES_HOOKS_BLOCK);
+  let hooksEnd = lines.length;
+  for (let i = hooksStart + 1; i < lines.length; i++) {
+    if (/^\[[^\]]+\]/.test(lines[i].trim())) {
+      hooksEnd = i;
+      break;
+    }
+  }
+  let enterStart = -1;
+  let enterEnd = -1;
+  for (let i = hooksStart + 1; i < hooksEnd; i++) {
+    if (!/^\s*enter\s*=/.test(lines[i])) continue;
+    enterStart = i;
+    enterEnd = i + 1;
+    const afterEquals = lines[i].slice(lines[i].indexOf("=") + 1);
+    if (afterEquals.includes("[") && !afterEquals.includes("]")) {
+      while (enterEnd < hooksEnd && !lines[enterEnd].includes("]")) enterEnd++;
+      if (enterEnd < hooksEnd) enterEnd++;
+    }
+    break;
+  }
+  const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";
+  const preserved = extractTomlStrings(existingBlock).filter((entry) => !isManagedHookEntry(entry));
+  const merged = [...LINK_AGENTFILES_HOOK_ENTRIES];
+  for (const entry of preserved) {
+    if (!merged.includes(entry)) merged.push(entry);
+  }
+  const indent = enterStart >= 0 ? lines[enterStart].match(/^\s*/)?.[0] ?? "" : "";
+  const rendered = renderHookEntries(merged, indent);
+  if (enterStart >= 0) {
+    return lines.slice(0, enterStart).concat(rendered, lines.slice(enterEnd)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  }
+  return lines.slice(0, hooksStart + 1).concat(rendered, lines.slice(hooksStart + 1)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+function upsertLinkAgentfilesBlock(text4, ctx) {
+  const withPath = upsertMisePath(text4, requiredMisePathEntries(ctx));
+  if (withPath.includes(LINK_AGENTFILES_BLOCK)) return withPath;
+  let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
+  cleaned = upsertLinkAgentfilesHooks(cleaned);
+  return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
 function readProjectJson(ctx) {
   return tryParseJson(safeReadText(join8(ctx.repoRoot, ".project.json")));
@@ -1742,23 +1888,35 @@ function canonicalProjectJson(ctx) {
     workspace: String((existing.ticket_provider?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
     identifier: String((existing.ticket_provider?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String((existing.ticket_provider?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || "")
+    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
+    state: String((existing.ticket_provider?.state ?? "planned") || "planned")
   };
+  const existingAgents = existing.agents ?? {};
+  const discoveredAgents = Object.fromEntries(
+    roles.map((role) => [
+      role.agentId || `${slug}-${role.role}`,
+      {
+        role: role.role,
+        role_dir: relative(ctx.repoRoot, role.roleDir)
+      }
+    ])
+  );
+  const agents = { ...existingAgents };
+  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
+    const existingAgent = existingAgents[agentId] ?? {};
+    agents[agentId] = {
+      role: discovered.role,
+      role_dir: discovered.role_dir,
+      provisioning_state: existingAgent.provisioning_state
+    };
+  }
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_slug: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
-    agents: Object.fromEntries(
-      roles.map((role) => [
-        role.agentId || `${slug}-${role.role}`,
-        {
-          role: role.role,
-          role_dir: relative(ctx.repoRoot, role.roleDir)
-        }
-      ])
-    )
+    agents
   };
 }
 function projectJsonFinding(ctx) {
@@ -1790,7 +1948,7 @@ function projectJsonFinding(ctx) {
     }
   }
   const ticketProvider = data.ticket_provider ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
   if (existsSync7(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
@@ -1937,9 +2095,9 @@ ${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
   return path;
 }
 function profileMetaInheritsDefault(path) {
-  const text3 = safeReadText(path);
+  const text4 = safeReadText(path);
   return Boolean(
-    text3 && /^config:\s*$/m.test(text3) && /^\s+inherit_from:\s*default\s*$/m.test(text3) && /^\s+save_mode:\s*delta\s*$/m.test(text3)
+    text4 && /^config:\s*$/m.test(text4) && /^\s+inherit_from:\s*default\s*$/m.test(text4) && /^\s+save_mode:\s*delta\s*$/m.test(text4)
   );
 }
 function upsertInheritedProfileMeta(path, changedFiles, dryRun) {
@@ -1997,17 +2155,17 @@ var RULES = [
       if (!existsSync7(misePath)) {
         return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
       }
-      const text3 = readText(misePath);
+      const text4 = readText(misePath);
       const details = [];
       const linkAgentfilesPath = join8(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       if (!existsSync7(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
-      const pathValues = [...(text3.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      const pathValues = [...(text4.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
-      if (!text3.includes('"{{config_root}}/.mise/scripts/link-agentfiles.sh"')) details.push("link-agentfiles must use raw {{config_root}} guard");
-      if (!text3.includes("op inject -i .env.op > .env")) details.push("[hooks].enter must materialize .env from .env.op");
-      if (!text3.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
-      if (!text3.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
+      if (!text4.includes('"{{config_root}}/.mise/scripts/link-agentfiles.sh"')) details.push("link-agentfiles must use raw {{config_root}} guard");
+      if (!text4.includes("op inject -i .env.op > .env")) details.push("[hooks].enter must materialize .env from .env.op");
+      if (!text4.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
+      if (!text4.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
       return {
         id: "mise.config-root",
         title: "mise config_root + AGENTS link hooks",
@@ -2020,15 +2178,22 @@ var RULES = [
     migrate: (ctx, finding) => {
       const path = join8(ctx.repoRoot, "mise.toml");
       const changedFiles = [];
+      const details = [];
       if (!existsSync7(path)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
-      let text3 = readText(path);
-      const next = upsertLinkAgentfilesBlock(text3, ctx);
-      if (next !== text3) {
-        changedFiles.push(path);
+      let text4 = readText(path);
+      const next = upsertLinkAgentfilesBlock(text4, ctx);
+      if (next !== text4) {
+        if (!changedFiles.includes(path)) changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, next);
-        text3 = next;
+        text4 = next;
       }
       const linkAgentfilesPath = join8(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       const expectedScript = templateLinkAgentfilesScript(ctx);
@@ -2060,8 +2225,8 @@ var RULES = [
       const misePath = join8(ctx.repoRoot, "mise.toml");
       const versioningPath = join8(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const manifestPath = join8(ctx.repoRoot, ".mise", "version-files.conf");
-      const text3 = safeReadText(misePath);
-      if (!text3?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
+      const text4 = safeReadText(misePath);
+      if (!text4?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
       if (!existsSync7(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
       if (!existsSync7(manifestPath)) details.push(".mise/version-files.conf missing");
       return {
@@ -2075,14 +2240,21 @@ var RULES = [
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
+      const details = [];
       const misePath = join8(ctx.repoRoot, "mise.toml");
       if (!existsSync7(misePath)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; cannot inject versioning block", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
       const currentMise = readText(misePath);
       const nextMise = replaceOrAppendManagedBlock(currentMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
       if (nextMise !== currentMise) {
-        changedFiles.push(misePath);
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
       const versioningPath = join8(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
@@ -2222,7 +2394,8 @@ var RULES = [
       } else {
         const invalidLines = envOp.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && line.includes("=")).filter((line) => {
           const value = line.slice(line.indexOf("=") + 1).trim();
-          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value);
+          const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
         });
         if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
       }
@@ -2274,19 +2447,19 @@ var RULES = [
     audit: (ctx) => {
       const details = [];
       const path = join8(ctx.repoRoot, ".copier-answers.yml");
-      const text3 = safeReadText(path);
+      const text4 = safeReadText(path);
       const project = readProjectJson(ctx);
-      if (!text3) {
+      if (!text4) {
         details.push(".copier-answers.yml missing");
       } else {
-        if (!text3.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY")) details.push("missing Copier overwrite warning header");
-        if (!text3.includes("_src_path:")) details.push("_src_path missing");
+        if (!text4.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY")) details.push("missing Copier overwrite warning header");
+        if (!text4.includes("_src_path:")) details.push("_src_path missing");
         if (project?.project_name) {
-          const nameMatch = text3.match(/project_name:\s*(.+)/);
+          const nameMatch = text4.match(/project_name:\s*(.+)/);
           if (!nameMatch || nameMatch[1]?.trim() !== String(project.project_name)) details.push("project_name drift between .copier-answers.yml and .project.json");
         }
         if (project?.project_description) {
-          const descMatch = text3.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
+          const descMatch = text4.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
           const yamlDesc = descMatch?.[1]?.replace(/\n\s+/g, " ").trim() ?? "";
           if (yamlDesc !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
         }
@@ -2303,16 +2476,16 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const project = canonicalProjectJson(ctx);
-      const text3 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+      const text4 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
 _src_path: ${join8(ctx.pjanglerRoot, "templates", "commonproject")}
 project_description: ${String(project.project_description)}
 project_name: ${String(project.project_name)}
 ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
 `;
       const path = join8(ctx.repoRoot, ".copier-answers.yml");
-      if (safeReadText(path) !== text3) {
+      if (safeReadText(path) !== text4) {
         changedFiles.push(path);
-        if (!ctx.dryRun) writeText(path, text3);
+        if (!ctx.dryRun) writeText(path, text4);
       }
       return {
         id: finding.id,
@@ -2508,6 +2681,9 @@ function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
     if (mode) chmodSync(path, mode);
   }
 }
+function getParityRuleIds() {
+  return RULES.map((rule) => rule.id);
+}
 function runAudit(repoArg) {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx = {
@@ -2524,7 +2700,7 @@ function runAudit(repoArg) {
     rules
   };
 }
-function runMigration(selector, repoArg, dryRun, all) {
+function runMigrationForRules(ruleIds, repoArg, dryRun) {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx = {
     repoRoot: resolve(repoArg ?? process.cwd()),
@@ -2532,9 +2708,9 @@ function runMigration(selector, repoArg, dryRun, all) {
     pjanglerRoot,
     homeDir: homedir4()
   };
-  const selected = all ? RULES : RULES.filter((rule) => rule.id === selector);
+  const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
-    throw new Error(`Unknown parity rule: ${selector}`);
+    throw new Error(`Unknown parity rules: ${ruleIds.join(", ")}`);
   }
   const results = selected.map((rule) => {
     try {
@@ -2560,6 +2736,10 @@ function runMigration(selector, repoArg, dryRun, all) {
     changedFiles
   };
 }
+function runMigration(selector, repoArg, dryRun, all) {
+  const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
+  return runMigrationForRules(ruleIds, repoArg, dryRun);
+}
 function formatAuditReport(report) {
   const lines = [`repo: ${report.repo}`, `ok: ${report.ok}`, `audited_at: ${report.auditedAt}`, "rules:"];
   for (const rule of report.rules) {
@@ -2584,19 +2764,421 @@ function formatMigrationReport(report) {
 `;
 }
 
+// src/project/index.ts
+import { spawnSync as spawnSync5 } from "node:child_process";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync4, renameSync as renameSync2, statSync, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { basename as basename3, dirname as dirname6, join as join9, resolve as resolve2 } from "node:path";
+import YAML from "yaml";
+var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
+var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
+var KNOWN_SKILL_ROOTS = [
+  "/home/delorenj/code/skillex/all-skills",
+  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
+  "/home/delorenj/code/pjangler/.agents/skills",
+  join9(homedir5(), ".codex", "skills")
+];
+function projectRegistryPath(env = process.env) {
+  return expandHome(env[PROJECT_REGISTRY_ENV] || join9(homedir5(), ".config", "pjangler", "projects.yaml"));
+}
+function emptyProjectRegistry() {
+  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
+}
+function loadProjectRegistry(path = projectRegistryPath()) {
+  if (!existsSync8(path)) return emptyProjectRegistry();
+  const raw = YAML.parse(readFileSync4(path, "utf8"));
+  if (raw == null) return emptyProjectRegistry();
+  if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
+  const registry = raw;
+  const normalized = {
+    schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
+    projects: isRecord(registry.projects) ? registry.projects : {}
+  };
+  validateProjectRegistry(normalized);
+  return normalized;
+}
+function saveProjectRegistry(registry, path = projectRegistryPath()) {
+  validateProjectRegistry(registry);
+  mkdirSync6(dirname6(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync5(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
+  renameSync2(temp, path);
+}
+function validateProjectRegistry(registry) {
+  if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION) {
+    throw new Error(`Unsupported project registry schema_version: ${registry.schema_version}`);
+  }
+  if (!isRecord(registry.projects)) throw new Error("Project registry projects must be a mapping");
+  const slugs = /* @__PURE__ */ new Set();
+  const repoPaths = /* @__PURE__ */ new Map();
+  const identifiers = /* @__PURE__ */ new Map();
+  for (const [slug, project] of Object.entries(registry.projects)) {
+    validateProjectRecord(project, slug);
+    if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
+    slugs.add(project.slug);
+    const repoKey = resolve2(project.repo_path);
+    const existingRepoSlug = repoPaths.get(repoKey);
+    if (existingRepoSlug && existingRepoSlug !== slug) {
+      throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
+    }
+    repoPaths.set(repoKey, slug);
+    const identifier = project.ticket_provider.identifier?.toUpperCase();
+    if (identifier) {
+      const existingIdentifierSlug = identifiers.get(identifier);
+      if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
+        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+      }
+      identifiers.set(identifier, slug);
+    }
+  }
+}
+function slugifyProjectName(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+function deriveProjectIdentifier(value) {
+  const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const identifier = compact.slice(0, 4) || "PROJ";
+  return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
+}
+function normalizeAgentRole(value) {
+  return value?.trim() || "pm";
+}
+function jsonStable(value) {
+  return JSON.stringify(value);
+}
+function projectRecordEquivalent(a, b) {
+  if (!a) return false;
+  const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
+  const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
+  return jsonStable(aComparable) === jsonStable(bComparable);
+}
+function defaultProjectTargetDir(name, cwd = process.cwd()) {
+  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
+  return resolve2(dirname6(resolve2(cwd)), compactName);
+}
+function resolveSourceSkillPath(sourceSkill) {
+  if (!sourceSkill) return void 0;
+  const expanded = expandHome(sourceSkill);
+  const direct = resolve2(expanded);
+  if (existsSync8(direct)) return direct;
+  const name = basename3(sourceSkill);
+  for (const root of KNOWN_SKILL_ROOTS) {
+    const candidate = join9(root, name);
+    if (existsSync8(candidate)) return candidate;
+  }
+  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
+  const hint = existsSync8(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
+  throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
+}
+function planProjectInit(input) {
+  if (!input.name.trim()) throw new Error("Project name is required");
+  const registryPath2 = resolve2(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registry = loadProjectRegistry(registryPath2);
+  const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  const slug = input.projectSlug ?? slugifyProjectName(input.name);
+  const targetDir = resolve2(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const existing = registry.projects[slug];
+  const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
+  const overwrite = input.overwrite ?? input.force ?? false;
+  const agentRole = normalizeAgentRole(input.agentRole);
+  const agents = input.provisionAgent ? {
+    ...existing?.agents ?? {},
+    [agentRole]: {
+      role: agentRole,
+      provisioning_state: "planned"
+    }
+  } : existing?.agents ?? {};
+  const scaffold = input.scaffold ?? true;
+  const candidateProject = {
+    name: input.name,
+    slug,
+    repo_path: targetDir,
+    description: input.description ?? "",
+    status: "planned",
+    source_artifacts: sourceSkillPath ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }] : [],
+    template: {
+      commonproject: {
+        enabled: true,
+        primary_language: input.primaryLanguage ?? "python"
+      }
+    },
+    ticket_provider: {
+      type: input.ticketProvider ?? "plane",
+      workspace: input.planeWorkspace ?? "33god",
+      identifier,
+      board_id: input.planeProjectId ?? "",
+      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
+      state: input.live ? "planned" : "planned"
+    },
+    agents,
+    created_at: existing?.created_at ?? now,
+    updated_at: now
+  };
+  const project = {
+    ...candidateProject,
+    updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
+  };
+  validateNoDuplicateProject(registry, project, overwrite);
+  const pjanglerRoot = resolve2(input.pjanglerRoot ?? resolvePjanglerRoot2());
+  const manifest = projectManifestFromRegistryProject(project);
+  const apply = input.apply ?? false;
+  const live = input.live ?? false;
+  const actions = [
+    { kind: "registry.upsert", registryPath: registryPath2, slug, project }
+  ];
+  if (scaffold) {
+    actions.push(buildCommonProjectCopierAction({
+      pjanglerRoot,
+      targetDir,
+      projectName: project.name,
+      projectDescription: project.description,
+      projectSlug: project.slug,
+      ticketProvider: project.ticket_provider.type,
+      planeWorkspace: project.ticket_provider.workspace ?? "33god",
+      planeProjectId: project.ticket_provider.board_id ?? "",
+      projectIdentifier: identifier,
+      primaryLanguage: project.template.commonproject.primary_language,
+      overwrite
+    }));
+  }
+  actions.push(
+    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
+    {
+      kind: "plane.create-or-link",
+      enabled: live,
+      live,
+      workspace: project.ticket_provider.workspace ?? "33god",
+      identifier,
+      state: live ? "planned" : "planned",
+      reason: live ? void 0 : "network/cloud actions require --live"
+    },
+    {
+      kind: "hermes.provision-agent",
+      enabled: input.provisionAgent ?? false,
+      local: !live,
+      targetDir,
+      targetRepo: slug,
+      role: agentRole,
+      context: {
+        skipRuntimeRepo: !live,
+        skipPlane: !live,
+        skipBloodbank: !live,
+        skipSystemd: !live || process.platform === "darwin"
+      }
+    }
+  );
+  return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
+}
+function executeProjectInitPlan(plan) {
+  const logs = [];
+  const errors = [];
+  const changedFiles = [];
+  if (!plan.apply) return { ok: true, plan, logs, errors, changedFiles };
+  const registry = loadProjectRegistry(plan.registryPath);
+  let pendingRegistryAction;
+  for (const action of plan.actions) {
+    if (action.kind === "copier.copy.commonproject") {
+      mkdirSync6(dirname6(action.targetDir), { recursive: true });
+      const result = spawnSync5(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      if (result.stdout?.trim()) logs.push(result.stdout.trim());
+      if (result.stderr?.trim()) logs.push(result.stderr.trim());
+      if (result.error) {
+        const code = result.error.code;
+        errors.push(
+          code === "ENOENT" ? "copier not found on PATH. Install with: uv tool install copier or pip install copier" : `copier failed: ${result.error.message}`
+        );
+        break;
+      }
+      if (result.status !== 0) {
+        errors.push(`copier exited with status ${result.status ?? "unknown"}`);
+        if (existsSync8(action.targetDir)) changedFiles.push(action.targetDir);
+        break;
+      }
+      changedFiles.push(action.targetDir);
+    } else if (action.kind === "project.write-manifest") {
+      mkdirSync6(dirname6(action.path), { recursive: true });
+      const next = `${JSON.stringify(action.manifest, null, 2)}
+`;
+      const current = existsSync8(action.path) ? readFileSync4(action.path, "utf8") : void 0;
+      if (current !== next) {
+        writeFileSync5(action.path, next, "utf8");
+        changedFiles.push(action.path);
+      }
+    } else if (action.kind === "registry.upsert") {
+      pendingRegistryAction = action;
+    } else if (action.kind === "plane.create-or-link") {
+      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "hermes.provision-agent") {
+      logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
+    }
+  }
+  if (pendingRegistryAction && errors.length === 0) {
+    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+      registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
+      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+      changedFiles.push(pendingRegistryAction.registryPath);
+    }
+  }
+  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
+}
+function projectManifestFromRegistryProject(project) {
+  const agents = Object.fromEntries(
+    Object.entries(project.agents).map(([name, agent]) => [
+      `${project.slug}-${name}`,
+      {
+        role: agent.role,
+        role_dir: agent.role_dir,
+        provisioning_state: agent.provisioning_state
+      }
+    ])
+  );
+  return {
+    project_name: project.name,
+    project_description: project.description,
+    project_slug: project.slug,
+    repo_path: project.repo_path,
+    ticket_provider: {
+      type: project.ticket_provider.type,
+      workspace: project.ticket_provider.workspace ?? "",
+      identifier: project.ticket_provider.identifier ?? "",
+      board_id: project.ticket_provider.board_id ?? "",
+      board_url: project.ticket_provider.board_url ?? "",
+      state: project.ticket_provider.state
+    },
+    agents
+  };
+}
+function formatProjectInitPlan(plan) {
+  const lines = [
+    `${plan.dryRun ? "[DRY RUN] " : ""}Project init plan: ${plan.project.name} (${plan.project.slug})`,
+    `Registry: ${plan.registryPath}`,
+    `Target: ${plan.project.repo_path}`,
+    "Actions:"
+  ];
+  for (const action of plan.actions) {
+    lines.push(`  - ${action.kind}`);
+    if (action.kind === "copier.copy.commonproject") lines.push(`    target: ${action.targetDir}`);
+    if (action.kind === "project.write-manifest") lines.push(`    path: ${action.path}`);
+    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`    note: ${action.reason}`);
+  }
+  return lines.join("\n");
+}
+function formatProjectList(registry) {
+  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
+  if (!projects.length) return "No projects registered.";
+  return projects.map((project) => `${project.slug.padEnd(18)} ${String(project.ticket_provider.identifier ?? "").padEnd(6)} ${project.status.padEnd(8)} ${project.repo_path}`).join("\n");
+}
+function getProject(registry, slug) {
+  const project = registry.projects[slug];
+  if (!project) throw new Error(`Project not found in registry: ${slug}`);
+  return project;
+}
+function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
+  const issues = [];
+  const registry = loadProjectRegistry(registryPath2);
+  const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
+  for (const [projectSlug, project] of projects) {
+    if (!existsSync8(project.repo_path)) {
+      issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
+    } else if (!statSync(project.repo_path).isDirectory()) {
+      issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
+    } else {
+      const manifestPath = join9(project.repo_path, ".project.json");
+      if (!existsSync8(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+    }
+    for (const artifact of project.source_artifacts) {
+      if (artifact.path && !existsSync8(artifact.path)) {
+        issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
+      }
+    }
+  }
+  return {
+    ok: !issues.some((issue) => issue.level === "error"),
+    registryPath: registryPath2,
+    checkedProjects: projects.map(([projectSlug]) => projectSlug),
+    issues
+  };
+}
+function buildCommonProjectCopierAction(input) {
+  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
+  const data = {
+    project_name: input.projectName,
+    project_description: input.projectDescription ?? "",
+    project_slug: input.projectSlug,
+    ticket_provider: input.ticketProvider,
+    plane_workspace: input.planeWorkspace,
+    plane_project_id: input.planeProjectId ?? "",
+    project_identifier: input.projectIdentifier,
+    primary_language: input.primaryLanguage
+  };
+  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
+  for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
+  if (input.overwrite) command.push("--overwrite");
+  return {
+    kind: "copier.copy.commonproject",
+    cwd: input.pjanglerRoot,
+    command,
+    targetDir: input.targetDir,
+    data,
+    overwrite: input.overwrite
+  };
+}
+function resolvePjanglerRoot2() {
+  let dir = dirname6(new URL(import.meta.url).pathname);
+  while (dir !== dirname6(dir)) {
+    if (existsSync8(join9(dir, "package.json")) && existsSync8(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname6(dir);
+  }
+  return resolve2(process.cwd());
+}
+function validateNoDuplicateProject(registry, project, overwrite) {
+  const existingSameSlug = registry.projects[project.slug];
+  if (existingSameSlug && !overwrite && resolve2(existingSameSlug.repo_path) !== resolve2(project.repo_path)) {
+    throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  }
+  for (const [slug, existing] of Object.entries(registry.projects)) {
+    if (slug === project.slug) continue;
+    if (resolve2(existing.repo_path) === resolve2(project.repo_path)) {
+      throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
+    }
+    if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
+      throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
+    }
+  }
+}
+function validateProjectRecord(project, key) {
+  if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
+  if (!project.name) throw new Error(`Project ${key} missing name`);
+  if (!project.slug) throw new Error(`Project ${key} missing slug`);
+  if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
+  if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
+  if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
+  if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+}
+function expandHome(path) {
+  if (path === "~") return homedir5();
+  if (path.startsWith("~/")) return join9(homedir5(), path.slice(2));
+  return path;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/utils/version.ts
-import { readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { readFileSync as readFileSync5 } from "node:fs";
+import { dirname as dirname7, join as join10 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname6(fileURLToPath4(import.meta.url));
+    let dir = dirname7(fileURLToPath4(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync4(join9(dir, "package.json"), "utf8");
+        const raw = readFileSync5(join10(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname6(dir);
+        const parent = dirname7(dir);
         if (parent === dir) break;
         dir = parent;
       }
@@ -2607,6 +3189,190 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/index.ts
+function printMigrationReport(report, asJson) {
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatMigrationReport(report));
+  }
+}
+async function promptForRuleIds(rules) {
+  const options = rules.filter((rule) => rule.fixable).map((rule) => ({
+    value: rule.id,
+    label: `${rule.id} [${rule.status}] ${rule.title}`,
+    hint: rule.summary
+  }));
+  if (!options.length) {
+    return [];
+  }
+  const initialValues = rules.filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => rule.id);
+  const selected = await multiselect({
+    message: "Select parity rules to apply (space to toggle, enter to confirm):",
+    options,
+    initialValues
+  });
+  if (isCancel5(selected)) {
+    return [];
+  }
+  return selected;
+}
+function readJson(path) {
+  if (!existsSync9(path)) return void 0;
+  try {
+    const parsed = JSON.parse(readFileSync6(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function findGitRoot(cwd) {
+  const result = spawnSync6("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  if (result.status !== 0) return void 0;
+  return resolve3(result.stdout.trim());
+}
+function packageNameToProjectName(value) {
+  if (!value) return void 0;
+  const name = value.split("/").pop() ?? value;
+  return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
+}
+function deriveProjectDefaults(targetDir) {
+  const manifest = readJson(join11(targetDir, ".project.json"));
+  const pkg = readJson(join11(targetDir, "package.json"));
+  const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename4(targetDir)) || "Project";
+  const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
+  return {
+    name,
+    description: String(manifest?.project_description ?? pkg?.description ?? ""),
+    slug: typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0,
+    identifier: typeof ticketProvider.identifier === "string" ? ticketProvider.identifier : void 0
+  };
+}
+function isInteractiveProjectInit(options) {
+  return !options.json && !options.yes && options.tui !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+async function promptTextValue(message, initialValue) {
+  const value = await text3({
+    message,
+    initialValue,
+    validate: (input) => input?.trim() ? void 0 : "Required"
+  });
+  if (isCancel5(value)) {
+    cancel2("project init cancelled");
+    process.exit(1);
+  }
+  return value.trim();
+}
+function projectInitActionLabel(kind) {
+  switch (kind) {
+    case "registry.upsert":
+      return "Register/update project registry entry";
+    case "copier.copy.commonproject":
+      return "Render CommonProject scaffold";
+    case "project.write-manifest":
+      return "Write repo-local .project.json projection";
+    case "plane.create-or-link":
+      return "Create/link ticket provider project";
+    case "hermes.provision-agent":
+      return "Provision Hermes agent";
+    default:
+      return kind;
+  }
+}
+function registryNeedsUpsert(plan) {
+  const registry = loadProjectRegistry(plan.registryPath);
+  const existing = registry.projects[plan.project.slug];
+  if (!existing) return true;
+  const { created_at: _existingCreated, updated_at: _existingUpdated, ...existingComparable } = existing;
+  const { created_at: _projectCreated, updated_at: _projectUpdated, ...projectComparable } = plan.project;
+  return JSON.stringify(existingComparable) !== JSON.stringify(projectComparable);
+}
+function actionNeedsRun(plan, kind, syncMode) {
+  if (kind === "registry.upsert") return registryNeedsUpsert(plan);
+  if (kind === "project.write-manifest") {
+    const action = plan.actions.find((item) => item.kind === "project.write-manifest");
+    if (!action || action.kind !== "project.write-manifest") return false;
+    const next = `${JSON.stringify(action.manifest, null, 2)}
+`;
+    return !existsSync9(action.path) || readFileSync6(action.path, "utf8") !== next;
+  }
+  if (kind === "copier.copy.commonproject") return true;
+  if (kind === "plane.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  if (kind === "hermes.provision-agent") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  return true;
+}
+async function selectProjectInitOperations(input) {
+  const planOperations = input.plan.actions.filter((action) => actionNeedsRun(input.plan, action.kind, input.syncMode)).map((action) => ({
+    value: action.kind,
+    label: projectInitActionLabel(action.kind),
+    hint: action.kind === "registry.upsert" ? input.plan.registryPath : action.kind
+  }));
+  const parityOperations = input.auditRules.filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => ({
+    value: `parity:${rule.id}`,
+    label: `${rule.title}`,
+    hint: `${rule.id}: ${rule.summary}`
+  }));
+  const operations = [...planOperations, ...parityOperations];
+  const all = operations.map((operation) => operation.value);
+  if (input.options.yes || input.options.apply && !isInteractiveProjectInit(input.options)) {
+    return {
+      selectedOperations: all,
+      selectedParityRules: parityOperations.map((operation) => operation.value.replace(/^parity:/, ""))
+    };
+  }
+  if (input.options.dryRun || !isInteractiveProjectInit(input.options)) {
+    return { selectedOperations: [], selectedParityRules: [] };
+  }
+  if (!operations.length) return { selectedOperations: [], selectedParityRules: [] };
+  const selected = await multiselect({
+    message: "Select project init operations to run:",
+    options: operations,
+    initialValues: all
+  });
+  if (isCancel5(selected)) {
+    cancel2("project init cancelled");
+    process.exit(1);
+  }
+  return {
+    selectedOperations: selected,
+    selectedParityRules: selected.filter((value) => value.startsWith("parity:")).map((value) => value.replace(/^parity:/, ""))
+  };
+}
+async function resolveProjectInitTarget(name, options) {
+  const interactive = isInteractiveProjectInit(options);
+  const cwd = process.cwd();
+  const cwdGitRoot = findGitRoot(cwd);
+  let targetDir = options.targetDir ? resolve3(options.targetDir) : void 0;
+  if (!targetDir && cwdGitRoot) {
+    targetDir = cwdGitRoot;
+  }
+  if (!targetDir && interactive) {
+    const defaultName = name ?? basename4(cwd);
+    const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
+    const defaultDir = join11(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = await promptTextValue("Project directory", defaultDir);
+    name = promptedName;
+  }
+  if (!targetDir) {
+    if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
+    targetDir = resolve3(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+  }
+  const targetExists = existsSync9(targetDir);
+  if (targetExists && !statSync2(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
+  const syncMode = Boolean(targetGitRoot && resolve3(targetGitRoot) === resolve3(targetDir));
+  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename4(targetDir)) ?? "Project", description: "" };
+  if (!name && interactive && !syncMode) {
+    name = await promptTextValue("Project name", defaults.name);
+  }
+  return {
+    name: name ?? defaults.name,
+    targetDir,
+    description: options.description ?? defaults.description,
+    syncMode,
+    slug: options.slug ?? defaults.slug,
+    identifier: options.identifier ?? defaults.identifier
+  };
+}
 var program = new Command3();
 program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
 program.command("init").argument("<subsystem>", "Subsystem to initialize").description("Initialize a project subsystem").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (subsystem, options) => {
@@ -2639,6 +3405,144 @@ program.command("list").description("List available subsystems").action(() => {
   console.log("  pjangler init mise");
   console.log("  pjangler init docker");
   console.log("  pjangler init node");
+});
+var projectCmd = program.command("project").description("Manage the pjangler project registry");
+projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
+  try {
+    const target = await resolveProjectInitTarget(name, options);
+    const interactive = isInteractiveProjectInit(options);
+    const apply = Boolean(!options.dryRun && (options.yes || options.apply || interactive));
+    const plan = planProjectInit({
+      name: target.name,
+      description: target.description,
+      targetDir: target.targetDir,
+      sourceSkill: options.sourceSkill,
+      primaryLanguage: options.primaryLanguage,
+      provisionAgent: options.provisionAgent ?? false,
+      agentRole: options.agentRole,
+      apply,
+      live: options.live ?? false,
+      projectSlug: target.slug,
+      projectIdentifier: target.identifier,
+      registryPath: options.registry,
+      force: options.force ?? false,
+      overwrite: options.force ?? false,
+      cwd: process.cwd(),
+      scaffold: !target.syncMode
+    });
+    const audit = target.syncMode ? runAudit(target.targetDir) : void 0;
+    const selection = await selectProjectInitOperations({
+      plan,
+      auditRules: audit?.rules ?? [],
+      syncMode: target.syncMode,
+      options
+    });
+    const selectedPlanActionKinds = new Set(selection.selectedOperations.filter((value) => !value.startsWith("parity:")));
+    const selectedPlan = {
+      ...plan,
+      apply,
+      dryRun: !apply,
+      actions: apply ? plan.actions.filter((action) => selectedPlanActionKinds.has(action.kind)) : plan.actions
+    };
+    if (!apply) {
+      const payload = {
+        ...plan,
+        mode: target.syncMode ? "sync" : "create",
+        audit,
+        proposedOperations: [
+          ...plan.actions.filter((action) => actionNeedsRun(plan, action.kind, target.syncMode)).map((action) => action.kind),
+          ...(audit?.rules ?? []).filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => `parity:${rule.id}`)
+        ]
+      };
+      if (options.json) console.log(JSON.stringify(payload, null, 2));
+      else {
+        console.log(formatProjectInitPlan(plan));
+        if (payload.proposedOperations.length) {
+          console.log("Proposed sync operations:");
+          for (const operation of payload.proposedOperations) console.log(`  - ${operation}`);
+        } else {
+          console.log("Project is already in parity.");
+        }
+      }
+      return;
+    }
+    const initResult = selectedPlan.actions.length ? executeProjectInitPlan(selectedPlan) : { ok: true, plan: selectedPlan, logs: [], errors: [], changedFiles: [] };
+    const migrationReport = selection.selectedParityRules.length ? runMigrationForRules(selection.selectedParityRules, target.targetDir, false) : void 0;
+    const migrationErrors = migrationReport?.results.filter((result2) => result2.status === "blocked").map((result2) => `${result2.id}: ${result2.summary}`) ?? [];
+    const changedFiles = Array.from(/* @__PURE__ */ new Set([
+      ...initResult.changedFiles,
+      ...migrationReport?.changedFiles ?? []
+    ])).sort();
+    const result = {
+      ok: initResult.ok && (migrationReport?.ok ?? true),
+      mode: target.syncMode ? "sync" : "create",
+      plan: selectedPlan,
+      audit,
+      selectedOperations: selection.selectedOperations,
+      selectedParityRules: selection.selectedParityRules,
+      logs: initResult.logs,
+      errors: [...initResult.errors, ...migrationErrors],
+      changedFiles,
+      migrationReport
+    };
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(formatProjectInitPlan(selectedPlan));
+      for (const line of result.logs) console.log(line);
+      for (const line of result.errors) console.error(line);
+      if (migrationReport) console.log(formatMigrationReport(migrationReport));
+      if (result.ok && changedFiles.length) console.log(`Project synchronized: ${plan.project.slug}`);
+      if (result.ok && changedFiles.length === 0) console.log(`Project already in parity: ${plan.project.slug}`);
+    }
+    process.exitCode = result.ok ? 0 : 1;
+  } catch (err) {
+    if (options.json) {
+      console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
+    } else {
+      console.error("\u274C project init failed:", err instanceof Error ? err.message : err);
+    }
+    process.exit(1);
+  }
+});
+projectCmd.command("list").description("List projects in the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((options) => {
+  try {
+    const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
+    if (options.json) console.log(JSON.stringify(registry, null, 2));
+    else console.log(formatProjectList(registry));
+  } catch (err) {
+    console.error("\u274C project list failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+});
+projectCmd.command("show").argument("<slug>", "Project slug").description("Show one project from the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((slug, options) => {
+  try {
+    const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
+    if (options.json) console.log(JSON.stringify(project, null, 2));
+    else console.log(`${project.name} (${project.slug})
+${project.repo_path}
+${project.description}`);
+  } catch (err) {
+    console.error("\u274C project show failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+});
+projectCmd.command("doctor").argument("[slug]", "Optional project slug").description("Validate the project registry and local projections").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((slug, options) => {
+  try {
+    const report = doctorProjectRegistry(options.registry ?? projectRegistryPath(), slug);
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else if (!report.issues.length) {
+      console.log(`Project registry OK: ${report.registryPath}`);
+    } else {
+      console.log(`Project registry issues: ${report.registryPath}`);
+      for (const issue of report.issues) console.log(`  [${issue.level}] ${issue.slug ?? "registry"}: ${issue.message}`);
+    }
+    process.exit(report.ok ? 0 : 1);
+  } catch (err) {
+    console.error("\u274C project doctor failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
 });
 var recipeCmd = program.command("recipe").description("Manage pjangler recipes");
 recipeCmd.command("list").description("List all available recipes").action(() => {
@@ -2772,24 +3676,50 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
     process.exit(1);
   }
 });
-program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit with --all to apply all)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or --all)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action((ruleId, repo, options) => {
+program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or open the rule selector)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
   try {
     const all = options.all ?? false;
-    if (!all && !ruleId) {
-      console.error("\u274C Provide a rule-id or use --all");
+    const dryRun = options.dryRun ?? false;
+    if (all) {
+      let actualRepo = repo;
+      if (ruleId && !actualRepo) {
+        actualRepo = ruleId;
+      }
+      const report2 = runMigration(void 0, actualRepo, dryRun, true);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (ruleId && repo) {
+      if (!getParityRuleIds().includes(ruleId)) {
+        console.error(`\u274C Unknown parity rule: ${ruleId}`);
+        process.exit(1);
+      }
+      const report2 = runMigration(ruleId, repo, dryRun, false);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (ruleId && getParityRuleIds().includes(ruleId)) {
+      const report2 = runMigration(ruleId, void 0, dryRun, false);
+      printMigrationReport(report2, options.json);
+      process.exit(report2.ok ? 0 : 1);
+    }
+    if (options.json) {
+      console.error("\u274C JSON output requires a rule-id or --all");
       process.exit(1);
     }
-    let actualRuleId = all ? void 0 : ruleId;
-    let actualRepo = repo;
-    if (all && ruleId && !actualRepo) {
-      actualRepo = ruleId;
+    if (!process.stdin.isTTY) {
+      console.error("\u274C Provide a rule-id, use --all, or run in an interactive terminal");
+      process.exit(1);
     }
-    const report = runMigration(actualRuleId, actualRepo, options.dryRun ?? false, all);
-    if (options.json) {
-      console.log(JSON.stringify(report, null, 2));
-    } else {
-      console.log(formatMigrationReport(report));
+    const targetRepo = ruleId ?? repo;
+    const audit = runAudit(targetRepo);
+    const ruleIds = await promptForRuleIds(audit.rules);
+    if (!ruleIds.length) {
+      console.log("No rules selected; nothing to migrate.");
+      process.exit(0);
     }
+    const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
+    printMigrationReport(report, false);
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
     console.error("\u274C migrate failed:", err);

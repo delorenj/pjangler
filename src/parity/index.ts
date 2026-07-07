@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -86,6 +86,31 @@ enter = [
 ]
 
 [[watch_files]]
+patterns = ["AGENTS.md"]
+task = "link-agentfiles"
+
+[tasks.link-agentfiles]
+description = "Symlink all agent files to AGENTS.md"
+run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+
+const LINK_AGENTFILES_HOOK_ENTRIES = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+];
+
+const LINK_AGENTFILES_HOOKS_BLOCK = `# This block will handle the linking of
+# agent files to the main AGENTS.md file.
+#
+# TODO: Ensure this works for all levels of nesting.
+# i.e. All linked agent files MUST be siblings at
+# any given level of nesting.
+[hooks]
+enter = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+]`;
+
+const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
@@ -339,6 +364,26 @@ function templateLinkAgentfilesScript(ctx: Context): string | undefined {
   return templateScript(ctx, "link-agentfiles.sh");
 }
 
+function renderGeneratedProjectMiseToml(ctx: Context, template: string): string {
+  const project = readProjectJson(ctx);
+  const projectName = String(project?.project_name ?? basename(ctx.repoRoot) ?? "project");
+  return template
+    .replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1")
+    .replace(/\{\{\s*project_name\s*\}\}/g, projectName);
+}
+
+function ensureMiseTomlFromTemplate(ctx: Context, changedFiles: string[]): boolean {
+  const targetPath = join(ctx.repoRoot, "mise.toml");
+  if (existsSync(targetPath)) return false;
+  const sourcePath = join(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
+  if (!existsSync(sourcePath)) return false;
+  changedFiles.push(targetPath);
+  if (!ctx.dryRun) {
+    writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
+  }
+  return true;
+}
+
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
   const packageJson = join(repoRoot, "package.json");
   return existsSync(packageJson)
@@ -395,17 +440,130 @@ function upsertMisePath(text: string, required = BASE_MISE_PATH_ENTRIES): string
   return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
 }
 
+function removeTomlSection(text: string, headerPattern: RegExp, marker?: RegExp, options?: { includePrecedingComments?: boolean }): string {
+  const lines = text.split("\n");
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!headerPattern.test(lines[i]!)) continue;
+    if (marker) {
+      let hasMarker = false;
+      for (let j = i + 1; j < lines.length && !/^\[[^\]]+\]/.test(lines[j]!); j++) {
+        if (marker.test(lines[j]!)) {
+          hasMarker = true;
+          break;
+        }
+      }
+      if (!hasMarker) continue;
+    }
+    start = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^\[[^\]]+\]/.test(lines[j]!)) {
+        end = j;
+        break;
+      }
+    }
+    if (end === -1) end = lines.length;
+    break;
+  }
+  if (start === -1) return text;
+  if (options?.includePrecedingComments) {
+    while (start > 0 && lines[start - 1]!.trim().startsWith("#")) {
+      start--;
+    }
+  }
+  const result = lines.slice(0, start).concat(lines.slice(end)).join("\n");
+  return result.replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+
+function insertTomlBlockBeforeVersioning(text: string, block: string): string {
+  const versioningIndex = text.indexOf("# >>> mise-versioning >>>");
+  if (versioningIndex >= 0) {
+    return `${text.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${block}\n\n${text.slice(versioningIndex)}`;
+  }
+  return `${text.replace(/\s*$/, "")}\n\n${block}\n`;
+}
+
+function extractTomlStrings(text: string): string[] {
+  const values: string[] = [];
+  const stringPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'/g;
+  for (const match of text.matchAll(stringPattern)) {
+    if (match[1] !== undefined) {
+      try {
+        values.push(JSON.parse(`"${match[1]}"`) as string);
+      } catch {
+        values.push(match[1]);
+      }
+    } else if (match[2] !== undefined) {
+      values.push(match[2]);
+    }
+  }
+  return values;
+}
+
+function isManagedHookEntry(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
+}
+
+function renderHookEntries(entries: string[], indent = ""): string[] {
+  return [
+    `${indent}enter = [`,
+    ...entries.map((entry) => `${indent}  ${JSON.stringify(entry)},`),
+    `${indent}]`,
+  ];
+}
+
+function upsertLinkAgentfilesHooks(text: string): string {
+  const lines = text.split("\n");
+  const hooksStart = lines.findIndex((line) => /^\[hooks\]$/.test(line.trim()));
+  if (hooksStart === -1) return insertTomlBlockBeforeVersioning(text, LINK_AGENTFILES_HOOKS_BLOCK);
+
+  let hooksEnd = lines.length;
+  for (let i = hooksStart + 1; i < lines.length; i++) {
+    if (/^\[[^\]]+\]/.test(lines[i]!.trim())) {
+      hooksEnd = i;
+      break;
+    }
+  }
+
+  let enterStart = -1;
+  let enterEnd = -1;
+  for (let i = hooksStart + 1; i < hooksEnd; i++) {
+    if (!/^\s*enter\s*=/.test(lines[i]!)) continue;
+    enterStart = i;
+    enterEnd = i + 1;
+    const afterEquals = lines[i]!.slice(lines[i]!.indexOf("=") + 1);
+    if (afterEquals.includes("[") && !afterEquals.includes("]")) {
+      while (enterEnd < hooksEnd && !lines[enterEnd]!.includes("]")) enterEnd++;
+      if (enterEnd < hooksEnd) enterEnd++;
+    }
+    break;
+  }
+
+  const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";
+  const preserved = extractTomlStrings(existingBlock).filter((entry) => !isManagedHookEntry(entry));
+  const merged = [...LINK_AGENTFILES_HOOK_ENTRIES];
+  for (const entry of preserved) {
+    if (!merged.includes(entry)) merged.push(entry);
+  }
+  const indent = enterStart >= 0 ? lines[enterStart]!.match(/^\s*/)?.[0] ?? "" : "";
+  const rendered = renderHookEntries(merged, indent);
+
+  if (enterStart >= 0) {
+    return lines.slice(0, enterStart).concat(rendered, lines.slice(enterEnd)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  }
+  return lines.slice(0, hooksStart + 1).concat(rendered, lines.slice(hooksStart + 1)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+}
+
 function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
   const withPath = upsertMisePath(text, requiredMisePathEntries(ctx));
-  const existing = /# This block will handle the linking of[\s\S]*?\[tasks\.link-agentfiles\][\s\S]*?run = "\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh"/;
-  if (existing.test(withPath)) {
-    return withPath.replace(existing, LINK_AGENTFILES_BLOCK);
-  }
-  const versioningIndex = withPath.indexOf("# >>> mise-versioning >>>");
-  if (versioningIndex >= 0) {
-    return `${withPath.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${LINK_AGENTFILES_BLOCK}\n\n${withPath.slice(versioningIndex)}`;
-  }
-  return `${withPath.replace(/\s*$/, "")}\n\n${LINK_AGENTFILES_BLOCK}\n`;
+  if (withPath.includes(LINK_AGENTFILES_BLOCK)) return withPath;
+  // Remove stale AGENTS-linking pieces before appending the canonical block.
+  let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
+  cleaned = upsertLinkAgentfilesHooks(cleaned);
+  return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
 
 function readProjectJson(ctx: Context): Record<string, unknown> | null {
@@ -431,22 +589,34 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     identifier: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
     board_url: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
+    state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? "planned") || "planned"),
   };
+  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; provisioning_state?: string }> | undefined) ?? {};
+  const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
+    roles.map((role) => [
+      role.agentId || `${slug}-${role.role}`,
+      {
+        role: role.role,
+        role_dir: relative(ctx.repoRoot, role.roleDir),
+      },
+    ])
+  );
+  const agents = { ...existingAgents } as Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
+  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
+    const existingAgent = existingAgents[agentId] ?? {};
+    agents[agentId] = {
+      role: discovered.role,
+      role_dir: discovered.role_dir,
+      provisioning_state: existingAgent.provisioning_state,
+    };
+  }
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_slug: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
-    agents: Object.fromEntries(
-      roles.map((role) => [
-        role.agentId || `${slug}-${role.role}`,
-        {
-          role: role.role,
-          role_dir: relative(ctx.repoRoot, role.roleDir),
-        },
-      ])
-    ),
+    agents,
   };
 }
 
@@ -479,7 +649,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     }
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
   if (existsSync(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
@@ -676,13 +846,20 @@ const RULES: Rule[] = [
     migrate: (ctx, finding) => {
       const path = join(ctx.repoRoot, "mise.toml");
       const changedFiles: string[] = [];
+      const details: string[] = [];
       if (!existsSync(path)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; initialize mise first", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
       let text = readText(path);
       const next = upsertLinkAgentfilesBlock(text, ctx);
       if (next !== text) {
-        changedFiles.push(path);
+        if (!changedFiles.includes(path)) changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, next);
         text = next;
       }
@@ -731,14 +908,21 @@ const RULES: Rule[] = [
     },
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
+      const details: string[] = [];
       const misePath = join(ctx.repoRoot, "mise.toml");
       if (!existsSync(misePath)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing; cannot inject versioning block", changedFiles, details: [] };
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+        }
+        details.push("Initialized mise.toml from generated-project template");
+        if (ctx.dryRun) {
+          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+        }
       }
       const currentMise = readText(misePath);
       const nextMise = replaceOrAppendManagedBlock(currentMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
       if (nextMise !== currentMise) {
-        changedFiles.push(misePath);
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
       const versioningPath = join(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
@@ -882,7 +1066,8 @@ const RULES: Rule[] = [
           .filter((line) => line && !line.startsWith("#") && line.includes("="))
           .filter((line) => {
             const value = line.slice(line.indexOf("=") + 1).trim();
-            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value);
+            const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
         if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
       }
@@ -1185,7 +1370,7 @@ export function runAudit(repoArg?: string): AuditReport {
   };
 }
 
-export function runMigration(selector: string | undefined, repoArg: string | undefined, dryRun: boolean, all: boolean): MigrationReport {
+export function runMigrationForRules(ruleIds: string[], repoArg: string | undefined, dryRun: boolean): MigrationReport {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx: Context = {
     repoRoot: resolve(repoArg ?? process.cwd()),
@@ -1193,9 +1378,9 @@ export function runMigration(selector: string | undefined, repoArg: string | und
     pjanglerRoot,
     homeDir: homedir(),
   };
-  const selected = all ? RULES : RULES.filter((rule) => rule.id === selector);
+  const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
-    throw new Error(`Unknown parity rule: ${selector}`);
+    throw new Error(`Unknown parity rules: ${ruleIds.join(", ")}`);
   }
   // One throwing rule must not kill the whole migration (PJAN-3: an ENOENT in
   // templateVersioningScript aborted every other step) — degrade to "blocked".
@@ -1222,6 +1407,11 @@ export function runMigration(selector: string | undefined, repoArg: string | und
     results,
     changedFiles,
   };
+}
+
+export function runMigration(selector: string | undefined, repoArg: string | undefined, dryRun: boolean, all: boolean): MigrationReport {
+  const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
+  return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
 
 export function formatAuditReport(report: AuditReport): string {
