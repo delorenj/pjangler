@@ -4,6 +4,7 @@ import { AddDotenv } from "../commands/AddDotenv";
 import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
 import { AddMiseBaseToml } from "../commands/AddMiseBaseToml";
 import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
+import { AddMiseCodegraphScript } from "../commands/AddMiseCodegraphScript";
 import type { CommandContext } from "../commands/Command";
 
 export class MiseRecipe extends Recipe {
@@ -14,7 +15,8 @@ export class MiseRecipe extends Recipe {
       .addIngredient(AddDotenv)
       .addIngredient(AddMiseTasksStructure)
       .addIngredient(AddMiseBaseToml)
-      .addIngredient(AddMiseBaseScript);
+      .addIngredient(AddMiseBaseScript)
+      .addIngredient(AddMiseCodegraphScript);
   }
 
   protected printNextSteps(): void {

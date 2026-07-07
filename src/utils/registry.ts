@@ -23,6 +23,7 @@ import { AddMiseToml } from "../commands/AddMiseToml";
 import { AddMiseBaseToml } from "../commands/AddMiseBaseToml";
 import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
 import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
+import { AddMiseCodegraphScript } from "../commands/AddMiseCodegraphScript";
 import { AddDotenv } from "../commands/AddDotenv";
 
 export interface RecipeInfo {
@@ -47,7 +48,7 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     name: "mise",
     description: "Mise task runner and environment setup",
     class: MiseRecipe,
-    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript"]
+    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript"]
   },
   docker: {
     name: "docker",
@@ -139,6 +140,12 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     description: "Create base mise task scripts",
     group: "mise",
     class: AddMiseBaseScript
+  },
+  AddMiseCodegraphScript: {
+    name: "AddMiseCodegraphScript",
+    description: "Create .mise/scripts/codegraph.sh enter hook",
+    group: "mise",
+    class: AddMiseCodegraphScript
   },
   AddDotenv: {
     name: "AddDotenv",
