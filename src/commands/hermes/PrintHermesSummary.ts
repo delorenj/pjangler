@@ -21,7 +21,8 @@ export class PrintHermesSummary extends Command {
     lines.push(`role dir     ${ctx.roleDir}`);
     lines.push(`runtime      gh:${runtimeRepo}`);
     lines.push(`telegram     @${botHandle}${skipTelegram ? "   (NOT yet wired)" : ""}`);
-    lines.push(`email        ${email}${skipEmail ? "   (NOT yet wired)" : ""}`);
+    // Email is opt-in only; only surface it when it was actually provisioned.
+    if (!skipEmail) lines.push(`email        ${email}`);
     lines.push("");
     lines.push("Start daemons:");
     lines.push(`  systemctl --user start ${csm}`);
@@ -34,11 +35,10 @@ export class PrintHermesSummary extends Command {
     lines.push("");
     lines.push("Talk locally:");
     lines.push(`  ${ctx.roleDir}/hermes chat "status"`);
-    if (skipTelegram || skipEmail) {
+    if (skipTelegram) {
       lines.push("");
-      lines.push("Deferred — re-run pjangler hermes-agent without --yes (or with explicit flags):");
-      if (skipTelegram) lines.push("  pjangler hermes-agent --skip-telegram=false   # wire just telegram");
-      if (skipEmail)    lines.push("  pjangler hermes-agent --skip-email=false      # wire just email");
+      lines.push("Wire Telegram later:");
+      lines.push("  pjangler hermes-agent          # re-run and answer yes when asked");
     }
 
     p.note(lines.join("\n"), `Provisioned ${agentId}`);

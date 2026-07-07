@@ -22,7 +22,9 @@ export class WireEmail extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
     if (ctx.skipEmail) {
-      return { success: true, message: "→ Email wire-up skipped" };
+      // Email is opt-in only (`--email`). Stay silent when off so the default
+      // flow never mentions email at all.
+      return { success: true, message: "" };
     }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };

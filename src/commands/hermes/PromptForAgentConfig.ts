@@ -3,13 +3,7 @@ import { readFileSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext, TicketProvider } from "./types";
-import {
-  SOUL_TONES,
-  ROLE_CHOICES,
-  TICKET_PROVIDERS,
-  deriveAgentId,
-  deriveProfileName,
-} from "./types";
+import { deriveAgentId, deriveProfileName } from "./types";
 
 /**
  * Synergy with CommonProject: if this repo was bootstrapped by the base
@@ -28,41 +22,47 @@ function detectTicketProvider(targetDir: string): TicketProvider | undefined {
 }
 
 /**
- * First step of the hermes-agent recipe. Either:
- *  - non-interactive (context.yes === true): apply sensible defaults relative
- *    to the current repo and short-circuit;
- *  - interactive: walk the user through a TUI (Clack) to collect missing fields.
+ * First step of the hermes-agent recipe.
  *
- * In both cases, mutates `this.context` (cast to HermesAgentContext) so that
- * downstream commands have what they need.
+ * A Hermes agent is, by design, always a single PM per repo named `<repo>-pm`
+ * (see the unified single-PM fleet model). There is therefore nothing to
+ * choose: repo, role, board, purpose, tone, and model all have one correct
+ * default. This command applies those defaults unconditionally and — in
+ * interactive mode — asks exactly ONE question: whether to wire the Telegram
+ * bot now. Email is never provisioned unless explicitly opted in via `--email`.
+ *
+ * Any field pre-supplied via a CLI flag (or by the MCP layer) is preserved;
+ * we only fill in what's missing. Downstream commands read the mutated context.
  */
 export class PromptForAgentConfig extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
 
-    // Compute the default target_repo from the current working dir.
-    // Lowercase here so the value is a valid hermes profile name, telegram
-    // handle prefix, email local-part, and systemd unit slug — all of which
-    // reject uppercase. GitHub repo names are case-insensitive, so this is safe.
+    // Default target_repo from the current working dir. Lowercase so the value
+    // is a valid hermes profile name, telegram handle prefix, and systemd unit
+    // slug — all of which reject uppercase. GitHub repo names are
+    // case-insensitive, so this is safe.
     const defaultRepo = basename(ctx.targetDir).toLowerCase();
-    const defaultRole = "pm";
 
-    // --- Non-interactive shortcut ---
+    // --- Defaults for everything (the PM-only, one-agent-per-repo model) ---
+    ctx.targetRepo = (ctx.targetRepo ?? defaultRepo).toLowerCase();
+    ctx.role ??= "pm"; // PM-only fleet: no other roles are offered.
+    ctx.agentPurpose ??= `${ctx.role} agent for ${ctx.targetRepo}`;
+    ctx.soulTone ??= "direct";
+    ctx.modelProvider ??= ""; // inherit shared default profile
+    ctx.modelName ??= ""; // inherit shared default profile
+    // Board provider: honor an explicit flag, else inherit the repo's existing
+    // .project.json provider, else plane.
+    ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
+    // Email is never provisioned by default — opt in with `--email`.
+    ctx.skipEmail ??= true;
+
+    ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
+    ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
+
+    // --- Non-interactive: also skip the one human-input step (Telegram) ---
     if (ctx.yes) {
-      ctx.targetRepo = (ctx.targetRepo ?? defaultRepo).toLowerCase();
-      ctx.role ??= defaultRole;
-      ctx.agentPurpose ??= `${ctx.role} agent for ${ctx.targetRepo}`;
-      ctx.soulTone ??= "direct";
-      ctx.modelProvider ??= "";
-      ctx.modelName ??= "";
-      // Board provider: honor an explicit flag, else inherit the repo's
-      // existing .project.json provider, else plane.
-      ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
-      // In --yes mode we always skip the human-input pieces (BotFather, CF).
       ctx.skipTelegram ??= true;
-      ctx.skipEmail ??= true;
-      ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
-      ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
       return {
         success: true,
         message: this.formatMessage(
@@ -71,115 +71,22 @@ export class PromptForAgentConfig extends Command {
       };
     }
 
-    // --- Interactive TUI ---
-    p.intro("⚕  hermes-agent  ·  add a new agent role to this repo");
-
-    // Pre-fill any values supplied via CLI flags; only prompt for what's missing.
-    if (!ctx.targetRepo) {
-      const answer = await p.text({
-        message: "Target repo name",
-        placeholder: defaultRepo,
-        initialValue: defaultRepo,
-        validate: (v) => (v && v.trim() ? undefined : "required"),
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.targetRepo = String(answer).trim().toLowerCase();
-    }
-
-    if (!ctx.role) {
-      const answer = await p.select({
-        message: "Role",
-        options: ROLE_CHOICES.map((r) => ({ value: r.value, label: r.label, hint: r.hint })),
-        initialValue: defaultRole,
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.role = String(answer).trim();
-    }
-
-    if (ctx.ticketProvider === undefined) {
-      const detected = detectTicketProvider(ctx.targetDir);
-      const answer = await p.select({
-        message: "Ticket board provider",
-        options: TICKET_PROVIDERS.map((t) => ({
-          value: t.value,
-          label: t.label,
-          hint: t.value === detected ? `${t.hint} — current .project.json` : t.hint,
-        })),
-        initialValue: detected ?? "plane",
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.ticketProvider = answer as TicketProvider;
-    }
-
-    if (!ctx.agentPurpose) {
-      const answer = await p.text({
-        message: "One-line purpose",
-        placeholder: `${ctx.role} agent for ${ctx.targetRepo}`,
-        initialValue: `${ctx.role} agent for ${ctx.targetRepo}`,
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.agentPurpose = String(answer).trim();
-    }
-
-    if (!ctx.soulTone) {
-      const answer = await p.select({
-        message: "Personality tone",
-        options: SOUL_TONES.map((t) => ({
-          value: t,
-          label: t,
-          hint:
-            t === "direct"
-              ? "decision-forward, no preamble (default)"
-              : t === "terse"
-              ? "minimum words, conclusion-first"
-              : t === "playful"
-              ? "warm, mildly funny"
-              : "precise, structured",
-        })),
-        initialValue: "direct",
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.soulTone = answer as HermesAgentContext["soulTone"];
-    }
-
-    if (ctx.modelProvider === undefined) {
-      const answer = await p.text({
-        message: "Provider override (empty = inherit shared default profile)",
-        placeholder: "",
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.modelProvider = String(answer).trim();
-    }
-
-    if (ctx.modelName === undefined) {
-      const answer = await p.text({
-        message: "Model name override (empty = inherit shared default profile)",
-        placeholder: "",
-      });
-      if (p.isCancel(answer)) return this.cancelled();
-      ctx.modelName = String(answer).trim();
-    }
+    // --- Interactive: the ONE and ONLY question is the Telegram wire-up ---
+    p.intro("⚕  hermes-agent  ·  provision the PM agent for this repo");
+    p.log.info(
+      `agent ${ctx.agentId}   ·   board ${ctx.ticketProvider}   ·   tone ${ctx.soulTone}`
+    );
 
     if (ctx.skipTelegram === undefined) {
+      const botHandle = `${ctx.targetRepo!.replace(/-/g, "_")}_${ctx.role}_bot`;
       const wire = await p.confirm({
-        message: `Wire up the Telegram bot (@${ctx.targetRepo}_${ctx.role}_bot) now?`,
+        message: `Wire up the Telegram bot (@${botHandle}) now?`,
         initialValue: true,
       });
       if (p.isCancel(wire)) return this.cancelled();
       ctx.skipTelegram = !wire;
     }
 
-    if (ctx.skipEmail === undefined) {
-      const wire = await p.confirm({
-        message: `Provision the delo.sh email address (${ctx.targetRepo}-${ctx.role}@delo.sh) now?`,
-        initialValue: true,
-      });
-      if (p.isCancel(wire)) return this.cancelled();
-      ctx.skipEmail = !wire;
-    }
-
-    ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
-    ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
     return {
       success: true,
       message: this.formatMessage(

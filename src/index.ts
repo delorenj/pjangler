@@ -840,16 +840,16 @@ program
 program
   .command("hermes-agent")
   .alias("hermes")
-  .description("Provision a Hermes agent role into the current repo (TUI; --yes for non-interactive)")
-  .option("-y, --yes", "Non-interactive: accept all defaults (skips Telegram + email)")
+  .description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)")
+  .option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)")
   .option("--target-repo <name>", "Target repo name (default: basename of cwd)")
-  .option("--role <role>", "Agent role (pm | dev | review | ops | qa | ci | ...)")
-  .option("--purpose <text>", "One-line agent purpose")
-  .option(`--tone <tone>`, `Personality tone (${SOUL_TONES.join(" | ")})`)
+  .option("--role <role>", "Agent role override (default: pm — the only role in the fleet)")
+  .option("--purpose <text>", "One-line agent purpose (default: \"pm agent for <repo>\")")
+  .option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`)
   .option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)')
   .option("--model-name <name>", 'Model name override ("" = inherit shared default profile)')
-  .option("--skip-telegram", "Skip BotFather token capture step")
-  .option("--skip-email", "Skip Cloudflare Email Routing step")
+  .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
+  .option("--email", "Also provision the delo.sh email address (off by default; never prompted)")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
   .option("--skip-plane", "Skip creating the Plane project")
   .option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer")
@@ -875,7 +875,8 @@ program
       modelProvider: options.modelProvider,
       modelName: options.modelName,
       skipTelegram: options.skipTelegram,
-      skipEmail: options.skipEmail,
+      // Email is opt-in only: `--email` wires it, otherwise it's never done.
+      skipEmail: options.email ? false : undefined,
       // --local (and macOS, for systemd) flip the heavy/irreversible steps off
       // by default so a non-technical operator can't accidentally create cloud
       // resources under the wrong account or hit systemd on a Mac. An explicit

@@ -39,18 +39,11 @@ export const HERMES_AGENT_TEMPLATE = "gh:delorenj/hermes-agent-template";
 
 export const SOUL_TONES = ["direct", "playful", "formal", "terse"] as const;
 
-/**
- * Roles offered in the recipe TUI. Kept in parity with the copier template's
- * `role` choices (copier.yml). `value` is what we pass to `--data role=`;
- * `label`/`hint` drive the Clack select.
- */
-export const ROLE_CHOICES = [
-  { value: "pm", label: "Project Manager (pm)", hint: "triage, planning, ticket authorship, board reconciliation" },
-  { value: "dev", label: "Developer (dev)", hint: "implements tickets" },
-  { value: "review", label: "Reviewer (review)", hint: "adversarial code review" },
-  { value: "ops", label: "Ops (ops)", hint: "deploy / infra" },
-  { value: "qa", label: "QA (qa)", hint: "test authorship + verification" },
-] as const;
+// NOTE: the fleet is PM-only (one `<repo>-pm` agent per repo), so the recipe no
+// longer offers a role selection. `role` defaults to "pm" and is overridable
+// only via the `--role` flag / MCP input for programmatic/edge use. The copier
+// template still accepts a `role` value, so other roles remain reachable
+// out-of-band — they're just not part of the interactive flow.
 
 export type TicketProvider = "plane" | "linear" | "trello";
 
