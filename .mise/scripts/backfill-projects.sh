@@ -37,14 +37,23 @@ PLANE=0
 FULL=0
 DEPTH=""
 
-usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+# Print the leading comment block (line 2 up to the first non-comment line) as
+# help, stripping the leading "# ". Pattern-based so it tracks header edits.
+usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p;}' "${BASH_SOURCE[0]}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) APPLY=1; shift ;;
     --plane) PLANE=1; shift ;;
     --full)  FULL=1; shift ;;
-    --depth) DEPTH="${2:-}"; shift 2 ;;
+    --depth)
+      if [[ $# -lt 2 ]]; then
+        echo "backfill-projects: --depth requires an argument" >&2; exit 2
+      fi
+      if [[ ! "$2" =~ ^[0-9]+$ ]]; then
+        echo "backfill-projects: --depth must be a non-negative integer: $2" >&2; exit 2
+      fi
+      DEPTH="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --) shift ;;
     -*) echo "backfill-projects: unknown option: $1" >&2; usage; exit 2 ;;
@@ -66,6 +75,16 @@ if [[ ! -d "$ROOT" ]]; then
   exit 2
 fi
 ROOT="$(cd "$ROOT" && pwd)"
+
+# Fail fast on Plane prerequisites rather than after scanning/registering.
+if [[ $PLANE -eq 1 ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "backfill-projects: python3 is required for --plane" >&2; exit 2
+  fi
+  if [[ ! -f "$SCRIPT_DIR/setup-plane.py" ]]; then
+    echo "backfill-projects: setup-plane.py not found in $SCRIPT_DIR" >&2; exit 2
+  fi
+fi
 
 # --- Resolve how to invoke the pjangler CLI -------------------------------
 # The dist bundle externalizes deps, so it only runs with node_modules present;
