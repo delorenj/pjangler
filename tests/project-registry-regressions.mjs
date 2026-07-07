@@ -254,6 +254,53 @@ try {
   assert.match(failureOutput(missingSkill), /Source skill not found/);
   assert.match(failureOutput(missingSkill), /civilwar-letterifer/);
 
+  // Regression: sync must update .project.json when the planned manifest differs
+  const syncUpdateRepo = join(tmp, "SyncUpdate");
+  mkdirSync(syncUpdateRepo, { recursive: true });
+  git(["init"], syncUpdateRepo);
+  writeFileSync(join(syncUpdateRepo, "package.json"), JSON.stringify({ name: "sync-update", description: "Original description" }, null, 2), "utf8");
+  const syncUpdateRegistry = join(tmp, "sync-update-projects.yaml");
+  const syncUpdateEnv = { PJ_PROJECT_REGISTRY: syncUpdateRegistry };
+  const syncUpdateFirst = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--json",
+  ], syncUpdateEnv, syncUpdateRepo));
+  assert.equal(syncUpdateFirst.ok, true, JSON.stringify(syncUpdateFirst.errors));
+  const firstSyncManifest = JSON.parse(readFileSync(join(syncUpdateRepo, ".project.json"), "utf8"));
+  assert.equal(firstSyncManifest.project_description, "Original description");
+
+  const syncUpdateSecond = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--description", "Updated description", "--json",
+  ], syncUpdateEnv, syncUpdateRepo));
+  assert.equal(syncUpdateSecond.ok, true, JSON.stringify(syncUpdateSecond.errors));
+  assert.ok(syncUpdateSecond.selectedOperations.includes("project.write-manifest"), "sync must select .project.json write when manifest differs");
+  const secondSyncManifest = JSON.parse(readFileSync(join(syncUpdateRepo, ".project.json"), "utf8"));
+  assert.equal(secondSyncManifest.project_description, "Updated description");
+
+  // Regression: provisioning a second agent role must preserve existing agents
+  const multiAgentRepo = join(tmp, "MultiAgent");
+  mkdirSync(multiAgentRepo, { recursive: true });
+  git(["init"], multiAgentRepo);
+  writeFileSync(join(multiAgentRepo, "package.json"), JSON.stringify({ name: "multi-agent", description: "Multi agent test" }, null, 2), "utf8");
+  const multiAgentRegistry = join(tmp, "multi-agent-projects.yaml");
+  const multiAgentEnv = { PJ_PROJECT_REGISTRY: multiAgentRegistry };
+  const multiAgentFirst = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "pm", "--json",
+  ], multiAgentEnv, multiAgentRepo));
+  assert.equal(multiAgentFirst.ok, true, JSON.stringify(multiAgentFirst.errors));
+  const firstMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
+  assert.equal(firstMultiRegistry.projects["multi-agent"].agents.pm.role, "pm");
+
+  const multiAgentSecond = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "dev", "--json",
+  ], multiAgentEnv, multiAgentRepo));
+  assert.equal(multiAgentSecond.ok, true, JSON.stringify(multiAgentSecond.errors));
+  const secondMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
+  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.pm.role, "pm", "existing pm agent must be preserved in registry");
+  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.dev.role, "dev", "new dev agent must be added to registry");
+  const secondMultiManifest = JSON.parse(readFileSync(join(multiAgentRepo, ".project.json"), "utf8"));
+  assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
+  assert.equal(secondMultiManifest.agents["multi-agent-dev"].role, "dev", "new dev agent must be added to manifest");
+
   console.log("project registry regressions passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

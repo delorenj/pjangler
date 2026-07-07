@@ -186,7 +186,6 @@ function actionNeedsRun(plan: ReturnType<typeof planProjectInit>, kind: string, 
   if (kind === "project.write-manifest") {
     const action = plan.actions.find((item) => item.kind === "project.write-manifest");
     if (!action || action.kind !== "project.write-manifest") return false;
-    if (syncMode) return !existsSync(action.path);
     const next = `${JSON.stringify(action.manifest, null, 2)}\n`;
     return !existsSync(action.path) || readFileSync(action.path, "utf8") !== next;
   }

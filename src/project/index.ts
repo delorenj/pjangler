@@ -290,6 +290,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const agentRole = normalizeAgentRole(input.agentRole);
   const agents: Record<string, ProjectAgentRecord> = input.provisionAgent
     ? {
+        ...(existing?.agents ?? {}),
         [agentRole]: {
           role: agentRole,
           provisioning_state: "planned",

@@ -589,22 +589,34 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     identifier: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
     board_url: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
+    state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? "planned") || "planned"),
   };
+  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; provisioning_state?: string }> | undefined) ?? {};
+  const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
+    roles.map((role) => [
+      role.agentId || `${slug}-${role.role}`,
+      {
+        role: role.role,
+        role_dir: relative(ctx.repoRoot, role.roleDir),
+      },
+    ])
+  );
+  const agents = { ...existingAgents } as Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
+  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
+    const existingAgent = existingAgents[agentId] ?? {};
+    agents[agentId] = {
+      role: discovered.role,
+      role_dir: discovered.role_dir,
+      provisioning_state: existingAgent.provisioning_state,
+    };
+  }
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_slug: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
-    agents: Object.fromEntries(
-      roles.map((role) => [
-        role.agentId || `${slug}-${role.role}`,
-        {
-          role: role.role,
-          role_dir: relative(ctx.repoRoot, role.roleDir),
-        },
-      ])
-    ),
+    agents,
   };
 }
 
@@ -637,7 +649,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     }
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
   if (existsSync(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");

@@ -1888,23 +1888,35 @@ function canonicalProjectJson(ctx) {
     workspace: String((existing.ticket_provider?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
     identifier: String((existing.ticket_provider?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String((existing.ticket_provider?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || "")
+    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
+    state: String((existing.ticket_provider?.state ?? "planned") || "planned")
   };
+  const existingAgents = existing.agents ?? {};
+  const discoveredAgents = Object.fromEntries(
+    roles.map((role) => [
+      role.agentId || `${slug}-${role.role}`,
+      {
+        role: role.role,
+        role_dir: relative(ctx.repoRoot, role.roleDir)
+      }
+    ])
+  );
+  const agents = { ...existingAgents };
+  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
+    const existingAgent = existingAgents[agentId] ?? {};
+    agents[agentId] = {
+      role: discovered.role,
+      role_dir: discovered.role_dir,
+      provisioning_state: existingAgent.provisioning_state
+    };
+  }
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_slug: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
-    agents: Object.fromEntries(
-      roles.map((role) => [
-        role.agentId || `${slug}-${role.role}`,
-        {
-          role: role.role,
-          role_dir: relative(ctx.repoRoot, role.roleDir)
-        }
-      ])
-    )
+    agents
   };
 }
 function projectJsonFinding(ctx) {
@@ -1936,7 +1948,7 @@ function projectJsonFinding(ctx) {
     }
   }
   const ticketProvider = data.ticket_provider ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
   if (existsSync7(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
@@ -2871,6 +2883,7 @@ function planProjectInit(input) {
   const overwrite = input.overwrite ?? input.force ?? false;
   const agentRole = normalizeAgentRole(input.agentRole);
   const agents = input.provisionAgent ? {
+    ...existing?.agents ?? {},
     [agentRole]: {
       role: agentRole,
       provisioning_state: "planned"
@@ -3278,7 +3291,6 @@ function actionNeedsRun(plan, kind, syncMode) {
   if (kind === "project.write-manifest") {
     const action = plan.actions.find((item) => item.kind === "project.write-manifest");
     if (!action || action.kind !== "project.write-manifest") return false;
-    if (syncMode) return !existsSync9(action.path);
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
     return !existsSync9(action.path) || readFileSync6(action.path, "utf8") !== next;
