@@ -289,6 +289,28 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
   };
 }
 
+/** Shared body for scaffolding a single subsystem/recipe into the cwd. Used by
+ * `pjangler add`, `pjangler recipe run`, and the deprecated `pjangler init <subsystem>`. */
+async function runRecipeSubsystem(name: string, options: { force?: boolean; dryRun?: boolean }): Promise<void> {
+  const context: CommandContext = {
+    targetDir: process.cwd(),
+    force: options.force || false,
+    dryRun: options.dryRun || false,
+  };
+  try {
+    const recipe = createRecipe(name, context);
+    if (!recipe) {
+      console.error(`${xmark} Unknown subsystem: ${bold(name)}`);
+      console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
+      process.exit(1);
+    }
+    await recipe.execute();
+  } catch (error) {
+    console.error(`${xmark} Error scaffolding ${bold(name)}:`, error);
+    process.exit(1);
+  }
+}
+
 const program = new Command();
 
 program
@@ -302,30 +324,49 @@ program
 
 program
   .command("init")
-  .argument("<subsystem>", "Subsystem to initialize")
-  .description("Initialize a project subsystem")
+  .argument("[name]", "Project name to bootstrap (omit inside an existing git repo)")
+  .description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json")
+  .option("--description <text>", "Project description")
+  .option("--target-dir <path>", "Target repo path")
+  .option("--source-skill <path>", "Source skill/template provenance path")
+  .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
+  .option("--provision-agent", "Plan local Hermes PM agent provisioning")
+  .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
+  .option("--apply", "Write the registry and render the repo scaffold")
+  .option("--dry-run", "Preview changes without writing files (default)")
+  .option("--live", "Allow live/network/cloud provisioning actions")
+  .option("--slug <slug>", "Project registry slug override")
+  .option("--identifier <identifier>", "Ticket identifier override")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
+  .option("-y, --yes", "Apply every proposed operation without prompting")
+  .option("--no-tui", "Disable interactive prompts")
+  .option("--json", "Output machine-parseable JSON")
+  .action(async (name: string | undefined, options: ProjectInitCliOptions) => {
+    // Back-compat: `pjangler init <subsystem>` used to scaffold a component.
+    // That is now `pjangler add <subsystem>`; forward with a deprecation notice.
+    if (name && getRecipeNames().includes(name)) {
+      if (!options.json) {
+        console.error(`${yellow(glyph.warn)} ${dim(`"pjangler init ${name}" is deprecated — use "pjangler add ${name}". Forwarding…`)}`);
+      }
+      await runRecipeSubsystem(name, { force: options.force, dryRun: options.dryRun });
+      return;
+    }
+    await runProjectInit(name, options);
+  });
+
+// ============================================================================
+// ADD COMMAND (scaffold a subsystem/component into the current repo)
+// ============================================================================
+
+program
+  .command("add")
+  .argument("<subsystem>", "Subsystem to scaffold (mise, docker, node, agent-hooks, …)")
+  .description("Scaffold a subsystem/component into the current repo")
   .option("--dry-run", "Preview changes without writing files")
   .option("-f, --force", "Overwrite existing files")
   .action(async (subsystem: string, options) => {
-    const context: CommandContext = {
-      targetDir: process.cwd(),
-      force: options.force || false,
-      dryRun: options.dryRun || false
-    };
-
-    try {
-      const recipe = createRecipe(subsystem, context);
-      if (!recipe) {
-        console.error(`${xmark} Unknown subsystem: ${bold(subsystem)}`);
-        console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
-        process.exit(1);
-      }
-
-      await recipe.execute();
-    } catch (error) {
-      console.error(`${xmark} Error initializing ${bold(subsystem)}:`, error);
-      process.exit(1);
-    }
+    await runRecipeSubsystem(subsystem, options);
   });
 
 // ============================================================================
@@ -345,7 +386,7 @@ program
     }
     console.log("");
     console.log(`  ${dim("Examples")}`);
-    for (const example of ["pj init mise", "pj init docker", "pj init node"]) {
+    for (const example of ["pj add mise", "pj add docker", "pj add node"]) {
       console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
     }
     console.log("");
@@ -379,7 +420,13 @@ projectCmd
   .option("-y, --yes", "Apply every proposed operation without prompting")
   .option("--no-tui", "Disable interactive prompts")
   .option("--json", "Output machine-parseable JSON")
-  .action(async (name: string | undefined, options: ProjectInitCliOptions) => {
+  .action((name: string | undefined, options: ProjectInitCliOptions) => {
+    if (!options.json) console.error(`${yellow(glyph.warn)} ${dim("\"pjangler project init\" is deprecated — use \"pjangler init\".")}`);
+    return runProjectInit(name, options);
+  });
+
+/** Full project bootstrap: plan + (optionally) apply the registry/scaffold/manifest. */
+async function runProjectInit(name: string | undefined, options: ProjectInitCliOptions): Promise<void> {
     try {
       const target = await resolveProjectInitTarget(name, options);
       const interactive = isInteractiveProjectInit(options);
@@ -489,7 +536,7 @@ projectCmd
       }
       process.exit(1);
     }
-  });
+}
 
 projectCmd
   .command("list")
@@ -612,7 +659,7 @@ recipeCmd
     console.log("");
     console.log(`  ${dim("Usage")}`);
     console.log(`     ${dim(glyph.pointer)} ${dim(`pj recipe run ${name}`)}`);
-    console.log(`     ${dim(glyph.pointer)} ${dim(`pj init ${name}`)}`);
+    console.log(`     ${dim(glyph.pointer)} ${dim(`pj add ${name}`)}`);
     console.log("");
   });
 
@@ -623,25 +670,7 @@ recipeCmd
   .option("--dry-run", "Preview changes without writing files")
   .option("-f, --force", "Overwrite existing files")
   .action(async (name: string, options) => {
-    const context: CommandContext = {
-      targetDir: process.cwd(),
-      force: options.force || false,
-      dryRun: options.dryRun || false
-    };
-
-    try {
-      const recipe = createRecipe(name, context);
-      if (!recipe) {
-        console.error(`${xmark} Recipe not found: ${bold(name)}`);
-        console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
-        process.exit(1);
-      }
-
-      await recipe.execute();
-    } catch (error) {
-      console.error(`${xmark} Error running recipe ${bold(name)}:`, error);
-      process.exit(1);
-    }
+    await runRecipeSubsystem(name, options);
   });
 
 // ============================================================================

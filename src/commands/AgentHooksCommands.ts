@@ -4,6 +4,13 @@ import { existsSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { fileURLToPath } from "node:url";
 import type { InvokeResult } from "./Command";
 import { Command } from "./Command";
+import { resolveAgentHooksLayer } from "../project/index";
+
+/** Shared skip result when a global ~/.agents/hooks install makes the project-scoped
+ * layer redundant. Overridable with PJ_AGENT_HOOKS_LAYER=1. */
+const AGENT_HOOKS_SKIP_MESSAGE =
+  "↷ agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n" +
+  "   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 
 /**
  * Resolve the CommonProject copier template root (which vendors the generic
@@ -47,6 +54,9 @@ function resolveTemplateRoot(): string {
  */
 export class CopyAgentHooksTree extends Command {
   async invoke(): Promise<InvokeResult> {
+    if (!resolveAgentHooksLayer()) {
+      return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
+    }
     let templateRoot: string;
     try {
       templateRoot = resolveTemplateRoot();
@@ -101,6 +111,9 @@ export class WireMiseAgentHooks extends Command {
   private static CR = "{{config_root}}"; // mise's own runtime var — emitted literally
 
   async invoke(): Promise<InvokeResult> {
+    if (!resolveAgentHooksLayer()) {
+      return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
+    }
     const misePath = join(this.context.targetDir, "mise.toml");
 
     if (!existsSync(misePath)) {

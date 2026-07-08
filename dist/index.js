@@ -1201,28 +1201,461 @@ var HermesAgentRecipe = class extends Recipe {
 };
 
 // src/commands/AgentHooksCommands.ts
-import { homedir as homedir3 } from "node:os";
-import { join as join8, dirname as dirname4 } from "node:path";
-import { existsSync as existsSync6, cpSync, mkdirSync as mkdirSync4, readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { join as join9, dirname as dirname5 } from "node:path";
+import { existsSync as existsSync7, cpSync, mkdirSync as mkdirSync5, readFileSync as readFileSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/project/index.ts
+import { spawnSync as spawnSync4 } from "node:child_process";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync2, renameSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { basename as basename2, dirname as dirname4, join as join8, resolve } from "node:path";
+import YAML from "yaml";
+var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
+var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
+var KNOWN_SKILL_ROOTS = [
+  "/home/delorenj/code/skillex/all-skills",
+  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
+  "/home/delorenj/code/pjangler/.agents/skills",
+  join8(homedir3(), ".codex", "skills")
+];
+function projectRegistryPath(env2 = process.env) {
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join8(homedir3(), ".config", "pjangler", "projects.yaml"));
+}
+function emptyProjectRegistry() {
+  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
+}
+function loadProjectRegistry(path = projectRegistryPath()) {
+  if (!existsSync6(path)) return emptyProjectRegistry();
+  const raw = YAML.parse(readFileSync2(path, "utf8"));
+  if (raw == null) return emptyProjectRegistry();
+  if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
+  const registry = raw;
+  const normalized = {
+    schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
+    projects: isRecord(registry.projects) ? registry.projects : {}
+  };
+  validateProjectRegistry(normalized);
+  return normalized;
+}
+function saveProjectRegistry(registry, path = projectRegistryPath()) {
+  validateProjectRegistry(registry);
+  mkdirSync4(dirname4(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync3(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
+  renameSync(temp, path);
+}
+function validateProjectRegistry(registry) {
+  if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION) {
+    throw new Error(`Unsupported project registry schema_version: ${registry.schema_version}`);
+  }
+  if (!isRecord(registry.projects)) throw new Error("Project registry projects must be a mapping");
+  const slugs = /* @__PURE__ */ new Set();
+  const repoPaths = /* @__PURE__ */ new Map();
+  const identifiers = /* @__PURE__ */ new Map();
+  for (const [slug, project] of Object.entries(registry.projects)) {
+    validateProjectRecord(project, slug);
+    if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
+    slugs.add(project.slug);
+    const repoKey = resolve(project.repo_path);
+    const existingRepoSlug = repoPaths.get(repoKey);
+    if (existingRepoSlug && existingRepoSlug !== slug) {
+      throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
+    }
+    repoPaths.set(repoKey, slug);
+    const identifier = project.ticket_provider.identifier?.toUpperCase();
+    if (identifier) {
+      const existingIdentifierSlug = identifiers.get(identifier);
+      if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
+        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+      }
+      identifiers.set(identifier, slug);
+    }
+  }
+}
+function slugifyProjectName(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+function deriveProjectIdentifier(value) {
+  const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const identifier = compact.slice(0, 4) || "PROJ";
+  return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
+}
+function normalizeAgentRole(value) {
+  return value?.trim() || "pm";
+}
+function resolveAgentHooksLayer(input, env2 = process.env) {
+  if (typeof input === "boolean") return input;
+  const override = env2.PJ_AGENT_HOOKS_LAYER;
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  return !existsSync6(join8(homedir3(), ".agents", "hooks"));
+}
+function jsonStable(value) {
+  return JSON.stringify(value);
+}
+function projectRecordEquivalent(a, b) {
+  if (!a) return false;
+  const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
+  const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
+  return jsonStable(aComparable) === jsonStable(bComparable);
+}
+function defaultProjectTargetDir(name, cwd = process.cwd()) {
+  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
+  return resolve(dirname4(resolve(cwd)), compactName);
+}
+function resolveSourceSkillPath(sourceSkill) {
+  if (!sourceSkill) return void 0;
+  const expanded = expandHome(sourceSkill);
+  const direct = resolve(expanded);
+  if (existsSync6(direct)) return direct;
+  const name = basename2(sourceSkill);
+  for (const root of KNOWN_SKILL_ROOTS) {
+    const candidate = join8(root, name);
+    if (existsSync6(candidate)) return candidate;
+  }
+  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
+  const hint = existsSync6(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
+  throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
+}
+function planProjectInit(input) {
+  if (!input.name.trim()) throw new Error("Project name is required");
+  const registryPath2 = resolve(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registry = loadProjectRegistry(registryPath2);
+  const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  const slug = input.projectSlug ?? slugifyProjectName(input.name);
+  const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const existing = registry.projects[slug];
+  const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
+  const overwrite = input.overwrite ?? input.force ?? false;
+  const agentRole = normalizeAgentRole(input.agentRole);
+  const agents = input.provisionAgent ? {
+    ...existing?.agents ?? {},
+    [agentRole]: {
+      role: agentRole,
+      provisioning_state: "planned"
+    }
+  } : existing?.agents ?? {};
+  const scaffold = input.scaffold ?? true;
+  const candidateProject = {
+    name: input.name,
+    slug,
+    repo_path: targetDir,
+    description: input.description ?? "",
+    status: "planned",
+    source_artifacts: sourceSkillPath ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }] : [],
+    template: {
+      commonproject: {
+        enabled: true,
+        primary_language: input.primaryLanguage ?? "python"
+      }
+    },
+    ticket_provider: {
+      type: input.ticketProvider ?? "plane",
+      workspace: input.planeWorkspace ?? "33god",
+      identifier,
+      board_id: input.planeProjectId ?? "",
+      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
+      state: input.live ? "planned" : "planned"
+    },
+    agents,
+    created_at: existing?.created_at ?? now,
+    updated_at: now
+  };
+  const project = {
+    ...candidateProject,
+    updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
+  };
+  validateNoDuplicateProject(registry, project, overwrite);
+  const pjanglerRoot = resolve(input.pjanglerRoot ?? resolvePjanglerRoot());
+  const manifest = projectManifestFromRegistryProject(project);
+  const apply = input.apply ?? false;
+  const live = input.live ?? false;
+  const actions = [
+    { kind: "registry.upsert", registryPath: registryPath2, slug, project }
+  ];
+  if (scaffold) {
+    actions.push(buildCommonProjectCopierAction({
+      pjanglerRoot,
+      targetDir,
+      projectName: project.name,
+      projectDescription: project.description,
+      projectSlug: project.slug,
+      ticketProvider: project.ticket_provider.type,
+      planeWorkspace: project.ticket_provider.workspace ?? "33god",
+      planeProjectId: project.ticket_provider.board_id ?? "",
+      projectIdentifier: identifier,
+      primaryLanguage: project.template.commonproject.primary_language,
+      agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
+      overwrite
+    }));
+  }
+  actions.push(
+    { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
+    {
+      kind: "plane.create-or-link",
+      enabled: live,
+      live,
+      workspace: project.ticket_provider.workspace ?? "33god",
+      identifier,
+      state: live ? "planned" : "planned",
+      reason: live ? void 0 : "network/cloud actions require --live"
+    },
+    {
+      kind: "hermes.provision-agent",
+      enabled: input.provisionAgent ?? false,
+      local: !live,
+      targetDir,
+      targetRepo: slug,
+      role: agentRole,
+      context: {
+        skipRuntimeRepo: !live,
+        skipPlane: !live,
+        skipBloodbank: !live,
+        skipSystemd: !live || process.platform === "darwin"
+      }
+    }
+  );
+  return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
+}
+function executeProjectInitPlan(plan) {
+  const logs = [];
+  const errors = [];
+  const changedFiles = [];
+  if (!plan.apply) return { ok: true, plan, logs, errors, changedFiles };
+  const registry = loadProjectRegistry(plan.registryPath);
+  let pendingRegistryAction;
+  for (const action of plan.actions) {
+    if (action.kind === "copier.copy.commonproject") {
+      logs.push(
+        action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
+      );
+      mkdirSync4(dirname4(action.targetDir), { recursive: true });
+      const result = spawnSync4(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      if (result.stdout?.trim()) logs.push(result.stdout.trim());
+      if (result.stderr?.trim()) logs.push(result.stderr.trim());
+      if (result.error) {
+        const code = result.error.code;
+        errors.push(
+          code === "ENOENT" ? "copier not found on PATH. Install with: uv tool install copier or pip install copier" : `copier failed: ${result.error.message}`
+        );
+        break;
+      }
+      if (result.status !== 0) {
+        errors.push(`copier exited with status ${result.status ?? "unknown"}`);
+        if (existsSync6(action.targetDir)) changedFiles.push(action.targetDir);
+        break;
+      }
+      changedFiles.push(action.targetDir);
+    } else if (action.kind === "project.write-manifest") {
+      mkdirSync4(dirname4(action.path), { recursive: true });
+      const next = `${JSON.stringify(action.manifest, null, 2)}
+`;
+      const current = existsSync6(action.path) ? readFileSync2(action.path, "utf8") : void 0;
+      if (current !== next) {
+        writeFileSync3(action.path, next, "utf8");
+        changedFiles.push(action.path);
+      }
+    } else if (action.kind === "registry.upsert") {
+      pendingRegistryAction = action;
+    } else if (action.kind === "plane.create-or-link") {
+      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "hermes.provision-agent") {
+      logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
+    }
+  }
+  if (pendingRegistryAction && errors.length === 0) {
+    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+      registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
+      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+      changedFiles.push(pendingRegistryAction.registryPath);
+    }
+  }
+  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
+}
+function projectManifestFromRegistryProject(project) {
+  const agents = Object.fromEntries(
+    Object.entries(project.agents).map(([name, agent]) => [
+      `${project.slug}-${name}`,
+      {
+        role: agent.role,
+        role_dir: agent.role_dir,
+        provisioning_state: agent.provisioning_state
+      }
+    ])
+  );
+  return {
+    project_name: project.name,
+    project_description: project.description,
+    project_slug: project.slug,
+    repo_path: project.repo_path,
+    ticket_provider: {
+      type: project.ticket_provider.type,
+      workspace: project.ticket_provider.workspace ?? "",
+      identifier: project.ticket_provider.identifier ?? "",
+      board_id: project.ticket_provider.board_id ?? "",
+      board_url: project.ticket_provider.board_url ?? "",
+      state: project.ticket_provider.state
+    },
+    agents
+  };
+}
+function formatProjectInitPlan(plan) {
+  const lines = [""];
+  const title = `${bold(plan.project.name)} ${dim(`(${plan.project.slug})`)}`;
+  lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+  lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
+  lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  lines.push("");
+  lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
+  if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
+  for (const action of plan.actions) {
+    lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
+    if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
+    if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
+    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+function formatProjectList(registry) {
+  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
+  if (!projects.length) return `
+  ${dim("No projects registered.")}
+`;
+  const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
+  const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
+  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
+  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
+  for (const project of projects) {
+    const slug = bold(project.slug.padEnd(slugWidth));
+    const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
+    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
+    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+function getProject(registry, slug) {
+  const project = registry.projects[slug];
+  if (!project) throw new Error(`Project not found in registry: ${slug}`);
+  return project;
+}
+function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
+  const issues = [];
+  const registry = loadProjectRegistry(registryPath2);
+  const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
+  for (const [projectSlug, project] of projects) {
+    if (!existsSync6(project.repo_path)) {
+      issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
+    } else if (!statSync(project.repo_path).isDirectory()) {
+      issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
+    } else {
+      const manifestPath = join8(project.repo_path, ".project.json");
+      if (!existsSync6(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+    }
+    for (const artifact of project.source_artifacts) {
+      if (artifact.path && !existsSync6(artifact.path)) {
+        issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
+      }
+    }
+  }
+  return {
+    ok: !issues.some((issue) => issue.level === "error"),
+    registryPath: registryPath2,
+    checkedProjects: projects.map(([projectSlug]) => projectSlug),
+    issues
+  };
+}
+function buildCommonProjectCopierAction(input) {
+  const templateDir = join8(input.pjanglerRoot, "templates", "commonproject");
+  const data = {
+    project_name: input.projectName,
+    project_description: input.projectDescription ?? "",
+    project_slug: input.projectSlug,
+    ticket_provider: input.ticketProvider,
+    plane_workspace: input.planeWorkspace,
+    plane_project_id: input.planeProjectId ?? "",
+    project_identifier: input.projectIdentifier,
+    primary_language: input.primaryLanguage,
+    agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
+  };
+  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
+  for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
+  if (input.overwrite) command.push("--overwrite");
+  return {
+    kind: "copier.copy.commonproject",
+    cwd: input.pjanglerRoot,
+    command,
+    targetDir: input.targetDir,
+    data,
+    overwrite: input.overwrite
+  };
+}
+function resolvePjanglerRoot() {
+  let dir = dirname4(new URL(import.meta.url).pathname);
+  while (dir !== dirname4(dir)) {
+    if (existsSync6(join8(dir, "package.json")) && existsSync6(join8(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname4(dir);
+  }
+  return resolve(process.cwd());
+}
+function validateNoDuplicateProject(registry, project, overwrite) {
+  const existingSameSlug = registry.projects[project.slug];
+  if (existingSameSlug && !overwrite && resolve(existingSameSlug.repo_path) !== resolve(project.repo_path)) {
+    throw new Error(`Project slug already exists in registry: ${project.slug}`);
+  }
+  for (const [slug, existing] of Object.entries(registry.projects)) {
+    if (slug === project.slug) continue;
+    if (resolve(existing.repo_path) === resolve(project.repo_path)) {
+      throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
+    }
+    if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
+      throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
+    }
+  }
+}
+function validateProjectRecord(project, key) {
+  if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
+  if (!project.name) throw new Error(`Project ${key} missing name`);
+  if (!project.slug) throw new Error(`Project ${key} missing slug`);
+  if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
+  if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
+  if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
+  if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+}
+function expandHome(path) {
+  if (path === "~") return homedir3();
+  if (path.startsWith("~/")) return join8(homedir3(), path.slice(2));
+  return path;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/commands/AgentHooksCommands.ts
+var AGENT_HOOKS_SKIP_MESSAGE = "\u21B7 agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 function resolveTemplateRoot() {
   const candidates = [];
   if (process.env.PJANGLER_COMMONPROJECT_TEMPLATE) {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname4(fileURLToPath2(import.meta.url));
+    let dir = dirname5(fileURLToPath2(import.meta.url));
     for (let i = 0; i < 8; i++) {
-      candidates.push(join8(dir, "templates", "commonproject", "template"));
-      const parent = dirname4(dir);
+      candidates.push(join9(dir, "templates", "commonproject", "template"));
+      const parent = dirname5(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
-  candidates.push(join8(homedir3(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join9(homedir4(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
-    if (existsSync6(join8(c, ".agents", "hooks", "hooks.master.json"))) return c;
+    if (existsSync7(join9(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
   throw new Error(
     "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
@@ -1230,6 +1663,9 @@ function resolveTemplateRoot() {
 }
 var CopyAgentHooksTree = class extends Command {
   async invoke() {
+    if (!resolveAgentHooksLayer()) {
+      return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
+    }
     let templateRoot;
     try {
       templateRoot = resolveTemplateRoot();
@@ -1246,15 +1682,15 @@ var CopyAgentHooksTree = class extends Command {
     const created = [];
     const skipped = [];
     for (const { rel, dir } of items) {
-      const src = join8(templateRoot, rel);
-      const dest = join8(this.context.targetDir, rel);
-      if (!existsSync6(src)) continue;
-      if (existsSync6(dest) && !this.context.force) {
+      const src = join9(templateRoot, rel);
+      const dest = join9(this.context.targetDir, rel);
+      if (!existsSync7(src)) continue;
+      if (existsSync7(dest) && !this.context.force) {
         skipped.push(rel);
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync4(dirname4(dest), { recursive: true });
+        mkdirSync5(dirname5(dest), { recursive: true });
         cpSync(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -1272,14 +1708,17 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
   static CR = "{{config_root}}";
   // mise's own runtime var — emitted literally
   async invoke() {
-    const misePath = join8(this.context.targetDir, "mise.toml");
-    if (!existsSync6(misePath)) {
+    if (!resolveAgentHooksLayer()) {
+      return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
+    }
+    const misePath = join9(this.context.targetDir, "mise.toml");
+    if (!existsSync7(misePath)) {
       return {
         success: false,
         message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pjangler init mise` first, then re-run."
       };
     }
-    let content = readFileSync2(misePath, "utf8");
+    let content = readFileSync3(misePath, "utf8");
     if (content.includes(_WireMiseAgentHooks.MARKER)) {
       return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for agent-hooks") };
     }
@@ -1355,7 +1794,7 @@ ${leaveBlock}`);
       ""
     ].join("\n");
     content = content.replace(/\n*$/, "\n") + appended;
-    if (!this.context.dryRun) writeFileSync3(misePath, content);
+    if (!this.context.dryRun) writeFileSync4(misePath, content);
     if (wiredHooks) {
       return { success: true, message: this.formatMessage("\u2705 Wired mise.toml ([hooks] enter/leave + tasks)") };
     }
@@ -1528,11 +1967,11 @@ function createRecipe(name, context) {
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/parity/index.ts
-import { existsSync as existsSync7, lstatSync, mkdirSync as mkdirSync5, readFileSync as readFileSync3, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4, chmodSync as chmodSync2, copyFileSync } from "node:fs";
-import { basename as basename2, dirname as dirname5, join as join9, relative, resolve } from "node:path";
+import { existsSync as existsSync8, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync4, readlinkSync, readdirSync, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync5, chmodSync as chmodSync2, copyFileSync } from "node:fs";
+import { basename as basename3, dirname as dirname6, join as join10, relative, resolve as resolve2 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import { homedir as homedir4 } from "node:os";
-import { spawnSync as spawnSync4 } from "node:child_process";
+import { homedir as homedir5 } from "node:os";
+import { spawnSync as spawnSync5 } from "node:child_process";
 var LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
@@ -1600,13 +2039,13 @@ run = "{{config_root}}/.mise/scripts/versioning.sh check"
 description = "Force every versioned file up to the highest version"
 run = "{{config_root}}/.mise/scripts/versioning.sh sync"
 # <<< mise-versioning <<<`;
-function resolvePjanglerRoot() {
-  let dir = dirname5(fileURLToPath3(import.meta.url));
-  while (dir !== dirname5(dir)) {
-    if (existsSync7(join9(dir, "package.json")) && existsSync7(join9(dir, "templates", "commonproject", "copier.yml"))) {
+function resolvePjanglerRoot2() {
+  let dir = dirname6(fileURLToPath3(import.meta.url));
+  while (dir !== dirname6(dir)) {
+    if (existsSync8(join10(dir, "package.json")) && existsSync8(join10(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
-    dir = dirname5(dir);
+    dir = dirname6(dir);
   }
   throw new Error("Unable to resolve pjangler root");
 }
@@ -1614,17 +2053,17 @@ function normalizeNewlines(value) {
   return value.replace(/\r\n/g, "\n");
 }
 function readText(path) {
-  return normalizeNewlines(readFileSync3(path, "utf8"));
+  return normalizeNewlines(readFileSync4(path, "utf8"));
 }
 function safeReadText(path) {
-  return existsSync7(path) ? readText(path) : null;
+  return existsSync8(path) ? readText(path) : null;
 }
 function ensureParent(path) {
-  mkdirSync5(dirname5(path), { recursive: true });
+  mkdirSync6(dirname6(path), { recursive: true });
 }
 function writeText(path, content) {
   ensureParent(path);
-  writeFileSync4(path, content);
+  writeFileSync5(path, content);
 }
 function tryParseJson(text3) {
   if (!text3) return null;
@@ -1641,7 +2080,7 @@ function titleCaseSlug(slug) {
   return slug.split(/[-_]/g).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 function readSymlinkTarget(path) {
-  if (!existsSync7(path)) return null;
+  if (!existsSync8(path)) return null;
   try {
     return readlinkSync(path);
   } catch {
@@ -1649,7 +2088,7 @@ function readSymlinkTarget(path) {
   }
 }
 function ensureSymlink(path, target, dryRun) {
-  if (existsSync7(path)) {
+  if (existsSync8(path)) {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) {
       const current = readSymlinkTarget(path);
@@ -1666,21 +2105,21 @@ function ensureSymlink(path, target, dryRun) {
   return { changed: true };
 }
 function bootstrapAgentsFile(repoRoot, dryRun) {
-  const agentsPath = join9(repoRoot, "AGENTS.md");
-  if (existsSync7(agentsPath)) return { changedFiles: [], details: [] };
+  const agentsPath = join10(repoRoot, "AGENTS.md");
+  if (existsSync8(agentsPath)) return { changedFiles: [], details: [] };
   for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-    const source = join9(repoRoot, file);
-    if (!existsSync7(source)) continue;
+    const source = join10(repoRoot, file);
+    if (!existsSync8(source)) continue;
     const stat = lstatSync(source);
     if (stat.isSymbolicLink()) continue;
     if (stat.isFile()) {
-      if (!dryRun) renameSync(source, agentsPath);
+      if (!dryRun) renameSync2(source, agentsPath);
       return { changedFiles: [agentsPath], details: [`Moved ${file} to AGENTS.md before wiring agent-file symlinks`] };
     }
     return { changedFiles: [], details: [], blocked: `${file} exists but is not a regular file; cannot promote to AGENTS.md` };
   }
-  const readmePath = join9(repoRoot, "README.md");
-  if (existsSync7(readmePath)) {
+  const readmePath = join10(repoRoot, "README.md");
+  if (existsSync8(readmePath)) {
     const stat = lstatSync(readmePath);
     if (!stat.isFile()) return { changedFiles: [], details: [], blocked: "README.md exists but is not a regular file; cannot copy to AGENTS.md" };
     if (!dryRun) copyFileSync(readmePath, agentsPath);
@@ -1719,12 +2158,12 @@ function yamlGet(text3, keyPath) {
   return "";
 }
 function discoverRoles(repoRoot) {
-  const rolesDir = join9(repoRoot, "agents", "hermes");
-  if (!existsSync7(rolesDir)) return [];
+  const rolesDir = join10(repoRoot, "agents", "hermes");
+  if (!existsSync8(rolesDir)) return [];
   return readdirSync(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
-    const roleDir = join9(rolesDir, entry.name);
-    const roleYamlPath = join9(roleDir, "role.yaml");
-    if (!existsSync7(roleYamlPath)) return null;
+    const roleDir = join10(rolesDir, entry.name);
+    const roleYamlPath = join10(roleDir, "role.yaml");
+    if (!existsSync8(roleYamlPath)) return null;
     const text3 = readText(roleYamlPath);
     const runtimeRepoRaw = yamlGet(text3, "runtime.github_repo");
     return {
@@ -1748,10 +2187,10 @@ function discoverRoles(repoRoot) {
   }).filter((value) => Boolean(value));
 }
 function registryPath(homeDir) {
-  return join9(homeDir, ".hermes", "agents-registry.yaml");
+  return join10(homeDir, ".hermes", "agents-registry.yaml");
 }
 function systemctlUser(args) {
-  const result = spawnSync4("systemctl", ["--user", ...args], { encoding: "utf8" });
+  const result = spawnSync5("systemctl", ["--user", ...args], { encoding: "utf8" });
   return {
     ok: result.status === 0,
     stdout: result.stdout.trim(),
@@ -1759,8 +2198,8 @@ function systemctlUser(args) {
   };
 }
 function templateScript(ctx, name) {
-  const source = join9(ctx.pjanglerRoot, ".mise", "scripts", name);
-  return existsSync7(source) ? readText(source) : void 0;
+  const source = join10(ctx.pjanglerRoot, ".mise", "scripts", name);
+  return existsSync8(source) ? readText(source) : void 0;
 }
 function templateVersioningScript(ctx) {
   return templateScript(ctx, "versioning.sh");
@@ -1770,14 +2209,14 @@ function templateLinkAgentfilesScript(ctx) {
 }
 function renderGeneratedProjectMiseToml(ctx, template) {
   const project = readProjectJson(ctx);
-  const projectName = String(project?.project_name ?? basename2(ctx.repoRoot) ?? "project");
+  const projectName = String(project?.project_name ?? basename3(ctx.repoRoot) ?? "project");
   return template.replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1").replace(/\{\{\s*project_name\s*\}\}/g, projectName);
 }
 function ensureMiseTomlFromTemplate(ctx, changedFiles) {
-  const targetPath = join9(ctx.repoRoot, "mise.toml");
-  if (existsSync7(targetPath)) return false;
-  const sourcePath = join9(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
-  if (!existsSync7(sourcePath)) return false;
+  const targetPath = join10(ctx.repoRoot, "mise.toml");
+  if (existsSync8(targetPath)) return false;
+  const sourcePath = join10(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
+  if (!existsSync8(sourcePath)) return false;
   changedFiles.push(targetPath);
   if (!ctx.dryRun) {
     writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
@@ -1785,8 +2224,8 @@ function ensureMiseTomlFromTemplate(ctx, changedFiles) {
   return true;
 }
 function templateVersionFilesConf(ctx, repoRoot) {
-  const packageJson = join9(repoRoot, "package.json");
-  return existsSync7(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
+  const packageJson = join10(repoRoot, "package.json");
+  return existsSync8(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
 }
 function replaceOrAppendManagedBlock(text3, startMarker, block, beforePattern) {
   if (startMarker.test(text3)) {
@@ -1810,7 +2249,7 @@ var CONDITIONAL_HERMES_PATHS = ["agents/hermes/pm/hermes", "agent/hermes/pm/herm
 function requiredMisePathEntries(ctx) {
   const required = [...BASE_MISE_PATH_ENTRIES];
   for (const candidate of CONDITIONAL_HERMES_PATHS) {
-    if (existsSync7(join9(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
+    if (existsSync8(join10(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
   }
   return required;
 }
@@ -1959,12 +2398,12 @@ function upsertLinkAgentfilesBlock(text3, ctx) {
   return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
 function readProjectJson(ctx) {
-  return tryParseJson(safeReadText(join9(ctx.repoRoot, ".project.json")));
+  return tryParseJson(safeReadText(join10(ctx.repoRoot, ".project.json")));
 }
 function canonicalProjectJson(ctx) {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname5(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = String(existing.project_slug ?? slugifyRepoName(dirname6(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String((existing.ticket_provider?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -2003,12 +2442,12 @@ function canonicalProjectJson(ctx) {
   };
 }
 function projectJsonFinding(ctx) {
-  const projectPath = join9(ctx.repoRoot, ".project.json");
-  const planeJsonPath = join9(ctx.repoRoot, ".plane.json");
+  const projectPath = join10(ctx.repoRoot, ".project.json");
+  const planeJsonPath = join10(ctx.repoRoot, ".plane.json");
   const details = [];
   const data = readProjectJson(ctx);
   const roles = discoverRoles(ctx.repoRoot);
-  if (!existsSync7(projectPath)) {
+  if (!existsSync8(projectPath)) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json missing", details: [], fixable: true };
   }
   if (!data) {
@@ -2034,7 +2473,7 @@ function projectJsonFinding(ctx) {
   for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
-  if (existsSync7(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
+  if (existsSync8(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
   return {
     id: "sot.project-json",
     title: "Canonical .project.json",
@@ -2115,17 +2554,17 @@ exec env HERMES_HOME="$HERMES_HOME" HERMES_FLEET_ENV="$FLEET_ENV"   HERMES_OAUTH
 `.replace(/\u0010/g, "$");
 }
 function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
-  if (!existsSync7(sourceDir)) return;
-  mkdirSync5(targetDir, { recursive: true });
+  if (!existsSync8(sourceDir)) return;
+  mkdirSync6(targetDir, { recursive: true });
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-    const sourcePath = join9(sourceDir, entry.name);
+    const sourcePath = join10(sourceDir, entry.name);
     if (skip?.(sourcePath)) continue;
-    const targetPath = join9(targetDir, entry.name);
+    const targetPath = join10(targetDir, entry.name);
     if (entry.isDirectory()) {
       copyMissingRecursive(sourcePath, targetPath, changedFiles, dryRun, skip);
       continue;
     }
-    if (existsSync7(targetPath)) continue;
+    if (existsSync8(targetPath)) continue;
     changedFiles.push(targetPath);
     if (!dryRun) {
       ensureParent(targetPath);
@@ -2134,7 +2573,7 @@ function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) 
   }
 }
 function upsertSubmodule(repoRoot, role, changedFiles, dryRun) {
-  const gitmodulesPath = join9(repoRoot, ".gitmodules");
+  const gitmodulesPath = join10(repoRoot, ".gitmodules");
   const repoName = role.runtimeRepo || `agent-hm-${role.repo}-${role.role}`;
   const owner = role.runtimeOwner || "delorenj";
   const block = `[submodule "agents/hermes/${role.role}/runtime"]
@@ -2156,7 +2595,7 @@ function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
     repo: ${role.repo}
     role: ${role.role}
     display_name: ${JSON.stringify(role.displayName || role.agentId)}
-    project_path: ${ctxEscape(role.roleDir ? dirname5(dirname5(dirname5(role.roleDir))) : "")}
+    project_path: ${ctxEscape(role.roleDir ? dirname6(dirname6(dirname6(role.roleDir))) : "")}
     role_dir: ${ctxEscape(role.roleDir)}
     profile_name: ${role.profileName || role.agentId}
     telegram:
@@ -2234,14 +2673,14 @@ var RULES = [
     id: "mise.config-root",
     title: "mise config_root + AGENTS link hooks",
     audit: (ctx) => {
-      const misePath = join9(ctx.repoRoot, "mise.toml");
-      if (!existsSync7(misePath)) {
+      const misePath = join10(ctx.repoRoot, "mise.toml");
+      if (!existsSync8(misePath)) {
         return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
       }
       const text3 = readText(misePath);
       const details = [];
-      const linkAgentfilesPath = join9(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
-      if (!existsSync7(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
+      const linkAgentfilesPath = join10(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      if (!existsSync8(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
       const pathValues = [...(text3.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
@@ -2259,10 +2698,10 @@ var RULES = [
       };
     },
     migrate: (ctx, finding) => {
-      const path = join9(ctx.repoRoot, "mise.toml");
+      const path = join10(ctx.repoRoot, "mise.toml");
       const changedFiles = [];
       const details = [];
-      if (!existsSync7(path)) {
+      if (!existsSync8(path)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
         }
@@ -2278,7 +2717,7 @@ var RULES = [
         if (!ctx.dryRun) writeText(path, next);
         text3 = next;
       }
-      const linkAgentfilesPath = join9(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+      const linkAgentfilesPath = join10(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       const expectedScript = templateLinkAgentfilesScript(ctx);
       if (expectedScript === void 0) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
@@ -2305,13 +2744,13 @@ var RULES = [
     title: "managed mise versioning block",
     audit: (ctx) => {
       const details = [];
-      const misePath = join9(ctx.repoRoot, "mise.toml");
-      const versioningPath = join9(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
-      const manifestPath = join9(ctx.repoRoot, ".mise", "version-files.conf");
+      const misePath = join10(ctx.repoRoot, "mise.toml");
+      const versioningPath = join10(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const manifestPath = join10(ctx.repoRoot, ".mise", "version-files.conf");
       const text3 = safeReadText(misePath);
       if (!text3?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
-      if (!existsSync7(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
-      if (!existsSync7(manifestPath)) details.push(".mise/version-files.conf missing");
+      if (!existsSync8(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
+      if (!existsSync8(manifestPath)) details.push(".mise/version-files.conf missing");
       return {
         id: "mise.versioning",
         title: "managed mise versioning block",
@@ -2324,8 +2763,8 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const details = [];
-      const misePath = join9(ctx.repoRoot, "mise.toml");
-      if (!existsSync7(misePath)) {
+      const misePath = join10(ctx.repoRoot, "mise.toml");
+      if (!existsSync8(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
         }
@@ -2340,7 +2779,7 @@ var RULES = [
         if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
-      const versioningPath = join9(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+      const versioningPath = join10(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const expectedScript = templateVersioningScript(ctx);
       if (expectedScript === void 0) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
@@ -2352,7 +2791,7 @@ var RULES = [
           chmodSync2(versioningPath, 493);
         }
       }
-      const manifestPath = join9(ctx.repoRoot, ".mise", "version-files.conf");
+      const manifestPath = join10(ctx.repoRoot, ".mise", "version-files.conf");
       const expectedManifest = templateVersionFilesConf(ctx, ctx.repoRoot);
       if (safeReadText(manifestPath) !== expectedManifest) {
         changedFiles.push(manifestPath);
@@ -2372,9 +2811,9 @@ var RULES = [
     id: "sot.agent-symlinks",
     title: "AGENTS/CLAUDE/GEMINI symlink contract",
     audit: (ctx) => {
-      const agentsPath = join9(ctx.repoRoot, "AGENTS.md");
-      if (!existsSync7(agentsPath)) {
-        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync7(join9(ctx.repoRoot, file)));
+      const agentsPath = join10(ctx.repoRoot, "AGENTS.md");
+      if (!existsSync8(agentsPath)) {
+        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync8(join10(ctx.repoRoot, file)));
         if (fallbackSources.length === 0) {
           return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
         }
@@ -2389,7 +2828,7 @@ var RULES = [
       }
       const details = [];
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join9(ctx.repoRoot, file);
+        const full = join10(ctx.repoRoot, file);
         const target = readSymlinkTarget(full);
         if (target !== "AGENTS.md") details.push(`${file} should be a symlink to AGENTS.md`);
       }
@@ -2413,7 +2852,7 @@ var RULES = [
         return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot derive canonical agent file", changedFiles, details: [bootstrap.blocked] };
       }
       for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join9(ctx.repoRoot, file);
+        const full = join10(ctx.repoRoot, file);
         const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
         if (result.blocked) blockedDetails.push(result.blocked);
         if (result.changed) changedFiles.push(full);
@@ -2435,7 +2874,7 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const details = [];
-      const path = join9(ctx.repoRoot, ".project.json");
+      const path = join10(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
       const merged = { ...existing, ...canonical };
@@ -2445,14 +2884,14 @@ var RULES = [
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, expected);
       }
-      const planeJson = join9(ctx.repoRoot, ".plane.json");
-      if (existsSync7(planeJson)) {
+      const planeJson = join10(ctx.repoRoot, ".plane.json");
+      if (existsSync8(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
-        if (existsSync7(backup)) {
+        if (existsSync8(backup)) {
           details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
-          if (!ctx.dryRun) renameSync(planeJson, backup);
+          if (!ctx.dryRun) renameSync2(planeJson, backup);
         }
       }
       return {
@@ -2470,8 +2909,8 @@ var RULES = [
     title: ".env.op + gitignore secrets contract",
     audit: (ctx) => {
       const details = [];
-      const envOp = safeReadText(join9(ctx.repoRoot, ".env.op"));
-      const gitignore = safeReadText(join9(ctx.repoRoot, ".gitignore"));
+      const envOp = safeReadText(join10(ctx.repoRoot, ".env.op"));
+      const gitignore = safeReadText(join10(ctx.repoRoot, ".gitignore"));
       if (!envOp) {
         details.push(".env.op missing");
       } else {
@@ -2497,12 +2936,12 @@ var RULES = [
     migrate: (ctx, finding) => {
       const changedFiles = [];
       const details = [];
-      const envOpPath = join9(ctx.repoRoot, ".env.op");
-      if (!existsSync7(envOpPath)) {
+      const envOpPath = join10(ctx.repoRoot, ".env.op");
+      if (!existsSync8(envOpPath)) {
         changedFiles.push(envOpPath);
-        if (!ctx.dryRun) writeText(envOpPath, readText(join9(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
+        if (!ctx.dryRun) writeText(envOpPath, readText(join10(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
       }
-      const gitignorePath = join9(ctx.repoRoot, ".gitignore");
+      const gitignorePath = join10(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
       const requiredBlock = `# Secrets \u2014 .env is materialized by \`op inject -i .env.op > .env\` on mise enter.
 # NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
@@ -2529,7 +2968,7 @@ var RULES = [
     title: ".copier-answers.yml provenance + drift report",
     audit: (ctx) => {
       const details = [];
-      const path = join9(ctx.repoRoot, ".copier-answers.yml");
+      const path = join10(ctx.repoRoot, ".copier-answers.yml");
       const text3 = safeReadText(path);
       const project = readProjectJson(ctx);
       if (!text3) {
@@ -2560,12 +2999,12 @@ var RULES = [
       const changedFiles = [];
       const project = canonicalProjectJson(ctx);
       const text3 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_src_path: ${join9(ctx.pjanglerRoot, "templates", "commonproject")}
+_src_path: ${join10(ctx.pjanglerRoot, "templates", "commonproject")}
 project_description: ${String(project.project_description)}
 project_name: ${String(project.project_name)}
 ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
 `;
-      const path = join9(ctx.repoRoot, ".copier-answers.yml");
+      const path = join10(ctx.repoRoot, ".copier-answers.yml");
       if (safeReadText(path) !== text3) {
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, text3);
@@ -2584,15 +3023,15 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
-      const sourceRoot = join9(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
-      const targetRoot = join9(ctx.repoRoot, "_bmad");
+      const sourceRoot = join10(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
+      const targetRoot = join10(ctx.repoRoot, "_bmad");
       const sentinels = [
-        join9("core", "config.yaml"),
-        join9("custom", "config.yaml"),
-        join9("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
-        join9("bmm", "workflows", "workflow-status", "workflow.yaml")
+        join10("core", "config.yaml"),
+        join10("custom", "config.yaml"),
+        join10("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
+        join10("bmm", "workflows", "workflow-status", "workflow.yaml")
       ];
-      const missing = sentinels.filter((file) => existsSync7(join9(sourceRoot, file)) && !existsSync7(join9(targetRoot, file)));
+      const missing = sentinels.filter((file) => existsSync8(join10(sourceRoot, file)) && !existsSync8(join10(targetRoot, file)));
       return {
         id: "bmad.scaffold",
         title: "BMAD modules/docs scaffold",
@@ -2604,7 +3043,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      copyMissingRecursive(join9(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join9(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join10(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join10(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
       return {
         id: finding.id,
         title: finding.title,
@@ -2626,11 +3065,11 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const details = [];
       for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
-        if (!existsSync7(join9(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join9(role.roleDir, rel))}`);
+        if (!existsSync8(join10(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join10(role.roleDir, rel))}`);
       }
-      const gitmodules = safeReadText(join9(ctx.repoRoot, ".gitmodules")) ?? "";
+      const gitmodules = safeReadText(join10(ctx.repoRoot, ".gitmodules")) ?? "";
       if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing pm runtime submodule entry");
-      if (!profileMetaInheritsDefault(join9(role.roleDir, "runtime", "profile.yaml"))) {
+      if (!profileMetaInheritsDefault(join10(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
       const registry = safeReadText(registryPath(ctx.homeDir));
@@ -2651,21 +3090,21 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       if (!role) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
       }
-      const templateRoleDir = join9(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join9(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join9(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
-      writeIfDifferent(join9(role.roleDir, ".gitignore"), readText(join9(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join9(templateRoleDir, ".runtime-scaffold"), join9(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join9(templateRoleDir, ".runtime-scaffold"), join9(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join9(templateRoleDir, ".scripts"), join9(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
-      const promptSource = join9(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
-      const promptTarget = join9(role.roleDir, ".scripts", "sentinel.prompt.md");
-      if (existsSync7(promptSource) && !existsSync7(promptTarget)) {
+      const templateRoleDir = join10(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      writeIfDifferent(join10(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+      writeIfDifferent(join10(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+      writeIfDifferent(join10(role.roleDir, ".gitignore"), readText(join10(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+      copyMissingRecursive(join10(templateRoleDir, ".runtime-scaffold"), join10(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join10(templateRoleDir, ".runtime-scaffold"), join10(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+      copyMissingRecursive(join10(templateRoleDir, ".scripts"), join10(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
+      const promptSource = join10(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
+      const promptTarget = join10(role.roleDir, ".scripts", "sentinel.prompt.md");
+      if (existsSync8(promptSource) && !existsSync8(promptTarget)) {
         const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo).replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
       upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      const profileMetaUpdated = upsertInheritedProfileMeta(join9(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+      const profileMetaUpdated = upsertInheritedProfileMeta(join10(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
       if (registryUpdated) details.push(`updated ${registryUpdated}`);
@@ -2719,9 +3158,9 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         return { id: finding.id, title: finding.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
       }
       for (const role of roles) {
-        const sysDir = join9(ctx.homeDir, ".config", "systemd", "user");
+        const sysDir = join10(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
-        const allUnitsPresent = units.every((unit) => existsSync7(join9(sysDir, unit)));
+        const allUnitsPresent = units.every((unit) => existsSync8(join10(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
@@ -2733,12 +3172,12 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           }
           continue;
         }
-        for (const script of [join9(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!script || !existsSync7(script)) continue;
+        for (const script of [join10(role.roleDir, ".scripts", "70-systemd.sh")]) {
+          if (!script || !existsSync8(script)) continue;
           if (ctx.dryRun) {
             details.push(`would run: bash ${script}`);
           } else {
-            const result = spawnSync4("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
+            const result = spawnSync5("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
             if (result.status !== 0) details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
           }
         }
@@ -2768,12 +3207,12 @@ function getParityRuleIds() {
   return RULES.map((rule) => rule.id);
 }
 function runAudit(repoArg) {
-  const pjanglerRoot = resolvePjanglerRoot();
+  const pjanglerRoot = resolvePjanglerRoot2();
   const ctx = {
-    repoRoot: resolve(repoArg ?? process.cwd()),
+    repoRoot: resolve2(repoArg ?? process.cwd()),
     dryRun: true,
     pjanglerRoot,
-    homeDir: homedir4()
+    homeDir: homedir5()
   };
   const rules = RULES.map((rule) => rule.audit(ctx));
   return {
@@ -2784,12 +3223,12 @@ function runAudit(repoArg) {
   };
 }
 function runMigrationForRules(ruleIds, repoArg, dryRun) {
-  const pjanglerRoot = resolvePjanglerRoot();
+  const pjanglerRoot = resolvePjanglerRoot2();
   const ctx = {
-    repoRoot: resolve(repoArg ?? process.cwd()),
+    repoRoot: resolve2(repoArg ?? process.cwd()),
     dryRun,
     pjanglerRoot,
-    homeDir: homedir4()
+    homeDir: homedir5()
   };
   const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
@@ -2870,436 +3309,6 @@ function formatMigrationReport(report) {
   }
   lines.push("");
   return lines.join("\n");
-}
-
-// src/project/index.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
-import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync4, renameSync as renameSync2, statSync, writeFileSync as writeFileSync5 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
-import { basename as basename3, dirname as dirname6, join as join10, resolve as resolve2 } from "node:path";
-import YAML from "yaml";
-var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
-var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
-var KNOWN_SKILL_ROOTS = [
-  "/home/delorenj/code/skillex/all-skills",
-  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
-  "/home/delorenj/code/pjangler/.agents/skills",
-  join10(homedir5(), ".codex", "skills")
-];
-function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join10(homedir5(), ".config", "pjangler", "projects.yaml"));
-}
-function emptyProjectRegistry() {
-  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
-}
-function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync8(path)) return emptyProjectRegistry();
-  const raw = YAML.parse(readFileSync4(path, "utf8"));
-  if (raw == null) return emptyProjectRegistry();
-  if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
-  const registry = raw;
-  const normalized = {
-    schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
-    projects: isRecord(registry.projects) ? registry.projects : {}
-  };
-  validateProjectRegistry(normalized);
-  return normalized;
-}
-function saveProjectRegistry(registry, path = projectRegistryPath()) {
-  validateProjectRegistry(registry);
-  mkdirSync6(dirname6(path), { recursive: true });
-  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync5(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
-  renameSync2(temp, path);
-}
-function validateProjectRegistry(registry) {
-  if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION) {
-    throw new Error(`Unsupported project registry schema_version: ${registry.schema_version}`);
-  }
-  if (!isRecord(registry.projects)) throw new Error("Project registry projects must be a mapping");
-  const slugs = /* @__PURE__ */ new Set();
-  const repoPaths = /* @__PURE__ */ new Map();
-  const identifiers = /* @__PURE__ */ new Map();
-  for (const [slug, project] of Object.entries(registry.projects)) {
-    validateProjectRecord(project, slug);
-    if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
-    slugs.add(project.slug);
-    const repoKey = resolve2(project.repo_path);
-    const existingRepoSlug = repoPaths.get(repoKey);
-    if (existingRepoSlug && existingRepoSlug !== slug) {
-      throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
-    }
-    repoPaths.set(repoKey, slug);
-    const identifier = project.ticket_provider.identifier?.toUpperCase();
-    if (identifier) {
-      const existingIdentifierSlug = identifiers.get(identifier);
-      if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
-        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
-      }
-      identifiers.set(identifier, slug);
-    }
-  }
-}
-function slugifyProjectName(value) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
-}
-function deriveProjectIdentifier(value) {
-  const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  const identifier = compact.slice(0, 4) || "PROJ";
-  return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
-}
-function normalizeAgentRole(value) {
-  return value?.trim() || "pm";
-}
-function resolveAgentHooksLayer(input, env2 = process.env) {
-  if (typeof input === "boolean") return input;
-  const override = env2.PJ_AGENT_HOOKS_LAYER;
-  if (override === "0" || override === "false") return false;
-  if (override === "1" || override === "true") return true;
-  return !existsSync8(join10(homedir5(), ".agents", "hooks"));
-}
-function jsonStable(value) {
-  return JSON.stringify(value);
-}
-function projectRecordEquivalent(a, b) {
-  if (!a) return false;
-  const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
-  const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
-  return jsonStable(aComparable) === jsonStable(bComparable);
-}
-function defaultProjectTargetDir(name, cwd = process.cwd()) {
-  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
-  return resolve2(dirname6(resolve2(cwd)), compactName);
-}
-function resolveSourceSkillPath(sourceSkill) {
-  if (!sourceSkill) return void 0;
-  const expanded = expandHome(sourceSkill);
-  const direct = resolve2(expanded);
-  if (existsSync8(direct)) return direct;
-  const name = basename3(sourceSkill);
-  for (const root of KNOWN_SKILL_ROOTS) {
-    const candidate = join10(root, name);
-    if (existsSync8(candidate)) return candidate;
-  }
-  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
-  const hint = existsSync8(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
-  throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
-}
-function planProjectInit(input) {
-  if (!input.name.trim()) throw new Error("Project name is required");
-  const registryPath2 = resolve2(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
-  const registry = loadProjectRegistry(registryPath2);
-  const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const slug = input.projectSlug ?? slugifyProjectName(input.name);
-  const targetDir = resolve2(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
-  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
-  const existing = registry.projects[slug];
-  const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
-  const overwrite = input.overwrite ?? input.force ?? false;
-  const agentRole = normalizeAgentRole(input.agentRole);
-  const agents = input.provisionAgent ? {
-    ...existing?.agents ?? {},
-    [agentRole]: {
-      role: agentRole,
-      provisioning_state: "planned"
-    }
-  } : existing?.agents ?? {};
-  const scaffold = input.scaffold ?? true;
-  const candidateProject = {
-    name: input.name,
-    slug,
-    repo_path: targetDir,
-    description: input.description ?? "",
-    status: "planned",
-    source_artifacts: sourceSkillPath ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }] : [],
-    template: {
-      commonproject: {
-        enabled: true,
-        primary_language: input.primaryLanguage ?? "python"
-      }
-    },
-    ticket_provider: {
-      type: input.ticketProvider ?? "plane",
-      workspace: input.planeWorkspace ?? "33god",
-      identifier,
-      board_id: input.planeProjectId ?? "",
-      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
-      state: input.live ? "planned" : "planned"
-    },
-    agents,
-    created_at: existing?.created_at ?? now,
-    updated_at: now
-  };
-  const project = {
-    ...candidateProject,
-    updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
-  };
-  validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve2(input.pjanglerRoot ?? resolvePjanglerRoot2());
-  const manifest = projectManifestFromRegistryProject(project);
-  const apply = input.apply ?? false;
-  const live = input.live ?? false;
-  const actions = [
-    { kind: "registry.upsert", registryPath: registryPath2, slug, project }
-  ];
-  if (scaffold) {
-    actions.push(buildCommonProjectCopierAction({
-      pjanglerRoot,
-      targetDir,
-      projectName: project.name,
-      projectDescription: project.description,
-      projectSlug: project.slug,
-      ticketProvider: project.ticket_provider.type,
-      planeWorkspace: project.ticket_provider.workspace ?? "33god",
-      planeProjectId: project.ticket_provider.board_id ?? "",
-      projectIdentifier: identifier,
-      primaryLanguage: project.template.commonproject.primary_language,
-      agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
-      overwrite
-    }));
-  }
-  actions.push(
-    { kind: "project.write-manifest", path: join10(targetDir, ".project.json"), manifest },
-    {
-      kind: "plane.create-or-link",
-      enabled: live,
-      live,
-      workspace: project.ticket_provider.workspace ?? "33god",
-      identifier,
-      state: live ? "planned" : "planned",
-      reason: live ? void 0 : "network/cloud actions require --live"
-    },
-    {
-      kind: "hermes.provision-agent",
-      enabled: input.provisionAgent ?? false,
-      local: !live,
-      targetDir,
-      targetRepo: slug,
-      role: agentRole,
-      context: {
-        skipRuntimeRepo: !live,
-        skipPlane: !live,
-        skipBloodbank: !live,
-        skipSystemd: !live || process.platform === "darwin"
-      }
-    }
-  );
-  return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
-}
-function executeProjectInitPlan(plan) {
-  const logs = [];
-  const errors = [];
-  const changedFiles = [];
-  if (!plan.apply) return { ok: true, plan, logs, errors, changedFiles };
-  const registry = loadProjectRegistry(plan.registryPath);
-  let pendingRegistryAction;
-  for (const action of plan.actions) {
-    if (action.kind === "copier.copy.commonproject") {
-      logs.push(
-        action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
-      );
-      mkdirSync6(dirname6(action.targetDir), { recursive: true });
-      const result = spawnSync5(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
-      if (result.stdout?.trim()) logs.push(result.stdout.trim());
-      if (result.stderr?.trim()) logs.push(result.stderr.trim());
-      if (result.error) {
-        const code = result.error.code;
-        errors.push(
-          code === "ENOENT" ? "copier not found on PATH. Install with: uv tool install copier or pip install copier" : `copier failed: ${result.error.message}`
-        );
-        break;
-      }
-      if (result.status !== 0) {
-        errors.push(`copier exited with status ${result.status ?? "unknown"}`);
-        if (existsSync8(action.targetDir)) changedFiles.push(action.targetDir);
-        break;
-      }
-      changedFiles.push(action.targetDir);
-    } else if (action.kind === "project.write-manifest") {
-      mkdirSync6(dirname6(action.path), { recursive: true });
-      const next = `${JSON.stringify(action.manifest, null, 2)}
-`;
-      const current = existsSync8(action.path) ? readFileSync4(action.path, "utf8") : void 0;
-      if (current !== next) {
-        writeFileSync5(action.path, next, "utf8");
-        changedFiles.push(action.path);
-      }
-    } else if (action.kind === "registry.upsert") {
-      pendingRegistryAction = action;
-    } else if (action.kind === "plane.create-or-link") {
-      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
-    } else if (action.kind === "hermes.provision-agent") {
-      logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
-    }
-  }
-  if (pendingRegistryAction && errors.length === 0) {
-    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
-      registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
-      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
-      changedFiles.push(pendingRegistryAction.registryPath);
-    }
-  }
-  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
-}
-function projectManifestFromRegistryProject(project) {
-  const agents = Object.fromEntries(
-    Object.entries(project.agents).map(([name, agent]) => [
-      `${project.slug}-${name}`,
-      {
-        role: agent.role,
-        role_dir: agent.role_dir,
-        provisioning_state: agent.provisioning_state
-      }
-    ])
-  );
-  return {
-    project_name: project.name,
-    project_description: project.description,
-    project_slug: project.slug,
-    repo_path: project.repo_path,
-    ticket_provider: {
-      type: project.ticket_provider.type,
-      workspace: project.ticket_provider.workspace ?? "",
-      identifier: project.ticket_provider.identifier ?? "",
-      board_id: project.ticket_provider.board_id ?? "",
-      board_url: project.ticket_provider.board_url ?? "",
-      state: project.ticket_provider.state
-    },
-    agents
-  };
-}
-function formatProjectInitPlan(plan) {
-  const lines = [""];
-  const title = `${bold(plan.project.name)} ${dim(`(${plan.project.slug})`)}`;
-  lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
-  lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
-  lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
-  lines.push("");
-  lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
-  if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
-  for (const action of plan.actions) {
-    lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
-    if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
-    if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
-    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
-  }
-  lines.push("");
-  return lines.join("\n");
-}
-function formatProjectList(registry) {
-  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
-  if (!projects.length) return `
-  ${dim("No projects registered.")}
-`;
-  const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
-  const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
-  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
-  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
-  for (const project of projects) {
-    const slug = bold(project.slug.padEnd(slugWidth));
-    const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
-    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
-    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
-  }
-  lines.push("");
-  return lines.join("\n");
-}
-function getProject(registry, slug) {
-  const project = registry.projects[slug];
-  if (!project) throw new Error(`Project not found in registry: ${slug}`);
-  return project;
-}
-function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
-  const issues = [];
-  const registry = loadProjectRegistry(registryPath2);
-  const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
-  for (const [projectSlug, project] of projects) {
-    if (!existsSync8(project.repo_path)) {
-      issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
-    } else if (!statSync(project.repo_path).isDirectory()) {
-      issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
-    } else {
-      const manifestPath = join10(project.repo_path, ".project.json");
-      if (!existsSync8(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
-    }
-    for (const artifact of project.source_artifacts) {
-      if (artifact.path && !existsSync8(artifact.path)) {
-        issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
-      }
-    }
-  }
-  return {
-    ok: !issues.some((issue) => issue.level === "error"),
-    registryPath: registryPath2,
-    checkedProjects: projects.map(([projectSlug]) => projectSlug),
-    issues
-  };
-}
-function buildCommonProjectCopierAction(input) {
-  const templateDir = join10(input.pjanglerRoot, "templates", "commonproject");
-  const data = {
-    project_name: input.projectName,
-    project_description: input.projectDescription ?? "",
-    project_slug: input.projectSlug,
-    ticket_provider: input.ticketProvider,
-    plane_workspace: input.planeWorkspace,
-    plane_project_id: input.planeProjectId ?? "",
-    project_identifier: input.projectIdentifier,
-    primary_language: input.primaryLanguage,
-    agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
-  };
-  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
-  for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
-  if (input.overwrite) command.push("--overwrite");
-  return {
-    kind: "copier.copy.commonproject",
-    cwd: input.pjanglerRoot,
-    command,
-    targetDir: input.targetDir,
-    data,
-    overwrite: input.overwrite
-  };
-}
-function resolvePjanglerRoot2() {
-  let dir = dirname6(new URL(import.meta.url).pathname);
-  while (dir !== dirname6(dir)) {
-    if (existsSync8(join10(dir, "package.json")) && existsSync8(join10(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname6(dir);
-  }
-  return resolve2(process.cwd());
-}
-function validateNoDuplicateProject(registry, project, overwrite) {
-  const existingSameSlug = registry.projects[project.slug];
-  if (existingSameSlug && !overwrite && resolve2(existingSameSlug.repo_path) !== resolve2(project.repo_path)) {
-    throw new Error(`Project slug already exists in registry: ${project.slug}`);
-  }
-  for (const [slug, existing] of Object.entries(registry.projects)) {
-    if (slug === project.slug) continue;
-    if (resolve2(existing.repo_path) === resolve2(project.repo_path)) {
-      throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
-    }
-    if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
-      throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
-    }
-  }
-}
-function validateProjectRecord(project, key) {
-  if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
-  if (!project.name) throw new Error(`Project ${key} missing name`);
-  if (!project.slug) throw new Error(`Project ${key} missing slug`);
-  if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
-  if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
-  if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
-  if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
-  if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
-}
-function expandHome(path) {
-  if (path === "~") return homedir5();
-  if (path.startsWith("~/")) return join10(homedir5(), path.slice(2));
-  return path;
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // src/utils/version.ts
@@ -3510,26 +3519,39 @@ async function resolveProjectInitTarget(name, options) {
     identifier: options.identifier ?? defaults.identifier
   };
 }
-var program = new Command3();
-program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
-program.command("init").argument("<subsystem>", "Subsystem to initialize").description("Initialize a project subsystem").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (subsystem, options) => {
+async function runRecipeSubsystem(name, options) {
   const context = {
     targetDir: process.cwd(),
     force: options.force || false,
     dryRun: options.dryRun || false
   };
   try {
-    const recipe = createRecipe(subsystem, context);
+    const recipe = createRecipe(name, context);
     if (!recipe) {
-      console.error(`${xmark} Unknown subsystem: ${bold(subsystem)}`);
+      console.error(`${xmark} Unknown subsystem: ${bold(name)}`);
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
     await recipe.execute();
   } catch (error) {
-    console.error(`${xmark} Error initializing ${bold(subsystem)}:`, error);
+    console.error(`${xmark} Error scaffolding ${bold(name)}:`, error);
     process.exit(1);
   }
+}
+var program = new Command3();
+program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
+program.command("init").argument("[name]", "Project name to bootstrap (omit inside an existing git repo)").description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
+  if (name && getRecipeNames().includes(name)) {
+    if (!options.json) {
+      console.error(`${yellow(glyph.warn)} ${dim(`"pjangler init ${name}" is deprecated \u2014 use "pjangler add ${name}". Forwarding\u2026`)}`);
+    }
+    await runRecipeSubsystem(name, { force: options.force, dryRun: options.dryRun });
+    return;
+  }
+  await runProjectInit(name, options);
+});
+program.command("add").argument("<subsystem>", "Subsystem to scaffold (mise, docker, node, agent-hooks, \u2026)").description("Scaffold a subsystem/component into the current repo").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (subsystem, options) => {
+  await runRecipeSubsystem(subsystem, options);
 });
 program.command("list").description("List available subsystems").action(() => {
   const width = Object.keys(RECIPE_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
@@ -3541,13 +3563,17 @@ program.command("list").description("List available subsystems").action(() => {
   }
   console.log("");
   console.log(`  ${dim("Examples")}`);
-  for (const example of ["pj init mise", "pj init docker", "pj init node"]) {
+  for (const example of ["pj add mise", "pj add docker", "pj add node"]) {
     console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
   }
   console.log("");
 });
 var projectCmd = program.command("project").description("Manage the pjangler project registry");
-projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
+projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action((name, options) => {
+  if (!options.json) console.error(`${yellow(glyph.warn)} ${dim('"pjangler project init" is deprecated \u2014 use "pjangler init".')}`);
+  return runProjectInit(name, options);
+});
+async function runProjectInit(name, options) {
   try {
     const target = await resolveProjectInitTarget(name, options);
     const interactive = isInteractiveProjectInit(options);
@@ -3647,7 +3673,7 @@ projectCmd.command("init").argument("[name]", "Project display name").descriptio
     }
     process.exit(1);
   }
-});
+}
 projectCmd.command("list").description("List projects in the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((options) => {
   try {
     const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
@@ -3732,27 +3758,11 @@ recipeCmd.command("describe").argument("<name>", "Recipe name").description("Sho
   console.log("");
   console.log(`  ${dim("Usage")}`);
   console.log(`     ${dim(glyph.pointer)} ${dim(`pj recipe run ${name}`)}`);
-  console.log(`     ${dim(glyph.pointer)} ${dim(`pj init ${name}`)}`);
+  console.log(`     ${dim(glyph.pointer)} ${dim(`pj add ${name}`)}`);
   console.log("");
 });
 recipeCmd.command("run").argument("<name>", "Recipe name").description("Execute a specific recipe").option("--dry-run", "Preview changes without writing files").option("-f, --force", "Overwrite existing files").action(async (name, options) => {
-  const context = {
-    targetDir: process.cwd(),
-    force: options.force || false,
-    dryRun: options.dryRun || false
-  };
-  try {
-    const recipe = createRecipe(name, context);
-    if (!recipe) {
-      console.error(`${xmark} Recipe not found: ${bold(name)}`);
-      console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
-      process.exit(1);
-    }
-    await recipe.execute();
-  } catch (error) {
-    console.error(`${xmark} Error running recipe ${bold(name)}:`, error);
-    process.exit(1);
-  }
+  await runRecipeSubsystem(name, options);
 });
 var commandCmd = program.command("command").alias("cmd").description("Manage pjangler commands");
 commandCmd.command("list").description("List all available commands").option("-g, --group", "Group commands by category").action((options) => {

@@ -33,6 +33,12 @@ if [ "$#" -eq 0 ]; then
   cat <<'EOF'
 pjangler — project + Hermes-agent provisioner
 
+  Bootstrap a project (registry + CommonProject scaffold + .project.json):
+    pjangler init <name>          # or run inside an existing repo with no name
+
+  Add a subsystem to the current repo:
+    pjangler add mise             # mise, docker, node, agent-hooks, …
+
   Provision a Hermes agent into a project (local-only, non-interactive):
     cd <your-project>
     pjangler hermes --yes --local
