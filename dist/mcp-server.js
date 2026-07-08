@@ -2918,6 +2918,13 @@ function deriveProjectIdentifier(value) {
 function normalizeAgentRole(value) {
   return value?.trim() || "pm";
 }
+function resolveAgentHooksLayer(input, env2 = process.env) {
+  if (typeof input === "boolean") return input;
+  const override = env2.PJ_AGENT_HOOKS_LAYER;
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  return !existsSync8(join11(homedir5(), ".agents", "hooks"));
+}
 function jsonStable(value) {
   return JSON.stringify(value);
 }
@@ -3014,6 +3021,7 @@ function planProjectInit(input) {
       planeProjectId: project.ticket_provider.board_id ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
+      agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
       overwrite
     }));
   }
@@ -3054,6 +3062,9 @@ function executeProjectInitPlan(plan) {
   let pendingRegistryAction;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
+      logs.push(
+        action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
+      );
       mkdirSync6(dirname7(action.targetDir), { recursive: true });
       const result = spawnSync5(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -3139,7 +3150,8 @@ function buildCommonProjectCopierAction(input) {
     plane_workspace: input.planeWorkspace,
     plane_project_id: input.planeProjectId ?? "",
     project_identifier: input.projectIdentifier,
-    primary_language: input.primaryLanguage
+    primary_language: input.primaryLanguage,
+    agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
   };
   const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
   for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);

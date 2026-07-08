@@ -89,6 +89,7 @@ export interface ProjectInitInput {
   pjanglerRoot?: string;
   cwd?: string;
   scaffold?: boolean;
+  agentHooksLayer?: boolean;
   force?: boolean;
   overwrite?: boolean;
   now?: Date;
@@ -244,6 +245,22 @@ export function normalizeAgentRole(value?: string): string {
   return value?.trim() || "pm";
 }
 
+/**
+ * Decide whether the CommonProject scaffold should include the project-scoped
+ * agent-hooks + skill fan-out layer. Explicit input wins; then the
+ * PJ_AGENT_HOOKS_LAYER env override (0/false | 1/true); otherwise the layer is
+ * SKIPPED when the machine already runs a global agent-hooks install
+ * (~/.agents/hooks), so a fresh project never re-injects the same hooks into the
+ * caller's shared per-user CLI configs (~/.codex, ~/.kimi-code, ...).
+ */
+export function resolveAgentHooksLayer(input?: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (typeof input === "boolean") return input;
+  const override = env.PJ_AGENT_HOOKS_LAYER;
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  return !existsSync(join(homedir(), ".agents", "hooks"));
+}
+
 function jsonStable(value: unknown): string {
   return JSON.stringify(value);
 }
@@ -353,6 +370,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       planeProjectId: project.ticket_provider.board_id ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
+      agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
       overwrite,
     }));
   }
@@ -396,6 +414,11 @@ export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecut
   let pendingRegistryAction: Extract<ProjectInitAction, { kind: "registry.upsert" }> | undefined;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
+      logs.push(
+        action.data.agent_hooks_layer === "false"
+          ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected — no per-user CLI injection)"
+          : "commonproject: agent-hooks layer included"
+      );
       mkdirSync(dirname(action.targetDir), { recursive: true });
       const result = spawnSync(action.command[0]!, action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -552,6 +575,7 @@ export function buildCommonProjectCopierAction(input: {
   planeProjectId?: string;
   projectIdentifier: string;
   primaryLanguage: string;
+  agentHooksLayer?: boolean;
   overwrite: boolean;
 }): Extract<ProjectInitAction, { kind: "copier.copy.commonproject" }> {
   const templateDir = join(input.pjanglerRoot, "templates", "commonproject");
@@ -564,6 +588,7 @@ export function buildCommonProjectCopierAction(input: {
     plane_project_id: input.planeProjectId ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
+    agent_hooks_layer: (input.agentHooksLayer ?? true) ? "true" : "false",
   };
   const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
   for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
