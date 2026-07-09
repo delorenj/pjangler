@@ -50,6 +50,10 @@ interface ProjectInitCliOptions {
   live?: boolean;
   slug?: string;
   identifier?: string;
+  ticketProvider?: string;
+  boardId?: string;
+  boardUrl?: string;
+  workspace?: string;
   registry?: string;
   force?: boolean;
   yes?: boolean;
@@ -167,7 +171,7 @@ function projectInitActionLabel(kind: string): string {
       return "Render CommonProject scaffold";
     case "project.write-manifest":
       return "Write repo-local .project.json projection";
-    case "plane.create-or-link":
+    case "ticket-provider.create-or-link":
       return "Create/link ticket provider project";
     case "hermes.provision-agent":
       return "Provision Hermes agent";
@@ -194,7 +198,7 @@ function actionNeedsRun(plan: ReturnType<typeof planProjectInit>, kind: string, 
     return !existsSync(action.path) || readFileSync(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
-  if (kind === "plane.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
   if (kind === "hermes.provision-agent") return plan.actions.some((action) => action.kind === kind && action.enabled);
   return true;
 }
@@ -337,6 +341,10 @@ program
   .option("--live", "Allow live/network/cloud provisioning actions")
   .option("--slug <slug>", "Project registry slug override")
   .option("--identifier <identifier>", "Ticket identifier override")
+  .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
+  .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
+  .option("--board-url <url>", "Board URL override (derived from provider + board-id if omitted)")
+  .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
   .option("-y, --yes", "Apply every proposed operation without prompting")
@@ -415,6 +423,10 @@ projectCmd
   .option("--live", "Allow live/network/cloud provisioning actions")
   .option("--slug <slug>", "Project registry slug override")
   .option("--identifier <identifier>", "Ticket identifier override")
+  .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
+  .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
+  .option("--board-url <url>", "Board URL override (derived from provider + board-id if omitted)")
+  .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
   .option("-y, --yes", "Apply every proposed operation without prompting")
@@ -443,6 +455,10 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         live: options.live ?? false,
         projectSlug: target.slug,
         projectIdentifier: target.identifier,
+        ticketProvider: options.ticketProvider,
+        boardId: options.boardId,
+        boardUrl: options.boardUrl,
+        boardWorkspace: options.workspace,
         registryPath: options.registry,
         force: options.force ?? false,
         overwrite: options.force ?? false,
@@ -880,10 +896,10 @@ program
   .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
   .option("--email", "Also provision the delo.sh email address (off by default; never prompted)")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
-  .option("--skip-plane", "Skip creating the Plane project")
+  .option("--skip-plane", "Skip creating or linking the ticket board")
   .option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer")
   .option("--skip-systemd", "Skip installing systemd --user units")
-  .option("--local", "Local-only: skip runtime repo, Plane, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
+  .option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
   .option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists")
   .option("--dry-run", "Preview what would run; don't execute copier")
   .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")

@@ -301,6 +301,62 @@ try {
   assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
   assert.equal(secondMultiManifest.agents["multi-agent-dev"].role, "dev", "new dev agent must be added to manifest");
 
+  // Regression: --ticket-provider trello yields a Trello-shaped provider block
+  const trelloPlan = JSON.parse(run([
+    "project", "init", "TrelloProj",
+    "--description", "Trello provider coverage",
+    "--target-dir", join(tmp, "TrelloProj"),
+    "--ticket-provider", "trello",
+    "--board-id", "687535e9873b89478afef689",
+    "--registry", join(tmp, "trello-projects.yaml"),
+    "--json",
+  ], {}));
+  assert.equal(trelloPlan.project.ticket_provider.type, "trello");
+  assert.equal(trelloPlan.project.ticket_provider.board_id, "687535e9873b89478afef689");
+  assert.equal(trelloPlan.project.ticket_provider.board_url, "https://trello.com/b/687535e9873b89478afef689");
+  assert.equal(trelloPlan.project.ticket_provider.workspace, "", "trello workspace defaults blank (not the Plane 33god default)");
+
+  // Regression: an explicit --board-url overrides the derived one
+  const trelloUrlPlan = JSON.parse(run([
+    "project", "init", "TrelloUrlProj",
+    "--description", "Trello explicit board-url",
+    "--target-dir", join(tmp, "TrelloUrlProj"),
+    "--ticket-provider", "trello",
+    "--board-id", "abc123",
+    "--board-url", "https://trello.com/b/jLl1NE0Z/intelforia",
+    "--registry", join(tmp, "trello-url-projects.yaml"),
+    "--json",
+  ], {}));
+  assert.equal(trelloUrlPlan.project.ticket_provider.board_url, "https://trello.com/b/jLl1NE0Z/intelforia");
+
+  // Regression: unsupported providers must fail instead of falling through to Plane URL derivation
+  const linearProvider = runExpectFailure([
+    "project", "init", "LinearProj",
+    "--description", "Unsupported provider coverage",
+    "--target-dir", join(tmp, "LinearProj"),
+    "--ticket-provider", "linear",
+    "--board-id", "LIN-123",
+    "--registry", join(tmp, "linear-projects.yaml"),
+    "--json",
+  ], {});
+  assert.match(failureOutput(linearProvider), /Unsupported ticket provider: linear/);
+
+  // Regression: default provider stays Plane with the Plane-style board_url (backward compat)
+  const planePlan = JSON.parse(run([
+    "project", "init", "PlaneProj",
+    "--description", "Plane default coverage",
+    "--target-dir", join(tmp, "PlaneProj"),
+    "--board-id", "82e56896-e7fd-466b-826c-1019441c64ca",
+    "--registry", join(tmp, "plane-projects.yaml"),
+    "--json",
+  ], {}));
+  assert.equal(planePlan.project.ticket_provider.type, "plane");
+  assert.equal(planePlan.project.ticket_provider.workspace, "33god");
+  assert.equal(
+    planePlan.project.ticket_provider.board_url,
+    "https://plane.delo.sh/33god/projects/82e56896-e7fd-466b-826c-1019441c64ca/issues/",
+  );
+
   console.log("project registry regressions passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

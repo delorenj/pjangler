@@ -713,7 +713,7 @@ function deriveProfileName(repo, role) {
 function detectTicketProvider(targetDir) {
   try {
     const t = JSON.parse(readFileSync(join4(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
-    return t === "plane" || t === "linear" || t === "trello" ? t : void 0;
+    return t === "plane" || t === "trello" ? t : void 0;
   } catch {
     return void 0;
   }
@@ -1260,6 +1260,34 @@ function validateProjectRegistry(registry) {
     }
   }
 }
+function normalizeTicketProvider(value) {
+  const type = (value || "plane").trim().toLowerCase();
+  if (type === "plane" || type === "trello") return type;
+  throw new Error(`Unsupported ticket provider: ${value}. Supported providers: plane, trello`);
+}
+function buildTicketProviderBlock(input) {
+  const type = normalizeTicketProvider(input.type);
+  const boardId = input.boardId ?? "";
+  if (type === "trello") {
+    return {
+      type,
+      workspace: input.workspace ?? "",
+      identifier: input.identifier,
+      board_id: boardId,
+      board_url: input.boardUrl ?? (boardId ? `https://trello.com/b/${boardId}` : ""),
+      state: "planned"
+    };
+  }
+  const workspace = input.workspace ?? "33god";
+  return {
+    type,
+    workspace,
+    identifier: input.identifier,
+    board_id: boardId,
+    board_url: input.boardUrl ?? (boardId ? `https://plane.delo.sh/${workspace}/projects/${boardId}/issues/` : ""),
+    state: "planned"
+  };
+}
 function slugifyProjectName(value) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
@@ -1338,14 +1366,13 @@ function planProjectInit(input) {
         primary_language: input.primaryLanguage ?? "python"
       }
     },
-    ticket_provider: {
+    ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
-      workspace: input.planeWorkspace ?? "33god",
       identifier,
-      board_id: input.planeProjectId ?? "",
-      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
-      state: input.live ? "planned" : "planned"
-    },
+      boardId: input.boardId ?? input.planeProjectId,
+      boardUrl: input.boardUrl,
+      workspace: input.boardWorkspace ?? input.planeWorkspace
+    }),
     agents,
     created_at: existing?.created_at ?? now,
     updated_at: now
@@ -1372,6 +1399,9 @@ function planProjectInit(input) {
       ticketProvider: project.ticket_provider.type,
       planeWorkspace: project.ticket_provider.workspace ?? "33god",
       planeProjectId: project.ticket_provider.board_id ?? "",
+      ticketWorkspace: project.ticket_provider.workspace ?? "",
+      boardId: project.ticket_provider.board_id ?? "",
+      boardUrl: project.ticket_provider.board_url ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
@@ -1381,9 +1411,10 @@ function planProjectInit(input) {
   actions.push(
     { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
     {
-      kind: "plane.create-or-link",
+      kind: "ticket-provider.create-or-link",
       enabled: live,
       live,
+      provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
       state: live ? "planned" : "planned",
@@ -1446,8 +1477,8 @@ function executeProjectInitPlan(plan) {
       }
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
-    } else if (action.kind === "plane.create-or-link") {
-      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "ticket-provider.create-or-link") {
+      logs.push(action.enabled ? "ticket-provider.create-or-link requires a live provider integration" : "ticket-provider.create-or-link skipped (requires --live)");
     } else if (action.kind === "hermes.provision-agent") {
       logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
@@ -1502,6 +1533,9 @@ function buildCommonProjectCopierAction(input) {
     ticket_provider: input.ticketProvider,
     plane_workspace: input.planeWorkspace,
     plane_project_id: input.planeProjectId ?? "",
+    ticket_workspace: input.ticketWorkspace ?? input.planeWorkspace,
+    board_id: input.boardId ?? input.planeProjectId ?? "",
+    board_url: input.boardUrl ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
     agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
@@ -3221,7 +3255,7 @@ var server = new McpServer({
   name: "pjangler-mcp",
   version: PJANGLER_VERSION
 });
-var TICKET_PROVIDER_SCHEMA = z.enum(["plane", "linear", "trello"]);
+var TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
 function resolveTargetDir(targetDir) {
   const dir = resolve3(targetDir ?? process.cwd());
   if (!existsSync9(dir)) {
@@ -3412,6 +3446,9 @@ server.registerTool(
       projectDescription: z.string().optional(),
       projectSlug: z.string().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
+      boardId: z.string().optional(),
+      boardUrl: z.string().optional(),
+      workspace: z.string().optional(),
       planeWorkspace: z.string().optional(),
       planeProjectId: z.string().optional(),
       projectIdentifier: z.string().optional(),
@@ -3440,9 +3477,10 @@ server.registerTool(
       const dryRun = input.dryRun ?? true;
       const local = input.local ?? true;
       const skipPlane = input.skipPlane ?? true;
-      const planeProjectId = input.planeProjectId ?? "";
-      if (!skipPlane && !planeProjectId) {
-        throw new Error("planeProjectId is required when skipPlane=false; keep skipPlane=true for safe local bootstrap");
+      const ticketProvider = input.ticketProvider ?? "plane";
+      const boardId = input.boardId ?? input.planeProjectId ?? "";
+      if (!skipPlane && ticketProvider === "plane" && !boardId) {
+        throw new Error("boardId or planeProjectId is required when skipPlane=false for Plane; keep skipPlane=true for safe local bootstrap");
       }
       if (!dryRun && existsSync9(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
       const plan = planProjectInit({
@@ -3458,9 +3496,12 @@ server.registerTool(
         live: input.live ?? false,
         registryPath: input.registryPath,
         projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
-        ticketProvider: input.ticketProvider ?? "plane",
+        ticketProvider,
+        boardId,
+        boardUrl: input.boardUrl,
+        boardWorkspace: input.workspace ?? input.planeWorkspace,
         planeWorkspace: input.planeWorkspace ?? "33god",
-        planeProjectId,
+        planeProjectId: input.planeProjectId,
         pjanglerRoot,
         overwrite
       });
@@ -3512,6 +3553,10 @@ server.registerTool(
       live: z.boolean().optional(),
       slug: z.string().optional(),
       identifier: z.string().optional(),
+      ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
+      boardId: z.string().optional(),
+      boardUrl: z.string().optional(),
+      workspace: z.string().optional(),
       registryPath: z.string().optional(),
       force: z.boolean().optional()
     }
@@ -3530,6 +3575,10 @@ server.registerTool(
         live: input.live ?? false,
         projectSlug: input.slug,
         projectIdentifier: input.identifier,
+        ticketProvider: input.ticketProvider,
+        boardId: input.boardId,
+        boardUrl: input.boardUrl,
+        boardWorkspace: input.workspace,
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false
@@ -3637,7 +3686,7 @@ server.registerTool(
   "pjangler_deploy_hermes_agent",
   {
     title: "Deploy Hermes agent",
-    description: "Provision a Hermes agent role for @33god-projects. For safe MCP use local=true defaults skip runtime repo, Plane, Bloodbank, and systemd; opt out with local=false plus explicit skip flags.",
+    description: "Provision a Hermes agent role for @33god-projects. For safe MCP use local=true defaults skip runtime repo, ticket-board creation, Bloodbank, and systemd; opt out with local=false plus explicit skip flags.",
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string().optional(),

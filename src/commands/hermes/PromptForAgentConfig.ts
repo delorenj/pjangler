@@ -15,7 +15,7 @@ function detectTicketProvider(targetDir: string): TicketProvider | undefined {
   try {
     const t = JSON.parse(readFileSync(join(targetDir, ".project.json"), "utf8"))
       ?.ticket_provider?.type;
-    return t === "plane" || t === "linear" || t === "trello" ? t : undefined;
+    return t === "plane" || t === "trello" ? t : undefined;
   } catch {
     return undefined;
   }

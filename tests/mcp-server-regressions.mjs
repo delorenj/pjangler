@@ -68,6 +68,19 @@ try {
   assert.ok(projectPayload.actions.some((action) => action.kind === "registry.upsert"));
   assert.ok(projectPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
 
+  const trelloProjectDryRun = await client.callTool({
+    name: "pjangler_project_init",
+    arguments: {
+      name: "Trello MCP Project",
+      targetDir: join(mcpTmp, "TrelloMcpProject"),
+      ticketProvider: "trello",
+      boardId: "687535e9873b89478afef689",
+    },
+  });
+  const trelloProjectPayload = JSON.parse(trelloProjectDryRun.content[0].text);
+  assert.equal(trelloProjectPayload.project.ticket_provider.type, "trello");
+  assert.equal(trelloProjectPayload.project.ticket_provider.board_url, "https://trello.com/b/687535e9873b89478afef689");
+
   const projectList = await client.callTool({ name: "pjangler_project_list", arguments: {} });
   const projectListPayload = JSON.parse(projectList.content[0].text);
   assert.deepEqual(projectListPayload.projects, {});

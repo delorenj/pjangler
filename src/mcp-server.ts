@@ -23,7 +23,7 @@ const server = new McpServer({
   version: PJANGLER_VERSION,
 });
 
-const TICKET_PROVIDER_SCHEMA = z.enum(["plane", "linear", "trello"]);
+const TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
 
 function resolveTargetDir(targetDir?: string): string {
   const dir = resolve(targetDir ?? process.cwd());
@@ -233,6 +233,9 @@ server.registerTool(
       projectDescription: z.string().optional(),
       projectSlug: z.string().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
+      boardId: z.string().optional(),
+      boardUrl: z.string().optional(),
+      workspace: z.string().optional(),
       planeWorkspace: z.string().optional(),
       planeProjectId: z.string().optional(),
       projectIdentifier: z.string().optional(),
@@ -261,9 +264,10 @@ server.registerTool(
       const dryRun = input.dryRun ?? true;
       const local = input.local ?? true;
       const skipPlane = input.skipPlane ?? true;
-      const planeProjectId = input.planeProjectId ?? "";
-      if (!skipPlane && !planeProjectId) {
-        throw new Error("planeProjectId is required when skipPlane=false; keep skipPlane=true for safe local bootstrap");
+      const ticketProvider = input.ticketProvider ?? "plane";
+      const boardId = input.boardId ?? input.planeProjectId ?? "";
+      if (!skipPlane && ticketProvider === "plane" && !boardId) {
+        throw new Error("boardId or planeProjectId is required when skipPlane=false for Plane; keep skipPlane=true for safe local bootstrap");
       }
       if (!dryRun && existsSync(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
 
@@ -280,9 +284,12 @@ server.registerTool(
         live: input.live ?? false,
         registryPath: input.registryPath,
         projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
-        ticketProvider: input.ticketProvider ?? "plane",
+        ticketProvider,
+        boardId,
+        boardUrl: input.boardUrl,
+        boardWorkspace: input.workspace ?? input.planeWorkspace,
         planeWorkspace: input.planeWorkspace ?? "33god",
-        planeProjectId,
+        planeProjectId: input.planeProjectId,
         pjanglerRoot,
         overwrite,
       });
@@ -339,6 +346,10 @@ server.registerTool(
       live: z.boolean().optional(),
       slug: z.string().optional(),
       identifier: z.string().optional(),
+      ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
+      boardId: z.string().optional(),
+      boardUrl: z.string().optional(),
+      workspace: z.string().optional(),
       registryPath: z.string().optional(),
       force: z.boolean().optional(),
     },
@@ -357,6 +368,10 @@ server.registerTool(
         live: input.live ?? false,
         projectSlug: input.slug,
         projectIdentifier: input.identifier,
+        ticketProvider: input.ticketProvider,
+        boardId: input.boardId,
+        boardUrl: input.boardUrl,
+        boardWorkspace: input.workspace,
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
@@ -472,7 +487,7 @@ server.registerTool(
   {
     title: "Deploy Hermes agent",
     description:
-      "Provision a Hermes agent role for @33god-projects. For safe MCP use local=true defaults skip runtime repo, Plane, Bloodbank, and systemd; opt out with local=false plus explicit skip flags.",
+      "Provision a Hermes agent role for @33god-projects. For safe MCP use local=true defaults skip runtime repo, ticket-board creation, Bloodbank, and systemd; opt out with local=false plus explicit skip flags.",
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string().optional(),

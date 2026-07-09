@@ -727,7 +727,7 @@ import * as p from "@clack/prompts";
 function detectTicketProvider(targetDir) {
   try {
     const t = JSON.parse(readFileSync(join4(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
-    return t === "plane" || t === "linear" || t === "trello" ? t : void 0;
+    return t === "plane" || t === "trello" ? t : void 0;
   } catch {
     return void 0;
   }
@@ -1274,6 +1274,34 @@ function validateProjectRegistry(registry) {
     }
   }
 }
+function normalizeTicketProvider(value) {
+  const type = (value || "plane").trim().toLowerCase();
+  if (type === "plane" || type === "trello") return type;
+  throw new Error(`Unsupported ticket provider: ${value}. Supported providers: plane, trello`);
+}
+function buildTicketProviderBlock(input) {
+  const type = normalizeTicketProvider(input.type);
+  const boardId = input.boardId ?? "";
+  if (type === "trello") {
+    return {
+      type,
+      workspace: input.workspace ?? "",
+      identifier: input.identifier,
+      board_id: boardId,
+      board_url: input.boardUrl ?? (boardId ? `https://trello.com/b/${boardId}` : ""),
+      state: "planned"
+    };
+  }
+  const workspace = input.workspace ?? "33god";
+  return {
+    type,
+    workspace,
+    identifier: input.identifier,
+    board_id: boardId,
+    board_url: input.boardUrl ?? (boardId ? `https://plane.delo.sh/${workspace}/projects/${boardId}/issues/` : ""),
+    state: "planned"
+  };
+}
 function slugifyProjectName(value) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
@@ -1352,14 +1380,13 @@ function planProjectInit(input) {
         primary_language: input.primaryLanguage ?? "python"
       }
     },
-    ticket_provider: {
+    ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
-      workspace: input.planeWorkspace ?? "33god",
       identifier,
-      board_id: input.planeProjectId ?? "",
-      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
-      state: input.live ? "planned" : "planned"
-    },
+      boardId: input.boardId ?? input.planeProjectId,
+      boardUrl: input.boardUrl,
+      workspace: input.boardWorkspace ?? input.planeWorkspace
+    }),
     agents,
     created_at: existing?.created_at ?? now,
     updated_at: now
@@ -1386,6 +1413,9 @@ function planProjectInit(input) {
       ticketProvider: project.ticket_provider.type,
       planeWorkspace: project.ticket_provider.workspace ?? "33god",
       planeProjectId: project.ticket_provider.board_id ?? "",
+      ticketWorkspace: project.ticket_provider.workspace ?? "",
+      boardId: project.ticket_provider.board_id ?? "",
+      boardUrl: project.ticket_provider.board_url ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
@@ -1395,9 +1425,10 @@ function planProjectInit(input) {
   actions.push(
     { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
     {
-      kind: "plane.create-or-link",
+      kind: "ticket-provider.create-or-link",
       enabled: live,
       live,
+      provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
       state: live ? "planned" : "planned",
@@ -1460,8 +1491,8 @@ function executeProjectInitPlan(plan) {
       }
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
-    } else if (action.kind === "plane.create-or-link") {
-      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "ticket-provider.create-or-link") {
+      logs.push(action.enabled ? "ticket-provider.create-or-link requires a live provider integration" : "ticket-provider.create-or-link skipped (requires --live)");
     } else if (action.kind === "hermes.provision-agent") {
       logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
@@ -1515,7 +1546,7 @@ function formatProjectInitPlan(plan) {
     lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
     if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
     if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
-    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    if (action.kind === "ticket-provider.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -1578,6 +1609,9 @@ function buildCommonProjectCopierAction(input) {
     ticket_provider: input.ticketProvider,
     plane_workspace: input.planeWorkspace,
     plane_project_id: input.planeProjectId ?? "",
+    ticket_workspace: input.ticketWorkspace ?? input.planeWorkspace,
+    board_id: input.boardId ?? input.planeProjectId ?? "",
+    board_url: input.boardUrl ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
     agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
@@ -3416,7 +3450,7 @@ function projectInitActionLabel(kind) {
       return "Render CommonProject scaffold";
     case "project.write-manifest":
       return "Write repo-local .project.json projection";
-    case "plane.create-or-link":
+    case "ticket-provider.create-or-link":
       return "Create/link ticket provider project";
     case "hermes.provision-agent":
       return "Provision Hermes agent";
@@ -3442,7 +3476,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     return !existsSync9(action.path) || readFileSync6(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
-  if (kind === "plane.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
+  if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
   if (kind === "hermes.provision-agent") return plan.actions.some((action) => action.kind === kind && action.enabled);
   return true;
 }
@@ -3540,7 +3574,7 @@ async function runRecipeSubsystem(name, options) {
 }
 var program = new Command3();
 program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
-program.command("init").argument("[name]", "Project name to bootstrap (omit inside an existing git repo)").description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
+program.command("init").argument("[name]", "Project name to bootstrap (omit inside an existing git repo)").description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane").option("--board-id <id>", "Board id (Plane project UUID or Trello board id)").option("--board-url <url>", "Board URL override (derived from provider + board-id if omitted)").option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
   if (name && getRecipeNames().includes(name)) {
     if (!options.json) {
       console.error(`${yellow(glyph.warn)} ${dim(`"pjangler init ${name}" is deprecated \u2014 use "pjangler add ${name}". Forwarding\u2026`)}`);
@@ -3569,7 +3603,7 @@ program.command("list").description("List available subsystems").action(() => {
   console.log("");
 });
 var projectCmd = program.command("project").description("Manage the pjangler project registry");
-projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action((name, options) => {
+projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane").option("--board-id <id>", "Board id (Plane project UUID or Trello board id)").option("--board-url <url>", "Board URL override (derived from provider + board-id if omitted)").option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action((name, options) => {
   if (!options.json) console.error(`${yellow(glyph.warn)} ${dim('"pjangler project init" is deprecated \u2014 use "pjangler init".')}`);
   return runProjectInit(name, options);
 });
@@ -3590,6 +3624,10 @@ async function runProjectInit(name, options) {
       live: options.live ?? false,
       projectSlug: target.slug,
       projectIdentifier: target.identifier,
+      ticketProvider: options.ticketProvider,
+      boardId: options.boardId,
+      boardUrl: options.boardUrl,
+      boardWorkspace: options.workspace,
       registryPath: options.registry,
       force: options.force ?? false,
       overwrite: options.force ?? false,
@@ -3886,7 +3924,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
     process.exit(1);
   }
 });
-program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating the Plane project").option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, Plane, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
+program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating or linking the ticket board").option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
   const isDarwin = process.platform === "darwin";
   const local = options.local ?? false;
   const context = {

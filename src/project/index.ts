@@ -14,8 +14,10 @@ export interface SourceArtifact {
   package_name?: string;
 }
 
+export type SupportedTicketProvider = "plane" | "trello";
+
 export interface ProjectTicketProvider {
-  type: "plane" | "linear" | "trello" | string;
+  type: SupportedTicketProvider | string;
   workspace?: string;
   identifier?: string;
   board_id?: string;
@@ -83,9 +85,13 @@ export interface ProjectInitInput {
   projectSlug?: string;
   projectIdentifier?: string;
   packageName?: string;
-  ticketProvider?: "plane" | "linear" | "trello" | string;
+  ticketProvider?: SupportedTicketProvider | string;
   planeWorkspace?: string;
   planeProjectId?: string;
+  /** Provider-agnostic board binding (preferred over the plane* aliases). */
+  boardId?: string;
+  boardUrl?: string;
+  boardWorkspace?: string;
   pjanglerRoot?: string;
   cwd?: string;
   scaffold?: boolean;
@@ -116,9 +122,10 @@ export type ProjectInitAction =
       manifest: ProjectManifest;
     }
   | {
-      kind: "plane.create-or-link";
+      kind: "ticket-provider.create-or-link";
       enabled: boolean;
       live: boolean;
+      provider: string;
       workspace: string;
       identifier: string;
       state: string;
@@ -231,6 +238,50 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
   }
 }
 
+/**
+ * Build the `.project.json` ticket_provider block for a supported provider.
+ * Plane keeps the historical workspace + `/projects/<id>/issues/` URL. Trello
+ * uses a blank workspace by default and a `https://trello.com/b/<board_id>` URL.
+ * An explicit `boardUrl` always wins. Lane→state mapping is NOT stored here —
+ * that is per-repo config (`.momo/config.json`), because kanban columns vary
+ * board to board.
+ */
+export function normalizeTicketProvider(value?: string): SupportedTicketProvider {
+  const type = (value || "plane").trim().toLowerCase();
+  if (type === "plane" || type === "trello") return type;
+  throw new Error(`Unsupported ticket provider: ${value}. Supported providers: plane, trello`);
+}
+
+export function buildTicketProviderBlock(input: {
+  type?: string;
+  identifier: string;
+  boardId?: string;
+  boardUrl?: string;
+  workspace?: string;
+}): ProjectTicketProvider {
+  const type = normalizeTicketProvider(input.type);
+  const boardId = input.boardId ?? "";
+  if (type === "trello") {
+    return {
+      type,
+      workspace: input.workspace ?? "",
+      identifier: input.identifier,
+      board_id: boardId,
+      board_url: input.boardUrl ?? (boardId ? `https://trello.com/b/${boardId}` : ""),
+      state: "planned",
+    };
+  }
+  const workspace = input.workspace ?? "33god";
+  return {
+    type,
+    workspace,
+    identifier: input.identifier,
+    board_id: boardId,
+    board_url: input.boardUrl ?? (boardId ? `https://plane.delo.sh/${workspace}/projects/${boardId}/issues/` : ""),
+    state: "planned",
+  };
+}
+
 export function slugifyProjectName(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
@@ -332,14 +383,13 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
         primary_language: input.primaryLanguage ?? "python",
       },
     },
-    ticket_provider: {
+    ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
-      workspace: input.planeWorkspace ?? "33god",
       identifier,
-      board_id: input.planeProjectId ?? "",
-      board_url: input.planeProjectId ? `https://plane.delo.sh/${input.planeWorkspace ?? "33god"}/projects/${input.planeProjectId}/issues/` : "",
-      state: input.live ? "planned" : "planned",
-    },
+      boardId: input.boardId ?? input.planeProjectId,
+      boardUrl: input.boardUrl,
+      workspace: input.boardWorkspace ?? input.planeWorkspace,
+    }),
     agents,
     created_at: existing?.created_at ?? now,
     updated_at: now,
@@ -368,6 +418,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       ticketProvider: project.ticket_provider.type,
       planeWorkspace: project.ticket_provider.workspace ?? "33god",
       planeProjectId: project.ticket_provider.board_id ?? "",
+      ticketWorkspace: project.ticket_provider.workspace ?? "",
+      boardId: project.ticket_provider.board_id ?? "",
+      boardUrl: project.ticket_provider.board_url ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
@@ -377,9 +430,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   actions.push(
     { kind: "project.write-manifest", path: join(targetDir, ".project.json"), manifest },
     {
-      kind: "plane.create-or-link",
+      kind: "ticket-provider.create-or-link",
       enabled: live,
       live,
+      provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
       state: live ? "planned" : "planned",
@@ -448,8 +502,8 @@ export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecut
       }
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
-    } else if (action.kind === "plane.create-or-link") {
-      logs.push(action.enabled ? "plane.create-or-link requires a live provider integration" : "plane.create-or-link skipped (requires --live)");
+    } else if (action.kind === "ticket-provider.create-or-link") {
+      logs.push(action.enabled ? "ticket-provider.create-or-link requires a live provider integration" : "ticket-provider.create-or-link skipped (requires --live)");
     } else if (action.kind === "hermes.provision-agent") {
       logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
@@ -507,7 +561,7 @@ export function formatProjectInitPlan(plan: ProjectInitPlan): string {
     lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
     if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
     if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
-    if (action.kind === "plane.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    if (action.kind === "ticket-provider.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -573,6 +627,9 @@ export function buildCommonProjectCopierAction(input: {
   ticketProvider: string;
   planeWorkspace: string;
   planeProjectId?: string;
+  boardId?: string;
+  boardUrl?: string;
+  ticketWorkspace?: string;
   projectIdentifier: string;
   primaryLanguage: string;
   agentHooksLayer?: boolean;
@@ -586,6 +643,9 @@ export function buildCommonProjectCopierAction(input: {
     ticket_provider: input.ticketProvider,
     plane_workspace: input.planeWorkspace,
     plane_project_id: input.planeProjectId ?? "",
+    ticket_workspace: input.ticketWorkspace ?? input.planeWorkspace,
+    board_id: input.boardId ?? input.planeProjectId ?? "",
+    board_url: input.boardUrl ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
     agent_hooks_layer: (input.agentHooksLayer ?? true) ? "true" : "false",

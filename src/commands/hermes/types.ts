@@ -45,11 +45,10 @@ export const SOUL_TONES = ["direct", "playful", "formal", "terse"] as const;
 // template still accepts a `role` value, so other roles remain reachable
 // out-of-band — they're just not part of the interactive flow.
 
-export type TicketProvider = "plane" | "linear" | "trello";
+export type TicketProvider = "plane" | "trello";
 
 export const TICKET_PROVIDERS = [
   { value: "plane", label: "Plane", hint: "self-hosted at plane.delo.sh (default)" },
-  { value: "linear", label: "Linear", hint: "team board (created in Linear UI)" },
   { value: "trello", label: "Trello", hint: "board = project" },
 ] as const;
 
