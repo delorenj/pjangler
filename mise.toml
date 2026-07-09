@@ -67,12 +67,10 @@ run = "{{config_root}}/.mise/scripts/versioning.sh sync"
 description = "Install dependencies with npm (the only package manager for this repo)"
 run = "npm install"
 
-# Version-aware build: bump patch once, then build BOTH shipped artifacts
-# (the pjangler CLI and the MCP server) so they stay on the same version.
-# Use `mise run build` instead of `npm run build` to get the bump + git tag.
+# Build BOTH shipped artifacts (the pjangler CLI and the MCP server) so they stay
+# on the same version. Use `mise run build` instead of `npm run build`.
 [tasks.build]
-description = "Bump patch, then build the CLI and MCP server bundles (esbuild via npm)"
-depends = ["version:bump-patch"]
+description = "Build the CLI and MCP server bundles (esbuild via npm)"
 run = "npm run build"
 
 [tasks.typecheck]
@@ -80,8 +78,8 @@ description = "Type-check the source with tsc --noEmit"
 run = "npm run typecheck"
 
 [tasks.publish]
-description = "Bump + build (via depends), verify templates, publish to npm (fresh 1Password TOTP)"
-depends = ["build"]
+description = "Bump patch + build, verify templates, publish to npm (fresh 1Password TOTP)"
+depends = ["version:bump-patch", "build"]
 run = [
   "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
   # --otp resolved at publish time; a TOTP can't be injected statically via env/.npmrc
