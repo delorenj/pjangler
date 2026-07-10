@@ -83,10 +83,29 @@ CANONICAL_SKILLS_DIR="${CANONICAL_SKILLS_DIR:-$(config_get fleet.canonical_skill
 CANONICAL_PM_SKILL_SRC="$CANONICAL_SKILLS_DIR/subagent-driven-development"
 LOCAL_PM_SKILL_DST="$PROFILE_HOME/skills/software-development/subagent-driven-development"
 
-if [[ -d "$CANONICAL_SKILLS_DIR" ]]; then
-  log "    setting skills.external_dirs[0] = $CANONICAL_SKILLS_DIR"
-  env HERMES_HOME="$PROFILE_HOME" "$HERMES_BIN" config set skills.external_dirs.0 "$CANONICAL_SKILLS_DIR"
+if [[ "$ROLE" == "pm" ]]; then
+  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.2")}" 
+  read -r -a RESOLVED_PM_EXTERNAL_SKILL_DIRS <<< "$PM_EXTERNAL_SKILL_DIRS"
+  if [[ ${#RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]} -gt 0 ]]; then
+    log "    setting PM skills.external_dirs = ${RESOLVED_PM_EXTERNAL_SKILL_DIRS[*]}"
+    python3 - "$PROFILE_HOME/config.yaml" "${RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]}" <<'PYEOF'
+import pathlib
+import sys
 
+import yaml
+
+path = pathlib.Path(sys.argv[1])
+external_dirs = sys.argv[2:]
+data = yaml.safe_load(path.read_text()) or {}
+skills = data.get("skills") or {}
+skills["external_dirs"] = external_dirs
+data["skills"] = skills
+path.write_text(yaml.safe_dump(data, sort_keys=False))
+PYEOF
+  fi
+fi
+
+if [[ -d "$CANONICAL_SKILLS_DIR" ]]; then
   # Ensure key PM/local-ops skills are symlinked into runtime/profile skills root.
   # This preserves canonical ownership and keeps updates instant across agents.
   read -r -a SYMLINKED_RUNTIME_SKILLS <<< "${SYMLINKED_RUNTIME_SKILLS:-$(config_get fleet.symlinked_runtime_skills 'delonet-conventions delonet-dotenv hermes-pm-template-maintenance hindsight subagent-driven-development')}"

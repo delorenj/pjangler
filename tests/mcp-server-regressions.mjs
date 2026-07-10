@@ -79,7 +79,8 @@ try {
   });
   const trelloProjectPayload = JSON.parse(trelloProjectDryRun.content[0].text);
   assert.equal(trelloProjectPayload.project.ticket_provider.type, "trello");
-  assert.equal(trelloProjectPayload.project.ticket_provider.board_url, "https://trello.com/b/687535e9873b89478afef689");
+  assert.equal("board_url" in trelloProjectPayload.project.ticket_provider, false);
+  assert.equal(trelloProjectPayload.project.ticket_provider.state, "linked");
 
   const projectList = await client.callTool({ name: "pjangler_project_list", arguments: {} });
   const projectListPayload = JSON.parse(projectList.content[0].text);

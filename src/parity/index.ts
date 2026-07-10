@@ -56,8 +56,12 @@ interface RoleMeta {
   planeWorkspace: string;
   ticketProviderName: string;
   ticketProviderBoardId: string;
-  ticketProviderBoardUrl: string;
   ticketProviderIdentifier: string;
+  legacyReconcileEnabled: string;
+  legacyReconcileGraceHours: string;
+  legacyReconcileAutoReview: string;
+  legacyScrumGraceHours: string;
+  legacyScrumAutoReview: string;
 }
 
 interface Context {
@@ -322,8 +326,12 @@ function discoverRoles(repoRoot: string): RoleMeta[] {
         planeWorkspace: yamlGet(text, "ticket_provider.workspace") || yamlGet(text, "plane.workspace"),
         ticketProviderName: yamlGet(text, "ticket_provider.name"),
         ticketProviderBoardId: yamlGet(text, "ticket_provider.board_id"),
-        ticketProviderBoardUrl: yamlGet(text, "ticket_provider.board_url"),
         ticketProviderIdentifier: yamlGet(text, "plane.identifier"),
+        legacyReconcileEnabled: yamlGet(text, "reconcile.enabled"),
+        legacyReconcileGraceHours: yamlGet(text, "reconcile.grace_hours"),
+        legacyReconcileAutoReview: yamlGet(text, "reconcile.auto_review"),
+        legacyScrumGraceHours: yamlGet(text, "scrum_master.grace_hours"),
+        legacyScrumAutoReview: yamlGet(text, "scrum_master.auto_review"),
       } satisfies RoleMeta;
     })
     .filter((value): value is RoleMeta => Boolean(value));
@@ -579,6 +587,25 @@ function roleAgentsMap(roles: RoleMeta[]): Record<string, { role: string; role_d
   );
 }
 
+function boolSetting(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function numberSetting(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 function canonicalProjectJson(ctx: Context): Record<string, unknown> {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
@@ -589,9 +616,9 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     workspace: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
     identifier: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    board_url: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
-    state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? "planned") || "planned"),
+    state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
   };
+  if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
   const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; provisioning_state?: string }> | undefined) ?? {};
   const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
     roles.map((role) => [
@@ -611,6 +638,19 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
       provisioning_state: existingAgent.provisioning_state,
     };
   }
+  const existingAutomation = (existing.automation as Record<string, unknown> | undefined) ?? {};
+  const existingReconcile = (existingAutomation.reconcile as Record<string, unknown> | undefined) ?? {};
+  const legacyEnabled = roles.find((role) => role.legacyReconcileEnabled)?.legacyReconcileEnabled;
+  const legacyGrace = roles.find((role) => role.legacyReconcileGraceHours || role.legacyScrumGraceHours);
+  const legacyAutoReview = roles.find((role) => role.legacyReconcileAutoReview || role.legacyScrumAutoReview);
+  const automation = {
+    ...existingAutomation,
+    reconcile: {
+      enabled: boolSetting(existingReconcile.enabled, boolSetting(legacyEnabled, false)),
+      grace_hours: numberSetting(existingReconcile.grace_hours, numberSetting(legacyGrace?.legacyReconcileGraceHours || legacyGrace?.legacyScrumGraceHours, 0)),
+      auto_review: boolSetting(existingReconcile.auto_review, boolSetting(legacyAutoReview?.legacyReconcileAutoReview || legacyAutoReview?.legacyScrumAutoReview, true)),
+    },
+  };
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
@@ -618,6 +658,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
+    automation,
   };
 }
 
@@ -633,7 +674,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   if (!data) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json is not valid JSON", details: [], fixable: true };
   }
-  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents"]) {
+  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents", "automation"]) {
     if (!(key in data)) details.push(`missing key: ${key}`);
   }
   if (data.repo_path !== ctx.repoRoot) details.push(`repo_path should be ${ctx.repoRoot}`);
@@ -650,8 +691,17 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     }
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
+  }
+  if ("board_url" in ticketProvider) details.push("ticket_provider.board_url should be removed; derive it from provider/workspace/board_id");
+  if (!ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
+    details.push("ticket_provider.board_id missing even though legacy role.yaml contains a board binding");
+  }
+  const automation = (data.automation as Record<string, unknown> | undefined) ?? {};
+  const reconcile = (automation.reconcile as Record<string, unknown> | undefined) ?? {};
+  for (const key of ["enabled", "grace_hours", "auto_review"]) {
+    if (!(key in reconcile)) details.push(`automation.reconcile.${key} missing`);
   }
   if (existsSync(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
   return {
@@ -670,7 +720,7 @@ function renderSoul(role: RoleMeta): string {
     ? "Direct and brief. Decision-forward. No throat-clearing, no apologies, no \"I'll help you with that\" preambles."
     : "Direct and brief.";
   const roleSpecific = role.role === "pm"
-    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`reconcile.enabled\` in role.yaml), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
+    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
     : `You operate as the ${role.role} agent for this repo.`;
   const runtimeOwner = role.runtimeOwner || "delorenj";
   return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`), which \`~/.hermes/profiles/${role.profileName || role.agentId}\` symlinks to (so \`--profile\` invocations resolve here too); Hermes loads its \`config.yaml\` directly. Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files all live local to that runtime.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;

@@ -6,7 +6,7 @@
 # reconciliation pass when local state says no worker is active, the worker
 # heartbeat is stale, or the last full run is outside the cooldown window. The
 # full pass executes the role's sentinel.prompt.md, which reasons about tickets
-# through the ticket-provider adapter (Linear | Plane | Trello) — never a
+# through the ticket-provider adapter (Plane | Trello) — never a
 # hardcoded backend. After the sentinel decision (skip OR full), it
 # opportunistically checkpoints the runtime submodule (commit+push) at most once
 # per HEARTBEAT_CHECKPOINT_MIN_INTERVAL_SECONDS, so memory/session state stays
@@ -19,12 +19,18 @@ PROMPT_FILE="$ROLE_DIR/.scripts/sentinel.prompt.md"
 STATE_FILE="$RUNTIME/continuous-ticket-sentinel-state.json"
 LOCK_FILE="$RUNTIME/continuous-ticket-sentinel.lock"
 ROLE_YAML="$ROLE_DIR/role.yaml"
+FLEET_ENV="${HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
 LOG_FILE="$RUNTIME/logs/heartbeat.log"
 CHECKPOINT_BIN="$ROLE_DIR/.scripts/checkpoint.sh"
 CHECKPOINT_STAMP="$RUNTIME/.last-checkpoint"
 
+if [[ -f "$FLEET_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$FLEET_ENV"
+fi
+
 # Hermes binary: explicit env > ~/.config/hermes-agent/hermes-bin > PATH.
-HERMES_BIN="${HERMES_BIN:-}"
+HERMES_BIN="${HERMES_BIN:-${HERMES_FLEET_BIN:-}}"
 if [[ -z "$HERMES_BIN" ]]; then
   if [[ -r "$HOME/.config/hermes-agent/hermes-bin" ]]; then
     HERMES_BIN="$(cat "$HOME/.config/hermes-agent/hermes-bin")"
@@ -80,24 +86,6 @@ print(value.strip().strip('"').strip("'"))
 PYEOF
 }
 
-# True only when role.yaml has a reconcile: block with enabled: true. Block-aware
-# so an unrelated `enabled:` leaf elsewhere in the file can't flip it on.
-reconcile_enabled() {
-  python3 - "$ROLE_YAML" <<'PYEOF'
-import re, sys
-from pathlib import Path
-text = Path(sys.argv[1]).read_text()
-m = re.search(r'(?m)^reconcile:[ \t]*\n((?:[ \t]+\S.*\n?)*)', text)
-block = m.group(1) if m else ""
-me = re.search(r'(?m)^[ \t]+enabled:[ \t]*"?([A-Za-z]+)"?', block)
-print("true" if (me and me.group(1).lower() == "true") else "false")
-PYEOF
-}
-
-AGENT_ID="$(yaml_value agent_id)"
-REPO_NAME="$(yaml_value repo)"
-PROVIDER="$(yaml_block_value ticket_provider name)"
-
 repo_root() {
   local dir="$ROLE_DIR"
   for _ in 1 2 3 4 5; do
@@ -107,6 +95,63 @@ repo_root() {
   return 1
 }
 REPO_ROOT="$(repo_root)"
+PROJECT_JSON="$REPO_ROOT/.project.json"
+
+project_json_value() {
+  python3 - "$PROJECT_JSON" "$1" <<'PYEOF'
+import json
+import pathlib
+import sys
+
+path, key = sys.argv[1:3]
+try:
+    cur = json.loads(pathlib.Path(path).read_text())
+except Exception:
+    print("")
+    raise SystemExit(0)
+for part in key.split("."):
+    if isinstance(cur, dict) and part in cur:
+        cur = cur[part]
+    else:
+        print("")
+        raise SystemExit(0)
+print(cur if isinstance(cur, (str, int, float, bool)) else "")
+PYEOF
+}
+
+# Project-owned automation gate. Legacy role.yaml reconcile.enabled is honored
+# only for older agents that have not migrated their .project.json yet.
+reconcile_enabled() {
+  python3 - "$PROJECT_JSON" "$ROLE_YAML" <<'PYEOF'
+import json
+import re
+import sys
+from pathlib import Path
+project_path, role_path = map(Path, sys.argv[1:3])
+try:
+    project = json.loads(project_path.read_text())
+except Exception:
+    project = {}
+reconcile = ((project.get("automation") or {}).get("reconcile") or {}) if isinstance(project, dict) else {}
+if "enabled" in reconcile:
+    value = reconcile.get("enabled")
+    print("true" if str(value).lower() == "true" else "false")
+    raise SystemExit(0)
+try:
+    text = role_path.read_text()
+except Exception:
+    text = ""
+m = re.search(r'(?m)^reconcile:[ \t]*\n((?:[ \t]+\S.*\n?)*)', text)
+block = m.group(1) if m else ""
+me = re.search(r'(?m)^[ \t]+enabled:[ \t]*"?([A-Za-z]+)"?', block)
+print("true" if (me and me.group(1).lower() == "true") else "false")
+PYEOF
+}
+
+AGENT_ID="$(yaml_value agent_id)"
+REPO_NAME="$(yaml_value repo)"
+PROVIDER="$(project_json_value ticket_provider.type)"
+[[ -n "$PROVIDER" ]] || PROVIDER="$(yaml_block_value ticket_provider name)"
 cd "$REPO_ROOT"
 mkdir -p "$RUNTIME/logs"
 
@@ -132,11 +177,10 @@ else
 fi
 
 # Reconcile gate: the autonomous board-reconciliation pass runs only when
-# role.yaml's reconcile.enabled is true. Default off → the heartbeat just
-# checkpoints (behaves like the legacy hourly checkpoint timer). Flip
-# reconcile.enabled to opt a repo into autonomous board reconciliation.
+# repo-root .project.json automation.reconcile.enabled is true. Default off →
+# the heartbeat just checkpoints (legacy checkpoint-timer behavior).
 if [[ "$(reconcile_enabled)" != "true" ]]; then
-  printf '[heartbeat] reconcile disabled (reconcile.enabled != true) — checkpoint-only tick\n'
+  printf '[heartbeat] reconcile disabled (automation.reconcile.enabled != true) — checkpoint-only tick\n'
   maybe_checkpoint
   exit 0
 fi

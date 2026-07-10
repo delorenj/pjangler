@@ -1,12 +1,11 @@
 #!/usr/bin/env sh
 # Plane ticket-provider adapter.
 #
-# Credentials:  PLANE_API_KEY   (X-API-Key header)
+# Credentials:  PLANE_API_KEY or PLANE_<WORKSPACE>_API_KEY (X-API-Key header)
 # Endpoint:     PLANE_BASE       (default https://plane.delo.sh)
-# Board binding (role.yaml `ticket_provider:`):
-#   name: plane
+# Board binding (repo-root .project.json `ticket_provider:`):
 #   workspace: <workspace-slug>      (or env PLANE_WORKSPACE)
-#   project:   <project-uuid>        (set by create_board / 42-ticket-provider)
+#   board_id:  <project-uuid>        (set by create_board / 42-ticket-provider)
 #   state_map: { in_review: "In Review", completed: "Done" }   optional
 #
 # Plane model:  project = board, cycle = milestone, state.group in
@@ -21,8 +20,20 @@ ROLE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 ROLE_YAML="$ROLE_DIR/role.yaml"
 BASE="${PLANE_BASE:-https://plane.delo.sh}"
 
+FLEET_ENV="${HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
+if [ -f "$FLEET_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$FLEET_ENV"
+fi
+
 die() { echo "plane: $*" >&2; exit 1; }
 need_key() { [ -n "${PLANE_API_KEY:-}" ] || die "PLANE_API_KEY is not set"; }
+
+workspace_key() {
+  key="$(printf '%s' "${1:-default}" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g')"
+  [ -n "$key" ] || key="DEFAULT"
+  printf 'PLANE_%s_API_KEY' "$key"
+}
 
 tp_cfg() {
   [ -f "$ROLE_YAML" ] || return 0
@@ -54,12 +65,18 @@ else:
 PY
 }
 
-# Board binding: .project.json (SOT) first, then role.yaml, then env.
+# Board binding: .project.json (SOT) first, then legacy role.yaml, then env.
 WS="$(pj_cfg workspace)"; [ -n "$WS" ] || WS="$(tp_cfg workspace)"; WS="${WS:-${PLANE_WORKSPACE:-}}"
-PROJ="$(pj_cfg board_id)"; [ -n "$PROJ" ] || PROJ="$(tp_cfg project)"
+PROJ="$(pj_cfg board_id)"; [ -n "$PROJ" ] || PROJ="$(tp_cfg project)"; [ -n "$PROJ" ] || PROJ="$(tp_cfg board_id)"
 SM_IN_REVIEW="$(tp_cfg in_review)"; SM_IN_REVIEW="${SM_IN_REVIEW:-In Review}"
 SM_DONE="$(tp_cfg completed)"; SM_DONE="${SM_DONE:-Done}"
 API="$BASE/api/v1/workspaces/$WS"
+
+if [ -z "${PLANE_API_KEY:-}" ]; then
+  KEY="$(workspace_key "$WS")"
+  eval "PLANE_API_KEY=\${$KEY:-}"
+  export PLANE_API_KEY
+fi
 
 # api METHOD PATH [JSON_BODY] — call Plane REST, print response body.
 api() {
@@ -68,9 +85,12 @@ api() {
   if [ -n "$body" ]; then
     curl -fsS -X "$method" "$API/$path" \
       -H "X-API-Key: $PLANE_API_KEY" -H "Content-Type: application/json" \
+      -H "User-Agent: curl/8.0" \
       -d "$body"
   else
-    curl -fsS -X "$method" "$API/$path" -H "X-API-Key: $PLANE_API_KEY"
+    curl -fsS -X "$method" "$API/$path" \
+      -H "X-API-Key: $PLANE_API_KEY" \
+      -H "User-Agent: curl/8.0"
   fi
 }
 
@@ -100,8 +120,8 @@ need_key
 
 case "$OP" in
   resolve)
-    [ -n "$WS" ] || die "workspace not set (role.yaml ticket_provider.workspace or PLANE_WORKSPACE)"
-    [ -n "$PROJ" ] || die "project not set (run 42-ticket-provider.sh)"
+    [ -n "$WS" ] || die "workspace not set (.project.json ticket_provider.workspace or PLANE_WORKSPACE)"
+    [ -n "$PROJ" ] || die "project not set (.project.json ticket_provider.board_id; run 42-ticket-provider.sh)"
     printf '{"provider":"plane","board_id":"%s","board_url":"%s/%s/projects/%s/issues/"}\n' \
       "$PROJ" "$BASE" "$WS" "$PROJ"
     ;;

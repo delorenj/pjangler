@@ -62,6 +62,38 @@ p.write_text(new)
 PYEOF
 }
 
+project_json_path() {
+  local root
+  root="$(project_repo_path 2>/dev/null || true)"
+  [[ -n "$root" && -f "$root/.project.json" ]] && { printf '%s' "$root/.project.json"; return 0; }
+  return 1
+}
+
+project_json_get() {
+  local key="$1" path
+  path="$(project_json_path 2>/dev/null || true)"
+  [[ -f "$path" ]] || { printf ''; return 0; }
+  python3 - "$path" "$key" <<'PYEOF'
+import json
+import pathlib
+import sys
+
+path, key = sys.argv[1:3]
+try:
+    cur = json.loads(pathlib.Path(path).read_text())
+except Exception:
+    print("", end="")
+    raise SystemExit(0)
+for part in key.split("."):
+    if isinstance(cur, dict) and part in cur:
+        cur = cur[part]
+    else:
+        print("", end="")
+        raise SystemExit(0)
+print(cur if isinstance(cur, (str, int, float, bool)) else "", end="")
+PYEOF
+}
+
 # ─── Distributable config (~/.config/hermes-agent-template/config.toml) ──────
 # Single source of truth for environment-specific defaults so this template can
 # be handed to someone else without editing any script. Ship config.example.toml
@@ -112,8 +144,10 @@ load_role_env() {
   BOT_HANDLE=$(yaml_get telegram.bot_username)
   PROFILE_NAME=$(yaml_get profile)
 
-  # Plane workspace: empty in role.yaml -> resolve from config.toml.
-  PLANE_WORKSPACE=$(yaml_get plane.workspace)
+  # Plane workspace: repo-root .project.json wins; role.yaml is legacy fallback.
+  PLANE_WORKSPACE=$(project_json_get ticket_provider.workspace)
+  [[ -n "$PLANE_WORKSPACE" ]] || PLANE_WORKSPACE=$(yaml_get ticket_provider.workspace)
+  [[ -n "$PLANE_WORKSPACE" ]] || PLANE_WORKSPACE=$(yaml_get plane.workspace)
   [[ -n "$PLANE_WORKSPACE" ]] || PLANE_WORKSPACE=$(config_get plane.workspace "33god")
 
   # Runtime repo: role.yaml stores the bare repo name plus an optional owner.
@@ -127,6 +161,27 @@ load_role_env() {
 
   export ROLE REPO AGENT_ID DISPLAY_NAME BOT_HANDLE \
          PLANE_WORKSPACE RUNTIME_REPO PROFILE_NAME
+}
+
+plane_workspace_key() {
+  local workspace="${1:-${PLANE_WORKSPACE:-}}"
+  workspace="$(printf '%s' "$workspace" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g')"
+  [[ -n "$workspace" ]] || workspace="DEFAULT"
+  printf 'PLANE_%s_API_KEY' "$workspace"
+}
+
+resolve_plane_api_key() {
+  if [[ -n "${PLANE_API_KEY:-}" ]]; then
+    export PLANE_API_KEY
+    return 0
+  fi
+  local key value
+  key="$(plane_workspace_key "${1:-${PLANE_WORKSPACE:-}}")"
+  value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    PLANE_API_KEY="$value"
+    export PLANE_API_KEY
+  fi
 }
 
 # Skip a step if previously completed (idempotent reruns).
@@ -165,7 +220,7 @@ BLOODBANK_COMPOSE_DIR="${BLOODBANK_COMPOSE_DIR:-$(config_get bloodbank.compose_d
 
 # Plane
 PLANE_BASE="${PLANE_BASE:-$(config_get plane.base 'https://plane.delo.sh')}"
-PLANE_API_KEY="${PLANE_API_KEY:-${PLANE_33GOD_API_KEY:-}}"
+PLANE_API_KEY="${PLANE_API_KEY:-}"
 
 export FLEET_ENV HERMES_BIN HERMES_AGENT_REPO HERMES_OAUTH_FILE CODEX_HOME \
        RUNTIME_SCAFFOLD_DIR REGISTRY_FILE \

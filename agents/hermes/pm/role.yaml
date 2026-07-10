@@ -19,18 +19,10 @@ profile: pjangler-pm
 telegram:
   bot_username: "pjangler_pm_bot"
 
-# Ticket-provider binding (linear | plane | trello).
-# The Scrum Master sentinel talks ONLY to this via .scripts/lib/ticket-provider.sh;
-# swapping providers is a one-line change here. Filled in by 42-ticket-provider.sh.
+# Ticket-provider adapter preference (plane | trello).
+# Repo-owned board identity lives in repo-root .project.json, not in this role.
 ticket_provider:
   name: plane
-  board_id: "18a79832-00fb-4146-b054-d88528f9fef3"
-  board_url: "https://plane.delo.sh/33god/projects/18a79832-00fb-4146-b054-d88528f9fef3/issues/"
-  workspace: "33god"
-  project: ""     # Plane project uuid (set by 42-ticket-provider.sh)
-  # Optional normalized-state name overrides for non-standard boards.
-  in_review: ""   # e.g. "In Review"
-  completed: ""   # e.g. "Done"
 
 # Scrum Master sentinel knobs (only meaningful for role: scrum-master).
 scrum_master:
@@ -38,12 +30,6 @@ scrum_master:
   auto_review: true          # autonomous adversarial review (act, do not wait) on/off
   paired_pm: "pjangler-pm"
 
-# Plane project (1:1 with this agent) — retained for fleet-registry back-compat.
-plane:
-  # Empty -> resolved from ~/.config/hermes-agent-template/config.toml [plane].workspace
-  workspace: ""
-  # identifier is set by .scripts/42-ticket-provider.sh after creation (plane only)
-  identifier: "PJAN"
 # Bloodbank wiring (consumed + produced subjects).
 bloodbank:
   subscribe:

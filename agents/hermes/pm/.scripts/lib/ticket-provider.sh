@@ -3,8 +3,8 @@
 # sentinel engine and a concrete ticket system (Linear | Plane | Trello).
 #
 # The engine NEVER calls a provider directly. It calls `tp <op> [args...]`,
-# which dispatches to providers/<provider>.sh. Swapping providers is a one-line
-# config change in role.yaml (ticket_provider.name) — no engine edits.
+# which dispatches to providers/<provider>.sh. Repo-root .project.json owns the
+# provider/board binding; role.yaml is only a legacy provider-name fallback.
 #
 # Contract (operations every provider must implement):
 #   resolve                       -> JSON {provider, board_id, board_url}
@@ -19,7 +19,7 @@
 #   create_board <name> <id> <d>  -> JSON {board_id, board_url}
 #
 # Each provider reads its credentials from the environment (see providers/*.sh
-# headers) and the board binding from role.yaml under `ticket_provider:`.
+# headers) and the board binding from repo-root .project.json.
 
 # Resolve the provider name: explicit env wins, then repo-root .project.json
 # (the SOT), then role.yaml (self-parsed so this works even when _lib.sh /

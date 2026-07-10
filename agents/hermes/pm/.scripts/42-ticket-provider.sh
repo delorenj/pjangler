@@ -10,11 +10,12 @@
 #   2. Otherwise (hermes run on a repo with no CommonProject board yet)
 #      -> create ONE repo-named board and write it back into .project.json so
 #         it becomes the SOT for every agent in this repo.
-# Either way we register this agent under .project.json `agents` and mirror the
-# binding into role.yaml for back-compat (80-registry.sh / 99-summary.sh).
+# Either way we register this agent under .project.json `agents`. role.yaml is
+# identity/personality only; it must not carry board UUIDs or derived URLs.
 # shellcheck source=_lib.sh
 source "$(dirname "$0")/_lib.sh"
 load_role_env
+resolve_plane_api_key "$PLANE_WORKSPACE"
 # shellcheck source=lib/ticket-provider.sh
 source "$(dirname "$0")/lib/ticket-provider.sh"
 
@@ -46,13 +47,13 @@ PY
 }
 
 # pj_write — merge board binding (optional) + this agent into .project.json.
-# args: set_provider(0|1) provider board_id board_url workspace identifier team
+# args: set_provider(0|1) provider board_id workspace identifier team
 pj_write() {
   REPO="$REPO" REPO_ROOT="$REPO_ROOT" AGENT_ID="$AGENT_ID" ROLE="$ROLE" \
   ROLE_DIR_REL="$ROLE_DIR_REL" PROJECT_DESC="${PROJECT_DESC:-}" \
   python3 - "$PROJECT_JSON" "$@" <<'PY'
 import sys, os, json, pathlib
-(path, set_provider, provider, board_id, board_url, workspace, identifier, team) = sys.argv[1:9]
+(path, set_provider, provider, board_id, workspace, identifier, team) = sys.argv[1:8]
 p = pathlib.Path(path)
 try:
     d = json.loads(p.read_text())
@@ -71,44 +72,29 @@ if set_provider == "1":
     if workspace:  tp["workspace"] = workspace
     if identifier: tp["identifier"] = identifier
     if board_id:   tp["board_id"] = board_id
-    if board_url:  tp["board_url"] = board_url
+    tp.pop("board_url", None)
+    tp["state"] = "linked" if board_id else tp.get("state", "planned")
     if team:       tp["team"] = team
 ag = d.setdefault("agents", {})
 ag[os.environ["AGENT_ID"]] = {"role": os.environ["ROLE"], "role_dir": os.environ["ROLE_DIR_REL"]}
+automation = d.setdefault("automation", {})
+automation.setdefault("reconcile", {"enabled": False, "grace_hours": 0, "auto_review": True})
 p.write_text(json.dumps(d, indent=2) + "\n")
 PY
   log "    .project.json updated (agent=$AGENT_ID)"
 }
 
-# Mirror the binding into role.yaml so legacy consumers keep working.
-mirror_to_role_yaml() {
-  # mirror_to_role_yaml <provider> <board_id> <board_url> <workspace> <identifier> <team>
-  local provider="$1" bid="$2" burl="$3" ws="$4" ident="$5" team="$6"
+# Keep only the legacy adapter name in role.yaml. Stable board identity belongs
+# in .project.json.
+mirror_provider_name_to_role_yaml() {
+  local provider="$1"
   yaml_set ticket_provider.name "$provider" 2>/dev/null || true
-  [ -n "$bid" ]  && yaml_set ticket_provider.board_id "$bid" 2>/dev/null || true
-  [ -n "$burl" ] && yaml_set ticket_provider.board_url "$burl" 2>/dev/null || true
-  case "$provider" in
-    plane)
-      [ -n "$bid" ] && echo "$bid" > "$ROLE_DIR/.scripts/.plane-project-id"
-      [ -n "$ws" ]    && yaml_set ticket_provider.workspace "$ws" 2>/dev/null || true
-      [ -n "$bid" ]   && yaml_set ticket_provider.project "$bid" 2>/dev/null || true
-      [ -n "$ws" ]    && yaml_set plane.workspace "$ws" 2>/dev/null || true
-      [ -n "$ident" ] && yaml_set plane.identifier "$ident" 2>/dev/null || true
-      ;;
-    trello)
-      [ -n "$bid" ] && yaml_set ticket_provider.board "$bid" 2>/dev/null || true
-      ;;
-    linear)
-      [ -n "$team" ] && yaml_set ticket_provider.team "$team" 2>/dev/null || true
-      ;;
-  esac
 }
 
 # ── Provider resolution ──────────────────────────────────────────────────
 # An existing repo board (in .project.json) wins — every agent binds to it.
 SOT_TYPE="$(pj ticket_provider.type)"
 SOT_BOARD_ID="$(pj ticket_provider.board_id)"
-SOT_URL="$(pj ticket_provider.board_url)"
 SOT_WS="$(pj ticket_provider.workspace)"
 SOT_IDENT="$(pj ticket_provider.identifier)"
 SOT_TEAM="$(pj ticket_provider.team)"
@@ -123,8 +109,8 @@ if [ -n "$SOT_BOARD_ID" ]; then
     warn "[42] requested provider '$ROLE_PROVIDER' but repo board is '$PROVIDER' (.project.json wins); binding to existing board"
   fi
   log "[42] binding $AGENT_ID to existing repo board (provider=$PROVIDER, id=$SOT_BOARD_ID)"
-  mirror_to_role_yaml "$PROVIDER" "$SOT_BOARD_ID" "$SOT_URL" "$SOT_WS" "$SOT_IDENT" "$SOT_TEAM"
-  pj_write 0 "$PROVIDER" "" "" "" "" ""   # register agent only; board already recorded
+  mirror_provider_name_to_role_yaml "$PROVIDER"
+  pj_write 1 "$PROVIDER" "$SOT_BOARD_ID" "$SOT_WS" "$SOT_IDENT" "$SOT_TEAM"
   mark_done 42-ticket-provider
   exit 0
 fi
@@ -146,7 +132,7 @@ case "$PROVIDER" in
   linear)
     if [[ -z "${LINEAR_API_KEY:-}" ]]; then
       warn "[42] LINEAR_API_KEY not set; set role.yaml/.project.json ticket_provider.team and re-run ./.scripts/42-ticket-provider.sh"
-      pj_write 1 linear "" "" "" "$IDENT" "$SOT_TEAM"
+      pj_write 1 linear "" "" "$IDENT" "$SOT_TEAM"
       mark_done 42-ticket-provider; exit 0
     fi
     OUT="$(tp resolve 2>/dev/null || true)"
@@ -157,11 +143,11 @@ except Exception: print("")')"
 try: print(json.load(sys.stdin).get("board_url",""))
 except Exception: print("")')"
     if [ -n "$BID" ]; then
-      mirror_to_role_yaml linear "$BID" "$BURL" "" "$IDENT" "$SOT_TEAM"
-      pj_write 1 linear "$BID" "$BURL" "" "$IDENT" "$SOT_TEAM"
+      mirror_provider_name_to_role_yaml linear
+      pj_write 1 linear "$BID" "" "$IDENT" "$SOT_TEAM"
     else
       warn "[42] linear resolve returned no board; set ticket_provider.team and re-run"
-      pj_write 1 linear "" "" "" "$IDENT" "$SOT_TEAM"
+      pj_write 1 linear "" "" "$IDENT" "$SOT_TEAM"
     fi
     ;;
 
@@ -169,7 +155,7 @@ except Exception: print("")')"
     KEYVAR=PLANE_API_KEY; [ "$PROVIDER" = trello ] && KEYVAR=TRELLO_KEY
     if [[ -z "${!KEYVAR:-}" ]]; then
       warn "[42] $KEYVAR not set; skipping board creation. Set creds and re-run ./.scripts/42-ticket-provider.sh"
-      pj_write 1 "$PROVIDER" "" "" "${SOT_WS:-$PLANE_WORKSPACE}" "$IDENT" ""
+      pj_write 1 "$PROVIDER" "" "${SOT_WS:-$PLANE_WORKSPACE}" "$IDENT" ""
       mark_done 42-ticket-provider; exit 0
     fi
     OUT="$(tp create_board "$NAME" "$IDENT" "$DESC")" || die "create_board failed for $PROVIDER"
@@ -177,8 +163,8 @@ except Exception: print("")')"
     BURL="$(printf '%s' "$OUT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("board_url",""))')"
     WS="${SOT_WS:-$PLANE_WORKSPACE}"
     [ "$PROVIDER" = trello ] && WS=""
-    mirror_to_role_yaml "$PROVIDER" "$BID" "$BURL" "$WS" "$IDENT" ""
-    pj_write 1 "$PROVIDER" "$BID" "$BURL" "$WS" "$IDENT" ""
+    mirror_provider_name_to_role_yaml "$PROVIDER"
+    pj_write 1 "$PROVIDER" "$BID" "$WS" "$IDENT" ""
     ;;
 
   *) die "unknown ticket provider: $PROVIDER (expected linear|plane|trello)" ;;

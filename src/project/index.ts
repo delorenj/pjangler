@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import YAML from "yaml";
 import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
+export const PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 
 export interface SourceArtifact {
@@ -21,6 +22,7 @@ export interface ProjectTicketProvider {
   workspace?: string;
   identifier?: string;
   board_id?: string;
+  /** Legacy input only. New manifests derive board URLs from provider/workspace/board_id. */
   board_url?: string;
   state?: "planned" | "linked" | "skipped" | string;
 }
@@ -29,6 +31,14 @@ export interface ProjectAgentRecord {
   role: string;
   provisioning_state: "planned" | "provisioned" | "skipped" | string;
   role_dir?: string;
+}
+
+export interface ProjectAutomation {
+  reconcile?: {
+    enabled: boolean;
+    grace_hours: number;
+    auto_review: boolean;
+  };
 }
 
 export interface ProjectRecord {
@@ -46,6 +56,7 @@ export interface ProjectRecord {
   };
   ticket_provider: ProjectTicketProvider;
   agents: Record<string, ProjectAgentRecord>;
+  automation?: ProjectAutomation;
   created_at: string;
   updated_at: string;
 }
@@ -65,10 +76,10 @@ export interface ProjectManifest {
     workspace: string;
     identifier: string;
     board_id: string;
-    board_url: string;
     state?: string;
   };
   agents: Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
+  automation?: ProjectAutomation;
 }
 
 export interface ProjectInitInput {
@@ -90,6 +101,7 @@ export interface ProjectInitInput {
   planeProjectId?: string;
   /** Provider-agnostic board binding (preferred over the plane* aliases). */
   boardId?: string;
+  /** Deprecated. Board URLs are derived from provider/workspace/board_id and are not persisted. */
   boardUrl?: string;
   boardWorkspace?: string;
   pjanglerRoot?: string;
@@ -172,10 +184,9 @@ export interface ProjectDoctorResult {
   issues: Array<{ level: "error" | "warn"; slug?: string; message: string }>;
 }
 
-const KNOWN_SKILL_ROOTS = [
+const DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
-  "/home/delorenj/code/pjangler/.agents/skills",
+  join(homedir(), ".agents", "skills"),
   join(homedir(), ".codex", "skills"),
 ];
 
@@ -240,11 +251,9 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
 
 /**
  * Build the `.project.json` ticket_provider block for a supported provider.
- * Plane keeps the historical workspace + `/projects/<id>/issues/` URL. Trello
- * uses a blank workspace by default and a `https://trello.com/b/<board_id>` URL.
- * An explicit `boardUrl` always wins. Lane→state mapping is NOT stored here —
- * that is per-repo config (`.momo/config.json`), because kanban columns vary
- * board to board.
+ * Board URLs are derived from provider + workspace + board_id at runtime; the
+ * manifest stores only stable identity. Lane→state mapping is NOT stored here —
+ * that is per-repo config because kanban columns vary board to board.
  */
 export function normalizeTicketProvider(value?: string): SupportedTicketProvider {
   const type = (value || "plane").trim().toLowerCase();
@@ -256,7 +265,6 @@ export function buildTicketProviderBlock(input: {
   type?: string;
   identifier: string;
   boardId?: string;
-  boardUrl?: string;
   workspace?: string;
 }): ProjectTicketProvider {
   const type = normalizeTicketProvider(input.type);
@@ -267,8 +275,7 @@ export function buildTicketProviderBlock(input: {
       workspace: input.workspace ?? "",
       identifier: input.identifier,
       board_id: boardId,
-      board_url: input.boardUrl ?? (boardId ? `https://trello.com/b/${boardId}` : ""),
-      state: "planned",
+      state: boardId ? "linked" : "planned",
     };
   }
   const workspace = input.workspace ?? "33god";
@@ -277,8 +284,17 @@ export function buildTicketProviderBlock(input: {
     workspace,
     identifier: input.identifier,
     board_id: boardId,
-    board_url: input.boardUrl ?? (boardId ? `https://plane.delo.sh/${workspace}/projects/${boardId}/issues/` : ""),
-    state: "planned",
+    state: boardId ? "linked" : "planned",
+  };
+}
+
+export function defaultProjectAutomation(): ProjectAutomation {
+  return {
+    reconcile: {
+      enabled: false,
+      grace_hours: 0,
+      auto_review: true,
+    },
   };
 }
 
@@ -328,20 +344,37 @@ export function defaultProjectTargetDir(name: string, cwd = process.cwd()): stri
   return resolve(dirname(resolve(cwd)), compactName);
 }
 
-export function resolveSourceSkillPath(sourceSkill?: string): string | undefined {
+export function sourceSkillRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configuredRoots = (env[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "")
+    .split(delimiter)
+    .map((root) => root.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
+    const normalized = resolve(expandHome(root));
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    roots.push(normalized);
+  }
+  return roots;
+}
+
+export function resolveSourceSkillPath(sourceSkill?: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (!sourceSkill) return undefined;
   const expanded = expandHome(sourceSkill);
   const direct = resolve(expanded);
   if (existsSync(direct)) return direct;
 
   const name = basename(sourceSkill);
-  for (const root of KNOWN_SKILL_ROOTS) {
+  const roots = sourceSkillRoots(env);
+  for (const root of roots) {
     const candidate = join(root, name);
     if (existsSync(candidate)) return candidate;
   }
 
-  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
-  const hint = existsSync(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
+  const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
+  const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
   throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
 }
 
@@ -387,10 +420,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       type: input.ticketProvider ?? "plane",
       identifier,
       boardId: input.boardId ?? input.planeProjectId,
-      boardUrl: input.boardUrl,
       workspace: input.boardWorkspace ?? input.planeWorkspace,
     }),
     agents,
+    automation: existing?.automation ?? defaultProjectAutomation(),
     created_at: existing?.created_at ?? now,
     updated_at: now,
   };
@@ -420,7 +453,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       planeProjectId: project.ticket_provider.board_id ?? "",
       ticketWorkspace: project.ticket_provider.workspace ?? "",
       boardId: project.ticket_provider.board_id ?? "",
-      boardUrl: project.ticket_provider.board_url ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
@@ -541,10 +573,10 @@ export function projectManifestFromRegistryProject(project: ProjectRecord): Proj
       workspace: project.ticket_provider.workspace ?? "",
       identifier: project.ticket_provider.identifier ?? "",
       board_id: project.ticket_provider.board_id ?? "",
-      board_url: project.ticket_provider.board_url ?? "",
       state: project.ticket_provider.state,
     },
     agents,
+    automation: project.automation ?? defaultProjectAutomation(),
   };
 }
 
@@ -628,7 +660,6 @@ export function buildCommonProjectCopierAction(input: {
   planeWorkspace: string;
   planeProjectId?: string;
   boardId?: string;
-  boardUrl?: string;
   ticketWorkspace?: string;
   projectIdentifier: string;
   primaryLanguage: string;
@@ -645,7 +676,6 @@ export function buildCommonProjectCopierAction(input: {
     plane_project_id: input.planeProjectId ?? "",
     ticket_workspace: input.ticketWorkspace ?? input.planeWorkspace,
     board_id: input.boardId ?? input.planeProjectId ?? "",
-    board_url: input.boardUrl ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
     agent_hooks_layer: (input.agentHooksLayer ?? true) ? "true" : "false",

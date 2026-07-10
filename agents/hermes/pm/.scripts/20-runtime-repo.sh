@@ -134,5 +134,27 @@ if [[ -d "$PROFILE_HOME" && ! -L "$PROFILE_HOME" ]]; then
   log "    $PROFILE_HOME -> $RUNTIME_LOCAL"
 fi
 
+if [[ "$ROLE" == "pm" ]]; then
+  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.2")}"
+  read -r -a RESOLVED_PM_EXTERNAL_SKILL_DIRS <<< "$PM_EXTERNAL_SKILL_DIRS"
+  if [[ ${#RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]} -gt 0 ]]; then
+    python3 - "$RUNTIME_LOCAL/config.yaml" "${RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]}" <<'PYEOF'
+import pathlib
+import sys
+
+import yaml
+
+path = pathlib.Path(sys.argv[1])
+external_dirs = sys.argv[2:]
+data = yaml.safe_load(path.read_text()) or {}
+skills = data.get("skills") or {}
+skills["external_dirs"] = external_dirs
+data["skills"] = skills
+path.write_text(yaml.safe_dump(data, sort_keys=False))
+PYEOF
+    log "    set PM runtime skills.external_dirs -> ${RESOLVED_PM_EXTERNAL_SKILL_DIRS[*]}"
+  fi
+fi
+
 rm -rf "$TMP"
 mark_done 20-runtime-repo

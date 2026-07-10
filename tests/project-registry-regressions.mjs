@@ -54,9 +54,16 @@ function git(args, cwd) {
 
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-project-registry-"));
 try {
+  const projectSource = readFileSync(join(root, "src", "project", "index.ts"), "utf8");
+  assert.doesNotMatch(projectSource, /CoachingAgentFramework/, "generic source-skill lookup must not hard-code project-local skill roots");
+
   const registryPath = join(tmp, "projects.yaml");
   const targetDir = join(tmp, "SlowBurns");
   const sourceSkill = createSkillFixture(tmp);
+  const extraSkillRoot = join(tmp, "extra-source-skills");
+  const envOnlySkill = join(extraSkillRoot, "env-only-skill");
+  mkdirSync(envOnlySkill, { recursive: true });
+  writeFileSync(join(envOnlySkill, "SKILL.md"), "---\nname: env-only-skill\n---\n# Env Only Skill\n", "utf8");
   const env = { PJ_PROJECT_REGISTRY: registryPath };
 
   const dryRun = JSON.parse(run([
@@ -81,6 +88,22 @@ try {
   assert.ok(dryRun.actions.some((action) => action.kind === "project.write-manifest"));
   assert.equal(existsSync(registryPath), false, "dry-run must not write the registry");
   assert.equal(existsSync(targetDir), false, "dry-run must not render the project");
+
+  const envRootDryRun = JSON.parse(run([
+    "project",
+    "init",
+    "EnvRootSkill",
+    "--description",
+    "Skill located through an explicit root override",
+    "--target-dir",
+    join(tmp, "EnvRootSkill"),
+    "--source-skill",
+    "env-only-skill",
+    "--registry",
+    join(tmp, "env-root-projects.yaml"),
+    "--json",
+  ], { PJ_SOURCE_SKILL_ROOTS: extraSkillRoot }));
+  assert.equal(envRootDryRun.project.source_artifacts[0].path, envOnlySkill);
 
   const nonGitParent = join(tmp, "non-git-parent");
   mkdirSync(nonGitParent);
@@ -132,6 +155,7 @@ try {
   assert.equal(manifest.ticket_provider.identifier, "SLOW");
   assert.equal(manifest.ticket_provider.state, "planned");
   assert.deepEqual(manifest.agents, {}, "default apply must not write a planned agent projection");
+  assert.deepEqual(manifest.automation.reconcile, { enabled: false, grace_hours: 0, auto_review: true });
 
   const agentPlan = JSON.parse(run([
     "project",
@@ -313,10 +337,11 @@ try {
   ], {}));
   assert.equal(trelloPlan.project.ticket_provider.type, "trello");
   assert.equal(trelloPlan.project.ticket_provider.board_id, "687535e9873b89478afef689");
-  assert.equal(trelloPlan.project.ticket_provider.board_url, "https://trello.com/b/687535e9873b89478afef689");
+  assert.equal("board_url" in trelloPlan.project.ticket_provider, false, "board_url must be derived, not persisted");
+  assert.equal(trelloPlan.project.ticket_provider.state, "linked");
   assert.equal(trelloPlan.project.ticket_provider.workspace, "", "trello workspace defaults blank (not the Plane 33god default)");
 
-  // Regression: an explicit --board-url overrides the derived one
+  // Regression: an explicit --board-url is accepted for old callers but not persisted
   const trelloUrlPlan = JSON.parse(run([
     "project", "init", "TrelloUrlProj",
     "--description", "Trello explicit board-url",
@@ -327,7 +352,7 @@ try {
     "--registry", join(tmp, "trello-url-projects.yaml"),
     "--json",
   ], {}));
-  assert.equal(trelloUrlPlan.project.ticket_provider.board_url, "https://trello.com/b/jLl1NE0Z/intelforia");
+  assert.equal("board_url" in trelloUrlPlan.project.ticket_provider, false);
 
   // Regression: unsupported providers must fail instead of falling through to Plane URL derivation
   const linearProvider = runExpectFailure([
@@ -341,7 +366,7 @@ try {
   ], {});
   assert.match(failureOutput(linearProvider), /Unsupported ticket provider: linear/);
 
-  // Regression: default provider stays Plane with the Plane-style board_url (backward compat)
+  // Regression: default provider stays Plane and derives URL outside the persisted SOT
   const planePlan = JSON.parse(run([
     "project", "init", "PlaneProj",
     "--description", "Plane default coverage",
@@ -352,10 +377,8 @@ try {
   ], {}));
   assert.equal(planePlan.project.ticket_provider.type, "plane");
   assert.equal(planePlan.project.ticket_provider.workspace, "33god");
-  assert.equal(
-    planePlan.project.ticket_provider.board_url,
-    "https://plane.delo.sh/33god/projects/82e56896-e7fd-466b-826c-1019441c64ca/issues/",
-  );
+  assert.equal("board_url" in planePlan.project.ticket_provider, false);
+  assert.equal(planePlan.project.ticket_provider.state, "linked");
 
   console.log("project registry regressions passed");
 } finally {

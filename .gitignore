@@ -42,3 +42,6 @@ tmp/
 .env
 .env.*
 !.env.op
+_bmad/config.user.yaml
+.bmad-loop/runs/
+.bmad-loop/cache/

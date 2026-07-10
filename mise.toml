@@ -89,3 +89,6 @@ run = [
 [tasks.mcp]
 description = "Run the pjangler MCP server from the built bundle"
 run = "npm run mcp"
+
+[tools]
+node = "26.4"

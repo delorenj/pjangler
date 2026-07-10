@@ -49,6 +49,8 @@ export function renderHostConfig(): string {
   const hermesRepo = join(home, "code", "hermes-agent");
   const scaffoldDir = join(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join(home, ".agents", "skills");
+  const pmExternalSkillGlobalDir = join(home, "code", "skillex", "skill-sets", "global", ".system");
+  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", "6.10.2");
 
   return `# hermes-agent-template — host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
@@ -65,9 +67,14 @@ home = "~/.hermes"
 hermes_bin = "${hermesBin}"
 hermes_repo = "${hermesRepo}"
 runtime_scaffold_dir = "${scaffoldDir}"
+# Shared fleet source-of-truth env file + fleet registry. ~ is expanded.
 fleet_env = "~/.hermes/fleet.env"
 registry_file = "~/.hermes/agents-registry.yaml"
 canonical_skills_dir = "${skillsDir}"
+pm_external_skill_dirs = [
+  "${pmExternalSkillGlobalDir}",
+  "${pmExternalSkillBmadDir}",
+]
 symlinked_runtime_skills = []
 
 [github]

@@ -47,6 +47,15 @@ PYEOF
 
 upsert_fleet_env HERMES_FLEET_OAUTH_FILE "$HERMES_OAUTH_FILE"
 upsert_fleet_env HERMES_FLEET_CODEX_HOME "$CODEX_HOME"
+
+PLANE_WORKSPACE_KEY="$(plane_workspace_key "$PLANE_WORKSPACE")"
+PLANE_WORKSPACE_VALUE="${!PLANE_WORKSPACE_KEY:-}"
+if [[ -z "$PLANE_WORKSPACE_VALUE" && -n "${PLANE_API_KEY:-}" ]]; then
+  PLANE_WORKSPACE_VALUE="$PLANE_API_KEY"
+fi
+if [[ -n "$PLANE_WORKSPACE_VALUE" ]]; then
+  upsert_fleet_env "$PLANE_WORKSPACE_KEY" "$PLANE_WORKSPACE_VALUE"
+fi
 chmod 600 "$FLEET_ENV"
 
 mark_done 05-fleet-env

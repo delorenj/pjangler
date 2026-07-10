@@ -630,6 +630,8 @@ function renderHostConfig() {
   const hermesRepo = join3(home, "code", "hermes-agent");
   const scaffoldDir = join3(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join3(home, ".agents", "skills");
+  const pmExternalSkillGlobalDir = join3(home, "code", "skillex", "skill-sets", "global", ".system");
+  const pmExternalSkillBmadDir = join3(home, "code", "skillex", "packs", "bmad", "6.10.2");
   return `# hermes-agent-template \u2014 host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
 #
@@ -645,9 +647,14 @@ home = "~/.hermes"
 hermes_bin = "${hermesBin}"
 hermes_repo = "${hermesRepo}"
 runtime_scaffold_dir = "${scaffoldDir}"
+# Shared fleet source-of-truth env file + fleet registry. ~ is expanded.
 fleet_env = "~/.hermes/fleet.env"
 registry_file = "~/.hermes/agents-registry.yaml"
 canonical_skills_dir = "${skillsDir}"
+pm_external_skill_dirs = [
+  "${pmExternalSkillGlobalDir}",
+  "${pmExternalSkillBmadDir}",
+]
 symlinked_runtime_skills = []
 
 [github]
@@ -1196,14 +1203,14 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync2, renameSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { basename as basename2, dirname as dirname4, join as join8, resolve } from "node:path";
+import { basename as basename2, delimiter, dirname as dirname4, join as join8, resolve } from "node:path";
 import YAML from "yaml";
 var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
+var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
-var KNOWN_SKILL_ROOTS = [
+var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  "/home/delorenj/code/CoachingAgentFramework/.agents/skills",
-  "/home/delorenj/code/pjangler/.agents/skills",
+  join8(homedir3(), ".agents", "skills"),
   join8(homedir3(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
@@ -1274,8 +1281,7 @@ function buildTicketProviderBlock(input) {
       workspace: input.workspace ?? "",
       identifier: input.identifier,
       board_id: boardId,
-      board_url: input.boardUrl ?? (boardId ? `https://trello.com/b/${boardId}` : ""),
-      state: "planned"
+      state: boardId ? "linked" : "planned"
     };
   }
   const workspace = input.workspace ?? "33god";
@@ -1284,8 +1290,16 @@ function buildTicketProviderBlock(input) {
     workspace,
     identifier: input.identifier,
     board_id: boardId,
-    board_url: input.boardUrl ?? (boardId ? `https://plane.delo.sh/${workspace}/projects/${boardId}/issues/` : ""),
-    state: "planned"
+    state: boardId ? "linked" : "planned"
+  };
+}
+function defaultProjectAutomation() {
+  return {
+    reconcile: {
+      enabled: false,
+      grace_hours: 0,
+      auto_review: true
+    }
   };
 }
 function slugifyProjectName(value) {
@@ -1319,18 +1333,31 @@ function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
   return resolve(dirname4(resolve(cwd)), compactName);
 }
-function resolveSourceSkillPath(sourceSkill) {
+function sourceSkillRoots(env2 = process.env) {
+  const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter).map((root) => root.trim()).filter(Boolean);
+  const seen = /* @__PURE__ */ new Set();
+  const roots = [];
+  for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
+    const normalized = resolve(expandHome(root));
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    roots.push(normalized);
+  }
+  return roots;
+}
+function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
   const direct = resolve(expanded);
   if (existsSync6(direct)) return direct;
   const name = basename2(sourceSkill);
-  for (const root of KNOWN_SKILL_ROOTS) {
+  const roots = sourceSkillRoots(env2);
+  for (const root of roots) {
     const candidate = join8(root, name);
     if (existsSync6(candidate)) return candidate;
   }
-  const civilWarLetterifier = "/home/delorenj/code/skillex/all-skills/civilwar-letterifier";
-  const hint = existsSync6(civilWarLetterifier) ? ` Did you mean ${civilWarLetterifier}?` : "";
+  const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
+  const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
   throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
 }
 function planProjectInit(input) {
@@ -1370,10 +1397,10 @@ function planProjectInit(input) {
       type: input.ticketProvider ?? "plane",
       identifier,
       boardId: input.boardId ?? input.planeProjectId,
-      boardUrl: input.boardUrl,
       workspace: input.boardWorkspace ?? input.planeWorkspace
     }),
     agents,
+    automation: existing?.automation ?? defaultProjectAutomation(),
     created_at: existing?.created_at ?? now,
     updated_at: now
   };
@@ -1401,7 +1428,6 @@ function planProjectInit(input) {
       planeProjectId: project.ticket_provider.board_id ?? "",
       ticketWorkspace: project.ticket_provider.workspace ?? "",
       boardId: project.ticket_provider.board_id ?? "",
-      boardUrl: project.ticket_provider.board_url ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
@@ -1513,10 +1539,10 @@ function projectManifestFromRegistryProject(project) {
       workspace: project.ticket_provider.workspace ?? "",
       identifier: project.ticket_provider.identifier ?? "",
       board_id: project.ticket_provider.board_id ?? "",
-      board_url: project.ticket_provider.board_url ?? "",
       state: project.ticket_provider.state
     },
-    agents
+    agents,
+    automation: project.automation ?? defaultProjectAutomation()
   };
 }
 function getProject(registry, slug) {
@@ -1535,7 +1561,6 @@ function buildCommonProjectCopierAction(input) {
     plane_project_id: input.planeProjectId ?? "",
     ticket_workspace: input.ticketWorkspace ?? input.planeWorkspace,
     board_id: input.boardId ?? input.planeProjectId ?? "",
-    board_url: input.boardUrl ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
     agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
@@ -2142,8 +2167,12 @@ function discoverRoles(repoRoot) {
       planeWorkspace: yamlGet(text2, "ticket_provider.workspace") || yamlGet(text2, "plane.workspace"),
       ticketProviderName: yamlGet(text2, "ticket_provider.name"),
       ticketProviderBoardId: yamlGet(text2, "ticket_provider.board_id"),
-      ticketProviderBoardUrl: yamlGet(text2, "ticket_provider.board_url"),
-      ticketProviderIdentifier: yamlGet(text2, "plane.identifier")
+      ticketProviderIdentifier: yamlGet(text2, "plane.identifier"),
+      legacyReconcileEnabled: yamlGet(text2, "reconcile.enabled"),
+      legacyReconcileGraceHours: yamlGet(text2, "reconcile.grace_hours"),
+      legacyReconcileAutoReview: yamlGet(text2, "reconcile.auto_review"),
+      legacyScrumGraceHours: yamlGet(text2, "scrum_master.grace_hours"),
+      legacyScrumAutoReview: yamlGet(text2, "scrum_master.auto_review")
     };
   }).filter((value) => Boolean(value));
 }
@@ -2361,6 +2390,23 @@ function upsertLinkAgentfilesBlock(text2, ctx) {
 function readProjectJson(ctx) {
   return tryParseJson(safeReadText(join11(ctx.repoRoot, ".project.json")));
 }
+function boolSetting(value, fallback) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+function numberSetting(value, fallback) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
 function canonicalProjectJson(ctx) {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
@@ -2371,9 +2417,9 @@ function canonicalProjectJson(ctx) {
     workspace: String((existing.ticket_provider?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
     identifier: String((existing.ticket_provider?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String((existing.ticket_provider?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    board_url: String((existing.ticket_provider?.board_url ?? firstRole?.ticketProviderBoardUrl ?? "") || ""),
-    state: String((existing.ticket_provider?.state ?? "planned") || "planned")
+    state: String((existing.ticket_provider?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned")
   };
+  if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
   const existingAgents = existing.agents ?? {};
   const discoveredAgents = Object.fromEntries(
     roles.map((role) => [
@@ -2393,13 +2439,27 @@ function canonicalProjectJson(ctx) {
       provisioning_state: existingAgent.provisioning_state
     };
   }
+  const existingAutomation = existing.automation ?? {};
+  const existingReconcile = existingAutomation.reconcile ?? {};
+  const legacyEnabled = roles.find((role) => role.legacyReconcileEnabled)?.legacyReconcileEnabled;
+  const legacyGrace = roles.find((role) => role.legacyReconcileGraceHours || role.legacyScrumGraceHours);
+  const legacyAutoReview = roles.find((role) => role.legacyReconcileAutoReview || role.legacyScrumAutoReview);
+  const automation = {
+    ...existingAutomation,
+    reconcile: {
+      enabled: boolSetting(existingReconcile.enabled, boolSetting(legacyEnabled, false)),
+      grace_hours: numberSetting(existingReconcile.grace_hours, numberSetting(legacyGrace?.legacyReconcileGraceHours || legacyGrace?.legacyScrumGraceHours, 0)),
+      auto_review: boolSetting(existingReconcile.auto_review, boolSetting(legacyAutoReview?.legacyReconcileAutoReview || legacyAutoReview?.legacyScrumAutoReview, true))
+    }
+  };
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_slug: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
-    agents
+    agents,
+    automation
   };
 }
 function projectJsonFinding(ctx) {
@@ -2414,7 +2474,7 @@ function projectJsonFinding(ctx) {
   if (!data) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json is not valid JSON", details: [], fixable: true };
   }
-  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents"]) {
+  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents", "automation"]) {
     if (!(key in data)) details.push(`missing key: ${key}`);
   }
   if (data.repo_path !== ctx.repoRoot) details.push(`repo_path should be ${ctx.repoRoot}`);
@@ -2431,8 +2491,17 @@ function projectJsonFinding(ctx) {
     }
   }
   const ticketProvider = data.ticket_provider ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "board_url", "state"]) {
+  for (const key of ["type", "workspace", "identifier", "board_id", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
+  }
+  if ("board_url" in ticketProvider) details.push("ticket_provider.board_url should be removed; derive it from provider/workspace/board_id");
+  if (!ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
+    details.push("ticket_provider.board_id missing even though legacy role.yaml contains a board binding");
+  }
+  const automation = data.automation ?? {};
+  const reconcile = automation.reconcile ?? {};
+  for (const key of ["enabled", "grace_hours", "auto_review"]) {
+    if (!(key in reconcile)) details.push(`automation.reconcile.${key} missing`);
   }
   if (existsSync8(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
   return {
@@ -2447,7 +2516,7 @@ function projectJsonFinding(ctx) {
 function renderSoul(role) {
   const telegram = role.botHandle ? `@${role.botHandle}` : "(unwired)";
   const tone = role.role === "pm" ? `Direct and brief. Decision-forward. No throat-clearing, no apologies, no "I'll help you with that" preambles.` : "Direct and brief.";
-  const roleSpecific = role.role === "pm" ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`reconcile.enabled\` in role.yaml), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.` : `You operate as the ${role.role} agent for this repo.`;
+  const roleSpecific = role.role === "pm" ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.` : `You operate as the ${role.role} agent for this repo.`;
   const runtimeOwner = role.runtimeOwner || "delorenj";
   return `# ${role.displayName || role.agentId}
 
