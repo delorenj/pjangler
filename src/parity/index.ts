@@ -373,10 +373,58 @@ function templateLinkAgentfilesScript(ctx: Context): string | undefined {
   return templateScript(ctx, "link-agentfiles.sh");
 }
 
+/**
+ * Resolve whether a generated mise.toml should wire in the project-scoped
+ * agent-hooks + skill fan-out layer. Mirrors pjangler's `resolveAgentHooksLayer`
+ * (src/project/index.ts): an explicit PJ_AGENT_HOOKS_LAYER override wins; a repo
+ * that already carries the hook tree keeps it; otherwise the layer is skipped
+ * when a GLOBAL install (~/.agents/hooks) is present, so sync never re-injects the
+ * same hooks into the caller's shared per-user CLI configs.
+ */
+function resolveAgentHooksLayer(ctx: Context): boolean {
+  const override = process.env.PJ_AGENT_HOOKS_LAYER;
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  if (existsSync(join(ctx.repoRoot, ".agents", "hooks", "sync.py"))) return true;
+  return !existsSync(join(ctx.homeDir, ".agents", "hooks"));
+}
+
+/**
+ * Evaluate the flat `{% if agent_hooks_layer %}...{% endif %}` conditionals in
+ * mise.toml.jinja. Every Jinja statement tag occupies its own line, so we
+ * evaluate line-by-line: statement lines are consumed and a block's body is
+ * dropped when its condition is falsy. Unknown variables are treated as falsy so
+ * an unevaluated (invalid-TOML) Jinja tag can never leak into a generated
+ * mise.toml — the root cause of the `TOML parse error ... {%- if
+ * agent_hooks_layer %}` crash when the naive renderer only stripped {% raw %}.
+ */
+function evaluateMiseConditionals(template: string, agentHooksLayer: boolean): string {
+  const out: string[] = [];
+  let depth = 0;
+  let skipDepth = 0;
+  for (const line of template.split("\n")) {
+    const stmt = line.trim();
+    const ifMatch = /^\{%-?\s*if\s+(\w+)\s*-?%\}$/.exec(stmt);
+    if (ifMatch) {
+      depth += 1;
+      const truthy = ifMatch[1] === "agent_hooks_layer" ? agentHooksLayer : false;
+      if (skipDepth === 0 && !truthy) skipDepth = depth;
+      continue;
+    }
+    if (/^\{%-?\s*endif\s*-?%\}$/.test(stmt)) {
+      if (skipDepth === depth) skipDepth = 0;
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (skipDepth === 0) out.push(line);
+  }
+  return out.join("\n");
+}
+
 function renderGeneratedProjectMiseToml(ctx: Context, template: string): string {
   const project = readProjectJson(ctx);
   const projectName = String(project?.project_name ?? basename(ctx.repoRoot) ?? "project");
-  return template
+  return evaluateMiseConditionals(template, resolveAgentHooksLayer(ctx))
     .replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1")
     .replace(/\{\{\s*project_name\s*\}\}/g, projectName);
 }

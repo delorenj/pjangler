@@ -7,16 +7,16 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 
-function run(args, cwd = root) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+function run(args, cwd = root, env) {
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
   if (result.status !== 0) {
     throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
   return result.stdout;
 }
 
-function runAllowFailure(args, cwd = root) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+function runAllowFailure(args, cwd = root, env) {
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
   if (!result.stdout.trim()) {
     throw new Error(`command produced no stdout: node ${cli} ${args.join(" ")}\nstderr:\n${result.stderr}`);
   }
@@ -125,9 +125,14 @@ run = "echo still here"
   }
 
   {
+    // Bootstrap mise.toml from the CommonProject template with the agent-hooks
+    // layer ENABLED. Regression guard for PJAN: the naive renderer used to leave
+    // literal `{% if agent_hooks_layer %}` Jinja in the generated mise.toml,
+    // producing "TOML parse error ... invalid key-value pair". Force the layer via
+    // env so the assertions are deterministic regardless of ~/.agents/hooks.
     const repo = makeRepoWithoutMiseToml("missing-mise-toml");
     repos.push(repo);
-    run(["migrate", "mise.config-root", repo, "--json"]);
+    run(["migrate", "mise.config-root", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "1" });
 
     assert.equal(existsSync(join(repo, "mise.toml")), true, "migrate must create mise.toml when missing");
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
@@ -135,13 +140,33 @@ run = "echo still here"
     assert.match(mise, /op inject -i \.env\.op > \.env/, "mise.toml should be normalized to current AGENTS-linking contract");
     assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
     assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
-    assert.doesNotMatch(mise, /\{% raw %\}/, "bootstrap should render Jinja raw markers out of the generated-project template");
-    assert.match(mise, /\[tasks\.hooks-sync\]/, "bootstrap should use the generated-project mise template");
+    assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
+    assert.match(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer ON should wire the hooks-sync task");
 
     const script = join(repo, ".mise", "scripts", "link-agentfiles.sh");
     assert.equal(existsSync(script), true, "migrate must copy .mise/scripts/link-agentfiles.sh");
 
-    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "1" }));
+    const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
+    assert.equal(finding.status, "pass", JSON.stringify(finding));
+  }
+
+  {
+    // Same bootstrap with the agent-hooks layer DISABLED (a global ~/.agents/hooks
+    // install exists). The conditional blocks must be dropped cleanly — still no
+    // literal Jinja, and no per-project hooks-sync wiring.
+    const repo = makeRepoWithoutMiseToml("missing-mise-toml-no-hooks-layer");
+    repos.push(repo);
+    run(["migrate", "mise.config-root", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "0" });
+
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
+    assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml should still contain the link-agentfiles task");
+    assert.match(mise, /op inject -i \.env\.op > \.env/, "mise.toml should retain the dotenv enter hook");
+    assert.doesNotMatch(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer OFF should omit the hooks-sync task");
+    assert.doesNotMatch(mise, /link-project-skills-to-clis/, "agent-hooks layer OFF should omit the skill fan-out wiring");
+
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "0" }));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
     assert.equal(finding.status, "pass", JSON.stringify(finding));
   }

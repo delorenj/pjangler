@@ -1,0 +1,10 @@
+[mcp_servers.pjangler]
+command = "mise"
+args = [
+    "x",
+    "--",
+    "node",
+    "/home/delorenj/code/pjangler/dist/mcp-server.js",
+    "-s",
+    "user",
+]

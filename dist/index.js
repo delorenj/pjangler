@@ -2270,10 +2270,39 @@ function templateVersioningScript(ctx) {
 function templateLinkAgentfilesScript(ctx) {
   return templateScript(ctx, "link-agentfiles.sh");
 }
+function resolveAgentHooksLayer2(ctx) {
+  const override = process.env.PJ_AGENT_HOOKS_LAYER;
+  if (override === "0" || override === "false") return false;
+  if (override === "1" || override === "true") return true;
+  if (existsSync8(join10(ctx.repoRoot, ".agents", "hooks", "sync.py"))) return true;
+  return !existsSync8(join10(ctx.homeDir, ".agents", "hooks"));
+}
+function evaluateMiseConditionals(template, agentHooksLayer) {
+  const out = [];
+  let depth = 0;
+  let skipDepth = 0;
+  for (const line of template.split("\n")) {
+    const stmt = line.trim();
+    const ifMatch = /^\{%-?\s*if\s+(\w+)\s*-?%\}$/.exec(stmt);
+    if (ifMatch) {
+      depth += 1;
+      const truthy = ifMatch[1] === "agent_hooks_layer" ? agentHooksLayer : false;
+      if (skipDepth === 0 && !truthy) skipDepth = depth;
+      continue;
+    }
+    if (/^\{%-?\s*endif\s*-?%\}$/.test(stmt)) {
+      if (skipDepth === depth) skipDepth = 0;
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (skipDepth === 0) out.push(line);
+  }
+  return out.join("\n");
+}
 function renderGeneratedProjectMiseToml(ctx, template) {
   const project = readProjectJson(ctx);
   const projectName = String(project?.project_name ?? basename3(ctx.repoRoot) ?? "project");
-  return template.replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1").replace(/\{\{\s*project_name\s*\}\}/g, projectName);
+  return evaluateMiseConditionals(template, resolveAgentHooksLayer2(ctx)).replace(/\{%\s*raw\s*%\}([\s\S]*?)\{%\s*endraw\s*%\}/g, "$1").replace(/\{\{\s*project_name\s*\}\}/g, projectName);
 }
 function ensureMiseTomlFromTemplate(ctx, changedFiles) {
   const targetPath = join10(ctx.repoRoot, "mise.toml");
