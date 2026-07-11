@@ -1019,7 +1019,16 @@ const RULES: Rule[] = [
         }
       }
       const currentMise = readText(misePath);
-      const nextMise = replaceOrAppendManagedBlock(currentMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
+      let cleanedMise = currentMise;
+      if (!currentMise.includes("# >>> mise-versioning >>>")) {
+        const taskNames = ["version", "version:bump", "version:bump-patch", "version:bump-minor", "version:bump-major", "version:check", "version:sync"];
+        for (const taskName of taskNames) {
+          const escaped = taskName.replace(/:/g, "\\:");
+          const headerPattern = new RegExp(`^\\[tasks\\.(?:"${escaped}"|'${escaped}'|${escaped})\\]$`);
+          cleanedMise = removeTomlSection(cleanedMise, headerPattern);
+        }
+      }
+      const nextMise = replaceOrAppendManagedBlock(cleanedMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
       if (nextMise !== currentMise) {
         if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
@@ -1357,6 +1366,115 @@ const RULES: Rule[] = [
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
         summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
+        changedFiles,
+        details,
+      };
+    },
+  },
+  {
+    id: "hermes.untracked-runtimes",
+    title: "Hermes agent runtimes untracked + gitignored",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (roles.length === 0) {
+        return {
+          id: "hermes.untracked-runtimes",
+          title: "Hermes agent runtimes untracked + gitignored",
+          status: "skip",
+          summary: "No Hermes roles present",
+          details: [],
+          fixable: false,
+        };
+      }
+      const details: string[] = [];
+      for (const role of roles) {
+        const roleRelDir = relative(ctx.repoRoot, role.roleDir);
+        const runtimeRelPath = join(roleRelDir, "runtime");
+
+        // 1. Check if tracked in git
+        const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
+          cwd: ctx.repoRoot,
+          encoding: "utf8",
+        });
+        if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
+          details.push(`submodule runtime is tracked in Git index at ${runtimeRelPath}`);
+        }
+
+        // 2. Check if .gitignore ignores runtime/
+        const gitignorePath = join(role.roleDir, ".gitignore");
+        if (existsSync(gitignorePath)) {
+          const content = safeReadText(gitignorePath) ?? "";
+          const lines = content.split(/\r?\n/).map((line) => line.trim());
+          if (!lines.includes("runtime/") && !lines.includes("runtime")) {
+            details.push(`.gitignore missing runtime/ ignore entry in ${relative(ctx.repoRoot, gitignorePath)}`);
+          }
+        } else {
+          details.push(`.gitignore is missing in ${relative(ctx.repoRoot, gitignorePath)}`);
+        }
+      }
+
+      return {
+        id: "hermes.untracked-runtimes",
+        title: "Hermes agent runtimes untracked + gitignored",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "All Hermes agent runtimes are untracked and gitignored" : `${details.length} issue(s) with untracked/ignored runtimes detected`,
+        details,
+        fixable: true,
+      };
+    },
+    migrate: (ctx, finding) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const changedFiles: string[] = [];
+      const details: string[] = [];
+
+      for (const role of roles) {
+        const roleRelDir = relative(ctx.repoRoot, role.roleDir);
+        const runtimeRelPath = join(roleRelDir, "runtime");
+
+        // 1. Untrack if tracked
+        const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
+          cwd: ctx.repoRoot,
+          encoding: "utf8",
+        });
+        if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
+          details.push(`untrack ${runtimeRelPath}`);
+          changedFiles.push(runtimeRelPath);
+          if (!ctx.dryRun) {
+            spawnSync("git", ["rm", "--cached", "-r", runtimeRelPath], {
+              cwd: ctx.repoRoot,
+              encoding: "utf8",
+            });
+          }
+        }
+
+        // 2. Update .gitignore
+        const gitignorePath = join(role.roleDir, ".gitignore");
+        let content = "";
+        let isIgnored = false;
+        if (existsSync(gitignorePath)) {
+          content = safeReadText(gitignorePath) ?? "";
+          const lines = content.split(/\r?\n/).map((line) => line.trim());
+          isIgnored = lines.includes("runtime/") || lines.includes("runtime");
+        }
+
+        if (!isIgnored) {
+          details.push(`ignore runtime/ in ${relative(ctx.repoRoot, gitignorePath)}`);
+          changedFiles.push(gitignorePath);
+          if (!ctx.dryRun) {
+            if (content && !content.endsWith("\n")) {
+              content += "\n";
+            }
+            content += "runtime/\n";
+            writeText(gitignorePath, content);
+          }
+        }
+      }
+
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Hermes agent runtimes made untracked and ignored" : "No changes required",
         changedFiles,
         details,
       };

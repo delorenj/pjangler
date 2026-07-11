@@ -3,6 +3,7 @@ import type { CommandContext } from "../commands/Command";
 import { EnsureTemplateConfig } from "../commands/hermes/EnsureTemplateConfig";
 import { PromptForAgentConfig } from "../commands/hermes/PromptForAgentConfig";
 import { RunCopierTemplate } from "../commands/hermes/RunCopierTemplate";
+import { UntrackHermesRuntimes } from "../commands/hermes/UntrackHermesRuntimes";
 import { WireTelegram } from "../commands/hermes/WireTelegram";
 import { WireEmail } from "../commands/hermes/WireEmail";
 import { PrintHermesSummary } from "../commands/hermes/PrintHermesSummary";
@@ -14,9 +15,10 @@ import { PrintHermesSummary } from "../commands/hermes/PrintHermesSummary";
  *   1. EnsureTemplateConfig  — bootstrap ~/.config/hermes-agent-template/config.toml if missing
  *   2. PromptForAgentConfig  — TUI (or accepts defaults via --yes)
  *   3. RunCopierTemplate     — copier copy gh:delorenj/hermes-agent-template
- *   4. WireTelegram          — BotFather token capture (skippable)
- *   5. WireEmail             — CF Email Routing rule (skippable)
- *   6. PrintHermesSummary    — connection points + next commands
+ *   4. UntrackHermesRuntimes — untrack the runtime repo submodule & gitignore it
+ *   5. WireTelegram          — BotFather token capture (skippable)
+ *   6. WireEmail             — CF Email Routing rule (skippable)
+ *   7. PrintHermesSummary    — connection points + next commands
  *
  * We deliberately swallow the base Recipe's "✓/⚠️ created file" line — our
  * commands print their own rich status via @clack/prompts, and we don't want
@@ -29,6 +31,7 @@ export class HermesAgentRecipe extends Recipe {
       .addIngredient(EnsureTemplateConfig)
       .addIngredient(PromptForAgentConfig)
       .addIngredient(RunCopierTemplate)
+      .addIngredient(UntrackHermesRuntimes)
       .addIngredient(WireTelegram)
       .addIngredient(WireEmail)
       .addIngredient(PrintHermesSummary);
