@@ -191,6 +191,57 @@ run = "echo still here"
   }
 
   {
+    // bmad.version: detect drift against the target npm channel and offer an
+    // upgrade. Seed the dist-tags cache (via XDG_CACHE_HOME) so the rule is
+    // deterministic and offline — no live npm lookup in the test.
+    const cacheHome = mkdtempSync(join(tmpdir(), "pjangler-bmadcache-"));
+    repos.push(cacheHome);
+    mkdirSync(join(cacheHome, "pjangler"), { recursive: true });
+    writeFileSync(
+      join(cacheHome, "pjangler", "bmad-dist-tags.json"),
+      JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.10.0", next: "6.10.1-next.12" } })
+    );
+    const bmadEnv = { XDG_CACHE_HOME: cacheHome };
+
+    const writeManifest = (repo, version) => {
+      mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
+      writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), `installation:\n  version: ${version}\nmodules:\n  - name: core\n    version: ${version}\n`);
+    };
+
+    // Stale install -> warn + fixable.
+    const stale = makeRepo("bmad-version-stale");
+    repos.push(stale);
+    writeManifest(stale, "6.8.0");
+    const staleAudit = JSON.parse(runAllowFailure(["audit", stale, "--json"], root, bmadEnv));
+    const staleFinding = staleAudit.rules.find((r) => r.id === "bmad.version");
+    assert.equal(staleFinding.status, "warn", JSON.stringify(staleFinding));
+    assert.equal(staleFinding.fixable, true, "stale BMAD should be fixable");
+    assert.match(staleFinding.summary, /behind next 6\.10\.1-next\.12/, JSON.stringify(staleFinding));
+
+    // dry-run migrate previews the upgrade without writing.
+    const dry = JSON.parse(run(["migrate", "bmad.version", stale, "--dry-run", "--json"], root, bmadEnv));
+    const dryResult = dry.results.find((r) => r.id === "bmad.version");
+    assert.equal(dryResult.status, "applied", JSON.stringify(dryResult));
+    assert.match(dryResult.summary, /Would upgrade BMAD 6\.8\.0 -> 6\.10\.1-next\.12/, JSON.stringify(dryResult));
+
+    // Current install (== target channel) -> pass, not fixable.
+    const current = makeRepo("bmad-version-current");
+    repos.push(current);
+    writeManifest(current, "6.10.1-next.12");
+    const currentAudit = JSON.parse(runAllowFailure(["audit", current, "--json"], root, bmadEnv));
+    const currentFinding = currentAudit.rules.find((r) => r.id === "bmad.version");
+    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
+
+    // No BMAD install -> skip (bmad.scaffold owns absence).
+    const none = makeRepo("bmad-version-none");
+    repos.push(none);
+    const noneAudit = JSON.parse(runAllowFailure(["audit", none, "--json"], root, bmadEnv));
+    const noneFinding = noneAudit.rules.find((r) => r.id === "bmad.version");
+    assert.equal(noneFinding.status, "skip", JSON.stringify(noneFinding));
+    assert.equal(noneFinding.fixable, false, "absent BMAD version rule must not be fixable");
+  }
+
+  {
     const repo = makeRepo("unknown-rule");
     repos.push(repo);
     const stderr = runExpectError(["migrate", "not-a-real-rule", repo]);

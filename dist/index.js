@@ -2121,6 +2121,7 @@ import { basename as basename3, dirname as dirname6, join as join11, relative, r
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
+import YAML2 from "yaml";
 var LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
@@ -2890,6 +2891,173 @@ function checkUnit(unit) {
   const active = systemctlUser(["is-active", unit]).ok;
   return { enabled, active };
 }
+var BMAD_NPM_PACKAGE = "bmad-method";
+var BMAD_TARGET_CHANNEL = "next";
+var BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1e3;
+var BMAD_INSTALL_TOOLS = [
+  "claude-code",
+  "codex",
+  "cursor",
+  "github-copilot",
+  "adal",
+  "antigravity-cli",
+  "auggie",
+  "goose",
+  "cline",
+  "codebuddy",
+  "codewhale",
+  "command-code",
+  "crush",
+  "droid",
+  "firebender",
+  "gemini",
+  "antigravity",
+  "hermes",
+  "bob",
+  "iflow",
+  "junie",
+  "kilo",
+  "kimi-code",
+  "kiro",
+  "kode",
+  "mistral-vibe",
+  "mux",
+  "neovate",
+  "ona",
+  "openclaw",
+  "opencode",
+  "openhands",
+  "pi",
+  "pochi",
+  "qoder",
+  "qwen",
+  "replit",
+  "roo",
+  "rovo-dev",
+  "cortex",
+  "amp",
+  "trae",
+  "warp",
+  "windsurf",
+  "zencoder"
+];
+function bmadInstallArgs(repoRoot) {
+  return [
+    "-y",
+    `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
+    "install",
+    "--yes",
+    "--directory",
+    repoRoot,
+    "--modules",
+    "bmm,bmb,cis",
+    "--tools",
+    BMAD_INSTALL_TOOLS.join(",")
+  ];
+}
+function runBmadInstall(repoRoot) {
+  const result = spawnSync6("npx", bmadInstallArgs(repoRoot), { encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
+  }
+  return { ok: true };
+}
+function readInstalledBmadVersion(repoRoot) {
+  const raw = safeReadText(join11(repoRoot, "_bmad", "_config", "manifest.yaml"));
+  if (!raw) return void 0;
+  try {
+    const parsed = YAML2.parse(raw);
+    const version = parsed?.installation?.version;
+    return typeof version === "string" && version.trim() ? version.trim() : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function bmadCachePath(homeDir) {
+  const cacheRoot = process.env.XDG_CACHE_HOME?.trim() || join11(homeDir, ".cache");
+  return join11(cacheRoot, "pjangler", "bmad-dist-tags.json");
+}
+function readBmadDistTagsCache(homeDir) {
+  const raw = safeReadText(bmadCachePath(homeDir));
+  if (!raw) return void 0;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.fetchedAt === "number" && parsed.distTags && typeof parsed.distTags === "object") {
+      return parsed;
+    }
+  } catch {
+  }
+  return void 0;
+}
+function fetchBmadDistTags() {
+  const result = spawnSync6("npm", ["view", BMAD_NPM_PACKAGE, "dist-tags", "--json"], {
+    encoding: "utf8",
+    timeout: 8e3
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return void 0;
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const obj = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!obj || typeof obj !== "object") return void 0;
+    const tags = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === "string") tags[key] = value;
+    }
+    return Object.keys(tags).length ? tags : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function resolveBmadDistTags(homeDir) {
+  const cached = readBmadDistTagsCache(homeDir);
+  if (cached && Date.now() - cached.fetchedAt < BMAD_DIST_TAGS_TTL_MS) {
+    return { distTags: cached.distTags, stale: false };
+  }
+  const fetched = fetchBmadDistTags();
+  if (fetched) {
+    try {
+      const path = bmadCachePath(homeDir);
+      mkdirSync6(dirname6(path), { recursive: true });
+      writeFileSync6(path, JSON.stringify({ fetchedAt: Date.now(), distTags: fetched }, null, 2));
+    } catch {
+    }
+    return { distTags: fetched, stale: false };
+  }
+  if (cached) return { distTags: cached.distTags, stale: true };
+  return void 0;
+}
+function compareBmadVersions(a, b) {
+  const parse = (v) => {
+    const [core = "0", pre = ""] = v.replace(/^v/, "").split("-", 2);
+    const parts = core.split(".");
+    const n = (i) => parseInt(parts[i] ?? "0", 10) || 0;
+    return { nums: [n(0), n(1), n(2)], pre };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa.nums[i] !== pb.nums[i]) return pa.nums[i] - pb.nums[i];
+  }
+  if (pa.pre === pb.pre) return 0;
+  if (!pa.pre) return 1;
+  if (!pb.pre) return -1;
+  const ida = pa.pre.split(".");
+  const idb = pb.pre.split(".");
+  for (let i = 0; i < Math.max(ida.length, idb.length); i++) {
+    const xa = ida[i];
+    const xb = idb[i];
+    if (xa === void 0) return -1;
+    if (xb === void 0) return 1;
+    const na = Number(xa);
+    const nb = Number(xb);
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) {
+      if (na !== nb) return na - nb;
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1;
+    }
+  }
+  return 0;
+}
 var RULES = [
   {
     id: "mise.config-root",
@@ -3254,15 +3422,14 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
-      const sourceRoot = join11(ctx.pjanglerRoot, "templates", "commonproject", "_bmad");
       const targetRoot = join11(ctx.repoRoot, "_bmad");
       const sentinels = [
         join11("core", "config.yaml"),
-        join11("custom", "config.yaml"),
-        join11("custom", "workflows", "ticket-lifecycle", "workflow.yaml"),
-        join11("bmm", "workflows", "workflow-status", "workflow.yaml")
+        join11("config.toml"),
+        join11("_config", "manifest.yaml"),
+        join11("bmm", "config.yaml")
       ];
-      const missing = sentinels.filter((file) => existsSync9(join11(sourceRoot, file)) && !existsSync9(join11(targetRoot, file)));
+      const missing = sentinels.filter((file) => !existsSync9(join11(targetRoot, file)));
       return {
         id: "bmad.scaffold",
         title: "BMAD modules/docs scaffold",
@@ -3274,13 +3441,144 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
     },
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      copyMissingRecursive(join11(ctx.pjanglerRoot, "templates", "commonproject", "_bmad"), join11(ctx.repoRoot, "_bmad"), changedFiles, ctx.dryRun);
+      if (ctx.dryRun) {
+        for (const detail of finding.details) {
+          changedFiles.push(join11(ctx.repoRoot, detail));
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
+          changedFiles,
+          details: [
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+          ]
+        };
+      }
+      const install = runBmadInstall(ctx.repoRoot);
+      if (!install.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: `Failed to run bmad-method install`,
+          changedFiles: [],
+          details: [install.error ?? "Unknown error"]
+        };
+      }
+      for (const detail of finding.details) {
+        if (existsSync9(join11(ctx.repoRoot, detail))) {
+          changedFiles.push(join11(ctx.repoRoot, detail));
+        }
+      }
       return {
         id: finding.id,
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Copied missing BMAD scaffold files" : "No changes required",
+        summary: changedFiles.length ? "Installed BMAD scaffold via non-interactive installer" : "No changes required",
         changedFiles,
+        details: []
+      };
+    }
+  },
+  {
+    id: "bmad.version",
+    title: "BMAD version currency",
+    audit: (ctx) => {
+      const installed = readInstalledBmadVersion(ctx.repoRoot);
+      if (!installed) {
+        return {
+          id: "bmad.version",
+          title: "BMAD version currency",
+          status: "skip",
+          summary: existsSync9(join11(ctx.repoRoot, "_bmad")) ? "BMAD installed but version manifest unreadable" : "No BMAD install present",
+          details: [],
+          fixable: false
+        };
+      }
+      const resolved = resolveBmadDistTags(ctx.homeDir);
+      const available = resolved?.distTags?.[BMAD_TARGET_CHANNEL];
+      if (!available) {
+        return {
+          id: "bmad.version",
+          title: "BMAD version currency",
+          status: "skip",
+          summary: `BMAD ${installed} installed; latest ${BMAD_TARGET_CHANNEL} version unknown (npm unreachable)`,
+          details: [`Could not resolve ${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL} from npm`],
+          fixable: false
+        };
+      }
+      const staleNote = resolved.stale ? `  ${glyph.dot} cached` : "";
+      if (compareBmadVersions(installed, available) >= 0) {
+        return {
+          id: "bmad.version",
+          title: "BMAD version currency",
+          status: "pass",
+          summary: `BMAD ${installed} is current (${BMAD_TARGET_CHANNEL} ${available})${staleNote}`,
+          details: [],
+          fixable: false
+        };
+      }
+      return {
+        id: "bmad.version",
+        title: "BMAD version currency",
+        status: "warn",
+        summary: `BMAD ${installed} is behind ${BMAD_TARGET_CHANNEL} ${available} \u2014 upgrade available`,
+        details: [
+          `installed: ${installed}`,
+          `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+          resolved.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
+          "run `pj migrate bmad.version` to upgrade"
+        ].filter(Boolean),
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      if (finding.status !== "warn") {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "noop",
+          summary: finding.status === "skip" ? finding.summary : "BMAD already current",
+          changedFiles: [],
+          details: []
+        };
+      }
+      const installed = readInstalledBmadVersion(ctx.repoRoot);
+      const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+      const manifestPath = join11(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
+      if (ctx.dryRun) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "applied",
+          summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
+          changedFiles: [manifestPath],
+          details: [
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+          ]
+        };
+      }
+      const install = runBmadInstall(ctx.repoRoot);
+      if (!install.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Failed to upgrade BMAD via installer",
+          changedFiles: [],
+          details: [install.error ?? "Unknown error"]
+        };
+      }
+      const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
+      const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: upgraded ? "applied" : "noop",
+        summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
+        changedFiles: upgraded ? [manifestPath] : [],
         details: []
       };
     }
