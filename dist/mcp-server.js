@@ -2049,72 +2049,48 @@ import { fileURLToPath as fileURLToPath4 } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML2 from "yaml";
-var LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
+var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
+var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
+var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
 # TODO: Ensure this works for all levels of nesting.
 # i.e. All linked agent files MUST be siblings at
-# any given level of nesting.
-[hooks]
-enter = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
-]
-
-[[watch_files]]
-patterns = ["AGENTS.md"]
-task = "link-agentfiles"
-
-[tasks.link-agentfiles]
-description = "Symlink all agent files to AGENTS.md"
-run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
-var LINK_AGENTFILES_HOOK_ENTRIES = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env"
-];
-var LINK_AGENTFILES_HOOKS_BLOCK = `# This block will handle the linking of
-# agent files to the main AGENTS.md file.
-#
-# TODO: Ensure this works for all levels of nesting.
-# i.e. All linked agent files MUST be siblings at
-# any given level of nesting.
-[hooks]
-enter = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
-]`;
+# any given level of nesting.`;
+var LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT];
 var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
 [tasks.link-agentfiles]
 description = "Symlink all agent files to AGENTS.md"
-run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"`;
 var VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block \u2014 do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
-run = "{{config_root}}/.mise/scripts/versioning.sh current"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' current"
 
 [tasks."version:bump"]
 description = "Bump patch version: vX.Y.Z -> vX.Y.(Z+1)"
 alias = "version:bump-patch"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump patch"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump patch"
 
 [tasks."version:bump-minor"]
 description = "Bump minor version: vX.Y.Z -> vX.(Y+1).0"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump minor"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump minor"
 
 [tasks."version:bump-major"]
 description = "Bump major version: vX.Y.Z -> v(X+1).0.0"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump major"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump major"
 
 [tasks."version:check"]
 description = "Verify every versioned file is in parity"
-run = "{{config_root}}/.mise/scripts/versioning.sh check"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' check"
 
 [tasks."version:sync"]
 description = "Force every versioned file up to the highest version"
-run = "{{config_root}}/.mise/scripts/versioning.sh sync"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' sync"
 # <<< mise-versioning <<<`;
 function resolvePjanglerRoot2() {
   let dir = dirname7(fileURLToPath4(import.meta.url));
@@ -2415,6 +2391,9 @@ function removeTomlSection(text2, headerPattern, marker, options) {
     break;
   }
   if (start === -1) return text2;
+  while (end > start + 1 && (lines[end - 1].trim() === "" || lines[end - 1].trim().startsWith("#"))) {
+    end--;
+  }
   if (options?.includePrecedingComments) {
     while (start > 0 && lines[start - 1].trim().startsWith("#")) {
       start--;
@@ -2456,60 +2435,108 @@ function stripTomlStringsAndComments(line) {
 }
 function isManagedHookEntry(value) {
   const trimmed = value.trim();
-  return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
+  if (trimmed === OP_INJECT_SCRIPT) return true;
+  return /link-agentfiles\.sh'?\s*$/.test(trimmed);
 }
-function renderHookEntries(entries, indent = "") {
-  return [
-    `${indent}enter = [`,
-    ...entries.map((entry) => `${indent}  ${JSON.stringify(entry)},`),
-    `${indent}]`
-  ];
+function normalizeHookScript(script) {
+  const trimmed = script.trim();
+  if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
+  return trimmed;
+}
+function tomlValueSpanEnd(lines, start, limit) {
+  let depth = 0;
+  let j = start;
+  for (; j < limit; j++) {
+    for (const ch of stripTomlStringsAndComments(lines[j])) {
+      if (ch === "[") depth++;
+      else if (ch === "]") depth--;
+    }
+    if (depth <= 0) break;
+  }
+  return Math.min(j, limit - 1) + 1;
+}
+function stripHookBlocks(text2) {
+  const lines = text2.split("\n");
+  const enter = [];
+  const leave = [];
+  const drop = new Array(lines.length).fill(false);
+  const isHeader = (line) => /^\[/.test(line.trim());
+  const dropPrecedingComments = (idx) => {
+    for (let k = idx - 1; k >= 0 && !drop[k] && lines[k].trim().startsWith("#"); k--) drop[k] = true;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed);
+    if (tableMatch) {
+      const bucket = tableMatch[1] === "enter" ? enter : leave;
+      dropPrecedingComments(i);
+      drop[i] = true;
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        const body = lines[j].trim();
+        if (body === "" || body.startsWith("#") || isHeader(lines[j])) break;
+        drop[j] = true;
+        const scriptMatch = /^\s*script\s*=\s*(.+)$/.exec(lines[j]);
+        if (scriptMatch) {
+          const value = extractTomlStrings(scriptMatch[1])[0];
+          if (value !== void 0) bucket.push(value);
+        }
+      }
+      i = j - 1;
+      continue;
+    }
+    if (trimmed === "[hooks]") {
+      dropPrecedingComments(i);
+      let j = i + 1;
+      let lastDrop = i;
+      while (j < lines.length && !isHeader(lines[j])) {
+        const keyMatch = /^\s*(enter|leave)\s*=/.exec(lines[j]);
+        if (keyMatch) {
+          const bucket = keyMatch[1] === "enter" ? enter : leave;
+          const end = tomlValueSpanEnd(lines, j, lines.length);
+          for (const value of extractTomlStrings(lines.slice(j, end).join("\n"))) bucket.push(value);
+          lastDrop = end - 1;
+          j = end;
+        } else if (/^\s*\]\s*$/.test(lines[j])) {
+          lastDrop = j;
+          j++;
+        } else {
+          j++;
+        }
+      }
+      for (let k = i; k <= lastDrop; k++) drop[k] = true;
+      i = j - 1;
+      continue;
+    }
+  }
+  const kept = lines.filter((_, idx) => !drop[idx]).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  return { text: kept, enter, leave };
+}
+function renderHookTables(scripts, kind) {
+  return scripts.map((script) => `[[hooks.${kind}]]
+script = ${JSON.stringify(script)}`);
+}
+function dedupePreserve(scripts) {
+  const out = [];
+  for (const script of scripts) {
+    if (script && !out.includes(script)) out.push(script);
+  }
+  return out;
 }
 function upsertLinkAgentfilesHooks(text2) {
-  const lines = text2.split("\n");
-  const hooksStart = lines.findIndex((line) => /^\[hooks\]$/.test(line.trim()));
-  if (hooksStart === -1) return insertTomlBlockBeforeVersioning(text2, LINK_AGENTFILES_HOOKS_BLOCK);
-  let hooksEnd = lines.length;
-  for (let i = hooksStart + 1; i < lines.length; i++) {
-    if (/^\[[^\]]+\]/.test(lines[i].trim())) {
-      hooksEnd = i;
-      break;
-    }
-  }
-  let enterStart = -1;
-  let enterEnd = -1;
-  for (let i = hooksStart + 1; i < hooksEnd; i++) {
-    if (!/^\s*enter\s*=/.test(lines[i])) continue;
-    enterStart = i;
-    let depth = 0;
-    let j = i;
-    for (; j < hooksEnd; j++) {
-      for (const ch of stripTomlStringsAndComments(lines[j])) {
-        if (ch === "[") depth++;
-        else if (ch === "]") depth--;
-      }
-      if (depth <= 0) break;
-    }
-    enterEnd = Math.min(j, hooksEnd - 1) + 1;
-    while (enterEnd < hooksEnd && /^\s*\]\s*$/.test(lines[enterEnd])) enterEnd++;
-    break;
-  }
-  const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";
-  const preserved = extractTomlStrings(existingBlock).filter((entry) => !isManagedHookEntry(entry));
-  const merged = [...LINK_AGENTFILES_HOOK_ENTRIES];
-  for (const entry of preserved) {
-    if (!merged.includes(entry)) merged.push(entry);
-  }
-  const indent = enterStart >= 0 ? lines[enterStart].match(/^\s*/)?.[0] ?? "" : "";
-  const rendered = renderHookEntries(merged, indent);
-  if (enterStart >= 0) {
-    return lines.slice(0, enterStart).concat(rendered, lines.slice(enterEnd)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
-  }
-  return lines.slice(0, hooksStart + 1).concat(rendered, lines.slice(hooksStart + 1)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  const { text: stripped, enter, leave } = stripHookBlocks(text2);
+  const preservedEnter = enter.map(normalizeHookScript).filter((script) => !isManagedHookEntry(script));
+  const enterScripts = dedupePreserve([...LINK_AGENTFILES_HOOK_ENTRIES, ...preservedEnter]);
+  const leaveScripts = dedupePreserve(leave.map(normalizeHookScript));
+  const block = [
+    HOOKS_COMMENT_HEADER,
+    ...renderHookTables(enterScripts, "enter"),
+    ...renderHookTables(leaveScripts, "leave")
+  ].join("\n");
+  return insertTomlBlockBeforeVersioning(stripped, block);
 }
 function upsertLinkAgentfilesBlock(text2, ctx) {
   const withPath = upsertMisePath(text2, requiredMisePathEntries(ctx));
-  if (withPath.includes(LINK_AGENTFILES_BLOCK)) return withPath;
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
   cleaned = upsertLinkAgentfilesHooks(cleaned);
@@ -3009,8 +3036,8 @@ var RULES = [
       const pathValues = [...(text2.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
-      if (!text2.includes('"{{config_root}}/.mise/scripts/link-agentfiles.sh"')) details.push("link-agentfiles must use raw {{config_root}} guard");
-      if (!text2.includes("op inject -i .env.op > .env")) details.push("[hooks].enter must materialize .env from .env.op");
+      if (!text2.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
+      if (!text2.includes("op inject -i .env.op > .env")) details.push("hooks.enter must materialize .env from .env.op");
       if (!text2.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
       if (!text2.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
       return {

@@ -31,6 +31,27 @@ function runExpectError(args, cwd = root) {
   return result.stderr;
 }
 
+let miseChecked = false;
+let miseOnPath = false;
+function miseAvailable() {
+  if (!miseChecked) {
+    miseChecked = true;
+    miseOnPath = spawnSync("mise", ["--version"], { encoding: "utf8" }).status === 0;
+  }
+  return miseOnPath;
+}
+
+// End-to-end guard: the real `mise` binary must parse the generated config. Skips
+// silently where mise is not installed (e.g. minimal CI). Catches TOML syntax
+// regressions like a stray `]`; the structural assertions guard the hook shape.
+function assertMiseParses(repo, label) {
+  if (!miseAvailable()) return;
+  const misePath = join(repo, "mise.toml");
+  spawnSync("mise", ["trust", misePath], { encoding: "utf8" });
+  const result = spawnSync("mise", ["tasks"], { cwd: repo, encoding: "utf8" });
+  assert.equal(result.status, 0, `${label}: mise must parse the generated mise.toml\n${result.stderr}`);
+}
+
 function makeRepo(name) {
   const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
   writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
@@ -116,12 +137,14 @@ run = "echo still here"
     run(["migrate", "mise.config-root", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.equal((mise.match(/^\[hooks\]$/gm) ?? []).length, 1, "migrate should keep a single [hooks] table");
-    assert.match(mise, /"custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
-    assert.match(mise, /"custom-leave-hook"/, "migrate must preserve unrelated leave hooks");
+    assert.match(mise, /\[\[hooks\.enter\]\]/, "migrate should emit [[hooks.enter]] tables");
+    assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "migrate must not emit the invalid enter = [ ... ] array form");
+    assert.match(mise, /script = "custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
+    assert.match(mise, /\[\[hooks\.leave\]\]\nscript = "custom-leave-hook"/, "migrate must preserve unrelated leave hooks as a table");
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
-    assert.match(mise, /"{{config_root}}\/\.mise\/scripts\/link-agentfiles\.sh"/, "migrate should install canonical link-agentfiles hook");
-    assert.match(mise, /"op inject -i \.env\.op > \.env"/, "migrate should install canonical dotenv hook");
+    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh'"/, "link-agentfiles hook must be single-quoted (space-safe)");
+    assert.match(mise, /script = "op inject -i \.env\.op > \.env"/, "migrate should install canonical dotenv hook");
+    assertMiseParses(repo, "preserve-hooks");
   }
 
   {
@@ -147,9 +170,11 @@ run = "echo still here"
     run(["migrate", "mise.config-root", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must not emit a duplicate closing bracket for the enter array");
-    assert.match(mise, /codegraph\.sh \] &&/, "migrate must preserve the bracket-bearing codegraph hook entry");
-    assert.equal((mise.match(/^\[hooks\]$/gm) ?? []).length, 1, "migrate should keep a single [hooks] table");
+    assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must not emit a duplicate closing bracket");
+    assert.match(mise, /\[\[hooks\.enter\]\]/, "migrate should convert the array to [[hooks.enter]] tables");
+    assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "migrate must not emit the invalid enter = [ ... ] array form");
+    // Codegraph guard is normalized to the single-quoted, space-safe form.
+    assert.match(mise, /\[ -f '\{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh' \] && '\{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh' \|\| true/, "migrate must preserve+quote the codegraph hook entry");
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
     // Bracket balance (ignoring quoted strings) must be even — a stray `]` breaks it.
     const structural = mise.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
@@ -158,6 +183,7 @@ run = "echo still here"
       (structural.match(/\]/g) ?? []).length,
       "generated mise.toml must have balanced brackets outside of strings"
     );
+    assertMiseParses(repo, "preserve-hooks-bracket-in-string");
   }
 
   {
@@ -184,13 +210,38 @@ run = "echo still here"
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must repair a duplicate closing bracket left by a prior run");
-    assert.match(mise, /codegraph\.sh \] &&/, "migrate must preserve the bracket-bearing codegraph hook entry while repairing");
+    assert.match(mise, /\[\[hooks\.enter\]\]/, "repaired mise.toml should use [[hooks.enter]] tables");
+    assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "repaired mise.toml must not carry the invalid array form");
     const structural = mise.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
     assert.equal(
       (structural.match(/\[/g) ?? []).length,
       (structural.match(/\]/g) ?? []).length,
       "repaired mise.toml must have balanced brackets outside of strings"
     );
+    assertMiseParses(repo, "selfheal-duplicate-bracket");
+  }
+
+  {
+    // Idempotency: a full `pj init` pass (mise.config-root + mise.versioning),
+    // re-run, must be byte-identical. Regression guard for the config-root pass
+    // swallowing the `# >>> mise-versioning >>>` marker and duplicating the
+    // hooks comment header on re-run.
+    const repo = makeRepo("hooks-idempotent");
+    repos.push(repo);
+    const initOnce = () => {
+      run(["migrate", "mise.config-root", repo, "--json"]);
+      run(["migrate", "mise.versioning", repo, "--json"]);
+    };
+    initOnce();
+    const first = readFileSync(join(repo, "mise.toml"), "utf8");
+    initOnce();
+    const second = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.equal(second, first, "re-running the full init (config-root + versioning) must be idempotent");
+    assert.match(first, /\[\[hooks\.enter\]\]/, "canonical mise.toml uses [[hooks.enter]] tables");
+    assert.equal((first.match(/# >>> mise-versioning >>>/g) ?? []).length, 1, "exactly one versioning open marker");
+    assert.equal((first.match(/# <<< mise-versioning <<</g) ?? []).length, 1, "exactly one versioning close marker");
+    assert.equal((first.match(/This block will handle the linking of/g) ?? []).length, 1, "exactly one hooks comment header");
+    assertMiseParses(repo, "hooks-idempotent");
   }
 
   {

@@ -79,42 +79,26 @@ interface Rule {
   migrate: (ctx: Context, finding: AuditFinding) => MigrationRuleResult;
 }
 
-const LINK_AGENTFILES_BLOCK = `# This block will handle the linking of
+// mise runs each hook `script`/task `run` value through `sh -c`, expanding the
+// `{{config_root}}` tera template first. If the resolved path contains a space
+// (e.g. ".../James Brennan/...") an UNQUOTED reference word-splits and fails, so
+// every config_root path is wrapped in single quotes. Multiple commands must be
+// expressed as an array of `[[hooks.enter]]` tables — mise mangles the
+// `enter = [ ... ]` array-of-strings form into one broken argv.
+const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
+const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+const CODEGRAPH_SCRIPT =
+  "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
+
+const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
 # TODO: Ensure this works for all levels of nesting.
 # i.e. All linked agent files MUST be siblings at
-# any given level of nesting.
-[hooks]
-enter = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
-]
+# any given level of nesting.`;
 
-[[watch_files]]
-patterns = ["AGENTS.md"]
-task = "link-agentfiles"
-
-[tasks.link-agentfiles]
-description = "Symlink all agent files to AGENTS.md"
-run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
-
-const LINK_AGENTFILES_HOOK_ENTRIES = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
-];
-
-const LINK_AGENTFILES_HOOKS_BLOCK = `# This block will handle the linking of
-# agent files to the main AGENTS.md file.
-#
-# TODO: Ensure this works for all levels of nesting.
-# i.e. All linked agent files MUST be siblings at
-# any given level of nesting.
-[hooks]
-enter = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
-]`;
+// Canonical managed enter-hook commands, always installed (space-safe).
+const LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT];
 
 const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
@@ -122,33 +106,33 @@ task = "link-agentfiles"
 
 [tasks.link-agentfiles]
 description = "Symlink all agent files to AGENTS.md"
-run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"`;
+run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"`;
 
 const VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
-run = "{{config_root}}/.mise/scripts/versioning.sh current"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' current"
 
 [tasks."version:bump"]
 description = "Bump patch version: vX.Y.Z -> vX.Y.(Z+1)"
 alias = "version:bump-patch"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump patch"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump patch"
 
 [tasks."version:bump-minor"]
 description = "Bump minor version: vX.Y.Z -> vX.(Y+1).0"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump minor"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump minor"
 
 [tasks."version:bump-major"]
 description = "Bump major version: vX.Y.Z -> v(X+1).0.0"
-run = "{{config_root}}/.mise/scripts/versioning.sh bump major"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' bump major"
 
 [tasks."version:check"]
 description = "Verify every versioned file is in parity"
-run = "{{config_root}}/.mise/scripts/versioning.sh check"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' check"
 
 [tasks."version:sync"]
 description = "Force every versioned file up to the highest version"
-run = "{{config_root}}/.mise/scripts/versioning.sh sync"
+run = "'{{config_root}}/.mise/scripts/versioning.sh' sync"
 # <<< mise-versioning <<<`;
 
 function resolvePjanglerRoot(): string {
@@ -525,6 +509,12 @@ function removeTomlSection(text: string, headerPattern: RegExp, marker?: RegExp,
     break;
   }
   if (start === -1) return text;
+  // Trailing comment/blank lines directly before the next header belong to that
+  // next section (e.g. the `# >>> mise-versioning >>>` marker), so keep them out
+  // of the removed range — otherwise re-running a migrate corrupts them.
+  while (end > start + 1 && (lines[end - 1]!.trim() === "" || lines[end - 1]!.trim().startsWith("#"))) {
+    end--;
+  }
   if (options?.includePrecedingComments) {
     while (start > 0 && lines[start - 1]!.trim().startsWith("#")) {
       start--;
@@ -573,73 +563,146 @@ function stripTomlStringsAndComments(line: string): string {
 
 function isManagedHookEntry(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
+  if (trimmed === OP_INJECT_SCRIPT) return true;
+  // link-agentfiles.sh, with or without wrapping single quotes / path prefix.
+  return /link-agentfiles\.sh'?\s*$/.test(trimmed);
 }
 
-function renderHookEntries(entries: string[], indent = ""): string[] {
-  return [
-    `${indent}enter = [`,
-    ...entries.map((entry) => `${indent}  ${JSON.stringify(entry)},`),
-    `${indent}]`,
-  ];
+/**
+ * Normalize a preserved hook command so pjangler-managed scripts it references
+ * are single-quoted (space-safe). Unknown user commands are kept verbatim.
+ */
+function normalizeHookScript(script: string): string {
+  const trimmed = script.trim();
+  if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
+  return trimmed;
+}
+
+/**
+ * Determine the exclusive end line of a (possibly multi-line) TOML value that
+ * begins at `start`, counting array brackets outside of string literals so a
+ * `]` inside a quoted command can't be mistaken for the array close.
+ */
+function tomlValueSpanEnd(lines: string[], start: number, limit: number): number {
+  let depth = 0;
+  let j = start;
+  for (; j < limit; j++) {
+    for (const ch of stripTomlStringsAndComments(lines[j]!)) {
+      if (ch === "[") depth++;
+      else if (ch === "]") depth--;
+    }
+    if (depth <= 0) break;
+  }
+  return Math.min(j, limit - 1) + 1;
+}
+
+/**
+ * Remove every mise hook construct from the text — both the `[hooks]` table
+ * (with `enter`/`leave` as a string or an array of strings) and any
+ * `[[hooks.enter]]`/`[[hooks.leave]]` array-of-tables — and return the stripped
+ * text alongside the collected enter/leave commands.
+ */
+function stripHookBlocks(text: string): { text: string; enter: string[]; leave: string[] } {
+  const lines = text.split("\n");
+  const enter: string[] = [];
+  const leave: string[] = [];
+  const drop = new Array<boolean>(lines.length).fill(false);
+  const isHeader = (line: string) => /^\[/.test(line.trim());
+  // Drop the contiguous comment header directly above a hook construct so a
+  // re-run doesn't leave the old header behind and duplicate it.
+  const dropPrecedingComments = (idx: number) => {
+    for (let k = idx - 1; k >= 0 && !drop[k] && lines[k]!.trim().startsWith("#"); k--) drop[k] = true;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed);
+    if (tableMatch) {
+      const bucket = tableMatch[1] === "enter" ? enter : leave;
+      dropPrecedingComments(i);
+      drop[i] = true;
+      let j = i + 1;
+      // A table body is only its contiguous key=value lines — stop at a blank,
+      // comment, or header so trailing lines (e.g. a following versioning
+      // marker comment) that belong to the next section are never swallowed.
+      for (; j < lines.length; j++) {
+        const body = lines[j]!.trim();
+        if (body === "" || body.startsWith("#") || isHeader(lines[j]!)) break;
+        drop[j] = true;
+        const scriptMatch = /^\s*script\s*=\s*(.+)$/.exec(lines[j]!);
+        if (scriptMatch) {
+          const value = extractTomlStrings(scriptMatch[1]!)[0];
+          if (value !== undefined) bucket.push(value);
+        }
+      }
+      i = j - 1;
+      continue;
+    }
+    if (trimmed === "[hooks]") {
+      dropPrecedingComments(i);
+      let j = i + 1;
+      let lastDrop = i; // last line index that is part of the [hooks] table proper
+      while (j < lines.length && !isHeader(lines[j]!)) {
+        const keyMatch = /^\s*(enter|leave)\s*=/.exec(lines[j]!);
+        if (keyMatch) {
+          const bucket = keyMatch[1] === "enter" ? enter : leave;
+          const end = tomlValueSpanEnd(lines, j, lines.length);
+          for (const value of extractTomlStrings(lines.slice(j, end).join("\n"))) bucket.push(value);
+          lastDrop = end - 1;
+          j = end;
+        } else if (/^\s*\]\s*$/.test(lines[j]!)) {
+          // Orphan bare-`]` left by a prior buggy run that duplicated the array
+          // close — absorb it (self-heal) rather than leaking invalid TOML.
+          lastDrop = j;
+          j++;
+        } else {
+          j++;
+        }
+      }
+      // Drop the header through the last key value only; keep trailing
+      // comment/blank lines that belong to the following section.
+      for (let k = i; k <= lastDrop; k++) drop[k] = true;
+      i = j - 1;
+      continue;
+    }
+  }
+
+  const kept = lines
+    .filter((_, idx) => !drop[idx])
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\n+$/, "\n");
+  return { text: kept, enter, leave };
+}
+
+function renderHookTables(scripts: string[], kind: "enter" | "leave"): string[] {
+  return scripts.map((script) => `[[hooks.${kind}]]\nscript = ${JSON.stringify(script)}`);
+}
+
+function dedupePreserve(scripts: string[]): string[] {
+  const out: string[] = [];
+  for (const script of scripts) {
+    if (script && !out.includes(script)) out.push(script);
+  }
+  return out;
 }
 
 function upsertLinkAgentfilesHooks(text: string): string {
-  const lines = text.split("\n");
-  const hooksStart = lines.findIndex((line) => /^\[hooks\]$/.test(line.trim()));
-  if (hooksStart === -1) return insertTomlBlockBeforeVersioning(text, LINK_AGENTFILES_HOOKS_BLOCK);
+  const { text: stripped, enter, leave } = stripHookBlocks(text);
+  const preservedEnter = enter.map(normalizeHookScript).filter((script) => !isManagedHookEntry(script));
+  const enterScripts = dedupePreserve([...LINK_AGENTFILES_HOOK_ENTRIES, ...preservedEnter]);
+  const leaveScripts = dedupePreserve(leave.map(normalizeHookScript));
 
-  let hooksEnd = lines.length;
-  for (let i = hooksStart + 1; i < lines.length; i++) {
-    if (/^\[[^\]]+\]/.test(lines[i]!.trim())) {
-      hooksEnd = i;
-      break;
-    }
-  }
-
-  let enterStart = -1;
-  let enterEnd = -1;
-  for (let i = hooksStart + 1; i < hooksEnd; i++) {
-    if (!/^\s*enter\s*=/.test(lines[i]!)) continue;
-    enterStart = i;
-    // Walk lines tracking array-bracket depth, ignoring `[`/`]` inside string
-    // literals so a hook entry like `"[ -f foo ] && ..."` can't be mistaken for
-    // the array's closing bracket (which used to leak a duplicate `]`).
-    let depth = 0;
-    let j = i;
-    for (; j < hooksEnd; j++) {
-      for (const ch of stripTomlStringsAndComments(lines[j]!)) {
-        if (ch === "[") depth++;
-        else if (ch === "]") depth--;
-      }
-      if (depth <= 0) break;
-    }
-    enterEnd = Math.min(j, hooksEnd - 1) + 1;
-    // Self-heal: absorb orphan bracket-only lines left behind by a prior
-    // buggy run that emitted a duplicate `]`. A bare `]` is never valid
-    // content here, so dropping it repairs an already-corrupted mise.toml.
-    while (enterEnd < hooksEnd && /^\s*\]\s*$/.test(lines[enterEnd]!)) enterEnd++;
-    break;
-  }
-
-  const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";
-  const preserved = extractTomlStrings(existingBlock).filter((entry) => !isManagedHookEntry(entry));
-  const merged = [...LINK_AGENTFILES_HOOK_ENTRIES];
-  for (const entry of preserved) {
-    if (!merged.includes(entry)) merged.push(entry);
-  }
-  const indent = enterStart >= 0 ? lines[enterStart]!.match(/^\s*/)?.[0] ?? "" : "";
-  const rendered = renderHookEntries(merged, indent);
-
-  if (enterStart >= 0) {
-    return lines.slice(0, enterStart).concat(rendered, lines.slice(enterEnd)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
-  }
-  return lines.slice(0, hooksStart + 1).concat(rendered, lines.slice(hooksStart + 1)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
+  const block = [
+    HOOKS_COMMENT_HEADER,
+    ...renderHookTables(enterScripts, "enter"),
+    ...renderHookTables(leaveScripts, "leave"),
+  ].join("\n");
+  return insertTomlBlockBeforeVersioning(stripped, block);
 }
 
 function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
   const withPath = upsertMisePath(text, requiredMisePathEntries(ctx));
-  if (withPath.includes(LINK_AGENTFILES_BLOCK)) return withPath;
   // Remove stale AGENTS-linking pieces before appending the canonical block.
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
@@ -1123,8 +1186,8 @@ const RULES: Rule[] = [
       const pathValues = [...(text.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
-      if (!text.includes("\"{{config_root}}/.mise/scripts/link-agentfiles.sh\"")) details.push("link-agentfiles must use raw {{config_root}} guard");
-      if (!text.includes("op inject -i .env.op > .env")) details.push("[hooks].enter must materialize .env from .env.op");
+      if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
+      if (!text.includes("op inject -i .env.op > .env")) details.push("hooks.enter must materialize .env from .env.op");
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes("task = \"link-agentfiles\"")) details.push("watch_files must dispatch link-agentfiles task");
       return {
