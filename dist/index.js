@@ -2524,6 +2524,9 @@ function extractTomlStrings(text3) {
   }
   return values;
 }
+function stripTomlStringsAndComments(line) {
+  return line.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''").replace(/#.*$/, "");
+}
 function isManagedHookEntry(value) {
   const trimmed = value.trim();
   return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
@@ -2551,12 +2554,17 @@ function upsertLinkAgentfilesHooks(text3) {
   for (let i = hooksStart + 1; i < hooksEnd; i++) {
     if (!/^\s*enter\s*=/.test(lines[i])) continue;
     enterStart = i;
-    enterEnd = i + 1;
-    const afterEquals = lines[i].slice(lines[i].indexOf("=") + 1);
-    if (afterEquals.includes("[") && !afterEquals.includes("]")) {
-      while (enterEnd < hooksEnd && !lines[enterEnd].includes("]")) enterEnd++;
-      if (enterEnd < hooksEnd) enterEnd++;
+    let depth = 0;
+    let j = i;
+    for (; j < hooksEnd; j++) {
+      for (const ch of stripTomlStringsAndComments(lines[j])) {
+        if (ch === "[") depth++;
+        else if (ch === "]") depth--;
+      }
+      if (depth <= 0) break;
     }
+    enterEnd = Math.min(j, hooksEnd - 1) + 1;
+    while (enterEnd < hooksEnd && /^\s*\]\s*$/.test(lines[enterEnd])) enterEnd++;
     break;
   }
   const existingBlock = enterStart >= 0 ? lines.slice(enterStart, enterEnd).join("\n") : "";

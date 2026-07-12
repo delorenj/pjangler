@@ -559,6 +559,18 @@ function extractTomlStrings(text: string): string[] {
   return values;
 }
 
+/**
+ * Blank out TOML string literals (and any trailing comment) so structural
+ * scans can count brackets without being fooled by `[`/`]` that live inside a
+ * quoted value — e.g. a hook entry like `"[ -f foo ] && foo || true"`.
+ */
+function stripTomlStringsAndComments(line: string): string {
+  return line
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'[^']*'/g, "''")
+    .replace(/#.*$/, "");
+}
+
 function isManagedHookEntry(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "op inject -i .env.op > .env" || /(^|\/)link-agentfiles\.sh$/.test(trimmed);
@@ -590,12 +602,23 @@ function upsertLinkAgentfilesHooks(text: string): string {
   for (let i = hooksStart + 1; i < hooksEnd; i++) {
     if (!/^\s*enter\s*=/.test(lines[i]!)) continue;
     enterStart = i;
-    enterEnd = i + 1;
-    const afterEquals = lines[i]!.slice(lines[i]!.indexOf("=") + 1);
-    if (afterEquals.includes("[") && !afterEquals.includes("]")) {
-      while (enterEnd < hooksEnd && !lines[enterEnd]!.includes("]")) enterEnd++;
-      if (enterEnd < hooksEnd) enterEnd++;
+    // Walk lines tracking array-bracket depth, ignoring `[`/`]` inside string
+    // literals so a hook entry like `"[ -f foo ] && ..."` can't be mistaken for
+    // the array's closing bracket (which used to leak a duplicate `]`).
+    let depth = 0;
+    let j = i;
+    for (; j < hooksEnd; j++) {
+      for (const ch of stripTomlStringsAndComments(lines[j]!)) {
+        if (ch === "[") depth++;
+        else if (ch === "]") depth--;
+      }
+      if (depth <= 0) break;
     }
+    enterEnd = Math.min(j, hooksEnd - 1) + 1;
+    // Self-heal: absorb orphan bracket-only lines left behind by a prior
+    // buggy run that emitted a duplicate `]`. A bare `]` is never valid
+    // content here, so dropping it repairs an already-corrupted mise.toml.
+    while (enterEnd < hooksEnd && /^\s*\]\s*$/.test(lines[enterEnd]!)) enterEnd++;
     break;
   }
 

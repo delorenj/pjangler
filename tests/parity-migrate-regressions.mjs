@@ -125,6 +125,75 @@ run = "echo still here"
   }
 
   {
+    // Regression guard: a preserved hook entry whose command contains a literal
+    // `]` (e.g. a `[ -f ... ]` shell test) must not be mistaken for the enter
+    // array's closing bracket. Previously the real `]` leaked one line down,
+    // producing a duplicate `]` that crashed `mise` with a TOML parse error.
+    const repo = makeRepo("preserve-hooks-bracket-in-string");
+    repos.push(repo);
+    writeFileSync(join(repo, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+
+[hooks]
+enter = [
+  ".mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+  "[ -f {{config_root}}/.mise/scripts/codegraph.sh ] && {{config_root}}/.mise/scripts/codegraph.sh || true",
+]
+
+[tasks.other]
+run = "echo still here"
+`);
+    run(["migrate", "mise.config-root", repo, "--json"]);
+
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must not emit a duplicate closing bracket for the enter array");
+    assert.match(mise, /codegraph\.sh \] &&/, "migrate must preserve the bracket-bearing codegraph hook entry");
+    assert.equal((mise.match(/^\[hooks\]$/gm) ?? []).length, 1, "migrate should keep a single [hooks] table");
+    assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
+    // Bracket balance (ignoring quoted strings) must be even — a stray `]` breaks it.
+    const structural = mise.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
+    assert.equal(
+      (structural.match(/\[/g) ?? []).length,
+      (structural.match(/\]/g) ?? []).length,
+      "generated mise.toml must have balanced brackets outside of strings"
+    );
+  }
+
+  {
+    // Self-heal guard: a mise.toml already corrupted by a prior buggy run (a
+    // duplicate `]` closing the enter array) must be repaired on the next
+    // migrate, not left broken.
+    const repo = makeRepo("selfheal-duplicate-bracket");
+    repos.push(repo);
+    writeFileSync(join(repo, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+
+[hooks]
+enter = [
+  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
+  "op inject -i .env.op > .env",
+  "[ -f {{config_root}}/.mise/scripts/codegraph.sh ] && {{config_root}}/.mise/scripts/codegraph.sh || true",
+]
+]
+
+[tasks.other]
+run = "echo still here"
+`);
+    run(["migrate", "mise.config-root", repo, "--json"]);
+
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must repair a duplicate closing bracket left by a prior run");
+    assert.match(mise, /codegraph\.sh \] &&/, "migrate must preserve the bracket-bearing codegraph hook entry while repairing");
+    const structural = mise.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
+    assert.equal(
+      (structural.match(/\[/g) ?? []).length,
+      (structural.match(/\]/g) ?? []).length,
+      "repaired mise.toml must have balanced brackets outside of strings"
+    );
+  }
+
+  {
     // Bootstrap mise.toml from the CommonProject template with the agent-hooks
     // layer ENABLED. Regression guard for PJAN: the naive renderer used to leave
     // literal `{% if agent_hooks_layer %}` Jinja in the generated mise.toml,
