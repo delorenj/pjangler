@@ -1,0 +1,40 @@
+{
+  "workflow_version": "1.2.0",
+  "timestamps": { "started": "2026-07-13T11:10:04Z", "last_updated": "2026-07-13T11:10:04Z", "completed": "2026-07-13T11:10:04Z" },
+  "mode": "initial_scan",
+  "scan_level": "deep",
+  "project_root": "/home/delorenj/code/33GOD/pjangler/.worktrees/bmad-init",
+  "output_folder": "/home/delorenj/code/33GOD/pjangler/.worktrees/bmad-init/docs",
+  "repository_type": "monolith",
+  "project_classification": "CLI + MCP server (npm package, TypeScript, ESM, Node>=20)",
+  "project_types": [ { "part_id": "pjangler", "project_type_id": "cli", "display_name": "CLI" } ],
+  "findings": {
+    "tech_stack": "TypeScript/commander/@clack/prompts/@modelcontextprotocol-sdk/zod/yaml/esbuild; external copier(python); mise",
+    "loc": 6583, "source_files": 33,
+    "core_subsystems": ["command/recipe composition (src/commands,src/recipes,utils/registry)", "project registry + bootstrap plan/apply (src/project)", "parity engine 11 rules (src/parity)", "hermes provisioning (src/commands/hermes)"],
+    "cli_commands": ["init","add","list","project(init/list/show/doctor)","recipe(list/describe/run)","command(list/describe/create)","audit","migrate","hermes-agent","config bootstrap","describe"],
+    "mcp_tools_count": 11,
+    "parity_rules": ["sot.project-json","mise.config-root","mise.versioning","sot.agent-symlinks","secrets.env-op","provenance.copier","bmad.scaffold","bmad.version","hermes.pm-scaffold","hermes.untracked-runtimes","systemd.sentinel"],
+    "recipes": ["mise","docker","node","hermes-agent","agent-hooks"]
+  },
+  "completed_steps": [
+    { "step": "step_0.6", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Init; deep scan + cli classification; output_folder=docs" },
+    { "step": "step_1", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Classified monolith, single part project_type_id=cli" },
+    { "step": "step_2", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Existing docs found: README.md, AGENTS.md, product-brief/tech-spec/sprint-plan in docs/" },
+    { "step": "step_3", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Tech stack + architecture pattern (layered CLI + plan/apply + rule reconciler)" },
+    { "step": "step_4", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Conditional scans n/a for cli (all requires_*=false); captured CLI + MCP surface + parity rules as component-inventory" },
+    { "step": "step_5", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "source-tree-analysis.md written" },
+    { "step": "step_6", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "dev + deployment info extracted (mise tasks, esbuild build, npm publish, versioning)" },
+    { "step": "step_8", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "architecture.md written (single part, no suffix)" },
+    { "step": "step_9", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "project-overview, component-inventory, development-guide, deployment-guide written" },
+    { "step": "step_10", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "index.md master retrieval index written; no (To be generated) markers" },
+    { "step": "step_11", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Validation: all expected files present, no incomplete markers" },
+    { "step": "step_12", "status": "completed", "timestamp": "2026-07-13T11:10:04Z", "summary": "Workflow complete" }
+  ],
+  "current_step": "completed",
+  "outputs_generated": [
+    "project-scan-report.json","index.md","project-overview.md","architecture.md",
+    "source-tree-analysis.md","component-inventory.md","development-guide.md","deployment-guide.md"
+  ],
+  "resume_instructions": "Complete. Re-run document-project to full_rescan or deep-dive a specific area."
+}
