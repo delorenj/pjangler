@@ -77,9 +77,21 @@ run = "npm run build"
 description = "Type-check the source with tsc --noEmit"
 run = "npm run typecheck"
 
+# Cut a release in ONE commit: gate (build+test) -> bump -> commit -> tag the
+# commit -> publish -> push. This is the task you want for shipping a new
+# version — it owns the bump so you never commit twice. Level defaults to patch.
+#   mise run release            # patch
+#   mise run release minor      # or major
+#   mise run release -- --dry-run   # gates + intent only, mutates nothing
+[tasks.release]
+description = "Cut a release: build+test, bump [patch|minor|major], one commit, tag it, publish, push"
+run = "{{config_root}}/.mise/scripts/release.sh"
+
+# Publish the CURRENT package.json version as-is (NO bump). `release` is the
+# normal path; use this only to re-push an already-bumped version.
 [tasks.publish]
-description = "Bump patch + build, verify templates, publish to npm (fresh 1Password TOTP)"
-depends = ["version:bump-patch", "build"]
+description = "Publish the current version to npm as-is, no bump (use `mise run release` to cut a version)"
+depends = ["build"]
 run = [
   "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
   # --otp resolved at publish time; a TOTP can't be injected statically via env/.npmrc
