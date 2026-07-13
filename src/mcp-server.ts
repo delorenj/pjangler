@@ -298,7 +298,7 @@ server.registerTool(
         return asText({ ...plan, guidance: parityGuidance() });
       }
 
-      const result = executeProjectInitPlan(plan);
+      const result = await executeProjectInitPlan(plan);
       if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
 
       let agentResult: Awaited<ReturnType<typeof runRecipeWithCapture>> | undefined;
@@ -377,7 +377,7 @@ server.registerTool(
         overwrite: input.force ?? false,
       });
       if (!input.apply) return asText(plan);
-      return asText(executeProjectInitPlan(plan));
+      return asText(await executeProjectInitPlan(plan));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }

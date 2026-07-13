@@ -4,6 +4,15 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import YAML from "yaml";
 import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
+import {
+  isPgRegistryEnabled,
+  PgRegistryStore,
+  pgRegistryConfigFromEnv,
+  type RegistryStore,
+  type DualWriteRegistryStore,
+} from "./RegistryStore";
+
+export { isPgRegistryEnabled, pgRegistryConfigFromEnv, PgRegistryStore, type RegistryStore, type DualWriteRegistryStore };
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 export const PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
@@ -490,7 +499,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   return { ok: true, apply, dryRun: !apply, live, registryPath, project, manifest, actions };
 }
 
-export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecutionResult {
+export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<ProjectInitExecutionResult> {
   const logs: string[] = [];
   const errors: string[] = [];
   const changedFiles: string[] = [];
@@ -546,6 +555,17 @@ export function executeProjectInitPlan(plan: ProjectInitPlan): ProjectInitExecut
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
       saveProjectRegistry(registry, pendingRegistryAction.registryPath);
       changedFiles.push(pendingRegistryAction.registryPath);
+
+      if (isPgRegistryEnabled()) {
+        try {
+          const pgStore = new PgRegistryStore(pgRegistryConfigFromEnv());
+          await pgStore.upsert(pendingRegistryAction.slug, pendingRegistryAction.project);
+          await pgStore.close();
+          logs.push("registry: PG dual-write complete");
+        } catch (pgErr) {
+          logs.push(`registry: PG dual-write failed (yaml is authoritative): ${pgErr instanceof Error ? pgErr.message : pgErr}`);
+        }
+      }
     }
   }
 

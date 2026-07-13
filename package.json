@@ -23,7 +23,10 @@
     "start": "node dist/index.js",
     "mcp": "node dist/mcp-server.js",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/parity-migrate-regressions.mjs && node tests/mcp-catalog-regressions.mjs && node tests/mcp-server-regressions.mjs && node tests/project-registry-regressions.mjs",
+    "test": "node tests/parity-migrate-regressions.mjs && node tests/mcp-catalog-regressions.mjs && node tests/mcp-server-regressions.mjs && node tests/project-registry-regressions.mjs && node tests/pg-registry-regressions.mjs",
+    "migrate:up": "node-pg-migrate --migrations-dir migrations up",
+    "migrate:down": "node-pg-migrate --migrations-dir migrations down",
+    "migrate:create": "node-pg-migrate --migrations-dir migrations create",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -39,12 +42,15 @@
     "@clack/prompts": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
+    "pg": "^8.16.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "@types/pg": "^8.15.0",
     "esbuild": "^0.25.0",
+    "node-pg-migrate": "^8.0.0",
     "typescript": "^5"
   }
 }

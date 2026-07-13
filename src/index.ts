@@ -509,7 +509,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       }
 
       const initResult = selectedPlan.actions.length
-        ? executeProjectInitPlan(selectedPlan)
+        ? await executeProjectInitPlan(selectedPlan)
         : { ok: true, plan: selectedPlan, logs: [], errors: [], changedFiles: [] };
       const migrationReport = selection.selectedParityRules.length
         ? runMigrationForRules(selection.selectedParityRules, target.targetDir, false)

@@ -1294,7 +1294,235 @@ import { spawnSync as spawnSync5 } from "node:child_process";
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync3, renameSync, statSync, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { basename as basename2, delimiter, dirname as dirname4, join as join9, resolve } from "node:path";
+import YAML2 from "yaml";
+
+// src/project/RegistryStore.ts
+import { Pool } from "pg";
 import YAML from "yaml";
+function pgRegistryConfigFromEnv(env2 = process.env) {
+  return {
+    host: env2.PGHOST || "localhost",
+    port: parseInt(env2.PGPORT || "5432", 10),
+    user: env2.PGUSER || "delorenj",
+    password: env2.PGPASSWORD || "",
+    database: env2.PGDATABASE || "33god"
+  };
+}
+var PgRegistryStore = class {
+  pool;
+  constructor(config) {
+    this.pool = new Pool({
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      password: config.password,
+      database: config.database
+    });
+  }
+  async load() {
+    const client = await this.pool.connect();
+    try {
+      const { rows } = await client.query(
+        `SELECT p.id, p.name, p.description, p.slug, p.status,
+                p.source_artifacts, p.template, p.automation,
+                p.created_at, p.updated_at,
+                r.id AS repo_id, r.local_path
+         FROM public.projects p
+         LEFT JOIN public.repos r ON r.project_id = p.id
+         WHERE p.slug IS NOT NULL`
+      );
+      const projects = {};
+      for (const row of rows) {
+        const slug = row.slug;
+        const ticketProvider = await this.loadTicketProvider(client, row.id);
+        const agents = await this.loadAgents(client, row.id, slug);
+        projects[slug] = {
+          name: row.name ?? "",
+          slug,
+          repo_path: row.local_path ?? "",
+          description: row.description ?? "",
+          status: row.status ?? "planned",
+          source_artifacts: row.source_artifacts ?? [],
+          template: row.template ?? {
+            commonproject: { enabled: false, primary_language: "python" }
+          },
+          ticket_provider: ticketProvider,
+          agents,
+          automation: row.automation ?? void 0,
+          created_at: row.created_at.toISOString(),
+          updated_at: row.updated_at.toISOString()
+        };
+      }
+      const registry = {
+        schema_version: PROJECT_REGISTRY_SCHEMA_VERSION,
+        projects
+      };
+      validateProjectRegistry(registry);
+      return registry;
+    } finally {
+      client.release();
+    }
+  }
+  async save(registry) {
+    validateProjectRegistry(registry);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const [slug, record] of Object.entries(registry.projects)) {
+        await this.upsertInTx(client, slug, record);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+  async upsert(slug, record) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.upsertInTx(client, slug, record);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+  async getBySlug(slug) {
+    const registry = await this.load();
+    return registry.projects[slug];
+  }
+  async getByRepoPath(repoPath) {
+    const registry = await this.load();
+    return Object.values(registry.projects).find(
+      (p6) => p6.repo_path === repoPath
+    );
+  }
+  async close() {
+    await this.pool.end();
+  }
+  // --- private helpers ---
+  async upsertInTx(client, slug, record) {
+    if (!slug) throw new Error("PgRegistryStore.upsert: slug is required");
+    const projectResult = await client.query(
+      `INSERT INTO public.projects (name, description, slug, status, source_artifacts, template, automation)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (slug) WHERE slug IS NOT NULL
+       DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         status = EXCLUDED.status,
+         source_artifacts = EXCLUDED.source_artifacts,
+         template = EXCLUDED.template,
+         automation = EXCLUDED.automation
+       RETURNING id`,
+      [
+        record.name,
+        record.description,
+        slug,
+        record.status,
+        JSON.stringify(record.source_artifacts),
+        JSON.stringify(record.template),
+        record.automation ? JSON.stringify(record.automation) : null
+      ]
+    );
+    const projectId = projectResult.rows[0]?.id;
+    if (!projectId) throw new Error(`Failed to upsert project: ${slug}`);
+    await client.query(
+      `INSERT INTO public.repos (project_id, local_path)
+       VALUES ($1, $2)
+       ON CONFLICT (local_path)
+       DO UPDATE SET project_id = EXCLUDED.project_id
+       RETURNING id`,
+      [projectId, record.repo_path]
+    );
+    const repoResult = await client.query(
+      `SELECT id FROM public.repos WHERE project_id = $1 AND local_path = $2`,
+      [projectId, record.repo_path]
+    );
+    const repoId = repoResult.rows[0]?.id;
+    if (!repoId) throw new Error(`Failed to find repo for project ${slug} at path ${record.repo_path}`);
+    await this.upsertTicketProvider(client, projectId, repoId, record.ticket_provider);
+    await client.query(
+      `DELETE FROM public.project_agents WHERE project_id = $1`,
+      [projectId]
+    );
+    for (const [agentKey, agent] of Object.entries(record.agents)) {
+      await client.query(
+        `INSERT INTO public.project_agents (repo_id, project_id, agent_key, role, role_dir, provisioning_state)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [repoId, projectId, agentKey, agent.role, agent.role_dir ?? null, agent.provisioning_state]
+      );
+    }
+  }
+  async loadTicketProvider(client, projectId) {
+    const { rows } = await client.query(
+      `SELECT provider_type, workspace, identifier, board_id, state
+       FROM public.project_ticket_boards
+       WHERE project_id = $1
+       LIMIT 1`,
+      [projectId]
+    );
+    if (!rows.length) {
+      return { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" };
+    }
+    const row = rows[0];
+    return {
+      type: row.provider_type,
+      workspace: row.workspace ?? void 0,
+      identifier: row.identifier ?? void 0,
+      board_id: row.board_id ?? void 0,
+      state: row.state ?? void 0
+    };
+  }
+  async loadAgents(client, projectId, slug) {
+    const { rows } = await client.query(
+      `SELECT agent_key, role, role_dir, provisioning_state
+       FROM public.project_agents
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    const agents = {};
+    for (const row of rows) {
+      agents[row.agent_key] = {
+        role: row.role,
+        provisioning_state: row.provisioning_state,
+        role_dir: row.role_dir ?? void 0
+      };
+    }
+    return agents;
+  }
+  async upsertTicketProvider(client, projectId, repoId, tp) {
+    await client.query(
+      `DELETE FROM public.project_ticket_boards WHERE project_id = $1`,
+      [projectId]
+    );
+    await client.query(
+      `INSERT INTO public.project_ticket_boards
+         (repo_id, project_id, provider_type, workspace, identifier, board_id, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        repoId,
+        projectId,
+        tp.type,
+        tp.workspace ?? null,
+        tp.identifier ?? null,
+        tp.board_id ?? null,
+        tp.state ?? null
+      ]
+    );
+  }
+};
+var PJ_REGISTRY_PG_ENV = "PJ_REGISTRY_PG";
+function isPgRegistryEnabled(env2 = process.env) {
+  return env2[PJ_REGISTRY_PG_ENV] === "1" || env2[PJ_REGISTRY_PG_ENV] === "true";
+}
+
+// src/project/index.ts
 var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
@@ -1311,7 +1539,7 @@ function emptyProjectRegistry() {
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
   if (!existsSync7(path)) return emptyProjectRegistry();
-  const raw = YAML.parse(readFileSync3(path, "utf8"));
+  const raw = YAML2.parse(readFileSync3(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -1326,7 +1554,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
   mkdirSync4(dirname4(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync4(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync4(temp, YAML2.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -1553,7 +1781,7 @@ function planProjectInit(input) {
   );
   return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
 }
-function executeProjectInitPlan(plan) {
+async function executeProjectInitPlan(plan) {
   const logs = [];
   const errors = [];
   const changedFiles = [];
@@ -1604,6 +1832,16 @@ function executeProjectInitPlan(plan) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
       saveProjectRegistry(registry, pendingRegistryAction.registryPath);
       changedFiles.push(pendingRegistryAction.registryPath);
+      if (isPgRegistryEnabled()) {
+        try {
+          const pgStore = new PgRegistryStore(pgRegistryConfigFromEnv());
+          await pgStore.upsert(pendingRegistryAction.slug, pendingRegistryAction.project);
+          await pgStore.close();
+          logs.push("registry: PG dual-write complete");
+        } catch (pgErr) {
+          logs.push(`registry: PG dual-write failed (yaml is authoritative): ${pgErr instanceof Error ? pgErr.message : pgErr}`);
+        }
+      }
     }
   }
   return { ok: errors.length === 0, plan, logs, errors, changedFiles };
@@ -2048,7 +2286,7 @@ import { basename as basename3, dirname as dirname7, join as join12, relative, r
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
-import YAML2 from "yaml";
+import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
@@ -2928,7 +3166,7 @@ function readInstalledBmadVersion(repoRoot) {
   const raw = safeReadText(join12(repoRoot, "_bmad", "_config", "manifest.yaml"));
   if (!raw) return void 0;
   try {
-    const parsed = YAML2.parse(raw);
+    const parsed = YAML3.parse(raw);
     const version = parsed?.installation?.version;
     return typeof version === "string" && version.trim() ? version.trim() : void 0;
   } catch {
@@ -4135,7 +4373,7 @@ server.registerTool(
       if (dryRun) {
         return asText({ ...plan, guidance: parityGuidance() });
       }
-      const result = executeProjectInitPlan(plan);
+      const result = await executeProjectInitPlan(plan);
       if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
       let agentResult;
       if (input.provisionAgent) {
@@ -4211,7 +4449,7 @@ server.registerTool(
         overwrite: input.force ?? false
       });
       if (!input.apply) return asText(plan);
-      return asText(executeProjectInitPlan(plan));
+      return asText(await executeProjectInitPlan(plan));
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }
