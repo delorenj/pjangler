@@ -13,6 +13,7 @@ import { DockerRecipe } from "../recipes/DockerRecipe";
 import { NodeRecipe } from "../recipes/NodeRecipe";
 import { HermesAgentRecipe } from "../recipes/HermesAgentRecipe";
 import { AgentHooksRecipe } from "../recipes/AgentHooksRecipe";
+import { MiseOpInjectRecipe } from "../recipes/MiseOpInjectRecipe";
 
 // Import all commands
 import { CopyAgentHooksTree, WireMiseAgentHooks } from "../commands/AgentHooksCommands";
@@ -25,6 +26,7 @@ import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
 import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
 import { AddMiseCodegraphScript } from "../commands/AddMiseCodegraphScript";
 import { AddDotenv } from "../commands/AddDotenv";
+import { WireMiseOpInject } from "../commands/WireMiseOpInject";
 
 export interface RecipeInfo {
   name: string;
@@ -80,6 +82,12 @@ export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
     description: "Retrofit the project-scoped agent-hooks + skill fan-out layer (Claude/Codex/Kimi/Hermes hooks via mise enter/leave)",
     class: AgentHooksRecipe,
     commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"]
+  },
+  "mise-op-inject": {
+    name: "mise-op-inject",
+    description: "Wire up op-inject script to mise.toml for 1Password secret resolution",
+    class: MiseOpInjectRecipe,
+    commands: ["WireMiseOpInject"]
   }
 };
 
@@ -152,6 +160,12 @@ export const COMMAND_REGISTRY: Record<string, CommandInfo> = {
     description: "Create .env.example file",
     group: "environment",
     class: AddDotenv
+  },
+  WireMiseOpInject: {
+    name: "WireMiseOpInject",
+    description: "Wire up op-inject script to mise.toml for 1Password secret resolution",
+    group: "mise",
+    class: WireMiseOpInject
   }
 };
 

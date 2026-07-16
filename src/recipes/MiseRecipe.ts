@@ -5,6 +5,8 @@ import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
 import { AddMiseBaseToml } from "../commands/AddMiseBaseToml";
 import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
 import { AddMiseCodegraphScript } from "../commands/AddMiseCodegraphScript";
+import { AddMiseCodegraphWireScript } from "../commands/AddMiseCodegraphWireScript";
+import { WireMiseOpInject } from "../commands/WireMiseOpInject";
 import type { CommandContext } from "../commands/Command";
 
 export class MiseRecipe extends Recipe {
@@ -16,7 +18,9 @@ export class MiseRecipe extends Recipe {
       .addIngredient(AddMiseTasksStructure)
       .addIngredient(AddMiseBaseToml)
       .addIngredient(AddMiseBaseScript)
-      .addIngredient(AddMiseCodegraphScript);
+      .addIngredient(AddMiseCodegraphScript)
+      .addIngredient(AddMiseCodegraphWireScript)
+      .addIngredient(WireMiseOpInject);
   }
 
   protected printNextSteps(): void {

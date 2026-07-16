@@ -16,79 +16,56 @@ export class AddMiseCodegraphScript extends Command {
     }
 
     const content = `#!/usr/bin/env bash
-# Mise enter hook: ensure the CodeGraph CLI is available and initialize the
-# project index. If \`codegraph\` is not installed, this script installs it
-# non-interactively into the project-local .mise/bin directory and retries.
-#
-# This is intended to run from a mise enter hook so onboarding a new host is
-# fully automatic.
+# Mise enter hook: ensure the CodeGraph MCP Server is running via Docker.
+# This containerized approach ensures zero host dependencies and live-syncs
+# the graph. The agent connects to it via SSE (Server-Sent Events).
 
 set -euo pipefail
 
 REPO_ROOT="\${MISE_PROJECT_ROOT:-\$(cd "\$(dirname "\$0")/../.." && pwd)}"
-PROJECT_BIN_DIR="\$REPO_ROOT/.mise/bin"
-mkdir -p "\$PROJECT_BIN_DIR"
+PROJECT_NAME="\$(basename "\$REPO_ROOT")"
+CONTAINER_NAME="codegraph-mcp-\$PROJECT_NAME"
+CACHE_DIR="\$REPO_ROOT/.codegraph_cache"
 
-# Install the CodeGraph CLI into the project-local bin directory.
-install_codegraph() {
-  echo "[mise] codegraph not found. Installing non-interactively..."
-  export CODEGRAPH_BIN_DIR="\$PROJECT_BIN_DIR"
-  curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+mkdir -p "\$CACHE_DIR"
 
-  if [ -x "\$PROJECT_BIN_DIR/codegraph" ]; then
-    export PATH="\$PROJECT_BIN_DIR:\$PATH"
-  else
-    echo "[mise] codegraph install did not place a binary at \$PROJECT_BIN_DIR/codegraph" >&2
-    return 1
-  fi
-}
+# Generate a consistent port between 8045 and 8999 based on REPO_ROOT
+PORT_HASH=\$(echo -n "\$REPO_ROOT" | md5sum | awk '{print \$1}')
+PORT_DEC=\$(printf "%d" "0x\${PORT_HASH:0:4}")
+PORT=\$(( 8045 + (PORT_DEC % 955) ))
 
-# Ensure a codegraph binary is available on PATH.
-ensure_codegraph() {
-  if command -v codegraph >/dev/null 2>&1; then
-    return 0
-  fi
+if ! docker ps -q -f name="^/\${CONTAINER_NAME}\$" >/dev/null 2>&1; then
+  echo "[mise] Starting CodeGraph MCP Docker container..."
+  
+  # Remove stopped container if it exists
+  docker rm -f "\$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-  # Check the project-local bin dir first (previous install from this hook).
-  if [ -x "\$PROJECT_BIN_DIR/codegraph" ]; then
-    export PATH="\$PROJECT_BIN_DIR:\$PATH"
-    return 0
-  fi
+  # We mount the repo to the EXACT same path so absolute paths from agents match
+  docker run -d \\
+    --name="\$CONTAINER_NAME" \\
+    --restart=unless-stopped \\
+    -p "\$PORT:8045" \\
+    -v "\$CACHE_DIR:/home/node/.cache" \\
+    -v "\$REPO_ROOT:\$REPO_ROOT" \\
+    -e PORT=8045 \\
+    -e PUID="\$(id -u)" \\
+    -e PGID="\$(id -g)" \\
+    -e PROTOCOL=HTTP \\
+    -e ENABLE_HTTPS=false \\
+    mekayelanik/codegraphcontext-mcp:stable >/dev/null
 
-  # Check typical user-level install locations before fetching anything.
-  for d in "\$HOME/.local/bin" "\$HOME/.codegraph/current/bin"; do
-    if [ -x "\$d/codegraph" ]; then
-      export PATH="\$d:\$PATH"
-      return 0
-    fi
-  done
+  echo "[mise] CodeGraph SSE running at http://localhost:\$PORT/sse"
+fi
 
-  install_codegraph
-}
+# Run init inside the container to ensure the index is bootstrapped.
+# The MCP server process will maintain live sync automatically.
+docker exec "\$CONTAINER_NAME" codegraph init -i "\$REPO_ROOT" >/dev/null 2>&1 || true
 
-# Attempt to initialize the project graph. If the command is missing, install
-# it and retry once.
-init_project() {
-  local err_file
-  err_file="\$(mktemp)"
-  trap 'rm -f "\$err_file"' RETURN
-
-  if codegraph init -i "\$REPO_ROOT" 2>"\$err_file"; then
-    return 0
-  fi
-
-  # If the failure looks like a missing binary, install and retry.
-  if grep -qiE 'command not found|not installed|No such file|executable file not found' "\$err_file" 2>/dev/null; then
-    ensure_codegraph
-    codegraph init -i "\$REPO_ROOT"
-    return 0
-  fi
-
-  cat "\$err_file" >&2
-  return 1
-}
-
-init_project
+# Wire up the MCP server to local agents
+WIRE_SCRIPT="\$(dirname "\$0")/codegraph-wire.sh"
+if [ -x "\$WIRE_SCRIPT" ]; then
+  "\$WIRE_SCRIPT"
+fi
 `;
 
     this.writeFile(filePath, content);
