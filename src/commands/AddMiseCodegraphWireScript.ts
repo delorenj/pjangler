@@ -65,6 +65,18 @@ inject_sse "\$HOME/.kimi-code/mcp.json" "Kimi"
 
 # 5. OpenCode (Global)
 inject_sse "\$HOME/.opencode/mcp.json" "OpenCode"
+
+# 6. Cursor (Global)
+inject_sse "\$HOME/.cursor/mcp.json" "Cursor"
+
+# 7. VSCode native MCP (Global)
+inject_sse "\$HOME/.vscode/mcp.json" "VSCode"
+
+# 8. Cline (VSCode extension)
+inject_sse "\$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" "Cline"
+
+# 9. Roo (VSCode extension)
+inject_sse "\$HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" "Roo Code"
 `;
 
     this.writeFile(filePath, content);
