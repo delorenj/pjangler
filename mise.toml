@@ -34,6 +34,16 @@ run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"
 description = "Reconcile every deployed Hermes agent with the current template + fleet contract"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh --apply"
 
+# Backfill: discover every git repo under a root dir and register each as a
+# formal pjangler project (writes the canonical .project.json). Dry-run by
+# default; pass --apply to write, --plane to also register in Plane.
+#   mise run projects:backfill -- /home/delorenj/code
+#   mise run projects:backfill -- /home/delorenj/code --apply
+[tasks."projects:backfill"]
+description = "Scan a root dir for git repos and register each as a formal pjangler project (dry-run unless --apply)"
+alias = "projects:register"
+run = "{{config_root}}/.mise/scripts/backfill-projects.sh"
+
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
