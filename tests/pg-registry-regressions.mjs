@@ -17,7 +17,7 @@ const env = {
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", env, ...opts });
 const psql = (db, q) => run("psql", ["-h", env.PGHOST, "-U", env.PGUSER, "-d", db, "-tAc", q]);
-const have = (bin) => run("bash", ["-lc", `command -v ${bin} >/dev/null`]).status === 0;
+const have = (bin) => run(bin, ["--version"]).status === 0;
 
 // Availability probe — skip (exit 0) if we can't reach PG or bun is missing.
 if (!have("bun") || psql("postgres", "select 1").status !== 0) {
