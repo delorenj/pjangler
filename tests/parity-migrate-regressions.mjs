@@ -95,6 +95,7 @@ try {
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.match(mise, /_\.path = \["\.mise\/scripts", "bin", "agents\/hermes\/pm"\]/, "mise.toml _.path should include agents/hermes/pm and preserve existing entries");
+    assert.match(mise, /sync-skills\.py --scope project/, "mise.toml should install the project skills sync hook");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
@@ -144,6 +145,8 @@ run = "echo still here"
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh'"/, "link-agentfiles hook must be single-quoted (space-safe)");
     assert.match(mise, /script = "op inject -i \.env\.op > \.env"/, "migrate should install canonical dotenv hook");
+    assert.match(mise, /script = "sync-skills\.py --scope project"/, "migrate should install canonical skills sync hook");
+    assert.match(mise, /\[tasks\.skills-sync\]/, "migrate should add the canonical skills-sync task");
     assertMiseParses(repo, "preserve-hooks");
   }
 
@@ -254,10 +257,13 @@ run = "echo still here"
     repos.push(repo);
     run(["migrate", "mise.config-root", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "1" });
 
-    assert.equal(existsSync(join(repo, "mise.toml")), true, "migrate must create mise.toml when missing");
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml from template should contain link-agentfiles task");
     assert.match(mise, /op inject -i \.env\.op > \.env/, "mise.toml should be normalized to current AGENTS-linking contract");
+    assert.match(mise, /sync-skills\.py --scope project/, "mise.toml should run project skill sync on enter");
+    assert.match(mise, /\[tasks\.skills-sync\]/, "mise.toml should include the skills-sync task");
+    assert.match(mise, /patterns = \["\.agents\/skills\.json"\]/, "mise.toml should watch the project skills manifest");
     assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
     assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
@@ -283,8 +289,10 @@ run = "echo still here"
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml should still contain the link-agentfiles task");
     assert.match(mise, /op inject -i \.env\.op > \.env/, "mise.toml should retain the dotenv enter hook");
+    assert.match(mise, /sync-skills\.py --scope project/, "skills sync should stay enabled even when the hook layer is skipped");
+    assert.match(mise, /\[tasks\.skills-sync\]/, "skills-sync task should remain when the hook layer is skipped");
     assert.doesNotMatch(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer OFF should omit the hooks-sync task");
-    assert.doesNotMatch(mise, /link-project-skills-to-clis/, "agent-hooks layer OFF should omit the skill fan-out wiring");
+    assert.doesNotMatch(mise, /link-project-skills-to-clis/, "agent-hooks layer OFF should omit the legacy skill fan-out wiring");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "0" }));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
@@ -299,6 +307,53 @@ run = "echo still here"
     assert.equal(result.status, "applied", JSON.stringify(result));
     assert.equal(existsSync(join(repo, "mise.toml")), false, "dry-run must not create mise.toml");
     assert.ok(result.changedFiles.some((f) => f.endsWith("mise.toml")), "dry-run should report mise.toml would be created");
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-legacy");
+    repos.push(repo);
+    mkdirSync(join(repo, ".agents", "skills"), { recursive: true });
+    mkdirSync(join(repo, ".mise", "scripts"), { recursive: true });
+    writeFileSync(join(repo, ".mise", "scripts", "link-project-skills-to-clis.sh"), "#!/bin/bash\n");
+    writeFileSync(join(repo, ".mise", "scripts", "unlink-project-skills-from-clis.sh"), "#!/bin/bash\n");
+    writeFileSync(
+      join(repo, ".agents", "local.example.json"),
+      JSON.stringify({ hooks: { disabled: [] }, skills: { defer_to_global: true } }, null, 2) + "\n"
+    );
+    writeFileSync(
+      join(repo, "mise.toml"),
+      `[env]\n_.path = [".mise/scripts"]\n\n[[hooks.enter]]\nscript = "sync-skills.py --scope project"\n\n[tasks.skills-relink]\nrun = "{{config_root}}/.mise/scripts/link-project-skills-to-clis.sh"\n`
+    );
+
+    const staleAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const staleFinding = staleAudit.rules.find((r) => r.id === "skills.project-manifest");
+    assert.equal(staleFinding.status, "fail", JSON.stringify(staleFinding));
+
+    run(["migrate", "skills.project-manifest", repo, "--json"]);
+
+    const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
+    assert.equal(manifest.inherit_global, true, "migrate should create the canonical skills manifest");
+    assert.equal(manifest.registry, "https://github.com/delorenj/skillex.git");
+    assert.deepEqual(manifest.skills, []);
+    assert.equal(existsSync(join(repo, ".agents", "skills")), false, "empty legacy .agents/skills dir should be removed");
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "link-project-skills-to-clis.sh")), false, "legacy link script should be removed");
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "unlink-project-skills-from-clis.sh")), false, "legacy unlink script should be removed");
+    const localExample = JSON.parse(readFileSync(join(repo, ".agents", "local.example.json"), "utf8"));
+    assert.equal(Object.hasOwn(localExample, "skills"), false, "legacy skills overrides should be removed from local.example");
+
+    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const currentFinding = currentAudit.rules.find((r) => r.id === "skills.project-manifest");
+    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-blocked");
+    repos.push(repo);
+    mkdirSync(join(repo, ".agents", "skills", "example-skill"), { recursive: true });
+    const report = JSON.parse(runAllowFailure(["migrate", "skills.project-manifest", repo, "--json"]));
+    const result = report.results.find((r) => r.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.ok(result.details.some((detail) => detail.includes("example-skill")), JSON.stringify(result));
   }
 
   {

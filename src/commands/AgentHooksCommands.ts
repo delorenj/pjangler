@@ -47,7 +47,7 @@ function resolveTemplateRoot(): string {
 
 /**
  * Copy the generic project-scoped agent-hooks tree (hooks SSOT + sync engine +
- * hindsight scripts + hermes adapter + skill linker + hindsight-setup +
+ * hindsight scripts + hermes adapter + skills manifest + hindsight-setup +
  * local.example.json) from the CommonProject template into the target repo.
  * Files are already project-agnostic (bank = repo basename, op ref is a
  * placeholder), so no rendering is needed.
@@ -67,9 +67,8 @@ export class CopyAgentHooksTree extends Command {
     // relative path -> whether it's a directory (copied recursively)
     const items: Array<{ rel: string; dir: boolean }> = [
       { rel: ".agents/hooks", dir: true },
+      { rel: ".agents/skills.json", dir: false },
       { rel: ".agents/local.example.json", dir: false },
-      { rel: ".mise/scripts/link-project-skills-to-clis.sh", dir: false },
-      { rel: ".mise/scripts/unlink-project-skills-from-clis.sh", dir: false },
       { rel: ".mise/scripts/hindsight-setup.sh", dir: false },
     ];
 
@@ -128,13 +127,9 @@ export class WireMiseAgentHooks extends Command {
     }
 
     const cr = WireMiseAgentHooks.CR;
-    const enterAdds = [
-      `  "${cr}/.mise/scripts/link-project-skills-to-clis.sh",`,
-      `  "${cr}/.agents/hooks/sync.py --install --quiet",`,
-    ].join("\n");
+    const enterAdds = [`  "sync-skills.py --scope project",`, `  "${cr}/.agents/hooks/sync.py --install --quiet",`].join("\n");
     const leaveBlock = [
       "leave = [",
-      `  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",`,
       `  "${cr}/.agents/hooks/sync.py --uninstall --quiet",`,
       "]",
     ].join("\n");
@@ -152,7 +147,7 @@ export class WireMiseAgentHooks extends Command {
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
           const sep = /[,[]\s*$/.test(head) ? "" : ",";
-          return `${head}${sep}\n  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",\n  "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
+          return `${head}${sep}\n  "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
         content = content.replace(enterRe, (m) => `${m}\n${leaveBlock}`);
@@ -163,6 +158,14 @@ export class WireMiseAgentHooks extends Command {
     const appended = [
       "",
       WireMiseAgentHooks.MARKER + " (generated — see .agents/hooks/README.md)",
+      "[[watch_files]]",
+      'patterns = [".agents/skills.json"]',
+      'task = "skills-sync"',
+      "",
+      "[tasks.skills-sync]",
+      'description = "Sync skills from manifest to local CLI dirs"',
+      'run = "sync-skills.py --scope project"',
+      "",
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
       'task = "hooks-sync"',
@@ -178,18 +181,6 @@ export class WireMiseAgentHooks extends Command {
       "[tasks.hooks-uninstall]",
       'description = "Remove per-user agent-hook injections (codex/kimi/hermes)"',
       `run = "${cr}/.agents/hooks/sync.py --uninstall"`,
-      "",
-      "[tasks.link-project-skills-to-clis]",
-      'description = "Fan .agents/skills out to each agent CLI (honors local.json)"',
-      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
-      "",
-      "[tasks.unlink-project-skills-from-clis]",
-      'description = "Remove project skill symlinks from shared per-CLI dirs"',
-      `run = "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh"`,
-      "",
-      "[tasks.skills-relink]",
-      'description = "Re-fan the project skill set to all CLIs"',
-      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
       "",
       "[tasks.hindsight-setup]",
       'description = "Provision this dev\'s shared project Hindsight key from 1Password into .env"',
@@ -210,8 +201,8 @@ export class WireMiseAgentHooks extends Command {
       message: this.formatMessage(
         "✅ Added agent-hooks tasks to mise.toml.\n" +
           "   ⚠️  Could not find a [hooks].enter array to extend — add these to your [hooks] block manually:\n" +
-          `     enter += "${cr}/.mise/scripts/link-project-skills-to-clis.sh", "${cr}/.agents/hooks/sync.py --install --quiet"\n` +
-          `     leave += "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh", "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
+          `     enter += "sync-skills.py --scope project", "${cr}/.agents/hooks/sync.py --install --quiet"\n` +
+          `     leave += "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
       ),
     };
   }

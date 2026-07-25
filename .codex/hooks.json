@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.bmad-loop/bmad_loop_hook.py PreCompact"
+            "command": "python3 /home/delorenj/code/33GOD/pjangler/.bmad-loop/bmad_loop_hook.py PreCompact"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.bmad-loop/bmad_loop_hook.py SessionStart"
+            "command": "python3 /home/delorenj/code/33GOD/pjangler/.bmad-loop/bmad_loop_hook.py SessionStart"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.bmad-loop/bmad_loop_hook.py Stop"
+            "command": "python3 /home/delorenj/code/33GOD/pjangler/.bmad-loop/bmad_loop_hook.py Stop"
           }
         ]
       }

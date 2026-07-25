@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -87,8 +87,10 @@ interface Rule {
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+const SYNC_SKILLS_SCRIPT = "sync-skills.py --scope project";
 const CODEGRAPH_SCRIPT =
   "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
+const SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 
 const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
@@ -98,15 +100,23 @@ const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # any given level of nesting.`;
 
 // Canonical managed enter-hook commands, always installed (space-safe).
-const LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT];
+const LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT, SYNC_SKILLS_SCRIPT];
 
 const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
+[[watch_files]]
+patterns = [".agents/skills.json"]
+task = "skills-sync"
+
 [tasks.link-agentfiles]
 description = "Symlink all agent files to AGENTS.md"
-run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"`;
+run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+
+[tasks.skills-sync]
+description = "Sync skills from manifest to local CLI dirs"
+run = "sync-skills.py --scope project"`;
 
 const VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
@@ -426,6 +436,24 @@ function ensureMiseTomlFromTemplate(ctx: Context, changedFiles: string[]): boole
   return true;
 }
 
+function templateCommonProjectText(ctx: Context, rel: string): string | undefined {
+  const path = join(ctx.pjanglerRoot, "templates", "commonproject", "template", rel);
+  return existsSync(path) ? readText(path) : undefined;
+}
+
+function canonicalSkillsManifest(): string {
+  return `${JSON.stringify(
+    {
+      $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+      inherit_global: true,
+      registry: SKILLS_REGISTRY_URL,
+      skills: [],
+    },
+    null,
+    2
+  )}\n`;
+}
+
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
   const packageJson = join(repoRoot, "package.json");
   return existsSync(packageJson)
@@ -564,6 +592,9 @@ function stripTomlStringsAndComments(line: string): string {
 function isManagedHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
+  if (trimmed === SYNC_SKILLS_SCRIPT) return true;
+  if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
+  if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
   // link-agentfiles.sh, with or without wrapping single quotes / path prefix.
   return /link-agentfiles\.sh'?\s*$/.test(trimmed);
 }
@@ -705,7 +736,12 @@ function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
   const withPath = upsertMisePath(text, requiredMisePathEntries(ctx));
   // Remove stale AGENTS-linking pieces before appending the canonical block.
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, undefined, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, undefined, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.unlink-project-skills-from-clis\]$/, undefined, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-relink\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /\.agents\/skills\.json/, { includePrecedingComments: false });
   cleaned = upsertLinkAgentfilesHooks(cleaned);
   return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
@@ -1315,6 +1351,130 @@ const RULES: Rule[] = [
         summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
         changedFiles,
         details: [],
+      };
+    },
+  },
+  {
+    id: "skills.project-manifest",
+    title: "Skillex project skills manifest",
+    audit: (ctx) => {
+      const details: string[] = [];
+      const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
+      const legacyDir = join(ctx.repoRoot, ".agents", "skills");
+      const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
+      const misePath = join(ctx.repoRoot, "mise.toml");
+      let fixable = true;
+
+      const manifest = tryParseJson(safeReadText(manifestPath));
+      if (!manifest) {
+        details.push(".agents/skills.json missing or invalid JSON");
+      } else {
+        if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
+        if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
+        if (!Array.isArray(manifest.skills)) details.push(".agents/skills.json should define a skills array");
+      }
+
+      if (existsSync(legacyDir)) {
+        const entries = readdirSync(legacyDir);
+        if (entries.length > 0) {
+          details.push(".agents/skills/ still contains legacy committed skills; map them into .agents/skills.json before migrating");
+          fixable = false;
+        } else {
+          details.push(".agents/skills/ legacy directory should be removed");
+        }
+      }
+
+      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+        if (existsSync(join(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
+      }
+
+      const localExample = tryParseJson(safeReadText(localExamplePath));
+      if (localExample && Object.prototype.hasOwnProperty.call(localExample, "skills")) {
+        details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
+      }
+
+      const mise = safeReadText(misePath);
+      if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run sync-skills.py --scope project on enter");
+      if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
+      if (!mise?.includes('[tasks.skills-sync]')) details.push("mise.toml should define a skills-sync task");
+      if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
+        details.push("mise.toml still contains legacy skill-link wiring");
+      }
+
+      return {
+        id: "skills.project-manifest",
+        title: "Skillex project skills manifest",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Skillex skills manifest parity verified" : `${details.length} Skillex migration issue(s) detected`,
+        details,
+        fixable,
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles: string[] = [];
+      const details: string[] = [];
+      const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
+      const legacyDir = join(ctx.repoRoot, ".agents", "skills");
+      const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
+      const misePath = join(ctx.repoRoot, "mise.toml");
+
+      if (existsSync(legacyDir)) {
+        const entries = readdirSync(legacyDir);
+        if (entries.length > 0) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Legacy .agents/skills/ still contains committed skills; migrate them into .agents/skills.json manually first",
+            changedFiles,
+            details: entries.map((entry) => `.agents/skills/${entry}`),
+          };
+        }
+        changedFiles.push(legacyDir);
+        if (!ctx.dryRun) rmSync(legacyDir, { recursive: true, force: true });
+      }
+
+      const expectedManifest = canonicalSkillsManifest();
+      if (safeReadText(manifestPath) !== expectedManifest) {
+        changedFiles.push(manifestPath);
+        if (!ctx.dryRun) writeText(manifestPath, expectedManifest);
+        details.push("Wrote canonical .agents/skills.json manifest");
+      }
+
+      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+        const path = join(ctx.repoRoot, rel);
+        if (existsSync(path)) {
+          changedFiles.push(path);
+          if (!ctx.dryRun) unlinkSync(path);
+        }
+      }
+
+      const templateLocalExample = templateCommonProjectText(ctx, ".agents/local.example.json");
+      const currentLocalExample = safeReadText(localExamplePath);
+      if (templateLocalExample && currentLocalExample && currentLocalExample !== templateLocalExample) {
+        changedFiles.push(localExamplePath);
+        if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
+      }
+
+      if (!existsSync(misePath)) {
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
+        }
+      }
+      const currentMise = readText(misePath);
+      const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
+      if (nextMise !== currentMise) {
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+        if (!ctx.dryRun) writeText(misePath, nextMise);
+      }
+
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Skillex skills manifest contract normalized" : "No changes required",
+        changedFiles,
+        details,
       };
     },
   },

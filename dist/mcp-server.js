@@ -2172,9 +2172,8 @@ var CopyAgentHooksTree = class extends Command {
     }
     const items = [
       { rel: ".agents/hooks", dir: true },
+      { rel: ".agents/skills.json", dir: false },
       { rel: ".agents/local.example.json", dir: false },
-      { rel: ".mise/scripts/link-project-skills-to-clis.sh", dir: false },
-      { rel: ".mise/scripts/unlink-project-skills-from-clis.sh", dir: false },
       { rel: ".mise/scripts/hindsight-setup.sh", dir: false }
     ];
     const created = [];
@@ -2221,13 +2220,9 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
       return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for agent-hooks") };
     }
     const cr = _WireMiseAgentHooks.CR;
-    const enterAdds = [
-      `  "${cr}/.mise/scripts/link-project-skills-to-clis.sh",`,
-      `  "${cr}/.agents/hooks/sync.py --install --quiet",`
-    ].join("\n");
+    const enterAdds = [`  "sync-skills.py --scope project",`, `  "${cr}/.agents/hooks/sync.py --install --quiet",`].join("\n");
     const leaveBlock = [
       "leave = [",
-      `  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",`,
       `  "${cr}/.agents/hooks/sync.py --uninstall --quiet",`,
       "]"
     ].join("\n");
@@ -2244,7 +2239,6 @@ ${enterAdds}${close}`;
         content = content.replace(leaveRe, (_m, head, close) => {
           const sep = /[,[]\s*$/.test(head) ? "" : ",";
           return `${head}${sep}
-  "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh",
   "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
@@ -2256,6 +2250,14 @@ ${leaveBlock}`);
     const appended = [
       "",
       _WireMiseAgentHooks.MARKER + " (generated \u2014 see .agents/hooks/README.md)",
+      "[[watch_files]]",
+      'patterns = [".agents/skills.json"]',
+      'task = "skills-sync"',
+      "",
+      "[tasks.skills-sync]",
+      'description = "Sync skills from manifest to local CLI dirs"',
+      'run = "sync-skills.py --scope project"',
+      "",
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
       'task = "hooks-sync"',
@@ -2271,18 +2273,6 @@ ${leaveBlock}`);
       "[tasks.hooks-uninstall]",
       'description = "Remove per-user agent-hook injections (codex/kimi/hermes)"',
       `run = "${cr}/.agents/hooks/sync.py --uninstall"`,
-      "",
-      "[tasks.link-project-skills-to-clis]",
-      'description = "Fan .agents/skills out to each agent CLI (honors local.json)"',
-      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
-      "",
-      "[tasks.unlink-project-skills-from-clis]",
-      'description = "Remove project skill symlinks from shared per-CLI dirs"',
-      `run = "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh"`,
-      "",
-      "[tasks.skills-relink]",
-      'description = "Re-fan the project skill set to all CLIs"',
-      `run = "${cr}/.mise/scripts/link-project-skills-to-clis.sh"`,
       "",
       "[tasks.hindsight-setup]",
       `description = "Provision this dev's shared project Hindsight key from 1Password into .env"`,
@@ -2301,8 +2291,8 @@ ${leaveBlock}`);
       message: this.formatMessage(
         `\u2705 Added agent-hooks tasks to mise.toml.
    \u26A0\uFE0F  Could not find a [hooks].enter array to extend \u2014 add these to your [hooks] block manually:
-     enter += "${cr}/.mise/scripts/link-project-skills-to-clis.sh", "${cr}/.agents/hooks/sync.py --install --quiet"
-     leave += "${cr}/.mise/scripts/unlink-project-skills-from-clis.sh", "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
+     enter += "sync-skills.py --scope project", "${cr}/.agents/hooks/sync.py --install --quiet"
+     leave += "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
       )
     };
   }
@@ -2317,10 +2307,11 @@ var AgentHooksRecipe = class extends Recipe {
   printNextSteps() {
     console.log("\u{1FA9D} Agent-hooks layer installed!");
     console.log("   Next steps:");
-    console.log("   1. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
-    console.log("   2. git add .claude/settings.json .agents/hooks && commit (codex/kimi/hermes are per-dev)");
-    console.log("   3. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
-    console.log(`   4. If you run a global agent system: echo '{"skills":{"defer_to_global":true}}' > .agents/local.json`);
+    console.log("   1. mise run skills-sync  # sync .agents/skills.json into local CLI dirs");
+    console.log("   2. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
+    console.log("   3. git add .claude/settings.json .agents/hooks .agents/skills.json && commit (codex/kimi/hermes are per-dev)");
+    console.log("   4. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
+    console.log("   5. Optional per-dev hook opt-out: copy .agents/local.example.json -> .agents/local.json");
   }
 };
 
@@ -2494,7 +2485,7 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/parity/index.ts
-import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync2, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync } from "node:fs";
+import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync2, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
 import { basename as basename3, dirname as dirname7, join as join14, relative, resolve as resolve2 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import { homedir as homedir5 } from "node:os";
@@ -2502,21 +2493,31 @@ import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+var SYNC_SKILLS_SCRIPT = "sync-skills.py --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
+var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
 # TODO: Ensure this works for all levels of nesting.
 # i.e. All linked agent files MUST be siblings at
 # any given level of nesting.`;
-var LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT];
+var LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT, SYNC_SKILLS_SCRIPT];
 var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
+[[watch_files]]
+patterns = [".agents/skills.json"]
+task = "skills-sync"
+
 [tasks.link-agentfiles]
 description = "Symlink all agent files to AGENTS.md"
-run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"`;
+run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+
+[tasks.skills-sync]
+description = "Sync skills from manifest to local CLI dirs"
+run = "sync-skills.py --scope project"`;
 var VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block \u2014 do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
@@ -2760,6 +2761,23 @@ function ensureMiseTomlFromTemplate(ctx, changedFiles) {
   }
   return true;
 }
+function templateCommonProjectText(ctx, rel) {
+  const path = join14(ctx.pjanglerRoot, "templates", "commonproject", "template", rel);
+  return existsSync10(path) ? readText(path) : void 0;
+}
+function canonicalSkillsManifest() {
+  return `${JSON.stringify(
+    {
+      $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+      inherit_global: true,
+      registry: SKILLS_REGISTRY_URL,
+      skills: []
+    },
+    null,
+    2
+  )}
+`;
+}
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join14(repoRoot, "package.json");
   return existsSync10(packageJson) ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n" : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
@@ -2887,6 +2905,9 @@ function stripTomlStringsAndComments(line) {
 function isManagedHookEntry(value) {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
+  if (trimmed === SYNC_SKILLS_SCRIPT) return true;
+  if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
+  if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
   return /link-agentfiles\.sh'?\s*$/.test(trimmed);
 }
 function normalizeHookScript(script) {
@@ -2989,7 +3010,12 @@ function upsertLinkAgentfilesHooks(text2) {
 function upsertLinkAgentfilesBlock(text2, ctx) {
   const withPath = upsertMisePath(text2, requiredMisePathEntries(ctx));
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, void 0, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, void 0, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.unlink-project-skills-from-clis\]$/, void 0, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-relink\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /\.agents\/skills\.json/, { includePrecedingComments: false });
   cleaned = upsertLinkAgentfilesHooks(cleaned);
   return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
 }
@@ -3616,6 +3642,118 @@ var RULES = [
         summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
         changedFiles,
         details: []
+      };
+    }
+  },
+  {
+    id: "skills.project-manifest",
+    title: "Skillex project skills manifest",
+    audit: (ctx) => {
+      const details = [];
+      const manifestPath = join14(ctx.repoRoot, ".agents", "skills.json");
+      const legacyDir = join14(ctx.repoRoot, ".agents", "skills");
+      const localExamplePath = join14(ctx.repoRoot, ".agents", "local.example.json");
+      const misePath = join14(ctx.repoRoot, "mise.toml");
+      let fixable = true;
+      const manifest = tryParseJson(safeReadText(manifestPath));
+      if (!manifest) {
+        details.push(".agents/skills.json missing or invalid JSON");
+      } else {
+        if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
+        if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
+        if (!Array.isArray(manifest.skills)) details.push(".agents/skills.json should define a skills array");
+      }
+      if (existsSync10(legacyDir)) {
+        const entries = readdirSync2(legacyDir);
+        if (entries.length > 0) {
+          details.push(".agents/skills/ still contains legacy committed skills; map them into .agents/skills.json before migrating");
+          fixable = false;
+        } else {
+          details.push(".agents/skills/ legacy directory should be removed");
+        }
+      }
+      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+        if (existsSync10(join14(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
+      }
+      const localExample = tryParseJson(safeReadText(localExamplePath));
+      if (localExample && Object.prototype.hasOwnProperty.call(localExample, "skills")) {
+        details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
+      }
+      const mise = safeReadText(misePath);
+      if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run sync-skills.py --scope project on enter");
+      if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
+      if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
+      if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
+        details.push("mise.toml still contains legacy skill-link wiring");
+      }
+      return {
+        id: "skills.project-manifest",
+        title: "Skillex project skills manifest",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Skillex skills manifest parity verified" : `${details.length} Skillex migration issue(s) detected`,
+        details,
+        fixable
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const details = [];
+      const manifestPath = join14(ctx.repoRoot, ".agents", "skills.json");
+      const legacyDir = join14(ctx.repoRoot, ".agents", "skills");
+      const localExamplePath = join14(ctx.repoRoot, ".agents", "local.example.json");
+      const misePath = join14(ctx.repoRoot, "mise.toml");
+      if (existsSync10(legacyDir)) {
+        const entries = readdirSync2(legacyDir);
+        if (entries.length > 0) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Legacy .agents/skills/ still contains committed skills; migrate them into .agents/skills.json manually first",
+            changedFiles,
+            details: entries.map((entry) => `.agents/skills/${entry}`)
+          };
+        }
+        changedFiles.push(legacyDir);
+        if (!ctx.dryRun) rmSync(legacyDir, { recursive: true, force: true });
+      }
+      const expectedManifest = canonicalSkillsManifest();
+      if (safeReadText(manifestPath) !== expectedManifest) {
+        changedFiles.push(manifestPath);
+        if (!ctx.dryRun) writeText(manifestPath, expectedManifest);
+        details.push("Wrote canonical .agents/skills.json manifest");
+      }
+      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+        const path = join14(ctx.repoRoot, rel);
+        if (existsSync10(path)) {
+          changedFiles.push(path);
+          if (!ctx.dryRun) unlinkSync3(path);
+        }
+      }
+      const templateLocalExample = templateCommonProjectText(ctx, ".agents/local.example.json");
+      const currentLocalExample = safeReadText(localExamplePath);
+      if (templateLocalExample && currentLocalExample && currentLocalExample !== templateLocalExample) {
+        changedFiles.push(localExamplePath);
+        if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
+      }
+      if (!existsSync10(misePath)) {
+        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
+        }
+      }
+      const currentMise = readText(misePath);
+      const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
+      if (nextMise !== currentMise) {
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+        if (!ctx.dryRun) writeText(misePath, nextMise);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? "applied" : "noop",
+        summary: changedFiles.length ? "Skillex skills manifest contract normalized" : "No changes required",
+        changedFiles,
+        details
       };
     }
   },
