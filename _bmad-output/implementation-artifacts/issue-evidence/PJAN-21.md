@@ -16,6 +16,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent starting candidate:
   `7cf98590fda77613e3175dd183e1e491f7cf9b8d`
+- Parent v15 implementation commit:
+  `7666ceffbc91a3e15637bdadd514af92d5050a17`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes starting candidate:
   `c373f9b11ef962f4493c3b6cd6859faaca68d253`
@@ -229,6 +231,15 @@
   its packaged local template directory is absent. PJAN-21 changes no package,
   CommonProject, fixture, parent source, or build output.
 - Parent and Hermes `git diff --check` pass.
+- The real close gate was invoked from unrelated cwd `/tmp` through the
+  absolute script path from the exact committed Copier render, with the
+  committed parent repository supplied explicitly:
+
+  ```text
+  CLOSE GATE: PASS for PJAN-21
+  ```
+
+  It emitted event `bb6e139b-90e0-4c52-a0dd-60d39ba756e6`.
 - No live Plane, Linear, or Trello call was made. No parent remote branch,
   main branch, tag, release, version, package file, task ledger, CommonProject,
   root-main event ledger, or unrelated file was changed.
@@ -241,6 +252,8 @@ Ledger updated: yes
   `9fa71fff-87fc-4f9f-a9ef-ab47ac9b8054`.
 - V15 implementation event:
   `5ad71773-a248-4f67-bffa-642c179b1449`.
+- V15 close-gate event:
+  `bb6e139b-90e0-4c52-a0dd-60d39ba756e6`.
 - V14 implementation and close-gate events:
   `84702a1e-df9c-484c-a2bd-b7f5a46acef0`,
   `5a517fe5-0775-4253-be71-ff2881098c93`.
