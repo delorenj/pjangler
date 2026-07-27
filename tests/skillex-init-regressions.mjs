@@ -21,6 +21,7 @@ const root = resolve(import.meta.dirname, "..");
 const sourceCli = join(root, "dist", "index.js");
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-skillex-init-"));
 const explicitBmadPack = process.env.PJ_BMAD_PACK_ROOT?.trim();
+const runMiseIntegration = process.env.PJ_RUN_MISE_INTEGRATION === "1";
 const bmadPack = explicitBmadPack
   ? resolve(explicitBmadPack)
   : join(tmp, "fixtures", "packs", "bmad", "6.10.2");
@@ -91,6 +92,16 @@ function assertProjectContract(projectDir, homeDir) {
   writeFileSync(join(projectDir, ".agents", "skills.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   mkdirSync(join(projectDir, ".codex"), { recursive: true });
+  const projectEnv = { HOME: homeDir, PJ_BMAD_PACK_ROOT: bmadPack };
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+    cwd: projectDir,
+    env: projectEnv,
+  });
+  run("python3", [join(projectDir, ".mise", "scripts", "sync-skills.py"), "--scope", "project"], {
+    cwd: projectDir,
+    env: projectEnv,
+  });
+
   const miseGlobalConfig = join(homeDir, ".config", "mise", "config.toml");
   mkdirSync(dirname(miseGlobalConfig), { recursive: true });
   if (!existsSync(miseGlobalConfig)) writeFileSync(miseGlobalConfig, "");
@@ -105,10 +116,12 @@ function assertProjectContract(projectDir, homeDir) {
     MISE_CEILING_PATHS: tmp,
     MISE_TRUSTED_CONFIG_PATHS: tmp,
   };
-  run("mise", ["run", "skills-sync"], {
-    cwd: projectDir,
-    env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
-  });
+  if (runMiseIntegration) {
+    run("mise", ["run", "skills-sync"], {
+      cwd: projectDir,
+      env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
+    });
+  }
 
   assert.equal(existsSync(join(customSkill, "SKILL.md")), true, "non-BMAD project skill must survive reprovisioning");
   const reprovisioned = JSON.parse(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"));
@@ -118,15 +131,15 @@ function assertProjectContract(projectDir, homeDir) {
   const brokenLink = join(skillsDir, "bmad-agent-pm");
   unlinkSync(brokenLink);
   symlinkSync(join(tmp, "missing-bmad-agent-pm"), brokenLink);
-  run("mise", ["run", "skills-provision-bmad"], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
     cwd: projectDir,
-    env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
+    env: projectEnv,
   });
   assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "bmad-agent-pm"), "broken BMAD links must self-heal");
   const beforeIdempotent = readFileSync(join(projectDir, ".agents", "skills.json"), "utf8");
-  run("mise", ["run", "skills-provision-bmad"], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
     cwd: projectDir,
-    env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
+    env: projectEnv,
   });
   assert.equal(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"), beforeIdempotent, "BMAD provisioning must be idempotent");
 
@@ -267,7 +280,9 @@ try {
   assert.equal(source.contract.customPreserved && installed.contract.customPreserved, true);
   assertAdversarialBoundaries(source.projectDir, homeDir);
 
-  console.log(`Skillex init regressions passed (${explicitBmadPack ? "explicit integration pack" : "hermetic fixture"})`);
+  const packMode = explicitBmadPack ? "explicit integration pack" : "hermetic fixture";
+  const miseMode = runMiseIntegration ? "mise integration exercised" : "mise integration skipped";
+  console.log(`Skillex init regressions passed (${packMode}; ${miseMode})`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
