@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
   `224a59fc4cf14b2215a3fbf9f151e4df58f63a86`
+- Parent implementation commit:
+  `a8d0cdf9bad6d1fa0d734767e92fef0b969502b2`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `1aae4c9d9cf9e134b40365fe5593713aa05ae667`
@@ -142,6 +144,8 @@ Ledger updated: yes
   `248cf0f1-a5ea-4660-991c-37e10b009076`.
 - V8 terminal-review implementation event:
   `fdc9220a-0eab-452a-8459-d2fb3bdaa757`.
+- V8 terminal-review close-gate event:
+  `66aa623d-af98-4b1f-bd31-83f56f9aa33e`.
 
 ## Known Gaps
 
