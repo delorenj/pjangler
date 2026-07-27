@@ -1,280 +1,224 @@
-# Evidence: PJAN-21 — v13 amended-threat-model remediation
+# Evidence: PJAN-21 — v14 provider execution boundary
 
 ## Issue
 
 - Ticket: PJAN-21
+- State: In Progress; Gate 2 unopened
 - Worker: Agent Buttercup / Codex CLI
-- Momo decision:
+- SyntaxSorcerer Gate 1 comment:
+  `2029058e-b78c-42ec-a0dd-96f24cf5e47f`
+- Momo hold decision:
+  `777944dd-4959-42cd-bc0a-275867cd8d9b`
+- Canonical same-UID threat-model decision:
   `43cffa92-7ca9-4369-8f39-9d74d56aa6cb`
-- Canonical Plane amendment comment:
+- Canonical threat-model Plane comment:
   `5a646310-0f79-4866-a202-9aba6558b7ed`
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent starting candidate:
-  `0a49d8e4a1e5811f98b2a0fcd8130ce9b900cbee`
-- Parent implementation commit:
-  `c18d3567c820f6e820f50fe0d78a1b9e4c30d998`
+  `8641351ac7dbb0596745b9ed23e1de23adaed6be`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes starting candidate:
-  `08326421dc346886de154270363d59ba4eba72bd`
+  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`
 - Hermes implementation:
-  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`
+  `c373f9b11ef962f4493c3b6cd6859faaca68d253`
 - Hermes feature ref and fresh fetch:
-  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`
+  `c373f9b11ef962f4493c3b6cd6859faaca68d253`
 - Hermes local and remote main, unchanged:
   `62c05b578cfb5e310292e8034626436335bb1677`
+- Parent local and remote main, unchanged:
+  `3664bd3dac75b152a16276645f4b6751f49d5023`
 
 ## Acceptance Criteria
 
-1. Preserve the post-loop protocol: step 11 follows the final board-status
-   report, asks exactly what hurt, what should change, and whether the fix is
-   repo-local versus external/template/fleet; step 12 remains the final
-   checkpoint.
-2. Use the amended unprivileged threat model. Same-OS-UID peers are trusted.
-   Reject symlinks, replacement path components or trees, stale identities
-   detectable before mutation, and untrusted repository content. Fail closed
-   when descriptor/path identity drift is detected.
-3. Do not claim that an unprivileged controller can prevent an independent
-   trusted same-UID peer from renaming an already-open directory inside the
-   final syscall window. Privileged immutable/mount helpers and trusted
-   mutation daemons are deferred.
-4. Hold the exact `run-retros` and `.bindings` directory descriptors and
-   identities for one store lifetime. Revalidate the repository, retro, and
-   bindings path identities before mutations; use held descriptors and bare
-   filenames for mutations.
-5. If retry finds a valid final-name prepared binding after a crash between
-   no-replace link and the durability barriers, fsync the final file and
-   bindings directory, validate again, and revalidate bound path identities
-   before reuse.
-6. Binding `schema_version` is exact non-boolean integer `1` for prepared and
-   final bindings; JSON `true` and `false` are rejected.
-7. Parent PostgreSQL release evidence uses bounded child execution, a finite
-   capability scan without a login shell, and deterministic pass, skip, or
-   failure output.
-8. Preserve every previously passing PJAN-21 property: trusted artifact-bound
-   finalization, immutable comment identity/body, provider/source/target
-   binding, closed safe persisted shapes, bounded I/O, provider-subtree
-   containment, schema/runtime equality, current Plane cursor semantics, and
-   provider-neutral behavior.
+1. Preserve the post-loop protocol: step 11 asks exactly what hurt, what
+   should change, and whether the fix is repo-local versus
+   external/template/fleet; step 12 remains the final checkpoint.
+2. Before provider launch, validate stable descriptor identity, approved
+   ownership, expected file type, executability where required, and absence
+   of group/world write permission for the provider, controller,
+   `.project.json`, repository root, and every repository-origin path
+   component consumed by delivery.
+3. Revalidate those bound identities and configuration bytes immediately
+   before launch. Detectable drift fails closed with sanitized output.
+4. Give the provider an explicit environment containing fixed runtime fields
+   and only provider-specific artifact-bound configuration. Controller-only
+   environment values are absent and secrets are never printed.
+5. Execute inside a read-only root with only the identity-checked prepared
+   repository and a fresh dedicated temporary directory writable. Reap the
+   complete provider subtree before removing the temporary directory and
+   releasing the exact keyed comment lock.
+6. Preserve the amended unprivileged threat model: same-OS-UID peers are
+   trusted, while symlinks, replacement trees, stale identities detectable
+   before mutation, and repository content writable by other identities are
+   rejected.
+7. Preserve prior durability, binding schema typing, closed persisted shapes,
+   source/target/body binding, pagination and typed-ID behavior, bounded I/O,
+   schema/runtime parity, and provider-neutral behavior.
 
 ## Repo Changes
 
-- Hermes commit `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`
-  changes exactly these paths relative to
-  `08326421dc346886de154270363d59ba4eba72bd`:
+- Hermes commit `c373f9b11ef962f4493c3b6cd6859faaca68d253`
+  changes exactly four paths relative to
+  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`:
   - `template/.scripts/sentinel.prompt.md.jinja`
   - `template/.scripts/sentinel/bin/run-retro.py`
   - `template/.scripts/sentinel/docs/continuous-ticket-orchestration.md`
   - `tests/test_run_retro_contract.py`
-- `RetroStore` now holds the `.bindings` descriptor and device/inode identity
-  for the complete store lifetime. Store-path checks re-open the current
-  repository path with `O_NOFOLLOW` and require byte-current retro and bindings
-  identities before a mutation proceeds.
-- Binding validation, initial publication, and finalization use the held
-  `bindings_fd`; no operation reopens `.bindings` for its mutation target.
-- Existing-final binding retry now performs validation, final-file fsync,
-  bindings-directory fsync, a second validation, and a final store-identity
-  check before returning.
-- Binding validation rejects boolean `schema_version` values even though
-  Python otherwise compares `True == 1`.
-- Prompt and orchestration documentation carry the same amended same-UID trust
-  boundary and retry durability sequence. Generated protocol contains no PJAN
-  reference. The standard artifact schema remains v8.
-- Parent changes are limited to:
-  - `templates/hermes-agent` gitlink
-  - `tests/pg-registry-regressions.mjs`
-  - this evidence file
-  - `_bmad-output/implementation-artifacts/bloodbank-events.jsonl`
-- The parent PG harness now resolves tools through a bounded finite `PATH`
-  scan, runs every child with a timeout and output cap, classifies
-  timeout/output/spawn/signal/exit outcomes, checks every setup/migration/test
-  and cleanup result, and has a deterministic bounded self-test.
+- Delivery opens repository-origin inputs descriptor-relatively with
+  no-follow semantics. It checks every containing directory plus the provider,
+  controller, repository root, and `.project.json` for stable device/inode
+  identity, approved ownership, expected type, and no group/world write bit.
+  Provider and controller files must also be executable.
+- The repository and configuration digest are rebound and revalidated
+  immediately before provider launch. Provider and repository descriptors are
+  passed into the trusted supervisor and validated there again.
+- Provider execution no longer inherits the controller environment. A fixed
+  system `PATH`, bounded locale/proxy/certificate fields, the bound provider
+  name/configuration, and only the selected adapter's required credential and
+  endpoint fields are supplied.
+- Bubblewrap exposes `/` read-only, then overlays only the identity-checked
+  prepared repository and a fresh dedicated temporary directory as writable.
+  Provider-subtree containment completes before that temporary directory is
+  removed or the keyed comment lock is released.
+- Prompt and orchestration documentation describe the same descriptor,
+  environment, containment, and same-UID trust contract. Generated surfaces
+  contain no PJAN-local reference.
+- Parent changes are limited to the Hermes gitlink, this PJAN-21 evidence, and
+  the candidate BloodBank event ledger.
 
 ## Verification
 
-### Review lineage and threat-model decision
+### Review lineage
 
-- Sir Fix-a-Lot gave the original exactly-three-decisions protocol independent
-  specification approval.
-- Doctor Von Code held the early restoration for evidence, durability,
-  sanitization, routing, and generated-ticket leakage. Those repairs remain
-  covered by executable regressions.
-- Fresh v12 reviewers held parent
-  `0a49d8e4a1e5811f98b2a0fcd8130ce9b900cbee` / Hermes
-  `08326421dc346886de154270363d59ba4eba72bd` for moved-descriptor visibility,
-  incomplete binding retry durability, boolean binding versions, and an
-  unbounded login-shell PG probe.
-- The original v13 zero-transient peer-rename demand was tested before the
-  amendment. Against exact Hermes
-  `08326421dc346886de154270363d59ba4eba72bd`:
-
-  ```text
-  Ran 6 tests in 0.206s
-  FAILED (failures=6)
-  ```
-
-  The six probes directly observed:
-  - artifact create wrote its temporary JSON into the relocated directory;
-  - artifact link published its final JSON there;
-  - artifact replace changed the relocated artifact to `posted`;
-  - binding create wrote its temporary binding there;
-  - binding link published the final `.sha256` there; and
-  - binding replace wrote the final document digest there.
-
-  Those probes inspected the moved descriptor-backed directories at each
-  syscall boundary, not merely the replacement pathname.
-- Kernel feasibility receipts:
-
-  ```text
-  OPEN_FD_FLOCK_RENAME=allowed outside_write=outside-write
-  unshare: write failed /proc/self/uid_map: Operation not permitted
-  UNSHARE_BIND_STATUS=1
-  IMMUTABLE_SET_STATUS=errno:1:Operation not permitted
-  ```
-
-  An open directory descriptor plus exclusive `flock` does not prevent an
-  independent same-UID rename. `openat2` constrains resolution but does not pin
-  a directory against later rename; Landlock cannot constrain an independent
-  peer and does not revoke pre-opened descriptors; a private mount namespace
-  does not stop a host peer renaming the underlying tree. Enforcing the
-  stronger demand requires a privileged immutable/mount helper or a trusted
-  mutation daemon.
-- Momo decision `43cffa92-7ca9-4369-8f39-9d74d56aa6cb` and Plane comment
-  `5a646310-0f79-4866-a202-9aba6558b7ed` therefore amend the contract: same-UID
-  peers are trusted, detectable stale/path drift must fail closed, and the
-  impossible final-syscall peer exclusion is not claimed. The intentionally
-  failing six-test class was removed rather than committed or disguised as
-  expected failure.
+- Sir Fix-a-Lot approved the original exactly-three-decisions protocol
+  specification.
+- Doctor Von Code's earlier holds drove the durable artifact, sanitization,
+  deterministic routing, idempotency, and generated-protocol repairs retained
+  by the current suite.
+- SyntaxSorcerer held exact parent
+  `8641351ac7dbb0596745b9ed23e1de23adaed6be` / Hermes
+  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8` because an untrusted provider
+  file could execute with the full controller environment and a writable
+  containment root.
+- Momo decision `777944dd-4959-42cd-bc0a-275867cd8d9b` keeps PJAN-21 active
+  for this narrow Gate 1 remediation. No Plane mutation was performed by the
+  implementation worker.
 
 ### Red-first receipts
 
-- The amended five-test v13 set was added before runtime changes. Against exact
-  Hermes `08326421dc346886de154270363d59ba4eba72bd`:
+- The two exact regressions were added before runtime changes and run against
+  Hermes `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`:
 
   ```text
-  Ran 5 tests in 0.160s
-  FAILED (failures=4)
+  test_mode_0666_provider_is_rejected_before_launch ... FAIL
+  test_world_writable_provider_component_is_rejected_before_launch ... FAIL
+  Ran 2 tests in 1.212s
+  FAILED (failures=2)
   ```
 
-  The replacement `.bindings` tree was accepted, retry emitted no binding file
-  or directory fsync, and prepared/final binding validators accepted JSON
-  `true` as version `1`. The honest `run-retros` relocation-before-mutation
-  rejection already passed; JSON `false` was already rejected. Both boolean
-  values remain explicit committed subtests.
-- Parent PG pre-repair probe exited `1`:
+- An exact-candidate diagnostic confirmed all prohibited effects:
 
   ```text
-  PG_HARNESS_RED login_shell=true spawn=true bounded=false
+  mode_0666: result=posted routing=posted marker_read=True outside_write=True endpoint_calls=1
+  world_writable_component: result=posted routing=posted marker_read=True outside_write=True endpoint_calls=1
   ```
 
-### Green receipts
+### Green receipts and boundary evidence
 
-- Amended v13 focused suite:
-  `Ran 5 tests in 0.154s`, `OK`.
+- Focused seven-test provider-boundary suite:
+  `Ran 7 tests in 4.134s`, `OK`.
+- Those tests prove, without exposing credentials:
+  - mode-`0666` and non-executable providers fail before launch;
+  - group/world-writable provider components and repository roots fail before
+    launch;
+  - a group/world-writable `.project.json` and an untrusted controller fail
+    before launch;
+  - the provider cannot observe a synthetic controller-only marker or the
+    controller's temporary-directory setting;
+  - Plane, Trello, and Linear receive only their selected bound adapter fields;
+  - a realistic local provider can use its dedicated temporary directory and
+    complete one endpoint call, while an outside write is blocked;
+  - the temporary directory is removed and a delayed descendant cannot make a
+    second endpoint call after subtree cleanup.
 - Full exact Hermes suite:
-  `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p
-  'test_*.py' -v`:
-  `Ran 124 tests in 26.350s`, `OK`.
-- Coverage includes relocation detected before mutation with unchanged moved
-  and replacement trees, `.bindings` replacement rejection, crash immediately
-  after the no-replace link, retry fsync ordering, prepared/final boolean
-  rejection, and prompt/docs contract parity.
-- Existing coverage remains green for serial 7-of-7 idempotency, concurrent
-  cross-run comments, independent lock keys, controller death, provider
-  descendants, canonical provider/source/target/body binding, malformed bytes,
-  bounded HTTP/provider data, Plane pagination cycles/snapshot drift/terminal
-  cursors, symlink attacks, monotonic finalization, durability, and
-  schema/runtime acceptance parity.
-- Ruff check passes; Ruff format-check reports both Python files formatted.
-  Python compilation passes.
-- `sh -n` and `dash -n` pass for Plane, Linear, Trello, the provider adapter,
-  and the issue close gate.
-- Draft 2020-12 metaschema validation passes. Jinja parses with 8 opening and
-  8 closing delimiters. All 28 embedded provider Python blocks compile. The
-  rendered prompt contains exactly the three locked step-11 decisions and one
-  final step 12. Prompt/docs normalized parity passes.
-- Hermes and parent `git diff --check` pass.
-- Exact Copier `9.14.0` render used `--trust --skip-tasks --defaults` with
-  `target_repo=pjangler`, `role=pm`, and `ticket_provider=trello` from a clean
-  `git archive` of committed Hermes
-  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`. All seven generated
-  implementation/schema/doc surfaces are byte-equal; decisions are 3/3 and
-  final step 12 occurs once.
-- Normal non-force feature push advanced only
-  `refs/heads/feature/PJAN-21-post-loop-main`. Local HEAD, fresh
-  `ls-remote`, and fetched `FETCH_HEAD` all equal
-  `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`. Hermes local and remote main
-  remain `62c05b578cfb5e310292e8034626436335bb1677`.
+
+  ```text
+  Ran 131 tests in 31.468s
+  OK
+  ```
+
+- Existing executable coverage remains green for serial 7-of-7 idempotency,
+  concurrent comment keys, controller death, provider descendants,
+  artifact-bound finalization, immutable marker/body, canonical
+  provider/source/target binding, malformed bytes, bounded HTTP/provider data,
+  Plane cursor and terminal-page behavior, symlink and replacement attacks,
+  binding retry durability, non-boolean binding versions, monotonic
+  finalization, and schema/runtime acceptance parity.
+- Ruff check and Ruff format-check pass. Python compilation passes.
+- `sh -n` and `dash -n` pass for the Plane, Linear, Trello, provider-adapter,
+  and issue-close-gate scripts.
+- Draft 2020-12 metaschema validation passes. Jinja has 8 opening and 8 closing
+  delimiters. All 28 embedded provider Python blocks compile. Prompt/docs
+  normalized parity passes. The prompt has exactly 3 locked step-11 decisions
+  and one final step 12.
+- Exact Copier `9.14.0` render used a clean archive of committed Hermes
+  `c373f9b11ef962f4493c3b6cd6859faaca68d253` with `--trust --skip-tasks
+  --defaults`, `target_repo=pjangler`, `role=pm`, and
+  `ticket_provider=trello`. All seven generated controller/schema/docs/provider
+  surfaces are byte-equal to committed source; generated PJAN references and
+  cache files both count zero.
+- Normal non-force push advanced only
+  `refs/heads/feature/PJAN-21-post-loop-main`. `ls-remote`, a fresh fetch, and
+  local Hermes HEAD all read
+  `c373f9b11ef962f4493c3b6cd6859faaca68d253`. Hermes main remains
+  `62c05b578cfb5e310292e8034626436335bb1677`.
 - Parent `npm run typecheck` and `npm run build` pass.
-- Direct parent suites pass:
-  - parity migration
-  - MCP catalog
-  - MCP server
-  - project registry
-  - deterministic bounded PG harness self-test
-  - real PostgreSQL registry round trip
-- PG output:
+- Direct parent parity migration, MCP catalog, MCP server, and project registry
+  suites pass.
+- Bounded PostgreSQL harness self-test:
 
   ```text
   PASS pg-registry-regressions self-test bounded_children=2 capability_probes=2
+  ```
+
+- Real local PostgreSQL round trip:
+
+  ```text
   PG_STORE_CHECK_OK: yaml + pg round-trip correct; dual-write ok; legacy slug-NULL row untouched.
   pg-registry-regressions OK
   ```
-- Full parent `npm test` still stops at the unchanged copied-CommonProject
-  Skillex fixture because the packaged template directory is absent. This
-  ticket changes no CommonProject, fixture, package, source, or generated
-  parent build file.
-- `npm ci --ignore-scripts --dry-run` still exits `1` on the unchanged
-  package/lock mismatch beginning with `@types/pg`, `node-pg-migrate`, and
-  `pg`.
-- `git submodule status --recursive` still exits `128` because the existing
-  `.tmp/plugins` gitlink has no `.gitmodules` mapping. This ticket does not
-  change `.gitmodules` or orphan gitlinks.
-- The real absolute close gate was invoked from unrelated cwd `/tmp` using the
-  exact committed Copier `9.14.0` render and explicit parent root. Exact output:
 
-  ```text
-  CLOSE GATE: PASS for PJAN-21
-  ```
-
-  It emitted close-gate event
-  `f6a062d2-caf3-4abe-bad8-e40efdc62f04`.
+- Parent and Hermes `git diff --check` pass.
 - No live Plane, Linear, or Trello mutation was invoked. No parent remote
   branch, main branch, tag, release, version, package file, task ledger,
-  CommonProject, root-main event ledger, or unrelated file was changed.
+  CommonProject, root-main ledger, or unrelated file was changed.
 
 ## Ledger Update
 
 Ledger updated: yes
 
-- Canonical threat-model decision copied byte-for-byte:
+- Gate 1 hold decision copied byte-for-byte:
+  `777944dd-4959-42cd-bc0a-275867cd8d9b`.
+- V14 implementation event:
+  `84702a1e-df9c-484c-a2bd-b7f5a46acef0`.
+- Canonical same-UID threat-model decision:
   `43cffa92-7ca9-4369-8f39-9d74d56aa6cb`.
-- V13 implementation event:
-  `c0a9e9c1-bb7f-4793-9d9e-feb956b3644c`.
-- V13 close-gate event:
+- V13 implementation and close-gate events:
+  `c0a9e9c1-bb7f-4793-9d9e-feb956b3644c`,
   `f6a062d2-caf3-4abe-bad8-e40efdc62f04`.
-- V12 implementation and close-gate events:
-  `253284c2-fecb-4a06-aa18-250808c7b85f`,
-  `ac67c0d3-87f9-4405-a1bd-01ffd37fa31d`.
-- V11 implementation and close-gate events:
-  `72f5d5a0-60fc-44df-89e3-4c9b7af87f68`,
-  `ec5a1814-e6d6-4275-bcf7-687e80c8ed12`.
-- V10 implementation and close-gate events:
-  `f4d3dd09-f6bb-4fb4-92d0-3f45ac3486e4`,
-  `e718c14a-2301-46d8-8b49-a11740925ec5`.
-- V8 implementation and close-gate events:
-  `fdc9220a-0eab-452a-8459-d2fb3bdaa757`,
-  `66aa623d-af98-4b1f-bd31-83f56f9aa33e`.
 - Original restoration decision:
   `67e6c132-facf-427a-87a0-3263c6fc8005`.
 - Doctor Von Code hold:
   `132cbd1c-b5b0-42cc-8571-ea44f3f25e9c`.
-- SyntaxSorcerer hold:
+- SyntaxSorcerer identity hold:
   `835ed986-fbc2-416a-ace2-fb8479ce61ff`.
-- Professor Fiddlesticks hold:
+- Professor Fiddlesticks identity hold:
   `2703a751-2696-4108-89f7-ae8cd800b003`.
 
 ## Known Gaps
 
+- This is implementation readiness for a fresh Gate 1 review. It is not a
+  claim of acceptance, and Gate 2 remains unopened.
 - `pjangler:PJAN-23` owns a future create-issue adapter operation. Generated
   Hermes protocol contains no PJAN reference and requires an existing local
   tracking reference.
@@ -282,30 +226,30 @@ Ledger updated: yes
   prevent an independent trusted peer from renaming an already-open directory
   inside the final syscall window. Privileged immutable/mount helpers and a
   trusted mutation daemon remain deferred architecture options.
-- Successful provider delivery requires Linux with a trusted Bubblewrap binary
-  and a pidfd-capable kernel. Unsupported or unverifiable containment fails
-  closed before a board side effect.
-- Parent dependency hygiene remains outside PJAN-21: package declarations and
-  `package-lock.json` are not synchronized, so clean `npm ci` rejects the
-  unchanged baseline.
-- The parent copied-CommonProject Skillex fixture remains outside PJAN-21 and
-  fails when its packaged template directory is absent.
-- Recursive submodule inspection remains outside PJAN-21 because existing
-  `.tmp/plugins` and `memories` gitlinks lack `.gitmodules` mappings.
-- Provider integration is verified with deterministic local fakes; no live
-  comment delivery or ticket transition was attempted.
+- Successful provider delivery requires Linux with trusted Bubblewrap and
+  pidfd support. Unsupported or unverifiable containment fails closed before a
+  board side effect.
+- Full parent `npm test` reaches the unchanged Skillex copied-CommonProject
+  fixture and exits `1` because its packaged template directory is absent.
+  PJAN-21 changes no CommonProject, fixture, package, parent source, or
+  generated parent build file.
+- `npm ci --ignore-scripts --dry-run` exits `1` on the unchanged package/lock
+  mismatch beginning with `@types/pg`, `node-pg-migrate`, and `pg`.
+- Recursive submodule inspection exits `128` because existing `.tmp/plugins`
+  lacks a `.gitmodules` mapping. PJAN-21 changes neither surface.
+- Provider integration uses deterministic local fakes and a local HTTP
+  endpoint; no live ticket-provider delivery or transition was attempted.
 - Hermes feature ref is published. Hermes main and the parent remote remain
-  unchanged by this work.
+  unchanged.
 
 ## Close Recommendation
 
 Close recommendation: ready
 
-- Rationale: the impossible six-probe demand is preserved as feasibility
-  evidence and replaced by the canonical amended threat model; all in-scope
-  defects have red/green executable coverage; 124 Hermes tests, static/schema
-  checks, the exact committed seven-surface render, feature-ref readback,
-  parent typecheck/build, bounded PG self-test, and real PostgreSQL round trip
-  pass. The real close gate passes and its canonical event is recorded. This is
-  implementation readiness for fresh independent specification and quality
-  review, not a claim of acceptance.
+- Rationale: the exact Gate 1 exploit fails closed under executable
+  regressions; the environment and writable-filesystem boundaries are explicit
+  and tested; 131 Hermes tests, static/schema checks, exact seven-surface
+  render, feature-ref readback, parent typecheck/build/direct suites, bounded
+  PG self-test, and real PostgreSQL round trip pass. The residual parent
+  failures are unchanged out-of-scope baselines. This recommendation means
+  readiness for fresh independent Gate 1 review, not acceptance.
