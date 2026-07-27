@@ -1,29 +1,26 @@
-# Evidence: PJAN-21 — v16 trusted Copier bootstrap
+# Evidence: PJAN-21 — v17 ancestor-bound Copier bootstrap
 
 ## Issue
 
 - Ticket: PJAN-21
 - State: In Progress; Gate 2 unopened
 - Worker: Agent Buttercup / Codex CLI
-- Momo Gate 1 hold decision:
-  `1e9f0fa0-2dee-4bb7-a89d-1f6c8b7433de`
-- Momo hold Plane comment:
-  `ffe19e7b-00b0-4907-8aad-d33946be8733`
+- V17 Momo Gate 1 hold decision:
+  `be2b424c-a555-45b2-9446-a2b4fd210183`
+- V17 Momo hold Plane comment:
+  `65ee11cd-69ba-4318-9ed5-6e225b910f72`
 - Canonical same-UID threat-model decision:
   `43cffa92-7ca9-4369-8f39-9d74d56aa6cb`
 - Parent branch: `feature/PJAN-21-post-loop-main`
-- Parent starting candidate:
-  `49feda59e04f0134df70fa72154ec5bc26b0856b`
-- Parent v16 implementation commit:
-  `0543969df451584b426dc2942e59767beff1cbf6`
+- Parent v17 starting candidate:
+  `73c38929e06ba9674610cb46790bc5db5e0d31b4`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
-- Hermes starting candidate:
-  `3132a0f0ca223d499e0870f8a0057fc84f6a17f0`
-- Hermes v16 commits:
-  `4e301cdf520f9b1f87de893fb98f98e418cf8d0f`,
+- Hermes v17 starting candidate:
   `be4dd9704227f41add9cd62d396aaa22aaeadb27`
+- Hermes v17 commit:
+  `a5184e9a08eb272a16b1052178ca14c57ae2d18d`
 - Hermes feature ref and fresh fetch:
-  `be4dd9704227f41add9cd62d396aaa22aaeadb27`
+  `a5184e9a08eb272a16b1052178ca14c57ae2d18d`
 - Hermes local and remote main, unchanged:
   `62c05b578cfb5e310292e8034626436335bb1677`
 - Parent local and remote main, unchanged:
@@ -46,13 +43,17 @@
    is never executed during Copier bootstrap.
 5. Bootstrap-file symlinks, `.scripts` parent substitution, and malicious
    regular bootstrap content must not change an external target, create an
-   external effect, or execute substituted content. A standalone render must
-   not normalize an unrelated ancestor Git repository.
+   external effect, or execute substituted content.
 6. Preserve successful Copier 9.14.0 rendering under umask `002`: required
    directories, providers, controllers, and subsequent tasks become `0755`;
    non-executable inputs become `0644`; run-retro private storage remains
    `0700/0600`; contained deterministic fake delivery succeeds.
-7. Preserve every v15 guarantee: retained configuration/storage/artifact/
+7. Select an ancestor repository only when its descriptor-bound
+   `.project.json.project_name` is an exact string match for the Copier
+   `target_repo` and the output's canonical path is exactly
+   `<repo>/agents/hermes/<role>`. Either mismatch must normalize only the
+   rendered output and leave all ancestor modes unchanged.
+8. Preserve every v16 guarantee: retained configuration/storage/artifact/
    binding descriptors, repository-path validation, environment allowlist,
    read-only-root containment, complete provider-subtree teardown,
    provider-neutral routing, trusted finalization, typed IDs, bounded I/O and
@@ -60,11 +61,10 @@
 
 ## Repo Changes
 
-- Hermes head `be4dd9704227f41add9cd62d396aaa22aaeadb27`
-  changes exactly five paths relative to
-  `3132a0f0ca223d499e0870f8a0057fc84f6a17f0`:
+- Hermes head `a5184e9a08eb272a16b1052178ca14c57ae2d18d`
+  changes exactly four paths relative to
+  `be4dd9704227f41add9cd62d396aaa22aaeadb27`:
   - `copier.yml`
-  - `template/.scripts/02-security-modes.sh`
   - `template/.scripts/sentinel.prompt.md.jinja`
   - `template/.scripts/sentinel/docs/continuous-ticket-orchestration.md`
   - `tests/test_run_retro_contract.py`
@@ -76,9 +76,16 @@
   invokes the rendered bootstrap file. That file is now source mode `0644`,
   remains rendered data at `0644`, and is documented as a manual helper rather
   than a Copier bootstrap executable.
-- Repository-root discovery accepts an ancestor Git worktree only when its
-  canonical path contains a trusted regular `.project.json`; a standalone
-  render inside an unrelated Git ancestor remains scoped to its own output.
+- Repository-root discovery now retains the candidate repository and manifest
+  descriptors, parses at most 65,536 strict UTF-8 JSON bytes, and selects that
+  ancestor only when `project_name` is a string byte-equal to Copier
+  `target_repo` and the output path is exactly
+  `<candidate>/agents/hermes/<role>`. Missing, malformed, mismatched, or
+  noncanonical candidates leave `repo_fd` bound to the output root.
+- Two red-first v17 regressions cover an unrelated managed ancestor at the
+  otherwise canonical role path and a matching-looking manifest at a
+  noncanonical output path. A third positive control proves the matching
+  project/path pair still normalizes the intended repository.
 - Three durable tests cover bootstrap-file symlink substitution, `.scripts`
   parent-directory substitution, and chmod/execution separation with
   malicious regular content. They verify return disposition, exact external
@@ -99,17 +106,46 @@
   sanitization, provider/source/target binding, pagination, containment,
   idempotency, and trusted-finalization properties retained by the current
   suite.
+- Fresh SyntaxSorcerer Gate 1 held exact parent
+  `73c38929e06ba9674610cb46790bc5db5e0d31b4` / Hermes
+  `be4dd9704227f41add9cd62d396aaa22aaeadb27` on one High AC5 finding:
+  any same-owner regular ancestor `.project.json` was sufficient for
+  repository normalization, even when its project identity and the rendered
+  role path did not belong to this Copier invocation. No critical finding was
+  reported, and Gate 2 remained unopened.
 - Fresh Gate 1 review held exact parent
   `49feda59e04f0134df70fa72154ec5bc26b0856b` / Hermes
   `3132a0f0ca223d499e0870f8a0057fc84f6a17f0` because the first Copier task
   ran `chmod 0755 .scripts/02-security-modes.sh &&
   ./.scripts/02-security-modes.sh` before that rendered path could validate
   its symlink, owner, type, or identity.
-- Momo decision `1e9f0fa0-2dee-4bb7-a89d-1f6c8b7433de` was copied
+- Momo decision `be2b424c-a555-45b2-9446-a2b4fd210183` was copied
   byte-for-byte from the root ledger. No Plane mutation was performed by the
   implementation worker.
 
-### Red-first receipts
+### V17 red-first receipts
+
+- The two deterministic ancestor regressions were added before implementation
+  and run against unchanged Hermes
+  `be4dd9704227f41add9cd62d396aaa22aaeadb27`:
+
+  ```text
+  Ran 2 tests in 0.592s
+  FAILED (failures=12)
+  ```
+
+- Both cases returned success but changed all six ancestor modes:
+
+  ```text
+  repository: 0770 -> 0755
+  .project.json: 0660 -> 0644
+  _bmad-output: 0770 -> 0755
+  implementation-artifacts: 0770 -> 0755
+  run-retros: 0770 -> 0700
+  existing-private.json: 0660 -> 0600
+  ```
+
+### V16 red-first receipts
 
 - The three deterministic bootstrap regressions were added before
   implementation and run against Hermes
@@ -132,7 +168,78 @@
   substituted pathname, changed the external target to `0755`, and invoked the
   substituted content.
 
-### Green receipts and security closure
+### V17 green receipts and security closure
+
+- The same two hostile regressions plus the canonical legitimate control:
+
+  ```text
+  Ran 3 tests in 0.967s
+  OK
+  ```
+
+- Full Hermes discovery, preserving all prior tests and adding the three v17
+  cases:
+
+  ```text
+  Ran 143 tests in 40.351s
+  OK
+  ```
+
+- A clean archive of committed Hermes
+  `a5184e9a08eb272a16b1052178ca14c57ae2d18d` reran all six bootstrap
+  trust tests, the umask/contained-delivery control, and both protocol parity
+  tests:
+
+  ```text
+  Ran 9 tests in 3.506s
+  OK
+  ```
+
+- The exact committed-archive mode audit proves both mismatches return `0`,
+  normalize the output to `0755`, and leave the ancestor exactly unchanged:
+
+  ```text
+  ancestor_before=0770/0660/0770/0770/0770/0660
+  ancestor_after=0770/0660/0770/0770/0770/0660
+  ```
+
+  The canonical `pjangler` plus `agents/hermes/pm` control alone changes those
+  modes to `0755/0644/0755/0755/0700/0600`.
+- The original v17 issue no longer reproduces: neither an unrelated
+  `project_name` at the canonical role path nor a matching-looking manifest at
+  a standalone path can select or mutate the ancestor. Legitimate matching
+  provisioning still succeeds.
+- Ruff check and format-check pass for the owned Python test. All seven Python
+  sources compile. All template shell scripts pass Bash syntax; the normalizer,
+  provider adapters, provider scripts, and close gate pass Dash syntax. The
+  inline Copier Python and 33 embedded provider Python blocks compile.
+- Draft 2020-12 metaschema validation passes. Jinja parses with 8 opening and
+  8 closing delimiters. Prompt/docs v17 wording is whitespace-normalized
+  identical. The prompt retains exactly three step-11 decisions and one final
+  step 12.
+- Exact Copier `9.14.0` committed-archive rendering used
+  `--trust --skip-tasks --defaults`, `target_repo=pjangler`, `role=pm`,
+  `ticket_provider=trello`, and umask `002`:
+
+  ```text
+  render_surfaces=7 byte_equal=yes
+  rendered_prompt_values=resolved ancestor_contract=present
+  pre_bootstrap_mode=0664 pre_provider_mode=0775
+  post_bootstrap_mode=0644 post_provider_mode=0755
+  generated_pjan_refs=0 cache_files=0
+  rendered_bootstrap_executed=no
+  ```
+
+- A normal non-force push advanced only
+  `refs/heads/feature/PJAN-21-post-loop-main`. `ls-remote`, a fresh fetch, and
+  local Hermes HEAD all read
+  `a5184e9a08eb272a16b1052178ca14c57ae2d18d`. Hermes main remained
+  `62c05b578cfb5e310292e8034626436335bb1677`.
+- Bounded parent typecheck/build; parity migration, MCP catalog, MCP server,
+  and project registry direct suites; the PG harness self-test; and the real
+  local PG round trip all pass against this candidate.
+
+### V16 green receipts retained as regression history
 
 - The same three focused regressions after the repair:
 
@@ -241,6 +348,10 @@
 
 Ledger updated: yes
 
+- V17 Gate 1 hold decision copied byte-for-byte:
+  `be2b424c-a555-45b2-9446-a2b4fd210183`.
+- V17 implementation event:
+  `3c1a6326-d3ae-4339-b37b-88bf548f1fa8`.
 - V16 Gate 1 hold decision copied byte-for-byte:
   `1e9f0fa0-2dee-4bb7-a89d-1f6c8b7433de`.
 - V16 implementation event:
@@ -278,6 +389,9 @@ Ledger updated: yes
   board side effect.
 - Full parent `npm test` reaches the unchanged Skillex copied-CommonProject
   fixture and exits `1` because its packaged template directory is absent.
+- Full-repository Ruff reaches 13 unchanged style findings in the unrelated
+  `template/.scripts/momo-wip-lock.py`; the owned v17 test passes Ruff check
+  and format-check.
 - `npm ci --ignore-scripts --dry-run` has an unchanged package/lock mismatch
   beginning with `@types/pg`, `node-pg-migrate`, and `pg`.
 - Recursive submodule inspection exits `128` because existing `.tmp/plugins`
@@ -292,13 +406,13 @@ Ledger updated: yes
 
 Close recommendation: ready
 
-- Rationale: the exact Gate 1 bootstrap exploit is locked into executable
-  committed-render regressions and now fails before mutation or execution;
-  legitimate umask-`002` normalization and contained delivery still work; all
-  v15 descriptor, containment, routing, schema, privacy, and finalization
-  guarantees remain green; 140 Hermes tests, static/schema checks, exact
-  seven-surface render, feature-ref readback, parent typecheck/build and direct
-  suites, bounded PG self-test, and the real local PG round trip pass. The
-  residual parent failures are unchanged out-of-scope baselines. This
-  recommendation means readiness for fresh independent Gate 1 review, not
-  acceptance.
+- Rationale: both v17 ancestor-selection bypasses are locked into executable
+  committed-render regressions and now leave unrelated managed ancestors
+  unchanged, while the exact matching project/path control, umask-`002`
+  normalization, and contained fake delivery still work. All v16 descriptor,
+  containment, routing, schema, privacy, and finalization guarantees remain
+  green; 143 Hermes tests, static/schema checks, exact seven-surface render,
+  feature-ref readback, parent typecheck/build and direct suites, bounded PG
+  self-test, and the real local PG round trip pass. Residual failures are
+  unchanged out-of-scope baselines. This recommendation means readiness for
+  fresh independent Gate 1 review, not acceptance.
