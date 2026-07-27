@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,12 +11,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceCli = join(root, "dist", "index.js");
-const canonicalEngine = "/home/delorenj/.agents/scripts/sync-skills.py";
 const bmadPack = "/home/delorenj/code/skillex/packs/bmad/6.10.2";
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-skillex-init-"));
 
@@ -44,9 +42,11 @@ function bmadSkillNames() {
 
 function assertProjectContract(projectDir, homeDir) {
   const mise = readFileSync(join(projectDir, "mise.toml"), "utf8");
-  assert.match(mise, /\$HOME\/\.agents\/scripts\/sync-skills\.py/, "mise must resolve the canonical engine through HOME");
+  assert.match(mise, /\{\{config_root\}\}\/\.mise\/scripts\/sync-skills\.py/, "mise must resolve the shipped project-local engine through config_root");
+  assert.doesNotMatch(mise, /\$HOME\/\.agents\/scripts\/sync-skills\.py/, "mise must not depend on a host-global skills engine");
   assert.doesNotMatch(mise, /(?:script|run) = "sync-skills(?:\.py)? --scope project"/, "mise must not invoke a missing bare sync-skills executable");
   assert.doesNotMatch(mise, /~\/\.agents\/scripts/, "mise must not depend on tilde expansion in _.path");
+  assert.equal(existsSync(join(projectDir, ".mise", "scripts", "sync-skills.py")), true, "fresh init must ship its configured skills sync engine");
 
   const manifest = JSON.parse(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"));
   const bmadEntries = manifest.skills.filter((entry) => entry?.name?.startsWith("bmad-"));
@@ -136,12 +136,15 @@ function initWith(cli, label, homeDir) {
 }
 
 try {
-  assert.equal(existsSync(canonicalEngine), true, "canonical sync-skills.py engine is required");
   assert.ok(bmadSkillNames().length > 0, "BMAD 6.10.2 pack is required");
 
   const homeDir = join(tmp, "home");
-  mkdirSync(join(homeDir, ".agents", "scripts"), { recursive: true });
-  copyFileSync(canonicalEngine, join(homeDir, ".agents", "scripts", "sync-skills.py"));
+  mkdirSync(homeDir, { recursive: true });
+  assert.equal(
+    existsSync(join(homeDir, ".agents", "scripts", "sync-skills.py")),
+    false,
+    "E2E home must not mask a missing generated executable with host-global provisioning"
+  );
 
   const packDir = join(tmp, "pack");
   mkdirSync(packDir);

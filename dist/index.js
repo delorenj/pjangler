@@ -2568,7 +2568,7 @@ var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'
 var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
 var BMAD_PACK_VERSION = "6.10.2";
 var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
-var SYNC_SKILLS_SCRIPT = 'python3 "$HOME/.agents/scripts/sync-skills.py" --scope project';
+var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
@@ -2598,7 +2598,7 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 [tasks.skills-sync]
 description = "Sync skills from manifest to local CLI dirs"
 depends = ["skills-provision-bmad"]
-run = "python3 \\"$HOME/.agents/scripts/sync-skills.py\\" --scope project"
+run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
 
 [tasks.skills-provision-bmad]
 description = "Provision pinned BMAD skills from the Skillex pack"
@@ -3060,7 +3060,7 @@ function isManagedHookEntry(value) {
   if (trimmed === OP_INJECT_SCRIPT) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
   if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
-  if (/sync-skills(?:\.py)?\s+--scope project/.test(trimmed)) return true;
+  if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
   if (/provision-bmad-skills\.py/.test(trimmed)) return true;
   if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
   if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
@@ -3862,7 +3862,7 @@ var RULES = [
         details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
       }
       const mise = safeReadText(misePath);
-      if (!mise?.includes("$HOME/.agents/scripts/sync-skills.py")) details.push("mise.toml should run the canonical sync-skills.py engine via an absolute $HOME path");
+      if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
       if (!mise?.includes(PROVISION_BMAD_SKILLS_SCRIPT)) details.push("mise.toml should provision pinned BMAD pack links before syncing skills");
       if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
         details.push("mise.toml still invokes the missing bare sync-skills.py executable");
@@ -3870,6 +3870,7 @@ var RULES = [
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
       if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
       if (!existsSync10(join13(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py"))) details.push("BMAD Skillex provisioning script is missing");
+      if (!existsSync10(join13(ctx.repoRoot, ".mise", "scripts", "sync-skills.py"))) details.push("Project-local skills sync engine is missing");
       if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
         details.push("mise.toml still contains legacy skill-link wiring");
       }
@@ -3931,6 +3932,25 @@ var RULES = [
         if (!ctx.dryRun) {
           writeText(provisionScriptPath, expectedProvisionScript);
           chmodSync4(provisionScriptPath, 493);
+        }
+      }
+      const syncScriptPath = join13(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
+      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
+      if (!expectedSyncScript) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "pjangler install is missing the project-local skills sync engine",
+          changedFiles,
+          details
+        };
+      }
+      if (safeReadText(syncScriptPath) !== expectedSyncScript) {
+        changedFiles.push(syncScriptPath);
+        if (!ctx.dryRun) {
+          writeText(syncScriptPath, expectedSyncScript);
+          chmodSync4(syncScriptPath, 493);
         }
       }
       if (!existsSync10(misePath)) {
