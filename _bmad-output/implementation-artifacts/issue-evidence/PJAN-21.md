@@ -1,4 +1,4 @@
-# Evidence: PJAN-21 — terminal-review post-loop hardening
+# Evidence: PJAN-21 — v7 terminal-review remediation
 
 ## Issue
 
@@ -6,12 +6,10 @@
 - Worker: Agent Buttercup / Codex CLI
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
-  `4eefb51ed2245116bf4caa9d1c975d84939becbf`
-- Parent implementation commit:
-  `27fb41f46ca1e5855e16fd3873c013d144a9a505`
+  `0d2fe25640be3714b6c3d79f1773ad0af7fab0d4`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
-  `3aa5e803a7b669e32ccecb391da8ae8507c600ab`
+  `14e4865efb691bcbb1e48d8b1277b99dd78ecfbc`
 - Hermes feature ref:
   `refs/heads/feature/PJAN-21-post-loop-main`
 - Hermes remote main, unchanged:
@@ -22,146 +20,131 @@
 1. Keep step 11 directly after the final board-status report with exactly three
    decisions: what hurt, what should change, and whether the fix is repo-local
    or external/template/fleet. Keep step 12 as the final checkpoint.
-2. Durably persist the immutable prepared intent before any board side effect.
-   Bind the canonical repository, provider, source, content, operator flag, and
-   delivery body for every retry.
-3. Use a run-scoped artifact fingerprint and a separate content-scoped comment
-   fingerprint. Same-run changed intent stalls; distinct runs keep distinct
-   artifacts; identical cross-run improvements deduplicate one immutable
-   marker/body pair.
-4. Hold one descriptor-anchored repository, configuration, store, provider, and
-   finalization lifetime. Use descriptor-relative `O_NOFOLLOW` traversal,
-   exclusive temporary files, no-replace creation, atomic replacement, file
-   and directory fsync, parse/read-back, and no new transient artifact or lock
-   write after store relocation.
-5. Hold the serialized comment lock for the complete provider subtree. Start a
-   provider session/process group and terminate and reap every descendant after
-   timeout or bounded-output failure before releasing the lock.
-6. Persist only closed canonical shapes: RFC UUID invocation and Plane/Linear
-   identities, Trello IDs, finite signal/action summaries, finite categories,
-   and opaque `evidence:<uuid>` references. No arbitrary secret, PII, path, log,
-   or prose content may enter an artifact or comment.
-7. Publish a standard Draft 2020-12 version 7 schema whose executable acceptance
-   set matches runtime. Derive fingerprints, marker, body, target, and immutable
-   binding outside the serialized shape when portable JSON Schema cannot assert
-   their computed equality.
-8. Use Plane's current work-item comment endpoints with `per_page`/`cursor`
-   pagination, stable typed envelope and collection-snapshot validation, bounded
-   reads, and canonical string-UUID POST confirmation. Malformed, drifting, or
-   oversized responses fail closed without a second post.
-9. Preserve provider/source/target/body binding, monotonic finalization,
-   malformed-byte sanitization, concurrency, controller-SIGKILL lock inheritance,
-   exact rendering, portability, and provider-neutral routing.
+2. Make standard Draft 2020-12 and runtime accept the same v7 documents,
+   including integral JSON numbers and true end-of-string regex behavior.
+3. Hold repository, configuration, provider, artifact store, and finalization
+   to one descriptor-bound repository lifetime. Detect root replacement before
+   an external effect, and execute providers portably without `/proc/self/fd`.
+4. Keep one non-forkable comment lock domain across repository copies or path
+   replacement. Bind the immutable canonical provider, source, target, marker,
+   and body before any external side effect.
+5. Permit no transient or durable write after the artifact store is relocated,
+   at either exclusive temporary creation or durable replacement.
+6. Terminate and reap the complete provider descendant tree, including
+   descendants that create a new session, before releasing the comment lock.
+7. Preserve malformed bytes such as NUL through provider validation so malformed
+   lookups fail closed before POST. Bound and time every Plane, Linear, and
+   Trello HTTP response read.
+8. Reject protected repository identities, require canonical string provider
+   IDs, and make `validate --final` stall for retryable failed delivery.
+9. Preserve every earlier accepted cursor, typed-envelope, idempotency,
+   crash/durability, privacy, source-target-body, bounded-I/O, exact rendering,
+   portability, and provider-neutral guarantee.
 
 ## Repo Changes
 
-- Hermes commit `3aa5e803a7b669e32ccecb391da8ae8507c600ab`
+- Hermes commit `14e4865efb691bcbb1e48d8b1277b99dd78ecfbc`
   changes exactly these paths relative to
-  `025e6ab42648abdf374530ac7ff4c93b6910c65a`:
+  `3aa5e803a7b669e32ccecb391da8ae8507c600ab`:
+  - `template/.scripts/providers/linear.sh`
   - `template/.scripts/providers/plane.sh`
+  - `template/.scripts/providers/trello.sh`
   - `template/.scripts/sentinel.prompt.md.jinja`
   - `template/.scripts/sentinel/bin/run-retro.py`
   - `template/.scripts/sentinel/docs/continuous-ticket-orchestration.md`
-  - `template/.scripts/sentinel/schemas/run-retro.v6.schema.json` renamed to
-    `template/.scripts/sentinel/schemas/run-retro.v7.schema.json`
+  - `template/.scripts/sentinel/schemas/run-retro.v7.schema.json`
   - `tests/test_run_retro_contract.py`
 - The parent advances only the `templates/hermes-agent` gitlink from
-  `025e6ab42648abdf374530ac7ff4c93b6910c65a` to
-  `3aa5e803a7b669e32ccecb391da8ae8507c600ab`, this evidence file, and
+  `3aa5e803a7b669e32ccecb391da8ae8507c600ab` to
+  `14e4865efb691bcbb1e48d8b1277b99dd78ecfbc`, this evidence file, and
   Bloodbank implementation/close-gate events.
 - Package manifests, lockfiles, CommonProject, tasks, live boards, both main
-  branches, tags, releases, and runtime agents are unchanged.
+  branches, tags, releases, and unrelated runtime agents are unchanged.
 
 ## Verification
 
 - Sir Fix-a-Lot gave the original exactly-three-decisions protocol independent
   specification approval. Doctor Von Code held the first restoration for
   evidence, durability, sanitization, routing, and generated-ticket leakage.
-  Every later concrete hold remains represented by an executable regression.
-- The terminal specification review of parent
-  `4eefb51ed2245116bf4caa9d1c975d84939becbf` and Hermes
-  `025e6ab42648abdf374530ac7ff4c93b6910c65a` held for live Plane cursor
-  pagination, transient writes after directory relocation, artifact-wide
-  privacy, strict POST response typing, and portable schema/runtime parity.
-- The terminal quality review held the same candidate for collection-snapshot
-  drift, repository-path reopen during finalization, surviving provider
-  descendants, non-summary protected shapes, non-string POST IDs, unbounded
-  input/artifact/provider reads, and divergence between the board description
-  and the expanded terminal remediation.
-- Regressions were locked before implementation: the old candidate failed 21
-  new assertions spanning descriptor lifetime, relocated artifact/binding/lock
-  writes, provider group timeout/output, cursor pages and drift, POST typing,
-  HTTP/input/artifact bounds, persisted shapes, and standard-schema parity.
-- Focused command `python3 tests/test_run_retro_contract.py -q`: pass, 54 of 54.
-- Full command
-  `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/var/tmp/pjan21-pycache
-  python3 -m unittest discover -s tests -p 'test_*.py' -q`: pass, 61 of 61.
-- The scenario matrix passes same-run same/changed content, cross-run
-  identical/different content, corrupt artifact, lost response, and no source.
-  Same-run binding-only crash retries the identical immutable intent and rejects
-  changed intent without overwrite or comment.
-- Descriptor/adversarial probes pass for static symlinks, deterministic
-  run-retros relocation, artifact/binding/lock create interception, whole-root
-  path replacement during delivery, provider-script path replacement, and
-  finalization through the held original store. Relocation creates no new file
-  outside the repository.
-- Provider lifecycle probes pass for controller SIGKILL, timeout descendants,
-  delayed side effects, inherited lock holders, infinite stdout, infinite
-  stderr, and bounded reaping. Retry blocks or rescans and the external-post
-  counter remains one.
-- Plane probes pass for `per_page=100` and cursor advancement, page-two marker
-  lookup, pinned totals, cumulative counts, unique typed item IDs, cursor
-  progress, 2,000-comment bounds, malformed/ambiguous HTTP-200 envelopes,
-  oversized bodies, and transport failure. Every lookup failure produces zero
-  POST calls. POST success requires a canonical lowercase RFC UUID string;
-  null, numeric, malformed, and noncanonical IDs record a safe retryable
-  failure.
-- The implementation uses the official current
-  `/work-items/{id}/comments/` list/create contract for both Plane comment
-  paths. Legacy `/issues/{id}/comments/` comment paths are absent.
-- Closed persisted-shape probes reject arbitrary token, credential, SSN,
-  phone, customer, password, private-path, backtick-path, raw-log, timestamped
-  log, and free-prose values. Protected evidence is represented only by an
-  opaque canonical UUID token without protected contents.
-- Draft 2020-12 metaschema and bidirectional acceptance probes pass for every
-  serialized field, provider-specific source/reference type, null-source rule,
-  operator flag, routing status/error relation, finite summary grammar, and
-  bounded integer epoch-microsecond value. The schema has no custom assertion
-  keyword.
-- Prior guarantees pass: provider or target overrides produce zero provider
-  calls; wrong stored values and wrong result provider/target are rejected; one
-  marker maps to one body; stale failure cannot replace terminal success;
-  corrupt and malformed-byte inputs yield safe declared categories without
-  traceback or private-path output; concurrent writers and identical cross-run
-  comments remain idempotent.
-- Ruff format/check, Python compile, `sh -n`, `dash -n` for every provider,
-  embedded Python parsing, Jinja delimiter counts, exact numbering, normalized
-  prompt/docs parity, schema metaschema validation, and both repository
-  `git diff --check` checks pass.
+  Every concrete hold since then remains represented by an executable
+  regression.
+- The fresh v7 specification review of parent
+  `0d2fe25640be3714b6c3d79f1773ad0af7fab0d4` and Hermes
+  `3aa5e803a7b669e32ccecb391da8ae8507c600ab` held for schema/runtime numeric
+  and final-newline divergence, replacement-root provider binding, escaped
+  descendants, transient relocated-store writes, and unbounded Linear/Trello
+  response reads.
+- The fresh v7 quality review held the same candidate for a root-copy lock
+  fork that posted twice, a durable relocated-store write, escaped-session
+  effects, NUL normalization followed by Plane POST, protected repository
+  identity, failed-delivery final-checkpoint success, numeric provider IDs,
+  and Linux-only provider execution.
+- The exact focused red run covered 14 v7 adversarial reproductions. Before the
+  repair, 13 failed or errored as expected; the existing Linear oversize probe
+  was already safe. The same reproductions are green after the repair.
+- Full Hermes command
+  `python3 -m unittest discover -s tests -p 'test_*.py' -q`: pass, 77 of 77.
+- Schema/runtime differential probes now agree for integral JSON numbers and
+  reject trailing-newline strings identically. Draft 2020-12 metaschema and
+  bidirectional acceptance checks pass.
+- Descriptor-lifetime probes prove replacement repository/provider/config
+  values produce zero provider calls. A cross-root-copy concurrent retry uses
+  one global lock domain, one immutable marker/body, and one external comment.
+- Both relocated-store race windows pass: no temporary entry is created outside
+  the repository, and no posted final state is durably replaced outside it.
+  Static artifact, lock, and provider symlinks remain rejected.
+- A real provider descendant calling `setsid()` is terminated and reaped before
+  delivery returns or the lock is released. It leaves no delayed side effect,
+  live descendant, zombie, or inherited lock holder.
+- Plane preserves NUL-bearing lookup bytes and classifies the response as
+  `lookup_failed` with zero POST calls. Plane cursor/envelope/snapshot checks and
+  current work-item comment endpoints remain exhaustive and fail closed.
+- Trello and Linear require canonical string result IDs; null, numeric,
+  malformed, noncanonical, oversized, and timed-out responses are safe failures.
+  All three providers bound response sizes and deadlines.
+- Protected-value probes reject synthetic Slack, Google, Stripe, AWS, and
+  GitHub credential-shaped repository identities. Closed persisted shapes and
+  opaque `evidence:<uuid>` references retain the protected-evidence boundary.
+- A retryable failed delivery remains a valid stored attempt, but
+  `validate --final` returns nonzero and stalls until a terminal checkpoint
+  status exists.
+- Provider execution is descriptor-bound yet portable: the exact regression
+  runs with a mocked Darwin platform and verifies no `/proc/self/fd` path.
+- Prior matrices remain green for same-run same/changed content, cross-run
+  identical/different content, corrupt artifacts, lost responses, no source,
+  controller SIGKILL, monotonic stale finalization, bounded input/artifacts,
+  pagination drift, immutable target/body binding, and concurrent writers.
+- Ruff check/format, Python compile, `sh -n`, `dash -n`, embedded provider
+  Python parsing, Jinja delimiter counts, exact numbering, normalized
+  prompt/docs parity, schema metaschema/parity, and Hermes `git diff --check`
+  pass.
 - Jinja delimiters remain balanced. Step 11 contains exactly three decisions;
   step 12 occurs once and is final. Generated prompt/docs contain no PJAN
   reference.
 - Exact committed Copier render: Copier 9.14.0,
-  `--trust --skip-tasks --defaults`, PM role, Trello provider, and exact commit
-  `3aa5e803a7b669e32ccecb391da8ae8507c600ab`: pass. Helper, v7 schema,
-  orchestration docs, adapter, Plane provider, and Trello provider are
-  byte-equal, 6 of 6.
+  `--trust --skip-tasks --defaults --data target_repo=pjangler --data role=pm
+  --data ticket_provider=trello`, at
+  `14e4865efb691bcbb1e48d8b1277b99dd78ecfbc`: pass. The helper, v7 schema,
+  orchestration docs, and three providers are byte-equal, 6 of 6; the rendered
+  prompt numbering and no-PJAN checks pass. No cache directory is rendered.
 - Hermes feature publish/read-back: local HEAD, `git ls-remote`, and freshly
   fetched `FETCH_HEAD` all equal
-  `3aa5e803a7b669e32ccecb391da8ae8507c600ab`. Hermes remote main remains
+  `14e4865efb691bcbb1e48d8b1277b99dd78ecfbc`. Hermes remote main remains
   `62c05b578cfb5e310292e8034626436335bb1677`.
-- Parent TypeScript typecheck passes. Parity migration, MCP catalog, MCP server,
-  project registry, and PostgreSQL registry regression suites pass.
+- Parent `npm run typecheck` passes. Parity migration, MCP catalog, MCP server,
+  project registry, and PostgreSQL registry suites pass; the PostgreSQL check
+  reports `PG_STORE_CHECK_OK`.
 - Full parent `npm test` passes parity migration, then reproduces the unchanged
-  Skillex packaged-template fixture failure because its copied local
-  CommonProject template directory is absent. The remaining directly relevant
-  suites pass when run individually.
+  Skillex installed-package fixture failure because its copied CommonProject
+  template directory is absent. The remaining directly relevant suites pass
+  when run individually.
 - Parent `npm ci --ignore-scripts --dry-run` reproduces the unchanged
   package/lock mismatch beginning with `@types/pg`, `node-pg-migrate`, and `pg`.
-  Parent diff inspection proves package files, CommonProject, and fixture tests
-  are unchanged.
+  `git diff --quiet` from the exact parent base proves package files,
+  CommonProject, fixture tests, and `dist` are unchanged.
 - No live Plane, Linear, or Trello mutation was made. Deterministic adapters and
   fakes cover comment side effects and failure paths.
+- Parent `git diff --check`: pass.
 - Real parent command
   `bash agents/hermes/pm/.scripts/sentinel/bin/issue-close-gate.sh PJAN-21 .`:
   pass with exact output `CLOSE GATE: PASS for PJAN-21`.
@@ -186,17 +169,19 @@ Ledger updated: yes
   `4c5194c0-ac4f-4302-830f-34652b882393`.
 - Terminal-review close-gate event:
   `31cfd3fd-149a-47aa-a36f-ac7dfc995a3d`.
+- V7 terminal-review implementation event:
+  `4c4db949-5447-4161-a30c-358c19a26c1b`.
 
 ## Known Gaps
 
 - `pjangler:PJAN-23` owns a future create-issue adapter operation. Generated
   Hermes protocol contains no PJAN reference and requires an existing local
   tracking reference.
-- The canonical Plane description still reflects the earlier protocol-only
-  scope, while the user's terminal-review remediation expressly authorized the
-  provider/runtime/schema seams needed for correctness. Plane and Momo mutation
-  were prohibited in this implementation pass, so this evidence records the
-  amended implementation scope without rewriting the live ticket.
+- The canonical Plane description reflects the earlier protocol-only scope,
+  while the user's terminal-review remediation expressly authorized the
+  provider/runtime/schema seams required for correctness. Plane and Momo
+  mutation were prohibited in this implementation pass, so this evidence
+  records the amended scope without rewriting the live ticket.
 - Parent dependency hygiene remains outside PJAN-21: `package.json` declares
   packages absent from `package-lock.json`, so clean `npm ci` rejects the
   unchanged baseline.
@@ -213,8 +198,8 @@ Ledger updated: yes
 
 Close recommendation: ready
 
-- Rationale: every terminal finding has a locked executable regression, all 61
-  Hermes tests pass, the exact committed candidate renders cleanly, the feature
-  ref reads back at the exact commit, the real close gate passes, and remaining
-  parent failures and ticket wording are explicitly isolated unchanged surfaces
-  outside this branch implementation.
+- Rationale: every v7 finding has a locked executable regression, all 77 Hermes
+  tests pass, the exact committed candidate renders cleanly, the feature ref
+  reads back at the exact commit, the real close gate passes, and the remaining
+  parent failures and ticket wording are isolated unchanged surfaces outside
+  this branch implementation.
