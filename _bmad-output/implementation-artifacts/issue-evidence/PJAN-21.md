@@ -16,6 +16,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent starting candidate:
   `8641351ac7dbb0596745b9ed23e1de23adaed6be`
+- Parent implementation commit:
+  `7b33b32c5ccacce507b254bb9a4d4718132c085f`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes starting candidate:
   `23e5a4fbdd78adb9af88f3334db69ad71741f2c8`
@@ -189,6 +191,15 @@
   ```
 
 - Parent and Hermes `git diff --check` pass.
+- The real close gate was invoked from unrelated cwd `/tmp` through the
+  absolute script path from the exact committed Copier render, with the parent
+  repository supplied explicitly:
+
+  ```text
+  CLOSE GATE: PASS for PJAN-21
+  ```
+
+  It emitted event `5a517fe5-0775-4253-be71-ff2881098c93`.
 - No live Plane, Linear, or Trello mutation was invoked. No parent remote
   branch, main branch, tag, release, version, package file, task ledger,
   CommonProject, root-main ledger, or unrelated file was changed.
@@ -201,6 +212,8 @@ Ledger updated: yes
   `777944dd-4959-42cd-bc0a-275867cd8d9b`.
 - V14 implementation event:
   `84702a1e-df9c-484c-a2bd-b7f5a46acef0`.
+- V14 close-gate event:
+  `5a517fe5-0775-4253-be71-ff2881098c93`.
 - Canonical same-UID threat-model decision:
   `43cffa92-7ca9-4369-8f39-9d74d56aa6cb`.
 - V13 implementation and close-gate events:
@@ -250,6 +263,7 @@ Close recommendation: ready
   regressions; the environment and writable-filesystem boundaries are explicit
   and tested; 131 Hermes tests, static/schema checks, exact seven-surface
   render, feature-ref readback, parent typecheck/build/direct suites, bounded
-  PG self-test, and real PostgreSQL round trip pass. The residual parent
-  failures are unchanged out-of-scope baselines. This recommendation means
-  readiness for fresh independent Gate 1 review, not acceptance.
+  PG self-test, real PostgreSQL round trip, and unrelated-cwd close gate pass.
+  The residual parent failures are unchanged out-of-scope baselines. This
+  recommendation means readiness for fresh independent Gate 1 review, not
+  acceptance.
