@@ -2560,13 +2560,15 @@ import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } 
 // src/parity/index.ts
 import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync6, readlinkSync, readdirSync as readdirSync2, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
 import { basename as basename3, dirname as dirname6, join as join13, relative, resolve as resolve2 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
-var SYNC_SKILLS_SCRIPT = "sync-skills.py --scope project";
+var BMAD_PACK_VERSION = "6.10.2";
+var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
+var SYNC_SKILLS_SCRIPT = 'python3 "$HOME/.agents/scripts/sync-skills.py" --scope project';
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
@@ -2575,7 +2577,12 @@ var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # TODO: Ensure this works for all levels of nesting.
 # i.e. All linked agent files MUST be siblings at
 # any given level of nesting.`;
-var LINK_AGENTFILES_HOOK_ENTRIES = [LINK_AGENTFILES_SCRIPT, OP_INJECT_SCRIPT, SYNC_SKILLS_SCRIPT];
+var LINK_AGENTFILES_HOOK_ENTRIES = [
+  LINK_AGENTFILES_SCRIPT,
+  OP_INJECT_SCRIPT,
+  PROVISION_BMAD_SKILLS_SCRIPT,
+  SYNC_SKILLS_SCRIPT
+];
 var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
@@ -2590,7 +2597,12 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 
 [tasks.skills-sync]
 description = "Sync skills from manifest to local CLI dirs"
-run = "sync-skills.py --scope project"`;
+depends = ["skills-provision-bmad"]
+run = "python3 \\"$HOME/.agents/scripts/sync-skills.py\\" --scope project"
+
+[tasks.skills-provision-bmad]
+description = "Provision pinned BMAD skills from the Skillex pack"
+run = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"`;
 var VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block \u2014 do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"
@@ -2838,18 +2850,86 @@ function templateCommonProjectText(ctx, rel) {
   const path = join13(ctx.pjanglerRoot, "templates", "commonproject", "template", rel);
   return existsSync10(path) ? readText(path) : void 0;
 }
-function canonicalSkillsManifest() {
+function bmadPackRoot(ctx) {
+  return resolve2(
+    process.env.PJ_BMAD_PACK_ROOT?.trim() || join13(ctx.homeDir, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION)
+  );
+}
+function canonicalBmadSkillEntries(ctx) {
+  const root = bmadPackRoot(ctx);
+  if (!existsSync10(root)) return [];
+  return readdirSync2(root).filter((name) => name.startsWith("bmad-") && lstatSync(join13(root, name)).isDirectory()).sort().map((name) => ({ name, source: pathToFileURL(join13(root, name)).href }));
+}
+function isBmadManifestEntry(entry) {
+  if (typeof entry === "string") return entry.startsWith("bmad-");
+  if (!entry || typeof entry !== "object") return false;
+  const name = entry.name;
+  return typeof name === "string" && name.startsWith("bmad-");
+}
+function canonicalSkillsManifest(ctx, current) {
+  const existing = Array.isArray(current?.skills) ? current.skills : [];
   return `${JSON.stringify(
     {
+      ...current ?? {},
       $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
-      skills: []
+      skills: [
+        ...existing.filter((entry) => !isBmadManifestEntry(entry)),
+        ...canonicalBmadSkillEntries(ctx)
+      ]
     },
     null,
     2
   )}
 `;
+}
+function provisionBmadSkills(ctx, preservedManifest) {
+  const packRoot = bmadPackRoot(ctx);
+  const packSkills = canonicalBmadSkillEntries(ctx);
+  if (packSkills.length === 0) {
+    return {
+      ok: false,
+      changedFiles: [],
+      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} not found or empty at ${packRoot}`
+    };
+  }
+  const changedFiles = [];
+  const manifestPath = join13(ctx.repoRoot, ".agents", "skills.json");
+  const currentManifest = tryParseJson(safeReadText(manifestPath));
+  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest);
+  if (safeReadText(manifestPath) !== nextManifest) {
+    changedFiles.push(manifestPath);
+    if (!ctx.dryRun) writeText(manifestPath, nextManifest);
+  }
+  const skillsDir = join13(ctx.repoRoot, ".agents", "skills");
+  const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
+  let topologyChanged = false;
+  if (existsSync10(skillsDir)) {
+    for (const name of readdirSync2(skillsDir)) {
+      if (!name.startsWith("bmad-") || expected.has(name)) continue;
+      topologyChanged = true;
+      if (!ctx.dryRun) rmSync(join13(skillsDir, name), { recursive: true, force: true });
+    }
+  }
+  for (const [name, target] of expected) {
+    const link = join13(skillsDir, name);
+    let correct = false;
+    try {
+      correct = lstatSync(link).isSymbolicLink() && resolve2(dirname6(link), readlinkSync(link)) === target;
+    } catch {
+      correct = false;
+    }
+    if (correct) continue;
+    topologyChanged = true;
+    if (!ctx.dryRun) {
+      mkdirSync6(skillsDir, { recursive: true });
+      rmSync(link, { recursive: true, force: true });
+      symlinkSync(target, link, "dir");
+    }
+  }
+  if (topologyChanged) changedFiles.push(skillsDir);
+  return { ok: true, changedFiles };
 }
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join13(repoRoot, "package.json");
@@ -2979,6 +3059,9 @@ function isManagedHookEntry(value) {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
+  if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
+  if (/sync-skills(?:\.py)?\s+--scope project/.test(trimmed)) return true;
+  if (/provision-bmad-skills\.py/.test(trimmed)) return true;
   if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
   if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
   return /link-agentfiles\.sh'?\s*$/.test(trimmed);
@@ -3084,6 +3167,7 @@ function upsertLinkAgentfilesBlock(text3, ctx) {
   const withPath = upsertMisePath(text3, requiredMisePathEntries(ctx));
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, void 0, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-bmad\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.unlink-project-skills-from-clis\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-relink\]$/, void 0, { includePrecedingComments: false });
@@ -3728,22 +3812,47 @@ var RULES = [
       const localExamplePath = join13(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join13(ctx.repoRoot, "mise.toml");
       let fixable = true;
+      const expectedBmad = canonicalBmadSkillEntries(ctx);
+      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
+      if (expectedBmad.length === 0) {
+        details.push(`BMAD Skillex pack ${BMAD_PACK_VERSION} missing or empty at ${bmadPackRoot(ctx)}`);
+        fixable = false;
+      }
       const manifest = tryParseJson(safeReadText(manifestPath));
       if (!manifest) {
         details.push(".agents/skills.json missing or invalid JSON");
       } else {
         if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
         if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
-        if (!Array.isArray(manifest.skills)) details.push(".agents/skills.json should define a skills array");
-      }
-      if (existsSync10(legacyDir)) {
-        const entries = readdirSync2(legacyDir);
-        if (entries.length > 0) {
-          details.push(".agents/skills/ still contains legacy committed skills; map them into .agents/skills.json before migrating");
-          fixable = false;
+        if (!Array.isArray(manifest.skills)) {
+          details.push(".agents/skills.json should define a skills array");
         } else {
-          details.push(".agents/skills/ legacy directory should be removed");
+          const actualBmad = new Map(
+            manifest.skills.filter((entry) => Boolean(entry) && typeof entry === "object" && isBmadManifestEntry(entry)).map((entry) => [String(entry.name), String(entry.source ?? "")])
+          );
+          const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
+          if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
+            details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+          }
         }
+      }
+      let invalidBmadLinks = 0;
+      if (existsSync10(legacyDir)) {
+        for (const name of readdirSync2(legacyDir)) {
+          if (!name.startsWith("bmad-")) continue;
+          const expected = expectedByName.get(name);
+          const path = join13(legacyDir, name);
+          try {
+            if (!expected || !lstatSync(path).isSymbolicLink() || resolve2(dirname6(path), readlinkSync(path)) !== expected) invalidBmadLinks++;
+          } catch {
+            invalidBmadLinks++;
+          }
+        }
+      } else if (expectedBmad.length > 0) {
+        invalidBmadLinks = expectedBmad.length;
+      }
+      if (invalidBmadLinks > 0) {
+        details.push(`${invalidBmadLinks} .agents/skills/bmad-* path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         if (existsSync10(join13(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
@@ -3753,9 +3862,14 @@ var RULES = [
         details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
       }
       const mise = safeReadText(misePath);
-      if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run sync-skills.py --scope project on enter");
+      if (!mise?.includes("$HOME/.agents/scripts/sync-skills.py")) details.push("mise.toml should run the canonical sync-skills.py engine via an absolute $HOME path");
+      if (!mise?.includes(PROVISION_BMAD_SKILLS_SCRIPT)) details.push("mise.toml should provision pinned BMAD pack links before syncing skills");
+      if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
+        details.push("mise.toml still invokes the missing bare sync-skills.py executable");
+      }
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
       if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
+      if (!existsSync10(join13(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py"))) details.push("BMAD Skillex provisioning script is missing");
       if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
         details.push("mise.toml still contains legacy skill-link wiring");
       }
@@ -3772,30 +3886,21 @@ var RULES = [
       const changedFiles = [];
       const details = [];
       const manifestPath = join13(ctx.repoRoot, ".agents", "skills.json");
-      const legacyDir = join13(ctx.repoRoot, ".agents", "skills");
       const localExamplePath = join13(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join13(ctx.repoRoot, "mise.toml");
-      if (existsSync10(legacyDir)) {
-        const entries = readdirSync2(legacyDir);
-        if (entries.length > 0) {
-          return {
-            id: finding.id,
-            title: finding.title,
-            status: "blocked",
-            summary: "Legacy .agents/skills/ still contains committed skills; migrate them into .agents/skills.json manually first",
-            changedFiles,
-            details: entries.map((entry) => `.agents/skills/${entry}`)
-          };
-        }
-        changedFiles.push(legacyDir);
-        if (!ctx.dryRun) rmSync(legacyDir, { recursive: true, force: true });
+      const provisioned = provisionBmadSkills(ctx);
+      if (!provisioned.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: `BMAD Skillex pack ${BMAD_PACK_VERSION} is unavailable`,
+          changedFiles,
+          details: [provisioned.error ?? "Unknown BMAD pack error"]
+        };
       }
-      const expectedManifest = canonicalSkillsManifest();
-      if (safeReadText(manifestPath) !== expectedManifest) {
-        changedFiles.push(manifestPath);
-        if (!ctx.dryRun) writeText(manifestPath, expectedManifest);
-        details.push("Wrote canonical .agents/skills.json manifest");
-      }
+      changedFiles.push(...provisioned.changedFiles);
+      if (provisioned.changedFiles.includes(manifestPath)) details.push(`Recorded BMAD pack ${BMAD_PACK_VERSION} in .agents/skills.json`);
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         const path = join13(ctx.repoRoot, rel);
         if (existsSync10(path)) {
@@ -3808,6 +3913,25 @@ var RULES = [
       if (templateLocalExample && currentLocalExample && currentLocalExample !== templateLocalExample) {
         changedFiles.push(localExamplePath);
         if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
+      }
+      const provisionScriptPath = join13(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
+      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
+      if (!expectedProvisionScript) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "pjangler install is missing the BMAD Skillex provisioning script",
+          changedFiles,
+          details
+        };
+      }
+      if (safeReadText(provisionScriptPath) !== expectedProvisionScript) {
+        changedFiles.push(provisionScriptPath);
+        if (!ctx.dryRun) {
+          writeText(provisionScriptPath, expectedProvisionScript);
+          chmodSync4(provisionScriptPath, 493);
+        }
       }
       if (!existsSync10(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
@@ -4080,6 +4204,9 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           ]
         };
       }
+      const preservedSkillsManifest = tryParseJson(
+        safeReadText(join13(ctx.repoRoot, ".agents", "skills.json"))
+      );
       const install = runBmadInstall(ctx.repoRoot);
       if (!install.ok) {
         return {
@@ -4091,16 +4218,28 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           details: [install.error ?? "Unknown error"]
         };
       }
+      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
+      if (!provisioned.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: `BMAD installed but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
+          changedFiles: [],
+          details: [provisioned.error ?? "Unknown BMAD pack error"]
+        };
+      }
       for (const detail of finding.details) {
         if (existsSync10(join13(ctx.repoRoot, detail))) {
           changedFiles.push(join13(ctx.repoRoot, detail));
         }
       }
+      changedFiles.push(...provisioned.changedFiles);
       return {
         id: finding.id,
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Installed BMAD scaffold via non-interactive installer" : "No changes required",
+        summary: changedFiles.length ? `Installed BMAD scaffold with Skillex pack ${BMAD_PACK_VERSION} skills` : "No changes required",
         changedFiles,
         details: []
       };
@@ -4184,6 +4323,9 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           ]
         };
       }
+      const preservedSkillsManifest = tryParseJson(
+        safeReadText(join13(ctx.repoRoot, ".agents", "skills.json"))
+      );
       const install = runBmadInstall(ctx.repoRoot);
       if (!install.ok) {
         return {
@@ -4195,6 +4337,17 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           details: [install.error ?? "Unknown error"]
         };
       }
+      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
+      if (!provisioned.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: `BMAD upgraded but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
+          changedFiles: [],
+          details: [provisioned.error ?? "Unknown BMAD pack error"]
+        };
+      }
       const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
       const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
       return {
@@ -4202,7 +4355,10 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         title: finding.title,
         status: upgraded ? "applied" : "noop",
         summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
-        changedFiles: upgraded ? [manifestPath] : [],
+        changedFiles: Array.from(/* @__PURE__ */ new Set([
+          ...upgraded ? [manifestPath] : [],
+          ...provisioned.changedFiles
+        ])),
         details: []
       };
     }
