@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent candidate base:
   `bfc1191a2c5173ccd2490615afe8896151f301f0`
+- Parent implementation commit:
+  `88aad39e12312ae650050da9dec2d2ed420a1ad6`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `90ba6e2a9afffbfe19c27653830f9e877aeec94f`
@@ -143,6 +145,11 @@
 - No live Plane, Linear, or Trello operation was invoked. No main branch, tag,
   release, package file, task ledger, CommonProject content, or unrelated file
   was changed.
+- The real close gate was run from a fresh exact Copier 9.14.0 render of
+  committed Hermes `90ba6e2a9afffbfe19c27653830f9e877aeec94f`
+  against the parent candidate. It passed with exact output
+  `CLOSE GATE: PASS for PJAN-21`.
+- Parent `git diff --check` passes.
 
 ## Ledger Update
 
@@ -167,6 +174,8 @@ Ledger updated: yes
   `e718c14a-2301-46d8-8b49-a11740925ec5`.
 - V11 implementation:
   `72f5d5a0-60fc-44df-89e3-4c9b7af87f68`.
+- V11 close gate:
+  `ec5a1814-e6d6-4275-bcf7-687e80c8ed12`.
 
 ## Known Gaps
 
