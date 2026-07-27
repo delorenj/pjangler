@@ -8,6 +8,8 @@
 - Parent baseline: `3664bd3dac75b152a16276645f4b6751f49d5023`
 - WidgetWhisperer-reviewed parent remediation base:
   `45a6844b80a126cdfe45087f155286099ce04189`
+- Parent crash-safety remediation commit:
+  `eb117451dcab4373c05e3f85bb935e3da97a127e`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes baseline and unchanged remote main:
   `62c05b578cfb5e310292e8034626436335bb1677`
@@ -145,6 +147,8 @@
   `4120b904a19fbb75a9b7addec3e788cd73f0c679`.
 - Hermes remote main remains
   `62c05b578cfb5e310292e8034626436335bb1677`.
+- Real parent close gate: `CLOSE GATE: PASS for PJAN-21`; generated event
+  `7ecbe29b-084a-4a27-bac3-98e52d4e1420`.
 - Live provider writes were excluded from validation; deterministic fake
   provider tests exercise posting, pagination, failure, retry, and concurrency
   without mutating Plane, Linear, or Trello.
@@ -166,8 +170,8 @@ Ledger updated: yes
   `a9ed90fb-11ea-498e-b509-8e5aec6967ba`.
 - WidgetWhisperer remediation implementation event:
   `97f10e8a-5f94-4eae-9a9b-fd979828ce73`.
-- The final close-gate event is appended by the real repository gate after the
-  parent remediation commit and recorded in the final PJAN-21 follow-up commit.
+- WidgetWhisperer remediation close-gate pass event:
+  `7ecbe29b-084a-4a27-bac3-98e52d4e1420`.
 
 ## Known Gaps
 
