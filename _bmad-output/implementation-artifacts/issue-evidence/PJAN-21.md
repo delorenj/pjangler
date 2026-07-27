@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
   `52d41b270f9a2499d54000b13a2ae2a1a0378fe8`
+- Parent implementation commit:
+  `2171c969a09afc54da5075c368b763ffe0b77a15`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `3ac772996be757e9b6d611d727cce8a6c26119c0`
@@ -153,6 +155,8 @@
   changes neither that fixture nor CommonProject; all directly relevant parent
   suites listed above pass.
 - Hermes and parent `git diff --check`: pass.
+- Real parent close gate: `CLOSE GATE: PASS for PJAN-21`; generated event
+  `3bbc9865-474d-423a-ba10-055808b758e8`.
 - No live Plane, Linear, or Trello call was made; deterministic fakes cover
   posting, pagination, failure, retry, concurrency, and no-post preflight.
 
@@ -173,6 +177,8 @@ Ledger updated: yes
   `7ecbe29b-084a-4a27-bac3-98e52d4e1420`.
 - Bartholomew/Doctor remediation implementation event:
   `c5245292-0ba9-449d-b5f7-ab607c743598`.
+- Bartholomew/Doctor remediation close-gate event:
+  `3bbc9865-474d-423a-ba10-055808b758e8`.
 
 ## Known Gaps
 
