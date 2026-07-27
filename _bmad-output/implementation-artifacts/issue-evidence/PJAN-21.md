@@ -11,6 +11,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent starting candidate:
   `0a49d8e4a1e5811f98b2a0fcd8130ce9b900cbee`
+- Parent implementation commit:
+  `c18d3567c820f6e820f50fe0d78a1b9e4c30d998`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes starting candidate:
   `08326421dc346886de154270363d59ba4eba72bd`
@@ -227,9 +229,18 @@
 - `git submodule status --recursive` still exits `128` because the existing
   `.tmp/plugins` gitlink has no `.gitmodules` mapping. This ticket does not
   change `.gitmodules` or orphan gitlinks.
-- No live Plane, Linear, or Trello mutation was invoked. No parent branch,
-  main branch, tag, release, version, package file, task ledger, CommonProject,
-  root-main event ledger, or unrelated file was changed.
+- The real absolute close gate was invoked from unrelated cwd `/tmp` using the
+  exact committed Copier `9.14.0` render and explicit parent root. Exact output:
+
+  ```text
+  CLOSE GATE: PASS for PJAN-21
+  ```
+
+  It emitted close-gate event
+  `f6a062d2-caf3-4abe-bad8-e40efdc62f04`.
+- No live Plane, Linear, or Trello mutation was invoked. No parent remote
+  branch, main branch, tag, release, version, package file, task ledger,
+  CommonProject, root-main event ledger, or unrelated file was changed.
 
 ## Ledger Update
 
@@ -239,6 +250,8 @@ Ledger updated: yes
   `43cffa92-7ca9-4369-8f39-9d74d56aa6cb`.
 - V13 implementation event:
   `c0a9e9c1-bb7f-4793-9d9e-feb956b3644c`.
+- V13 close-gate event:
+  `f6a062d2-caf3-4abe-bad8-e40efdc62f04`.
 - V12 implementation and close-gate events:
   `253284c2-fecb-4a06-aa18-250808c7b85f`,
   `ac67c0d3-87f9-4405-a1bd-01ffd37fa31d`.
@@ -293,6 +306,6 @@ Close recommendation: ready
   defects have red/green executable coverage; 124 Hermes tests, static/schema
   checks, the exact committed seven-surface render, feature-ref readback,
   parent typecheck/build, bounded PG self-test, and real PostgreSQL round trip
-  pass. The real close gate is the next repository action and will be recorded
-  in a follow-up commit. This is implementation readiness for fresh independent
-  specification and quality review, not a claim of acceptance.
+  pass. The real close gate passes and its canonical event is recorded. This is
+  implementation readiness for fresh independent specification and quality
+  review, not a claim of acceptance.
