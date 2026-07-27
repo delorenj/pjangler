@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
   `36b11d20c495d5fe25d7f9c072bf7107f449e1fd`
+- Parent implementation commit:
+  `c2d6b6a189de179590509fa3f66da11c258b3402`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `025e6ab42648abdf374530ac7ff4c93b6910c65a`
@@ -170,6 +172,8 @@ Ledger updated: yes
   `3bbc9865-474d-423a-ba10-055808b758e8`.
 - Post-repair adversarial implementation event:
   `4177a469-5ac7-4101-bb17-7477e0169986`.
+- Post-repair adversarial close-gate event:
+  `0d26974f-7fc3-4f77-b837-f5ba7e72d664`.
 
 ## Known Gaps
 
@@ -192,5 +196,5 @@ Close recommendation: ready
 
 - Rationale: all terminal post-repair findings have executable regressions,
   the exact committed candidate renders cleanly, feature-ref reachability is
-  verified, and the remaining parent failures are proven baseline surfaces
-  outside this ticket.
+  verified, the real close gate reports `CLOSE GATE: PASS for PJAN-21`, and the
+  remaining parent failures are proven baseline surfaces outside this ticket.
