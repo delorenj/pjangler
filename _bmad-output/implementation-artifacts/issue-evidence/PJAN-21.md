@@ -14,6 +14,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent v17 starting candidate:
   `73c38929e06ba9674610cb46790bc5db5e0d31b4`
+- Parent v17 implementation commit:
+  `56edc75292c574b2c4eab125fe9ee19e14a4a7bd`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes v17 starting candidate:
   `be4dd9704227f41add9cd62d396aaa22aaeadb27`
@@ -238,6 +240,15 @@
 - Bounded parent typecheck/build; parity migration, MCP catalog, MCP server,
   and project registry direct suites; the PG harness self-test; and the real
   local PG round trip all pass against this candidate.
+- From unrelated cwd `/home/delorenj/.claude/tmp`, the exact Copier `9.14.0`
+  rendered close-gate bytes and committed Hermes source both had SHA-256
+  `cf2de6403f01b540cb23cc31ee3fbf055367849fd2e543ad41e0428077366cbf`.
+  Invoking the rendered script through `sh` with the parent repository root
+  passed explicitly produced:
+
+  ```text
+  CLOSE GATE: PASS for PJAN-21
+  ```
 
 ### V16 green receipts retained as regression history
 
@@ -352,6 +363,8 @@ Ledger updated: yes
   `be2b424c-a555-45b2-9446-a2b4fd210183`.
 - V17 implementation event:
   `3c1a6326-d3ae-4339-b37b-88bf548f1fa8`.
+- V17 close-gate event:
+  `87f58908-f2f5-4fa9-92ae-f80acd71b90e`.
 - V16 Gate 1 hold decision copied byte-for-byte:
   `1e9f0fa0-2dee-4bb7-a89d-1f6c8b7433de`.
 - V16 implementation event:
