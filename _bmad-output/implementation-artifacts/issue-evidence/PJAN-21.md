@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
   `ac7584e2732900a131a194750936dd4976024127`
+- Parent implementation commit:
+  `717d9cacdc35880c467e0cb60ef1c33c191acf55`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `a65b6afa05ede221bb3b1e3b31646bef7d7c7e0a`
@@ -131,8 +133,9 @@
 - No live Plane, Linear, or Trello operation was invoked. No main branch, tag,
   release, package file, task ledger, CommonProject content, or unrelated file
   was changed.
-- Parent `git diff --check` passes. The real close gate runs on the committed
-  parent evidence and records its generated event in the follow-up commit.
+- Parent `git diff --check` passes. Real command
+  `bash agents/hermes/pm/.scripts/sentinel/bin/issue-close-gate.sh PJAN-21 .`
+  passes with exact output `CLOSE GATE: PASS for PJAN-21`.
 
 ## Ledger Update
 
@@ -154,6 +157,8 @@ Ledger updated: yes
   `66aa623d-af98-4b1f-bd31-83f56f9aa33e`.
 - V10 red-first implementation event:
   `f4d3dd09-f6bb-4fb4-92d0-3f45ac3486e4`.
+- V10 close-gate event:
+  `e718c14a-2301-46d8-8b49-a11740925ec5`.
 
 ## Known Gaps
 
