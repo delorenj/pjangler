@@ -14,6 +14,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent starting candidate:
   `49feda59e04f0134df70fa72154ec5bc26b0856b`
+- Parent v16 implementation commit:
+  `0543969df451584b426dc2942e59767beff1cbf6`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes starting candidate:
   `3132a0f0ca223d499e0870f8a0057fc84f6a17f0`
@@ -215,6 +217,17 @@
   pg-registry-regressions OK
   ```
 
+- From unrelated cwd `/tmp`, Copier `9.14.0` rendered a clean archive of
+  committed Hermes `be4dd9704227f41add9cd62d396aaa22aaeadb27` with
+  `--skip-tasks`. The rendered and committed close-gate bytes both had SHA-256
+  `cf2de6403f01b540cb23cc31ee3fbf055367849fd2e543ad41e0428077366cbf`.
+  Invoking those exact rendered bytes through `sh` with the parent repository
+  root passed explicitly produced:
+
+  ```text
+  CLOSE GATE: PASS for PJAN-21
+  ```
+
 - Parent `npm test` remains an honest bounded baseline failure: parity passes,
   then the unchanged Skillex copied-CommonProject fixture exits `1` because
   its packaged local template directory is absent. PJAN-21 changes no package,
@@ -232,6 +245,8 @@ Ledger updated: yes
   `1e9f0fa0-2dee-4bb7-a89d-1f6c8b7433de`.
 - V16 implementation event:
   `b57bbfb8-a30b-4c15-8a38-c41d0922e033`.
+- V16 close-gate event:
+  `cf822191-45d8-4cca-97d9-5850eb31a3f4`.
 - V15 implementation and close-gate events:
   `5ad71773-a248-4f67-bffa-642c179b1449`,
   `bb6e139b-90e0-4c52-a0dd-60d39ba756e6`.
