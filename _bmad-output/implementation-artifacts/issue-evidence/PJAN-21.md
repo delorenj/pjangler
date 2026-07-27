@@ -9,13 +9,17 @@
 - Initial parent candidate: `09394060920389a12268718828571bb018938088`
 - SyntaxSorcerer-reviewed parent candidate and remediation base:
   `112f40ddea12fe82a2994d3e8a66cdba6df4900f`
+- Professor Fiddlesticks-reviewed parent candidate and remediation base:
+  `b12963351a676508ab9594486e85e99c2854c519`
 - Submodule branch: `feature/PJAN-21-post-loop-main`
 - Submodule baseline: `62c05b578cfb5e310292e8034626436335bb1677`
 - Initial submodule candidate: `d204c353ec875bb8331569e3c0d28902d2f27118`
 - Doctor Von Code-remediated submodule commit:
   `1407bf3f9a94a6635420014e98aa3e4f41aaa632`
-- Current dual-identity submodule commit:
+- Professor Fiddlesticks-reviewed submodule commit:
   `a6d264cf931a3a671177da7ee624f6efec269573`
+- Current run-stable submodule commit:
+  `bd9a70aecba0940c66bb4962cbd2720ac867c32f`
 - Published submodule ref:
   `refs/heads/feature/PJAN-21-post-loop-main`
 
@@ -34,9 +38,11 @@
 4. Store and comment sanitized summaries only. Exclude tokens, credentials, raw
    logs, customer data/PII, and private paths; reference protected evidence
    without reproducing it.
-5. Separate a run-scoped artifact fingerprint that incorporates `run_id` from
-   a stable content/comment fingerprint that deduplicates identical comments
-   across runs. Route only to the single source issue and record
+5. Separate a run-scoped artifact fingerprint derived only from schema version,
+   canonical repository identity, and `run_id` from a stable content/comment
+   fingerprint that deduplicates identical comments across runs. Same-run
+   immutable-content drift must stall without overwrite or comment. Route only
+   to the single source issue and record
    `posted|already_present|failed|no_target_issue` plus the explicit operator
    flag.
 6. Keep the generated protocol provider-neutral: state that create-issue is
@@ -48,16 +54,19 @@
 
 ## Repo Changes
 
-- Submodule follow-up `a6d264cf931a3a671177da7ee624f6efec269573`
-  separates run artifact identity from cross-run comment identity in exactly:
+- Submodule follow-up `bd9a70aecba0940c66bb4962cbd2720ac867c32f`
+  makes artifact identity run-stable and retains independent content/comment
+  identity in exactly:
   - `template/.scripts/sentinel.prompt.md.jinja`
   - `template/.scripts/sentinel/docs/continuous-ticket-orchestration.md`
 - The parent gitlink advances from
-  `1407bf3f9a94a6635420014e98aa3e4f41aaa632` to
-  `a6d264cf931a3a671177da7ee624f6efec269573`.
+  `a6d264cf931a3a671177da7ee624f6efec269573` to
+  `bd9a70aecba0940c66bb4962cbd2720ac867c32f`.
 - This evidence adopts the canonical close-gate headings and exact markers.
-- The Bloodbank ledger appends SyntaxSorcerer's Momo HOLD decision event
-  `835ed986-fbc2-416a-ace2-fb8479ce61ff` byte-for-byte from the root ledger.
+- The Bloodbank ledger appends Professor Fiddlesticks' Momo HOLD decision event
+  `2703a751-2696-4108-89f7-ae8cd800b003` byte-for-byte from the root ledger and
+  records implementation event `7665c7bc-b03d-4763-92e4-c1b3e89f38d0`
+  through the established sentinel recorder.
 - Migrations and executable behavior changes: none.
 
 ## Verification
@@ -84,46 +93,69 @@
   (`hermes.run-retro.artifact`, version, `run_id`, `comment_fingerprint`), while
   `comment_fingerprint` hashes the exact sanitized content preimage and excludes
   run/correlation identity, timestamps, and routing outcome.
+- Professor Fiddlesticks independently reviewed parent
+  `b12963351a676508ab9594486e85e99c2854c519` and submodule
+  `a6d264cf931a3a671177da7ee624f6efec269573`, returning `SPEC ISSUES` for one
+  substantive defect. The accepted rationale was that exactly one artifact was
+  required at reviewer prompt line 125 and documentation line 91, but
+  `comment_fingerprint` participated in the artifact preimage at prompt line 154
+  and documentation line 119. Retry handling at prompt line 195 and
+  documentation line 158 therefore derived a second path when sanitized content
+  changed for the same `run_id`.
+- Submodule `bd9a70aecba0940c66bb4962cbd2720ac867c32f` resolves that finding with schema
+  version 3. `artifact_fingerprint` hashes exactly four LF-terminated lines:
+  `hermes.run-retro.artifact`, schema version `3`, canonical `repo`, and
+  `run_id`. It excludes every mutable or content-derived value.
+  `comment_fingerprint` retains its independent version-2 content preimage so
+  existing source-comment markers do not change.
 - Submodule `git diff --check`: pass.
-- Submodule follow-up scope: exactly the two authorized protocol files; 132
-  insertions and 64 deletions, with no executable files.
+- Submodule follow-up scope: exactly the two authorized protocol files; 97
+  insertions and 58 deletions, with no executable files.
 - Prompt numbering: contiguous top-level steps 1 through 12; step 11 directly
   follows step 10 and step 12 is the final retro checkpoint.
 - Jinja delimiter counts: `{{` / `}}` = 8 / 8; `{%` / `%}` = 0 / 0.
 - Jinja parser: pass.
 - Each of the three required decisions appears exactly once in both generated
   protocol surfaces.
-- Prompt/docs parity checks cover both exact SHA-256 preimages and field names,
-  the run-scoped path, same-invocation reuse, distinct-run preservation,
+- Whitespace-normalized prompt/docs parity checks cover both exact SHA-256
+  preimages and field names, the run-stable path, immutable/mutable field split,
+  pre-routing corruption/content validation, no-overwrite/no-comment stall,
   cross-run comment deduplication, schema/version, run/correlation identity,
   sanitization boundary, protected evidence, routing statuses, atomic
   rename/read-back, retry behavior, operator flag, local tracking reference,
   and final checkpoint.
-- Duplicate-run semantics: pass. Identical sanitized content produced comment
-  fingerprint
-  `20ec6f5a94195c81e4ec2a939c7fb565450333a3bd53735a24b78065fa88da7d`;
-  `run-a` and its retry both produced artifact fingerprint
-  `c5dda4e6aaf5be3646c87343ac4bf76296a1b0317346aebe244b00c649be74eb`,
-  while `run-b` produced
-  `08343a5e98210ee6748975c7c3497e15ddc4a056d7183a342f77ecf8bc921e8e`.
+- Mechanical scenario matrix: pass, 7 of 7. Same-run/same-content kept one path
+  and updated only mutable routing fields. Same-run/changed-content kept that
+  same path and returned `stalled` without overwrite or comment. Cross-run
+  identical and different content produced distinct artifact paths; identical
+  content shared its comment fingerprint. Corrupt artifact, lost response, and
+  no-source cases all followed the specified safe disposition.
+- Exact matrix identities: `run-a` artifact
+  `36a38bf7fcbc1db52a48e2fbaa3d3b957a8b1920dec746eaea8f3f08b66552f9`;
+  `run-b` artifact
+  `936bf34c5547c6e04aadf49b8c9336a06ab521154344de90521de84e5ebbe91a`;
+  shared comment fingerprint
+  `3d22084fb1f64bec3f3a1db1e63ce3dd8cc32ae6077623bfad9203aea9941d5c`.
 - Generated prompt/docs contain no PJAN reference.
 - Copier 9.14.0 render with `--skip-tasks`, defaults, PM role, and Trello
-  provider: pass; both rendered files retain the complete schema-v2 contract,
+  provider: pass; both rendered files retain the complete schema-v3 contract,
   contain no residual Jinja delimiters, and contain no PJAN reference.
 - Submodule publish/read-back: local HEAD, `git ls-remote`, and fetched
-  `FETCH_HEAD` all equal `a6d264cf931a3a671177da7ee624f6efec269573`.
+  `FETCH_HEAD` all equal `bd9a70aecba0940c66bb4962cbd2720ac867c32f`.
 - Submodule `origin/main` remains unchanged at
   `62c05b578cfb5e310292e8034626436335bb1677`.
 - Submodule worktree: clean on `feature/PJAN-21-post-loop-main` at
-  `a6d264cf931a3a671177da7ee624f6efec269573`.
+  `bd9a70aecba0940c66bb4962cbd2720ac867c32f`.
 - Parent `git diff --check`: pass.
 - Parent candidate scope: exactly the Hermes gitlink, this evidence file, and
   the Bloodbank ledger.
 - Canonical evidence simulation: all seven required headings, `Ledger updated:
   yes`, `Close recommendation: ready`, and the forbidden-placeholder scan pass.
-- Bloodbank JSONL parses with `jq`; SyntaxSorcerer HOLD decision event
-  `835ed986-fbc2-416a-ace2-fb8479ce61ff` occurs once and matches the root-ledger
-  source byte-for-byte.
+- Bloodbank JSONL parses with `jq`; Professor Fiddlesticks HOLD decision event
+  `2703a751-2696-4108-89f7-ae8cd800b003` occurs once and matches the root-ledger
+  source byte-for-byte. Implementation event
+  `7665c7bc-b03d-4763-92e4-c1b3e89f38d0` occurs once with the exact Hermes
+  commit and worker attribution.
 
 ## Ledger Update
 
@@ -136,6 +168,12 @@ Ledger updated: yes
   `623e32b4-dd4d-41b5-b18f-3770e4697b01`.
 - SyntaxSorcerer spec HOLD decision event:
   `835ed986-fbc2-416a-ace2-fb8479ce61ff`.
+- Prior dual-identity close-gate pass event:
+  `e60a5092-f9fe-4544-af54-8101e645ed60`.
+- Professor Fiddlesticks spec HOLD decision event:
+  `2703a751-2696-4108-89f7-ae8cd800b003`.
+- Run-stable implementation event:
+  `7665c7bc-b03d-4763-92e4-c1b3e89f38d0`.
 - The real close gate emits its pass event after the remediation commit; that
   event is recorded in the mandated final follow-up commit.
 
@@ -145,7 +183,7 @@ Ledger updated: yes
   create-issue operation. The generated Hermes protocol contains no PJAN ticket
   reference and never claims automated issue creation.
 - Fresh independent spec and quality re-review remain the orchestrator's next
-  gate on the dual-identity parent/submodule commits.
+  gate on the run-stable parent/submodule commits.
 - The submodule feature branch is published, while submodule `main` and the
   parent remote remain unchanged as required.
 
@@ -153,7 +191,7 @@ Ledger updated: yes
 
 Close recommendation: ready
 
-- Rationale: the quality and spec findings have concrete remediations, separate
-  run and comment identities pass duplicate-run semantics, the dependency is
-  remotely reachable through its feature ref, and the candidate is ready for
-  the real repository close gate and fresh independent re-review.
+- Rationale: the quality and spec findings have concrete remediations, the full
+  seven-case lifecycle matrix passes, the dependency is remotely reachable
+  through its feature ref, and the candidate is ready for the real repository
+  close gate and fresh independent re-review.
