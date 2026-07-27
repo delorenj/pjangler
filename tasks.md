@@ -12,3 +12,5 @@
   - [x] Isolate mise execution behind explicit integration mode — **COMPLETED by Codemaster Zigzag**
   - [x] Final independent code-quality approval — **PASSED by Bartholomew the Builder**
   - [x] Automated close gate and autonomous review — **PASSED by Taskforce Kraken**
+  - [x] Publish CommonProject dependency — **COMPLETED by Professor Fiddlesticks / Root Orchestrator**
+  - [x] Cut and publish PJangler patch release — **COMPLETED by Root Orchestrator**
