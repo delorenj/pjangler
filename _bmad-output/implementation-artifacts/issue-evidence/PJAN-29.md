@@ -58,6 +58,7 @@
 
 ## Known Gaps
 - CommonProject commits are local and must be published before the parent gitlink is safe to push.
+- The Plane board has no distinct `In Review` state, so the normalized transition remains displayed as `In Progress`; accepted repository evidence is authoritative.
 - No functional acceptance gap remains in the local branch.
 
 ## Close Recommendation
