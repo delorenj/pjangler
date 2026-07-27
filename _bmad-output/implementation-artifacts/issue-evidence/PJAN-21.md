@@ -7,6 +7,8 @@
 - Parent branch: `feature/PJAN-21-post-loop-main`
 - Parent implementation base:
   `4eefb51ed2245116bf4caa9d1c975d84939becbf`
+- Parent implementation commit:
+  `27fb41f46ca1e5855e16fd3873c013d144a9a505`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
 - Hermes implementation:
   `3aa5e803a7b669e32ccecb391da8ae8507c600ab`
@@ -160,6 +162,9 @@
   are unchanged.
 - No live Plane, Linear, or Trello mutation was made. Deterministic adapters and
   fakes cover comment side effects and failure paths.
+- Real parent command
+  `bash agents/hermes/pm/.scripts/sentinel/bin/issue-close-gate.sh PJAN-21 .`:
+  pass with exact output `CLOSE GATE: PASS for PJAN-21`.
 
 ## Ledger Update
 
@@ -179,6 +184,8 @@ Ledger updated: yes
   `0d26974f-7fc3-4f77-b837-f5ba7e72d664`.
 - Terminal-review implementation event:
   `4c5194c0-ac4f-4302-830f-34652b882393`.
+- Terminal-review close-gate event:
+  `31cfd3fd-149a-47aa-a36f-ac7dfc995a3d`.
 
 ## Known Gaps
 
@@ -208,6 +215,6 @@ Close recommendation: ready
 
 - Rationale: every terminal finding has a locked executable regression, all 61
   Hermes tests pass, the exact committed candidate renders cleanly, the feature
-  ref reads back at the exact commit, and remaining parent failures and ticket
-  wording are explicitly isolated unchanged surfaces outside this branch
-  implementation.
+  ref reads back at the exact commit, the real close gate passes, and remaining
+  parent failures and ticket wording are explicitly isolated unchanged surfaces
+  outside this branch implementation.
