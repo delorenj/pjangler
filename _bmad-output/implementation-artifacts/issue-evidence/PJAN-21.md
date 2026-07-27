@@ -1,62 +1,54 @@
-# Evidence: PJAN-21 — crash-safe Hermes post-loop improvement protocol
+# Evidence: PJAN-21 — bound, crash-safe Hermes post-loop improvement protocol
 
 ## Issue
 
 - Ticket: PJAN-21
 - Worker: Agent Buttercup / Codex CLI
 - Parent branch: `feature/PJAN-21-post-loop-main`
-- Parent baseline: `3664bd3dac75b152a16276645f4b6751f49d5023`
-- WidgetWhisperer-reviewed parent remediation base:
-  `45a6844b80a126cdfe45087f155286099ce04189`
-- Parent crash-safety remediation commit:
-  `eb117451dcab4373c05e3f85bb935e3da97a127e`
+- Parent implementation base:
+  `52d41b270f9a2499d54000b13a2ae2a1a0378fe8`
 - Hermes branch: `feature/PJAN-21-post-loop-main`
-- Hermes baseline and unchanged remote main:
-  `62c05b578cfb5e310292e8034626436335bb1677`
-- WidgetWhisperer-reviewed Hermes remediation base:
-  `bd9a70aecba0940c66bb4962cbd2720ac867c32f`
-- Current Hermes implementation:
-  `4120b904a19fbb75a9b7addec3e788cd73f0c679`
-- Published Hermes ref:
+- Hermes implementation:
+  `3ac772996be757e9b6d611d727cce8a6c26119c0`
+- Hermes feature ref:
   `refs/heads/feature/PJAN-21-post-loop-main`
+- Hermes remote main, unchanged:
+  `62c05b578cfb5e310292e8034626436335bb1677`
 
 ## Acceptance Criteria
 
 1. Keep step 11 directly after the final board-status report and ask exactly
    three decisions: what hurt, what should change, and whether the fix is
    repo-local or external/template/fleet. Keep step 12 as the final checkpoint.
-2. Persist and durability-sync immutable prepared run intent before any board
-   comment side effect.
-3. Serialize artifact creation and retry updates by run identity. Use unique
-   exclusive temporary files, no-replace creation, atomic replacement under
-   lock, file fsync, parent-directory fsync, and parse/read-back validation.
-4. Replace comment check-then-post with provider-neutral
-   `resolve_issue_id` and serialized `ensure_comment` operations. Exhaust every
-   provider comment page, including Plane cursor pagination; perform no post on
-   lookup or serialization failure.
-5. Publish an exact Draft 2020-12 JSON Schema with types, nullability, enums,
-   immutable and mutable pointers, and machine-enforced cross-field invariants.
-   Only routing result/error metadata may change after preparation, and
-   `target_issue` must equal immutable canonical `source_issue` when present.
-6. Define canonical identity before fingerprinting: repository identity comes
-   only from `.project.json.project_name`; provider comes only from
-   `.project.json.ticket_provider.type`; Plane and Linear use canonical UUIDs;
-   Trello uses canonical 24-hex card IDs; all input normalization and allowed
-   characters are explicit.
-7. Preserve sanitization and protected-evidence boundaries. Artifacts and
-   comments contain safe categories and summaries only, never credentials,
-   tokens, raw logs, customer/PII content, or private/absolute paths.
-8. Keep artifact identity run-scoped and comment identity content-scoped.
-   Same-run immutable drift stalls without overwrite or comment, while distinct
-   runs retain distinct artifacts and identical cross-run comments deduplicate.
-9. Validate serial 7/7 semantics, concurrent writers, concurrent cross-run
-   comments, both crash windows, Plane pagination, lookup and serialization
-   failure, wrong target, schema parity, fsync/no-overwrite, Jinja, and an exact
-   committed Copier 9.14.0 Trello render.
+2. Persist and durability-sync immutable run intent, including exact provider,
+   canonical source/target, marker, body, and operator flag, before any external
+   side effect.
+3. Use a run-scoped artifact fingerprint and a separate content-scoped comment
+   fingerprint. One marker maps to one immutable body; same-run immutable drift
+   stalls; distinct runs retain distinct artifacts; identical cross-run content
+   deduplicates.
+4. Serialize artifact and comment delivery with non-truncating, symlink-rejecting
+   locks, unique exclusive temporary files, no-replace creation, atomic replace,
+   file fsync, parent-directory fsync, and parse/read-back validation.
+5. Route only from the durable artifact. Environment provider selection and an
+   independent issue argument cannot redirect prepared intent. Provider and
+   target results must match the prepared values exactly.
+6. Publish a Draft 2020-12 version 5 schema with exact types, nullability, enums,
+   immutable/mutable pointers, canonical UUID/card rules, source/target and
+   operator invariants, sanitization patterns, and monotonic terminal routing.
+7. Fail closed before artifact or comment on tokens, credentials, private keys,
+   AWS access-key shapes, raw logs/traces, email/SSN/phone/payment-card PII, and
+   Unix, tilde, Windows, UNC, or file-URI private paths.
+8. Use Plane's supported work-item comment list/create endpoints with exhaustive
+   documented limit/offset pagination and safe no-post lookup failure.
+9. Validate serial 7/7, concurrency, both crash windows, stale finalization,
+   malformed bytes, canonical stored values, symlink attacks, provider/target
+   preflight, schema/runtime parity, Jinja, and an exact committed Copier 9.14.0
+   Trello render.
 
 ## Repo Changes
 
-- Hermes commit `4120b904a19fbb75a9b7addec3e788cd73f0c679`
+- Hermes commit `3ac772996be757e9b6d611d727cce8a6c26119c0`
   changes exactly:
   - `template/.scripts/lib/ticket-provider.sh`
   - `template/.scripts/providers/linear.sh`
@@ -65,93 +57,104 @@
   - `template/.scripts/sentinel.prompt.md.jinja`
   - `template/.scripts/sentinel/bin/run-retro.py`
   - `template/.scripts/sentinel/docs/continuous-ticket-orchestration.md`
-  - `template/.scripts/sentinel/schemas/run-retro.v4.schema.json`
+  - `template/.scripts/sentinel/schemas/run-retro.v4.schema.json` renamed to
+    `template/.scripts/sentinel/schemas/run-retro.v5.schema.json`
   - `tests/test_run_retro_contract.py`
 - The parent gitlink advances from
-  `bd9a70aecba0940c66bb4962cbd2720ac867c32f` to
-  `4120b904a19fbb75a9b7addec3e788cd73f0c679`.
-- Parent changes remain limited to the Hermes gitlink, this evidence file, and
-  the Bloodbank event ledger.
-- No parent application code, ticket board, main branch, release, or deployment
-  surface changes.
+  `4120b904a19fbb75a9b7addec3e788cd73f0c679` to
+  `3ac772996be757e9b6d611d727cce8a6c26119c0`.
+- Parent changes are limited to the Hermes gitlink, this evidence file, and
+  Bloodbank implementation/close-gate events.
+- No parent application code, package manifest, lockfile, board, main branch,
+  tag, release, deployment, or runtime backfill changes.
 
 ## Verification
 
-- Sir Fix-a-Lot gave the original protocol its independent specification
-  approval.
-- Doctor Von Code held the first restoration for evidence, durability,
+- Sir Fix-a-Lot gave the original exactly-three-decisions protocol independent
+  specification approval.
+- Doctor Von Code held the earlier restoration for evidence, durability,
   sanitization, routing, and generated-ticket leakage; those findings were
   remediated before the later identity reviews.
-- SyntaxSorcerer held the next candidate because artifact identity did not
-  preserve distinct run identity.
-- Professor Fiddlesticks held the next candidate because content identity could
-  fork one run into multiple artifact paths.
-- WidgetWhisperer reviewed parent
-  `45a6844b80a126cdfe45087f155286099ce04189` and Hermes
-  `bd9a70aecba0940c66bb4962cbd2720ac867c32f`, returning `QUALITY ISSUES` for
-  five concrete defects:
-  1. no durable prepared intent before comment side effects;
-  2. overwrite-prone and incompletely synced artifact writes;
-  3. check-then-post comment routing with incomplete Plane pagination;
-  4. an underspecified schema and mutable target identity; and
-  5. ambiguous repository/provider issue canonicalization.
-- Hermes `4120b904a19fbb75a9b7addec3e788cd73f0c679` remediates all five:
-  - schema v4 and `run-retro.py prepare` persist immutable intent first;
-  - per-run `flock`, `O_EXCL` temps, no-replace `link`, atomic retry replace,
-    file fsync, parent-directory fsync, and final read-back enforce durability;
-  - provider `ensure_comment` holds one cross-run lock across exhaustive lookup
-    and at-most-once post, with safe `lookup_failed`,
-    `serialization_failed`, and indeterminate-response results;
-  - the schema publishes exact types/nullability/enums, immutable/mutable JSON
-    pointers, and semantic invariants enforced by the helper; and
-  - NFKC/trim/casefold and provider-specific canonical ID rules run before either
-    fingerprint is derived.
-- Full Hermes unit suite: pass, 27 of 27.
-- Requested serial scenario matrix: pass, 7 of 7:
-  same-run/same-content, same-run/changed-content, cross-run/identical-content,
-  cross-run/different-content, corrupt artifact, lost response, and no source.
-- Concurrency and crash tests: pass for concurrent artifact writers, concurrent
-  cross-run identical comments, crash after prepared intent, and crash after an
-  external post with lost response.
-- Provider safety tests: pass for Plane multi-page cursor traversal, lookup
-  failure without post, adapter serialization failure without post, and
-  wrong-target rejection without artifact mutation.
-- Durability tests: pass for unique exclusive temps, no-replace creation, file
-  fsync, parent-directory fsync, atomic retry replacement, read-back, and
-  no-overwrite behavior.
-- Schema validation: Draft 2020-12 metaschema check passes; helper/schema field,
-  enum, mutability, provider-ID, target/source, and fingerprint contracts agree.
-- Sanitization tests reject secret-like content, email/PII-like content,
-  multiline raw material, absolute paths, unsafe evidence references, and
-  noncanonical identity.
-- Prompt/docs/source parity: whitespace-normalized contract is equal, schema and
-  helper constants agree, exactly three step-11 decisions exist, and step 12 is
-  final.
-- Jinja parser: pass. Delimiters are balanced:
-  `{{` / `}}` = 8 / 8, `{%` / `%}` = 0 / 0, `{#` / `#}` = 0 / 0.
-- Shell syntax: Bash adapter and all three POSIX provider scripts pass their
-  syntax parsers.
-- Ruff lint and format checks: pass.
-- Hermes `git diff --check`: pass.
-- Exact committed candidate render: Copier 9.14.0 with `--skip-tasks`, defaults,
-  PM role, and Trello provider passes. The rendered helper and schema match the
-  committed source byte-for-byte; prompt/docs retain exact decision count and
-  parity and contain no PJAN reference.
-- A first local render omitted `--skip-tasks` and entered provisioning before
-  stopping at runtime setup. It made no repository, board, publish, or release
-  change. The one changed profile cwd was restored from the live agent registry,
-  and the rendered SOUL matched the installed SOUL byte-for-byte. The validated
-  committed render used `--skip-tasks`.
+- SyntaxSorcerer held a candidate whose artifact identity did not preserve
+  distinct run identity.
+- Professor Fiddlesticks held a candidate whose content-derived artifact path
+  could fork one stable run.
+- WidgetWhisperer held Hermes
+  `bd9a70aecba0940c66bb4962cbd2720ac867c32f` for prepared-intent durability,
+  safe creation/update serialization, comment idempotency, exact schema, and
+  canonical repository/provider issue identity. Hermes
+  `4120b904a19fbb75a9b7addec3e788cd73f0c679` addressed that review.
+- Fresh Bartholomew review then held parent
+  `52d41b270f9a2499d54000b13a2ae2a1a0378fe8` / Hermes
+  `4120b904a19fbb75a9b7addec3e788cd73f0c679` because provider/source were not
+  bound before delivery, one marker could produce mutable operator-body drift,
+  schema/helper UUID and null-source rules differed, and SSN/AWS/private-path
+  content crossed the sanitization boundary.
+- Fresh Doctor Von Code review held the same candidate for retired Plane issue
+  comment endpoints, provider rebinding, symlink/truncation escape, sanitization
+  bypass, stale failure regression, noncanonical stored IDs, UUID version
+  mismatch, unsafe malformed-byte errors, and GNU-only shell locking.
+- Hermes `3ac772996be757e9b6d611d727cce8a6c26119c0` remediates both final reviews:
+  - version 5 persists provider, canonical byte-equal source/target, immutable
+    operator flag, marker, and exact body before routing;
+  - `tp ensure_comment` accepts only the artifact fingerprint and routes through
+    the prepared provider/source/body while ignoring provider override attempts;
+  - one content fingerprint includes every body-varying immutable value;
+  - Python advisory locks replace GNU `flock`/`sha256sum`, reject symlinks, avoid
+    truncation, and protect artifact plus cross-run comment delivery;
+  - terminal success/no-target results are monotonic over delayed failures;
+  - helper and schema accept canonical RFC UUID versions 1-8 with RFC variant,
+    reject nil/noncanonical stored IDs, and enforce null-source rules;
+  - malformed UTF-8 input/artifacts return declared safe JSON categories without
+    traceback or private paths;
+  - expanded fail-closed sanitization covers every claimed protected category;
+  - Plane retro resolution/list/post uses supported `/work-items/` endpoints,
+    with comment lookup exhausting `limit`/`offset` pages.
+- Full Hermes command
+  `python3 -m unittest discover -s tests -p 'test_*.py' -v`: pass, 40 of 40.
+- PJAN-21 adversarial command `python3 tests/test_run_retro_contract.py -q`:
+  pass, 33 of 33.
+- Serial scenario matrix: pass, 7 of 7 for same-run same/changed content,
+  cross-run same/different content, corrupt artifact, lost response, and no
+  source.
+- Concurrency/crash probes: pass for eight concurrent artifact writers,
+  concurrent identical cross-run comments, crash after prepared intent, and
+  crash after external post with lost response.
+- Adversarial probes: pass for provider override, extra issue argument, invalid
+  prepared provider/target with zero provider calls, marker/body stability,
+  stale finalization ordering, noncanonical stored IDs, malformed bytes,
+  symlinked artifact/comment-lock paths, no-overwrite/fsync, expanded
+  sanitization, no-source routing, Plane pagination, and lookup failure with no
+  post.
+- Draft 2020-12 metaschema and runtime/schema parity: pass for required fields,
+  types, nullability, enums, immutable/mutable pointers, UUID versions 1-8,
+  null-source/operator rules, and the exact runtime unsafe-summary pattern list.
+- Ruff lint/format, Python compile, Bash adapter syntax, dash syntax for all
+  provider scripts, and 17 embedded Python heredoc parses: pass.
+- Prompt/docs/source parity: whitespace-normalized contract equal; exactly
+  three step-11 decisions; one final step 12; no generated PJAN reference.
+- Jinja delimiters: balanced at `{{`/`}}` 8/8, `{%`/`%}` 0/0, `{#`/`#}` 0/0.
+- Exact committed render: Copier 9.14.0, commit
+  `3ac772996be757e9b6d611d727cce8a6c26119c0`, `--skip-tasks`, defaults, PM role,
+  Trello provider: pass. Rendered helper, schema, adapter, and Trello provider
+  match committed sources byte-for-byte; rendered prompt/docs retain exact
+  decision count and normalized parity.
 - Hermes feature publish/read-back: local HEAD, `git ls-remote`, and freshly
   fetched `FETCH_HEAD` all equal
-  `4120b904a19fbb75a9b7addec3e788cd73f0c679`.
-- Hermes remote main remains
-  `62c05b578cfb5e310292e8034626436335bb1677`.
-- Real parent close gate: `CLOSE GATE: PASS for PJAN-21`; generated event
-  `7ecbe29b-084a-4a27-bac3-98e52d4e1420`.
-- Live provider writes were excluded from validation; deterministic fake
-  provider tests exercise posting, pagination, failure, retry, and concurrency
-  without mutating Plane, Linear, or Trello.
+  `3ac772996be757e9b6d611d727cce8a6c26119c0`.
+- Relevant parent checks pass: parity migration; MCP catalog/server; project
+  registry; PostgreSQL registry; TypeScript typecheck; esbuild bundle.
+- Parent `npm ci --ignore-scripts --dry-run` reproduces the baseline lock
+  mismatch for declared PostgreSQL dependencies. `git diff` from
+  `52d41b270f9a2499d54000b13a2ae2a1a0378fe8` confirms PJAN-21 changes neither
+  package manifest nor lockfile.
+- Full parent `npm test` reaches the pre-existing Skillex/CommonProject packaged
+  fixture and stops because that copied local template is absent. PJAN-21
+  changes neither that fixture nor CommonProject; all directly relevant parent
+  suites listed above pass.
+- Hermes and parent `git diff --check`: pass.
+- No live Plane, Linear, or Trello call was made; deterministic fakes cover
+  posting, pagination, failure, retry, concurrency, and no-post preflight.
 
 ## Ledger Update
 
@@ -164,22 +167,25 @@ Ledger updated: yes
   `835ed986-fbc2-416a-ace2-fb8479ce61ff`.
 - Professor Fiddlesticks specification HOLD event:
   `2703a751-2696-4108-89f7-ae8cd800b003`.
-- Prior run-stable implementation event:
-  `7665c7bc-b03d-4763-92e4-c1b3e89f38d0`.
-- Prior run-stable close-gate event:
-  `a9ed90fb-11ea-498e-b509-8e5aec6967ba`.
-- WidgetWhisperer remediation implementation event:
+- Prior final-remediation implementation event:
   `97f10e8a-5f94-4eae-9a9b-fd979828ce73`.
-- WidgetWhisperer remediation close-gate pass event:
+- Prior final-remediation close-gate event:
   `7ecbe29b-084a-4a27-bac3-98e52d4e1420`.
+- Bartholomew/Doctor remediation implementation event:
+  `c5245292-0ba9-449d-b5f7-ab607c743598`.
 
 ## Known Gaps
 
-- `pjangler:PJAN-23` remains the local owner for a future create-issue adapter
-  operation. Generated Hermes protocol contains no PJAN reference and never
-  claims automated issue creation.
-- Provider correctness was verified with deterministic adapters and fakes; no
-  live third-party comment was needed for this repository change.
+- `pjangler:PJAN-23` owns a future create-issue adapter operation. Generated
+  Hermes protocol contains no PJAN reference and states that automated issue
+  creation is unavailable without an existing local ticket reference.
+- Parent dependency hygiene remains outside PJAN-21: `package.json` declares
+  PostgreSQL packages and transitive dependencies absent from
+  `package-lock.json`, so clean `npm ci` rejects the unchanged baseline.
+- The parent Skillex packaged-template fixture remains outside PJAN-21 and fails
+  when its copied CommonProject template directory is absent.
+- Provider correctness is verified with deterministic adapters/fakes; live
+  third-party comments were intentionally excluded.
 - Hermes feature ref is published. Hermes main and the parent remote remain
   unchanged by this work.
 
@@ -187,8 +193,7 @@ Ledger updated: yes
 
 Close recommendation: ready
 
-- Rationale: WidgetWhisperer’s five quality findings have executable
-  remediations, deterministic concurrency/crash coverage, an exact schema,
-  provider-safe routing, a clean committed render, and verified feature-ref
-  reachability. The parent candidate is ready for the real repository close
-  gate.
+- Rationale: every concrete Bartholomew and Doctor final-review finding now has
+  an executable adversarial regression, the exact committed candidate renders
+  cleanly, feature-ref reachability is verified, and the remaining parent
+  hygiene items are proven baseline surfaces outside this ticket.
