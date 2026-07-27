@@ -2485,7 +2485,7 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/parity/index.ts
-import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync2, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
+import { existsSync as existsSync10, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync2, realpathSync, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
 import { basename as basename3, dirname as dirname7, join as join14, relative, resolve as resolve2 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL } from "node:url";
 import { homedir as homedir5 } from "node:os";
@@ -2777,6 +2777,48 @@ function templateCommonProjectText(ctx, rel) {
   const path = join14(ctx.pjanglerRoot, "templates", "commonproject", "template", rel);
   return existsSync10(path) ? readText(path) : void 0;
 }
+function validateSkillName(name) {
+  if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\") || basename3(name) !== name) {
+    throw new Error(`Unsafe skill name: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+function lstatIfPresent(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+function isContainedBy(root, target) {
+  const rel = relative(root, target);
+  return rel === "" || rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\");
+}
+function prepareSafeProjectSkillsDirs(ctx) {
+  const projectRoot = realpathSync(ctx.repoRoot);
+  const agentsDir = join14(projectRoot, ".agents");
+  const skillsDir = join14(agentsDir, "skills");
+  for (const path of [agentsDir, skillsDir]) {
+    if (!isContainedBy(projectRoot, path)) throw new Error(`Project skills path escapes repository: ${path}`);
+    const stat = lstatIfPresent(path);
+    if (stat?.isSymbolicLink()) throw new Error(`Refusing symlinked project skills directory: ${path}`);
+    if (stat && !stat.isDirectory()) throw new Error(`Project skills path is not a directory: ${path}`);
+  }
+  if (!ctx.dryRun) {
+    if (!existsSync10(agentsDir)) mkdirSync6(agentsDir, { recursive: false });
+    if (!existsSync10(skillsDir)) mkdirSync6(skillsDir, { recursive: false });
+    for (const path of [agentsDir, skillsDir]) {
+      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) {
+        throw new Error(`Unsafe project skills directory after creation: ${path}`);
+      }
+      if (!isContainedBy(projectRoot, realpathSync(path))) {
+        throw new Error(`Resolved project skills directory escapes repository: ${path}`);
+      }
+    }
+  }
+  return { agentsDir, skillsDir };
+}
 function bmadPackRoot(ctx) {
   return resolve2(
     process.env.PJ_BMAD_PACK_ROOT?.trim() || join14(ctx.homeDir, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION)
@@ -2785,7 +2827,7 @@ function bmadPackRoot(ctx) {
 function canonicalBmadSkillEntries(ctx) {
   const root = bmadPackRoot(ctx);
   if (!existsSync10(root)) return [];
-  return readdirSync2(root).filter((name) => name.startsWith("bmad-") && lstatSync(join14(root, name)).isDirectory()).sort().map((name) => ({ name, source: pathToFileURL(join14(root, name)).href }));
+  return readdirSync2(root).filter((name) => name.startsWith("bmad-") && lstatSync(join14(root, name)).isDirectory()).sort().map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join14(root, name)).href }));
 }
 function isBmadManifestEntry(entry) {
   if (typeof entry === "string") return entry.startsWith("bmad-");
@@ -2822,25 +2864,43 @@ function provisionBmadSkills(ctx, preservedManifest) {
     };
   }
   const changedFiles = [];
-  const manifestPath = join14(ctx.repoRoot, ".agents", "skills.json");
+  let safeDirs;
+  try {
+    safeDirs = prepareSafeProjectSkillsDirs(ctx);
+  } catch (error) {
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
+  const manifestPath = join14(safeDirs.agentsDir, "skills.json");
+  const manifestStat = lstatIfPresent(manifestPath);
+  if (manifestStat?.isSymbolicLink() || manifestStat && !manifestStat.isFile()) {
+    return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
+  }
   const currentManifest = tryParseJson(safeReadText(manifestPath));
   const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest);
   if (safeReadText(manifestPath) !== nextManifest) {
     changedFiles.push(manifestPath);
     if (!ctx.dryRun) writeText(manifestPath, nextManifest);
   }
-  const skillsDir = join14(ctx.repoRoot, ".agents", "skills");
+  const skillsDir = safeDirs.skillsDir;
+  const resolvedSkillsDir = ctx.dryRun && !existsSync10(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath4(entry.source)]));
   let topologyChanged = false;
   if (existsSync10(skillsDir)) {
     for (const name of readdirSync2(skillsDir)) {
+      validateSkillName(name);
       if (!name.startsWith("bmad-") || expected.has(name)) continue;
+      if (dirname7(join14(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
+        return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
+      }
       topologyChanged = true;
       if (!ctx.dryRun) rmSync(join14(skillsDir, name), { recursive: true, force: true });
     }
   }
   for (const [name, target] of expected) {
-    const link = join14(skillsDir, name);
+    const link = join14(resolvedSkillsDir, validateSkillName(name));
+    if (dirname7(link) !== resolvedSkillsDir) {
+      return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
+    }
     let correct = false;
     try {
       correct = lstatSync(link).isSymbolicLink() && resolve2(dirname7(link), readlinkSync(link)) === target;

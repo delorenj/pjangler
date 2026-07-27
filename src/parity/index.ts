@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
@@ -460,6 +460,52 @@ interface SkillManifestEntry {
   source: string;
 }
 
+function validateSkillName(name: string): string {
+  if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\") || basename(name) !== name) {
+    throw new Error(`Unsafe skill name: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
+function lstatIfPresent(path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function isContainedBy(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\"));
+}
+
+function prepareSafeProjectSkillsDirs(ctx: Context): { agentsDir: string; skillsDir: string } {
+  const projectRoot = realpathSync(ctx.repoRoot);
+  const agentsDir = join(projectRoot, ".agents");
+  const skillsDir = join(agentsDir, "skills");
+  for (const path of [agentsDir, skillsDir]) {
+    if (!isContainedBy(projectRoot, path)) throw new Error(`Project skills path escapes repository: ${path}`);
+    const stat = lstatIfPresent(path);
+    if (stat?.isSymbolicLink()) throw new Error(`Refusing symlinked project skills directory: ${path}`);
+    if (stat && !stat.isDirectory()) throw new Error(`Project skills path is not a directory: ${path}`);
+  }
+  if (!ctx.dryRun) {
+    if (!existsSync(agentsDir)) mkdirSync(agentsDir, { recursive: false });
+    if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: false });
+    for (const path of [agentsDir, skillsDir]) {
+      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) {
+        throw new Error(`Unsafe project skills directory after creation: ${path}`);
+      }
+      if (!isContainedBy(projectRoot, realpathSync(path))) {
+        throw new Error(`Resolved project skills directory escapes repository: ${path}`);
+      }
+    }
+  }
+  return { agentsDir, skillsDir };
+}
+
 function bmadPackRoot(ctx: Context): string {
   return resolve(
     process.env.PJ_BMAD_PACK_ROOT?.trim() ||
@@ -473,7 +519,7 @@ function canonicalBmadSkillEntries(ctx: Context): SkillManifestEntry[] {
   return readdirSync(root)
     .filter((name) => name.startsWith("bmad-") && lstatSync(join(root, name)).isDirectory())
     .sort()
-    .map((name) => ({ name, source: pathToFileURL(join(root, name)).href }));
+    .map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join(root, name)).href }));
 }
 
 function isBmadManifestEntry(entry: unknown): boolean {
@@ -516,7 +562,17 @@ function provisionBmadSkills(
   }
 
   const changedFiles: string[] = [];
-  const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
+  let safeDirs: { agentsDir: string; skillsDir: string };
+  try {
+    safeDirs = prepareSafeProjectSkillsDirs(ctx);
+  } catch (error) {
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
+  const manifestPath = join(safeDirs.agentsDir, "skills.json");
+  const manifestStat = lstatIfPresent(manifestPath);
+  if (manifestStat?.isSymbolicLink() || (manifestStat && !manifestStat.isFile())) {
+    return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
+  }
   const currentManifest = tryParseJson(safeReadText(manifestPath));
   const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest);
   if (safeReadText(manifestPath) !== nextManifest) {
@@ -524,18 +580,26 @@ function provisionBmadSkills(
     if (!ctx.dryRun) writeText(manifestPath, nextManifest);
   }
 
-  const skillsDir = join(ctx.repoRoot, ".agents", "skills");
+  const skillsDir = safeDirs.skillsDir;
+  const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath(entry.source)]));
   let topologyChanged = false;
   if (existsSync(skillsDir)) {
     for (const name of readdirSync(skillsDir)) {
+      validateSkillName(name);
       if (!name.startsWith("bmad-") || expected.has(name)) continue;
+      if (dirname(join(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
+        return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
+      }
       topologyChanged = true;
       if (!ctx.dryRun) rmSync(join(skillsDir, name), { recursive: true, force: true });
     }
   }
   for (const [name, target] of expected) {
-    const link = join(skillsDir, name);
+    const link = join(resolvedSkillsDir, validateSkillName(name));
+    if (dirname(link) !== resolvedSkillsDir) {
+      return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
+    }
     let correct = false;
     try {
       correct = lstatSync(link).isSymbolicLink() && resolve(dirname(link), readlinkSync(link)) === target;

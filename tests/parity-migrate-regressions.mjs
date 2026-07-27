@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -378,6 +378,22 @@ run = "echo still here"
     const result = report.results.find((r) => r.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
     assert.ok(result.details.some((detail) => detail.includes("6.10.2")), JSON.stringify(result));
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-symlink-boundary");
+    repos.push(repo);
+    const outside = mkdtempSync(join(tmpdir(), "pjangler-outside-skills-"));
+    repos.push(outside);
+    writeFileSync(join(outside, "sentinel"), "do-not-touch\n");
+    mkdirSync(join(repo, ".agents"), { recursive: true });
+    symlinkSync(outside, join(repo, ".agents", "skills"), "dir");
+    const report = JSON.parse(runAllowFailure(["migrate", "skills.project-manifest", repo, "--json"]));
+    const result = report.results.find((r) => r.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /symlinked project skills directory/);
+    assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "do-not-touch\n");
+    assert.deepEqual(readdirSync(outside), ["sentinel"], "migration must not mutate a symlinked skills target");
   }
 
   {

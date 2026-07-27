@@ -8,16 +8,22 @@ import {
   readlinkSync,
   readdirSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceCli = join(root, "dist", "index.js");
-const bmadPack = "/home/delorenj/code/skillex/packs/bmad/6.10.2";
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-skillex-init-"));
+const explicitBmadPack = process.env.PJ_BMAD_PACK_ROOT?.trim();
+const bmadPack = explicitBmadPack
+  ? resolve(explicitBmadPack)
+  : join(tmp, "fixtures", "packs", "bmad", "6.10.2");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -32,6 +38,17 @@ function run(command, args, options = {}) {
     );
   }
   return result.stdout;
+}
+
+function runExpectFailure(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? tmp,
+    env: { ...process.env, ...options.env },
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  assert.notEqual(result.status, 0, `expected failure: ${command} ${args.join(" ")}`);
+  return `${result.stdout}\n${result.stderr}`;
 }
 
 function bmadSkillNames() {
@@ -98,12 +115,92 @@ function assertProjectContract(projectDir, homeDir) {
   assert.deepEqual(reprovisioned.skills[0], { name: "project-custom", source: `file://${customSkill}` });
   assert.equal(lstatSync(join(projectDir, ".codex", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "canonical engine must be runnable by mise");
 
+  const brokenLink = join(skillsDir, "bmad-agent-pm");
+  unlinkSync(brokenLink);
+  symlinkSync(join(tmp, "missing-bmad-agent-pm"), brokenLink);
+  run("mise", ["run", "skills-provision-bmad"], {
+    cwd: projectDir,
+    env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
+  });
+  assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "bmad-agent-pm"), "broken BMAD links must self-heal");
+  const beforeIdempotent = readFileSync(join(projectDir, ".agents", "skills.json"), "utf8");
+  run("mise", ["run", "skills-provision-bmad"], {
+    cwd: projectDir,
+    env: { ...miseEnv, PJ_BMAD_PACK_ROOT: bmadPack },
+  });
+  assert.equal(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"), beforeIdempotent, "BMAD provisioning must be idempotent");
+
   return {
     mise,
     bmadEntries: reprovisioned.skills.filter((entry) => entry?.name?.startsWith("bmad-")),
     bmadLinks: bmadSkillNames().map((name) => resolve(skillsDir, readlinkSync(join(skillsDir, name)))),
     customPreserved: existsSync(join(customSkill, "SKILL.md")),
   };
+}
+
+function assertAdversarialBoundaries(projectDir, homeDir) {
+  const manifestPath = join(projectDir, ".agents", "skills.json");
+  const originalManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const syncScript = join(projectDir, ".mise", "scripts", "sync-skills.py");
+  const env = { HOME: homeDir, PJ_BMAD_PACK_ROOT: bmadPack };
+  const cliSentinel = join(projectDir, ".codex", "sentinel");
+  writeFileSync(cliSentinel, "do-not-delete\n");
+
+  for (const name of ["../sentinel", ".", "..", join(tmp, "absolute-skill")]) {
+    const malicious = {
+      ...originalManifest,
+      skills: [{ name, source: pathToFileURL(join(bmadPack, "bmad-agent-pm")).href }, ...originalManifest.skills],
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(malicious, null, 2)}\n`);
+    runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+    assert.equal(readFileSync(cliSentinel, "utf8"), "do-not-delete\n", `malicious name ${name} must not touch outside sentinel`);
+  }
+  writeFileSync(
+    manifestPath,
+    `${JSON.stringify({ ...originalManifest, skills: [{ name: "remote-file", source: "file://attacker.example/tmp/skill" }] }, null, 2)}\n`
+  );
+  assert.match(
+    runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env }),
+    /Non-local file URI authority/
+  );
+  assert.equal(readFileSync(cliSentinel, "utf8"), "do-not-delete\n");
+
+  const encodedSource = join(tmp, "encoded skill # 100%");
+  mkdirSync(encodedSource, { recursive: true });
+  writeFileSync(join(encodedSource, "SKILL.md"), "# encoded URI\n");
+  const encodedManifest = {
+    ...originalManifest,
+    skills: [{ name: "encoded-custom", source: pathToFileURL(encodedSource).href }, ...originalManifest.skills],
+  };
+  writeFileSync(manifestPath, `${JSON.stringify(encodedManifest, null, 2)}\n`);
+  run("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+  assert.equal(
+    resolve(dirname(join(projectDir, ".codex", "skills", "encoded-custom")), readlinkSync(join(projectDir, ".codex", "skills", "encoded-custom"))),
+    encodedSource,
+    "encoded file URI must resolve spaces, #, and %"
+  );
+
+  writeFileSync(manifestPath, `${JSON.stringify(originalManifest, null, 2)}\n`);
+  const outsideCli = join(tmp, "outside-cli");
+  mkdirSync(outsideCli);
+  writeFileSync(join(outsideCli, "sentinel"), "outside-cli-safe\n");
+  rmSync(join(projectDir, ".codex"), { recursive: true, force: true });
+  symlinkSync(outsideCli, join(projectDir, ".codex"), "dir");
+  runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+  assert.equal(readFileSync(join(outsideCli, "sentinel"), "utf8"), "outside-cli-safe\n");
+  assert.equal(existsSync(join(outsideCli, "skills")), false, "symlinked CLI parent must not receive fanout");
+
+  const outsideSkills = join(tmp, "outside-skills");
+  mkdirSync(outsideSkills);
+  writeFileSync(join(outsideSkills, "sentinel"), "outside-skills-safe\n");
+  rmSync(join(projectDir, ".agents", "skills"), { recursive: true, force: true });
+  symlinkSync(outsideSkills, join(projectDir, ".agents", "skills"), "dir");
+  runExpectFailure("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+    cwd: projectDir,
+    env,
+  });
+  assert.equal(readFileSync(join(outsideSkills, "sentinel"), "utf8"), "outside-skills-safe\n");
+  assert.equal(readdirSync(outsideSkills).length, 1, "symlinked .agents/skills must not be mutated");
 }
 
 function initWith(cli, label, homeDir) {
@@ -136,6 +233,12 @@ function initWith(cli, label, homeDir) {
 }
 
 try {
+  if (!explicitBmadPack) {
+    for (const name of ["bmad-agent-pm", "bmad-create-prd"]) {
+      mkdirSync(join(bmadPack, name), { recursive: true });
+      writeFileSync(join(bmadPack, name, "SKILL.md"), `# ${name}\n`);
+    }
+  }
   assert.ok(bmadSkillNames().length > 0, "BMAD 6.10.2 pack is required");
 
   const homeDir = join(tmp, "home");
@@ -162,8 +265,9 @@ try {
   assert.deepEqual(installed.contract.bmadEntries, source.contract.bmadEntries, "source and packed-installed manifests must match");
   assert.deepEqual(installed.contract.bmadLinks, source.contract.bmadLinks, "source and packed-installed BMAD symlink targets must match");
   assert.equal(source.contract.customPreserved && installed.contract.customPreserved, true);
+  assertAdversarialBoundaries(source.projectDir, homeDir);
 
-  console.log("Skillex init regressions passed");
+  console.log(`Skillex init regressions passed (${explicitBmadPack ? "explicit integration pack" : "hermetic fixture"})`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
