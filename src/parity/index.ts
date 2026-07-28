@@ -1495,11 +1495,15 @@ function realOrSelf(path: string): string {
   }
 }
 
+// heartbeat.SERVICE (not just the .timer) also carries Environment= lines, so
+// omitting it leaves a stale HERMES_HOME and the dead HERMES_OAUTH_FILE behind.
 function profileUnits(role: RoleMeta): string[] {
   return [
     `hermes-${role.agentId}-gateway.service`,
     `hermes-${role.agentId}-consumer.service`,
+    `hermes-${role.agentId}-heartbeat.service`,
     `hermes-${role.agentId}-heartbeat.timer`,
+    `hermes-${role.agentId}-checkpoint.service`,
   ];
 }
 
