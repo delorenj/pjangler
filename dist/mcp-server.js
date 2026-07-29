@@ -3342,13 +3342,21 @@ if [[ -f "$FLEET_ENV" ]]; then
   source "$FLEET_ENV"
 fi
 
-HERMES_BIN="{HERMES_BIN:-{HERMES_FLEET_BIN:-/home/delorenj/code/hermes-agent/.venv/bin/hermes}}"
-HERMES_OAUTH_FILE="{HERMES_OAUTH_FILE:-{HERMES_FLEET_OAUTH_FILE:-$HOME/.hermes/auth.json}}"
+HERMES_BIN="{HERMES_BIN:-{HERMES_FLEET_BIN:-$HOME/.hermes/hermes-agent/.venv/bin/hermes}}"
 CODEX_HOME="{CODEX_HOME:-{HERMES_FLEET_CODEX_HOME:-$HOME/.codex}}"
 
 FLEET_HOME="{HERMES_FLEET_HOME:-$HOME/.hermes}"
 PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
-HERMES_HOME="$RUNTIME_HOME"
+
+# Singleton-runtime contract: HERMES_HOME MUST be the named profile dir, never
+# the raw runtime path. Hermes treats any HERMES_HOME that is neither under
+# ~/.hermes nor a child of a "profiles" dir as its own standalone root, which
+# makes get_active_profile_name() report "default" and _global_auth_file_path()
+# return None -- silently disabling shared fleet auth and giving every agent a
+# divergent config.yaml. The profile dir is a REAL dir whose shared entries
+# (config.yaml, .env, skills) symlink to the fleet root and whose person-owned
+# entries (memories, sessions, state.db, workspace) symlink into $RUNTIME_HOME.
+HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
 
 if [[ ! -d "$RUNTIME_HOME" ]]; then
   echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
@@ -3356,7 +3364,13 @@ if [[ ! -d "$RUNTIME_HOME" ]]; then
   exit 1
 fi
 
-exec env HERMES_HOME="$HERMES_HOME" HERMES_FLEET_ENV="$FLEET_ENV"   HERMES_OAUTH_FILE="$HERMES_OAUTH_FILE" CODEX_HOME="$CODEX_HOME"   "$HERMES_BIN" "$@"
+if [[ ! -d "$HERMES_HOME" ]]; then
+  echo "hermes: profile not provisioned at $HERMES_HOME" >&2
+  echo "  fix: pj migrate hermes.runtime-singleton" >&2
+  exit 1
+fi
+
+exec env HERMES_HOME="$HERMES_HOME" HERMES_FLEET_ENV="$FLEET_ENV"   CODEX_HOME="$CODEX_HOME"   "$HERMES_BIN" "$@"
 `.replace(/\u0010/g, "$");
 }
 function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
@@ -3640,6 +3654,149 @@ function compareBmadVersions(a, b) {
     }
   }
   return 0;
+}
+var SHARED_PROFILE_ENTRIES = ["config.yaml", ".env", "skills"];
+var OWNED_PROFILE_ENTRIES = [
+  "memories",
+  "sessions",
+  "workspace",
+  "logs",
+  "cron",
+  "plans",
+  "hooks",
+  "pairing",
+  "audio_cache",
+  "image_cache"
+];
+var OWNED_PROFILE_FILES = ["SOUL.md", "state.db", "kanban.db"];
+function fleetHome(ctx) {
+  return process.env.HERMES_FLEET_HOME || join14(ctx.homeDir, ".hermes");
+}
+function fleetBinPath(ctx) {
+  const candidates = [
+    process.env.HERMES_FLEET_BIN,
+    join14(fleetHome(ctx), "hermes-agent", ".venv", "bin", "hermes"),
+    join14(fleetHome(ctx), "hermes-agent", "venv", "bin", "hermes"),
+    join14(ctx.homeDir, ".local", "bin", "hermes")
+  ].filter(Boolean);
+  return candidates.find((candidate) => existsSync10(candidate)) ?? "";
+}
+function singletonPlan(ctx, role) {
+  const fleetRoot = fleetHome(ctx);
+  const profileName = role.profileName || role.agentId;
+  const profileDir = join14(fleetRoot, "profiles", profileName);
+  const runtimeDir = join14(role.roleDir, "runtime");
+  const links = [];
+  for (const entry of SHARED_PROFILE_ENTRIES) {
+    links.push({ path: join14(profileDir, entry), target: join14(fleetRoot, entry), ensureTargetDir: entry === "skills" });
+  }
+  for (const entry of OWNED_PROFILE_ENTRIES) {
+    links.push({ path: join14(profileDir, entry), target: join14(runtimeDir, entry), ensureTargetDir: true });
+  }
+  for (const entry of OWNED_PROFILE_FILES) {
+    links.push({ path: join14(profileDir, entry), target: join14(runtimeDir, entry), ensureTargetDir: false });
+  }
+  const sharedSeeds = ["config.yaml", "auth.json", ".env"].map((entry) => ({
+    rootPath: join14(fleetRoot, entry),
+    runtimePath: join14(runtimeDir, entry)
+  }));
+  return { fleetRoot, profileDir, runtimeDir, links, sharedSeeds };
+}
+function isDanglingLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync10(path);
+  } catch {
+    return false;
+  }
+}
+function linkState(path, target) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return "missing";
+  }
+  if (!stat.isSymbolicLink()) return "not-a-symlink";
+  try {
+    return readlinkSync(path) === target ? "ok" : "wrong-target";
+  } catch {
+    return "wrong-target";
+  }
+}
+function realOrSelf(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+function profileUnits(role) {
+  return [
+    `hermes-${role.agentId}-gateway.service`,
+    `hermes-${role.agentId}-consumer.service`,
+    `hermes-${role.agentId}-heartbeat.service`,
+    `hermes-${role.agentId}-heartbeat.timer`,
+    `hermes-${role.agentId}-checkpoint.service`
+  ];
+}
+function readRegistry(registryPath2) {
+  const raw = safeReadText(registryPath2);
+  if (raw === null) return null;
+  try {
+    const doc = YAML3.parse(raw);
+    return doc?.agents ?? {};
+  } catch {
+    return null;
+  }
+}
+function declaredAgentIds(repoRoot) {
+  const raw = safeReadText(join14(repoRoot, ".project.json"));
+  if (raw === null) return [];
+  try {
+    const doc = JSON.parse(raw);
+    return Object.keys(doc.agents ?? {});
+  } catch {
+    return [];
+  }
+}
+function ownedRegistryEntries(registry, repoRoot) {
+  const want = realOrSelf(repoRoot);
+  const owned = [];
+  for (const [agentId, raw] of Object.entries(registry)) {
+    const entry = raw ?? {};
+    const roleDir = String(entry.role_dir ?? "");
+    if (!roleDir) continue;
+    if (realOrSelf(dirname7(dirname7(dirname7(roleDir)))) !== want) continue;
+    owned.push([agentId, entry]);
+  }
+  return owned;
+}
+function dropDeclaredAgent(ctx, agentId, changedFiles, details) {
+  const path = join14(ctx.repoRoot, ".project.json");
+  const raw = safeReadText(path);
+  if (raw === null) return;
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!doc.agents || !(agentId in doc.agents)) return;
+  delete doc.agents[agentId];
+  details.push(`drop agent "${agentId}" from .project.json`);
+  changedFiles.push(path);
+  if (!ctx.dryRun) writeText(path, `${JSON.stringify(doc, null, 2)}
+`);
+}
+function rewriteLauncher(text2) {
+  let next = text2.replace(/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m, 'HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"');
+  next = next.replace(/^HERMES_OAUTH_FILE=.*\n/m, "");
+  next = next.replace(/\s*HERMES_OAUTH_FILE="\$HERMES_OAUTH_FILE"/g, "");
+  next = next.replace(
+    /^.*\/home\/delorenj\/code\/hermes-agent\/\.venv\/bin\/hermes.*$/m,
+    (line) => line.replace("/home/delorenj/code/hermes-agent/.venv/bin/hermes", "$HOME/.hermes/hermes-agent/.venv/bin/hermes")
+  );
+  return next;
 }
 var RULES = [
   {
@@ -4600,6 +4757,306 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         title: finding.title,
         status: details.some((detail) => detail.includes("failed:")) ? "blocked" : details.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
         summary: details.length ? ctx.dryRun ? "Planned systemd remediation commands" : "Attempted systemd remediation" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "hermes.runtime-singleton",
+    title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "hermes.runtime-singleton", title: "Hermes singleton runtime (shared config/auth, per-agent memory)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const details = [];
+      for (const role of roles) {
+        const plan = singletonPlan(ctx, role);
+        if (!existsSync10(plan.fleetRoot)) {
+          details.push(`fleet root missing at ${plan.fleetRoot}`);
+          continue;
+        }
+        if (!existsSync10(plan.profileDir)) {
+          details.push(`profile dir missing: ${plan.profileDir}`);
+        } else if (lstatSync(plan.profileDir).isSymbolicLink()) {
+          details.push(`profile dir is a symlink (must be a real dir): ${plan.profileDir}`);
+        }
+        for (const link of plan.links) {
+          const state = linkState(link.path, link.target);
+          if (state !== "ok") details.push(`${state}: ${link.path} -> ${link.target}`);
+        }
+      }
+      return {
+        id: "hermes.runtime-singleton",
+        title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Singleton runtime contract satisfied" : `${details.length} singleton-runtime issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const changedFiles = [];
+      const details = [];
+      for (const role of roles) {
+        const plan = singletonPlan(ctx, role);
+        if (!existsSync10(plan.fleetRoot)) {
+          details.push(`blocked: fleet root missing at ${plan.fleetRoot}`);
+          continue;
+        }
+        for (const shared of plan.sharedSeeds) {
+          if (existsSync10(shared.rootPath)) continue;
+          const donor = existsSync10(shared.runtimePath) ? shared.runtimePath : null;
+          if (!donor) continue;
+          details.push(`seed fleet ${basename3(shared.rootPath)} from ${donor}`);
+          changedFiles.push(shared.rootPath);
+          if (!ctx.dryRun) copyFileSync(donor, shared.rootPath);
+        }
+        if (existsSync10(plan.profileDir) && lstatSync(plan.profileDir).isSymbolicLink()) {
+          details.push(`convert profile symlink to real dir: ${plan.profileDir}`);
+          changedFiles.push(plan.profileDir);
+          if (!ctx.dryRun) unlinkSync3(plan.profileDir);
+        }
+        if (!existsSync10(plan.profileDir)) {
+          details.push(`create profile dir: ${plan.profileDir}`);
+          changedFiles.push(plan.profileDir);
+          if (!ctx.dryRun) mkdirSync6(plan.profileDir, { recursive: true });
+        }
+        for (const link of plan.links) {
+          const state = linkState(link.path, link.target);
+          if (state === "ok") continue;
+          if (link.ensureTargetDir && !existsSync10(link.target) && !ctx.dryRun) {
+            mkdirSync6(link.target, { recursive: true });
+          }
+          details.push(`link ${link.path} -> ${link.target}`);
+          changedFiles.push(link.path);
+          if (ctx.dryRun) continue;
+          if (existsSync10(link.path) || isDanglingLink(link.path)) {
+            const lst = lstatSync(link.path);
+            if (lst.isSymbolicLink()) {
+              unlinkSync3(link.path);
+            } else {
+              const parked = `${link.path}.pre-singleton`;
+              renameSync2(link.path, parked);
+              details.push(`parked pre-existing ${link.path} at ${parked}`);
+            }
+          }
+          ensureParent(link.path);
+          symlinkSync(link.target, link.path);
+        }
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: details.some((d) => d.startsWith("blocked:")) ? "blocked" : changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+        summary: changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "hermes.profile-wiring",
+    title: "Launcher + systemd HERMES_HOME points at the named profile",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "hermes.profile-wiring", title: "Launcher + systemd HERMES_HOME points at the named profile", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const details = [];
+      for (const role of roles) {
+        const plan = singletonPlan(ctx, role);
+        const launcher = join14(role.roleDir, "hermes");
+        const text2 = safeReadText(launcher);
+        if (text2 === null) {
+          details.push(`launcher missing: ${relative(ctx.repoRoot, launcher)}`);
+        } else {
+          if (/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m.test(text2)) {
+            details.push(`launcher sets HERMES_HOME to the raw runtime path (disables shared auth + profile identity): ${relative(ctx.repoRoot, launcher)}`);
+          }
+          if (/HERMES_OAUTH_FILE/.test(text2)) {
+            details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative(ctx.repoRoot, launcher)}`);
+          }
+        }
+        for (const unit of profileUnits(role)) {
+          const unitPath = join14(ctx.homeDir, ".config", "systemd", "user", unit);
+          const unitText = safeReadText(unitPath);
+          if (unitText === null) continue;
+          const current = /^Environment=HERMES_HOME=(.*)$/m.exec(unitText)?.[1]?.trim();
+          if (current && current !== plan.profileDir) {
+            details.push(`${unit} HERMES_HOME=${current} (expected ${plan.profileDir})`);
+          }
+          if (/^Environment=HERMES_OAUTH_FILE=/m.test(unitText)) {
+            details.push(`${unit} sets HERMES_OAUTH_FILE (dead config)`);
+          }
+        }
+      }
+      return {
+        id: "hermes.profile-wiring",
+        title: "Launcher + systemd HERMES_HOME points at the named profile",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "HERMES_HOME wiring is in parity" : `${details.length} HERMES_HOME wiring issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      const changedFiles = [];
+      const details = [];
+      let unitsTouched = false;
+      for (const role of roles) {
+        const plan = singletonPlan(ctx, role);
+        const launcher = join14(role.roleDir, "hermes");
+        const text2 = safeReadText(launcher);
+        if (text2 !== null) {
+          const rewritten = rewriteLauncher(text2);
+          if (rewritten !== text2) {
+            details.push(`rewrite launcher HERMES_HOME -> profile path: ${relative(ctx.repoRoot, launcher)}`);
+            writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 493);
+          }
+        }
+        for (const unit of profileUnits(role)) {
+          const unitPath = join14(ctx.homeDir, ".config", "systemd", "user", unit);
+          const unitText = safeReadText(unitPath);
+          if (unitText === null) continue;
+          let next = unitText.replace(/^Environment=HERMES_HOME=.*$/m, `Environment=HERMES_HOME=${plan.profileDir}`);
+          next = next.replace(/^Environment=HERMES_OAUTH_FILE=.*\n/m, "");
+          if (next !== unitText) {
+            details.push(`repoint ${unit} HERMES_HOME -> ${plan.profileDir}`);
+            writeIfDifferent(unitPath, next, ctx.dryRun, changedFiles);
+            unitsTouched = true;
+          }
+        }
+      }
+      if (unitsTouched && !ctx.dryRun) {
+        systemctlUser(["daemon-reload"]);
+        details.push("systemctl --user daemon-reload (restart units to pick up the new HERMES_HOME)");
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+        summary: changedFiles.length ? ctx.dryRun ? "Planned HERMES_HOME rewiring" : "HERMES_HOME rewired to named profiles" : "No changes required",
+        changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "hermes.registry-parity",
+    title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const details = [];
+      const registryPath2 = join14(ctx.homeDir, ".hermes", "agents-registry.yaml");
+      const registry = readRegistry(registryPath2);
+      if (!registry) {
+        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath2}`, details: [], fixable: false };
+      }
+      const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+      for (const [agentId, entry] of ownedRegistryEntries(registry, ctx.repoRoot)) {
+        const roleDir = String(entry?.role_dir ?? "");
+        if (canonical.size === 0) {
+          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}) -- provision it, do not delete it`);
+          continue;
+        }
+        if (!canonical.has(agentId)) {
+          details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
+        }
+      }
+      for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+        details.push(`.project.json declares agent "${extra}" that no role.yaml claims`);
+      }
+      for (const role of roles) {
+        const entry = registry[role.agentId];
+        if (!entry) {
+          details.push(`registry is missing an entry for ${role.agentId}`);
+          continue;
+        }
+        const entryRoleDir = String(entry.role_dir ?? "");
+        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+          details.push(`registry role_dir for ${role.agentId} is ${entryRoleDir} (expected ${role.roleDir})`);
+        }
+        const bin = String(entry.hermes?.bin ?? "");
+        if (bin && !existsSync10(bin)) {
+          details.push(`registry hermes.bin for ${role.agentId} does not exist: ${bin}`);
+        }
+      }
+      return {
+        id: "hermes.registry-parity",
+        title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Fleet registry is in parity" : `${details.length} registry parity issue(s) detected`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const changedFiles = [];
+      const details = [];
+      const registryPath2 = join14(ctx.homeDir, ".hermes", "agents-registry.yaml");
+      const raw = safeReadText(registryPath2);
+      if (raw === null) {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: `registry unreadable at ${registryPath2}`, changedFiles, details };
+      }
+      let doc;
+      try {
+        doc = YAML3.parse(raw);
+      } catch {
+        return { id: finding.id, title: finding.title, status: "blocked", summary: "registry is not valid YAML", changedFiles, details };
+      }
+      const agents = doc?.agents ?? {};
+      const roles = discoverRoles(ctx.repoRoot);
+      const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+      const fleetBin = fleetBinPath(ctx);
+      let dirty = false;
+      if (canonical.size === 0) {
+        for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
+          details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
+        }
+      }
+      for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
+        if (canonical.size > 0 && !canonical.has(agentId)) {
+          details.push(`drop stale/duplicate registry agent "${agentId}"`);
+          delete agents[agentId];
+          dropDeclaredAgent(ctx, agentId, changedFiles, details);
+          dirty = true;
+          continue;
+        }
+        const hermes = entry.hermes ?? {};
+        if (fleetBin && String(hermes.bin ?? "") !== fleetBin && !existsSync10(String(hermes.bin ?? ""))) {
+          details.push(`repoint ${agentId} hermes.bin -> ${fleetBin}`);
+          hermes.bin = fleetBin;
+          entry.hermes = hermes;
+          dirty = true;
+        }
+        if (hermes.oauth_file) {
+          details.push(`drop dead hermes.oauth_file from ${agentId}`);
+          delete hermes.oauth_file;
+          dirty = true;
+        }
+      }
+      for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+        dropDeclaredAgent(ctx, extra, changedFiles, details);
+      }
+      if (dirty) {
+        changedFiles.push(registryPath2);
+        if (!ctx.dryRun) {
+          doc.agents = agents;
+          writeText(registryPath2, YAML3.stringify(doc));
+        }
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+        summary: changedFiles.length ? ctx.dryRun ? "Planned registry repair" : "Fleet registry repaired" : "No changes required",
         changedFiles,
         details
       };
