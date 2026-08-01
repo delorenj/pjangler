@@ -123,6 +123,8 @@ try {
     git(join(ROOT, "templates", "hermes-agent"), ["bundle", "create", hermesBundle, "HEAD"]);
     git(cloneRoot, ["clone", "--quiet", "--bare", commonBundle, commonBare]);
     git(cloneRoot, ["clone", "--quiet", "--bare", hermesBundle, hermesBare]);
+    git(commonBare, ["update-ref", "refs/heads/main", git(join(ROOT, "templates", "commonproject"), ["rev-parse", "HEAD"])]);
+    git(hermesBare, ["update-ref", "refs/heads/main", git(join(ROOT, "templates", "hermes-agent"), ["rev-parse", "HEAD"])]);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
     git(clone, ["config", `url.file://${commonBare}.insteadOf`, "git@github.com:delorenj/CommonProject.git"]);
