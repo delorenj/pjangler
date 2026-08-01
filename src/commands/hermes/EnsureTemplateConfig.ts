@@ -50,7 +50,7 @@ export function renderHostConfig(): string {
   const scaffoldDir = join(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join(home, ".agents", "skills");
   const pmExternalSkillGlobalDir = join(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", "6.10.2");
+  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", "6.10.1-next.31");
 
   return `# hermes-agent-template — host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).

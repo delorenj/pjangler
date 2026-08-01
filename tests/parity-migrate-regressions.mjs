@@ -6,6 +6,10 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
+const selectedBmadPack = resolve(
+  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
+    "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
+);
 
 function run(args, cwd = root, env) {
   const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
@@ -351,10 +355,13 @@ run = "echo still here"
     assert.equal(manifest.registry, "https://github.com/delorenj/skillex.git");
     assert.deepEqual(manifest.skills[0], { name: "example-skill", source: `file://${join(repo, ".agents", "skills", "example-skill")}` }, "non-BMAD manifest entries must be preserved");
     assert.ok(manifest.skills.length > 1, "migrate should record the pinned BMAD pack entries");
-    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-") && entry.source.startsWith("file://") && entry.source.includes("/packs/bmad/6.10.2/")));
+    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-") && entry.source.startsWith("file://") && entry.source.includes("/packs/bmad/6.10.1-next.31/")));
     assert.equal(existsSync(join(repo, ".agents", "skills", "example-skill", "SKILL.md")), true, "non-BMAD skill trees must remain intact");
     assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "copied BMAD trees must be replaced with symlinks");
-    assert.equal(resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))), "/home/delorenj/code/skillex/packs/bmad/6.10.2/bmad-agent-pm");
+    assert.equal(
+      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
+      join(selectedBmadPack, "bmad-agent-pm")
+    );
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), true, "migrate should install the BMAD pack provisioner");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "sync-skills.py")), true, "migrate should install the project-local skills sync engine");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "link-project-skills-to-clis.sh")), false, "legacy link script should be removed");
@@ -377,7 +384,7 @@ run = "echo still here"
     ));
     const result = report.results.find((r) => r.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.ok(result.details.some((detail) => detail.includes("6.10.2")), JSON.stringify(result));
+    assert.ok(result.details.some((detail) => detail.includes("6.10.1-next.31")), JSON.stringify(result));
   }
 
   {

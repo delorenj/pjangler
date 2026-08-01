@@ -87,7 +87,7 @@ interface Rule {
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
-const BMAD_PACK_VERSION = "6.10.2";
+const BMAD_PACK_VERSION = "6.10.1-next.31";
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =

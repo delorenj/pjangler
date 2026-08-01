@@ -818,7 +818,7 @@ function renderHostConfig() {
   const scaffoldDir = join5(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join5(home, ".agents", "skills");
   const pmExternalSkillGlobalDir = join5(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join5(home, "code", "skillex", "packs", "bmad", "6.10.2");
+  const pmExternalSkillBmadDir = join5(home, "code", "skillex", "packs", "bmad", "6.10.1-next.31");
   return `# hermes-agent-template \u2014 host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
 #
@@ -2493,7 +2493,7 @@ import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
-var BMAD_PACK_VERSION = "6.10.2";
+var BMAD_PACK_VERSION = "6.10.1-next.31";
 var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";

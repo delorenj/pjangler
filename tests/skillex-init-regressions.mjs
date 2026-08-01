@@ -24,7 +24,7 @@ const explicitBmadPack = process.env.PJ_BMAD_PACK_ROOT?.trim();
 const runMiseIntegration = process.env.PJ_RUN_MISE_INTEGRATION === "1";
 const bmadPack = explicitBmadPack
   ? resolve(explicitBmadPack)
-  : join(tmp, "fixtures", "packs", "bmad", "6.10.2");
+  : join(tmp, "fixtures", "packs", "bmad", "6.10.1-next.31");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -75,7 +75,7 @@ function assertProjectContract(projectDir, homeDir) {
         Object.keys(entry).sort().join(",") === "name,source" &&
         entry.source === `file://${join(bmadPack, entry.name)}`
     ),
-    "BMAD manifest entries must use the live {name, file:// source} schema and pinned 6.10.2 pack"
+    "BMAD manifest entries must use the live {name, file:// source} schema and pinned 6.10.1-next.31 pack"
   );
 
   const skillsDir = join(projectDir, ".agents", "skills");
@@ -252,7 +252,7 @@ try {
       writeFileSync(join(bmadPack, name, "SKILL.md"), `# ${name}\n`);
     }
   }
-  assert.ok(bmadSkillNames().length > 0, "BMAD 6.10.2 pack is required");
+  assert.ok(bmadSkillNames().length > 0, "BMAD 6.10.1-next.31 pack is required");
 
   const homeDir = join(tmp, "home");
   mkdirSync(homeDir, { recursive: true });
