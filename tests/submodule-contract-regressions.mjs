@@ -116,9 +116,13 @@ try {
     temporary.push(cloneRoot);
     const commonBare = join(cloneRoot, "common.git");
     const hermesBare = join(cloneRoot, "hermes.git");
+    const commonBundle = join(cloneRoot, "common.bundle");
+    const hermesBundle = join(cloneRoot, "hermes.bundle");
     const clone = join(cloneRoot, "pjangler");
-    git(cloneRoot, ["clone", "--quiet", "--bare", join(ROOT, "templates", "commonproject"), commonBare]);
-    git(cloneRoot, ["clone", "--quiet", "--bare", join(ROOT, "templates", "hermes-agent"), hermesBare]);
+    git(join(ROOT, "templates", "commonproject"), ["bundle", "create", commonBundle, "HEAD"]);
+    git(join(ROOT, "templates", "hermes-agent"), ["bundle", "create", hermesBundle, "HEAD"]);
+    git(cloneRoot, ["clone", "--quiet", "--bare", commonBundle, commonBare]);
+    git(cloneRoot, ["clone", "--quiet", "--bare", hermesBundle, hermesBare]);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
     git(clone, ["config", `url.file://${commonBare}.insteadOf`, "git@github.com:delorenj/CommonProject.git"]);
