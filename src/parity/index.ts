@@ -625,10 +625,13 @@ export function provisionBmadSkills(
   const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath(entry.source)]));
   const affected = new Set<string>();
+  const originalBmadNames = new Set<string>();
+  const originalCorrectLinks = new Map<string, string>();
   if (existsSync(skillsDir)) {
     for (const name of readdirSync(skillsDir)) {
       validateSkillName(name);
       if (!name.startsWith("bmad-")) continue;
+      originalBmadNames.add(name);
       if (dirname(join(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
       }
@@ -639,7 +642,8 @@ export function provisionBmadSkills(
       } catch {
         correct = false;
       }
-      if (!correct) affected.add(name);
+      if (correct) originalCorrectLinks.set(name, readlinkSync(join(skillsDir, name)));
+      else affected.add(name);
     }
   }
   for (const [name, target] of expected) {
@@ -677,17 +681,31 @@ export function provisionBmadSkills(
   const backup = join(transaction, "entries");
   mkdirSync(backup);
   const moved: string[] = [];
-  const created: string[] = [];
 
   const rollback = (): void => {
     const errors: string[] = [];
-    for (const name of [...created].reverse()) {
-      try { removeProjectEntry(join(skillsDir, name)); } catch (error) { errors.push(`remove ${name}: ${String(error)}`); }
+    const movedNames = new Set(moved);
+    try {
+      for (const name of readdirSync(skillsDir)) {
+        if (!name.startsWith("bmad-")) continue;
+        validateSkillName(name);
+        if (!originalBmadNames.has(name) || movedNames.has(name) || originalCorrectLinks.has(name)) {
+          removeProjectEntry(join(skillsDir, name));
+        }
+      }
+    } catch (error) {
+      errors.push(`remove applied projection: ${String(error)}`);
     }
     for (const name of [...moved].reverse()) {
       try {
-        removeProjectEntry(join(skillsDir, name));
         renameSync(join(backup, name), join(skillsDir, name));
+      } catch (error) {
+        errors.push(`restore ${name}: ${String(error)}`);
+      }
+    }
+    for (const [name, rawTarget] of originalCorrectLinks) {
+      try {
+        symlinkSync(rawTarget, join(skillsDir, name), "dir");
       } catch (error) {
         errors.push(`restore ${name}: ${String(error)}`);
       }
@@ -729,7 +747,6 @@ export function provisionBmadSkills(
       if (correct) continue;
       if (hooks.createLink) hooks.createLink(target, link, index);
       else symlinkSync(target, link, "dir");
-      created.push(name);
     }
     if (manifestChanged) {
       atomicWriteBuffer(manifestPath, Buffer.from(nextManifest), manifestMode, join(transaction, "manifest.next"));

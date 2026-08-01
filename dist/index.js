@@ -3118,10 +3118,13 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
   const resolvedSkillsDir = ctx.dryRun && !existsSync10(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
   const affected = /* @__PURE__ */ new Set();
+  const originalBmadNames = /* @__PURE__ */ new Set();
+  const originalCorrectLinks = /* @__PURE__ */ new Map();
   if (existsSync10(skillsDir)) {
     for (const name of readdirSync3(skillsDir)) {
       validateSkillName(name);
       if (!name.startsWith("bmad-")) continue;
+      originalBmadNames.add(name);
       if (dirname6(join14(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
       }
@@ -3132,7 +3135,8 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       } catch {
         correct = false;
       }
-      if (!correct) affected.add(name);
+      if (correct) originalCorrectLinks.set(name, readlinkSync(join14(skillsDir, name)));
+      else affected.add(name);
     }
   }
   for (const [name, target] of expected) {
@@ -3168,20 +3172,30 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
   const backup = join14(transaction, "entries");
   mkdirSync6(backup);
   const moved = [];
-  const created = [];
   const rollback = () => {
     const errors = [];
-    for (const name of [...created].reverse()) {
-      try {
-        removeProjectEntry(join14(skillsDir, name));
-      } catch (error) {
-        errors.push(`remove ${name}: ${String(error)}`);
+    const movedNames = new Set(moved);
+    try {
+      for (const name of readdirSync3(skillsDir)) {
+        if (!name.startsWith("bmad-")) continue;
+        validateSkillName(name);
+        if (!originalBmadNames.has(name) || movedNames.has(name) || originalCorrectLinks.has(name)) {
+          removeProjectEntry(join14(skillsDir, name));
+        }
       }
+    } catch (error) {
+      errors.push(`remove applied projection: ${String(error)}`);
     }
     for (const name of [...moved].reverse()) {
       try {
-        removeProjectEntry(join14(skillsDir, name));
         renameSync2(join14(backup, name), join14(skillsDir, name));
+      } catch (error) {
+        errors.push(`restore ${name}: ${String(error)}`);
+      }
+    }
+    for (const [name, rawTarget] of originalCorrectLinks) {
+      try {
+        symlinkSync(rawTarget, join14(skillsDir, name), "dir");
       } catch (error) {
         errors.push(`restore ${name}: ${String(error)}`);
       }
@@ -3222,7 +3236,6 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       if (correct) continue;
       if (hooks.createLink) hooks.createLink(target, link, index);
       else symlinkSync(target, link, "dir");
-      created.push(name);
     }
     if (manifestChanged) {
       atomicWriteBuffer(manifestPath, Buffer.from(nextManifest), manifestMode, join14(transaction, "manifest.next"));
