@@ -1315,8 +1315,10 @@ function copyMissingRecursive(sourceDir: string, targetDir: string, changedFiles
   }
 }
 
-function runtimeSubmodulePath(role: RoleMeta): string {
-  return `agents/hermes/${role.role}/runtime`;
+function runtimeSubmodulePath(repoRoot: string, role: RoleMeta): string | null {
+  const rolePath = relative(repoRoot, role.roleDir).replace(/\\/g, "/");
+  if (!/^agents\/hermes\/[^/]+$/.test(rolePath)) return null;
+  return `${rolePath}/runtime`;
 }
 
 function submoduleSectionHasPath(section: string, targetPath: string): boolean {
@@ -1329,14 +1331,16 @@ function hasRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta): boolean {
   const gitmodulesPath = join(repoRoot, ".gitmodules");
   const current = safeReadText(gitmodulesPath) ?? "";
   const sections = current.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
-  return sections.some((section) => submoduleSectionHasPath(section, runtimeSubmodulePath(role)));
+  const targetPath = runtimeSubmodulePath(repoRoot, role);
+  return Boolean(targetPath && sections.some((section) => submoduleSectionHasPath(section, targetPath)));
 }
 
 function removeRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta, changedFiles: string[], dryRun: boolean): string[] {
   const gitmodulesPath = join(repoRoot, ".gitmodules");
   const current = safeReadText(gitmodulesPath) ?? "";
   if (!hasRuntimeSubmoduleMapping(repoRoot, role)) return [];
-  const targetPath = runtimeSubmodulePath(role);
+  const targetPath = runtimeSubmodulePath(repoRoot, role);
+  if (!targetPath) return [];
   const next = current
     .replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) =>
       submoduleSectionHasPath(section, targetPath) ? "" : section)
@@ -1345,6 +1349,67 @@ function removeRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta, changed
   changedFiles.push(gitmodulesPath);
   if (!dryRun) writeText(gitmodulesPath, next ? `${next}\n` : "");
   return [gitmodulesPath];
+}
+
+interface RuntimeRetirementResult {
+  ok: boolean;
+  details: string[];
+  error?: string;
+}
+
+function retireRuntimeSubmodule(
+  repoRoot: string,
+  role: RoleMeta,
+  changedFiles: string[],
+  dryRun: boolean,
+): RuntimeRetirementResult {
+  const runtimePath = runtimeSubmodulePath(repoRoot, role);
+  if (!runtimePath) {
+    return { ok: false, details: [], error: `refusing unsafe runtime path for ${role.roleDir}` };
+  }
+  const probe = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (probe.status !== 0) {
+    return { ok: false, details: [], error: `failed to inspect runtime index at ${runtimePath}: ${probe.stderr.trim() || `exit ${probe.status}`}` };
+  }
+
+  const details: string[] = [];
+  if (probe.stdout.trim()) {
+    details.push(`untrack ${runtimePath}`);
+    if (dryRun) {
+      changedFiles.push(runtimePath);
+    } else {
+      const removal = spawnSync("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (removal.status !== 0) {
+        return { ok: false, details, error: `failed to untrack ${runtimePath}: ${removal.stderr.trim() || `exit ${removal.status}`}` };
+      }
+      const verification = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (verification.status !== 0 || verification.stdout.trim()) {
+        return {
+          ok: false,
+          details,
+          error: verification.status !== 0
+            ? `failed to verify untracked runtime ${runtimePath}: ${verification.stderr.trim() || `exit ${verification.status}`}`
+            : `runtime remains tracked after index-only removal: ${runtimePath}`,
+        };
+      }
+      changedFiles.push(runtimePath);
+    }
+  }
+
+  if (hasRuntimeSubmoduleMapping(repoRoot, role)) {
+    details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
+    removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun);
+  }
+  return { ok: true, details };
 }
 
 function upsertRegistryEntry(role: RoleMeta, homeDir: string, changedFiles: string[], dryRun: boolean): string | null {
@@ -2571,6 +2636,18 @@ const RULES: Rule[] = [
       if (!role) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
       }
+      const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      details.push(...retirement.details);
+      if (!retirement.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Failed to retire PM runtime submodule metadata safely",
+          changedFiles,
+          details: [retirement.error ?? "unknown runtime retirement failure"],
+        };
+      }
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
       writeIfDifferent(join(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
       writeIfDifferent(join(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 0o755);
@@ -2589,7 +2666,6 @@ const RULES: Rule[] = [
           .replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
-      removeRuntimeSubmoduleMapping(ctx.repoRoot, role, changedFiles, ctx.dryRun);
       const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
@@ -2665,31 +2741,21 @@ const RULES: Rule[] = [
       const details: string[] = [];
 
       for (const role of roles) {
-        const roleRelDir = relative(ctx.repoRoot, role.roleDir);
-        const runtimeRelPath = join(roleRelDir, "runtime");
-
-        // 1. Untrack if tracked
-        const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
-          cwd: ctx.repoRoot,
-          encoding: "utf8",
-        });
-        if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
-          details.push(`untrack ${runtimeRelPath}`);
-          changedFiles.push(runtimeRelPath);
-          if (!ctx.dryRun) {
-            spawnSync("git", ["rm", "--cached", "-r", runtimeRelPath], {
-              cwd: ctx.repoRoot,
-              encoding: "utf8",
-            });
-          }
+        const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+        details.push(...retirement.details);
+        if (!retirement.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Failed to retire Hermes runtime submodule metadata safely",
+            changedFiles,
+            details: [retirement.error ?? "unknown runtime retirement failure"],
+          };
         }
 
-        if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
-          details.push(`remove stale .gitmodules mapping for ${runtimeRelPath}`);
-          removeRuntimeSubmoduleMapping(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-        }
-
-        // 2. Update .gitignore
+        // Update .gitignore only after index removal is verified and the stale
+        // mapping has been retired.
         const gitignorePath = join(role.roleDir, ".gitignore");
         let content = "";
         let isIgnored = false;

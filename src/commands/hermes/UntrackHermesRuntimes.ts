@@ -50,10 +50,16 @@ export class UntrackHermesRuntimes extends Command {
 
       // 1. Check if runtime is tracked in git
       let isTracked = false;
-      const lsResult = spawnSync("git", ["ls-files", "--stage", runtimePath], {
+      const lsResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
         encoding: "utf8",
       });
+      if (lsResult.status !== 0) {
+        return {
+          success: false,
+          message: `✗ Failed to inspect runtime index at ${runtimePath}: ${lsResult.stderr.trim() || `exit ${lsResult.status}`}`,
+        };
+      }
       if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
         isTracked = true;
       }
@@ -81,14 +87,26 @@ export class UntrackHermesRuntimes extends Command {
         if (isTracked) {
           details.push(`untrack agents/hermes/${role}/runtime`);
           if (!this.context.dryRun) {
-            const rmResult = spawnSync("git", ["rm", "--cached", "-r", runtimePath], {
+            const rmResult = spawnSync("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8",
             });
             if (rmResult.status !== 0) {
               return {
                 success: false,
-                message: `Failed to untrack agents/hermes/${role}/runtime: ${rmResult.stderr}`,
+                message: `✗ Failed to untrack ${runtimePath}: ${rmResult.stderr.trim() || `exit ${rmResult.status}`}`,
+              };
+            }
+            const verifyResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+              cwd: targetDir,
+              encoding: "utf8",
+            });
+            if (verifyResult.status !== 0 || verifyResult.stdout.trim()) {
+              return {
+                success: false,
+                message: verifyResult.status !== 0
+                  ? `✗ Failed to verify untracked runtime ${runtimePath}: ${verifyResult.stderr.trim() || `exit ${verifyResult.status}`}`
+                  : `✗ Runtime remains tracked after index-only removal: ${runtimePath}`,
               };
             }
           }

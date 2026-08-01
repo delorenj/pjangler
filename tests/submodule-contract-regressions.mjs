@@ -105,7 +105,11 @@ try {
     const active = readFileSync(join(ROOT, "agents", "hermes", "pm", ".scripts", "20-runtime-repo.sh"), "utf8");
     assert.doesNotMatch(source, /function upsertSubmodule/);
     assert.match(source, /removeRuntimeSubmoduleMapping/);
+    assert.match(source, /\["rm", "--cached", "-r", "-f", "--", runtimePath\]/);
+    assert.match(source, /runtime remains tracked after index-only removal/);
     assert.match(command, /remove stale \.gitmodules mapping/);
+    assert.match(command, /\["rm", "--cached", "-r", "-f", "--", runtimePath\]/);
+    assert.match(command, /Runtime remains tracked after index-only removal/);
     for (const forbidden of ["gh repo create", "git submodule add", "git submodule update", 'rm -rf "$RUNTIME_LOCAL"']) {
       assert.ok(!active.includes(forbidden), `active runtime provisioner contains ${forbidden}`);
     }

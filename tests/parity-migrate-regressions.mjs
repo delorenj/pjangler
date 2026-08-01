@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -35,6 +35,16 @@ function runExpectError(args, cwd = root) {
   return result.stderr;
 }
 
+function git(cwd, args, env) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return result.stdout.trim();
+}
+
 let miseChecked = false;
 let miseOnPath = false;
 function miseAvailable() {
@@ -67,6 +77,60 @@ function makeRepoWithoutMiseToml(name) {
   const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
   writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
   return repo;
+}
+
+function makeLegacyRuntimeRepo(name) {
+  const repo = makeRepo(name);
+  const runtimeSource = mkdtempSync(join(tmpdir(), `pjangler-${name}-runtime-source-`));
+  repos.push(repo, runtimeSource);
+
+  git(runtimeSource, ["init", "--quiet", "-b", "main"]);
+  git(runtimeSource, ["config", "user.email", "fixture@example.invalid"]);
+  git(runtimeSource, ["config", "user.name", "Fixture"]);
+  writeFileSync(join(runtimeSource, "version.txt"), "one\n");
+  git(runtimeSource, ["add", "version.txt"]);
+  git(runtimeSource, ["commit", "--quiet", "-m", "one"]);
+  const firstPin = git(runtimeSource, ["rev-parse", "HEAD"]);
+  writeFileSync(join(runtimeSource, "version.txt"), "two\n");
+  git(runtimeSource, ["commit", "--quiet", "-am", "two"]);
+  const secondPin = git(runtimeSource, ["rev-parse", "HEAD"]);
+
+  const roleDir = join(repo, "agents", "hermes", "pm");
+  const runtimeDir = join(roleDir, "runtime");
+  const privatePath = join(runtimeDir, "private-state.bin");
+  mkdirSync(runtimeDir, { recursive: true });
+  writeFileSync(join(roleDir, "role.yaml"), "repo: demo\nrole: pm\nagent_id: demo-pm\nprofile: demo-pm\n");
+  writeFileSync(join(roleDir, ".gitignore"), ".scripts/.provision.log\nruntime/\n");
+  writeFileSync(privatePath, Buffer.from([0, 17, 34, 51, 68, 255]));
+  writeFileSync(
+    join(repo, ".gitmodules"),
+    `[submodule "templates/commonproject"]
+\tpath = templates/commonproject
+\turl = git@github.com:delorenj/CommonProject.git
+[submodule "legacy-runtime-name"]
+\tpath = agents/hermes/pm/runtime
+\turl = git@github.com:example/agent-hm-demo-pm.git
+`,
+  );
+
+  git(repo, ["init", "--quiet", "-b", "main"]);
+  git(repo, ["config", "user.email", "fixture@example.invalid"]);
+  git(repo, ["config", "user.name", "Fixture"]);
+  git(repo, ["fetch", "--quiet", runtimeSource, "main"]);
+  git(repo, ["add", ".gitmodules", "AGENTS.md", "mise.toml", "agents/hermes/pm/role.yaml", "agents/hermes/pm/.gitignore"]);
+  git(repo, ["update-index", "--add", "--cacheinfo", `160000,${firstPin},agents/hermes/pm/runtime`]);
+  git(repo, ["commit", "--quiet", "-m", "legacy runtime gitlink"]);
+  git(repo, ["update-index", "--cacheinfo", `160000,${secondPin},agents/hermes/pm/runtime`]);
+
+  return {
+    repo,
+    roleDir,
+    runtimeDir,
+    privatePath,
+    privateBytes: readFileSync(privatePath),
+    runtimeEntries: readdirSync(runtimeDir),
+    secondPin,
+  };
 }
 
 function assertAgentSymlinks(repo) {
@@ -515,34 +579,60 @@ run = "echo still here"
   }
 
   {
-    const repo = makeRepo("retired-runtime-submodule-mapping");
-    repos.push(repo);
-    const roleDir = join(repo, "agents", "hermes", "pm");
-    mkdirSync(roleDir, { recursive: true });
-    writeFileSync(join(roleDir, "role.yaml"), "repo: demo\nrole: pm\nagent_id: demo-pm\nprofile: demo-pm\n");
-    writeFileSync(join(roleDir, ".gitignore"), ".scripts/.provision.log\n");
-    writeFileSync(
-      join(repo, ".gitmodules"),
-      `[submodule "templates/commonproject"]
-\tpath = templates/commonproject
-\turl = git@github.com:delorenj/CommonProject.git
-[submodule "legacy-runtime-name"]
-\tpath = agents/hermes/pm/runtime
-\turl = git@github.com:example/agent-hm-demo-pm.git
-`,
-    );
-
+    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-mapping");
+    const { repo, roleDir, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
+    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`));
     const report = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
     const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
     assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.deepEqual(readFileSync(privatePath), privateBytes, "index-only retirement must preserve private runtime bytes");
+    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "index-only retirement must preserve the runtime tree");
+    assert.equal(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), "", "runtime gitlink must be absent from the index");
     const gitmodules = readFileSync(join(repo, ".gitmodules"), "utf8");
     assert.match(gitmodules, /templates\/commonproject/);
     assert.doesNotMatch(gitmodules, /agents\/hermes\/pm\/runtime/);
     assert.match(readFileSync(join(roleDir, ".gitignore"), "utf8"), /^runtime\/$/m);
 
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const auditFinding = audit.rules.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(auditFinding.status, "pass", JSON.stringify(auditFinding));
+
     const rerun = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
     const rerunResult = rerun.results.find((entry) => entry.id === "hermes.untracked-runtimes");
     assert.equal(rerunResult.status, "noop", JSON.stringify(rerunResult));
+  }
+
+  {
+    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-git-failure");
+    const { repo, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
+    const fakeBin = mkdtempSync(join(tmpdir(), "pjangler-failing-git-"));
+    repos.push(fakeBin);
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const wrapper = join(fakeBin, "git");
+    writeFileSync(
+      wrapper,
+      `#!/usr/bin/env bash
+if [[ "$1" == "rm" ]]; then
+  printf 'injected git rm failure\\n' >&2
+  exit 97
+fi
+exec "$REAL_GIT" "$@"
+`,
+    );
+    chmodSync(wrapper, 0o755);
+
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "hermes.untracked-runtimes", repo, "--json"],
+      root,
+      { PATH: `${fakeBin}:${process.env.PATH}`, REAL_GIT: realGit },
+    ));
+    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /injected git rm failure/);
+    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`), "failed removal must preserve the staged gitlink");
+    assert.match(readFileSync(join(repo, ".gitmodules"), "utf8"), /agents\/hermes\/pm\/runtime/, "failed removal must preserve the stale mapping");
+    assert.deepEqual(readFileSync(privatePath), privateBytes, "failed removal must preserve private runtime bytes");
+    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "failed removal must preserve the runtime tree");
   }
 
   {
