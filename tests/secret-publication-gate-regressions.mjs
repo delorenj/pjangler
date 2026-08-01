@@ -190,6 +190,48 @@ try {
   }
 
   {
+    const repo = makeRepo("review-name-variants");
+    const upperLiteral = `opaque-${"upper".repeat(4)}`;
+    const ticketLiteral = `opaque-${"ticket".repeat(4)}`;
+    track(repo, "REVIEW.md", `api_key=${upperLiteral}\n`);
+    track(repo, "PJAN-99.review.md", `client_secret=${ticketLiteral}\n`);
+
+    const result = check(repo);
+    assert.equal(result.status, 1, "case and ticket-prefixed review artifacts must be sensitive");
+    assert.match(result.stderr, /"REVIEW\.md": literal credential in session\/review artifact/);
+    assert.match(
+      result.stderr,
+      /"PJAN-99\.review\.md": literal credential in session\/review artifact/,
+    );
+    assertValueOmitted(result, upperLiteral);
+    assertValueOmitted(result, ticketLiteral);
+  }
+
+  {
+    const repo = makeRepo("punctuated-unquoted-values");
+    const dotted = `opaque.${"credential".repeat(3)}`;
+    const colon = `opaque:${"credential".repeat(3)}`;
+    const escaped = `opaque\\${"credential".repeat(3)}`;
+    track(
+      repo,
+      "PJAN-99.review.md",
+      [
+        `api_key=${dotted}`,
+        `Authorization: Bearer ${colon}`,
+        `client_secret=${escaped}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = check(repo);
+    assert.equal(result.status, 1, "punctuation must not exempt complete unquoted credentials");
+    assert.match(result.stderr, /literal credential in session\/review artifact \(3\)/);
+    assertValueOmitted(result, dotted);
+    assertValueOmitted(result, colon);
+    assertValueOmitted(result, escaped);
+  }
+
+  {
     const repo = makeRepo("safe-references");
     track(repo, ".npmrc", "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n");
     track(repo, ".env.op", "NPM_TOKEN=op://DeLoSecrets/NPM/token\n");
@@ -200,6 +242,8 @@ try {
         "Authorization: Bearer ${REVIEW_TOKEN}",
         "api_key=$API_KEY",
         "client_secret=op://DeLoSecrets/API/token",
+        "access_token=process.env.ACCESS_TOKEN",
+        "refresh_token=os.environ.get(\"REFRESH_TOKEN\")",
         "password=<redacted>",
         "id_token=***",
         "api_key=api_key_not_found",

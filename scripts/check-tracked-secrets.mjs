@@ -13,7 +13,7 @@ let scanned = 0;
 // separators and must not hide a JWT, even though they are base64url symbols.
 const rawJwtSource = String.raw`(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9])`;
 const bearerCredential = /\bauthorization\b\s*[:=]\s*["']?\s*bearer\s+([^\s"',\\]+)/gi;
-const assignedCredential = /["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|([^\s"',\]]+))/gi;
+const assignedCredential = /["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|([^\s,\]]+))/gi;
 
 // This legacy transcript is JWT-free but contains code/examples that resemble
 // assignments. The exception is content-addressed: any byte change restores
@@ -34,11 +34,13 @@ function displayPath(path) {
 }
 
 function isSensitiveArtifact(path) {
+  const lowerPath = path.toLowerCase();
+  const basename = lowerPath.slice(lowerPath.lastIndexOf("/") + 1);
   return (
-    path === "review.md" ||
-    path.endsWith("/review.md") ||
-    path.startsWith("sessions/") ||
-    path.includes("/sessions/")
+    basename === "review.md" ||
+    basename.endsWith(".review.md") ||
+    lowerPath.startsWith("sessions/") ||
+    lowerPath.includes("/sessions/")
   );
 }
 
@@ -48,6 +50,8 @@ function isSafeReference(value) {
     /^\$\{[A-Z][A-Z0-9_]*\}$/.test(candidate) ||
     /^\$[A-Z][A-Z0-9_]*$/.test(candidate) ||
     /^op:\/\/[^/\s]+(?:\/[^/\s]+){2,3}$/.test(candidate) ||
+    /^(?:process\.env|Deno\.env)\.[A-Z][A-Z0-9_]*$/.test(candidate) ||
+    /^os\.environ(?:\.get\(["'][A-Z][A-Z0-9_]*["']\)|\[["'][A-Z][A-Z0-9_]*["']\])$/.test(candidate) ||
     /^(?:<|\[)redacted(?:>|\])$/i.test(candidate) ||
     /^(?:your|example|dummy|test)[_-](?:api[_-]?key|token|secret|password)(?:[_-]here)?$/i.test(candidate) ||
     /^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password)[_-](?:not[_-]found|missing|unset)$/i.test(candidate) ||
@@ -55,16 +59,8 @@ function isSafeReference(value) {
   );
 }
 
-function isCredentialCandidate(candidate, quoted) {
-  if (isSafeReference(candidate) || candidate.length < 12 || candidate.includes("\\")) {
-    return false;
-  }
-  if (quoted) return true;
-  return (
-    /^[A-Za-z0-9_+/=-]+$/.test(candidate) ||
-    candidate.startsWith("$") ||
-    candidate.startsWith("op://")
-  );
+function isCredentialCandidate(candidate) {
+  return !isSafeReference(candidate) && candidate.length >= 12;
 }
 
 function countLiteralCredentials(content) {
@@ -72,13 +68,12 @@ function countLiteralCredentials(content) {
   bearerCredential.lastIndex = 0;
   for (const match of content.matchAll(bearerCredential)) {
     const candidate = match[1].trim();
-    if (isCredentialCandidate(candidate, false)) count += 1;
+    if (isCredentialCandidate(candidate)) count += 1;
   }
   assignedCredential.lastIndex = 0;
   for (const match of content.matchAll(assignedCredential)) {
-    const quoted = match[1] !== undefined;
     const candidate = (match[1] ?? match[2] ?? "").trim();
-    if (isCredentialCandidate(candidate, quoted)) count += 1;
+    if (isCredentialCandidate(candidate)) count += 1;
   }
   return count;
 }
