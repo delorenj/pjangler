@@ -49,6 +49,10 @@ try {
   assert.match(source, /\$\{NODE_AUTH_TOKEN\}/);
   assert.match(source, /npm whoami --registry=/);
   assert.match(source, /PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1/);
+  assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-pack\.XXXXXX"/);
+  assert.match(source, /--pack-destination "\$PACK_DIR"/);
+  assert.match(source, /"\$PACK_BASE"\/pjangler-pack\.\*\) rm -rf -- "\$PACK_DIR"/);
+  assert.match(source, /basename "\$filename"/);
   assert.match(
     source,
     /Array\.isArray\(parsed\) \? parsed : Object\.values\(parsed\)/,

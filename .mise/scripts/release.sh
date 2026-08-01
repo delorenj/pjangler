@@ -24,6 +24,8 @@ REMOTE="${RELEASE_REMOTE:-origin}"
 BRANCH="${RELEASE_BRANCH:-main}"
 AUTH_CONFIG=""
 TARBALL=""
+PACK_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+PACK_DIR=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -40,6 +42,12 @@ cleanup() {
   unset NODE_AUTH_TOKEN || true
   if [ -n "$AUTH_CONFIG" ] && [ -f "$AUTH_CONFIG" ]; then
     rm -f -- "$AUTH_CONFIG"
+  fi
+  if [ -n "$PACK_DIR" ] && [ -d "$PACK_DIR" ]; then
+    case "$PACK_DIR" in
+      "$PACK_BASE"/pjangler-pack.*) rm -rf -- "$PACK_DIR" ;;
+      *) log "refusing to clean unexpected package directory: $PACK_DIR" ;;
+    esac
   fi
 }
 trap cleanup EXIT
@@ -90,9 +98,11 @@ registry_auth() {
 }
 
 inspect_tarball() {
-  local pack_json package_name package_version
-  pack_json="$(npm pack --json --ignore-scripts)" || die "npm pack failed"
-  TARBALL="$(printf '%s' "$pack_json" | node -e '
+  local pack_json package_name package_version filename
+  PACK_DIR="$(mktemp -d "$PACK_BASE/pjangler-pack.XXXXXX")"
+  pack_json="$(npm pack --json --ignore-scripts --pack-destination "$PACK_DIR")" ||
+    die "npm pack failed"
+  filename="$(printf '%s' "$pack_json" | node -e '
     let input = "";
     process.stdin.on("data", chunk => input += chunk);
     process.stdin.on("end", () => {
@@ -102,6 +112,8 @@ inspect_tarball() {
       process.stdout.write(entries[0].filename);
     });
   ')" || die "could not resolve the exact npm tarball"
+  [ "$(basename "$filename")" = "$filename" ] || die "npm returned an unsafe tarball filename"
+  TARBALL="$PACK_DIR/$filename"
   [ -f "$TARBALL" ] || die "npm pack did not create $TARBALL"
 
   package_name="$(node -p 'require("./package.json").name')"
