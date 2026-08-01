@@ -25,6 +25,8 @@ shell_snapshots/
 .claude/skills/
 
 auth.json
+/review.md
+/sessions/
 
 # --- generated plugin cache / staging ---
 plugins/cache/
