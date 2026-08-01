@@ -73,8 +73,8 @@ assert.match(
 );
 assert.equal(
   projectPackage.scripts.prepublishOnly,
-  "npm run check:submodules -- --remote --recursive --archive --npm && npm run build && npm run check:tracked-secrets",
-  "prepublishOnly must verify published submodules, then scan the final build output",
+  "npm run check:lock && npm run check:submodules -- --remote --recursive --archive --npm && npm run build && npm run check:tracked-secrets",
+  "prepublishOnly must verify lock parity and published submodules, then scan the final build output",
 );
 
 try {

@@ -1,7 +1,9 @@
 // PG-backed RegistryStore regression. Bootstraps an ISOLATED scratch database
 // (base schema + the pjangler migration), runs the bun round-trip harness, and
 // tears the scratch db down. SKIPS cleanly when Postgres or bun is unavailable
-// so the default suite stays green in environments without a DB.
+// so the default suite stays green in environments without a DB. Set
+// PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 for a release gate that fails instead
+// of skipping when a required disposable Postgres capability is unavailable.
 import { spawnSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -16,10 +18,13 @@ const MAX_PATH_ENTRIES = 256;
 const env = {
   ...process.env,
   PGHOST: process.env.PGHOST || "localhost",
+  PGPORT: process.env.PGPORT || "5432",
   PGUSER: process.env.PGUSER || "delorenj",
   PGPASSWORD: process.env.PGPASSWORD || "",
   PGDATABASE: DB,
 };
+const requireDisposablePostgres =
+  process.env.PJANGLER_REQUIRE_DISPOSABLE_POSTGRES === "1";
 
 const executable = (bin, searchPath = env.PATH || "") => {
   if (!bin || bin.includes("\0") || bin.includes("/")) {
@@ -89,13 +94,40 @@ const requireSuccess = (label, result) => {
 const psql = (psqlPath, db, q, timeoutMs = CHILD_TIMEOUT_MS) =>
   run(
     psqlPath,
-    ["-h", env.PGHOST, "-U", env.PGUSER, "-d", db, "-tAc", q],
+    [
+      "-h",
+      env.PGHOST,
+      "-p",
+      env.PGPORT,
+      "-U",
+      env.PGUSER,
+      "-d",
+      db,
+      "-tAc",
+      q,
+    ],
     { timeoutMs },
   );
 
 const skip = (reason) => {
+  if (requireDisposablePostgres) {
+    console.error(
+      `FAIL pg-registry-regressions disposable_postgres_required reason=${reason}`,
+    );
+    process.exit(1);
+  }
   console.log(`SKIP pg-registry-regressions reason=${reason}`);
   process.exit(0);
+};
+
+const databaseUrl = (db) => {
+  const url = new URL("postgres://localhost");
+  url.hostname = env.PGHOST;
+  url.port = env.PGPORT;
+  url.username = env.PGUSER;
+  url.password = env.PGPASSWORD;
+  url.pathname = `/${db}`;
+  return url.toString();
 };
 
 if (process.env.PJAN21_PG_HARNESS_SELF_TEST === "1") {
@@ -122,8 +154,36 @@ if (process.env.PJAN21_PG_HARNESS_SELF_TEST === "1") {
   ) {
     throw new Error("self-test capability probe was not deterministic");
   }
+  const originalPort = env.PGPORT;
+  env.PGPORT = "6543";
+  if (!databaseUrl("port_probe").includes(":6543/port_probe")) {
+    throw new Error("self-test DATABASE_URL did not honor PGPORT");
+  }
+  env.PGPORT = originalPort;
+  const strictUnavailable = run(
+    process.execPath,
+    [import.meta.filename],
+    {
+      timeoutMs: 2_000,
+      maxBuffer: 64 * 1024,
+      env: {
+        ...env,
+        PATH: "",
+        PJAN21_PG_HARNESS_SELF_TEST: "0",
+        PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: "1",
+      },
+    },
+  );
+  if (
+    strictUnavailable.status === 0 ||
+    !`${strictUnavailable.stdout}${strictUnavailable.stderr}`.includes(
+      "disposable_postgres_required",
+    )
+  ) {
+    throw new Error("self-test strict mode silently skipped a required capability");
+  }
   console.log(
-    "PASS pg-registry-regressions self-test bounded_children=2 capability_probes=2",
+    "PASS pg-registry-regressions self-test bounded_children=3 capability_probes=2 pgport=1 strict_mode=1",
   );
   process.exit(0);
 }
@@ -160,6 +220,8 @@ try {
       [
         "-h",
         env.PGHOST,
+        "-p",
+        env.PGPORT,
         "-U",
         env.PGUSER,
         "-d",
@@ -189,7 +251,7 @@ try {
         cwd: root,
         env: {
           ...env,
-          DATABASE_URL: `postgres://${env.PGUSER}:${env.PGPASSWORD}@${env.PGHOST}:5432/${DB}`,
+          DATABASE_URL: databaseUrl(DB),
         },
       },
     ),
