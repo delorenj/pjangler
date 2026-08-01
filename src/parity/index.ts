@@ -652,6 +652,26 @@ function removeProjectEntry(path: string): void {
   rmSync(path, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true });
 }
 
+function normalizeExecutableTemplate(
+  ctx: Context,
+  target: string,
+  expected: string,
+  changedFiles: string[]
+): void {
+  const stat = lstatIfPresent(target);
+  const unsafe = Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
+  const contentChanged = !stat || unsafe || safeReadText(target) !== expected;
+  const modeChanged = !stat || unsafe || (Number(stat.mode) & 0o111) === 0;
+  if (!contentChanged && !modeChanged) return;
+  if (!changedFiles.includes(target)) changedFiles.push(target);
+  if (ctx.dryRun) return;
+  if (contentChanged) {
+    if (unsafe) removeProjectEntry(target);
+    writeText(target, expected);
+  }
+  chmodSync(target, 0o755);
+}
+
 function atomicWriteBuffer(path: string, content: Buffer, mode: number, temporary: string): void {
   writeFileSync(temporary, content, { flag: "wx" });
   chmodSync(temporary, mode);
@@ -2421,13 +2441,7 @@ const RULES: Rule[] = [
           details,
         };
       }
-      if (safeReadText(provisionScriptPath) !== expectedProvisionScript) {
-        changedFiles.push(provisionScriptPath);
-        if (!ctx.dryRun) {
-          writeText(provisionScriptPath, expectedProvisionScript);
-          chmodSync(provisionScriptPath, 0o755);
-        }
-      }
+      normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
 
       const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
       const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
@@ -2441,13 +2455,7 @@ const RULES: Rule[] = [
           details,
         };
       }
-      if (safeReadText(syncScriptPath) !== expectedSyncScript) {
-        changedFiles.push(syncScriptPath);
-        if (!ctx.dryRun) {
-          writeText(syncScriptPath, expectedSyncScript);
-          chmodSync(syncScriptPath, 0o755);
-        }
-      }
+      normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
 
       if (!existsSync(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {

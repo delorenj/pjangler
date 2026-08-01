@@ -3114,6 +3114,20 @@ function removeProjectEntry(path) {
   if (!stat) return;
   rmSync(path, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true });
 }
+function normalizeExecutableTemplate(ctx, target, expected, changedFiles) {
+  const stat = lstatIfPresent(target);
+  const unsafe = Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
+  const contentChanged = !stat || unsafe || safeReadText(target) !== expected;
+  const modeChanged = !stat || unsafe || (Number(stat.mode) & 73) === 0;
+  if (!contentChanged && !modeChanged) return;
+  if (!changedFiles.includes(target)) changedFiles.push(target);
+  if (ctx.dryRun) return;
+  if (contentChanged) {
+    if (unsafe) removeProjectEntry(target);
+    writeText(target, expected);
+  }
+  chmodSync4(target, 493);
+}
 function atomicWriteBuffer(path, content, mode, temporary) {
   writeFileSync7(temporary, content, { flag: "wx" });
   chmodSync4(temporary, mode);
@@ -4708,13 +4722,7 @@ var RULES = [
           details
         };
       }
-      if (safeReadText(provisionScriptPath) !== expectedProvisionScript) {
-        changedFiles.push(provisionScriptPath);
-        if (!ctx.dryRun) {
-          writeText(provisionScriptPath, expectedProvisionScript);
-          chmodSync4(provisionScriptPath, 493);
-        }
-      }
+      normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
       const syncScriptPath = join15(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
       const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
       if (!expectedSyncScript) {
@@ -4727,13 +4735,7 @@ var RULES = [
           details
         };
       }
-      if (safeReadText(syncScriptPath) !== expectedSyncScript) {
-        changedFiles.push(syncScriptPath);
-        if (!ctx.dryRun) {
-          writeText(syncScriptPath, expectedSyncScript);
-          chmodSync4(syncScriptPath, 493);
-        }
-      }
+      normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
       if (!existsSync10(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };

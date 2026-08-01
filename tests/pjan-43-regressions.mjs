@@ -123,7 +123,29 @@ try {
     const second = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(second, "skills.project-manifest").status, "noop");
 
+    const provisionScript = join(repo, ".mise", "scripts", "provision-bmad-skills.py");
     const syncScript = join(repo, ".mise", "scripts", "sync-skills.py");
+    const canonicalProvisionBytes = readFileSync(provisionScript);
+    const canonicalSyncBytes = readFileSync(syncScript);
+    chmodSync(provisionScript, 0o644);
+    chmodSync(syncScript, 0o644);
+    const modeAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    const modeDrift = finding(modeAudit, "skills.project-manifest");
+    assert.equal(modeDrift.status, "fail");
+    assert.equal(modeDrift.details.filter((detail) => detail.includes("is not executable")).length, 2);
+    assert.doesNotMatch(modeDrift.details.join("\n"), /differs from the shipped template/);
+
+    const modeRepair = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(modeRepair, "skills.project-manifest").status, "applied");
+    assert.deepEqual(readFileSync(provisionScript), canonicalProvisionBytes);
+    assert.deepEqual(readFileSync(syncScript), canonicalSyncBytes);
+    assert.notEqual(lstatSync(provisionScript).mode & 0o111, 0);
+    assert.notEqual(lstatSync(syncScript).mode & 0o111, 0);
+    const modePostAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    assert.equal(finding(modePostAudit, "skills.project-manifest").status, "pass", JSON.stringify(finding(modePostAudit, "skills.project-manifest")));
+    const modeNoop = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(modeNoop, "skills.project-manifest").status, "noop");
+
     writeFileSync(syncScript, `${readFileSync(syncScript, "utf8")}\n# drift\n`);
     chmodSync(syncScript, 0o644);
     const driftAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
@@ -131,6 +153,12 @@ try {
     assert.equal(drift.status, "fail");
     assert.match(drift.details.join("\n"), /differs from the shipped template/);
     assert.match(drift.details.join("\n"), /not executable/);
+    const driftRepair = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(driftRepair, "skills.project-manifest").status, "applied");
+    assert.deepEqual(readFileSync(syncScript), canonicalSyncBytes);
+    assert.notEqual(lstatSync(syncScript).mode & 0o111, 0);
+    const driftNoop = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(driftNoop, "skills.project-manifest").status, "noop");
   }
 
   {
