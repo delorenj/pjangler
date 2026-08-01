@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -385,6 +385,57 @@ run = "echo still here"
     const result = report.results.find((r) => r.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
     assert.ok(result.details.some((detail) => detail.includes("6.10.1-next.31")), JSON.stringify(result));
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-partial-pack");
+    repos.push(repo);
+    const partialPack = mkdtempSync(join(tmpdir(), "pjangler-partial-bmad-pack-"));
+    repos.push(partialPack);
+    copyFileSync(join(selectedBmadPack, "SHA256SUMS"), join(partialPack, "SHA256SUMS"));
+    copyFileSync(join(selectedBmadPack, "pack.toml"), join(partialPack, "pack.toml"));
+    cpSync(join(selectedBmadPack, "bmad-agent-pm"), join(partialPack, "bmad-agent-pm"), { recursive: true });
+
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: partialPack }
+    ));
+    const result = report.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /checksum coverage mismatch/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "partial pack rejection must precede project mutation");
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-tampered-pack");
+    repos.push(repo);
+    const tamperedPack = mkdtempSync(join(tmpdir(), "pjangler-tampered-bmad-pack-"));
+    repos.push(tamperedPack);
+    cpSync(selectedBmadPack, tamperedPack, { recursive: true });
+    writeFileSync(join(tamperedPack, "bmad-agent-pm", "SKILL.md"), "tampered\n");
+
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: tamperedPack }
+    ));
+    const result = report.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /digest mismatch/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "tampered pack rejection must precede project mutation");
+
+    copyFileSync(join(selectedBmadPack, "bmad-agent-pm", "SKILL.md"), join(tamperedPack, "bmad-agent-pm", "SKILL.md"));
+    mkdirSync(join(tamperedPack, "bmad-agent-pm", "unauthenticated-empty"));
+    const topologyReport = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: tamperedPack }
+    ));
+    const topologyResult = topologyReport.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(topologyResult.status, "blocked", JSON.stringify(topologyResult));
+    assert.match(topologyResult.details.join("\n"), /unauthenticated empty directory/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "unauthenticated topology rejection must precede project mutation");
   }
 
   {

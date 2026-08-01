@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
+import { BMAD_PACK_VERSION, validateTrustedBmadPack } from "./bmadPack";
 
 export type RuleStatus = "pass" | "fail" | "warn" | "skip";
 
@@ -87,7 +88,6 @@ interface Rule {
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
-const BMAD_PACK_VERSION = "6.10.1-next.31";
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =
@@ -515,10 +515,8 @@ function bmadPackRoot(ctx: Context): string {
 
 function canonicalBmadSkillEntries(ctx: Context): SkillManifestEntry[] {
   const root = bmadPackRoot(ctx);
-  if (!existsSync(root)) return [];
-  return readdirSync(root)
-    .filter((name) => name.startsWith("bmad-") && lstatSync(join(root, name)).isDirectory())
-    .sort()
+  const trusted = validateTrustedBmadPack(root);
+  return trusted.skillNames
     .map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join(root, name)).href }));
 }
 
@@ -529,7 +527,11 @@ function isBmadManifestEntry(entry: unknown): boolean {
   return typeof name === "string" && name.startsWith("bmad-");
 }
 
-function canonicalSkillsManifest(ctx: Context, current?: Record<string, unknown> | null): string {
+function canonicalSkillsManifest(
+  ctx: Context,
+  current?: Record<string, unknown> | null,
+  packSkills = canonicalBmadSkillEntries(ctx)
+): string {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
   return `${JSON.stringify(
     {
@@ -539,7 +541,7 @@ function canonicalSkillsManifest(ctx: Context, current?: Record<string, unknown>
       registry: SKILLS_REGISTRY_URL,
       skills: [
         ...existing.filter((entry) => !isBmadManifestEntry(entry)),
-        ...canonicalBmadSkillEntries(ctx),
+        ...packSkills,
       ],
     },
     null,
@@ -552,12 +554,14 @@ function provisionBmadSkills(
   preservedManifest?: Record<string, unknown> | null
 ): { ok: boolean; changedFiles: string[]; error?: string } {
   const packRoot = bmadPackRoot(ctx);
-  const packSkills = canonicalBmadSkillEntries(ctx);
-  if (packSkills.length === 0) {
+  let packSkills: SkillManifestEntry[];
+  try {
+    packSkills = canonicalBmadSkillEntries(ctx);
+  } catch (error) {
     return {
       ok: false,
       changedFiles: [],
-      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} not found or empty at ${packRoot}`,
+      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${packRoot}: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 
@@ -574,7 +578,7 @@ function provisionBmadSkills(
     return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
   }
   const currentManifest = tryParseJson(safeReadText(manifestPath));
-  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest);
+  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
   if (safeReadText(manifestPath) !== nextManifest) {
     changedFiles.push(manifestPath);
     if (!ctx.dryRun) writeText(manifestPath, nextManifest);
@@ -1735,12 +1739,16 @@ const RULES: Rule[] = [
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
       let fixable = true;
-      const expectedBmad = canonicalBmadSkillEntries(ctx);
-      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
-      if (expectedBmad.length === 0) {
-        details.push(`BMAD Skillex pack ${BMAD_PACK_VERSION} missing or empty at ${bmadPackRoot(ctx)}`);
+      let expectedBmad: SkillManifestEntry[] = [];
+      try {
+        expectedBmad = canonicalBmadSkillEntries(ctx);
+      } catch (error) {
+        details.push(
+          `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${bmadPackRoot(ctx)}: ${error instanceof Error ? error.message : String(error)}`
+        );
         fixable = false;
       }
+      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
 
       const manifest = tryParseJson(safeReadText(manifestPath));
       if (!manifest) {
