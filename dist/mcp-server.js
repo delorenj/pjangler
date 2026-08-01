@@ -3112,7 +3112,15 @@ function canonicalSkillsManifest(ctx, current, packSkills = canonicalBmadSkillEn
 function removeProjectEntry(path) {
   const stat = lstatIfPresent(path);
   if (!stat) return;
-  rmSync(path, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true });
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    rmSync(path, { recursive: true, force: true });
+    return;
+  }
+  try {
+    unlinkSync3(path);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
 }
 function normalizeExecutableTemplate(ctx, target, expected, changedFiles) {
   const stat = lstatIfPresent(target);
