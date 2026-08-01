@@ -15,6 +15,7 @@ import { delimiter, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
+const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "pjangler-release-regression-"));
 
 const indexOf = (needle) => {
@@ -30,7 +31,7 @@ try {
   );
   assert.ok(
     indexOf("npm install --package-lock-only --ignore-scripts") <
-      indexOf("git commit -m \"release(PJAN-44): $NEW\""),
+      indexOf('git -c core.hooksPath=/dev/null commit -m "release(PJAN-44): $NEW"'),
     "lockfile regeneration must be inside the release commit",
   );
   assert.ok(
@@ -46,6 +47,17 @@ try {
   assert.match(source, /HEAD:refs\/heads\/\$BRANCH/);
   assert.match(source, /refs\/tags\/\$NEW:refs\/tags\/\$NEW/);
   assert.match(source, /gh auth token 2>\/dev\/null/);
+  assert.match(source, /mise exec node@24\.6 --/);
+  assert.match(source, /expected npm 11\.x/);
+  assert.doesNotMatch(source, /export NODE_AUTH_TOKEN/);
+  assert.match(source, /NODE_AUTH_TOKEN="\$token" NPM_CONFIG_USERCONFIG=/);
+  assert.ok(
+    indexOf("unset NODE_AUTH_TOKEN") < indexOf('log "installing from the committed npm lockfile..."; npm ci'),
+  );
+  assert.ok(
+    indexOf('log "testing..."') < source.indexOf("\nregistry_auth\n", indexOf("# Only trusted")),
+    "credentials must be acquired only after install/build/test gates",
+  );
   assert.match(source, /\$\{NODE_AUTH_TOKEN\}/);
   assert.match(source, /registry_npm\(\) \(/);
   assert.match(source, /cd "\$AUTH_DIR"/);
@@ -66,6 +78,30 @@ try {
   );
   assert.match(source, /TARBALL="\$PACK_DIR\/\$filename"/);
   assert.match(source, /PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1/);
+  assert.match(source, /PJAN21_PG_HARNESS_SELF_TEST=0 PJANGLER_REQUIRE/);
+  assert.match(source, /npm run check:audit:prod/);
+  assert.ok(
+    source.lastIndexOf("npm run check:audit:prod") <
+      indexOf('git -c core.hooksPath=/dev/null commit'),
+    "production audit must rerun after the bumped lock is generated",
+  );
+  assert.match(source, /--resume-push/);
+  assert.match(source, /would atomically resume pushing HEAD\+\$TARGET/);
+  assert.match(source, /refs\/tags\/\$TARGET:refs\/tags\/\$TARGET/);
+  assert.match(source, /npm publish "\$TARBALL"[\s\\\n]+--dry-run --ignore-scripts/);
+  assert.match(source, /E404\|404 Not Found/);
+  assert.match(source, /failed without a definitive 404/);
+  assert.ok(
+    source.lastIndexOf("preflight_publish_cli") <
+      indexOf('git -c core.hooksPath=/dev/null commit'),
+    "exact-tarball preflight must precede the final commit",
+  );
+  assert.ok(
+    source.lastIndexOf("npm run check:tracked-secrets") <
+      indexOf('git -c core.hooksPath=/dev/null commit'),
+    "payload secret gate must precede the final commit",
+  );
+  assert.match(pgSource, /"ON_ERROR_STOP=1"/);
   assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-pack\.XXXXXX"/);
   assert.match(source, /--pack-destination "\$PACK_DIR"/);
   assert.match(source, /"\$PACK_BASE"\/pjangler-pack\.\*\) rm -rf -- "\$PACK_DIR"/);

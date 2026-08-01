@@ -39,25 +39,30 @@ mise run release                    # patch release (or pass minor / major)
 
 The release task owns the only supported bump-and-publish transaction:
 
-1. Require a clean main repo and clean initialized submodules.
-2. Prove every supported submodule commit is remotely reachable and archive-safe.
-3. Fetch the explicit release target (`RELEASE_REMOTE=origin`,
+1. Re-exec the complete release under the pinned Node 24.6/npm 11 runtime;
+   the normal Node 26/npm 12 toolchain currently cannot publish tarballs.
+2. Require a clean main repo and clean initialized submodules.
+3. Prove every supported submodule commit is remotely reachable and archive-safe.
+4. Fetch the explicit release target (`RELEASE_REMOTE=origin`,
    `RELEASE_BRANCH=main`) and require the candidate to fast-forward it.
-4. Authenticate to the configured GitHub Packages registry using the active
-   `gh` session. The token stays in `NODE_AUTH_TOKEN`; the temporary npm config
+5. Run install, production audit, build, typecheck, tests, strict PG coverage,
+   and an unauthenticated exact-tarball publish dry-run before acquiring a token.
+6. Authenticate to the configured GitHub Packages registry using the active
+   `gh` session. Each registry command receives a newly acquired token only in
+   its own process environment; the temporary npm config
    contains only `${NODE_AUTH_TOKEN}` and is removed on exit. Authenticated npm
    commands run from a dedicated temporary directory so a stale project
    `.npmrc` cannot override the runtime credential.
-5. Run `npm ci`, build, typecheck, the full suite, and strict disposable
-   PostgreSQL coverage. Set `PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for
+7. Strict disposable PostgreSQL coverage uses `PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for
    the disposable instance. A release fails rather than skipping this database
    gate.
-6. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
+8. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
    parity, and make one `release(PJAN-44): vX.Y.Z` commit.
-7. Create an annotated tag, build and inspect the actual tarball, and run the
+9. Build and inspect the actual tarball, run the production audit and
    tracked/package secret scan.
-8. Atomically push the release commit to the configured main ref plus the tag.
-9. Publish that exact `.tgz`, then verify the new registry version.
+10. Create the commit/tag only after those gates, then atomically push both.
+11. Publish that exact `.tgz`, then verify the new registry version. If the
+   atomic push fails locally, rerun with `--resume-push`.
 
 `prepublishOnly` remains a defense-in-depth build/template/secret gate.
 `PJANGLER_VERSION` is read from `package.json` at runtime, so `pj --version`

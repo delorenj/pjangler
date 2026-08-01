@@ -226,6 +226,8 @@ try {
         env.PGUSER,
         "-d",
         DB,
+        "-v",
+        "ON_ERROR_STOP=1",
         "-q",
         "-f",
         join(root, "tests", "test-base-schema.sql"),
