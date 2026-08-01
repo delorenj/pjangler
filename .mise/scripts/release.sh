@@ -23,6 +23,7 @@ PUBLISH_CURRENT=""
 REMOTE="${RELEASE_REMOTE:-origin}"
 BRANCH="${RELEASE_BRANCH:-main}"
 AUTH_CONFIG=""
+AUTH_DIR=""
 TARBALL=""
 PACK_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 PACK_DIR=""
@@ -40,8 +41,11 @@ log() { printf 'release: %s\n' "$1" >&2; }
 die() { log "$1"; exit 1; }
 cleanup() {
   unset NODE_AUTH_TOKEN || true
-  if [ -n "$AUTH_CONFIG" ] && [ -f "$AUTH_CONFIG" ]; then
-    rm -f -- "$AUTH_CONFIG"
+  if [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ]; then
+    case "$AUTH_DIR" in
+      "$PACK_BASE"/pjangler-auth.*) rm -rf -- "$AUTH_DIR" ;;
+      *) log "refusing to clean unexpected auth directory: $AUTH_DIR" ;;
+    esac
   fi
   if [ -n "$PACK_DIR" ] && [ -d "$PACK_DIR" ]; then
     case "$PACK_DIR" in
@@ -71,6 +75,15 @@ next_version() {
   ' "$1" "$2"
 }
 
+# npm loads a project .npmrc from its current working directory even when a
+# different userconfig is supplied. Run every authenticated command outside the
+# repository so stale project credentials cannot override the runtime gh token.
+registry_npm() (
+  [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ] || die "registry auth directory is unavailable"
+  cd "$AUTH_DIR"
+  NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm "$@"
+)
+
 registry_auth() {
   REGISTRY="$(node -e '
     const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
@@ -83,12 +96,13 @@ registry_auth() {
         die "GitHub Packages auth unavailable; run gh auth login"
       [ -n "$NODE_AUTH_TOKEN" ] || die "gh returned an empty auth token"
       export NODE_AUTH_TOKEN
-      AUTH_CONFIG="$(mktemp "${TMPDIR:-/tmp}/pjangler-npmrc.XXXXXX")"
+      AUTH_DIR="$(mktemp -d "$PACK_BASE/pjangler-auth.XXXXXX")"
+      AUTH_CONFIG="$AUTH_DIR/.npmrc"
       chmod 600 "$AUTH_CONFIG"
       # Keep only the environment-variable reference on disk; the token remains
       # process-local and is cleared by the EXIT trap.
       printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' >"$AUTH_CONFIG"
-      NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm whoami --registry="$REGISTRY" >/dev/null ||
+      registry_npm whoami --registry="$REGISTRY" >/dev/null ||
         die "GitHub Packages authentication failed"
       ;;
     *)
@@ -172,7 +186,7 @@ else
   [ -z "$(git ls-remote --tags "$REMOTE" "refs/tags/$TARGET")" ] ||
     die "remote tag already exists: $TARGET"
 fi
-if NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm view "$PACKAGE_NAME@${TARGET#v}" version \
+if registry_npm view "$PACKAGE_NAME@${TARGET#v}" version \
   --registry="$REGISTRY" >/dev/null 2>&1; then
   die "$PACKAGE_NAME@${TARGET#v} already exists in $REGISTRY"
 fi
@@ -200,9 +214,9 @@ fi
 if [ -n "$PUBLISH_CURRENT" ]; then
   inspect_tarball
   npm run check:tracked-secrets
-  NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm publish "$TARBALL" \
+  registry_npm publish "$TARBALL" \
     --registry="$REGISTRY" --access public
-  PUBLISHED="$(NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm view \
+  PUBLISHED="$(registry_npm view \
     "$PACKAGE_NAME@${TARGET#v}" version --registry="$REGISTRY")"
   [ "$PUBLISHED" = "${TARGET#v}" ] || die "registry verification failed for $PACKAGE_NAME@$TARGET"
   log "published and verified $PACKAGE_NAME@$TARGET from $TARBALL"
@@ -236,9 +250,9 @@ git push --atomic "$REMOTE" \
   "HEAD:refs/heads/$BRANCH" \
   "refs/tags/$NEW:refs/tags/$NEW"
 
-NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm publish "$TARBALL" \
+registry_npm publish "$TARBALL" \
   --registry="$REGISTRY" --access public
-PUBLISHED="$(NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm view \
+PUBLISHED="$(registry_npm view \
   "$PACKAGE_NAME@${NEW#v}" version --registry="$REGISTRY")"
 [ "$PUBLISHED" = "${NEW#v}" ] || die "registry verification failed for $PACKAGE_NAME@$NEW"
 

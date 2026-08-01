@@ -45,7 +45,9 @@ The release task owns the only supported bump-and-publish transaction:
    `RELEASE_BRANCH=main`) and require the candidate to fast-forward it.
 4. Authenticate to the configured GitHub Packages registry using the active
    `gh` session. The token stays in `NODE_AUTH_TOKEN`; the temporary npm config
-   contains only `${NODE_AUTH_TOKEN}` and is removed on exit.
+   contains only `${NODE_AUTH_TOKEN}` and is removed on exit. Authenticated npm
+   commands run from a dedicated temporary directory so a stale project
+   `.npmrc` cannot override the runtime credential.
 5. Run `npm ci`, build, typecheck, the full suite, and strict disposable
    PostgreSQL coverage. Set `PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for
    the disposable instance. A release fails rather than skipping this database

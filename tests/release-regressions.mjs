@@ -47,7 +47,19 @@ try {
   assert.match(source, /refs\/tags\/\$NEW:refs\/tags\/\$NEW/);
   assert.match(source, /gh auth token 2>\/dev\/null/);
   assert.match(source, /\$\{NODE_AUTH_TOKEN\}/);
-  assert.match(source, /npm whoami --registry=/);
+  assert.match(source, /registry_npm\(\) \(/);
+  assert.match(source, /cd "\$AUTH_DIR"/);
+  assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-auth\.XXXXXX"/);
+  assert.match(source, /"\$PACK_BASE"\/pjangler-auth\.\*\) rm -rf -- "\$AUTH_DIR"/);
+  assert.match(source, /registry_npm whoami --registry=/);
+  assert.match(source, /registry_npm view/);
+  assert.match(source, /registry_npm publish "\$TARBALL"/);
+  assert.doesNotMatch(
+    source,
+    /NPM_CONFIG_USERCONFIG="\$AUTH_CONFIG" npm (?:whoami|view|publish)/,
+    "authenticated npm commands must not run from the repository",
+  );
+  assert.match(source, /TARBALL="\$PACK_DIR\/\$filename"/);
   assert.match(source, /PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1/);
   assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-pack\.XXXXXX"/);
   assert.match(source, /--pack-destination "\$PACK_DIR"/);
