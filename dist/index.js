@@ -2688,7 +2688,7 @@ function createRecipe(name, context) {
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/parity/index.ts
-import { existsSync as existsSync10, lstatSync as lstatSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync3, realpathSync, renameSync as renameSync2, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
+import { existsSync as existsSync10, lstatSync as lstatSync2, mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync3, realpathSync, renameSync as renameSync2, rmdirSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
 import { basename as basename4, dirname as dirname6, join as join14, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 import { homedir as homedir5 } from "node:os";
@@ -3055,7 +3055,17 @@ function canonicalSkillsManifest(ctx, current, packSkills = canonicalBmadSkillEn
   )}
 `;
 }
-function provisionBmadSkills(ctx, preservedManifest) {
+function removeProjectEntry(path) {
+  const stat = lstatIfPresent(path);
+  if (!stat) return;
+  rmSync(path, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true });
+}
+function atomicWriteBuffer(path, content, mode, temporary) {
+  writeFileSync7(temporary, content, { flag: "wx" });
+  chmodSync4(temporary, mode);
+  renameSync2(temporary, path);
+}
+function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
   const packRoot = bmadPackRoot(ctx);
   let packSkills;
   try {
@@ -3067,7 +3077,11 @@ function provisionBmadSkills(ctx, preservedManifest) {
       error: `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${packRoot}: ${error instanceof Error ? error.message : String(error)}`
     };
   }
-  const changedFiles = [];
+  hooks.afterPreflight?.();
+  const agentsPath = join14(realpathSync(ctx.repoRoot), ".agents");
+  const skillsPath = join14(agentsPath, "skills");
+  const agentsExisted = Boolean(lstatIfPresent(agentsPath));
+  const skillsExisted = Boolean(lstatIfPresent(skillsPath));
   let safeDirs;
   try {
     safeDirs = prepareSafeProjectSkillsDirs(ctx);
@@ -3079,25 +3093,29 @@ function provisionBmadSkills(ctx, preservedManifest) {
   if (manifestStat?.isSymbolicLink() || manifestStat && !manifestStat.isFile()) {
     return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
   }
+  const manifestBytes = manifestStat ? readFileSync7(manifestPath) : null;
+  const manifestMode = manifestStat ? Number(manifestStat.mode) & 511 : 420;
   const currentManifest = tryParseJson(safeReadText(manifestPath));
   const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
-  if (safeReadText(manifestPath) !== nextManifest) {
-    changedFiles.push(manifestPath);
-    if (!ctx.dryRun) writeText(manifestPath, nextManifest);
-  }
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync10(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
-  let topologyChanged = false;
+  const affected = /* @__PURE__ */ new Set();
   if (existsSync10(skillsDir)) {
     for (const name of readdirSync3(skillsDir)) {
       validateSkillName(name);
-      if (!name.startsWith("bmad-") || expected.has(name)) continue;
+      if (!name.startsWith("bmad-")) continue;
       if (dirname6(join14(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
       }
-      topologyChanged = true;
-      if (!ctx.dryRun) rmSync(join14(skillsDir, name), { recursive: true, force: true });
+      const target = expected.get(name);
+      let correct = false;
+      try {
+        correct = Boolean(target) && lstatSync2(join14(skillsDir, name)).isSymbolicLink() && resolve3(skillsDir, readlinkSync(join14(skillsDir, name))) === target;
+      } catch {
+        correct = false;
+      }
+      if (!correct) affected.add(name);
     }
   }
   for (const [name, target] of expected) {
@@ -3111,15 +3129,100 @@ function provisionBmadSkills(ctx, preservedManifest) {
     } catch {
       correct = false;
     }
-    if (correct) continue;
-    topologyChanged = true;
-    if (!ctx.dryRun) {
-      mkdirSync6(skillsDir, { recursive: true });
-      rmSync(link, { recursive: true, force: true });
-      symlinkSync(target, link, "dir");
+    if (!correct) affected.add(name);
+  }
+  const manifestChanged = manifestBytes?.toString("utf8") !== nextManifest;
+  const changedFiles = [
+    ...manifestChanged ? [manifestPath] : [],
+    ...affected.size ? [skillsDir] : []
+  ];
+  if (ctx.dryRun || changedFiles.length === 0) {
+    try {
+      const postflight = validateTrustedBmadPack(packRoot);
+      if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
+        throw new Error("BMAD pack inventory changed after preflight");
+      }
+      return { ok: true, changedFiles };
+    } catch (error) {
+      return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
   }
-  if (topologyChanged) changedFiles.push(skillsDir);
+  const transaction = mkdtempSync(join14(safeDirs.agentsDir, ".bmad-transaction-"));
+  const backup = join14(transaction, "entries");
+  mkdirSync6(backup);
+  const moved = [];
+  const created = [];
+  const rollback = () => {
+    const errors = [];
+    for (const name of [...created].reverse()) {
+      try {
+        removeProjectEntry(join14(skillsDir, name));
+      } catch (error) {
+        errors.push(`remove ${name}: ${String(error)}`);
+      }
+    }
+    for (const name of [...moved].reverse()) {
+      try {
+        removeProjectEntry(join14(skillsDir, name));
+        renameSync2(join14(backup, name), join14(skillsDir, name));
+      } catch (error) {
+        errors.push(`restore ${name}: ${String(error)}`);
+      }
+    }
+    try {
+      if (manifestBytes === null) removeProjectEntry(manifestPath);
+      else atomicWriteBuffer(manifestPath, manifestBytes, manifestMode, join14(transaction, "manifest.restore"));
+    } catch (error) {
+      errors.push(`restore manifest: ${String(error)}`);
+    }
+    rmSync(transaction, { recursive: true, force: true });
+    try {
+      if (!skillsExisted && existsSync10(skillsDir) && readdirSync3(skillsDir).length === 0) rmdirSync(skillsDir);
+      if (!agentsExisted && existsSync10(safeDirs.agentsDir) && readdirSync3(safeDirs.agentsDir).length === 0) rmdirSync(safeDirs.agentsDir);
+    } catch (error) {
+      errors.push(`remove created directories: ${String(error)}`);
+    }
+    if (errors.length) throw new Error(`BMAD rollback was incomplete: ${errors.join("; ")}`);
+  };
+  try {
+    for (const name of affected) {
+      const entry = join14(skillsDir, name);
+      if (lstatIfPresent(entry)) {
+        renameSync2(entry, join14(backup, name));
+        moved.push(name);
+      }
+    }
+    let index = 0;
+    for (const [name, target] of expected) {
+      index += 1;
+      const link = join14(skillsDir, name);
+      let correct = false;
+      try {
+        correct = lstatSync2(link).isSymbolicLink() && resolve3(skillsDir, readlinkSync(link)) === target;
+      } catch {
+        correct = false;
+      }
+      if (correct) continue;
+      if (hooks.createLink) hooks.createLink(target, link, index);
+      else symlinkSync(target, link, "dir");
+      created.push(name);
+    }
+    if (manifestChanged) {
+      atomicWriteBuffer(manifestPath, Buffer.from(nextManifest), manifestMode, join14(transaction, "manifest.next"));
+    }
+    const postflight = validateTrustedBmadPack(packRoot);
+    if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
+      throw new Error("BMAD pack inventory changed after preflight");
+    }
+  } catch (error) {
+    try {
+      rollback();
+    } catch (rollbackError) {
+      return { ok: false, changedFiles: [], error: `BMAD provisioning failed (${String(error)}); ${String(rollbackError)}` };
+    }
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
+  rmSync(transaction, { recursive: true });
   return { ok: true, changedFiles };
 }
 function templateVersionFilesConf(ctx, repoRoot) {
