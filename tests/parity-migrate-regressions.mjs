@@ -515,6 +515,37 @@ run = "echo still here"
   }
 
   {
+    const repo = makeRepo("retired-runtime-submodule-mapping");
+    repos.push(repo);
+    const roleDir = join(repo, "agents", "hermes", "pm");
+    mkdirSync(roleDir, { recursive: true });
+    writeFileSync(join(roleDir, "role.yaml"), "repo: demo\nrole: pm\nagent_id: demo-pm\nprofile: demo-pm\n");
+    writeFileSync(join(roleDir, ".gitignore"), ".scripts/.provision.log\n");
+    writeFileSync(
+      join(repo, ".gitmodules"),
+      `[submodule "templates/commonproject"]
+\tpath = templates/commonproject
+\turl = git@github.com:delorenj/CommonProject.git
+[submodule "legacy-runtime-name"]
+\tpath = agents/hermes/pm/runtime
+\turl = git@github.com:example/agent-hm-demo-pm.git
+`,
+    );
+
+    const report = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
+    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    const gitmodules = readFileSync(join(repo, ".gitmodules"), "utf8");
+    assert.match(gitmodules, /templates\/commonproject/);
+    assert.doesNotMatch(gitmodules, /agents\/hermes\/pm\/runtime/);
+    assert.match(readFileSync(join(roleDir, ".gitignore"), "utf8"), /^runtime\/$/m);
+
+    const rerun = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
+    const rerunResult = rerun.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(rerunResult.status, "noop", JSON.stringify(rerunResult));
+  }
+
+  {
     const repo = makeRepo("unknown-rule");
     repos.push(repo);
     const stderr = runExpectError(["migrate", "not-a-real-rule", repo]);

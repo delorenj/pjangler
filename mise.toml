@@ -94,6 +94,7 @@ description = "Publish the current version to npm as-is, no bump (use `mise run 
 depends = ["build"]
 run = [
   "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
+  "npm run check:submodules -- --remote --recursive --archive --npm",
   # --otp resolved at publish time; a TOTP can't be injected statically via env/.npmrc
   "npm publish --access public --otp=\"$(op item get NPM --vault DeLoSecrets --otp)\"",
 ]

@@ -45,6 +45,10 @@ if ! git submodule foreach --quiet 'git diff --quiet && git diff --cached --quie
   log "WARNING — a submodule has uncommitted changes; commit & push it first if you want git to match npm."
 fi
 
+# PJAN-41: release only from a recursively initialized, exact, remotely
+# published supported-submodule graph with private runtime/cache surfaces absent.
+npm run check:submodules -- --remote --recursive --archive --npm
+
 CUR="$("$SCRIPTS_DIR/versioning.sh" current)"
 
 # 1. gates: build then test (tests exercise the built dist/) --------------------

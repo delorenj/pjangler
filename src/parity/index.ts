@@ -1241,15 +1241,14 @@ function renderSoul(role: RoleMeta): string {
     ? "Direct and brief. Decision-forward. No throat-clearing, no apologies, no \"I'll help you with that\" preambles."
     : "Direct and brief.";
   const roleSpecific = role.role === "pm"
-    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
+    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checks runtime health; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
     : `You operate as the ${role.role} agent for this repo.`;
-  const runtimeOwner = role.runtimeOwner || "delorenj";
-  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`), which \`~/.hermes/profiles/${role.profileName || role.agentId}\` symlinks to (so \`--profile\` invocations resolve here too); Hermes loads its \`config.yaml\` directly. Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files all live local to that runtime.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
+  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the ignored local directory at \`./runtime/\`, which \`~/.hermes/profiles/${role.profileName || role.agentId}\` projects into (so \`--profile\` invocations resolve here too). Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files stay local to that runtime and are never project gitlinks.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is stored locally at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
 
 function renderHermesWrapper(role: RoleMeta): string {
   return `#!/usr/bin/env bash
-# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule.
+# Launcher for ${role.agentId}. Resolves HERMES_HOME to the local runtime.
 
 set -euo pipefail
 
@@ -1279,8 +1278,8 @@ PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
 HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
 
 if [[ ! -d "$RUNTIME_HOME" ]]; then
-  echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
-  echo "  fix: git submodule update --init --recursive" >&2
+  echo "hermes: local runtime not provisioned at $RUNTIME_HOME" >&2
+  echo "  fix: run the role's .scripts/20-runtime-repo.sh" >&2
   exit 1
 fi
 
@@ -1316,16 +1315,35 @@ function copyMissingRecursive(sourceDir: string, targetDir: string, changedFiles
   }
 }
 
-function upsertSubmodule(repoRoot: string, role: RoleMeta, changedFiles: string[], dryRun: boolean): string[] {
+function runtimeSubmodulePath(role: RoleMeta): string {
+  return `agents/hermes/${role.role}/runtime`;
+}
+
+function submoduleSectionHasPath(section: string, targetPath: string): boolean {
+  return section
+    .split(/\r?\n/)
+    .some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+}
+
+function hasRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta): boolean {
   const gitmodulesPath = join(repoRoot, ".gitmodules");
-  const repoName = role.runtimeRepo || `agent-hm-${role.repo}-${role.role}`;
-  const owner = role.runtimeOwner || "delorenj";
-  const block = `[submodule "agents/hermes/${role.role}/runtime"]\n\tpath = agents/hermes/${role.role}/runtime\n\turl = git@github.com:${owner}/${repoName}.git\n`;
   const current = safeReadText(gitmodulesPath) ?? "";
-  const header = `[submodule "agents/hermes/${role.role}/runtime"]`;
-  if (current.includes(header)) return [];
+  const sections = current.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
+  return sections.some((section) => submoduleSectionHasPath(section, runtimeSubmodulePath(role)));
+}
+
+function removeRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta, changedFiles: string[], dryRun: boolean): string[] {
+  const gitmodulesPath = join(repoRoot, ".gitmodules");
+  const current = safeReadText(gitmodulesPath) ?? "";
+  if (!hasRuntimeSubmoduleMapping(repoRoot, role)) return [];
+  const targetPath = runtimeSubmodulePath(role);
+  const next = current
+    .replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) =>
+      submoduleSectionHasPath(section, targetPath) ? "" : section)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   changedFiles.push(gitmodulesPath);
-  if (!dryRun) writeText(gitmodulesPath, `${current.replace(/\s*$/, "")}${current.trim() ? "\n" : ""}${block}`);
+  if (!dryRun) writeText(gitmodulesPath, next ? `${next}\n` : "");
   return [gitmodulesPath];
 }
 
@@ -2529,8 +2547,9 @@ const RULES: Rule[] = [
       for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
         if (!existsSync(join(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
       }
-      const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
-      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing pm runtime submodule entry");
+      if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+        details.push(".gitmodules contains retired pm runtime submodule mapping");
+      }
       if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
@@ -2570,7 +2589,7 @@ const RULES: Rule[] = [
           .replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
-      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      removeRuntimeSubmoduleMapping(ctx.repoRoot, role, changedFiles, ctx.dryRun);
       const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
@@ -2612,6 +2631,10 @@ const RULES: Rule[] = [
         });
         if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
           details.push(`submodule runtime is tracked in Git index at ${runtimeRelPath}`);
+        }
+
+        if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+          details.push(`stale .gitmodules mapping exists for ${runtimeRelPath}`);
         }
 
         // 2. Check if .gitignore ignores runtime/
@@ -2659,6 +2682,11 @@ const RULES: Rule[] = [
               encoding: "utf8",
             });
           }
+        }
+
+        if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+          details.push(`remove stale .gitmodules mapping for ${runtimeRelPath}`);
+          removeRuntimeSubmoduleMapping(ctx.repoRoot, role, changedFiles, ctx.dryRun);
         }
 
         // 2. Update .gitignore
