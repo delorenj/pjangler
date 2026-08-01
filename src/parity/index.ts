@@ -659,15 +659,20 @@ function normalizeExecutableTemplate(
   changedFiles: string[]
 ): void {
   const stat = lstatIfPresent(target);
-  const unsafe = Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
-  const contentChanged = !stat || unsafe || safeReadText(target) !== expected;
-  const modeChanged = !stat || unsafe || (Number(stat.mode) & 0o111) === 0;
+  if (stat && (!stat.isFile() || stat.isSymbolicLink())) {
+    throw new Error(`Refusing non-regular managed executable target: ${target}`);
+  }
+  const contentChanged = !stat || safeReadText(target) !== expected;
+  const modeChanged = !stat || (Number(stat.mode) & 0o111) === 0;
   if (!contentChanged && !modeChanged) return;
   if (!changedFiles.includes(target)) changedFiles.push(target);
   if (ctx.dryRun) return;
   if (contentChanged) {
-    if (unsafe) removeProjectEntry(target);
     writeText(target, expected);
+  }
+  const beforeChmod = lstatIfPresent(target);
+  if (!beforeChmod?.isFile() || beforeChmod.isSymbolicLink()) {
+    throw new Error(`Refusing changed managed executable target: ${target}`);
   }
   chmodSync(target, 0o755);
 }
@@ -1631,19 +1636,38 @@ const BMAD_INSTALL_TOOLS = [
   "replit", "roo", "rovo-dev", "cortex", "amp", "trae", "warp", "windsurf", "zencoder",
 ];
 
-function manifestBmadModules(repoRoot: string): string[] | undefined {
-  const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
-  if (!raw) return undefined;
+type ManifestBmadModuleSelection =
+  | { status: "absent" }
+  | { status: "valid"; modules: string[] }
+  | { status: "invalid"; error: string };
+
+function manifestBmadModules(repoRoot: string): ManifestBmadModuleSelection {
+  const manifestPath = join(repoRoot, "_bmad", "_config", "manifest.yaml");
+  const raw = safeReadText(manifestPath);
+  if (raw === null) return { status: "absent" };
   try {
     const parsed = YAML.parse(raw) as { modules?: unknown } | undefined;
-    if (!Array.isArray(parsed?.modules)) return undefined;
-    const modules = parsed.modules
-      .map((entry) => typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as Record<string, unknown>).name : undefined)
-      .filter((name): name is string => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name))
-      .filter((name) => name !== "core" && name !== "custom");
-    return Array.from(new Set(modules));
-  } catch {
-    return undefined;
+    if (!Array.isArray(parsed?.modules)) {
+      return { status: "invalid", error: `${manifestPath} must define a modules array` };
+    }
+    const declared: string[] = [];
+    for (const entry of parsed.modules) {
+      const name = typeof entry === "string"
+        ? entry
+        : entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).name
+          : undefined;
+      if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+        return { status: "invalid", error: `${manifestPath} contains an invalid module entry` };
+      }
+      if (name !== "core" && name !== "custom") declared.push(name);
+    }
+    return { status: "valid", modules: Array.from(new Set(declared)) };
+  } catch (error) {
+    return {
+      status: "invalid",
+      error: `Could not parse ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -1656,16 +1680,17 @@ function configuredBmadModules(repoRoot: string): string[] | undefined {
 
 function selectedBmadModules(repoRoot: string): string[] {
   const manifest = manifestBmadModules(repoRoot);
-  if (manifest !== undefined) return manifest;
+  if (manifest.status === "valid") return manifest.modules;
+  if (manifest.status === "invalid") throw new Error(manifest.error);
   return configuredBmadModules(repoRoot) ?? [...DEFAULT_BMAD_MODULES];
 }
 
-function requiredBmadSentinels(repoRoot: string): string[] {
+function requiredBmadSentinels(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
   return [
     join("core", "config.yaml"),
     join("config.toml"),
     join("_config", "manifest.yaml"),
-    ...selectedBmadModules(repoRoot).map((module) => join(module, "config.yaml")),
+    ...modules.map((module) => join(module, "config.yaml")),
   ];
 }
 
@@ -2362,6 +2387,7 @@ const RULES: Rule[] = [
         const stat = lstatIfPresent(target);
         if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
           details.push(`${label} is missing or unsafe`);
+          if (stat) fixable = false;
         } else {
           if (expected === undefined || safeReadText(target) !== expected) details.push(`${label} differs from the shipped template`);
           if ((Number(stat.mode) & 0o111) === 0) details.push(`${label} is not executable`);
@@ -2387,6 +2413,10 @@ const RULES: Rule[] = [
       const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
+      const provisionScriptPath = join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
+      const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
+      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
+      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
 
       const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
       if (topologyIssues.length) {
@@ -2397,6 +2427,34 @@ const RULES: Rule[] = [
           summary: "Unsafe project CLI skill topology must be repaired manually",
           changedFiles,
           details: topologyIssues,
+        };
+      }
+
+      if (!expectedProvisionScript || !expectedSyncScript) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "pjangler install is missing a shipped skills executable",
+          changedFiles,
+          details: [
+            ...(!expectedProvisionScript ? ["Missing BMAD Skillex provisioning script template"] : []),
+            ...(!expectedSyncScript ? ["Missing project-local skills sync engine template"] : []),
+          ],
+        };
+      }
+      const unsafeScriptTargets = [provisionScriptPath, syncScriptPath].filter((path) => {
+        const stat = lstatIfPresent(path);
+        return Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
+      });
+      if (unsafeScriptTargets.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Refusing non-regular managed skills executable target",
+          changedFiles,
+          details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`),
         };
       }
 
@@ -2429,32 +2487,8 @@ const RULES: Rule[] = [
         if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
       }
 
-      const provisionScriptPath = join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
-      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
-      if (!expectedProvisionScript) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "pjangler install is missing the BMAD Skillex provisioning script",
-          changedFiles,
-          details,
-        };
-      }
       normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
 
-      const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
-      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
-      if (!expectedSyncScript) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "pjangler install is missing the project-local skills sync engine",
-          changedFiles,
-          details,
-        };
-      }
       normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
 
       if (!existsSync(misePath)) {
@@ -2704,8 +2738,22 @@ const RULES: Rule[] = [
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: "bmad.scaffold",
+          title: "BMAD modules/docs scaffold",
+          status: "fail",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          details: [manifestSelection.error],
+          fixable: false,
+        };
+      }
       const targetRoot = join(ctx.repoRoot, "_bmad");
-      const sentinels = requiredBmadSentinels(ctx.repoRoot);
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+      const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
       const missing = sentinels.filter((file) => !existsSync(join(targetRoot, file)));
       return {
         id: "bmad.scaffold",
@@ -2718,7 +2766,20 @@ const RULES: Rule[] = [
     },
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
-      const selectedModules = selectedBmadModules(ctx.repoRoot);
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          changedFiles,
+          details: [manifestSelection.error],
+        };
+      }
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
       if (ctx.dryRun) {
         for (const detail of finding.details) {
           changedFiles.push(join(ctx.repoRoot, detail));
@@ -2853,7 +2914,20 @@ const RULES: Rule[] = [
       const installed = readInstalledBmadVersion(ctx.repoRoot);
       const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
-      const selectedModules = selectedBmadModules(ctx.repoRoot);
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          changedFiles: [],
+          details: [manifestSelection.error],
+        };
+      }
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
 
       if (ctx.dryRun) {
         return {

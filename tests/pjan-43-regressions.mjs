@@ -82,6 +82,15 @@ function writeCanonicalGitignore(repo) {
 }
 
 try {
+  for (const script of ["provision-bmad-skills.py", "sync-skills.py"]) {
+    const packagedTemplate = join(root, "templates", "commonproject", "template", ".mise", "scripts", script);
+    assert.notEqual(
+      lstatSync(packagedTemplate).mode & 0o111,
+      0,
+      `packaged CommonProject executable mode must survive a fresh projection: ${script}`,
+    );
+  }
+
   {
     const repo = makeRepo("skills-safe-alias");
     const home = makeHome("skills-safe-alias");
@@ -159,6 +168,36 @@ try {
     assert.notEqual(lstatSync(syncScript).mode & 0o111, 0);
     const driftNoop = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(driftNoop, "skills.project-manifest").status, "noop");
+  }
+
+  {
+    const repo = makeRepo("skills-script-directory-blocker");
+    const home = makeHome("skills-script-directory-blocker");
+    const initial = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(initial, "skills.project-manifest").status, "applied");
+    const target = join(repo, ".mise", "scripts", "provision-bmad-skills.py");
+    rmSync(target);
+    mkdirSync(target);
+    const sentinel = join(target, "user-sentinel.txt");
+    writeFileSync(sentinel, "must remain byte-identical\n");
+    const beforeEntries = readdirSync(target);
+    const beforeSentinel = readFileSync(sentinel);
+
+    const unsafeAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    const unsafeFinding = finding(unsafeAudit, "skills.project-manifest");
+    assert.equal(unsafeFinding.status, "fail");
+    assert.equal(unsafeFinding.fixable, false);
+    assert.match(unsafeFinding.details.join("\n"), /missing or unsafe/);
+
+    const blocked = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    const blockedResult = migrationResult(blocked, "skills.project-manifest");
+    assert.equal(blockedResult.status, "blocked", JSON.stringify(blockedResult));
+    assert.deepEqual(blockedResult.changedFiles, []);
+    assert.deepEqual(readdirSync(target), beforeEntries);
+    assert.deepEqual(readFileSync(sentinel), beforeSentinel);
+    const postAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    assert.equal(finding(postAudit, "skills.project-manifest").status, "fail");
+    assert.equal(finding(postAudit, "skills.project-manifest").fixable, false);
   }
 
   {
@@ -269,6 +308,41 @@ done
     const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
     assert.deepEqual(all.selectedRules.filter((id) => skipped.includes(id)), [], "--all must not select audit-skipped rules");
     assert.equal(all.results.some((entry) => skipped.includes(entry.id) && entry.status === "blocked"), false);
+  }
+
+  {
+    const repo = makeRepo("bmad-malformed-module-manifest");
+    const home = makeHome("bmad-malformed-module-manifest");
+    const manifestPath = join(repo, "_bmad", "_config", "manifest.yaml");
+    mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
+    const malformed = "installation:\n  version: 6.10.1-next.31\nmodules:\n  - name: tea\n  - [unterminated\n";
+    writeFileSync(manifestPath, malformed);
+    const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    const blocker = finding(audit, "bmad.scaffold");
+    assert.equal(blocker.status, "fail", JSON.stringify(blocker));
+    assert.equal(blocker.fixable, false);
+    assert.match(blocker.summary, /invalid.*refusing fallback/i);
+
+    const fakeBin = mkdtempSync(join(tmpdir(), "pjan-43-malformed-manifest-npx-"));
+    cleanup.push(fakeBin);
+    const invocation = join(fakeBin, "invoked");
+    const fakeNpx = join(fakeBin, "npx");
+    writeFileSync(fakeNpx, `#!/usr/bin/env bash\nprintf invoked > "${invocation}"\nexit 97\n`);
+    chmodSync(fakeNpx, 0o755);
+    const migrated = jsonCommand(["migrate", "bmad.scaffold", repo, "--json"], {
+      home,
+      extraEnv: { PATH: `${fakeBin}:${process.env.PATH}` },
+    }).json;
+    const blocked = migrationResult(migrated, "bmad.scaffold");
+    assert.equal(blocked.status, "blocked", JSON.stringify(blocked));
+    assert.deepEqual(blocked.changedFiles, []);
+    assert.equal(existsSync(invocation), false, "invalid manifest must block before invoking default modules");
+    assert.equal(readFileSync(manifestPath, "utf8"), malformed);
+    for (const module of ["bmm", "bmb", "cis", "tea"]) {
+      assert.equal(existsSync(join(repo, "_bmad", module)), false, `invalid manifest must not mutate ${module}`);
+    }
+    const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
+    assert.equal(all.selectedRules.includes("bmad.scaffold"), false);
   }
 
   for (const selection of [
