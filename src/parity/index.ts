@@ -95,6 +95,17 @@ const SYNC_SKILLS_SCRIPT =
 const CODEGRAPH_SCRIPT =
   "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 const SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
+const PROJECT_CLI_SKILL_DIRS = [
+  ".gemini/skills",
+  ".codex/skills",
+  ".kimi/skills",
+  ".augment/skills",
+  ".config/opencode/skills",
+  ".hermes/skills",
+  ".claude/skills",
+  ".openclaw/skills",
+] as const;
+const CANONICAL_CLAUDE_SKILLS_ALIAS = "../.agents/skills";
 
 const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
@@ -504,6 +515,69 @@ function prepareSafeProjectSkillsDirs(ctx: Context): { agentsDir: string; skills
     }
   }
   return { agentsDir, skillsDir };
+}
+
+function projectSkillTopologyIssues(repoRoot: string): string[] {
+  const issues: string[] = [];
+  let projectRoot: string;
+  try {
+    projectRoot = realpathSync(repoRoot);
+  } catch (error) {
+    return [`Project root is not a readable real directory: ${error instanceof Error ? error.message : String(error)}`];
+  }
+  const managedSkills = join(projectRoot, ".agents", "skills");
+
+  for (const rel of PROJECT_CLI_SKILL_DIRS) {
+    const cliDir = join(projectRoot, rel);
+    const parent = dirname(cliDir);
+    const parentStat = lstatIfPresent(parent);
+    if (!parentStat) continue;
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+      issues.push(`${rel} has an unsafe symlinked/non-directory parent`);
+      continue;
+    }
+    if (!isContainedBy(projectRoot, realOrSelf(parent))) {
+      issues.push(`${rel} parent resolves outside the project`);
+      continue;
+    }
+
+    const stat = lstatIfPresent(cliDir);
+    if (!stat) continue;
+    if (stat.isSymbolicLink()) {
+      let rawTarget = "";
+      try {
+        rawTarget = readlinkSync(cliDir);
+      } catch {
+        issues.push(`${rel} is an unreadable skills directory symlink`);
+        continue;
+      }
+      if (rel !== ".claude/skills" || rawTarget !== CANONICAL_CLAUDE_SKILLS_ALIAS) {
+        issues.push(`${rel} is an unsupported skills directory symlink`);
+        continue;
+      }
+      const managedStat = lstatIfPresent(managedSkills);
+      if (!managedStat || managedStat.isSymbolicLink() || !managedStat.isDirectory()) {
+        issues.push(`${rel} canonical alias target .agents/skills is missing or unsafe`);
+        continue;
+      }
+      try {
+        if (realpathSync(cliDir) !== realpathSync(managedSkills)) {
+          issues.push(`${rel} canonical alias resolves outside .agents/skills`);
+        }
+      } catch {
+        issues.push(`${rel} canonical alias is broken`);
+      }
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      issues.push(`${rel} is not a directory`);
+      continue;
+    }
+    if (!isContainedBy(projectRoot, realOrSelf(cliDir))) {
+      issues.push(`${rel} resolves outside the project`);
+    }
+  }
+  return issues;
 }
 
 function bmadPackRoot(ctx: Context): string {
@@ -1492,6 +1566,7 @@ const BMAD_NPM_PACKAGE = "bmad-method";
 // install yields today. Change this one constant to retarget the whole toolchain.
 const BMAD_TARGET_CHANNEL = "next";
 const BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1000; // 1h — mirrors the starship BMAD indicator cache
+const DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
 
 // The tool matrix installed alongside the BMAD modules. Kept in one place so the
 // scaffold-install and version-upgrade paths never drift apart.
@@ -1504,7 +1579,45 @@ const BMAD_INSTALL_TOOLS = [
   "replit", "roo", "rovo-dev", "cortex", "amp", "trae", "warp", "windsurf", "zencoder",
 ];
 
-function bmadInstallArgs(repoRoot: string): string[] {
+function manifestBmadModules(repoRoot: string): string[] | undefined {
+  const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
+  if (!raw) return undefined;
+  try {
+    const parsed = YAML.parse(raw) as { modules?: unknown } | undefined;
+    if (!Array.isArray(parsed?.modules)) return undefined;
+    const modules = parsed.modules
+      .map((entry) => typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as Record<string, unknown>).name : undefined)
+      .filter((name): name is string => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name))
+      .filter((name) => name !== "core" && name !== "custom");
+    return Array.from(new Set(modules));
+  } catch {
+    return undefined;
+  }
+}
+
+function configuredBmadModules(repoRoot: string): string[] | undefined {
+  const raw = safeReadText(join(repoRoot, "_bmad", "config.toml"));
+  if (!raw) return undefined;
+  const modules = [...raw.matchAll(/^\[modules\.([A-Za-z0-9][A-Za-z0-9_-]*)\]\s*$/gm)].map((match) => match[1]!);
+  return modules.length ? Array.from(new Set(modules)) : undefined;
+}
+
+function selectedBmadModules(repoRoot: string): string[] {
+  const manifest = manifestBmadModules(repoRoot);
+  if (manifest !== undefined) return manifest;
+  return configuredBmadModules(repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+}
+
+function requiredBmadSentinels(repoRoot: string): string[] {
+  return [
+    join("core", "config.yaml"),
+    join("config.toml"),
+    join("_config", "manifest.yaml"),
+    ...selectedBmadModules(repoRoot).map((module) => join(module, "config.yaml")),
+  ];
+}
+
+function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
   return [
     "-y",
     `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
@@ -1512,16 +1625,15 @@ function bmadInstallArgs(repoRoot: string): string[] {
     "--yes",
     "--directory",
     repoRoot,
-    "--modules",
-    "bmm,bmb,cis",
+    ...(modules.length ? ["--modules", modules.join(",")] : []),
     "--tools",
     BMAD_INSTALL_TOOLS.join(","),
   ];
 }
 
 /** Run the non-interactive BMAD installer/upgrader against `repoRoot`. */
-function runBmadInstall(repoRoot: string): { ok: boolean; error?: string } {
-  const result = spawnSync("npx", bmadInstallArgs(repoRoot), { encoding: "utf8" });
+function runBmadInstall(repoRoot: string, modules = selectedBmadModules(repoRoot)): { ok: boolean; error?: string } {
+  const result = spawnSync("npx", bmadInstallArgs(repoRoot, modules), { encoding: "utf8" });
   if (result.status !== 0) {
     return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
   }
@@ -1842,6 +1954,59 @@ function rewriteLauncher(text: string): string {
   return next;
 }
 
+interface OpReferenceOccurrence {
+  line: number;
+  value: string;
+  commentOnly: boolean;
+}
+
+function isValidOpReference(value: string): boolean {
+  if (!value.startsWith("op://") || /[\[\]{}<>]/.test(value)) return false;
+  const withoutScheme = value.slice("op://".length);
+  const fragmentIndex = withoutScheme.indexOf("#");
+  if (fragmentIndex >= 0) return false;
+  const queryIndex = withoutScheme.indexOf("?");
+  const pathPart = queryIndex >= 0 ? withoutScheme.slice(0, queryIndex) : withoutScheme;
+  const queryPart = queryIndex >= 0 ? withoutScheme.slice(queryIndex + 1) : "";
+  const parts = pathPart.split("/");
+  if (parts.length < 3 || parts.length > 4 || parts.some((part) => !part)) return false;
+  try {
+    for (const part of parts) decodeURIComponent(part);
+  } catch {
+    return false;
+  }
+  if (queryIndex >= 0 && !/^attribute=[A-Za-z0-9._~-]+$/.test(queryPart)) return false;
+  return true;
+}
+
+function malformedOpReferences(text: string): OpReferenceOccurrence[] {
+  const occurrences: OpReferenceOccurrence[] = [];
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    for (const match of line.matchAll(/op:\/\/[^\s"'`]+/g)) {
+      const value = match[0];
+      if (!isValidOpReference(value)) {
+        occurrences.push({ line: index + 1, value, commentOnly: line.trimStart().startsWith("#") });
+      }
+    }
+  }
+  return occurrences;
+}
+
+function removeMalformedCommentOpReferences(text: string): { text: string; changed: boolean } {
+  let changed = false;
+  const lines = text.split("\n").map((line) => {
+    if (!line.trimStart().startsWith("#")) return line;
+    return line.replace(/op:\/\/[^\s"'`]+/g, (value) => {
+      if (isValidOpReference(value)) return value;
+      changed = true;
+      return "<invalid 1Password reference removed by pjangler>";
+    });
+  });
+  return { text: lines.join("\n"), changed };
+}
+
 const RULES: Rule[] = [
   {
     id: "mise.config-root",
@@ -2032,23 +2197,31 @@ const RULES: Rule[] = [
         }
       }
 
-      let invalidBmadLinks = 0;
+      const invalidBmadLinkNames = new Set<string>();
       if (existsSync(legacyDir)) {
         for (const name of readdirSync(legacyDir)) {
           if (!name.startsWith("bmad-")) continue;
           const expected = expectedByName.get(name);
           const path = join(legacyDir, name);
           try {
-            if (!expected || !lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinks++;
+            if (!expected || !lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
           } catch {
-            invalidBmadLinks++;
+            invalidBmadLinkNames.add(name);
           }
         }
-      } else if (expectedBmad.length > 0) {
-        invalidBmadLinks = expectedBmad.length;
+        for (const [name, expected] of expectedByName) {
+          const path = join(legacyDir, name);
+          try {
+            if (!lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
+          } catch {
+            invalidBmadLinkNames.add(name);
+          }
+        }
+      } else {
+        for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
       }
-      if (invalidBmadLinks > 0) {
-        details.push(`${invalidBmadLinks} .agents/skills/bmad-* path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
+      if (invalidBmadLinkNames.size > 0) {
+        details.push(`${invalidBmadLinkNames.size} .agents/skills/bmad-* path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
 
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
@@ -2063,13 +2236,30 @@ const RULES: Rule[] = [
       const mise = safeReadText(misePath);
       if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
       if (!mise?.includes(PROVISION_BMAD_SKILLS_SCRIPT)) details.push("mise.toml should provision pinned BMAD pack links before syncing skills");
+      if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_BMAD_SKILLS_SCRIPT) && mise.indexOf(PROVISION_BMAD_SKILLS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
+        details.push("mise.toml should run the BMAD provisioner before project skill sync");
+      }
       if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
         details.push("mise.toml still invokes the missing bare sync-skills.py executable");
       }
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
       if (!mise?.includes('[tasks.skills-sync]')) details.push("mise.toml should define a skills-sync task");
-      if (!existsSync(join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py"))) details.push("BMAD Skillex provisioning script is missing");
-      if (!existsSync(join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py"))) details.push("Project-local skills sync engine is missing");
+      if (!mise?.includes('depends = ["skills-provision-bmad"]')) details.push("skills-sync task should depend on skills-provision-bmad");
+      for (const [rel, label] of [
+        [".mise/scripts/provision-bmad-skills.py", "BMAD Skillex provisioning script"],
+        [".mise/scripts/sync-skills.py", "Project-local skills sync engine"],
+      ] as const) {
+        const target = join(ctx.repoRoot, rel);
+        const expected = templateCommonProjectText(ctx, rel);
+        const stat = lstatIfPresent(target);
+        if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+          details.push(`${label} is missing or unsafe`);
+        } else {
+          if (expected === undefined || safeReadText(target) !== expected) details.push(`${label} differs from the shipped template`);
+          if ((Number(stat.mode) & 0o111) === 0) details.push(`${label} is not executable`);
+        }
+      }
+      details.push(...projectSkillTopologyIssues(ctx.repoRoot).map((issue) => `CLI skill topology: ${issue}`));
       if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
         details.push("mise.toml still contains legacy skill-link wiring");
       }
@@ -2089,6 +2279,18 @@ const RULES: Rule[] = [
       const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
+
+      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+      if (topologyIssues.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Unsafe project CLI skill topology must be repaired manually",
+          changedFiles,
+          details: topologyIssues,
+        };
+      }
 
       const provisioned = provisionBmadSkills(ctx);
       if (!provisioned.ok) {
@@ -2288,16 +2490,20 @@ const RULES: Rule[] = [
       if (!envOp) {
         details.push(".env.op missing");
       } else {
+        const malformed = malformedOpReferences(envOp);
+        if (malformed.length) {
+          details.push(`.env.op has malformed op:// reference(s) on line(s): ${Array.from(new Set(malformed.map((entry) => entry.line))).join(", ")}`);
+        }
         const invalidLines = envOp
           .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line && !line.startsWith("#") && line.includes("="))
-          .filter((line) => {
+          .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+          .filter(({ line }) => line && !line.startsWith("#") && line.includes("="))
+          .filter(({ line }) => {
             const value = line.slice(line.indexOf("=") + 1).trim();
             const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
             return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
-        if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
+        if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals on line(s): ${invalidLines.map((entry) => entry.number).join(", ")}`);
       }
       if (!gitignore?.includes(".env\n") && !gitignore?.includes(".env\r\n")) details.push(".gitignore should ignore .env");
       if (!gitignore?.includes(".env.*")) details.push(".gitignore should ignore .env.*");
@@ -2318,6 +2524,17 @@ const RULES: Rule[] = [
       if (!existsSync(envOpPath)) {
         changedFiles.push(envOpPath);
         if (!ctx.dryRun) writeText(envOpPath, readText(join(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
+      } else {
+        const current = readText(envOpPath);
+        const repaired = removeMalformedCommentOpReferences(current);
+        if (repaired.changed) {
+          changedFiles.push(envOpPath);
+          if (!ctx.dryRun) writeText(envOpPath, repaired.text);
+        }
+        const remaining = malformedOpReferences(repaired.text).filter((entry) => !entry.commentOnly);
+        if (remaining.length) {
+          details.push(`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(remaining.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`);
+        }
       }
       const gitignorePath = join(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
@@ -2392,12 +2609,7 @@ const RULES: Rule[] = [
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
       const targetRoot = join(ctx.repoRoot, "_bmad");
-      const sentinels = [
-        join("core", "config.yaml"),
-        join("config.toml"),
-        join("_config", "manifest.yaml"),
-        join("bmm", "config.yaml"),
-      ];
+      const sentinels = requiredBmadSentinels(ctx.repoRoot);
       const missing = sentinels.filter((file) => !existsSync(join(targetRoot, file)));
       return {
         id: "bmad.scaffold",
@@ -2410,6 +2622,7 @@ const RULES: Rule[] = [
     },
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
+      const selectedModules = selectedBmadModules(ctx.repoRoot);
       if (ctx.dryRun) {
         for (const detail of finding.details) {
           changedFiles.push(join(ctx.repoRoot, detail));
@@ -2421,7 +2634,7 @@ const RULES: Rule[] = [
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
           ],
         };
       }
@@ -2429,7 +2642,7 @@ const RULES: Rule[] = [
       const preservedSkillsManifest = tryParseJson(
         safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
       );
-      const install = runBmadInstall(ctx.repoRoot);
+      const install = runBmadInstall(ctx.repoRoot, selectedModules);
       if (!install.ok) {
         return {
           id: finding.id,
@@ -2544,6 +2757,7 @@ const RULES: Rule[] = [
       const installed = readInstalledBmadVersion(ctx.repoRoot);
       const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
+      const selectedModules = selectedBmadModules(ctx.repoRoot);
 
       if (ctx.dryRun) {
         return {
@@ -2553,7 +2767,7 @@ const RULES: Rule[] = [
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
           changedFiles: [manifestPath],
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
           ],
         };
       }
@@ -2561,7 +2775,7 @@ const RULES: Rule[] = [
       const preservedSkillsManifest = tryParseJson(
         safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
       );
-      const install = runBmadInstall(ctx.repoRoot);
+      const install = runBmadInstall(ctx.repoRoot, selectedModules);
       if (!install.ok) {
         return {
           id: finding.id,
@@ -3059,13 +3273,13 @@ const RULES: Rule[] = [
     title: "Fleet registry matches .project.json (no duplicate or stale agents)",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
-      if (!roles.length) {
-        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
-      }
       const details: string[] = [];
       const registryPath = join(ctx.homeDir, ".hermes", "agents-registry.yaml");
       const registry = readRegistry(registryPath);
       if (!registry) {
+        if (!roles.length && declaredAgentIds(ctx.repoRoot).length === 0) {
+          return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles or declared agents present", details: [], fixable: false };
+        }
         return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath}`, details: [], fixable: false };
       }
       // role.yaml is the identity SSOT. discoverRoles() only walks this repo's
@@ -3073,15 +3287,33 @@ const RULES: Rule[] = [
       // a naive role_dir.startsWith(repoRoot) would swallow them and propose
       // deleting perfectly good sibling agents.
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
-      // An empty canonical set means this repo has no role.yaml at all -- the
-      // agent is unprovisioned, NOT duplicated. Deleting its registry entry
-      // would throw away the Plane binding, unit names, and telegram handle.
-      for (const [agentId, entry] of ownedRegistryEntries(registry, ctx.repoRoot)) {
-        const roleDir = String((entry as Record<string, unknown>)?.role_dir ?? "");
-        if (canonical.size === 0) {
-          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}) -- provision it, do not delete it`);
-          continue;
+      const owned = ownedRegistryEntries(registry, ctx.repoRoot);
+      const declared = declaredAgentIds(ctx.repoRoot);
+      if (canonical.size === 0) {
+        for (const [agentId, entry] of owned) {
+          const roleDir = String(entry.role_dir ?? "");
+          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}); provision or restore the role, do not delete the registry entry`);
         }
+        for (const agentId of declared.filter((id) => !owned.some(([ownedId]) => ownedId === id))) {
+          details.push(`.project.json declares unprovisioned agent "${agentId}"; provision or restore its role`);
+        }
+        if (details.length) {
+          return {
+            id: "hermes.registry-parity",
+            title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+            status: "fail",
+            summary: `${details.length} unprovisioned Hermes role blocker(s) detected`,
+            details,
+            fixable: false,
+          };
+        }
+        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
+      }
+      // With at least one provisioned role, stale sibling identities can be
+      // compared safely against role.yaml. The empty-role case returned above
+      // as a truthful non-fixable blocker and never enters destructive repair.
+      for (const [agentId, entry] of owned) {
+        const roleDir = String((entry as Record<string, unknown>)?.role_dir ?? "");
         if (!canonical.has(agentId)) {
           details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
         }
@@ -3139,6 +3371,21 @@ const RULES: Rule[] = [
         for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
           details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
         }
+        for (const agentId of declaredAgentIds(ctx.repoRoot)) {
+          if (!details.some((detail) => detail.includes(`"${agentId}"`))) {
+            details.push(`blocked: "${agentId}" is declared but has no role.yaml; provision or restore the role`);
+          }
+        }
+        if (details.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Registry parity is blocked by an unprovisioned Hermes role",
+            changedFiles,
+            details,
+          };
+        }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
         // Only ids this repo's own role.yaml files claim survive. Scoping is by
@@ -3166,10 +3413,12 @@ const RULES: Rule[] = [
         }
       }
 
-      // A .project.json entry with no role.yaml and no registry entry would
-      // otherwise be an audit failure migrate could never clear.
-      for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
-        dropDeclaredAgent(ctx, extra, changedFiles, details);
+      // Once role.yaml establishes the canonical identity, stale declarations
+      // can be retired alongside duplicate registry entries.
+      if (canonical.size > 0) {
+        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+          dropDeclaredAgent(ctx, extra, changedFiles, details);
+        }
       }
 
       if (dirty) {
@@ -3262,7 +3511,24 @@ export function runMigrationForRules(ruleIds: string[], repoArg: string | undefi
 }
 
 export function runMigration(selector: string | undefined, repoArg: string | undefined, dryRun: boolean, all: boolean): MigrationReport {
-  const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
+  if (all) {
+    const audit = runAudit(repoArg);
+    const ruleIds = audit.rules
+      .filter((finding) => finding.fixable && (finding.status === "fail" || finding.status === "warn"))
+      .map((finding) => finding.id);
+    if (ruleIds.length === 0) {
+      return {
+        repo: audit.repo,
+        dryRun,
+        ok: true,
+        selectedRules: [],
+        results: [],
+        changedFiles: [],
+      };
+    }
+    return runMigrationForRules(ruleIds, repoArg, dryRun);
+  }
+  const ruleIds = selector ? [selector] : [];
   return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
 
