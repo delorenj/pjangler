@@ -206,20 +206,35 @@ try {
     const managed = join(repo, ".agents", "skills");
     mkdirSync(managed, { recursive: true });
     writeFileSync(join(managed, "custom-sentinel"), "do-not-touch\n");
-    mkdirSync(join(repo, ".claude"));
+    mkdirSync(join(repo, ".codex"));
     const outside = mkdtempSync(join(tmpdir(), "pjan-43-outside-skills-"));
     cleanup.push(outside);
     writeFileSync(join(outside, "outside-sentinel"), "do-not-touch\n");
-    symlinkSync(outside, join(repo, ".claude", "skills"), "dir");
+    const unsafeLink = join(repo, ".codex", "skills");
+    symlinkSync(outside, unsafeLink, "dir");
 
     const beforeManaged = readdirSync(managed);
     const beforeOutside = readdirSync(outside);
+    const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    const unsafeFinding = finding(audit, "skills.project-manifest");
+    assert.equal(unsafeFinding.status, "fail");
+    assert.equal(unsafeFinding.fixable, false, "unsafe CLI topology must override otherwise-fixable drift");
+    assert.match(unsafeFinding.details.join("\n"), /unsupported skills directory symlink/);
+
+    const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
+    assert.equal(all.selectedRules.includes("skills.project-manifest"), false, "--all must exclude unsafe CLI topology blockers");
+    assert.deepEqual(readdirSync(managed), beforeManaged);
+    assert.deepEqual(readdirSync(outside), beforeOutside);
+    assert.equal(readlinkSync(unsafeLink), outside);
+    assert.equal(existsSync(join(repo, ".mise", "scripts")), false, "--all must not mutate unsafe skills topology");
+
     const report = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     const result = migrationResult(report, "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
     assert.match(result.details.join("\n"), /unsupported skills directory symlink/);
     assert.deepEqual(readdirSync(managed), beforeManaged);
     assert.deepEqual(readdirSync(outside), beforeOutside);
+    assert.equal(readlinkSync(unsafeLink), outside);
     assert.equal(existsSync(join(repo, ".mise", "scripts")), false, "unsafe topology must fail before project mutation");
   }
 

@@ -2393,7 +2393,11 @@ const RULES: Rule[] = [
           if ((Number(stat.mode) & 0o111) === 0) details.push(`${label} is not executable`);
         }
       }
-      details.push(...projectSkillTopologyIssues(ctx.repoRoot).map((issue) => `CLI skill topology: ${issue}`));
+      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+      if (topologyIssues.length) {
+        details.push(...topologyIssues.map((issue) => `CLI skill topology: ${issue}`));
+        fixable = false;
+      }
       if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
         details.push("mise.toml still contains legacy skill-link wiring");
       }
