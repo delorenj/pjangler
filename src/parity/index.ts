@@ -649,7 +649,18 @@ export interface BmadProvisionHooks {
 function removeProjectEntry(path: string): void {
   const stat = lstatIfPresent(path);
   if (!stat) return;
-  rmSync(path, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true });
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    rmSync(path, { recursive: true, force: true });
+    return;
+  }
+  // Node 24 rejects rmSync(..., { recursive: false }) for directory symlinks
+  // with ERR_FS_EISDIR. unlinkSync removes the link itself without touching its
+  // directory target and also preserves the intended regular-file behavior.
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 function normalizeExecutableTemplate(

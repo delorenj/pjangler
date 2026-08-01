@@ -136,13 +136,23 @@ try {
   const fakeBin = join(temp, "fake-bin");
   mkdirSync(fakeBin);
   const npmSentinel = join(temp, "npm-was-called");
+  const fakeNode = join(fakeBin, "node");
   const fakeNpm = join(fakeBin, "npm");
-  writeFileSync(fakeNpm, `#!/usr/bin/env sh\n: > "${npmSentinel}"\nexit 97\n`);
+  writeFileSync(fakeNode, "#!/usr/bin/env sh\nif [ \"${1:-}\" = \"--version\" ]; then printf 'v24.6.0\\n'; exit 0; fi\nexit 96\n");
+  writeFileSync(
+    fakeNpm,
+    `#!/usr/bin/env sh\nif [ "\${1:-}" = "--version" ]; then printf '11.13.0\\n'; exit 0; fi\n: > "${npmSentinel}"\nexit 97\n`,
+  );
+  chmodSync(fakeNode, 0o755);
   chmodSync(fakeNpm, 0o755);
   const dirtyResult = spawnSync(copiedRelease, ["--dry-run"], {
     cwd: temp,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH}` },
+    env: {
+      ...process.env,
+      PJANGLER_RELEASE_RUNTIME_ACTIVE: "1",
+      PATH: `${fakeBin}${delimiter}${process.env.PATH}`,
+    },
   });
   assert.notEqual(dirtyResult.status, 0);
   assert.match(dirtyResult.stderr, /working tree must be clean/);

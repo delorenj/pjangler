@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { provisionBmadSkills, type BmadProvisionHooks, type Context } from "../src/parity/index";
@@ -111,7 +111,7 @@ try {
     const result = provisionBmadSkills(context, null, {
       afterApply(_manifest, skills) {
         const link = join(skills, "bmad-agent-analyst");
-        rmSync(link);
+        unlinkSync(link);
         symlinkSync("/tmp/wrong-after-apply", link, "dir");
       },
     });
