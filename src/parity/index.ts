@@ -594,11 +594,26 @@ function canonicalBmadSkillEntries(ctx: Context): SkillManifestEntry[] {
     .map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join(root, name)).href }));
 }
 
-function isBmadManifestEntry(entry: unknown): boolean {
-  if (typeof entry === "string") return entry.startsWith("bmad-");
-  if (!entry || typeof entry !== "object") return false;
+function skillManifestEntryName(entry: unknown): string | undefined {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object") return undefined;
   const name = (entry as Record<string, unknown>).name;
-  return typeof name === "string" && name.startsWith("bmad-");
+  return typeof name === "string" ? name : undefined;
+}
+
+function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, packRoot: string): boolean {
+  const name = skillManifestEntryName(entry);
+  if (!name) return false;
+  if (expectedNames.has(name)) return true;
+  if (!entry || typeof entry !== "object") return false;
+  const source = (entry as Record<string, unknown>).source;
+  if (typeof source !== "string" || !source.startsWith("file:")) return false;
+  try {
+    const sourcePath = resolve(fileURLToPath(source));
+    return basename(sourcePath) === name && isContainedBy(packRoot, sourcePath);
+  } catch {
+    return false;
+  }
 }
 
 function canonicalSkillsManifest(
@@ -607,6 +622,8 @@ function canonicalSkillsManifest(
   packSkills = canonicalBmadSkillEntries(ctx)
 ): string {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
+  const expectedNames = new Set(packSkills.map((entry) => entry.name));
+  const packRoot = bmadPackRoot(ctx);
   return `${JSON.stringify(
     {
       ...(current ?? {}),
@@ -614,7 +631,7 @@ function canonicalSkillsManifest(
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
       skills: [
-        ...existing.filter((entry) => !isBmadManifestEntry(entry)),
+        ...existing.filter((entry) => !isPackManagedManifestEntry(entry, expectedNames, packRoot)),
         ...packSkills,
       ],
     },
@@ -698,26 +715,43 @@ export function provisionBmadSkills(
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath(entry.source)]));
+  const expectedNames = new Set(expected.keys());
+  const ownershipManifest = preservedManifest ?? currentManifest;
+  const managedManifestNames = new Set(
+    (Array.isArray(ownershipManifest.skills) ? ownershipManifest.skills : [])
+      .filter((entry) => isPackManagedManifestEntry(entry, expectedNames, packRoot))
+      .map(skillManifestEntryName)
+      .filter((name): name is string => Boolean(name))
+  );
   const affected = new Set<string>();
-  const originalBmadNames = new Set<string>();
+  const staleManagedNames = new Set<string>();
   const originalCorrectLinks = new Map<string, string>();
   if (existsSync(skillsDir)) {
     for (const name of readdirSync(skillsDir)) {
       validateSkillName(name);
-      if (!name.startsWith("bmad-")) continue;
-      originalBmadNames.add(name);
       if (dirname(join(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
       }
+      const entryPath = join(skillsDir, name);
+      let linkTargetsPack = false;
+      try {
+        linkTargetsPack = lstatSync(entryPath).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(entryPath), readlinkSync(entryPath)));
+      } catch {
+        linkTargetsPack = false;
+      }
+      if (!expected.has(name) && !managedManifestNames.has(name) && !linkTargetsPack) continue;
       const target = expected.get(name);
       let correct = false;
       try {
-        correct = Boolean(target) && lstatSync(join(skillsDir, name)).isSymbolicLink() && resolve(skillsDir, readlinkSync(join(skillsDir, name))) === target;
+        correct = Boolean(target) && lstatSync(entryPath).isSymbolicLink() && resolve(dirname(entryPath), readlinkSync(entryPath)) === target;
       } catch {
         correct = false;
       }
       if (correct) originalCorrectLinks.set(name, readlinkSync(join(skillsDir, name)));
-      else affected.add(name);
+      else {
+        affected.add(name);
+        if (!target) staleManagedNames.add(name);
+      }
     }
   }
   for (const [name, target] of expected) {
@@ -758,14 +792,12 @@ export function provisionBmadSkills(
 
   const rollback = (): void => {
     const errors: string[] = [];
-    const movedNames = new Set(moved);
     try {
-      for (const name of readdirSync(skillsDir)) {
-        if (!name.startsWith("bmad-")) continue;
-        validateSkillName(name);
-        if (!originalBmadNames.has(name) || movedNames.has(name) || originalCorrectLinks.has(name)) {
-          removeProjectEntry(join(skillsDir, name));
-        }
+      for (const name of affected) {
+        removeProjectEntry(join(skillsDir, validateSkillName(name)));
+      }
+      for (const name of originalCorrectLinks.keys()) {
+        removeProjectEntry(join(skillsDir, validateSkillName(name)));
       }
     } catch (error) {
       errors.push(`remove applied projection: ${String(error)}`);
@@ -830,10 +862,10 @@ export function provisionBmadSkills(
       throw new Error("BMAD pack inventory changed after preflight");
     }
     hooks.afterApply?.(manifestPath, skillsDir);
-    const plannedNames = [...expected.keys()].sort();
-    const actualNames = readdirSync(skillsDir).filter((name) => name.startsWith("bmad-")).sort();
-    if (JSON.stringify(actualNames) !== JSON.stringify(plannedNames)) {
-      throw new Error("Applied BMAD projection contains missing or unexpected entries");
+    for (const name of staleManagedNames) {
+      if (lstatIfPresent(join(skillsDir, name))) {
+        throw new Error(`Applied BMAD projection retained stale managed entry: ${name}`);
+      }
     }
     for (const [name, target] of expected) {
       const link = join(skillsDir, name);
@@ -2223,6 +2255,8 @@ const RULES: Rule[] = [
         fixable = false;
       }
       const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
+      const expectedNames = new Set(expectedByName.keys());
+      const packRoot = bmadPackRoot(ctx);
 
       const manifest = tryParseJson(safeReadText(manifestPath));
       if (!manifest) {
@@ -2235,7 +2269,7 @@ const RULES: Rule[] = [
         } else {
           const actualBmad = new Map(
             manifest.skills
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isBmadManifestEntry(entry))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, expectedNames, packRoot))
               .map((entry) => [String(entry.name), String(entry.source ?? "")])
           );
           const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
@@ -2248,9 +2282,15 @@ const RULES: Rule[] = [
       const invalidBmadLinkNames = new Set<string>();
       if (existsSync(legacyDir)) {
         for (const name of readdirSync(legacyDir)) {
-          if (!name.startsWith("bmad-")) continue;
           const expected = expectedByName.get(name);
           const path = join(legacyDir, name);
+          let linkTargetsPack = false;
+          try {
+            linkTargetsPack = lstatSync(path).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(path), readlinkSync(path)));
+          } catch {
+            linkTargetsPack = false;
+          }
+          if (!expected && !linkTargetsPack) continue;
           try {
             if (!expected || !lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
           } catch {
@@ -2269,7 +2309,7 @@ const RULES: Rule[] = [
         for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
       }
       if (invalidBmadLinkNames.size > 0) {
-        details.push(`${invalidBmadLinkNames.size} .agents/skills/bmad-* path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
+        details.push(`${invalidBmadLinkNames.size} managed BMAD skill path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
 
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {

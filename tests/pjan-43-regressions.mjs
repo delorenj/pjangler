@@ -86,11 +86,22 @@ try {
     const repo = makeRepo("skills-safe-alias");
     const home = makeHome("skills-safe-alias");
     const custom = join(repo, ".agents", "skills", "custom-real");
+    const privateCustom = join(repo, ".agents", "skills", "bmad-private-custom");
     mkdirSync(custom, { recursive: true });
+    mkdirSync(privateCustom, { recursive: true });
+    mkdirSync(join(repo, ".agents", "skills", "bmad-agent-pm"), { recursive: true });
     writeFileSync(join(custom, "SKILL.md"), "custom must survive\n");
+    writeFileSync(join(privateCustom, "SKILL.md"), "private custom must survive\n");
+    writeFileSync(join(repo, ".agents", "skills", "bmad-agent-pm", "COPIED"), "replace canonical collision\n");
     writeFileSync(
       join(repo, ".agents", "skills.json"),
-      `${JSON.stringify({ unrelated_top_level: { keep: true }, skills: [{ name: "custom-real", source: `file://${custom}` }] }, null, 2)}\n`,
+      `${JSON.stringify({
+        unrelated_top_level: { keep: true },
+        skills: [
+          { name: "custom-real", source: `file://${custom}` },
+          { name: "bmad-private-custom", source: `file://${privateCustom}` },
+        ],
+      }, null, 2)}\n`,
     );
     mkdirSync(join(repo, ".claude"));
     symlinkSync("../.agents/skills", join(repo, ".claude", "skills"), "dir");
@@ -98,11 +109,13 @@ try {
     const first = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(first, "skills.project-manifest").status, "applied");
     assert.equal(readFileSync(join(custom, "SKILL.md"), "utf8"), "custom must survive\n");
+    assert.equal(readFileSync(join(privateCustom, "SKILL.md"), "utf8"), "private custom must survive\n");
     assert.equal(readlinkSync(join(repo, ".claude", "skills")), "../.agents/skills");
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
     assert.deepEqual(manifest.unrelated_top_level, { keep: true });
     assert.deepEqual(manifest.skills[0], { name: "custom-real", source: `file://${custom}` });
-    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-")));
+    assert.deepEqual(manifest.skills[1], { name: "bmad-private-custom", source: `file://${privateCustom}` });
+    assert.ok(manifest.skills.slice(2).every((entry) => entry.name.startsWith("bmad-")));
     assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true);
 
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;

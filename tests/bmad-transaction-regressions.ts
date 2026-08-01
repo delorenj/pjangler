@@ -43,7 +43,7 @@ function fixture(label: string): { context: Context; pack: string; project: stri
   mkdirSync(join(skills, "bmad-agent-pm"));
   writeFileSync(join(skills, "bmad-agent-pm", "legacy.txt"), "preserve exactly\n");
   symlinkSync(join(pack, "bmad-agent-analyst"), join(skills, "bmad-agent-analyst"), "dir");
-  symlinkSync("/tmp/stale-target", join(skills, "bmad-stale"), "dir");
+  symlinkSync(join(pack, "bmad-stale"), join(skills, "bmad-stale"), "dir");
   mkdirSync(join(skills, "custom"));
   writeFileSync(join(skills, "custom", "SKILL.md"), "custom\n");
   return {
