@@ -4010,9 +4010,9 @@ function manifestBmadModules(repoRoot) {
 }
 function configuredBmadModules(repoRoot) {
   const raw = safeReadText(join15(repoRoot, "_bmad", "config.toml"));
-  if (!raw) return void 0;
+  if (raw === null) return void 0;
   const modules = [...raw.matchAll(/^\[modules\.([A-Za-z0-9][A-Za-z0-9_-]*)\]\s*$/gm)].map((match) => match[1]);
-  return modules.length ? Array.from(new Set(modules)) : void 0;
+  return Array.from(new Set(modules));
 }
 function selectedBmadModules(repoRoot) {
   const manifest = manifestBmadModules(repoRoot);
@@ -4028,6 +4028,7 @@ function requiredBmadSentinels(repoRoot) {
   ];
 }
 function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
+  const installerModules = modules.length ? modules.join(",") : "core";
   return [
     "-y",
     `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
@@ -4035,7 +4036,8 @@ function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
     "--yes",
     "--directory",
     repoRoot,
-    ...modules.length ? ["--modules", modules.join(",")] : [],
+    "--modules",
+    installerModules,
     "--tools",
     BMAD_INSTALL_TOOLS.join(",")
   ];
@@ -4237,11 +4239,14 @@ function readRegistry(registryPath2) {
   }
 }
 function declaredAgentIds(repoRoot) {
+  return declaredAgentEntries(repoRoot).map(([agentId]) => agentId);
+}
+function declaredAgentEntries(repoRoot) {
   const raw = safeReadText(join15(repoRoot, ".project.json"));
   if (raw === null) return [];
   try {
     const doc = JSON.parse(raw);
-    return Object.keys(doc.agents ?? {});
+    return Object.entries(doc.agents ?? {}).map(([agentId, entry]) => [agentId, entry ?? {}]);
   } catch {
     return [];
   }
@@ -4257,6 +4262,31 @@ function ownedRegistryEntries(registry, repoRoot) {
     owned.push([agentId, entry]);
   }
   return owned;
+}
+function unprovisionedRoleAgents(registry, repoRoot, canonical) {
+  const blockers = /* @__PURE__ */ new Map();
+  const record = (agentId, roleDir, source) => {
+    const current = blockers.get(agentId) ?? { roleDir, sources: /* @__PURE__ */ new Set() };
+    if (!current.roleDir && roleDir) current.roleDir = roleDir;
+    current.sources.add(source);
+    blockers.set(agentId, current);
+  };
+  for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const roleDir = String(entry.role_dir ?? "");
+    if (!roleDir || !existsSync10(join15(roleDir, "role.yaml"))) record(agentId, roleDir, "registry");
+  }
+  for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const configured = String(entry.role_dir ?? "");
+    const roleDir = configured ? resolve3(repoRoot, configured) : "";
+    if (!roleDir || !existsSync10(join15(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
+  }
+  return [...blockers.entries()].map(([agentId, value]) => ({
+    agentId,
+    roleDir: value.roleDir,
+    sources: [...value.sources]
+  }));
 }
 function dropDeclaredAgent(ctx, agentId, changedFiles, details) {
   const path = join15(ctx.repoRoot, ".project.json");
@@ -5555,25 +5585,20 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
       const owned = ownedRegistryEntries(registry, ctx.repoRoot);
-      const declared = declaredAgentIds(ctx.repoRoot);
+      const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: "hermes.registry-parity",
+          title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+          status: "fail",
+          summary: `${unprovisioned.length} unprovisioned Hermes role blocker(s) detected`,
+          details: unprovisioned.map(
+            ({ agentId, roleDir, sources }) => `agent "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role, do not delete its registry/declaration`
+          ),
+          fixable: false
+        };
+      }
       if (canonical.size === 0) {
-        for (const [agentId, entry] of owned) {
-          const roleDir = String(entry.role_dir ?? "");
-          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}); provision or restore the role, do not delete the registry entry`);
-        }
-        for (const agentId of declared.filter((id) => !owned.some(([ownedId]) => ownedId === id))) {
-          details.push(`.project.json declares unprovisioned agent "${agentId}"; provision or restore its role`);
-        }
-        if (details.length) {
-          return {
-            id: "hermes.registry-parity",
-            title: "Fleet registry matches .project.json (no duplicate or stale agents)",
-            status: "fail",
-            summary: `${details.length} unprovisioned Hermes role blocker(s) detected`,
-            details,
-            fixable: false
-          };
-        }
         return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
       }
       for (const [agentId, entry] of owned) {
@@ -5626,6 +5651,19 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       const agents = doc?.agents ?? {};
       const roles = discoverRoles(ctx.repoRoot);
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+      const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Registry parity is blocked by an unprovisioned Hermes role",
+          changedFiles,
+          details: unprovisioned.map(
+            ({ agentId, roleDir, sources }) => `blocked: "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role without pruning registry/declaration state`
+          )
+        };
+      }
       const fleetBin = fleetBinPath(ctx);
       let dirty = false;
       if (canonical.size === 0) {

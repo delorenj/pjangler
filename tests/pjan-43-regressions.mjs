@@ -230,6 +230,58 @@ done
     assert.equal(all.results.some((entry) => skipped.includes(entry.id) && entry.status === "blocked"), false);
   }
 
+  for (const selection of [
+    { name: "core-only", modules: "  - name: core\n" },
+    { name: "custom-only", modules: "  - core\n  - custom\n" },
+  ]) {
+    const repo = makeRepo(`bmad-${selection.name}`);
+    const home = makeHome(`bmad-${selection.name}`);
+    mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
+    writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "fixture"\n\n[custom]\n');
+    const manifestPath = join(repo, "_bmad", "_config", "manifest.yaml");
+    writeFileSync(
+      manifestPath,
+      `installation:\n  version: 6.10.1-next.31\nmodules:\n${selection.modules}`,
+    );
+    const manifestBefore = readFileSync(manifestPath, "utf8");
+    const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    assert.deepEqual(finding(audit, "bmad.scaffold").details, ["_bmad/core/config.yaml"]);
+
+    const fakeBin = mkdtempSync(join(tmpdir(), `pjan-43-${selection.name}-npx-`));
+    cleanup.push(fakeBin);
+    const invocation = join(fakeBin, "invocation.txt");
+    const fakeNpx = join(fakeBin, "npx");
+    writeFileSync(
+      fakeNpx,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" > "${invocation}"
+repo=''
+modules=''
+while (( $# )); do
+  case "$1" in
+    --directory) repo="$2"; shift 2 ;;
+    --modules) modules="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ "$modules" == "core" ]] || { printf 'expected explicit core-only selection, got %s\\n' "$modules" >&2; exit 91; }
+mkdir -p "$repo/_bmad/core"
+printf 'core: true\\n' > "$repo/_bmad/core/config.yaml"
+`,
+    );
+    chmodSync(fakeNpx, 0o755);
+    const migrated = jsonCommand(["migrate", "bmad.scaffold", repo, "--json"], {
+      home,
+      extraEnv: { PATH: `${fakeBin}:${process.env.PATH}` },
+    }).json;
+    assert.equal(migrationResult(migrated, "bmad.scaffold").status, "applied", JSON.stringify(migrationResult(migrated, "bmad.scaffold")));
+    assert.match(readFileSync(invocation, "utf8"), /--modules core(?:\s|$)/);
+    assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore, `${selection.name} manifest selection must be preserved`);
+    const current = jsonCommand(["audit", repo, "--json"], { home }).json;
+    assert.equal(finding(current, "bmad.scaffold").status, "pass", JSON.stringify(finding(current, "bmad.scaffold")));
+  }
+
   {
     const repo = makeRepo("registry-unprovisioned");
     const home = makeHome("registry-unprovisioned");
@@ -257,6 +309,47 @@ done
     assert.equal(readFileSync(join(repo, ".project.json"), "utf8"), projectBefore);
     const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
     assert.equal(all.selectedRules.includes("hermes.registry-parity"), false, "non-fixable blocker must not be auto-selected by --all");
+  }
+
+  {
+    const repo = makeRepo("registry-mixed-provisioning");
+    const home = makeHome("registry-mixed-provisioning");
+    const validRoleDir = join(repo, "agents", "hermes", "pm");
+    const missingRoleDir = join(repo, "agents", "hermes", "secondary-pm");
+    mkdirSync(validRoleDir, { recursive: true });
+    mkdirSync(missingRoleDir, { recursive: true });
+    writeFileSync(join(validRoleDir, "role.yaml"), "repo: fixture\nrole: pm\nagent_id: valid-pm\nprofile: valid-pm\n");
+    writeFileSync(
+      join(repo, ".project.json"),
+      `${JSON.stringify({
+        project_name: "fixture",
+        agents: {
+          "valid-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned" },
+          "unprovisioned-pm": { role: "pm", role_dir: "agents/hermes/secondary-pm", provisioning_state: "provisioned" },
+        },
+      }, null, 2)}\n`,
+    );
+    const registryPath = join(home, ".hermes", "agents-registry.yaml");
+    writeFileSync(
+      registryPath,
+      `agents:\n  valid-pm:\n    role_dir: ${validRoleDir}\n    hermes: {}\n  unprovisioned-pm:\n    role_dir: ${missingRoleDir}\n    hermes: {}\n`,
+    );
+    const registryBefore = readFileSync(registryPath, "utf8");
+    const projectBefore = readFileSync(join(repo, ".project.json"), "utf8");
+
+    const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
+    const blocker = finding(audit, "hermes.registry-parity");
+    assert.equal(blocker.status, "fail", JSON.stringify(blocker));
+    assert.equal(blocker.fixable, false);
+    assert.match(blocker.details.join("\n"), /unprovisioned-pm/);
+    assert.match(blocker.details.join("\n"), /provision or restore the role, do not delete/);
+
+    const explicit = jsonCommand(["migrate", "hermes.registry-parity", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(explicit, "hermes.registry-parity").status, "blocked", JSON.stringify(migrationResult(explicit, "hermes.registry-parity")));
+    assert.equal(readFileSync(registryPath, "utf8"), registryBefore, "mixed topology must preserve unprovisioned registry entry");
+    assert.equal(readFileSync(join(repo, ".project.json"), "utf8"), projectBefore, "mixed topology must preserve unprovisioned declaration");
+    const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
+    assert.equal(all.selectedRules.includes("hermes.registry-parity"), false);
   }
 
   {

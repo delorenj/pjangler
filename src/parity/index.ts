@@ -1597,9 +1597,9 @@ function manifestBmadModules(repoRoot: string): string[] | undefined {
 
 function configuredBmadModules(repoRoot: string): string[] | undefined {
   const raw = safeReadText(join(repoRoot, "_bmad", "config.toml"));
-  if (!raw) return undefined;
+  if (raw === null) return undefined;
   const modules = [...raw.matchAll(/^\[modules\.([A-Za-z0-9][A-Za-z0-9_-]*)\]\s*$/gm)].map((match) => match[1]!);
-  return modules.length ? Array.from(new Set(modules)) : undefined;
+  return Array.from(new Set(modules));
 }
 
 function selectedBmadModules(repoRoot: string): string[] {
@@ -1618,6 +1618,11 @@ function requiredBmadSentinels(repoRoot: string): string[] {
 }
 
 function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
+  // bmad-method treats a missing/falsy --modules under --yes as "installed +
+  // defaults", which can silently add bmm. The installer-supported explicit
+  // no-optional-modules representation is `--modules core`; core is mandatory
+  // and the installer does not add defaults when the option is truthy.
+  const installerModules = modules.length ? modules.join(",") : "core";
   return [
     "-y",
     `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
@@ -1625,7 +1630,8 @@ function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoo
     "--yes",
     "--directory",
     repoRoot,
-    ...(modules.length ? ["--modules", modules.join(",")] : []),
+    "--modules",
+    installerModules,
     "--tools",
     BMAD_INSTALL_TOOLS.join(","),
   ];
@@ -1895,11 +1901,15 @@ function readRegistry(registryPath: string): Record<string, unknown> | null {
 }
 
 function declaredAgentIds(repoRoot: string): string[] {
+  return declaredAgentEntries(repoRoot).map(([agentId]) => agentId);
+}
+
+function declaredAgentEntries(repoRoot: string): [string, Record<string, unknown>][] {
   const raw = safeReadText(join(repoRoot, ".project.json"));
   if (raw === null) return [];
   try {
     const doc = JSON.parse(raw) as { agents?: Record<string, unknown> };
-    return Object.keys(doc.agents ?? {});
+    return Object.entries(doc.agents ?? {}).map(([agentId, entry]) => [agentId, (entry ?? {}) as Record<string, unknown>]);
   } catch {
     return [];
   }
@@ -1923,6 +1933,44 @@ function ownedRegistryEntries(
     owned.push([agentId, entry]);
   }
   return owned;
+}
+
+interface UnprovisionedRoleAgent {
+  agentId: string;
+  roleDir: string;
+  sources: ("registry" | ".project.json")[];
+}
+
+function unprovisionedRoleAgents(
+  registry: Record<string, unknown>,
+  repoRoot: string,
+  canonical: Set<string>,
+): UnprovisionedRoleAgent[] {
+  const blockers = new Map<string, { roleDir: string; sources: Set<"registry" | ".project.json"> }>();
+  const record = (agentId: string, roleDir: string, source: "registry" | ".project.json") => {
+    const current = blockers.get(agentId) ?? { roleDir, sources: new Set<"registry" | ".project.json">() };
+    if (!current.roleDir && roleDir) current.roleDir = roleDir;
+    current.sources.add(source);
+    blockers.set(agentId, current);
+  };
+
+  for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const roleDir = String(entry.role_dir ?? "");
+    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, "registry");
+  }
+  for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const configured = String(entry.role_dir ?? "");
+    const roleDir = configured ? resolve(repoRoot, configured) : "";
+    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
+  }
+
+  return [...blockers.entries()].map(([agentId, value]) => ({
+    agentId,
+    roleDir: value.roleDir,
+    sources: [...value.sources],
+  }));
 }
 
 // Drop a duplicate agent id from .project.json so the next provisioning run
@@ -3288,25 +3336,20 @@ const RULES: Rule[] = [
       // deleting perfectly good sibling agents.
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
       const owned = ownedRegistryEntries(registry, ctx.repoRoot);
-      const declared = declaredAgentIds(ctx.repoRoot);
+      const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: "hermes.registry-parity",
+          title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+          status: "fail",
+          summary: `${unprovisioned.length} unprovisioned Hermes role blocker(s) detected`,
+          details: unprovisioned.map(({ agentId, roleDir, sources }) =>
+            `agent "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role, do not delete its registry/declaration`
+          ),
+          fixable: false,
+        };
+      }
       if (canonical.size === 0) {
-        for (const [agentId, entry] of owned) {
-          const roleDir = String(entry.role_dir ?? "");
-          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}); provision or restore the role, do not delete the registry entry`);
-        }
-        for (const agentId of declared.filter((id) => !owned.some(([ownedId]) => ownedId === id))) {
-          details.push(`.project.json declares unprovisioned agent "${agentId}"; provision or restore its role`);
-        }
-        if (details.length) {
-          return {
-            id: "hermes.registry-parity",
-            title: "Fleet registry matches .project.json (no duplicate or stale agents)",
-            status: "fail",
-            summary: `${details.length} unprovisioned Hermes role blocker(s) detected`,
-            details,
-            fixable: false,
-          };
-        }
         return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
       }
       // With at least one provisioned role, stale sibling identities can be
@@ -3362,6 +3405,19 @@ const RULES: Rule[] = [
       const agents = (doc?.agents ?? {}) as Record<string, Record<string, unknown>>;
       const roles = discoverRoles(ctx.repoRoot);
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+      const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Registry parity is blocked by an unprovisioned Hermes role",
+          changedFiles,
+          details: unprovisioned.map(({ agentId, roleDir, sources }) =>
+            `blocked: "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role without pruning registry/declaration state`
+          ),
+        };
+      }
       const fleetBin = fleetBinPath(ctx);
       let dirty = false;
 
