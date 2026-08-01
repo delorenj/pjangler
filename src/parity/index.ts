@@ -552,6 +552,7 @@ function canonicalSkillsManifest(
 export interface BmadProvisionHooks {
   afterPreflight?: () => void;
   createLink?: (target: string, link: string, index: number) => void;
+  afterApply?: (manifestPath: string, skillsDir: string) => void;
 }
 
 function removeProjectEntry(path: string): void {
@@ -584,24 +585,41 @@ export function provisionBmadSkills(
   }
   hooks.afterPreflight?.();
 
-  const agentsPath = join(realpathSync(ctx.repoRoot), ".agents");
+  const projectRoot = realpathSync(ctx.repoRoot);
+  const agentsPath = join(projectRoot, ".agents");
   const skillsPath = join(agentsPath, "skills");
   const agentsExisted = Boolean(lstatIfPresent(agentsPath));
   const skillsExisted = Boolean(lstatIfPresent(skillsPath));
-  let safeDirs: { agentsDir: string; skillsDir: string };
+  let preflightDirs: { agentsDir: string; skillsDir: string };
   try {
-    safeDirs = prepareSafeProjectSkillsDirs(ctx);
+    preflightDirs = prepareSafeProjectSkillsDirs({ ...ctx, dryRun: true });
   } catch (error) {
     return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
-  const manifestPath = join(safeDirs.agentsDir, "skills.json");
+  const manifestPath = join(preflightDirs.agentsDir, "skills.json");
   const manifestStat = lstatIfPresent(manifestPath);
   if (manifestStat?.isSymbolicLink() || (manifestStat && !manifestStat.isFile())) {
     return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
   }
   const manifestBytes = manifestStat ? readFileSync(manifestPath) : null;
   const manifestMode = manifestStat ? Number(manifestStat.mode) & 0o777 : 0o644;
-  const currentManifest = tryParseJson(safeReadText(manifestPath));
+  let currentManifest: Record<string, unknown> = {};
+  if (manifestBytes !== null) {
+    try {
+      const parsed = JSON.parse(manifestBytes.toString("utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("must contain a JSON object");
+      currentManifest = parsed as Record<string, unknown>;
+      if (currentManifest.skills !== undefined && !Array.isArray(currentManifest.skills)) throw new Error("skills must be an array");
+    } catch (error) {
+      return { ok: false, changedFiles: [], error: `Invalid existing skills manifest ${manifestPath}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  let safeDirs: { agentsDir: string; skillsDir: string };
+  try {
+    safeDirs = prepareSafeProjectSkillsDirs(ctx);
+  } catch (error) {
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
   const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
@@ -719,6 +737,38 @@ export function provisionBmadSkills(
     const postflight = validateTrustedBmadPack(packRoot);
     if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
       throw new Error("BMAD pack inventory changed after preflight");
+    }
+    hooks.afterApply?.(manifestPath, skillsDir);
+    const plannedNames = [...expected.keys()].sort();
+    const actualNames = readdirSync(skillsDir).filter((name) => name.startsWith("bmad-")).sort();
+    if (JSON.stringify(actualNames) !== JSON.stringify(plannedNames)) {
+      throw new Error("Applied BMAD projection contains missing or unexpected entries");
+    }
+    for (const [name, target] of expected) {
+      const link = join(skillsDir, name);
+      let correct = false;
+      try {
+        correct = lstatSync(link).isSymbolicLink() && resolve(skillsDir, readlinkSync(link)) === target;
+      } catch {
+        correct = false;
+      }
+      if (!correct) throw new Error(`Applied BMAD projection link differs from plan: ${name}`);
+    }
+    const finalManifestStat = lstatIfPresent(manifestPath);
+    if (
+      !finalManifestStat || finalManifestStat.isSymbolicLink() || !finalManifestStat.isFile() ||
+      (Number(finalManifestStat.mode) & 0o777) !== manifestMode ||
+      readFileSync(manifestPath).toString("utf8") !== nextManifest
+    ) {
+      throw new Error("Applied BMAD skills manifest differs from planned bytes or mode");
+    }
+    const finalManifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    if (
+      finalManifest.$schema !== "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json" ||
+      finalManifest.inherit_global !== true || finalManifest.registry !== SKILLS_REGISTRY_URL ||
+      !Array.isArray(finalManifest.skills)
+    ) {
+      throw new Error("Applied BMAD skills manifest schema differs from plan");
     }
   } catch (error) {
     try {

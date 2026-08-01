@@ -84,6 +84,42 @@ try {
   }
 
   {
+    const root = join(temporary, "malformed-manifest");
+    const pack = join(root, "pack");
+    cpSync(sourcePack, pack, { recursive: true });
+    const project = join(root, "project");
+    const agents = join(project, ".agents");
+    mkdirSync(agents, { recursive: true });
+    const manifest = join(agents, "skills.json");
+    writeFileSync(manifest, "{malformed\n");
+    chmodSync(manifest, 0o600);
+    process.env.PJ_BMAD_PACK_ROOT = pack;
+    const before = snapshot(project);
+    const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.match(result.error ?? "", /Invalid existing skills manifest/);
+    assert.deepEqual(snapshot(project), before, "malformed manifest failure must not mutate project state");
+    assert.equal(existsSync(join(agents, "skills")), false);
+    assert.equal(readdirSync(agents).some((name) => name.startsWith(".bmad-transaction-")), false);
+  }
+
+  {
+    const { context, pack, project } = fixture("projection-mismatch");
+    process.env.PJ_BMAD_PACK_ROOT = pack;
+    const before = snapshot(project);
+    const result = provisionBmadSkills(context, null, {
+      afterApply(_manifest, skills) {
+        const link = join(skills, "bmad-agent-pm");
+        rmSync(link);
+        symlinkSync("/tmp/wrong-after-apply", link, "dir");
+      },
+    });
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.match(result.error ?? "", /link differs from plan/);
+    assert.deepEqual(snapshot(project), before, "applied projection mismatch must restore exact project state");
+  }
+
+  {
     const { context, pack, project } = fixture("success");
     process.env.PJ_BMAD_PACK_ROOT = pack;
     const first = provisionBmadSkills(context);
