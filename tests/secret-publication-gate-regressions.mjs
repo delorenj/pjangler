@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -71,10 +71,10 @@ assert.match(
   /(?:^|&&\s*)npm run check:tracked-secrets(?:\s*&&|$)/,
   "the standard test surface must run the tracked-secret gate",
 );
-assert.match(
+assert.equal(
   projectPackage.scripts.prepublishOnly,
-  /(?:^|&&\s*)npm run check:tracked-secrets(?:\s*&&|$)/,
-  "prepublishOnly must run the tracked-secret gate",
+  "npm run build && npm run check:tracked-secrets",
+  "prepublishOnly must scan the final build output",
 );
 
 try {
@@ -151,6 +151,48 @@ try {
     const result = check(repo);
     assert.equal(result.status, 1, "a JWT in a publishable populated gitlink must fail");
     assert.match(result.stderr, /npm package payload/);
+    assertValueOmitted(result, token);
+  }
+
+  {
+    const repo = makeRepo("prepublish-order");
+    const token = syntheticJwt();
+    const segments = token.split(".");
+    writeFileSync(
+      join(repo, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "fixture-prepublish-order",
+          version: "1.0.0",
+          files: ["dist"],
+          scripts: {
+            build: "node build.mjs",
+            "check:tracked-secrets": `node ${JSON.stringify(gate)}`,
+            prepublishOnly: "npm run build && npm run check:tracked-secrets",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    track(
+      repo,
+      "build.mjs",
+      [
+        'import { mkdirSync, writeFileSync } from "node:fs";',
+        'mkdirSync("dist", { recursive: true });',
+        `const token = ${JSON.stringify(segments)}.join(".");`,
+        'writeFileSync("dist/index.js", token);',
+        "",
+      ].join("\n"),
+    );
+    const addPackage = run("git", ["add", "--force", "--", "package.json"], repo);
+    assert.equal(addPackage.status, 0, addPackage.stderr);
+
+    const result = run("npm", ["run", "prepublishOnly"], repo);
+    assert.equal(result.status, 1, "prepublishOnly must reject a JWT created by build");
+    assert.equal(existsSync(join(repo, "dist", "index.js")), true, "build must run before the gate");
+    assert.match(result.stdout + result.stderr, /high-confidence raw JWT in npm package payload/);
     assertValueOmitted(result, token);
   }
 

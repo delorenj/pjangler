@@ -28,7 +28,7 @@
     "migrate:up": "node-pg-migrate --migrations-dir migrations up",
     "migrate:down": "node-pg-migrate --migrations-dir migrations down",
     "migrate:create": "node-pg-migrate --migrations-dir migrations create",
-    "prepublishOnly": "npm run check:tracked-secrets && npm run build"
+    "prepublishOnly": "npm run build && npm run check:tracked-secrets"
   },
   "keywords": [
     "cli",
