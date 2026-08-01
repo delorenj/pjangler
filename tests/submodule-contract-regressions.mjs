@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -57,6 +57,23 @@ function check(root, ...args) {
   return run(process.execPath, [CHECKER, "--root", root, ...args], ROOT);
 }
 
+function materializePackage(root, payloads = []) {
+  writeFileSync(
+    join(root, "package.json"),
+    `${JSON.stringify({ name: "pjangler-contract-fixture", version: "1.0.0", files: ["templates"] }, null, 2)}\n`,
+  );
+  for (const template of ["commonproject", "hermes-agent"]) {
+    const directory = join(root, "templates", template);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "copier.yml"), "_subdirectory: template\n");
+  }
+  for (const [path, content] of payloads) {
+    const target = join(root, path);
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, content);
+  }
+}
+
 try {
   {
     const { root } = fixture();
@@ -97,6 +114,20 @@ try {
     const result = check(root);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /must declare path, url, and branch|URL must be/);
+  }
+
+  {
+    const { root } = fixture();
+    materializePackage(root, [
+      ["templates/hermes-agent/.codegraph/daemon.pid", '{"pid":1234}\n'],
+      ["templates/hermes-agent/.omo/run-continuation/ses_private.json", '{"sessionID":"private"}\n'],
+      ["templates/hermes-agent/tmp/agent.sock", "socket\n"],
+    ]);
+    const result = check(root, "--npm");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /CodeGraph daemon runtime state/);
+    assert.match(result.stderr, /Omo run-continuation state/);
+    assert.match(result.stderr, /process or socket runtime state/);
   }
 
   {

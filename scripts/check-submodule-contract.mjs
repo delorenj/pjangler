@@ -12,6 +12,18 @@ const FORBIDDEN_TRACKED = [
   { pattern: /^\.tmp(?:\/|$)/, label: "host-local .tmp cache" },
   { pattern: /^memories(?:\/|$)/, label: "host-local memories" },
   { pattern: /^agents\/hermes\/[^/]+\/runtime(?:\/|$)/, label: "Hermes local runtime" },
+  {
+    pattern: /(?:^|\/)\.codegraph\/(?:daemon\.pid|[^/]+\.(?:pid|sock|socket))(?:$|\/)/,
+    label: "CodeGraph daemon runtime state",
+  },
+  {
+    pattern: /(?:^|\/)\.omo\/run-continuation(?:\/|$)/,
+    label: "Omo run-continuation state",
+  },
+  {
+    pattern: /(?:^|\/)(?:run|runtime|tmp|temp|cache|\.cache)\/[^/]+\.(?:pid|sock|socket)$/,
+    label: "process or socket runtime state",
+  },
 ];
 
 function fail(message) {
