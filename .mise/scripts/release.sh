@@ -98,10 +98,10 @@ registry_auth() {
       export NODE_AUTH_TOKEN
       AUTH_DIR="$(mktemp -d "$PACK_BASE/pjangler-auth.XXXXXX")"
       AUTH_CONFIG="$AUTH_DIR/.npmrc"
-      chmod 600 "$AUTH_CONFIG"
       # Keep only the environment-variable reference on disk; the token remains
       # process-local and is cleared by the EXIT trap.
       printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' >"$AUTH_CONFIG"
+      chmod 600 "$AUTH_CONFIG"
       registry_npm whoami --registry="$REGISTRY" >/dev/null ||
         die "GitHub Packages authentication failed"
       ;;

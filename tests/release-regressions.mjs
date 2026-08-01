@@ -54,6 +54,11 @@ try {
   assert.match(source, /registry_npm whoami --registry=/);
   assert.match(source, /registry_npm view/);
   assert.match(source, /registry_npm publish "\$TARBALL"/);
+  assert.ok(
+    indexOf("printf '%s\\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'") <
+      indexOf('chmod 600 "$AUTH_CONFIG"'),
+    "the auth config must exist before its mode is restricted",
+  );
   assert.doesNotMatch(
     source,
     /NPM_CONFIG_USERCONFIG="\$AUTH_CONFIG" npm (?:whoami|view|publish)/,
