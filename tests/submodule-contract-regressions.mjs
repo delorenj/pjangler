@@ -127,8 +127,8 @@ try {
     git(hermesBare, ["update-ref", "refs/heads/main", git(join(ROOT, "templates", "hermes-agent"), ["rev-parse", "HEAD"])]);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
-    git(clone, ["config", `url.file://${commonBare}.insteadOf`, "git@github.com:delorenj/CommonProject.git"]);
-    git(clone, ["config", `url.file://${hermesBare}.insteadOf`, "git@github.com:delorenj/hermes-agent-template.git"]);
+    git(clone, ["config", "submodule.templates/commonproject.url", `file://${commonBare}`]);
+    git(clone, ["config", "submodule.templates/hermes-agent.url", `file://${hermesBare}`]);
     git(clone, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
     const result = run(
       process.execPath,
