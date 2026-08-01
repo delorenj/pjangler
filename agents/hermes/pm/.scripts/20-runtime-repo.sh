@@ -135,7 +135,7 @@ if [[ -d "$PROFILE_HOME" && ! -L "$PROFILE_HOME" ]]; then
 fi
 
 if [[ "$ROLE" == "pm" ]]; then
-  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.2")}"
+  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.1-next.31")}"
   read -r -a RESOLVED_PM_EXTERNAL_SKILL_DIRS <<< "$PM_EXTERNAL_SKILL_DIRS"
   if [[ ${#RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]} -gt 0 ]]; then
     python3 - "$RUNTIME_LOCAL/config.yaml" "${RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]}" <<'PYEOF'
