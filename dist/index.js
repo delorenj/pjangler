@@ -1041,10 +1041,11 @@ var RunCopierTemplate = class extends Command {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
-      // We DO want copier to run runtime-repo + plane + bloodbank + systemd.
+      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
+      // per-profile file consumer, even when an older template still exposes it.
       SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
       SKIP_PLANE: ctx.skipPlane ? "1" : "0",
-      SKIP_BLOODBANK: ctx.skipBloodbank ? "1" : "0",
+      SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
     };
     const LOCAL_TEMPLATE = join7(homedir2(), "code", "hermes-agent-template");
@@ -1427,7 +1428,6 @@ var PrintHermesSummary = class extends Command {
     const botHandle = `${targetRepo?.toLowerCase().replace(/-/g, "_")}_${role?.toLowerCase()}_bot`;
     const email = `${targetRepo}-${role}@delo.sh`;
     const gw = `hermes-${agentId}-gateway.service`;
-    const csm = `hermes-${agentId}-consumer.service`;
     const hb = `hermes-${agentId}-heartbeat.timer`;
     const lines = [];
     lines.push(`agent_id     ${agentId}`);
@@ -1437,13 +1437,13 @@ var PrintHermesSummary = class extends Command {
     if (!skipEmail) lines.push(`email        ${email}`);
     lines.push("");
     lines.push("Start daemons:");
-    lines.push(`  systemctl --user start ${csm}`);
     lines.push(`  systemctl --user start ${hb}`);
     if (!skipTelegram) {
       lines.push(`  systemctl --user start ${gw}`);
     } else {
       lines.push(`  # gateway needs Telegram wired first (re-run with --skip-telegram=0)`);
     }
+    lines.push("  # Bloodbank commands arrive through the fleet-shared Hermes gateway");
     lines.push("");
     lines.push("Talk locally:");
     lines.push(`  ${ctx.roleDir}/hermes chat "status"`);
@@ -3498,9 +3498,11 @@ function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
       project_id: ${ctxEscape(role.ticketProviderBoardId)}
       identifier: ${ctxEscape(role.ticketProviderIdentifier)}
     runtime_repo: ${ctxEscape(role.runtimeRepo)}
+    bloodbank:
+      gateway_scope: fleet
+      target_agent_id: ${role.agentId}
     systemd:
       gateway_unit: hermes-${role.agentId}-gateway.service
-      consumer_unit: hermes-${role.agentId}-consumer.service
       heartbeat_timer: hermes-${role.agentId}-heartbeat.timer
 `;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:
@@ -3806,7 +3808,6 @@ function realOrSelf(path) {
 function profileUnits(role) {
   return [
     `hermes-${role.agentId}-gateway.service`,
-    `hermes-${role.agentId}-consumer.service`,
     `hermes-${role.agentId}-heartbeat.service`,
     `hermes-${role.agentId}-heartbeat.timer`,
     `hermes-${role.agentId}-checkpoint.service`
@@ -4610,7 +4611,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
       }
       const details = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
         if (!existsSync10(join13(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join13(role.roleDir, rel))}`);
       }
       const gitmodules = safeReadText(join13(ctx.repoRoot, ".gitmodules")) ?? "";
@@ -4775,7 +4776,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       const details = [];
       for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
           const state = checkUnit(unit);
           if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
         }
@@ -4802,7 +4803,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       }
       for (const role of roles) {
         const sysDir = join13(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync10(join13(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
@@ -5833,7 +5834,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
     process.exit(1);
   }
 });
-program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating or linking the ticket board").option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
+program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating or linking the ticket board").option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
   const isDarwin = process.platform === "darwin";
   const local = options.local ?? false;
   const context = {

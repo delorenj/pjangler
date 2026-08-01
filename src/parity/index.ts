@@ -1151,7 +1151,7 @@ function upsertRegistryEntry(role: RoleMeta, homeDir: string, changedFiles: stri
   const path = registryPath(homeDir);
   const current = safeReadText(path) ?? "# Hermes agent fleet registry.\n# One entry per provisioned agent. Managed by hermes-agent-template/.scripts/80-registry.sh.\nschema_version: 1\nagents: {}\n";
   if (current.includes(`${role.agentId}:`)) return null;
-  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer\n`;
+  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    bloodbank:\n      gateway_scope: fleet\n      target_agent_id: ${role.agentId}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer\n`;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:\n${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
   changedFiles.push(path);
   if (!dryRun) writeText(path, next);
@@ -1500,7 +1500,6 @@ function realOrSelf(path: string): string {
 function profileUnits(role: RoleMeta): string[] {
   return [
     `hermes-${role.agentId}-gateway.service`,
-    `hermes-${role.agentId}-consumer.service`,
     `hermes-${role.agentId}-heartbeat.service`,
     `hermes-${role.agentId}-heartbeat.timer`,
     `hermes-${role.agentId}-checkpoint.service`,
@@ -2341,7 +2340,7 @@ const RULES: Rule[] = [
         return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
       }
       const details: string[] = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
         if (!existsSync(join(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
       }
       const gitmodules = safeReadText(join(ctx.repoRoot, ".gitmodules")) ?? "";
@@ -2523,7 +2522,7 @@ const RULES: Rule[] = [
       }
       const details: string[] = [];
       for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
           const state = checkUnit(unit);
           if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
         }
@@ -2550,7 +2549,7 @@ const RULES: Rule[] = [
       }
       for (const role of roles) {
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync(join(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {

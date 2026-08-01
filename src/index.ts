@@ -897,7 +897,7 @@ program
   .option("--email", "Also provision the delo.sh email address (off by default; never prompted)")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
   .option("--skip-plane", "Skip creating or linking the ticket board")
-  .option("--skip-bloodbank", "Skip installing the Bloodbank NATS consumer")
+  .option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway")
   .option("--skip-systemd", "Skip installing systemd --user units")
   .option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
   .option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists")
