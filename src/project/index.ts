@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
 import {
@@ -16,6 +17,8 @@ export { isPgRegistryEnabled, pgRegistryConfigFromEnv, PgRegistryStore, type Reg
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 export const PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
+/** Override the directory holding the `tp` provider adapters (`<provider>.sh`). */
+export const TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 
 export interface SourceArtifact {
@@ -149,6 +152,14 @@ export type ProjectInitAction =
       provider: string;
       workspace: string;
       identifier: string;
+      /** Repo the board is bound to; also where a repo-local `.env` credential is looked up. */
+      repoPath: string;
+      /** Board display name handed to the adapter's `create_board`. */
+      boardName: string;
+      /** Board description handed to the adapter's `create_board`. */
+      description: string;
+      /** Empty until the board is created or an explicit `--board-id` was supplied. */
+      boardId: string;
       state: string;
       reason?: string;
     }
@@ -297,6 +308,286 @@ export function buildTicketProviderBlock(input: {
   };
 }
 
+/**
+ * Env var a provider adapter reads its credential from. Mirrors the KEYVAR
+ * switch in agents/hermes/pm/.scripts/42-ticket-provider.sh.
+ */
+export function ticketProviderKeyVar(provider: string): string {
+  return provider === "trello" ? "TRELLO_KEY" : "PLANE_API_KEY";
+}
+
+/** Every credential a provider adapter needs, most significant (the gate) first. */
+function ticketProviderKeyVars(provider: string): string[] {
+  return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
+}
+
+/** Repo convention: exported secrets live in `<config>/zshyzsh/secrets.zsh`. */
+export function ticketProviderSecretsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config");
+  return join(base, "zshyzsh", "secrets.zsh");
+}
+
+/** Pull `KEY=value` / `export KEY=value` assignments for the requested keys only. */
+function readShellAssignments(path: string, keys: string[]): Record<string, string> {
+  const found: Record<string, string> = {};
+  if (!existsSync(path)) return found;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return found;
+  }
+  const wanted = new Set(keys);
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!match) continue;
+    const key = match[1]!;
+    if (!wanted.has(key) || found[key] !== undefined) continue;
+    let value = match[2]!.trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.length > 1 && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.split(/\s+#/)[0]!.trim();
+    }
+    if (value) found[key] = value;
+  }
+  return found;
+}
+
+/**
+ * Resolve ticket-provider credentials the way the rest of the repo does:
+ * process env -> repo `.env` -> the exported zshyzsh secrets file. Never
+ * prompts, and callers must never log `values` — `source` is the loggable part.
+ */
+export function resolveTicketProviderCredentials(input: {
+  keys: string[];
+  repoPath?: string;
+  env?: NodeJS.ProcessEnv;
+}): { values: Record<string, string>; sources: Record<string, string> } {
+  const env = input.env ?? process.env;
+  const values: Record<string, string> = {};
+  const sources: Record<string, string> = {};
+  const missing = () => input.keys.filter((key) => !values[key]);
+
+  for (const key of input.keys) {
+    const fromEnv = env[key];
+    if (fromEnv) {
+      values[key] = fromEnv;
+      sources[key] = "environment";
+    }
+  }
+
+  const candidates: Array<{ path: string; label: string }> = [];
+  if (input.repoPath) candidates.push({ path: join(input.repoPath, ".env"), label: join(input.repoPath, ".env") });
+  const secrets = ticketProviderSecretsPath(env);
+  candidates.push({ path: secrets, label: secrets });
+
+  for (const candidate of candidates) {
+    const outstanding = missing();
+    if (!outstanding.length) break;
+    const assignments = readShellAssignments(candidate.path, outstanding);
+    for (const [key, value] of Object.entries(assignments)) {
+      values[key] = value;
+      sources[key] = candidate.label;
+    }
+  }
+
+  return { values, sources };
+}
+
+/**
+ * Locate a `tp` provider adapter (`<provider>.sh`). Resolution mirrors
+ * resolveTemplateRoot() in src/commands/AgentHooksCommands.ts: an env override
+ * first, then a walk up from this module so it works from source, from the
+ * bundled `dist/`, and from the published npm package (which ships
+ * `templates/`), then the canonical ~/code/pjangler checkout.
+ *
+ * The distributable `templates/hermes-agent` submodule wins over the repo-local
+ * `agents/hermes/pm` tree so pjangler runs the same adapter it ships to users.
+ */
+export function resolveTicketProviderAdapter(provider: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const file = `${provider}.sh`;
+  const candidates: string[] = [];
+  const override = env[TICKET_PROVIDER_ADAPTERS_ENV];
+  if (override) candidates.push(join(override, file));
+  const relativeRoots = [
+    join("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join("agents", "hermes", "pm", ".scripts", "providers"),
+  ];
+  try {
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let depth = 0; depth < 8; depth++) {
+      for (const relativeRoot of relativeRoots) candidates.push(join(dir, relativeRoot, file));
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* import.meta.url unavailable — rely on the other candidates */
+  }
+  for (const relativeRoot of relativeRoots) {
+    candidates.push(join(homedir(), "code", "pjangler", relativeRoot, file));
+  }
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+export interface TicketProviderBoardResult {
+  ok: boolean;
+  /** True when the action was intentionally not performed (e.g. no credentials). */
+  skipped: boolean;
+  boardId?: string;
+  boardUrl?: string;
+  logs: string[];
+  error?: string;
+}
+
+/**
+ * Create (or link, the adapters are idempotent) the repo's ticket board by
+ * invoking the same `create_board` op that
+ * agents/hermes/pm/.scripts/42-ticket-provider.sh uses.
+ *
+ * Missing credentials are a graceful skip, never a failure — an operator
+ * without creds must still get a working init, exactly as 42-ticket-provider.sh
+ * behaves.
+ */
+export function provisionTicketProviderBoard(
+  action: Extract<ProjectInitAction, { kind: "ticket-provider.create-or-link" }>,
+  env: NodeJS.ProcessEnv = process.env
+): TicketProviderBoardResult {
+  const provider = action.provider;
+  const keyVar = ticketProviderKeyVar(provider);
+  const { values } = resolveTicketProviderCredentials({
+    keys: ticketProviderKeyVars(provider),
+    repoPath: action.repoPath,
+    env,
+  });
+
+  if (!values[keyVar]) {
+    return {
+      ok: true,
+      skipped: true,
+      logs: [
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). ` +
+          `Set it in the environment, ${join(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env)}, ` +
+          `then re-run with --live — or pass --board-id to link an existing board.`,
+      ],
+    };
+  }
+
+  const adapter = resolveTicketProviderAdapter(provider, env);
+  if (!adapter) {
+    return {
+      ok: false,
+      skipped: false,
+      logs: [],
+      error:
+        `ticket-provider: no ${provider} adapter found. ` +
+        `Set ${TICKET_PROVIDER_ADAPTERS_ENV} to a directory containing ${provider}.sh.`,
+    };
+  }
+
+  const redact = (text: string): string =>
+    Object.values(values).reduce((acc, secret) => (secret ? acc.split(secret).join("***") : acc), text);
+
+  // The adapters resolve their board binding from the nearest .project.json
+  // above their own role dir (`$0/../..`), NOT from the cwd or the environment.
+  // Running the vendored adapter in place would therefore make it inherit
+  // pjangler's own workspace/board. Stage it inside a throwaway repo shaped
+  // like a Hermes role tree whose .project.json carries exactly this plan's
+  // binding, so the adapter resolves the workspace we intend.
+  const staging = mkdtempSync(join(tmpdir(), "pjangler-tp-"));
+  try {
+    const providersDir = join(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    mkdirSync(providersDir, { recursive: true });
+    writeFileSync(
+      join(staging, ".project.json"),
+      `${JSON.stringify(
+        {
+          project_name: action.boardName,
+          repo_path: action.repoPath,
+          ticket_provider: {
+            type: provider,
+            workspace: action.workspace,
+            identifier: action.identifier,
+            board_id: "",
+            state: "planned",
+          },
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+    const staged = join(providersDir, `${provider}.sh`);
+    copyFileSync(adapter, staged);
+
+    const childEnv: NodeJS.ProcessEnv = { ...env, ...values, TICKET_PROVIDER: provider };
+    if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
+
+    const result = spawnSync("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+      cwd: existsSync(action.repoPath) ? action.repoPath : staging,
+      encoding: "utf8",
+      env: childEnv,
+    });
+
+    if (result.error) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: could not run the ${provider} adapter: ${redact(result.error.message)}`,
+      };
+    }
+    const stderr = redact((result.stderr ?? "").trim());
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error:
+          `ticket-provider: ${provider} create_board failed (exit ${result.status ?? "unknown"})` +
+          `${stderr ? `: ${stderr}` : ""}`,
+      };
+    }
+
+    const stdout = (result.stdout ?? "").trim();
+    const lastLine = stdout.split(/\r?\n/).filter((line) => line.trim()).pop() ?? "";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(lastLine);
+    } catch {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned unparseable output: ${redact(lastLine) || "(empty)"}`,
+      };
+    }
+    const boardId = isRecord(parsed) && typeof parsed.board_id === "string" ? parsed.board_id.trim() : "";
+    if (!boardId) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned no board_id`,
+      };
+    }
+    const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : undefined;
+    return {
+      ok: true,
+      skipped: false,
+      boardId,
+      boardUrl,
+      logs: [`ticket-provider: ${provider} board linked (${action.identifier} → ${boardId})`],
+    };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 export function defaultProjectAutomation(): ProjectAutomation {
   return {
     reconcile: {
@@ -428,7 +719,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
       identifier,
-      boardId: input.boardId ?? input.planeProjectId,
+      // A board provisioned by an earlier run lives in the registry, not in the
+      // CLI flags — inherit it so re-running init re-links instead of minting a
+      // second board.
+      boardId: input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || undefined),
       workspace: input.boardWorkspace ?? input.planeWorkspace,
     }),
     agents,
@@ -477,8 +771,16 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
-      state: live ? "planned" : "planned",
-      reason: live ? undefined : "network/cloud actions require --live",
+      repoPath: targetDir,
+      boardName: project.name,
+      description: project.description || `Ticket board for ${project.slug}`,
+      boardId: project.ticket_provider.board_id ?? "",
+      state: project.ticket_provider.board_id ? "linked" : "planned",
+      reason: project.ticket_provider.board_id
+        ? "board already linked; no provider call"
+        : live
+          ? `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
+          : "network/cloud actions require --live",
     },
     {
       kind: "hermes.provision-agent",
@@ -497,6 +799,62 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   );
 
   return { ok: true, apply, dryRun: !apply, live, registryPath, project, manifest, actions };
+}
+
+/**
+ * Fold a freshly provisioned board back into the plan's projections: the
+ * registry record (shared object with the `registry.upsert` action), the
+ * in-memory manifest, the action itself, and the on-disk `.project.json`.
+ *
+ * `buildTicketProviderBlock` owns the planned -> linked flip, so board_id and
+ * state can never disagree. Returns the files it changed.
+ */
+function linkTicketProviderBoard(
+  plan: ProjectInitPlan,
+  action: Extract<ProjectInitAction, { kind: "ticket-provider.create-or-link" }>,
+  boardId: string
+): string[] {
+  const block = buildTicketProviderBlock({
+    type: action.provider,
+    identifier: action.identifier,
+    boardId,
+    workspace: action.workspace,
+  });
+  plan.project.ticket_provider = block;
+  const manifestProvider = {
+    type: block.type,
+    workspace: block.workspace ?? "",
+    identifier: block.identifier ?? "",
+    board_id: block.board_id ?? "",
+    state: block.state ?? "linked",
+  };
+  plan.manifest.ticket_provider = manifestProvider;
+  action.boardId = boardId;
+  action.state = manifestProvider.state;
+
+  const manifestPath = join(action.repoPath, ".project.json");
+  let next: Record<string, unknown>;
+  if (existsSync(manifestPath)) {
+    // Preserve whatever the scaffold (or the operator) already put in the file.
+    let existing: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (isRecord(parsed)) existing = parsed;
+    } catch {
+      existing = {};
+    }
+    const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
+    next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
+  } else {
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    next = plan.manifest as unknown as Record<string, unknown>;
+  }
+  const text = `${JSON.stringify(next, null, 2)}\n`;
+  if (!existsSync(manifestPath) || readFileSync(manifestPath, "utf8") !== text) {
+    writeFileSync(manifestPath, text, "utf8");
+    return [manifestPath];
+  }
+  return [];
 }
 
 export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<ProjectInitExecutionResult> {
@@ -544,7 +902,25 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
-      logs.push(action.enabled ? "ticket-provider.create-or-link requires a live provider integration" : "ticket-provider.create-or-link skipped (requires --live)");
+      if (!action.enabled) {
+        logs.push("ticket-provider.create-or-link skipped (requires --live)");
+      } else if (action.boardId) {
+        logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} → ${action.boardId}); nothing to create`);
+      } else {
+        const outcome = provisionTicketProviderBoard(action);
+        logs.push(...outcome.logs);
+        if (!outcome.ok) {
+          errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
+        } else if (outcome.boardId) {
+          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId));
+          pendingRegistryAction ??= {
+            kind: "registry.upsert",
+            registryPath: plan.registryPath,
+            slug: plan.project.slug,
+            project: plan.project,
+          };
+        }
+      }
     } else if (action.kind === "hermes.provision-agent") {
       logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
@@ -613,7 +989,12 @@ export function formatProjectInitPlan(plan: ProjectInitPlan): string {
     lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
     if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
     if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
-    if (action.kind === "ticket-provider.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    if (action.kind === "ticket-provider.create-or-link") {
+      const target = [action.provider, action.workspace, action.identifier].filter(Boolean).join("/");
+      lines.push(`        ${dim(`board: ${target}  ${glyph.dot}  ${action.boardName}`)}`);
+      lines.push(`        ${dim(`state: ${action.state}${action.boardId ? ` (${action.boardId})` : ""}`)}`);
+      if (action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    }
   }
   lines.push("");
   return lines.join("\n");

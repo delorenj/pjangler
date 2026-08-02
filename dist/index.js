@@ -1656,13 +1656,14 @@ var HermesAgentRecipe = class extends Recipe {
 import { homedir as homedir4 } from "node:os";
 import { join as join13, dirname as dirname5 } from "node:path";
 import { existsSync as existsSync9, cpSync, mkdirSync as mkdirSync5, readFileSync as readFileSync6, writeFileSync as writeFileSync6 } from "node:fs";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/project/index.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync, statSync, writeFileSync as writeFileSync5 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
+import { copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync4, mkdtempSync, readFileSync as readFileSync5, renameSync, rmSync, statSync, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
 import { basename as basename3, delimiter, dirname as dirname4, join as join12, resolve as resolve2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import YAML2 from "yaml";
 
 // src/project/RegistryStore.ts
@@ -1894,6 +1895,7 @@ function isPgRegistryEnabled(env2 = process.env) {
 // src/project/index.ts
 var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
+var TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
@@ -1979,6 +1981,206 @@ function buildTicketProviderBlock(input) {
     board_id: boardId,
     state: boardId ? "linked" : "planned"
   };
+}
+function ticketProviderKeyVar(provider) {
+  return provider === "trello" ? "TRELLO_KEY" : "PLANE_API_KEY";
+}
+function ticketProviderKeyVars(provider) {
+  return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
+}
+function ticketProviderSecretsPath(env2 = process.env) {
+  const base = env2.XDG_CONFIG_HOME || join12(env2.HOME || homedir3(), ".config");
+  return join12(base, "zshyzsh", "secrets.zsh");
+}
+function readShellAssignments(path, keys) {
+  const found = {};
+  if (!existsSync8(path)) return found;
+  let text3;
+  try {
+    text3 = readFileSync5(path, "utf8");
+  } catch {
+    return found;
+  }
+  const wanted = new Set(keys);
+  for (const rawLine of text3.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!match) continue;
+    const key = match[1];
+    if (!wanted.has(key) || found[key] !== void 0) continue;
+    let value = match[2].trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.length > 1 && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.split(/\s+#/)[0].trim();
+    }
+    if (value) found[key] = value;
+  }
+  return found;
+}
+function resolveTicketProviderCredentials(input) {
+  const env2 = input.env ?? process.env;
+  const values = {};
+  const sources = {};
+  const missing = () => input.keys.filter((key) => !values[key]);
+  for (const key of input.keys) {
+    const fromEnv = env2[key];
+    if (fromEnv) {
+      values[key] = fromEnv;
+      sources[key] = "environment";
+    }
+  }
+  const candidates = [];
+  if (input.repoPath) candidates.push({ path: join12(input.repoPath, ".env"), label: join12(input.repoPath, ".env") });
+  const secrets = ticketProviderSecretsPath(env2);
+  candidates.push({ path: secrets, label: secrets });
+  for (const candidate of candidates) {
+    const outstanding = missing();
+    if (!outstanding.length) break;
+    const assignments = readShellAssignments(candidate.path, outstanding);
+    for (const [key, value] of Object.entries(assignments)) {
+      values[key] = value;
+      sources[key] = candidate.label;
+    }
+  }
+  return { values, sources };
+}
+function resolveTicketProviderAdapter(provider, env2 = process.env) {
+  const file = `${provider}.sh`;
+  const candidates = [];
+  const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
+  if (override) candidates.push(join12(override, file));
+  const relativeRoots = [
+    join12("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join12("agents", "hermes", "pm", ".scripts", "providers")
+  ];
+  try {
+    let dir = dirname4(fileURLToPath2(import.meta.url));
+    for (let depth = 0; depth < 8; depth++) {
+      for (const relativeRoot of relativeRoots) candidates.push(join12(dir, relativeRoot, file));
+      const parent = dirname4(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+  }
+  for (const relativeRoot of relativeRoots) {
+    candidates.push(join12(homedir3(), "code", "pjangler", relativeRoot, file));
+  }
+  return candidates.find((candidate) => existsSync8(candidate));
+}
+function provisionTicketProviderBoard(action, env2 = process.env) {
+  const provider = action.provider;
+  const keyVar = ticketProviderKeyVar(provider);
+  const { values } = resolveTicketProviderCredentials({
+    keys: ticketProviderKeyVars(provider),
+    repoPath: action.repoPath,
+    env: env2
+  });
+  if (!values[keyVar]) {
+    return {
+      ok: true,
+      skipped: true,
+      logs: [
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join12(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+      ]
+    };
+  }
+  const adapter = resolveTicketProviderAdapter(provider, env2);
+  if (!adapter) {
+    return {
+      ok: false,
+      skipped: false,
+      logs: [],
+      error: `ticket-provider: no ${provider} adapter found. Set ${TICKET_PROVIDER_ADAPTERS_ENV} to a directory containing ${provider}.sh.`
+    };
+  }
+  const redact = (text3) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text3);
+  const staging = mkdtempSync(join12(tmpdir(), "pjangler-tp-"));
+  try {
+    const providersDir = join12(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    mkdirSync4(providersDir, { recursive: true });
+    writeFileSync5(
+      join12(staging, ".project.json"),
+      `${JSON.stringify(
+        {
+          project_name: action.boardName,
+          repo_path: action.repoPath,
+          ticket_provider: {
+            type: provider,
+            workspace: action.workspace,
+            identifier: action.identifier,
+            board_id: "",
+            state: "planned"
+          }
+        },
+        null,
+        2
+      )}
+`,
+      "utf8"
+    );
+    const staged = join12(providersDir, `${provider}.sh`);
+    copyFileSync(adapter, staged);
+    const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
+    if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
+    const result = spawnSync5("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+      cwd: existsSync8(action.repoPath) ? action.repoPath : staging,
+      encoding: "utf8",
+      env: childEnv
+    });
+    if (result.error) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: could not run the ${provider} adapter: ${redact(result.error.message)}`
+      };
+    }
+    const stderr = redact((result.stderr ?? "").trim());
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board failed (exit ${result.status ?? "unknown"})${stderr ? `: ${stderr}` : ""}`
+      };
+    }
+    const stdout = (result.stdout ?? "").trim();
+    const lastLine = stdout.split(/\r?\n/).filter((line) => line.trim()).pop() ?? "";
+    let parsed;
+    try {
+      parsed = JSON.parse(lastLine);
+    } catch {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned unparseable output: ${redact(lastLine) || "(empty)"}`
+      };
+    }
+    const boardId = isRecord(parsed) && typeof parsed.board_id === "string" ? parsed.board_id.trim() : "";
+    if (!boardId) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned no board_id`
+      };
+    }
+    const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
+    return {
+      ok: true,
+      skipped: false,
+      boardId,
+      boardUrl,
+      logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
+    };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 function defaultProjectAutomation() {
   return {
@@ -2083,7 +2285,10 @@ function planProjectInit(input) {
     ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
       identifier,
-      boardId: input.boardId ?? input.planeProjectId,
+      // A board provisioned by an earlier run lives in the registry, not in the
+      // CLI flags — inherit it so re-running init re-links instead of minting a
+      // second board.
+      boardId: input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0),
       workspace: input.boardWorkspace ?? input.planeWorkspace
     }),
     agents,
@@ -2130,8 +2335,12 @@ function planProjectInit(input) {
       provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
-      state: live ? "planned" : "planned",
-      reason: live ? void 0 : "network/cloud actions require --live"
+      repoPath: targetDir,
+      boardName: project.name,
+      description: project.description || `Ticket board for ${project.slug}`,
+      boardId: project.ticket_provider.board_id ?? "",
+      state: project.ticket_provider.board_id ? "linked" : "planned",
+      reason: project.ticket_provider.board_id ? "board already linked; no provider call" : live ? `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter` : "network/cloud actions require --live"
     },
     {
       kind: "hermes.provision-agent",
@@ -2149,6 +2358,48 @@ function planProjectInit(input) {
     }
   );
   return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
+}
+function linkTicketProviderBoard(plan, action, boardId) {
+  const block = buildTicketProviderBlock({
+    type: action.provider,
+    identifier: action.identifier,
+    boardId,
+    workspace: action.workspace
+  });
+  plan.project.ticket_provider = block;
+  const manifestProvider = {
+    type: block.type,
+    workspace: block.workspace ?? "",
+    identifier: block.identifier ?? "",
+    board_id: block.board_id ?? "",
+    state: block.state ?? "linked"
+  };
+  plan.manifest.ticket_provider = manifestProvider;
+  action.boardId = boardId;
+  action.state = manifestProvider.state;
+  const manifestPath = join12(action.repoPath, ".project.json");
+  let next;
+  if (existsSync8(manifestPath)) {
+    let existing = {};
+    try {
+      const parsed = JSON.parse(readFileSync5(manifestPath, "utf8"));
+      if (isRecord(parsed)) existing = parsed;
+    } catch {
+      existing = {};
+    }
+    const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
+    next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
+  } else {
+    mkdirSync4(dirname4(manifestPath), { recursive: true });
+    next = plan.manifest;
+  }
+  const text3 = `${JSON.stringify(next, null, 2)}
+`;
+  if (!existsSync8(manifestPath) || readFileSync5(manifestPath, "utf8") !== text3) {
+    writeFileSync5(manifestPath, text3, "utf8");
+    return [manifestPath];
+  }
+  return [];
 }
 async function executeProjectInitPlan(plan) {
   const logs = [];
@@ -2191,7 +2442,25 @@ async function executeProjectInitPlan(plan) {
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
-      logs.push(action.enabled ? "ticket-provider.create-or-link requires a live provider integration" : "ticket-provider.create-or-link skipped (requires --live)");
+      if (!action.enabled) {
+        logs.push("ticket-provider.create-or-link skipped (requires --live)");
+      } else if (action.boardId) {
+        logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} \u2192 ${action.boardId}); nothing to create`);
+      } else {
+        const outcome = provisionTicketProviderBoard(action);
+        logs.push(...outcome.logs);
+        if (!outcome.ok) {
+          errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
+        } else if (outcome.boardId) {
+          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId));
+          pendingRegistryAction ??= {
+            kind: "registry.upsert",
+            registryPath: plan.registryPath,
+            slug: plan.project.slug,
+            project: plan.project
+          };
+        }
+      }
     } else if (action.kind === "hermes.provision-agent") {
       logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
@@ -2255,7 +2524,12 @@ function formatProjectInitPlan(plan) {
     lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
     if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
     if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
-    if (action.kind === "ticket-provider.create-or-link" && action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    if (action.kind === "ticket-provider.create-or-link") {
+      const target = [action.provider, action.workspace, action.identifier].filter(Boolean).join("/");
+      lines.push(`        ${dim(`board: ${target}  ${glyph.dot}  ${action.boardName}`)}`);
+      lines.push(`        ${dim(`state: ${action.state}${action.boardId ? ` (${action.boardId})` : ""}`)}`);
+      if (action.reason) lines.push(`        ${dim(`note: ${action.reason}`)}`);
+    }
   }
   lines.push("");
   return lines.join("\n");
@@ -2386,7 +2660,7 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname5(fileURLToPath2(import.meta.url));
+    let dir = dirname5(fileURLToPath3(import.meta.url));
     for (let i = 0; i < 8; i++) {
       candidates.push(join13(dir, "templates", "commonproject", "template"));
       const parent = dirname5(dir);
@@ -2726,9 +3000,9 @@ function createRecipe(name, context) {
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/parity/index.ts
-import { existsSync as existsSync10, lstatSync as lstatSync2, mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync3, realpathSync, renameSync as renameSync2, rmdirSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync, rmSync } from "node:fs";
+import { existsSync as existsSync10, lstatSync as lstatSync2, mkdirSync as mkdirSync6, mkdtempSync as mkdtempSync2, readFileSync as readFileSync7, readlinkSync, readdirSync as readdirSync3, realpathSync, renameSync as renameSync2, rmdirSync, symlinkSync, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7, chmodSync as chmodSync4, copyFileSync as copyFileSync2, rmSync as rmSync2 } from "node:fs";
 import { basename as basename4, dirname as dirname6, join as join14, relative as relative2, resolve as resolve3 } from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
+import { fileURLToPath as fileURLToPath4, pathToFileURL } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
@@ -2808,7 +3082,7 @@ description = "Force every versioned file up to the highest version"
 run = "'{{config_root}}/.mise/scripts/versioning.sh' sync"
 # <<< mise-versioning <<<`;
 function resolvePjanglerRoot2() {
-  let dir = dirname6(fileURLToPath3(import.meta.url));
+  let dir = dirname6(fileURLToPath4(import.meta.url));
   while (dir !== dirname6(dir)) {
     if (existsSync10(join14(dir, "package.json")) && existsSync10(join14(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
@@ -2890,7 +3164,7 @@ function bootstrapAgentsFile(repoRoot, dryRun) {
   if (existsSync10(readmePath)) {
     const stat = lstatSync2(readmePath);
     if (!stat.isFile()) return { changedFiles: [], details: [], blocked: "README.md exists but is not a regular file; cannot copy to AGENTS.md" };
-    if (!dryRun) copyFileSync(readmePath, agentsPath);
+    if (!dryRun) copyFileSync2(readmePath, agentsPath);
     return { changedFiles: [agentsPath], details: ["Copied README.md to AGENTS.md before wiring agent-file symlinks"] };
   }
   return { changedFiles: [], details: [], blocked: "AGENTS.md missing and no CLAUDE.md, GEMINI.md, or README.md source exists" };
@@ -3154,7 +3428,7 @@ function isPackManagedManifestEntry(entry, expectedNames, packRoot) {
   const source = entry.source;
   if (typeof source !== "string" || !source.startsWith("file:")) return false;
   try {
-    const sourcePath = resolve3(fileURLToPath3(source));
+    const sourcePath = resolve3(fileURLToPath4(source));
     return basename4(sourcePath) === name && isContainedBy(packRoot, sourcePath);
   } catch {
     return false;
@@ -3184,7 +3458,7 @@ function removeProjectEntry(path) {
   const stat = lstatIfPresent(path);
   if (!stat) return;
   if (stat.isDirectory() && !stat.isSymbolicLink()) {
-    rmSync(path, { recursive: true, force: true });
+    rmSync2(path, { recursive: true, force: true });
     return;
   }
   try {
@@ -3268,7 +3542,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
   const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync10(skillsDir) ? skillsDir : realpathSync(skillsDir);
-  const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
+  const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath4(entry.source)]));
   const expectedNames = new Set(expected.keys());
   const ownershipManifest = preservedManifest ?? currentManifest;
   const managedManifestNames = new Set(
@@ -3334,7 +3608,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
   }
-  const transaction = mkdtempSync(join14(safeDirs.agentsDir, ".bmad-transaction-"));
+  const transaction = mkdtempSync2(join14(safeDirs.agentsDir, ".bmad-transaction-"));
   const backup = join14(transaction, "entries");
   mkdirSync6(backup);
   const moved = [];
@@ -3370,7 +3644,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
     } catch (error) {
       errors.push(`restore manifest: ${String(error)}`);
     }
-    rmSync(transaction, { recursive: true, force: true });
+    rmSync2(transaction, { recursive: true, force: true });
     try {
       if (!skillsExisted && existsSync10(skillsDir) && readdirSync3(skillsDir).length === 0) rmdirSync(skillsDir);
       if (!agentsExisted && existsSync10(safeDirs.agentsDir) && readdirSync3(safeDirs.agentsDir).length === 0) rmdirSync(safeDirs.agentsDir);
@@ -3440,7 +3714,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
     }
     return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
-  rmSync(transaction, { recursive: true });
+  rmSync2(transaction, { recursive: true });
   return { ok: true, changedFiles };
 }
 function templateVersionFilesConf(ctx, repoRoot) {
@@ -4026,7 +4300,7 @@ function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) 
     changedFiles.push(targetPath);
     if (!dryRun) {
       ensureParent(targetPath);
-      copyFileSync(sourcePath, targetPath);
+      copyFileSync2(sourcePath, targetPath);
     }
   }
 }
@@ -5131,7 +5405,7 @@ var RULES = [
         );
         fixable = false;
       }
-      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath3(entry.source)]));
+      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath4(entry.source)]));
       const expectedNames = new Set(expectedByName.keys());
       const packRoot = bmadPackRoot(ctx);
       const manifest = tryParseJson(safeReadText(manifestPath));
@@ -6116,7 +6390,7 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           if (!donor) continue;
           details.push(`seed fleet ${basename4(shared.rootPath)} from ${donor}`);
           changedFiles.push(shared.rootPath);
-          if (!ctx.dryRun) copyFileSync(donor, shared.rootPath);
+          if (!ctx.dryRun) copyFileSync2(donor, shared.rootPath);
         }
         if (existsSync10(plan.profileDir) && lstatSync2(plan.profileDir).isSymbolicLink()) {
           details.push(`convert profile symlink to real dir: ${plan.profileDir}`);
@@ -6577,10 +6851,10 @@ function formatMigrationReport(report) {
 // src/utils/version.ts
 import { readFileSync as readFileSync8 } from "node:fs";
 import { dirname as dirname7, join as join15 } from "node:path";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname7(fileURLToPath4(import.meta.url));
+    let dir = dirname7(fileURLToPath5(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
         const raw = readFileSync8(join15(dir, "package.json"), "utf8");
