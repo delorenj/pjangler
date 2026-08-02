@@ -15,7 +15,9 @@ _.file = [".env"]
 [hooks]
 enter = [
   "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "op inject -i .env.op > .env",
+  # Guarded: a bare `op inject -i .env.op > .env` truncates a populated .env
+  # before `op` runs when .env.op is absent or the op CLI is missing (PJAN-24).
+  "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true",
 ]
 
 [[watch_files]]

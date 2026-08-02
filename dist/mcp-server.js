@@ -2662,7 +2662,9 @@ import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-var OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+var OP_INJECT_LEGACY_SCRIPT = "op inject -i .env.op > .env";
+var OP_INJECT_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
+var LEGACY_OP_INJECT_PATTERN = /op\s+inject\s+-i\s+\.env\.op\s*>\s*\.env/;
 var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
@@ -3496,9 +3498,15 @@ function extractTomlStrings(text2) {
 function stripTomlStringsAndComments(line) {
   return line.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''").replace(/#.*$/, "");
 }
-function isManagedHookEntry(value) {
+function isOpInjectHookEntry(value) {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
+  if (trimmed === OP_INJECT_LEGACY_SCRIPT) return true;
+  return LEGACY_OP_INJECT_PATTERN.test(trimmed) || /\bop\s+inject\b/.test(trimmed) && /\.env\.op/.test(trimmed);
+}
+function isManagedHookEntry(value) {
+  const trimmed = value.trim();
+  if (isOpInjectHookEntry(trimmed)) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
   if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
   if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
@@ -3510,6 +3518,7 @@ function isManagedHookEntry(value) {
 function normalizeHookScript(script) {
   const trimmed = script.trim();
   if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
+  if (isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
   return trimmed;
 }
 function tomlValueSpanEnd(lines, start, limit) {
@@ -4528,7 +4537,15 @@ var RULES = [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text2.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      if (!text2.includes("op inject -i .env.op > .env")) details.push("hooks.enter must materialize .env from .env.op");
+      if (!text2.includes(OP_INJECT_SCRIPT)) {
+        if (LEGACY_OP_INJECT_PATTERN.test(text2)) {
+          details.push(
+            "hooks.enter op inject is unguarded and truncates .env when .env.op or the op CLI is missing \u2014 must test [ -f .env.op ] && command -v op and end with || true"
+          );
+        } else {
+          details.push("hooks.enter must materialize .env from .env.op via the guarded op inject hook");
+        }
+      }
       if (!text2.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
       if (!text2.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
       return {

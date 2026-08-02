@@ -87,7 +87,18 @@ interface Rule {
 // expressed as an array of `[[hooks.enter]]` tables — mise mangles the
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+// PJAN-24: the enter hook must never clobber a populated .env. The bare
+// `op inject -i .env.op > .env` form runs the redirection FIRST, so in any repo
+// without a `.env.op` — or on a machine without the `op` CLI — the shell
+// truncates .env to zero bytes before `op` even fails. Guard on both the input
+// file and the binary, and terminate with `|| true` so a failed materialization
+// can never break shell entry under `set -e`.
+const OP_INJECT_LEGACY_SCRIPT = "op inject -i .env.op > .env";
+const OP_INJECT_SCRIPT =
+  "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
+// Matches the legacy unguarded hook (`-i .env.op`, no `[ -f ... ]` prefix). The
+// guarded form uses `-i '{{config_root}}/.env.op'` so it never matches this.
+const LEGACY_OP_INJECT_PATTERN = /op\s+inject\s+-i\s+\.env\.op\s*>\s*\.env/;
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =
@@ -1077,9 +1088,22 @@ function stripTomlStringsAndComments(line: string): string {
     .replace(/#.*$/, "");
 }
 
-function isManagedHookEntry(value: string): boolean {
+/**
+ * True for any pjangler-owned dotenv materialization hook — the canonical
+ * guarded form AND the legacy unguarded one. Both are "managed", so a migrate
+ * strips whichever is present and re-installs the canonical guarded command
+ * instead of preserving the legacy entry as an unknown user hook.
+ */
+function isOpInjectHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
+  if (trimmed === OP_INJECT_LEGACY_SCRIPT) return true;
+  return LEGACY_OP_INJECT_PATTERN.test(trimmed) || (/\bop\s+inject\b/.test(trimmed) && /\.env\.op/.test(trimmed));
+}
+
+function isManagedHookEntry(value: string): boolean {
+  const trimmed = value.trim();
+  if (isOpInjectHookEntry(trimmed)) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
   if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
   if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
@@ -1097,6 +1121,8 @@ function isManagedHookEntry(value: string): boolean {
 function normalizeHookScript(script: string): string {
   const trimmed = script.trim();
   if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
+  // PJAN-24: rewrite any legacy/unguarded dotenv hook to the guarded form.
+  if (isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
   return trimmed;
 }
 
@@ -2653,7 +2679,18 @@ const RULES: Rule[] = [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      if (!text.includes("op inject -i .env.op > .env")) details.push("hooks.enter must materialize .env from .env.op");
+      // PJAN-24: the guarded form is the contract. A repo still carrying the
+      // legacy unguarded hook is flagged (it truncates .env on every enter when
+      // .env.op or the `op` CLI is absent) and is auto-fixable to the guard.
+      if (!text.includes(OP_INJECT_SCRIPT)) {
+        if (LEGACY_OP_INJECT_PATTERN.test(text)) {
+          details.push(
+            "hooks.enter op inject is unguarded and truncates .env when .env.op or the op CLI is missing — must test [ -f .env.op ] && command -v op and end with || true",
+          );
+        } else {
+          details.push("hooks.enter must materialize .env from .env.op via the guarded op inject hook");
+        }
+      }
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes("task = \"link-agentfiles\"")) details.push("watch_files must dispatch link-agentfiles task");
       return {
