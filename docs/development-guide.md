@@ -20,7 +20,7 @@ npm install           # install deps (esbuild, typescript, @types/node + runtime
 mise run setup        # trust + setup-plane.py; "Project ready."
 ```
 
-`mise tasks` lists available tasks. The enter hook links agent files (`AGENTS.md` ← `CLAUDE.md`/`GEMINI.md`) and runs `op inject -i .env.op > .env`.
+`mise tasks` lists available tasks. The enter hook links agent files (`AGENTS.md` ← `CLAUDE.md`/`GEMINI.md`) and materializes `.env` from `.env.op` with `op inject`, staging through a `mktemp` file and replacing `.env` only on success — a failed or expired `op` session leaves `.env` untouched (PJAN-24).
 
 ## Everyday commands
 

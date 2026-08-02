@@ -2662,11 +2662,7 @@ import { homedir as homedir5 } from "node:os";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-var OP_INJECT_LEGACY_SCRIPT = "op inject -i .env.op > .env";
-var OP_INJECT_TRUNCATING_GUARD_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
 var OP_INJECT_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
-var LEGACY_OP_INJECT_PATTERN = /op\s+inject\s+-i\s+\.env\.op\s*>\s*\.env/;
-var TRUNCATING_OP_INJECT_PATTERN = /op\s+inject\b[^\n]*?>\s*\S*\.env(?:['"]|\s|$)/;
 var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
@@ -3500,12 +3496,34 @@ function extractTomlStrings(text2) {
 function stripTomlStringsAndComments(line) {
   return line.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''").replace(/#.*$/, "");
 }
+function normalizeOpInjectPath(raw) {
+  let path = raw.trim();
+  if (path.startsWith("'") && path.endsWith("'") || path.startsWith('"') && path.endsWith('"')) {
+    path = path.slice(1, -1);
+  }
+  return path.replace(/^\{\{config_root\}\}\//, "").replace(/^\.\//, "");
+}
+var QUOTED_OR_BARE = String.raw`("[^"]*"|'[^']*'|\S+)`;
+function opInjectOutputTarget(value) {
+  const trimmed = value.trim();
+  const start = trimmed.search(/\bop\s+inject\b/);
+  if (start < 0) return null;
+  const tail = trimmed.slice(start);
+  const mv = new RegExp(String.raw`\bmv\s+(?:-\S+\s+)*${QUOTED_OR_BARE}\s+${QUOTED_OR_BARE}`).exec(tail);
+  if (mv?.[2]) return normalizeOpInjectPath(mv[2]);
+  const redirect = new RegExp(String.raw`>\s*${QUOTED_OR_BARE}`).exec(tail);
+  if (redirect?.[1]) return normalizeOpInjectPath(redirect[1]);
+  const flag = new RegExp(String.raw`\s(?:-o|--out(?:put)?)[=\s]\s*${QUOTED_OR_BARE}`).exec(tail);
+  if (flag?.[1]) return normalizeOpInjectPath(flag[1]);
+  return null;
+}
 function isOpInjectHookEntry(value) {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
-  if (trimmed === OP_INJECT_LEGACY_SCRIPT) return true;
-  if (trimmed === OP_INJECT_TRUNCATING_GUARD_SCRIPT) return true;
-  return LEGACY_OP_INJECT_PATTERN.test(trimmed) || /\bop\s+inject\b/.test(trimmed) && /\.env\.op/.test(trimmed);
+  return opInjectOutputTarget(trimmed) === ".env";
+}
+function truncatingOpInjectEntries(enterHooks) {
+  return enterHooks.filter((value) => value.trim() !== OP_INJECT_SCRIPT && isOpInjectHookEntry(value));
 }
 function isManagedHookEntry(value) {
   const trimmed = value.trim();
@@ -3518,10 +3536,10 @@ function isManagedHookEntry(value) {
   if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
   return /link-agentfiles\.sh'?\s*$/.test(trimmed);
 }
-function normalizeHookScript(script) {
+function normalizeHookScript(script, kind) {
   const trimmed = script.trim();
   if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
-  if (isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
+  if (kind === "enter" && isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
   return trimmed;
 }
 function tomlValueSpanEnd(lines, start, limit) {
@@ -3575,7 +3593,8 @@ function stripHookBlocks(text2) {
         if (keyMatch) {
           const bucket = keyMatch[1] === "enter" ? enter : leave;
           const end = tomlValueSpanEnd(lines, j, lines.length);
-          for (const value of extractTomlStrings(lines.slice(j, end).join("\n"))) bucket.push(value);
+          const chunk = lines.slice(j, end).filter((line) => !/^\s*#/.test(line)).join("\n");
+          for (const value of extractTomlStrings(chunk)) bucket.push(value);
           lastDrop = end - 1;
           j = end;
         } else if (/^\s*\]\s*$/.test(lines[j])) {
@@ -3606,9 +3625,9 @@ function dedupePreserve(scripts) {
 }
 function upsertLinkAgentfilesHooks(text2) {
   const { text: stripped, enter, leave } = stripHookBlocks(text2);
-  const preservedEnter = enter.map(normalizeHookScript).filter((script) => !isManagedHookEntry(script));
+  const preservedEnter = enter.map((script) => normalizeHookScript(script, "enter")).filter((script) => !isManagedHookEntry(script));
   const enterScripts = dedupePreserve([...LINK_AGENTFILES_HOOK_ENTRIES, ...preservedEnter]);
-  const leaveScripts = dedupePreserve(leave.map(normalizeHookScript));
+  const leaveScripts = dedupePreserve(leave.map((script) => normalizeHookScript(script, "leave")));
   const block = [
     HOOKS_COMMENT_HEADER,
     ...renderHookTables(enterScripts, "enter"),
@@ -4540,14 +4559,15 @@ var RULES = [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text2.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      if (!text2.includes(OP_INJECT_SCRIPT)) {
-        if (TRUNCATING_OP_INJECT_PATTERN.test(text2)) {
-          details.push(
-            "hooks.enter op inject redirects onto .env and truncates it before op runs (missing .env.op, missing op CLI, or an expired op session all destroy it) \u2014 must materialize via mktemp + atomic mv"
-          );
-        } else {
-          details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
-        }
+      const enterHookValues = stripHookBlocks(text2).enter;
+      const truncating = truncatingOpInjectEntries(enterHookValues);
+      if (truncating.length) {
+        details.push(
+          `hooks.enter has ${truncating.length} op inject hook(s) that write .env non-atomically and truncate it before op runs (a missing .env.op, a missing op CLI, or merely an expired op session destroys it) \u2014 must materialize via mktemp + atomic mv`
+        );
+      }
+      if (!enterHookValues.some((value) => value.trim() === OP_INJECT_SCRIPT)) {
+        details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
       }
       if (!text2.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
       if (!text2.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
@@ -5066,7 +5086,8 @@ var RULES = [
       }
       const gitignorePath = join15(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
-      const requiredBlock = `# Secrets \u2014 .env is materialized from .env.op by \`op inject\` on mise enter.
+      const requiredBlock = `# Secrets \u2014 .env is materialized from .env.op by \`op inject\` on mise enter,
+# staged through a mktemp file and moved into place only on success.
 # NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
 .env
 .env.*

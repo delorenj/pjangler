@@ -154,7 +154,14 @@ try {
   }
 
   {
-    // pjangler's own mise.toml must obey the contract it enforces on others.
+    // pjangler's own mise.toml carries the atomic hook.
+    //
+    // SCOPE: this asserts the op-inject contract ONLY. It is deliberately NOT a
+    // self-compliance check — pjangler's own mise.toml still FAILS the full
+    // `mise.config-root` rule for unrelated pre-existing reasons (the
+    // link-agentfiles hook on line 17 is unquoted). Do not upgrade this into
+    // `audit(root).status === "pass"` without fixing that first; a green that
+    // implies more than it checks is what let PJAN-24 ship twice.
     const own = readFileSync(join(root, "mise.toml"), "utf8");
     assert.ok(own.includes(GUARDED_HOOK), "pjangler's own mise.toml must use the atomic op inject hook");
     assert.ok(!own.includes(TRUNCATING_GUARDED_HOOK), "pjangler's own mise.toml must not carry the truncating guarded hook");
@@ -306,7 +313,9 @@ try {
 
   {
     // A repo still carrying the legacy unguarded hook FAILS the audit with a
-    // message that names the data-loss, and is reported fixable.
+    // message that names the data-loss. (`fixable` is not asserted — the rule
+    // hardcodes it true, so the assertion would prove nothing; the migrate
+    // cases below are what actually prove it is fixable.)
     const repo = makeRepo("audit-fails-legacy");
     run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
     const migrated = readFileSync(join(repo, "mise.toml"), "utf8");
@@ -314,9 +323,8 @@ try {
 
     const finding = miseFinding(repo, hooksOff);
     assert.equal(finding.status, "fail", `audit must FAIL on the legacy unguarded hook\n${JSON.stringify(finding)}`);
-    assert.equal(finding.fixable, true, "the legacy hook must be reported as auto-fixable");
     assert.ok(
-      finding.details.some((detail) => /redirects onto \.env/.test(detail) && /truncates it before op runs/.test(detail)),
+      finding.details.some((detail) => /write \.env non-atomically/.test(detail) && /truncate it before op runs/.test(detail)),
       `audit detail must explain the truncation\n${JSON.stringify(finding.details)}`
     );
   }
@@ -332,7 +340,6 @@ try {
 
     const finding = miseFinding(repo, hooksOff);
     assert.equal(finding.status, "fail", `audit must FAIL on the v1 truncating guard\n${JSON.stringify(finding)}`);
-    assert.equal(finding.fixable, true, "the v1 truncating guard must be reported as auto-fixable");
     assert.ok(
       finding.details.some((detail) => /expired op session/.test(detail)),
       `audit detail must name the expired-session failure\n${JSON.stringify(finding.details)}`
@@ -398,6 +405,101 @@ run = "echo still here"
     assert.equal((fixed.match(/op inject -i /g) ?? []).length, 1, "exactly one op inject hook after migration");
     assert.match(fixed, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
     assert.equal(miseFinding(repo, hooksOff).status, "pass", "audit must PASS after migrating the array form");
+  }
+
+  {
+    // R2 — a repo carrying BOTH the atomic hook and a legacy one must FAIL.
+    // Presence of the guard is not absence of the truncation: the audit used to
+    // test `text.includes(CANONICAL)` and passed this repo with empty details
+    // while the legacy entry destroyed .env on every enter.
+    const repo = makeRepo("both-hooks-present");
+    run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
+    const migrated = readFileSync(join(repo, "mise.toml"), "utf8");
+    writeFileSync(
+      join(repo, "mise.toml"),
+      migrated.replace(
+        `[[hooks.enter]]\nscript = ${JSON.stringify(GUARDED_HOOK)}`,
+        `[[hooks.enter]]\nscript = ${JSON.stringify(GUARDED_HOOK)}\n[[hooks.enter]]\nscript = ${JSON.stringify(LEGACY_HOOK)}`
+      )
+    );
+    const withBoth = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.ok(withBoth.includes(GUARDED_HOOK) && withBoth.includes(`script = "${LEGACY_HOOK}"`), "fixture must carry BOTH hooks");
+
+    const finding = miseFinding(repo, hooksOff);
+    assert.equal(finding.status, "fail", `audit must FAIL when a truncating hook coexists with the atomic one\n${JSON.stringify(finding)}`);
+    assert.ok(
+      finding.details.some((detail) => /truncate/.test(detail)),
+      `audit must name the truncation, not stay silent\n${JSON.stringify(finding.details)}`
+    );
+
+    run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
+    assert.equal((readFileSync(join(repo, "mise.toml"), "utf8").match(/op inject /g) ?? []).length, 1, "migrate must collapse to one op inject hook");
+    assert.equal(miseFinding(repo, hooksOff).status, "pass", "audit must PASS once the duplicate is removed");
+  }
+
+  {
+    // R2b — the audit must read hook VALUES, not raw text. The explanatory
+    // comment beside the hook quotes the legacy form verbatim, so a naive
+    // `text.includes(LEGACY)` absence check would fail a correct repo.
+    const repo = makeRepo("legacy-literal-in-comment");
+    run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
+    const migrated = readFileSync(join(repo, "mise.toml"), "utf8");
+    writeFileSync(join(repo, "mise.toml"), `# historical note: this repo used to run op inject -i .env.op > .env\n${migrated}`);
+
+    assert.equal(
+      miseFinding(repo, hooksOff).status,
+      "pass",
+      "a comment quoting the legacy command must not be mistaken for a live hook"
+    );
+  }
+
+  {
+    // R3 — hooks that materialize a DIFFERENT destination belong to the user.
+    // The loose `op inject && .env.op` matcher claimed them, normalizeHookScript
+    // rewrote them to the canonical string, and dedupePreserve then collapsed
+    // them into the managed entry — so the user's hook vanished outright. Assert
+    // each one is still PRESENT and unmodified, not merely retargeted.
+    const foreign = [
+      // The WireMiseOpInject pattern — strictly SAFER than what we install.
+      "[ -f '{{config_root}}/.env.op' ] && op inject -i '{{config_root}}/.env.op' -o '{{config_root}}/.env.secrets' --force || true",
+      "op inject -i .env.op > .env.local",
+      "op inject -i .env.op.staging > .env.staging",
+    ];
+    const repo = makeRepo("foreign-op-inject-targets");
+    writeFileSync(
+      join(repo, "mise.toml"),
+      `[env]\n_.path = [".mise/scripts"]\n\n[hooks]\nenter = [\n${foreign
+        .map((hook) => `  ${JSON.stringify(hook)},`)
+        .join("\n")}\n  "echo unrelated-hook",\n]\n`
+    );
+    run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
+
+    const fixed = readFileSync(join(repo, "mise.toml"), "utf8");
+    for (const hook of foreign) {
+      assert.ok(fixed.includes(hook), `migrate must PRESERVE a user hook targeting another file, verbatim: ${hook}`);
+    }
+    assert.ok(fixed.includes("echo unrelated-hook"), "migrate must preserve unrelated hooks");
+    assert.ok(fixed.includes(GUARDED_HOOK), "migrate must still install the canonical .env hook alongside them");
+  }
+
+  {
+    // R5 — the dotenv rewrite is for ENTER hooks only. A LEAVE hook is teardown;
+    // rewriting one turns "clean up on exit" into "materialize secrets on exit".
+    const leaveHook = "rm -f .env && echo restored-from .env.op via op inject";
+    const repo = makeRepo("leave-hook-untouched");
+    writeFileSync(
+      join(repo, "mise.toml"),
+      `[env]\n_.path = [".mise/scripts"]\n\n[hooks]\nenter = ["op inject -i .env.op > .env"]\nleave = [${JSON.stringify(leaveHook)}]\n`
+    );
+    run(["migrate", "mise.config-root", repo, "--json"], root, hooksOff);
+
+    const fixed = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.ok(fixed.includes(leaveHook), "migrate must leave a leave-hook verbatim, never rewrite it to the materialization command");
+    assert.match(fixed, /\[\[hooks\.leave\]\]/, "the leave hook must survive as a leave hook");
+    assert.ok(fixed.includes(GUARDED_HOOK), "the ENTER hook must still be migrated");
+    // The materialization command must appear exactly once, and under enter.
+    const leaveIndex = fixed.indexOf("[[hooks.leave]]");
+    assert.ok(fixed.indexOf(GUARDED_HOOK) < leaveIndex, "the materialization hook must sit in the enter block, not the leave block");
   }
 
   console.log("PJAN-24 regressions: passed");
