@@ -82,6 +82,8 @@ try {
   assert.equal(dryRun.project.slug, "slowburns");
   assert.equal(dryRun.project.ticket_provider.identifier, "SLOW");
   assert.equal(dryRun.project.source_artifacts[0].path, sourceSkill);
+  // PJAN-26: a newly created project record is "active", not "planned".
+  assert.equal(dryRun.project.status, "active", "a new project record must default to status active");
   assert.deepEqual(dryRun.project.agents, {}, "default dry-run must not record a planned agent");
   assert.ok(dryRun.actions.some((action) => action.kind === "registry.upsert"));
   assert.ok(dryRun.actions.some((action) => action.kind === "copier.copy.commonproject"));
@@ -147,6 +149,10 @@ try {
   assert.equal(registry.schema_version, 1);
   assert.equal(registry.projects.slowburns.name, "SlowBurns");
   assert.equal(registry.projects.slowburns.repo_path, targetDir);
+  // PJAN-26: the persisted record for a new project is "active" …
+  assert.equal(registry.projects.slowburns.status, "active", "apply must persist status active for a new project");
+  // … but ticket_provider.state is a DIFFERENT lifecycle (planned -> linked)
+  // and must still default to "planned" when no board is linked.
   assert.equal(registry.projects.slowburns.ticket_provider.state, "planned");
   assert.deepEqual(registry.projects.slowburns.agents, {}, "default apply must not register a planned agent");
 
@@ -173,6 +179,8 @@ try {
     "--json",
   ], env));
   assert.equal(agentPlan.project.agents.review.role, "review");
+  // PJAN-26 guard: agent provisioning_state is its own lifecycle
+  // (planned -> provisioned) and must still default to "planned".
   assert.equal(agentPlan.project.agents.review.provisioning_state, "planned");
   assert.equal(agentPlan.actions.find((action) => action.kind === "hermes.provision-agent").role, "review");
 
@@ -324,6 +332,45 @@ try {
   const secondMultiManifest = JSON.parse(readFileSync(join(multiAgentRepo, ".project.json"), "utf8"));
   assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
   assert.equal(secondMultiManifest.agents["multi-agent-dev"].role, "dev", "new dev agent must be added to manifest");
+
+  // PJAN-26: "active" is a default for NEW records, never a migration.
+  // A project already recorded as "planned" keeps that status through a load
+  // and through an unrelated update (sync re-init with a new description).
+  const legacyStatusRepo = join(tmp, "LegacyStatus");
+  mkdirSync(legacyStatusRepo, { recursive: true });
+  git(["init"], legacyStatusRepo);
+  writeFileSync(join(legacyStatusRepo, "package.json"), JSON.stringify({ name: "legacy-status", description: "Original description" }, null, 2), "utf8");
+  const legacyStatusRegistry = join(tmp, "legacy-status-projects.yaml");
+  const legacyStatusEnv = { PJ_PROJECT_REGISTRY: legacyStatusRegistry };
+  const legacyStatusFirst = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--json",
+  ], legacyStatusEnv, legacyStatusRepo));
+  assert.equal(legacyStatusFirst.ok, true, JSON.stringify(legacyStatusFirst.errors));
+  assert.equal(YAML.parse(readFileSync(legacyStatusRegistry, "utf8")).projects["legacy-status"].status, "active");
+
+  // Simulate a pre-PJAN-26 row that was recorded as "planned".
+  const legacyStatusData = YAML.parse(readFileSync(legacyStatusRegistry, "utf8"));
+  legacyStatusData.projects["legacy-status"].status = "planned";
+  writeFileSync(legacyStatusRegistry, YAML.stringify(legacyStatusData, { lineWidth: 0 }), "utf8");
+
+  // Reading it back must not rewrite it.
+  assert.equal(JSON.parse(run(["project", "show", "legacy-status", "--json"], legacyStatusEnv)).status, "planned", "loading an existing record must not flip status to active");
+  assert.equal(YAML.parse(readFileSync(legacyStatusRegistry, "utf8")).projects["legacy-status"].status, "planned", "a read must not rewrite the stored status");
+
+  // An unrelated update (new description) must not flip it either.
+  const legacyStatusUpdate = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--description", "Updated description", "--json",
+  ], legacyStatusEnv, legacyStatusRepo));
+  assert.equal(legacyStatusUpdate.ok, true, JSON.stringify(legacyStatusUpdate.errors));
+  assert.equal(legacyStatusUpdate.plan.project.status, "planned", "an unrelated update must preserve the existing planned status");
+  const legacyStatusAfter = YAML.parse(readFileSync(legacyStatusRegistry, "utf8")).projects["legacy-status"];
+  assert.equal(legacyStatusAfter.status, "planned", "an unrelated update must not retroactively rewrite status");
+  assert.equal(JSON.parse(readFileSync(join(legacyStatusRepo, ".project.json"), "utf8")).project_description, "Updated description", "the unrelated update must still have been applied");
+
+  // PJAN-26 guard: the read-time fallback for a status-less record must stay
+  // "planned" — it is a legacy-row fallback, not the new-project default.
+  const registryStoreSource = readFileSync(join(root, "src", "project", "RegistryStore.ts"), "utf8");
+  assert.match(registryStoreSource, /status: row\.status \?\? "planned"/, "PgRegistryStore.load() must keep the legacy read-time fallback at planned");
 
   // Regression: --ticket-provider trello yields a Trello-shaped provider block
   const trelloPlan = JSON.parse(run([

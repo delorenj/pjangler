@@ -20,6 +20,13 @@ export const PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 /** Override the directory holding the `tp` provider adapters (`<provider>.sh`). */
 export const TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
+/**
+ * Lifecycle status stamped on a NEWLY created project record (PJAN-26).
+ * The project lifecycle is planned -> active -> archived; bootstrapping a
+ * project means work has started, so new records begin "active".
+ * Applies to new records only — existing records keep their recorded status.
+ */
+export const DEFAULT_NEW_PROJECT_STATUS = "active";
 
 export interface SourceArtifact {
   kind: "skill" | "template" | "package" | string;
@@ -706,7 +713,14 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     slug,
     repo_path: targetDir,
     description: input.description ?? "",
-    status: "planned",
+    // A project the CLI is bootstrapping is being worked on right now, so a
+    // NEW record starts "active" (PJAN-26). This is a default for new records,
+    // NOT a migration: an already-registered project keeps whatever lifecycle
+    // status it has ("planned"/"active"/"archived"), so re-running init (or the
+    // sync path) never rewrites it.
+    // NOTE: unrelated to `ticket_provider.state` and `agents.*.provisioning_state`,
+    // which are different lifecycles and still default to "planned".
+    status: existing?.status ?? DEFAULT_NEW_PROJECT_STATUS,
     source_artifacts: sourceSkillPath
       ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }]
       : [],
