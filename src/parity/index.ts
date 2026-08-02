@@ -1242,12 +1242,73 @@ function readProjectJson(ctx: Context): Record<string, unknown> | null {
   return tryParseJson(safeReadText(join(ctx.repoRoot, ".project.json")));
 }
 
-function roleAgentsMap(roles: RoleMeta[]): Record<string, { role: string; role_dir: string }> {
-  return Object.fromEntries(
-    roles
-      .filter((role) => role.agentId)
-      .map((role) => [role.agentId, { role: role.role, role_dir: relativeRepo(role.roleDir.startsWith("/") ? dirname(dirname(dirname(role.roleDir))) : process.cwd(), role.roleDir) }])
-  );
+interface DeclaredAgentEntry {
+  agentId: string;
+  role?: string;
+  roleDir?: string;
+  extras: Record<string, unknown>;
+}
+
+function readDeclaredAgents(ctx: Context): DeclaredAgentEntry[] {
+  const project = readProjectJson(ctx);
+  const agents = project?.agents as Record<string, unknown> | undefined;
+  if (!agents || typeof agents !== "object") return [];
+  return Object.entries(agents).map(([agentId, value]) => {
+    const entry = (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {}) as Record<string, unknown>;
+    return {
+      agentId,
+      role: typeof entry.role === "string" ? entry.role : undefined,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : undefined,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
+    };
+  });
+}
+
+function readRoleYamlAt(roleDir: string): { role: string; agentId: string; providerName: string; text: string } | null {
+  const roleYamlPath = join(roleDir, "role.yaml");
+  if (!existsSync(roleYamlPath)) return null;
+  const text = readText(roleYamlPath);
+  return {
+    role: yamlGet(text, "role"),
+    agentId: yamlGet(text, "agent_id"),
+    providerName: yamlGet(text, "ticket_provider.name"),
+    text,
+  };
+}
+
+function validateDeclaredAgent(ctx: Context, declared: DeclaredAgentEntry): { valid: boolean; role?: string; agentId?: string; roleDir?: string; details: string[] } {
+  const details: string[] = [];
+  if (!declared.roleDir) {
+    details.push(`agents.${declared.agentId}.role_dir missing`);
+    return { valid: false, details };
+  }
+  const roleDir = resolve(ctx.repoRoot, declared.roleDir);
+  if (!existsSync(roleDir)) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} does not exist`);
+    return { valid: false, roleDir, details };
+  }
+  const roleYaml = readRoleYamlAt(roleDir);
+  if (!roleYaml) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} missing role.yaml`);
+    return { valid: false, roleDir, details };
+  }
+  if (declared.role !== roleYaml.role) {
+    details.push(`agents.${declared.agentId}.role should be ${roleYaml.role} (declared ${declared.role})`);
+  }
+  if (declared.agentId !== roleYaml.agentId) {
+    details.push(`agents.${declared.agentId} should map to agent_id ${roleYaml.agentId}`);
+  }
+  if (roleYaml.providerName) {
+    const dispatcher = join(roleDir, ".scripts", "lib", "ticket-provider.sh");
+    if (!existsSync(dispatcher)) {
+      details.push(`agents.${declared.agentId} provider dispatcher ${relative(ctx.repoRoot, dispatcher)} missing`);
+    }
+    const provider = join(roleDir, ".scripts", "providers", `${roleYaml.providerName}.sh`);
+    if (!existsSync(provider)) {
+      details.push(`agents.${declared.agentId} provider script ${relative(ctx.repoRoot, provider)} missing`);
+    }
+  }
+  return { valid: details.length === 0, role: roleYaml.role, agentId: roleYaml.agentId, roleDir, details };
 }
 
 function boolSetting(value: unknown, fallback: boolean): boolean {
@@ -1269,10 +1330,10 @@ function numberSetting(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function canonicalProjectJson(ctx: Context): Record<string, unknown> {
+function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename(ctx.repoRoot));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -1282,7 +1343,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
   };
   if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
-  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; provisioning_state?: string }> | undefined) ?? {};
+  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; [key: string]: unknown }> | undefined) ?? {};
   const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
     roles.map((role) => [
       role.agentId || `${slug}-${role.role}`,
@@ -1292,13 +1353,30 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
       },
     ])
   );
-  const agents = { ...existingAgents } as Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
-  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
-    const existingAgent = existingAgents[agentId] ?? {};
-    agents[agentId] = {
-      role: discovered.role,
-      role_dir: discovered.role_dir,
-      provisioning_state: existingAgent.provisioning_state,
+  const agents: Record<string, { role: string; role_dir: string; [key: string]: unknown }> = Object.fromEntries(
+    Object.entries(discoveredAgents).map(([agentId, discovered]) => {
+      const existingAgent = existingAgents[agentId] ?? {};
+      const extras = Object.fromEntries(Object.entries(existingAgent).filter(([key]) => key !== "role" && key !== "role_dir"));
+      return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
+    })
+  );
+  const dropped: string[] = [];
+  for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
+    const declared: DeclaredAgentEntry = {
+      agentId: declaredAgentId,
+      role: typeof entry.role === "string" ? entry.role : undefined,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : undefined,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
+    };
+    const validated = validateDeclaredAgent(ctx, declared);
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
+      dropped.push(declaredAgentId);
+      continue;
+    }
+    agents[validated.agentId] = {
+      role: validated.role,
+      role_dir: relative(ctx.repoRoot, validated.roleDir),
+      ...declared.extras,
     };
   }
   const existingAutomation = (existing.automation as Record<string, unknown> | undefined) ?? {};
@@ -1322,6 +1400,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     ticket_provider: ticketProvider,
     agents,
     automation,
+    dropped,
   };
 }
 
@@ -1351,6 +1430,12 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     if (agent.role !== role.role) details.push(`agents.${role.agentId}.role should be ${role.role}`);
     if (agent.role_dir !== relative(ctx.repoRoot, role.roleDir)) {
       details.push(`agents.${role.agentId}.role_dir should be ${relative(ctx.repoRoot, role.roleDir)}`);
+    }
+  }
+  const declaredAgents = readDeclaredAgents(ctx);
+  if (declaredAgents.length > 0) {
+    for (const declared of declaredAgents) {
+      details.push(...validateDeclaredAgent(ctx, declared).details);
     }
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
@@ -2090,6 +2175,414 @@ function rewriteLauncher(text: string): string {
   return next;
 }
 
+// ============================================================================
+// Momo lifecycle-plane readiness profile
+// ============================================================================
+
+export interface MomoReadinessFinding {
+  section: string;
+  status: RuleStatus;
+  summary: string;
+  details: string[];
+}
+
+export interface MomoReadinessReport {
+  ready: boolean;
+  profile: "momo-lifecycle-plane";
+  repo: string;
+  live: boolean;
+  auditedAt: string;
+  findings: MomoReadinessFinding[];
+}
+
+interface MomoProviderCandidate {
+  path: string;
+  kind: "shell" | "python" | "unknown";
+}
+
+function discoverMomoProviderCandidates(repoRoot: string): MomoProviderCandidate[] {
+  const candidates: MomoProviderCandidate[] = [];
+  const roleDirs: string[] = [];
+  const hermesDir = join(repoRoot, "agents", "hermes");
+  if (existsSync(hermesDir)) {
+    for (const entry of readdirSync(hermesDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) roleDirs.push(join(hermesDir, entry.name));
+    }
+  }
+  for (const roleDir of roleDirs) {
+    for (const name of ["momo", "provider", "momo-provider"]) {
+      const path = join(roleDir, name);
+      if (existsSync(path)) {
+        const kind = path.endsWith(".py") ? "python" : "shell";
+        candidates.push({ path, kind });
+      }
+    }
+    // Also accept any executable file named momo* in the role dir.
+    if (existsSync(roleDir)) {
+      for (const entry of readdirSync(roleDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        if (!entry.name.startsWith("momo")) continue;
+        const path = join(roleDir, entry.name);
+        try {
+          if (lstatSync(path).mode & 0o111) {
+            const kind = entry.name.endsWith(".py") ? "python" : "shell";
+            if (!candidates.some((c) => c.path === path)) candidates.push({ path, kind });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  for (const rel of [".mise/scripts/momo-provider.sh", ".scripts/momo-provider.sh", "momo"]) {
+    const path = join(repoRoot, rel);
+    if (existsSync(path)) {
+      const kind = path.endsWith(".py") ? "python" : "shell";
+      if (!candidates.some((c) => c.path === path)) candidates.push({ path, kind });
+    }
+  }
+  return candidates;
+}
+
+function firstMomoProvider(repoRoot: string): MomoProviderCandidate | undefined {
+  return discoverMomoProviderCandidates(repoRoot)[0];
+}
+
+function checkProviderSyntax(candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
+  if (candidate.kind === "python") {
+    const result = spawnSync("python3", ["-m", "py_compile", candidate.path], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return { ok: false, detail: `python3 -m py_compile failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
+    }
+    return { ok: true };
+  }
+  if (candidate.kind === "shell") {
+    const result = spawnSync("bash", ["-n", candidate.path], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return { ok: false, detail: `bash -n failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
+    }
+    return { ok: true };
+  }
+  return { ok: true };
+}
+
+function runProviderLocalSmoke(repoRoot: string, candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
+  const result = spawnSync(candidate.path, ["--help"], { cwd: repoRoot, encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, detail: `${relative(repoRoot, candidate.path)} --help exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
+  }
+  return { ok: true };
+}
+
+function attemptPlaneStateMapping(repoRoot: string): { ok: boolean; detail?: string } {
+  const project = tryParseJson(safeReadText(join(repoRoot, ".project.json")));
+  const tp = (project?.ticket_provider as Record<string, unknown>) ?? {};
+  if (!tp.board_id) return { ok: false, detail: "ticket_provider.board_id missing; cannot map Plane states" };
+  // The live mapping is credential-bearing; a real run would query Plane here.
+  // In this deterministic interface we only verify the binding is present and
+  // report that the attempt was made. Returning ok:false with a stable detail
+  // keeps the output deterministic when credentials are absent.
+  return { ok: false, detail: `Plane state mapping attempted for board ${tp.board_id} (credentials required for full mapping)` };
+}
+
+function attemptNestedAdapterSmoke(repoRoot: string, candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
+  const result = spawnSync(candidate.path, ["--smoke", "nested"], { cwd: repoRoot, encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, detail: `${relative(repoRoot, candidate.path)} --smoke nested exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
+  }
+  return { ok: true };
+}
+
+function momoLifecycleFinding(
+  section: string,
+  status: RuleStatus,
+  summary: string,
+  details: string[] = []
+): MomoReadinessFinding {
+  return { section, status, summary, details };
+}
+
+function auditManifestRoleConsistency(repoRoot: string): MomoReadinessFinding {
+  const details: string[] = [];
+  const projectPath = join(repoRoot, ".project.json");
+  if (!existsSync(projectPath)) {
+    return momoLifecycleFinding("manifest-role-consistency", "fail", ".project.json missing", [".project.json missing"]);
+  }
+  const project = tryParseJson(safeReadText(projectPath));
+  if (!project) {
+    return momoLifecycleFinding("manifest-role-consistency", "fail", ".project.json is invalid JSON", [".project.json is invalid JSON"]);
+  }
+  const agents = (project.agents as Record<string, { role?: string; role_dir?: string }> | undefined) ?? {};
+  const discovered = discoverRoles(repoRoot);
+  const discoveredByAgentId = new Map(discovered.map((role) => [role.agentId, role]));
+  const discoveredByDir = new Map(discovered.map((role) => [role.roleDir, role]));
+
+  for (const [agentId, agent] of Object.entries(agents)) {
+    if (!agent.role_dir) {
+      details.push(`agents.${agentId}.role_dir missing`);
+      continue;
+    }
+    const roleDir = resolve(repoRoot, agent.role_dir);
+    if (!existsSync(roleDir)) {
+      details.push(`agents.${agentId}.role_dir does not exist: ${agent.role_dir}`);
+      continue;
+    }
+    const roleYaml = join(roleDir, "role.yaml");
+    if (!existsSync(roleYaml)) {
+      details.push(`agents.${agentId} role.yaml missing at ${agent.role_dir}/role.yaml`);
+      continue;
+    }
+    const discoveredRole = discoveredByDir.get(roleDir);
+    if (!discoveredRole) {
+      details.push(`agents.${agentId} role.yaml at ${agent.role_dir} could not be parsed`);
+      continue;
+    }
+    if (discoveredRole.agentId !== agentId) {
+      details.push(`agents.${agentId} role.yaml agent_id mismatch: ${discoveredRole.agentId}`);
+    }
+    if (discoveredRole.role !== agent.role) {
+      details.push(`agents.${agentId} role.yaml role mismatch: expected ${agent.role}, got ${discoveredRole.role}`);
+    }
+  }
+
+  for (const role of discovered) {
+    if (!role.agentId) {
+      details.push(`role.yaml at ${relative(repoRoot, role.roleYamlPath)} missing agent_id`);
+      continue;
+    }
+    if (!(role.agentId in agents)) {
+      details.push(`role.yaml declares unregistered agent_id: ${role.agentId}`);
+    }
+  }
+
+  if (Object.keys(agents).length === 0) {
+    details.push("no agents declared in .project.json");
+  }
+
+  return details.length === 0
+    ? momoLifecycleFinding("manifest-role-consistency", "pass", "manifest and role declarations are consistent")
+    : momoLifecycleFinding("manifest-role-consistency", "fail", `${details.length} manifest/role consistency issue(s)`, details);
+}
+
+function hasAnyLifecycleScript(repoRoot: string): boolean {
+  const patterns = [
+    ".mise/scripts/lifecycle",
+    ".scripts/lifecycle",
+    "agents/hermes/*/lifecycle",
+    "agents/hermes/*/.scripts/lifecycle",
+    "agents/hermes/*/.scripts/migrate",
+    ".mise/tasks/lifecycle",
+  ];
+  for (const pattern of patterns) {
+    if (pattern.includes("*")) {
+      const [prefix, suffix] = pattern.split("*") as [string, string];
+      const base = join(repoRoot, prefix);
+      if (!existsSync(base)) continue;
+      for (const entry of readdirSync(base, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const candidate = join(base, entry.name, suffix);
+          if (existsSync(candidate)) return true;
+        }
+      }
+    } else {
+      const base = join(repoRoot, pattern);
+      if (existsSync(base)) return true;
+      // Also accept any file starting with the base path.
+      const parent = dirname(base);
+      const prefix = basename(base);
+      if (existsSync(parent)) {
+        for (const entry of readdirSync(parent, { withFileTypes: true })) {
+          if (entry.name.startsWith(prefix)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function auditLifecycleScripts(repoRoot: string): MomoReadinessFinding {
+  if (hasAnyLifecycleScript(repoRoot)) {
+    return momoLifecycleFinding("lifecycle-scripts", "pass", "lifecycle scripts present");
+  }
+  return momoLifecycleFinding(
+    "lifecycle-scripts",
+    "fail",
+    "lifecycle scripts missing",
+    ["expected one of: .mise/scripts/lifecycle*, .scripts/lifecycle*, agents/hermes/<role>/lifecycle*, agents/hermes/<role>/.scripts/lifecycle*"]
+  );
+}
+
+function hasAnySentinelScript(repoRoot: string): boolean {
+  const patterns = [
+    "agents/hermes/*/.scripts/checkpoint.sh",
+    "agents/hermes/*/.scripts/heartbeat.sh",
+    "agents/hermes/*/.scripts/sentinel",
+    "agents/hermes/*/sentinel.prompt.md",
+    ".scripts/sentinel",
+  ];
+  for (const pattern of patterns) {
+    if (pattern.includes("*")) {
+      const [prefix, suffix] = pattern.split("*") as [string, string];
+      const base = join(repoRoot, prefix);
+      if (!existsSync(base)) continue;
+      for (const entry of readdirSync(base, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const candidate = join(base, entry.name, suffix);
+          if (existsSync(candidate)) return true;
+        }
+      }
+    } else {
+      const base = join(repoRoot, pattern);
+      if (existsSync(base)) return true;
+      const parent = dirname(base);
+      const prefix = basename(base);
+      if (existsSync(parent)) {
+        for (const entry of readdirSync(parent, { withFileTypes: true })) {
+          if (entry.name.startsWith(prefix)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function auditSentinelScripts(repoRoot: string): MomoReadinessFinding {
+  if (hasAnySentinelScript(repoRoot)) {
+    return momoLifecycleFinding("sentinel-scripts", "pass", "sentinel scripts present");
+  }
+  return momoLifecycleFinding(
+    "sentinel-scripts",
+    "fail",
+    "sentinel scripts missing",
+    ["expected one of: agents/hermes/<role>/.scripts/{checkpoint.sh,heartbeat.sh,sentinel*}, agents/hermes/<role>/sentinel.prompt.md, .scripts/sentinel*"]
+  );
+}
+
+function auditExecutableProvider(repoRoot: string): MomoReadinessFinding {
+  const candidates = discoverMomoProviderCandidates(repoRoot);
+  if (candidates.length === 0) {
+    return momoLifecycleFinding(
+      "executable-provider",
+      "fail",
+      "executable provider dispatcher missing",
+      ["expected an executable agents/hermes/<role>/momo, agents/hermes/<role>/provider, or project-level momo-provider script"]
+    );
+  }
+  const details = candidates.map((c) => relative(repoRoot, c.path));
+  return momoLifecycleFinding("executable-provider", "pass", `${candidates.length} provider dispatcher candidate(s)`, details);
+}
+
+function auditProviderSyntax(repoRoot: string): MomoReadinessFinding {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("provider-syntax", "skip", "no provider dispatcher to validate");
+  }
+  const syntax = checkProviderSyntax(candidate);
+  if (!syntax.ok) {
+    return momoLifecycleFinding("provider-syntax", "fail", `${relative(repoRoot, candidate.path)} has syntax errors`, [syntax.detail ?? "syntax check failed"]);
+  }
+  return momoLifecycleFinding("provider-syntax", "pass", `${relative(repoRoot, candidate.path)} syntax OK`);
+}
+
+function auditPlaneBinding(repoRoot: string): MomoReadinessFinding {
+  const details: string[] = [];
+  const project = tryParseJson(safeReadText(join(repoRoot, ".project.json")));
+  const tp = (project?.ticket_provider as Record<string, unknown>) ?? {};
+  for (const key of ["type", "workspace", "identifier", "board_id"]) {
+    if (!tp[key]) details.push(`ticket_provider.${key} missing`);
+  }
+  const discovered = discoverRoles(repoRoot);
+  for (const role of discovered) {
+    if (!role.ticketProviderBoardId && !role.ticketProviderIdentifier) {
+      details.push(`${relative(repoRoot, role.roleYamlPath)} missing ticket_provider/plane binding`);
+    }
+  }
+  if (details.length === 0) {
+    return momoLifecycleFinding("plane-binding", "pass", "Plane ticket provider binding present");
+  }
+  return momoLifecycleFinding("plane-binding", "fail", `${details.length} Plane binding issue(s)`, details);
+}
+
+function auditPlaneStateMapping(repoRoot: string, live: boolean): MomoReadinessFinding {
+  if (!live) {
+    return momoLifecycleFinding("plane-state-mapping", "skip", "live check skipped (pass --live)", ["requires --live"]);
+  }
+  const result = attemptPlaneStateMapping(repoRoot);
+  if (!result.ok) {
+    return momoLifecycleFinding("plane-state-mapping", "warn", "Plane state mapping attempted but incomplete", [result.detail ?? "incomplete"]);
+  }
+  return momoLifecycleFinding("plane-state-mapping", "pass", "Plane state mapping verified");
+}
+
+function auditRootAdapterSmoke(repoRoot: string): MomoReadinessFinding {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("root-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
+  }
+  const smoke = runProviderLocalSmoke(repoRoot, candidate);
+  if (!smoke.ok) {
+    return momoLifecycleFinding("root-adapter-smoke", "fail", "root adapter smoke test failed", [smoke.detail ?? "unknown error"]);
+  }
+  return momoLifecycleFinding("root-adapter-smoke", "pass", "root adapter smoke test passed");
+}
+
+function auditNestedAdapterSmoke(repoRoot: string, live: boolean): MomoReadinessFinding {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("nested-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
+  }
+  if (!live) {
+    return momoLifecycleFinding("nested-adapter-smoke", "skip", "live check skipped (pass --live)", ["requires --live"]);
+  }
+  const smoke = attemptNestedAdapterSmoke(repoRoot, candidate);
+  if (!smoke.ok) {
+    return momoLifecycleFinding("nested-adapter-smoke", "warn", "nested adapter smoke attempted but incomplete", [smoke.detail ?? "unknown error"]);
+  }
+  return momoLifecycleFinding("nested-adapter-smoke", "pass", "nested adapter smoke test passed");
+}
+
+function runMomoLifecyclePlaneAudit(repoRoot: string, live = false): MomoReadinessReport {
+  const findings: MomoReadinessFinding[] = [
+    auditManifestRoleConsistency(repoRoot),
+    auditLifecycleScripts(repoRoot),
+    auditSentinelScripts(repoRoot),
+    auditExecutableProvider(repoRoot),
+    auditProviderSyntax(repoRoot),
+    auditPlaneBinding(repoRoot),
+    auditPlaneStateMapping(repoRoot, live),
+    auditRootAdapterSmoke(repoRoot),
+    auditNestedAdapterSmoke(repoRoot, live),
+  ];
+  const ready = findings.every((f) => f.status === "pass" || f.status === "skip");
+  return {
+    ready,
+    profile: "momo-lifecycle-plane",
+    repo: resolve(repoRoot),
+    live,
+    auditedAt: new Date().toISOString(),
+    findings,
+  };
+}
+
+export function runMomoReadinessAudit(repoRoot?: string, live = false): MomoReadinessReport {
+  return runMomoLifecyclePlaneAudit(resolve(repoRoot ?? process.cwd()), live);
+}
+
+export function formatMomoReadinessReport(report: MomoReadinessReport): string {
+  const sectionWidth = report.findings.reduce((max, f) => Math.max(max, f.section.length), 0);
+  const overall = report.ready
+    ? `${green(glyph.pass)} ${bold("Momo readiness: ready")}`
+    : `${red(glyph.fail)} ${bold("Momo readiness: not ready")}`;
+  const lines = ["", `  ${overall}  ${dim(glyph.dot)}  ${dim(report.profile)}`, `  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(report.auditedAt)}`, ""];
+  for (const finding of report.findings) {
+    const style = statusStyle(finding.status);
+    lines.push(`  ${style.color(style.glyph)}  ${style.color(finding.section.padEnd(sectionWidth))}  ${finding.summary}`);
+    for (const detail of finding.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 interface OpReferenceOccurrence {
   line: number;
   value: string;
@@ -2594,12 +3087,27 @@ const RULES: Rule[] = [
     audit: projectJsonFinding,
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
-      const details: string[] = [];
+      const blockedDetails: string[] = [];
+      const droppedDetails: string[] = [];
       const path = join(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
+      for (const agentId of canonical.dropped) {
+        const entry = (existing.agents as Record<string, unknown> | undefined)?.[agentId];
+        const entryRecord = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : undefined;
+        const declared: DeclaredAgentEntry = {
+          agentId,
+          role: typeof entryRecord?.role === "string" ? entryRecord.role : undefined,
+          roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : undefined,
+          extras: {},
+        };
+        const validation = validateDeclaredAgent(ctx, declared);
+        const reason = validation.details.join("; ") || "invalid";
+        droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
+      }
       // Merge: canonical keys win, but preserve any extra keys the user added
-      const merged = { ...existing, ...canonical };
+      const { dropped: _dropped, ...canonicalJson } = canonical;
+      const merged = { ...existing, ...canonicalJson };
       const expected = `${JSON.stringify(merged, null, 2)}\n`;
       if (safeReadText(path) !== expected) {
         changedFiles.push(path);
@@ -2609,17 +3117,22 @@ const RULES: Rule[] = [
       if (existsSync(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
         if (existsSync(backup)) {
-          details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
+          blockedDetails.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
           if (!ctx.dryRun) renameSync(planeJson, backup);
         }
       }
+      const details = [...droppedDetails, ...blockedDetails];
       return {
         id: finding.id,
         title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "Project SOT partially blocked" : changedFiles.length ? "Canonical .project.json written" : "No changes required",
+        status: blockedDetails.length ? "blocked" : (changedFiles.length || droppedDetails.length) ? "applied" : "noop",
+        summary: blockedDetails.length
+          ? "Project SOT partially blocked"
+          : (changedFiles.length || droppedDetails.length)
+            ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)`
+            : "No changes required",
         changedFiles,
         details,
       };
@@ -3230,7 +3743,15 @@ const RULES: Rule[] = [
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync(join(sysDir, unit)));
-        if (allUnitsPresent) {
+        // Existing units can still point at the checkout's former location.
+        // In that case enabling them again preserves the stale ExecStart path,
+        // so regenerate them from the role's current provisioning script.
+        const unitsStale = units.some((unit) => {
+          const text = safeReadText(join(sysDir, unit));
+          if (text === null) return true;
+          return text.includes("/agents/hermes/") && !text.includes(role.roleDir);
+        });
+        if (allUnitsPresent && !unitsStale) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
           } else {
@@ -3242,12 +3763,23 @@ const RULES: Rule[] = [
           continue;
         }
         for (const script of [join(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!script || !existsSync(script)) continue;
+          if (!existsSync(script)) {
+            details.push(`script failed: missing ${script}`);
+            continue;
+          }
           if (ctx.dryRun) {
-            details.push(`would run: bash ${script}`);
+            details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
           } else {
-            const result = spawnSync("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
-            if (result.status !== 0) details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            const result = spawnSync("bash", [script], {
+              cwd: role.roleDir,
+              encoding: "utf8",
+              env: { ...process.env, FORCE_SYSTEMD: "1" },
+            });
+            if (result.status !== 0) {
+              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            } else {
+              details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
+            }
           }
         }
       }
@@ -3580,6 +4112,21 @@ const RULES: Rule[] = [
           };
         }
       }
+      // A moved checkout is deliberately invisible to ownedRegistryEntries(),
+      // because that helper scopes ownership using the registry's role_dir.
+      // role.yaml gives us a safer canonical identity: repair the matching
+      // agent by id first, then let normal ownership-scoped cleanup proceed.
+      for (const role of roles) {
+        const entry = agents[role.agentId] as Record<string, unknown> | undefined;
+        if (!entry) continue;
+        const entryRoleDir = String(entry.role_dir ?? "");
+        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+          details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
+          entry.role_dir = role.roleDir;
+          entry.project_path = ctx.repoRoot;
+          dirty = true;
+        }
+      }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
         // Only ids this repo's own role.yaml files claim survive. Scoping is by
         // derived project root, so nested submodule agents are never touched.
@@ -3630,6 +4177,26 @@ const RULES: Rule[] = [
         details,
       };
     },
+  },
+  {
+    id: "momo-lifecycle-plane",
+    title: "Momo lifecycle-plane readiness profile",
+    audit: () => ({
+      id: "momo-lifecycle-plane",
+      title: "Momo lifecycle-plane readiness profile",
+      status: "skip" as const,
+      summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
+      details: [],
+      fixable: false,
+    }),
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "skipped" as const,
+      summary: "report-only profile; migration is intentionally skipped",
+      changedFiles: [],
+      details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"],
+    }),
   },
 ];
 

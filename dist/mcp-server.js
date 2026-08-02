@@ -3620,6 +3620,65 @@ function upsertLinkAgentfilesBlock(text2, ctx) {
 function readProjectJson(ctx) {
   return tryParseJson(safeReadText(join15(ctx.repoRoot, ".project.json")));
 }
+function readDeclaredAgents(ctx) {
+  const project = readProjectJson(ctx);
+  const agents = project?.agents;
+  if (!agents || typeof agents !== "object") return [];
+  return Object.entries(agents).map(([agentId, value]) => {
+    const entry = typeof value === "object" && value !== null ? value : {};
+    return {
+      agentId,
+      role: typeof entry.role === "string" ? entry.role : void 0,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : void 0,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
+    };
+  });
+}
+function readRoleYamlAt(roleDir) {
+  const roleYamlPath = join15(roleDir, "role.yaml");
+  if (!existsSync10(roleYamlPath)) return null;
+  const text2 = readText(roleYamlPath);
+  return {
+    role: yamlGet(text2, "role"),
+    agentId: yamlGet(text2, "agent_id"),
+    providerName: yamlGet(text2, "ticket_provider.name"),
+    text: text2
+  };
+}
+function validateDeclaredAgent(ctx, declared) {
+  const details = [];
+  if (!declared.roleDir) {
+    details.push(`agents.${declared.agentId}.role_dir missing`);
+    return { valid: false, details };
+  }
+  const roleDir = resolve3(ctx.repoRoot, declared.roleDir);
+  if (!existsSync10(roleDir)) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} does not exist`);
+    return { valid: false, roleDir, details };
+  }
+  const roleYaml = readRoleYamlAt(roleDir);
+  if (!roleYaml) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} missing role.yaml`);
+    return { valid: false, roleDir, details };
+  }
+  if (declared.role !== roleYaml.role) {
+    details.push(`agents.${declared.agentId}.role should be ${roleYaml.role} (declared ${declared.role})`);
+  }
+  if (declared.agentId !== roleYaml.agentId) {
+    details.push(`agents.${declared.agentId} should map to agent_id ${roleYaml.agentId}`);
+  }
+  if (roleYaml.providerName) {
+    const dispatcher = join15(roleDir, ".scripts", "lib", "ticket-provider.sh");
+    if (!existsSync10(dispatcher)) {
+      details.push(`agents.${declared.agentId} provider dispatcher ${relative2(ctx.repoRoot, dispatcher)} missing`);
+    }
+    const provider = join15(roleDir, ".scripts", "providers", `${roleYaml.providerName}.sh`);
+    if (!existsSync10(provider)) {
+      details.push(`agents.${declared.agentId} provider script ${relative2(ctx.repoRoot, provider)} missing`);
+    }
+  }
+  return { valid: details.length === 0, role: roleYaml.role, agentId: roleYaml.agentId, roleDir, details };
+}
 function boolSetting(value, fallback) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -3640,7 +3699,7 @@ function numberSetting(value, fallback) {
 function canonicalProjectJson(ctx) {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname7(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename4(ctx.repoRoot));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String((existing.ticket_provider?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -3660,13 +3719,30 @@ function canonicalProjectJson(ctx) {
       }
     ])
   );
-  const agents = { ...existingAgents };
-  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
-    const existingAgent = existingAgents[agentId] ?? {};
-    agents[agentId] = {
-      role: discovered.role,
-      role_dir: discovered.role_dir,
-      provisioning_state: existingAgent.provisioning_state
+  const agents = Object.fromEntries(
+    Object.entries(discoveredAgents).map(([agentId, discovered]) => {
+      const existingAgent = existingAgents[agentId] ?? {};
+      const extras = Object.fromEntries(Object.entries(existingAgent).filter(([key]) => key !== "role" && key !== "role_dir"));
+      return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
+    })
+  );
+  const dropped = [];
+  for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
+    const declared = {
+      agentId: declaredAgentId,
+      role: typeof entry.role === "string" ? entry.role : void 0,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : void 0,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
+    };
+    const validated = validateDeclaredAgent(ctx, declared);
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
+      dropped.push(declaredAgentId);
+      continue;
+    }
+    agents[validated.agentId] = {
+      role: validated.role,
+      role_dir: relative2(ctx.repoRoot, validated.roleDir),
+      ...declared.extras
     };
   }
   const existingAutomation = existing.automation ?? {};
@@ -3689,7 +3765,8 @@ function canonicalProjectJson(ctx) {
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
-    automation
+    automation,
+    dropped
   };
 }
 function projectJsonFinding(ctx) {
@@ -3718,6 +3795,12 @@ function projectJsonFinding(ctx) {
     if (agent.role !== role.role) details.push(`agents.${role.agentId}.role should be ${role.role}`);
     if (agent.role_dir !== relative2(ctx.repoRoot, role.roleDir)) {
       details.push(`agents.${role.agentId}.role_dir should be ${relative2(ctx.repoRoot, role.roleDir)}`);
+    }
+  }
+  const declaredAgents = readDeclaredAgents(ctx);
+  if (declaredAgents.length > 0) {
+    for (const declared of declaredAgents) {
+      details.push(...validateDeclaredAgent(ctx, declared).details);
     }
   }
   const ticketProvider = data.ticket_provider ?? {};
@@ -4862,11 +4945,26 @@ var RULES = [
     audit: projectJsonFinding,
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      const details = [];
+      const blockedDetails = [];
+      const droppedDetails = [];
       const path = join15(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
-      const merged = { ...existing, ...canonical };
+      for (const agentId of canonical.dropped) {
+        const entry = existing.agents?.[agentId];
+        const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
+        const declared = {
+          agentId,
+          role: typeof entryRecord?.role === "string" ? entryRecord.role : void 0,
+          roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : void 0,
+          extras: {}
+        };
+        const validation = validateDeclaredAgent(ctx, declared);
+        const reason = validation.details.join("; ") || "invalid";
+        droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
+      }
+      const { dropped: _dropped, ...canonicalJson } = canonical;
+      const merged = { ...existing, ...canonicalJson };
       const expected = `${JSON.stringify(merged, null, 2)}
 `;
       if (safeReadText(path) !== expected) {
@@ -4877,17 +4975,18 @@ var RULES = [
       if (existsSync10(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
         if (existsSync10(backup)) {
-          details.push(`cannot back up .plane.json because ${relative2(ctx.repoRoot, backup)} already exists`);
+          blockedDetails.push(`cannot back up .plane.json because ${relative2(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
           if (!ctx.dryRun) renameSync2(planeJson, backup);
         }
       }
+      const details = [...droppedDetails, ...blockedDetails];
       return {
         id: finding.id,
         title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "Project SOT partially blocked" : changedFiles.length ? "Canonical .project.json written" : "No changes required",
+        status: blockedDetails.length ? "blocked" : changedFiles.length || droppedDetails.length ? "applied" : "noop",
+        summary: blockedDetails.length ? "Project SOT partially blocked" : changedFiles.length || droppedDetails.length ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)` : "No changes required",
         changedFiles,
         details
       };
@@ -5466,7 +5565,12 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         const sysDir = join15(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync10(join15(sysDir, unit)));
-        if (allUnitsPresent) {
+        const unitsStale = units.some((unit) => {
+          const text2 = safeReadText(join15(sysDir, unit));
+          if (text2 === null) return true;
+          return text2.includes("/agents/hermes/") && !text2.includes(role.roleDir);
+        });
+        if (allUnitsPresent && !unitsStale) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
           } else {
@@ -5478,12 +5582,23 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           continue;
         }
         for (const script of [join15(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!script || !existsSync10(script)) continue;
+          if (!existsSync10(script)) {
+            details.push(`script failed: missing ${script}`);
+            continue;
+          }
           if (ctx.dryRun) {
-            details.push(`would run: bash ${script}`);
+            details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
           } else {
-            const result = spawnSync6("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
-            if (result.status !== 0) details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            const result = spawnSync6("bash", [script], {
+              cwd: role.roleDir,
+              encoding: "utf8",
+              env: { ...process.env, FORCE_SYSTEMD: "1" }
+            });
+            if (result.status !== 0) {
+              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            } else {
+              details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
+            }
           }
         }
       }
@@ -5797,6 +5912,17 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           };
         }
       }
+      for (const role of roles) {
+        const entry = agents[role.agentId];
+        if (!entry) continue;
+        const entryRoleDir = String(entry.role_dir ?? "");
+        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+          details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
+          entry.role_dir = role.roleDir;
+          entry.project_path = ctx.repoRoot;
+          dirty = true;
+        }
+      }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
         if (canonical.size > 0 && !canonical.has(agentId)) {
           details.push(`drop stale/duplicate registry agent "${agentId}"`);
@@ -5839,6 +5965,26 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         details
       };
     }
+  },
+  {
+    id: "momo-lifecycle-plane",
+    title: "Momo lifecycle-plane readiness profile",
+    audit: () => ({
+      id: "momo-lifecycle-plane",
+      title: "Momo lifecycle-plane readiness profile",
+      status: "skip",
+      summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
+      details: [],
+      fixable: false
+    }),
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "skipped",
+      summary: "report-only profile; migration is intentionally skipped",
+      changedFiles: [],
+      details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"]
+    })
   }
 ];
 function writeIfDifferent(path, content, dryRun, changedFiles, mode) {

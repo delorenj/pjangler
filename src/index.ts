@@ -18,7 +18,7 @@ import {
   createRecipe
 } from "./utils/registry";
 import { cancel, multiselect, text, isCancel } from "@clack/prompts";
-import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, getParityRuleIds, type AuditFinding } from "./parity/index";
+import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
 import {
   doctorProjectRegistry,
   executeProjectInitPlan,
@@ -787,9 +787,26 @@ program
   .command("audit")
   .argument("[repo]", "Path to repo to audit (default: cwd)")
   .description("Deterministic parity audit against 33god project standard")
+  .option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)")
+  .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
   .option("--json", "Output machine-parseable JSON")
   .action((repo: string | undefined, options) => {
     try {
+      const profile = options.profile as string | undefined;
+      const live = (options.live as boolean | undefined) ?? false;
+      if (profile === "momo-lifecycle-plane") {
+        const report = runMomoReadinessAudit(repo, live);
+        if (options.json) {
+          console.log(JSON.stringify(report, null, 2));
+        } else {
+          console.log(formatMomoReadinessReport(report));
+        }
+        process.exit(report.ready ? 0 : 1);
+      }
+      if (profile) {
+        console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
+        process.exit(1);
+      }
       const report = runAudit(repo);
       if (options.json) {
         console.log(JSON.stringify(report, null, 2));
