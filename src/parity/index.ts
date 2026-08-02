@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
@@ -71,6 +72,9 @@ export interface Context {
   dryRun: boolean;
   pjanglerRoot: string;
   homeDir: string;
+  // PJAN-28: opt-in gate for mapping legacy committed skills into
+  // .agents/skills.json. Absent/false => migrate only REPORTS the proposal.
+  acceptRegistryMatches?: boolean;
 }
 
 interface Rule {
@@ -131,6 +135,26 @@ const SYNC_SKILLS_SCRIPT =
 const CODEGRAPH_SCRIPT =
   "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 const SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
+// PJAN-28: legacy committed skills are moved here — never deleted — when
+// `migrate skills.project-manifest --accept-registry-matches` maps them into
+// `.agents/skills.json`. It is a SIBLING of `.agents/skills`, so the audit walk
+// (which only reads `.agents/skills`) can never see its own backups and loop.
+// Deliberately NOT added to any managed `.gitignore` block: an entry mapped to
+// `file://.../.agents/skills.bak/<name>` is the manifest's source of truth for
+// that skill, so ignoring it would break every other clone of the repo.
+const SKILLS_BACKUP_DIRNAME = "skills.bak";
+// Directories inside a registry checkout that may hold a skill by bare name.
+// `all-skills/<name>` is the shorthand sync-skills.py expands a bare string
+// manifest entry into, so it is the primary and first-checked location.
+const SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"] as const;
+// PJAN-28 targets legacy NON-BMAD committed skills. Everything under the
+// `bmad-` namespace already has an owner: pinned pack names are validated as
+// symlinks by this same rule, and off-pack `bmad-*` trees (e.g. bmad-build from
+// a newer bmad-method installer writing through the .claude/skills alias) are
+// re-materialized by `bmad.scaffold` on every run. Mapping those into the
+// manifest and backing them up would be undone by the next BMAD install and
+// re-reported forever — the same drift loop the backup dir exists to avoid.
+const BMAD_SKILL_NAME_PREFIX = "bmad-";
 const PROJECT_CLI_SKILL_DIRS = [
   ".gemini/skills",
   ".codex/skills",
@@ -674,6 +698,275 @@ function canonicalSkillsManifest(
     null,
     2
   )}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// PJAN-28: legacy committed skills
+//
+// Before this, `.agents/skills/` entries that were neither BMAD pack symlinks
+// nor recorded in `.agents/skills.json` were *silently skipped* by both the
+// audit walk and the migrate walk. A repo could therefore carry committed
+// skills that no manifest knew about and nothing ever said so. These helpers
+// surface that drift and, behind an explicit opt-in, map each entry into the
+// manifest.
+// ---------------------------------------------------------------------------
+
+function skillsBackupDir(repoRoot: string): string {
+  return join(repoRoot, ".agents", SKILLS_BACKUP_DIRNAME);
+}
+
+/**
+ * Local, offline-only registry checkouts to consult for a content match.
+ *
+ * The "registry" (`SKILLS_REGISTRY_URL`) is a plain git repo — it exposes no
+ * API and no index, so the only thing that can be matched against is a
+ * checkout that already exists on disk. `sync-skills.py` clones it into
+ * `~/.agents/.cache/registries/<sanitized-url>`; `~/code/skillex` is the
+ * canonical developer checkout (the same one `bmadPackRoot` reads packs from).
+ * We NEVER clone or fetch here: a parity audit/migrate must not depend on the
+ * network, so an absent checkout simply means "no confident match".
+ */
+function skillsRegistryRoots(ctx: Context): string[] {
+  const explicit = process.env.PJ_SKILLS_REGISTRY_ROOT?.trim();
+  if (explicit) return [resolve(explicit)];
+  const cacheName = SKILLS_REGISTRY_URL.replace(/[^a-zA-Z0-9]/g, "_");
+  return [
+    join(ctx.homeDir, ".agents", ".cache", "registries", cacheName),
+    join(ctx.homeDir, "code", "skillex"),
+  ];
+}
+
+function availableSkillsRegistryRoots(ctx: Context): string[] {
+  return skillsRegistryRoots(ctx).filter((root) =>
+    SKILLS_REGISTRY_SKILL_DIRS.some((dir) => existsSync(join(root, dir)))
+  );
+}
+
+/**
+ * Canonical content digest for a skill entry.
+ *
+ * Returns `null` for anything that cannot be compared with certainty — a
+ * symlink at any depth, a device/fifo, or an unreadable path. `null` always
+ * means "not a confident match", never "match".
+ */
+function digestSkillEntry(root: string): string | null {
+  const hash = createHash("sha256");
+  try {
+    const stat = lstatSync(root);
+    if (stat.isSymbolicLink()) return null;
+    if (stat.isFile()) {
+      const content = readFileSync(root);
+      hash.update(`file\0\0${content.length}\0`);
+      hash.update(content);
+      return hash.digest("hex");
+    }
+    if (!stat.isDirectory()) return null;
+    const walk = (dir: string, rel: string): boolean => {
+      for (const name of readdirSync(dir).sort()) {
+        const full = join(dir, name);
+        const entryRel = rel ? `${rel}/${name}` : name;
+        const entryStat = lstatSync(full);
+        if (entryStat.isSymbolicLink()) return false;
+        if (entryStat.isDirectory()) {
+          hash.update(`dir\0${entryRel}\0`);
+          if (!walk(full, entryRel)) return false;
+        } else if (entryStat.isFile()) {
+          const content = readFileSync(full);
+          hash.update(`file\0${entryRel}\0${content.length}\0`);
+          hash.update(content);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    hash.update("dir\0");
+    return walk(root, "") ? hash.digest("hex") : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Names under `.agents/skills` that no contract accounts for.
+ *
+ * Shared by the audit and the migration so the two can never drift. An entry is
+ * "unmanaged" when it is NOT in the BMAD namespace (see
+ * BMAD_SKILL_NAME_PREFIX), NOT recorded in `.agents/skills.json`, and NOT a
+ * projection of a backed-up skill (`skills-sync` re-materializes mapped entries
+ * as symlinks into `.agents/skills.bak`, which must never be re-reported).
+ */
+function legacyCommittedSkillNames(
+  skillsDir: string,
+  backupDir: string,
+  expectedNames: Set<string>,
+  packRoot: string,
+  manifestNames: Set<string>
+): string[] {
+  const stat = lstatIfPresent(skillsDir);
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return [];
+  const names: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(skillsDir).sort();
+  } catch {
+    return [];
+  }
+  for (const name of entries) {
+    if (expectedNames.has(name) || manifestNames.has(name)) continue;
+    if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
+    const path = join(skillsDir, name);
+    let linkTarget: string | null = null;
+    try {
+      linkTarget = lstatSync(path).isSymbolicLink() ? resolve(dirname(path), readlinkSync(path)) : null;
+    } catch {
+      linkTarget = null;
+    }
+    if (linkTarget && (isContainedBy(packRoot, linkTarget) || isContainedBy(backupDir, linkTarget))) continue;
+    names.push(name);
+  }
+  return names;
+}
+
+interface LegacySkillPlan {
+  name: string;
+  registryPath?: string;
+  description: string;
+}
+
+/**
+ * Decide where a single unmanaged entry should be recorded.
+ *
+ * "Confident" means byte-identical: the entry's whole tree must digest to
+ * exactly the same value as a registry candidate. Anything short of that —
+ * a customized copy, an unreadable tree, a symlink, no local checkout — keeps
+ * the skill local, because a wrong registry mapping would silently swap the
+ * user's customized skill for the upstream one on the next `skills-sync`.
+ */
+function planLegacyCommittedSkill(
+  skillsDir: string,
+  backupDir: string,
+  registryRoots: string[],
+  name: string
+): LegacySkillPlan {
+  const backupTarget = join(backupDir, name);
+  const localDescription = (reason: string) =>
+    `${name} -> file://${backupTarget} (${reason}; kept local)`;
+  const digest = digestSkillEntry(join(skillsDir, name));
+  if (!digest) {
+    return { name, description: localDescription("entry is a symlink or is not byte-comparable") };
+  }
+  if (!registryRoots.length) {
+    return { name, description: localDescription("no local registry checkout to compare against") };
+  }
+  for (const root of registryRoots) {
+    for (const dir of SKILLS_REGISTRY_SKILL_DIRS) {
+      const candidate = join(root, dir, name);
+      if (!existsSync(candidate)) continue;
+      if (digestSkillEntry(candidate) !== digest) continue;
+      return {
+        name,
+        registryPath: `${dir}/${name}`,
+        description: `${name} -> registry_path ${dir}/${name} (exact content match)`,
+      };
+    }
+  }
+  return { name, description: localDescription("no exact registry content match") };
+}
+
+/**
+ * Report (default) or apply (with `--accept-registry-matches`) the mapping of
+ * every unmanaged `.agents/skills` entry into `.agents/skills.json`.
+ *
+ * Applying moves the original into `.agents/skills.bak/<name>` — never deletes
+ * it — and records either `registry_path` (confident match) or an absolute
+ * `file://` source pointing at the backup (everything else).
+ */
+function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): string[] {
+  const details: string[] = [];
+  const agentsDir = join(ctx.repoRoot, ".agents");
+  const skillsDir = join(agentsDir, "skills");
+  const backupDir = skillsBackupDir(ctx.repoRoot);
+  const manifestPath = join(agentsDir, "skills.json");
+
+  let expectedNames = new Set<string>();
+  try {
+    expectedNames = new Set(canonicalBmadSkillEntries(ctx).map((entry) => entry.name));
+  } catch {
+    // An untrusted pack blocks later in provisionBmadSkills; treating the pack
+    // inventory as empty here only makes this step more conservative.
+  }
+  const packRoot = bmadPackRoot(ctx);
+  const rawManifest = safeReadText(manifestPath);
+  const manifest = tryParseJson(rawManifest);
+  if (rawManifest !== null && manifest === null) {
+    // Invalid JSON: never clobber it. provisionBmadSkills reports the blocker.
+    return details;
+  }
+  const manifestSkills = Array.isArray(manifest?.skills) ? [...manifest.skills] : [];
+  const manifestNames = new Set(
+    manifestSkills
+      .map(skillManifestEntryName)
+      .filter((name): name is string => Boolean(name))
+  );
+
+  const names = legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot, manifestNames);
+  if (!names.length) return details;
+
+  const registryRoots = availableSkillsRegistryRoots(ctx);
+  if (!registryRoots.length) {
+    details.push(
+      `No local ${SKILLS_REGISTRY_URL} checkout is available; registry matching is skipped (set PJ_SKILLS_REGISTRY_ROOT or let skills-sync clone the registry)`
+    );
+  }
+  const plans = names.map((name) => planLegacyCommittedSkill(skillsDir, backupDir, registryRoots, name));
+
+  if (!ctx.acceptRegistryMatches) {
+    for (const plan of plans) details.push(`proposed mapping: ${plan.description}`);
+    details.push(
+      `${plans.length} legacy committed skill(s) left untouched; re-run with --accept-registry-matches to apply`
+    );
+    return details;
+  }
+
+  const applied: LegacySkillPlan[] = [];
+  for (const plan of plans) {
+    const from = join(skillsDir, plan.name);
+    const to = join(backupDir, plan.name);
+    if (lstatIfPresent(to)) {
+      details.push(`skipped ${plan.name}: ${to} already exists and would be overwritten`);
+      continue;
+    }
+    if (!changedFiles.includes(to)) changedFiles.push(to);
+    if (!ctx.dryRun) {
+      mkdirSync(backupDir, { recursive: true });
+      renameSync(from, to);
+    }
+    manifestSkills.push(
+      plan.registryPath
+        ? { name: plan.name, registry_path: plan.registryPath }
+        : { name: plan.name, source: pathToFileURL(to).href }
+    );
+    applied.push(plan);
+    details.push(`mapped ${plan.description}`);
+  }
+  if (!applied.length) return details;
+
+  // Emit the canonical shape rather than a plain append: provisionBmadSkills
+  // re-orders the manifest into [non-pack..., pack...] on every run, so a naive
+  // append would be rewritten on the next migrate and never reach "noop".
+  const merged = { ...(manifest ?? {}), skills: manifestSkills };
+  let nextManifest: string;
+  try {
+    nextManifest = canonicalSkillsManifest(ctx, merged);
+  } catch {
+    nextManifest = `${JSON.stringify(merged, null, 2)}\n`;
+  }
+  if (nextManifest !== rawManifest) {
+    if (!changedFiles.includes(manifestPath)) changedFiles.push(manifestPath);
+    if (!ctx.dryRun) writeText(manifestPath, nextManifest);
+  }
+  return details;
 }
 
 export interface BmadProvisionHooks {
@@ -2992,6 +3285,30 @@ const RULES: Rule[] = [
         details.push(`${invalidBmadLinkNames.size} managed BMAD skill path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
 
+      // PJAN-28: the walk above deliberately skips everything that is not a
+      // pinned pack name or a pack symlink. That used to mean legacy committed
+      // skills were silently ignored; enumerate them instead.
+      const manifestNames = new Set(
+        (Array.isArray(manifest?.skills) ? manifest.skills : [])
+          .map(skillManifestEntryName)
+          .filter((name): name is string => Boolean(name))
+      );
+      const unmanagedSkillNames = legacyCommittedSkillNames(
+        legacyDir,
+        skillsBackupDir(ctx.repoRoot),
+        expectedNames,
+        packRoot,
+        manifestNames
+      );
+      for (const name of unmanagedSkillNames) {
+        details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
+      }
+      if (unmanagedSkillNames.length) {
+        details.push(
+          `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+        );
+      }
+
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         if (existsSync(join(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
       }
@@ -3041,7 +3358,14 @@ const RULES: Rule[] = [
         id: "skills.project-manifest",
         title: "Skillex project skills manifest",
         status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Skillex skills manifest parity verified" : `${details.length} Skillex migration issue(s) detected`,
+        summary:
+          details.length === 0
+            ? "Skillex skills manifest parity verified"
+            : `${details.length} Skillex migration issue(s) detected${
+                unmanagedSkillNames.length
+                  ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})`
+                  : ""
+              }`,
         details,
         fixable,
       };
@@ -3110,6 +3434,12 @@ const RULES: Rule[] = [
       }
       changedFiles.push(...provisioned.changedFiles);
       if (provisioned.changedFiles.includes(manifestPath)) details.push(`Recorded BMAD pack ${BMAD_PACK_VERSION} in .agents/skills.json`);
+
+      // PJAN-28: runs after the BMAD projection so nothing is mutated ahead of
+      // the pack blocker above. provisionBmadSkills never touches unmanaged
+      // entries, and it preserves every non-pack-managed manifest entry, so
+      // appending here is stable in both directions.
+      details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
 
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         const path = join(ctx.repoRoot, rel);
@@ -4364,13 +4694,19 @@ export function runAudit(repoArg?: string): AuditReport {
   };
 }
 
-export function runMigrationForRules(ruleIds: string[], repoArg: string | undefined, dryRun: boolean): MigrationReport {
+export function runMigrationForRules(
+  ruleIds: string[],
+  repoArg: string | undefined,
+  dryRun: boolean,
+  acceptRegistryMatches = false
+): MigrationReport {
   const pjanglerRoot = resolvePjanglerRoot();
   const ctx: Context = {
     repoRoot: resolve(repoArg ?? process.cwd()),
     dryRun,
     pjanglerRoot,
     homeDir: homedir(),
+    acceptRegistryMatches,
   };
   const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
@@ -4403,7 +4739,13 @@ export function runMigrationForRules(ruleIds: string[], repoArg: string | undefi
   };
 }
 
-export function runMigration(selector: string | undefined, repoArg: string | undefined, dryRun: boolean, all: boolean): MigrationReport {
+export function runMigration(
+  selector: string | undefined,
+  repoArg: string | undefined,
+  dryRun: boolean,
+  all: boolean,
+  acceptRegistryMatches = false
+): MigrationReport {
   if (all) {
     const audit = runAudit(repoArg);
     const ruleIds = audit.rules
@@ -4419,10 +4761,10 @@ export function runMigration(selector: string | undefined, repoArg: string | und
         changedFiles: [],
       };
     }
-    return runMigrationForRules(ruleIds, repoArg, dryRun);
+    return runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches);
   }
   const ruleIds = selector ? [selector] : [];
-  return runMigrationForRules(ruleIds, repoArg, dryRun);
+  return runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches);
 }
 
 function prettyTimestamp(iso: string): string {
