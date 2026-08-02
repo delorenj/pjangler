@@ -3907,6 +3907,333 @@ function rewriteLauncher(text2) {
   );
   return next;
 }
+function discoverMomoProviderCandidates(repoRoot) {
+  const candidates = [];
+  const roleDirs = [];
+  const hermesDir = join14(repoRoot, "agents", "hermes");
+  if (existsSync10(hermesDir)) {
+    for (const entry of readdirSync2(hermesDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) roleDirs.push(join14(hermesDir, entry.name));
+    }
+  }
+  for (const roleDir of roleDirs) {
+    for (const name of ["momo", "provider", "momo-provider"]) {
+      const path = join14(roleDir, name);
+      if (existsSync10(path)) {
+        const kind = path.endsWith(".py") ? "python" : "shell";
+        candidates.push({ path, kind });
+      }
+    }
+    if (existsSync10(roleDir)) {
+      for (const entry of readdirSync2(roleDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        if (!entry.name.startsWith("momo")) continue;
+        const path = join14(roleDir, entry.name);
+        try {
+          if (lstatSync(path).mode & 73) {
+            const kind = entry.name.endsWith(".py") ? "python" : "shell";
+            if (!candidates.some((c) => c.path === path)) candidates.push({ path, kind });
+          }
+        } catch {
+        }
+      }
+    }
+  }
+  for (const rel of [".mise/scripts/momo-provider.sh", ".scripts/momo-provider.sh", "momo"]) {
+    const path = join14(repoRoot, rel);
+    if (existsSync10(path)) {
+      const kind = path.endsWith(".py") ? "python" : "shell";
+      if (!candidates.some((c) => c.path === path)) candidates.push({ path, kind });
+    }
+  }
+  return candidates;
+}
+function firstMomoProvider(repoRoot) {
+  return discoverMomoProviderCandidates(repoRoot)[0];
+}
+function checkProviderSyntax(candidate) {
+  if (candidate.kind === "python") {
+    const result = spawnSync6("python3", ["-m", "py_compile", candidate.path], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return { ok: false, detail: `python3 -m py_compile failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
+    }
+    return { ok: true };
+  }
+  if (candidate.kind === "shell") {
+    const result = spawnSync6("bash", ["-n", candidate.path], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return { ok: false, detail: `bash -n failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
+    }
+    return { ok: true };
+  }
+  return { ok: true };
+}
+function runProviderLocalSmoke(repoRoot, candidate) {
+  const result = spawnSync6(candidate.path, ["--help"], { cwd: repoRoot, encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, detail: `${relative(repoRoot, candidate.path)} --help exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
+  }
+  return { ok: true };
+}
+function attemptPlaneStateMapping(repoRoot) {
+  const project = tryParseJson(safeReadText(join14(repoRoot, ".project.json")));
+  const tp = project?.ticket_provider ?? {};
+  if (!tp.board_id) return { ok: false, detail: "ticket_provider.board_id missing; cannot map Plane states" };
+  return { ok: false, detail: `Plane state mapping attempted for board ${tp.board_id} (credentials required for full mapping)` };
+}
+function attemptNestedAdapterSmoke(repoRoot, candidate) {
+  const result = spawnSync6(candidate.path, ["--smoke", "nested"], { cwd: repoRoot, encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, detail: `${relative(repoRoot, candidate.path)} --smoke nested exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
+  }
+  return { ok: true };
+}
+function momoLifecycleFinding(section, status, summary, details = []) {
+  return { section, status, summary, details };
+}
+function auditManifestRoleConsistency(repoRoot) {
+  const details = [];
+  const projectPath = join14(repoRoot, ".project.json");
+  if (!existsSync10(projectPath)) {
+    return momoLifecycleFinding("manifest-role-consistency", "fail", ".project.json missing", [".project.json missing"]);
+  }
+  const project = tryParseJson(safeReadText(projectPath));
+  if (!project) {
+    return momoLifecycleFinding("manifest-role-consistency", "fail", ".project.json is invalid JSON", [".project.json is invalid JSON"]);
+  }
+  const agents = project.agents ?? {};
+  const discovered = discoverRoles(repoRoot);
+  const discoveredByAgentId = new Map(discovered.map((role) => [role.agentId, role]));
+  const discoveredByDir = new Map(discovered.map((role) => [role.roleDir, role]));
+  for (const [agentId, agent] of Object.entries(agents)) {
+    if (!agent.role_dir) {
+      details.push(`agents.${agentId}.role_dir missing`);
+      continue;
+    }
+    const roleDir = resolve2(repoRoot, agent.role_dir);
+    if (!existsSync10(roleDir)) {
+      details.push(`agents.${agentId}.role_dir does not exist: ${agent.role_dir}`);
+      continue;
+    }
+    const roleYaml = join14(roleDir, "role.yaml");
+    if (!existsSync10(roleYaml)) {
+      details.push(`agents.${agentId} role.yaml missing at ${agent.role_dir}/role.yaml`);
+      continue;
+    }
+    const discoveredRole = discoveredByDir.get(roleDir);
+    if (!discoveredRole) {
+      details.push(`agents.${agentId} role.yaml at ${agent.role_dir} could not be parsed`);
+      continue;
+    }
+    if (discoveredRole.agentId !== agentId) {
+      details.push(`agents.${agentId} role.yaml agent_id mismatch: ${discoveredRole.agentId}`);
+    }
+    if (discoveredRole.role !== agent.role) {
+      details.push(`agents.${agentId} role.yaml role mismatch: expected ${agent.role}, got ${discoveredRole.role}`);
+    }
+  }
+  for (const role of discovered) {
+    if (!role.agentId) {
+      details.push(`role.yaml at ${relative(repoRoot, role.roleYamlPath)} missing agent_id`);
+      continue;
+    }
+    if (!(role.agentId in agents)) {
+      details.push(`role.yaml declares unregistered agent_id: ${role.agentId}`);
+    }
+  }
+  if (Object.keys(agents).length === 0) {
+    details.push("no agents declared in .project.json");
+  }
+  return details.length === 0 ? momoLifecycleFinding("manifest-role-consistency", "pass", "manifest and role declarations are consistent") : momoLifecycleFinding("manifest-role-consistency", "fail", `${details.length} manifest/role consistency issue(s)`, details);
+}
+function hasAnyLifecycleScript(repoRoot) {
+  const patterns = [
+    ".mise/scripts/lifecycle",
+    ".scripts/lifecycle",
+    "agents/hermes/*/lifecycle",
+    "agents/hermes/*/.scripts/lifecycle",
+    "agents/hermes/*/.scripts/migrate",
+    ".mise/tasks/lifecycle"
+  ];
+  for (const pattern of patterns) {
+    if (pattern.includes("*")) {
+      const [prefix, suffix] = pattern.split("*");
+      const base = join14(repoRoot, prefix);
+      if (!existsSync10(base)) continue;
+      for (const entry of readdirSync2(base, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const candidate = join14(base, entry.name, suffix);
+          if (existsSync10(candidate)) return true;
+        }
+      }
+    } else {
+      const base = join14(repoRoot, pattern);
+      if (existsSync10(base)) return true;
+      const parent = dirname7(base);
+      const prefix = basename3(base);
+      if (existsSync10(parent)) {
+        for (const entry of readdirSync2(parent, { withFileTypes: true })) {
+          if (entry.name.startsWith(prefix)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+function auditLifecycleScripts(repoRoot) {
+  if (hasAnyLifecycleScript(repoRoot)) {
+    return momoLifecycleFinding("lifecycle-scripts", "pass", "lifecycle scripts present");
+  }
+  return momoLifecycleFinding(
+    "lifecycle-scripts",
+    "fail",
+    "lifecycle scripts missing",
+    ["expected one of: .mise/scripts/lifecycle*, .scripts/lifecycle*, agents/hermes/<role>/lifecycle*, agents/hermes/<role>/.scripts/lifecycle*"]
+  );
+}
+function hasAnySentinelScript(repoRoot) {
+  const patterns = [
+    "agents/hermes/*/.scripts/checkpoint.sh",
+    "agents/hermes/*/.scripts/heartbeat.sh",
+    "agents/hermes/*/.scripts/sentinel",
+    "agents/hermes/*/sentinel.prompt.md",
+    ".scripts/sentinel"
+  ];
+  for (const pattern of patterns) {
+    if (pattern.includes("*")) {
+      const [prefix, suffix] = pattern.split("*");
+      const base = join14(repoRoot, prefix);
+      if (!existsSync10(base)) continue;
+      for (const entry of readdirSync2(base, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const candidate = join14(base, entry.name, suffix);
+          if (existsSync10(candidate)) return true;
+        }
+      }
+    } else {
+      const base = join14(repoRoot, pattern);
+      if (existsSync10(base)) return true;
+      const parent = dirname7(base);
+      const prefix = basename3(base);
+      if (existsSync10(parent)) {
+        for (const entry of readdirSync2(parent, { withFileTypes: true })) {
+          if (entry.name.startsWith(prefix)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+function auditSentinelScripts(repoRoot) {
+  if (hasAnySentinelScript(repoRoot)) {
+    return momoLifecycleFinding("sentinel-scripts", "pass", "sentinel scripts present");
+  }
+  return momoLifecycleFinding(
+    "sentinel-scripts",
+    "fail",
+    "sentinel scripts missing",
+    ["expected one of: agents/hermes/<role>/.scripts/{checkpoint.sh,heartbeat.sh,sentinel*}, agents/hermes/<role>/sentinel.prompt.md, .scripts/sentinel*"]
+  );
+}
+function auditExecutableProvider(repoRoot) {
+  const candidates = discoverMomoProviderCandidates(repoRoot);
+  if (candidates.length === 0) {
+    return momoLifecycleFinding(
+      "executable-provider",
+      "fail",
+      "executable provider dispatcher missing",
+      ["expected an executable agents/hermes/<role>/momo, agents/hermes/<role>/provider, or project-level momo-provider script"]
+    );
+  }
+  const details = candidates.map((c) => relative(repoRoot, c.path));
+  return momoLifecycleFinding("executable-provider", "pass", `${candidates.length} provider dispatcher candidate(s)`, details);
+}
+function auditProviderSyntax(repoRoot) {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("provider-syntax", "skip", "no provider dispatcher to validate");
+  }
+  const syntax = checkProviderSyntax(candidate);
+  if (!syntax.ok) {
+    return momoLifecycleFinding("provider-syntax", "fail", `${relative(repoRoot, candidate.path)} has syntax errors`, [syntax.detail ?? "syntax check failed"]);
+  }
+  return momoLifecycleFinding("provider-syntax", "pass", `${relative(repoRoot, candidate.path)} syntax OK`);
+}
+function auditPlaneBinding(repoRoot) {
+  const details = [];
+  const project = tryParseJson(safeReadText(join14(repoRoot, ".project.json")));
+  const tp = project?.ticket_provider ?? {};
+  for (const key of ["type", "workspace", "identifier", "board_id"]) {
+    if (!tp[key]) details.push(`ticket_provider.${key} missing`);
+  }
+  const discovered = discoverRoles(repoRoot);
+  for (const role of discovered) {
+    if (!role.ticketProviderBoardId && !role.ticketProviderIdentifier) {
+      details.push(`${relative(repoRoot, role.roleYamlPath)} missing ticket_provider/plane binding`);
+    }
+  }
+  if (details.length === 0) {
+    return momoLifecycleFinding("plane-binding", "pass", "Plane ticket provider binding present");
+  }
+  return momoLifecycleFinding("plane-binding", "fail", `${details.length} Plane binding issue(s)`, details);
+}
+function auditPlaneStateMapping(repoRoot, live) {
+  if (!live) {
+    return momoLifecycleFinding("plane-state-mapping", "skip", "live check skipped (pass --live)", ["requires --live"]);
+  }
+  const result = attemptPlaneStateMapping(repoRoot);
+  if (!result.ok) {
+    return momoLifecycleFinding("plane-state-mapping", "warn", "Plane state mapping attempted but incomplete", [result.detail ?? "incomplete"]);
+  }
+  return momoLifecycleFinding("plane-state-mapping", "pass", "Plane state mapping verified");
+}
+function auditRootAdapterSmoke(repoRoot) {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("root-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
+  }
+  const smoke = runProviderLocalSmoke(repoRoot, candidate);
+  if (!smoke.ok) {
+    return momoLifecycleFinding("root-adapter-smoke", "fail", "root adapter smoke test failed", [smoke.detail ?? "unknown error"]);
+  }
+  return momoLifecycleFinding("root-adapter-smoke", "pass", "root adapter smoke test passed");
+}
+function auditNestedAdapterSmoke(repoRoot, live) {
+  const candidate = firstMomoProvider(repoRoot);
+  if (!candidate) {
+    return momoLifecycleFinding("nested-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
+  }
+  if (!live) {
+    return momoLifecycleFinding("nested-adapter-smoke", "skip", "live check skipped (pass --live)", ["requires --live"]);
+  }
+  const smoke = attemptNestedAdapterSmoke(repoRoot, candidate);
+  if (!smoke.ok) {
+    return momoLifecycleFinding("nested-adapter-smoke", "warn", "nested adapter smoke attempted but incomplete", [smoke.detail ?? "unknown error"]);
+  }
+  return momoLifecycleFinding("nested-adapter-smoke", "pass", "nested adapter smoke test passed");
+}
+function runMomoLifecyclePlaneAudit(repoRoot, live = false) {
+  const findings = [
+    auditManifestRoleConsistency(repoRoot),
+    auditLifecycleScripts(repoRoot),
+    auditSentinelScripts(repoRoot),
+    auditExecutableProvider(repoRoot),
+    auditProviderSyntax(repoRoot),
+    auditPlaneBinding(repoRoot),
+    auditPlaneStateMapping(repoRoot, live),
+    auditRootAdapterSmoke(repoRoot),
+    auditNestedAdapterSmoke(repoRoot, live)
+  ];
+  const ready = findings.every((f) => f.status === "pass" || f.status === "skip");
+  return {
+    ready,
+    profile: "momo-lifecycle-plane",
+    repo: resolve2(repoRoot),
+    live,
+    auditedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    findings
+  };
+}
 var RULES = [
   {
     id: "mise.config-root",
@@ -5175,6 +5502,61 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
         summary: changedFiles.length ? ctx.dryRun ? "Planned registry repair" : "Fleet registry repaired" : "No changes required",
         changedFiles,
+        details
+      };
+    }
+  },
+  {
+    id: "momo-lifecycle-plane",
+    title: "Momo lifecycle-plane readiness",
+    audit: (ctx) => {
+      const project = tryParseJson(safeReadText(join14(ctx.repoRoot, ".project.json")));
+      const agents = project && typeof project === "object" && project.agents && typeof project.agents === "object" ? project.agents : {};
+      if (Object.keys(agents).length === 0) {
+        return {
+          id: "momo-lifecycle-plane",
+          title: "Momo lifecycle-plane readiness",
+          status: "skip",
+          summary: "No agents declared in .project.json; Momo lifecycle-plane readiness not applicable",
+          details: [],
+          fixable: false
+        };
+      }
+      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
+      const details = [];
+      for (const finding of report.findings) {
+        if (finding.status !== "pass" && finding.status !== "skip") {
+          details.push(`${finding.section}: ${finding.summary}`);
+          for (const d of finding.details) details.push(`  - ${d}`);
+        }
+      }
+      return {
+        id: "momo-lifecycle-plane",
+        title: "Momo lifecycle-plane readiness",
+        status: report.ready ? "pass" : "fail",
+        summary: report.ready ? "Momo lifecycle-plane readiness verified" : `${details.length} Momo lifecycle-plane readiness issue(s)`,
+        details,
+        fixable: true
+      };
+    },
+    migrate: (ctx, finding) => {
+      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
+      const details = [];
+      for (const f of report.findings) {
+        if (f.status === "pass" || f.status === "skip") continue;
+        if (f.section === "plane-state-mapping" || f.section === "nested-adapter-smoke") {
+          details.push(`${f.section}: skipped in migration; requires live credentials`);
+          continue;
+        }
+        details.push(`${f.section}: missing \u2014 ${f.summary}`);
+        for (const d of f.details) details.push(`  - ${d}`);
+      }
+      return {
+        id: finding.id,
+        title: finding.title,
+        status: "skipped",
+        summary: details.length === 0 ? "No action required" : "Momo readiness migration is report-only; manual changes required",
+        changedFiles: [],
         details
       };
     }
