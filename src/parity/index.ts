@@ -83,11 +83,47 @@ interface Rule {
 // mise runs each hook `script`/task `run` value through `sh -c`, expanding the
 // `{{config_root}}` tera template first. If the resolved path contains a space
 // (e.g. ".../James Brennan/...") an UNQUOTED reference word-splits and fails, so
-// every config_root path is wrapped in single quotes. Multiple commands must be
-// expressed as an array of `[[hooks.enter]]` tables — mise mangles the
-// `enter = [ ... ]` array-of-strings form into one broken argv.
+// every config_root path is wrapped in single quotes. Multiple commands are
+// emitted as an array of `[[hooks.enter]]` tables purely for readability and
+// stable diffs — mise 2026.7.5 executes the `enter = [ ... ]` array-of-strings
+// form correctly too, so migrating a repo off it is cosmetic, not a fix.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
+// PJAN-24: the enter hook must never clobber a populated .env.
+//
+// v0 (legacy):  op inject -i .env.op > .env
+// v1 (guarded): [ -f .env.op ] && command -v op && op inject ... > .env || true
+//
+// BOTH truncate a populated `.env`, because the shell opens the `>` redirection
+// — destroying the target — BEFORE `op` ever runs.
+//
+// v1's two guards close NO live path in the repos this actually ships to:
+// `.env.op` is tracked in git and every CommonProject repo is designed to have
+// one, so guard #1 never fires; guard #2 never fires on any box with `op`
+// installed. The only thing standing between a populated `.env` and truncation
+// was `op` succeeding — and expired session / not-signed-in / offline is the
+// routine case. v1 is therefore worse than v0: identical data loss, wrapped in
+// guards that make it look safe.
+//
+// v2 (canonical, below) never redirects onto `.env`. It materializes into a
+// `mktemp` file inside the project dir and only `mv`s it over `.env` on a
+// genuine `op` success, so `.env` is either replaced wholesale or left
+// byte-for-byte untouched. Notes on the exact shape, which is load-bearing:
+//   * `umask 077` is set BEFORE mktemp so the temp file — and therefore the
+//     resulting `.env` — never exists group/world-readable while holding
+//     resolved secrets.
+//   * `CDPATH= cd` neutralizes a user CDPATH that would make `cd` echo the
+//     resolved path into the hook's stdout.
+//   * After the `cd` the temp name is RELATIVE and matches `.env.inject.XXXXXX`,
+//     so `$t` provably contains no whitespace and needs no double quotes — which
+//     matters because this string is embedded in a TOML basic string and a Jinja
+//     template, where `"` would have to be escaped in four places in lockstep.
+//     `{{config_root}}` itself is still single-quoted (space-safe house style).
+//   * `rm -f $t` cleans up on any failure; with an unset `$t` it degrades to a
+//     no-argument `rm -f`, which POSIX defines as exit 0.
+//   * The trailing `|| true` keeps the whole hook safe under `set -e` — it is an
+//     enter hook and must never break shell entry.
+const OP_INJECT_SCRIPT =
+  "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =
@@ -1077,9 +1113,75 @@ function stripTomlStringsAndComments(line: string): string {
     .replace(/#.*$/, "");
 }
 
-function isManagedHookEntry(value: string): boolean {
+/** Strip quoting and the `{{config_root}}/` prefix so hook paths compare. */
+function normalizeOpInjectPath(raw: string): string {
+  let path = raw.trim();
+  if ((path.startsWith("'") && path.endsWith("'")) || (path.startsWith('"') && path.endsWith('"'))) {
+    path = path.slice(1, -1);
+  }
+  return path.replace(/^\{\{config_root\}\}\//, "").replace(/^\.\//, "");
+}
+
+const QUOTED_OR_BARE = String.raw`("[^"]*"|'[^']*'|\S+)`;
+
+/**
+ * The file an `op inject` hook ultimately writes, normalized relative to the
+ * project root — or null if the value is not an `op inject` command at all.
+ *
+ * Publication order matters: a hook that stages to a temp and then `mv`s is
+ * defined by the `mv` destination, not by `-o`. Only the segment AFTER
+ * `op inject` is considered, so the `>/dev/null` in the `command -v op` guard
+ * is never mistaken for the output target.
+ */
+function opInjectOutputTarget(value: string): string | null {
+  const trimmed = value.trim();
+  const start = trimmed.search(/\bop\s+inject\b/);
+  if (start < 0) return null;
+  const tail = trimmed.slice(start);
+  const mv = new RegExp(String.raw`\bmv\s+(?:-\S+\s+)*${QUOTED_OR_BARE}\s+${QUOTED_OR_BARE}`).exec(tail);
+  if (mv?.[2]) return normalizeOpInjectPath(mv[2]);
+  const redirect = new RegExp(String.raw`>\s*${QUOTED_OR_BARE}`).exec(tail);
+  if (redirect?.[1]) return normalizeOpInjectPath(redirect[1]);
+  const flag = new RegExp(String.raw`\s(?:-o|--out(?:put)?)[=\s]\s*${QUOTED_OR_BARE}`).exec(tail);
+  if (flag?.[1]) return normalizeOpInjectPath(flag[1]);
+  return null;
+}
+
+/**
+ * True only for a pjangler-owned dotenv materialization hook: one that writes
+ * `.env` itself. That covers the canonical atomic form and both truncating
+ * ancestors (v0 unguarded, v1 guarded-but-still-redirecting), all of which a
+ * migrate replaces with the canonical command.
+ *
+ * It deliberately does NOT claim every hook that merely mentions `op inject`
+ * and `.env.op`. A hook writing somewhere else — `.env.secrets` (the
+ * WireMiseOpInject pattern, which is SAFER than what we install), `.env.local`,
+ * `.env.staging` — belongs to the user. Claiming it is destructive, not
+ * cosmetic: normalizeHookScript rewrites it to the canonical string and
+ * dedupePreserve then collapses it into the managed entry, so the user's hook
+ * disappears entirely. When in doubt, do not claim it.
+ */
+function isOpInjectHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
+  return opInjectOutputTarget(trimmed) === ".env";
+}
+
+/**
+ * Enter-hook values that materialize `.env` but are NOT the canonical atomic
+ * command — i.e. every form that can still clobber a populated `.env`.
+ *
+ * The audit must test these extracted VALUES, never the raw mise.toml text: the
+ * explanatory comments above the hook quote the truncating forms verbatim, so a
+ * text scan would flag the very files that are already correct.
+ */
+function truncatingOpInjectEntries(enterHooks: string[]): string[] {
+  return enterHooks.filter((value) => value.trim() !== OP_INJECT_SCRIPT && isOpInjectHookEntry(value));
+}
+
+function isManagedHookEntry(value: string): boolean {
+  const trimmed = value.trim();
+  if (isOpInjectHookEntry(trimmed)) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
   if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
   if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
@@ -1093,10 +1195,16 @@ function isManagedHookEntry(value: string): boolean {
 /**
  * Normalize a preserved hook command so pjangler-managed scripts it references
  * are single-quoted (space-safe). Unknown user commands are kept verbatim.
+ *
+ * `kind` is load-bearing (PJAN-24): the dotenv rewrite applies to ENTER hooks
+ * only. A LEAVE hook is a teardown step, so rewriting one to the materialization
+ * command turns "clean up on exit" into "resolve secrets on exit" — the exact
+ * inverse of its intent.
  */
-function normalizeHookScript(script: string): string {
+function normalizeHookScript(script: string, kind: "enter" | "leave"): string {
   const trimmed = script.trim();
   if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
+  if (kind === "enter" && isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
   return trimmed;
 }
 
@@ -1169,7 +1277,11 @@ function stripHookBlocks(text: string): { text: string; enter: string[]; leave: 
         if (keyMatch) {
           const bucket = keyMatch[1] === "enter" ? enter : leave;
           const end = tomlValueSpanEnd(lines, j, lines.length);
-          for (const value of extractTomlStrings(lines.slice(j, end).join("\n"))) bucket.push(value);
+          // Full-line comments are dropped before extraction: the explanatory
+          // comment above the op-inject hook quotes the truncating forms
+          // verbatim, and must not be read back as a hook value (PJAN-24).
+          const chunk = lines.slice(j, end).filter((line) => !/^\s*#/.test(line)).join("\n");
+          for (const value of extractTomlStrings(chunk)) bucket.push(value);
           lastDrop = end - 1;
           j = end;
         } else if (/^\s*\]\s*$/.test(lines[j]!)) {
@@ -1211,9 +1323,11 @@ function dedupePreserve(scripts: string[]): string[] {
 
 function upsertLinkAgentfilesHooks(text: string): string {
   const { text: stripped, enter, leave } = stripHookBlocks(text);
-  const preservedEnter = enter.map(normalizeHookScript).filter((script) => !isManagedHookEntry(script));
+  const preservedEnter = enter
+    .map((script) => normalizeHookScript(script, "enter"))
+    .filter((script) => !isManagedHookEntry(script));
   const enterScripts = dedupePreserve([...LINK_AGENTFILES_HOOK_ENTRIES, ...preservedEnter]);
-  const leaveScripts = dedupePreserve(leave.map(normalizeHookScript));
+  const leaveScripts = dedupePreserve(leave.map((script) => normalizeHookScript(script, "leave")));
 
   const block = [
     HOOKS_COMMENT_HEADER,
@@ -2653,7 +2767,24 @@ const RULES: Rule[] = [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      if (!text.includes("op inject -i .env.op > .env")) details.push("hooks.enter must materialize .env from .env.op");
+      // PJAN-24: the atomic form is the contract. These are two INDEPENDENT
+      // assertions — presence of the canonical hook does NOT imply absence of a
+      // truncating one. A repo carrying both used to audit clean while the
+      // legacy entry destroyed .env on every `mise enter`.
+      //
+      // Both run over extracted hook VALUES, never the raw file text: the
+      // explanatory comment beside the hook quotes the truncating forms
+      // verbatim, so a text scan would flag a correct file.
+      const enterHookValues = stripHookBlocks(text).enter;
+      const truncating = truncatingOpInjectEntries(enterHookValues);
+      if (truncating.length) {
+        details.push(
+          `hooks.enter has ${truncating.length} op inject hook(s) that write .env non-atomically and truncate it before op runs (a missing .env.op, a missing op CLI, or merely an expired op session destroys it) — must materialize via mktemp + atomic mv`,
+        );
+      }
+      if (!enterHookValues.some((value) => value.trim() === OP_INJECT_SCRIPT)) {
+        details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
+      }
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes("task = \"link-agentfiles\"")) details.push("watch_files must dispatch link-agentfiles task");
       return {
@@ -3196,7 +3327,9 @@ const RULES: Rule[] = [
       }
       const gitignorePath = join(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
-      const requiredBlock = `# Secrets — .env is materialized by \`op inject -i .env.op > .env\` on mise enter.\n# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.\n.env\n.env.*\n!.env.op\n`;
+      // `.env.*` also covers the `.env.inject.XXXXXX` staging file the atomic
+      // op-inject enter hook creates in the project dir (PJAN-24).
+      const requiredBlock = `# Secrets — .env is materialized from .env.op by \`op inject\` on mise enter,\n# staged through a mktemp file and moved into place only on success.\n# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.\n.env\n.env.*\n!.env.op\n`;
       if (!gitignore.includes("!.env.op") || !gitignore.includes(".env.*")) {
         changedFiles.push(gitignorePath);
         if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);
