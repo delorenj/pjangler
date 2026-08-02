@@ -1,6 +1,6 @@
 # Hermes agent role manifest.  Tracked in the PROJECT repository.
 # The agent's actual state (memory, sessions, evolving SOUL) lives in the
-# runtime submodule.  This file is the immutable contract for this role.
+# ignored local runtime. This file is the immutable contract for this role.
 
 repo: pjangler
 role: pm
@@ -37,15 +37,15 @@ bloodbank:
     - "bloodbank.cmd.v1.agent.pjangler-pm.>"
   producer: "hermes-agent:pjangler-pm"
 
-# Runtime repo (git-tracked HERMES_HOME, auto-checkpointed).
+# Pure-local HERMES_HOME. Legacy GitHub identity is metadata-only.
 runtime:
   # Empty owner -> resolved from config.toml [github].runtime_repo_owner.
   github_owner: ""
   github_repo: "agent-hm-pjangler-pm"
-  submodule_path: "./runtime"
+  local_path: "./runtime"
   checkpoint:
-    cadence: "hourly"
-    on_session_end: true
+    cadence: "disabled"
+    on_session_end: false
 
 # Provenance — managed by the template, do not hand-edit.
 provisioned_at: "2026-06-04T17:38:16Z"

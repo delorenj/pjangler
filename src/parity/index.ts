@@ -1,10 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
+import { BMAD_PACK_VERSION, validateTrustedBmadPack } from "./bmadPack";
 
 export type RuleStatus = "pass" | "fail" | "warn" | "skip";
 
@@ -65,7 +66,7 @@ interface RoleMeta {
   legacyScrumAutoReview: string;
 }
 
-interface Context {
+export interface Context {
   repoRoot: string;
   dryRun: boolean;
   pjanglerRoot: string;
@@ -87,7 +88,6 @@ interface Rule {
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 const OP_INJECT_SCRIPT = "op inject -i .env.op > .env";
-const BMAD_PACK_VERSION = "6.10.2";
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =
@@ -95,6 +95,17 @@ const SYNC_SKILLS_SCRIPT =
 const CODEGRAPH_SCRIPT =
   "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 const SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
+const PROJECT_CLI_SKILL_DIRS = [
+  ".gemini/skills",
+  ".codex/skills",
+  ".kimi/skills",
+  ".augment/skills",
+  ".config/opencode/skills",
+  ".hermes/skills",
+  ".claude/skills",
+  ".openclaw/skills",
+] as const;
+const CANONICAL_CLAUDE_SKILLS_ALIAS = "../.agents/skills";
 
 const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
@@ -506,6 +517,69 @@ function prepareSafeProjectSkillsDirs(ctx: Context): { agentsDir: string; skills
   return { agentsDir, skillsDir };
 }
 
+function projectSkillTopologyIssues(repoRoot: string): string[] {
+  const issues: string[] = [];
+  let projectRoot: string;
+  try {
+    projectRoot = realpathSync(repoRoot);
+  } catch (error) {
+    return [`Project root is not a readable real directory: ${error instanceof Error ? error.message : String(error)}`];
+  }
+  const managedSkills = join(projectRoot, ".agents", "skills");
+
+  for (const rel of PROJECT_CLI_SKILL_DIRS) {
+    const cliDir = join(projectRoot, rel);
+    const parent = dirname(cliDir);
+    const parentStat = lstatIfPresent(parent);
+    if (!parentStat) continue;
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+      issues.push(`${rel} has an unsafe symlinked/non-directory parent`);
+      continue;
+    }
+    if (!isContainedBy(projectRoot, realOrSelf(parent))) {
+      issues.push(`${rel} parent resolves outside the project`);
+      continue;
+    }
+
+    const stat = lstatIfPresent(cliDir);
+    if (!stat) continue;
+    if (stat.isSymbolicLink()) {
+      let rawTarget = "";
+      try {
+        rawTarget = readlinkSync(cliDir);
+      } catch {
+        issues.push(`${rel} is an unreadable skills directory symlink`);
+        continue;
+      }
+      if (rel !== ".claude/skills" || rawTarget !== CANONICAL_CLAUDE_SKILLS_ALIAS) {
+        issues.push(`${rel} is an unsupported skills directory symlink`);
+        continue;
+      }
+      const managedStat = lstatIfPresent(managedSkills);
+      if (!managedStat || managedStat.isSymbolicLink() || !managedStat.isDirectory()) {
+        issues.push(`${rel} canonical alias target .agents/skills is missing or unsafe`);
+        continue;
+      }
+      try {
+        if (realpathSync(cliDir) !== realpathSync(managedSkills)) {
+          issues.push(`${rel} canonical alias resolves outside .agents/skills`);
+        }
+      } catch {
+        issues.push(`${rel} canonical alias is broken`);
+      }
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      issues.push(`${rel} is not a directory`);
+      continue;
+    }
+    if (!isContainedBy(projectRoot, realOrSelf(cliDir))) {
+      issues.push(`${rel} resolves outside the project`);
+    }
+  }
+  return issues;
+}
+
 function bmadPackRoot(ctx: Context): string {
   return resolve(
     process.env.PJ_BMAD_PACK_ROOT?.trim() ||
@@ -515,22 +589,41 @@ function bmadPackRoot(ctx: Context): string {
 
 function canonicalBmadSkillEntries(ctx: Context): SkillManifestEntry[] {
   const root = bmadPackRoot(ctx);
-  if (!existsSync(root)) return [];
-  return readdirSync(root)
-    .filter((name) => name.startsWith("bmad-") && lstatSync(join(root, name)).isDirectory())
-    .sort()
+  const trusted = validateTrustedBmadPack(root);
+  return trusted.skillNames
     .map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join(root, name)).href }));
 }
 
-function isBmadManifestEntry(entry: unknown): boolean {
-  if (typeof entry === "string") return entry.startsWith("bmad-");
-  if (!entry || typeof entry !== "object") return false;
+function skillManifestEntryName(entry: unknown): string | undefined {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object") return undefined;
   const name = (entry as Record<string, unknown>).name;
-  return typeof name === "string" && name.startsWith("bmad-");
+  return typeof name === "string" ? name : undefined;
 }
 
-function canonicalSkillsManifest(ctx: Context, current?: Record<string, unknown> | null): string {
+function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, packRoot: string): boolean {
+  const name = skillManifestEntryName(entry);
+  if (!name) return false;
+  if (expectedNames.has(name)) return true;
+  if (!entry || typeof entry !== "object") return false;
+  const source = (entry as Record<string, unknown>).source;
+  if (typeof source !== "string" || !source.startsWith("file:")) return false;
+  try {
+    const sourcePath = resolve(fileURLToPath(source));
+    return basename(sourcePath) === name && isContainedBy(packRoot, sourcePath);
+  } catch {
+    return false;
+  }
+}
+
+function canonicalSkillsManifest(
+  ctx: Context,
+  current?: Record<string, unknown> | null,
+  packSkills = canonicalBmadSkillEntries(ctx)
+): string {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
+  const expectedNames = new Set(packSkills.map((entry) => entry.name));
+  const packRoot = bmadPackRoot(ctx);
   return `${JSON.stringify(
     {
       ...(current ?? {}),
@@ -538,8 +631,8 @@ function canonicalSkillsManifest(ctx: Context, current?: Record<string, unknown>
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
       skills: [
-        ...existing.filter((entry) => !isBmadManifestEntry(entry)),
-        ...canonicalBmadSkillEntries(ctx),
+        ...existing.filter((entry) => !isPackManagedManifestEntry(entry, expectedNames, packRoot)),
+        ...packSkills,
       ],
     },
     null,
@@ -547,52 +640,154 @@ function canonicalSkillsManifest(ctx: Context, current?: Record<string, unknown>
   )}\n`;
 }
 
-function provisionBmadSkills(
+export interface BmadProvisionHooks {
+  afterPreflight?: () => void;
+  createLink?: (target: string, link: string, index: number) => void;
+  afterApply?: (manifestPath: string, skillsDir: string) => void;
+}
+
+function removeProjectEntry(path: string): void {
+  const stat = lstatIfPresent(path);
+  if (!stat) return;
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    rmSync(path, { recursive: true, force: true });
+    return;
+  }
+  // Node 24 rejects rmSync(..., { recursive: false }) for directory symlinks
+  // with ERR_FS_EISDIR. unlinkSync removes the link itself without touching its
+  // directory target and also preserves the intended regular-file behavior.
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function normalizeExecutableTemplate(
   ctx: Context,
-  preservedManifest?: Record<string, unknown> | null
+  target: string,
+  expected: string,
+  changedFiles: string[]
+): void {
+  const stat = lstatIfPresent(target);
+  if (stat && (!stat.isFile() || stat.isSymbolicLink())) {
+    throw new Error(`Refusing non-regular managed executable target: ${target}`);
+  }
+  const contentChanged = !stat || safeReadText(target) !== expected;
+  const modeChanged = !stat || (Number(stat.mode) & 0o111) === 0;
+  if (!contentChanged && !modeChanged) return;
+  if (!changedFiles.includes(target)) changedFiles.push(target);
+  if (ctx.dryRun) return;
+  if (contentChanged) {
+    writeText(target, expected);
+  }
+  const beforeChmod = lstatIfPresent(target);
+  if (!beforeChmod?.isFile() || beforeChmod.isSymbolicLink()) {
+    throw new Error(`Refusing changed managed executable target: ${target}`);
+  }
+  chmodSync(target, 0o755);
+}
+
+function atomicWriteBuffer(path: string, content: Buffer, mode: number, temporary: string): void {
+  writeFileSync(temporary, content, { flag: "wx" });
+  chmodSync(temporary, mode);
+  renameSync(temporary, path);
+}
+
+export function provisionBmadSkills(
+  ctx: Context,
+  preservedManifest?: Record<string, unknown> | null,
+  hooks: BmadProvisionHooks = {}
 ): { ok: boolean; changedFiles: string[]; error?: string } {
   const packRoot = bmadPackRoot(ctx);
-  const packSkills = canonicalBmadSkillEntries(ctx);
-  if (packSkills.length === 0) {
+  let packSkills: SkillManifestEntry[];
+  try {
+    packSkills = canonicalBmadSkillEntries(ctx);
+  } catch (error) {
     return {
       ok: false,
       changedFiles: [],
-      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} not found or empty at ${packRoot}`,
+      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${packRoot}: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  hooks.afterPreflight?.();
 
-  const changedFiles: string[] = [];
+  const projectRoot = realpathSync(ctx.repoRoot);
+  const agentsPath = join(projectRoot, ".agents");
+  const skillsPath = join(agentsPath, "skills");
+  const agentsExisted = Boolean(lstatIfPresent(agentsPath));
+  const skillsExisted = Boolean(lstatIfPresent(skillsPath));
+  let preflightDirs: { agentsDir: string; skillsDir: string };
+  try {
+    preflightDirs = prepareSafeProjectSkillsDirs({ ...ctx, dryRun: true });
+  } catch (error) {
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
+  const manifestPath = join(preflightDirs.agentsDir, "skills.json");
+  const manifestStat = lstatIfPresent(manifestPath);
+  if (manifestStat?.isSymbolicLink() || (manifestStat && !manifestStat.isFile())) {
+    return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
+  }
+  const manifestBytes = manifestStat ? readFileSync(manifestPath) : null;
+  const manifestMode = manifestStat ? Number(manifestStat.mode) & 0o777 : 0o644;
+  let currentManifest: Record<string, unknown> = {};
+  if (manifestBytes !== null) {
+    try {
+      const parsed = JSON.parse(manifestBytes.toString("utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("must contain a JSON object");
+      currentManifest = parsed as Record<string, unknown>;
+      if (currentManifest.skills !== undefined && !Array.isArray(currentManifest.skills)) throw new Error("skills must be an array");
+    } catch (error) {
+      return { ok: false, changedFiles: [], error: `Invalid existing skills manifest ${manifestPath}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   let safeDirs: { agentsDir: string; skillsDir: string };
   try {
     safeDirs = prepareSafeProjectSkillsDirs(ctx);
   } catch (error) {
     return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
-  const manifestPath = join(safeDirs.agentsDir, "skills.json");
-  const manifestStat = lstatIfPresent(manifestPath);
-  if (manifestStat?.isSymbolicLink() || (manifestStat && !manifestStat.isFile())) {
-    return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
-  }
-  const currentManifest = tryParseJson(safeReadText(manifestPath));
-  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest);
-  if (safeReadText(manifestPath) !== nextManifest) {
-    changedFiles.push(manifestPath);
-    if (!ctx.dryRun) writeText(manifestPath, nextManifest);
-  }
-
+  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
   const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath(entry.source)]));
-  let topologyChanged = false;
+  const expectedNames = new Set(expected.keys());
+  const ownershipManifest = preservedManifest ?? currentManifest;
+  const managedManifestNames = new Set(
+    (Array.isArray(ownershipManifest.skills) ? ownershipManifest.skills : [])
+      .filter((entry) => isPackManagedManifestEntry(entry, expectedNames, packRoot))
+      .map(skillManifestEntryName)
+      .filter((name): name is string => Boolean(name))
+  );
+  const affected = new Set<string>();
+  const staleManagedNames = new Set<string>();
+  const originalCorrectLinks = new Map<string, string>();
   if (existsSync(skillsDir)) {
     for (const name of readdirSync(skillsDir)) {
       validateSkillName(name);
-      if (!name.startsWith("bmad-") || expected.has(name)) continue;
       if (dirname(join(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
       }
-      topologyChanged = true;
-      if (!ctx.dryRun) rmSync(join(skillsDir, name), { recursive: true, force: true });
+      const entryPath = join(skillsDir, name);
+      let linkTargetsPack = false;
+      try {
+        linkTargetsPack = lstatSync(entryPath).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(entryPath), readlinkSync(entryPath)));
+      } catch {
+        linkTargetsPack = false;
+      }
+      if (!expected.has(name) && !managedManifestNames.has(name) && !linkTargetsPack) continue;
+      const target = expected.get(name);
+      let correct = false;
+      try {
+        correct = Boolean(target) && lstatSync(entryPath).isSymbolicLink() && resolve(dirname(entryPath), readlinkSync(entryPath)) === target;
+      } catch {
+        correct = false;
+      }
+      if (correct) originalCorrectLinks.set(name, readlinkSync(join(skillsDir, name)));
+      else {
+        affected.add(name);
+        if (!target) staleManagedNames.add(name);
+      }
     }
   }
   for (const [name, target] of expected) {
@@ -606,15 +801,144 @@ function provisionBmadSkills(
     } catch {
       correct = false;
     }
-    if (correct) continue;
-    topologyChanged = true;
-    if (!ctx.dryRun) {
-      mkdirSync(skillsDir, { recursive: true });
-      rmSync(link, { recursive: true, force: true });
-      symlinkSync(target, link, "dir");
+    if (!correct) affected.add(name);
+  }
+
+  const manifestChanged = manifestBytes?.toString("utf8") !== nextManifest;
+  const changedFiles = [
+    ...(manifestChanged ? [manifestPath] : []),
+    ...(affected.size ? [skillsDir] : []),
+  ];
+  if (ctx.dryRun || changedFiles.length === 0) {
+    try {
+      const postflight = validateTrustedBmadPack(packRoot);
+      if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
+        throw new Error("BMAD pack inventory changed after preflight");
+      }
+      return { ok: true, changedFiles };
+    } catch (error) {
+      return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
   }
-  if (topologyChanged) changedFiles.push(skillsDir);
+
+  const transaction = mkdtempSync(join(safeDirs.agentsDir, ".bmad-transaction-"));
+  const backup = join(transaction, "entries");
+  mkdirSync(backup);
+  const moved: string[] = [];
+
+  const rollback = (): void => {
+    const errors: string[] = [];
+    try {
+      for (const name of affected) {
+        removeProjectEntry(join(skillsDir, validateSkillName(name)));
+      }
+      for (const name of originalCorrectLinks.keys()) {
+        removeProjectEntry(join(skillsDir, validateSkillName(name)));
+      }
+    } catch (error) {
+      errors.push(`remove applied projection: ${String(error)}`);
+    }
+    for (const name of [...moved].reverse()) {
+      try {
+        renameSync(join(backup, name), join(skillsDir, name));
+      } catch (error) {
+        errors.push(`restore ${name}: ${String(error)}`);
+      }
+    }
+    for (const [name, rawTarget] of originalCorrectLinks) {
+      try {
+        symlinkSync(rawTarget, join(skillsDir, name), "dir");
+      } catch (error) {
+        errors.push(`restore ${name}: ${String(error)}`);
+      }
+    }
+    try {
+      if (manifestBytes === null) removeProjectEntry(manifestPath);
+      else atomicWriteBuffer(manifestPath, manifestBytes, manifestMode, join(transaction, "manifest.restore"));
+    } catch (error) {
+      errors.push(`restore manifest: ${String(error)}`);
+    }
+    rmSync(transaction, { recursive: true, force: true });
+    try {
+      if (!skillsExisted && existsSync(skillsDir) && readdirSync(skillsDir).length === 0) rmdirSync(skillsDir);
+      if (!agentsExisted && existsSync(safeDirs.agentsDir) && readdirSync(safeDirs.agentsDir).length === 0) rmdirSync(safeDirs.agentsDir);
+    } catch (error) {
+      errors.push(`remove created directories: ${String(error)}`);
+    }
+    if (errors.length) throw new Error(`BMAD rollback was incomplete: ${errors.join("; ")}`);
+  };
+
+  try {
+    for (const name of affected) {
+      const entry = join(skillsDir, name);
+      if (lstatIfPresent(entry)) {
+        renameSync(entry, join(backup, name));
+        moved.push(name);
+      }
+    }
+    let index = 0;
+    for (const [name, target] of expected) {
+      index += 1;
+      const link = join(skillsDir, name);
+      let correct = false;
+      try {
+        correct = lstatSync(link).isSymbolicLink() && resolve(skillsDir, readlinkSync(link)) === target;
+      } catch {
+        correct = false;
+      }
+      if (correct) continue;
+      if (hooks.createLink) hooks.createLink(target, link, index);
+      else symlinkSync(target, link, "dir");
+    }
+    if (manifestChanged) {
+      atomicWriteBuffer(manifestPath, Buffer.from(nextManifest), manifestMode, join(transaction, "manifest.next"));
+    }
+    const postflight = validateTrustedBmadPack(packRoot);
+    if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
+      throw new Error("BMAD pack inventory changed after preflight");
+    }
+    hooks.afterApply?.(manifestPath, skillsDir);
+    for (const name of staleManagedNames) {
+      if (lstatIfPresent(join(skillsDir, name))) {
+        throw new Error(`Applied BMAD projection retained stale managed entry: ${name}`);
+      }
+    }
+    for (const [name, target] of expected) {
+      const link = join(skillsDir, name);
+      let correct = false;
+      try {
+        correct = lstatSync(link).isSymbolicLink() && resolve(skillsDir, readlinkSync(link)) === target;
+      } catch {
+        correct = false;
+      }
+      if (!correct) throw new Error(`Applied BMAD projection link differs from plan: ${name}`);
+    }
+    const finalManifestStat = lstatIfPresent(manifestPath);
+    if (
+      !finalManifestStat || finalManifestStat.isSymbolicLink() || !finalManifestStat.isFile() ||
+      (Number(finalManifestStat.mode) & 0o777) !== manifestMode ||
+      readFileSync(manifestPath).toString("utf8") !== nextManifest
+    ) {
+      throw new Error("Applied BMAD skills manifest differs from planned bytes or mode");
+    }
+    const finalManifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    if (
+      finalManifest.$schema !== "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json" ||
+      finalManifest.inherit_global !== true || finalManifest.registry !== SKILLS_REGISTRY_URL ||
+      !Array.isArray(finalManifest.skills)
+    ) {
+      throw new Error("Applied BMAD skills manifest schema differs from plan");
+    }
+  } catch (error) {
+    try {
+      rollback();
+    } catch (rollbackError) {
+      return { ok: false, changedFiles: [], error: `BMAD provisioning failed (${String(error)}); ${String(rollbackError)}` };
+    }
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
+  }
+
+  rmSync(transaction, { recursive: true });
   return { ok: true, changedFiles };
 }
 
@@ -1144,15 +1468,14 @@ function renderSoul(role: RoleMeta): string {
     ? "Direct and brief. Decision-forward. No throat-clearing, no apologies, no \"I'll help you with that\" preambles."
     : "Direct and brief.";
   const roleSpecific = role.role === "pm"
-    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checkpoints your runtime; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
+    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checks runtime health; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
     : `You operate as the ${role.role} agent for this repo.`;
-  const runtimeOwner = role.runtimeOwner || "delorenj";
-  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the runtime submodule at \`./runtime/\` (repo \`${runtimeOwner}/${role.runtimeRepo}\`), which \`~/.hermes/profiles/${role.profileName || role.agentId}\` symlinks to (so \`--profile\` invocations resolve here too); Hermes loads its \`config.yaml\` directly. Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files all live local to that runtime.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is the submodule at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
+  return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. Your HERMES_HOME is the ignored local directory at \`./runtime/\`, which \`~/.hermes/profiles/${role.profileName || role.agentId}\` projects into (so \`--profile\` invocations resolve here too). Secrets, SOUL, memories, skills, sessions, gateway state, and runtime files stay local to that runtime and are never project gitlinks.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is stored locally at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
 
 function renderHermesWrapper(role: RoleMeta): string {
   return `#!/usr/bin/env bash
-# Launcher for ${role.agentId}. Resolves HERMES_HOME to the runtime submodule.
+# Launcher for ${role.agentId}. Resolves HERMES_HOME to the local runtime.
 
 set -euo pipefail
 
@@ -1182,8 +1505,8 @@ PROFILE_NAME="{HERMES_PROFILE_NAME:-${role.profileName || role.agentId}}"
 HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"
 
 if [[ ! -d "$RUNTIME_HOME" ]]; then
-  echo "hermes: runtime submodule not initialized at $RUNTIME_HOME" >&2
-  echo "  fix: git submodule update --init --recursive" >&2
+  echo "hermes: local runtime not provisioned at $RUNTIME_HOME" >&2
+  echo "  fix: run the role's .scripts/20-runtime-repo.sh" >&2
   exit 1
 fi
 
@@ -1219,60 +1542,108 @@ function copyMissingRecursive(sourceDir: string, targetDir: string, changedFiles
   }
 }
 
-function isGitTracked(repoRoot: string, relPath: string): boolean {
-  const result = spawnSync("git", ["ls-files", "--stage", relPath], { cwd: repoRoot, encoding: "utf8" });
-  return result.status === 0 && result.stdout.trim().length > 0;
+function runtimeSubmodulePath(repoRoot: string, role: RoleMeta): string | null {
+  const rolePath = relative(repoRoot, role.roleDir).replace(/\\/g, "/");
+  if (!/^agents\/hermes\/[^/]+$/.test(rolePath)) return null;
+  return `${rolePath}/runtime`;
 }
 
-function isGitIgnored(repoRoot: string, relPath: string): boolean {
-  const result = spawnSync("git", ["check-ignore", "-q", relPath], { cwd: repoRoot, encoding: "utf8" });
-  return result.status === 0;
+function submoduleSectionHasPath(section: string, targetPath: string): boolean {
+  return section
+    .split(/\r?\n/)
+    .some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
 
-function removeRuntimeSubmodule(repoRoot: string, role: RoleMeta, changedFiles: string[], dryRun: boolean): string[] {
+function hasRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta): boolean {
   const gitmodulesPath = join(repoRoot, ".gitmodules");
-  if (!existsSync(gitmodulesPath)) return [];
-  const current = readText(gitmodulesPath);
-  const header = `[submodule "agents/hermes/${role.role}/runtime"]`;
-  if (!current.includes(header)) return [];
-  if (!dryRun) {
-    const lines = current.split("\n");
-    const out: string[] = [];
-    let skip = false;
-    for (const line of lines) {
-      if (line.startsWith(header)) {
-        skip = true;
-        continue;
-      }
-      if (skip) {
-        if (line.trim() === "") {
-          skip = false;
-          continue;
-        }
-        if (line.startsWith("[submodule")) {
-          skip = false;
-          out.push(line);
-        }
-        continue;
-      }
-      out.push(line);
-    }
-    const remaining = out.join("\n").replace(/\n+$/, "\n");
-    if (!remaining.trim().includes("[submodule")) {
-      unlinkSync(gitmodulesPath);
+  const current = safeReadText(gitmodulesPath) ?? "";
+  const sections = current.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
+  const targetPath = runtimeSubmodulePath(repoRoot, role);
+  return Boolean(targetPath && sections.some((section) => submoduleSectionHasPath(section, targetPath)));
+}
+
+function removeRuntimeSubmoduleMapping(repoRoot: string, role: RoleMeta, changedFiles: string[], dryRun: boolean): string[] {
+  const gitmodulesPath = join(repoRoot, ".gitmodules");
+  const current = safeReadText(gitmodulesPath) ?? "";
+  if (!hasRuntimeSubmoduleMapping(repoRoot, role)) return [];
+  const targetPath = runtimeSubmodulePath(repoRoot, role);
+  if (!targetPath) return [];
+  const next = current
+    .replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) =>
+      submoduleSectionHasPath(section, targetPath) ? "" : section)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  changedFiles.push(gitmodulesPath);
+  if (!dryRun) writeText(gitmodulesPath, next ? `${next}\n` : "");
+  return [gitmodulesPath];
+}
+
+interface RuntimeRetirementResult {
+  ok: boolean;
+  details: string[];
+  error?: string;
+}
+
+function retireRuntimeSubmodule(
+  repoRoot: string,
+  role: RoleMeta,
+  changedFiles: string[],
+  dryRun: boolean,
+): RuntimeRetirementResult {
+  const runtimePath = runtimeSubmodulePath(repoRoot, role);
+  if (!runtimePath) {
+    return { ok: false, details: [], error: `refusing unsafe runtime path for ${role.roleDir}` };
+  }
+  const probe = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (probe.status !== 0) {
+    return { ok: false, details: [], error: `failed to inspect runtime index at ${runtimePath}: ${probe.stderr.trim() || `exit ${probe.status}`}` };
+  }
+
+  const details: string[] = [];
+  if (probe.stdout.trim()) {
+    details.push(`untrack ${runtimePath}`);
+    if (dryRun) {
+      changedFiles.push(runtimePath);
     } else {
-      writeText(gitmodulesPath, remaining);
+      const removal = spawnSync("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (removal.status !== 0) {
+        return { ok: false, details, error: `failed to untrack ${runtimePath}: ${removal.stderr.trim() || `exit ${removal.status}`}` };
+      }
+      const verification = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (verification.status !== 0 || verification.stdout.trim()) {
+        return {
+          ok: false,
+          details,
+          error: verification.status !== 0
+            ? `failed to verify untracked runtime ${runtimePath}: ${verification.stderr.trim() || `exit ${verification.status}`}`
+            : `runtime remains tracked after index-only removal: ${runtimePath}`,
+        };
+      }
+      changedFiles.push(runtimePath);
     }
   }
-  changedFiles.push(gitmodulesPath);
-  return [gitmodulesPath];
+
+  if (hasRuntimeSubmoduleMapping(repoRoot, role)) {
+    details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
+    removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun);
+  }
+  return { ok: true, details };
 }
 
 function upsertRegistryEntry(role: RoleMeta, homeDir: string, changedFiles: string[], dryRun: boolean): string | null {
   const path = registryPath(homeDir);
   const current = safeReadText(path) ?? "# Hermes agent fleet registry.\n# One entry per provisioned agent. Managed by hermes-agent-template/.scripts/80-registry.sh.\nschema_version: 1\nagents: {}\n";
   if (current.includes(`${role.agentId}:`)) return null;
-  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      consumer_unit: hermes-${role.agentId}-consumer.service\n      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer\n`;
+  const block = `  ${role.agentId}:\n    repo: ${role.repo}\n    role: ${role.role}\n    display_name: ${JSON.stringify(role.displayName || role.agentId)}\n    project_path: ${ctxEscape(role.roleDir ? dirname(dirname(dirname(role.roleDir))) : "")}\n    role_dir: ${ctxEscape(role.roleDir)}\n    profile_name: ${role.profileName || role.agentId}\n    telegram:\n      bot_username: ${ctxEscape(role.botHandle)}\n    plane:\n      workspace: ${ctxEscape(role.planeWorkspace)}\n      project_id: ${ctxEscape(role.ticketProviderBoardId)}\n      identifier: ${ctxEscape(role.ticketProviderIdentifier)}\n    runtime_repo: ${ctxEscape(role.runtimeRepo)}\n    bloodbank:\n      gateway_scope: fleet\n      target_agent_id: ${role.agentId}\n    systemd:\n      gateway_unit: hermes-${role.agentId}-gateway.service\n      heartbeat_timer: hermes-${role.agentId}-heartbeat.timer\n`;
   const next = current.includes("agents: {}") ? current.replace("agents: {}", `agents:\n${block}`) : `${current.replace(/\s*$/, "\n")}${block}`;
   changedFiles.push(path);
   if (!dryRun) writeText(path, next);
@@ -1348,6 +1719,7 @@ const BMAD_NPM_PACKAGE = "bmad-method";
 // install yields today. Change this one constant to retarget the whole toolchain.
 const BMAD_TARGET_CHANNEL = "next";
 const BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1000; // 1h — mirrors the starship BMAD indicator cache
+const DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
 
 // The tool matrix installed alongside the BMAD modules. Kept in one place so the
 // scaffold-install and version-upgrade paths never drift apart.
@@ -1360,7 +1732,70 @@ const BMAD_INSTALL_TOOLS = [
   "replit", "roo", "rovo-dev", "cortex", "amp", "trae", "warp", "windsurf", "zencoder",
 ];
 
-function bmadInstallArgs(repoRoot: string): string[] {
+type ManifestBmadModuleSelection =
+  | { status: "absent" }
+  | { status: "valid"; modules: string[] }
+  | { status: "invalid"; error: string };
+
+function manifestBmadModules(repoRoot: string): ManifestBmadModuleSelection {
+  const manifestPath = join(repoRoot, "_bmad", "_config", "manifest.yaml");
+  const raw = safeReadText(manifestPath);
+  if (raw === null) return { status: "absent" };
+  try {
+    const parsed = YAML.parse(raw) as { modules?: unknown } | undefined;
+    if (!Array.isArray(parsed?.modules)) {
+      return { status: "invalid", error: `${manifestPath} must define a modules array` };
+    }
+    const declared: string[] = [];
+    for (const entry of parsed.modules) {
+      const name = typeof entry === "string"
+        ? entry
+        : entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).name
+          : undefined;
+      if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+        return { status: "invalid", error: `${manifestPath} contains an invalid module entry` };
+      }
+      if (name !== "core" && name !== "custom") declared.push(name);
+    }
+    return { status: "valid", modules: Array.from(new Set(declared)) };
+  } catch (error) {
+    return {
+      status: "invalid",
+      error: `Could not parse ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function configuredBmadModules(repoRoot: string): string[] | undefined {
+  const raw = safeReadText(join(repoRoot, "_bmad", "config.toml"));
+  if (raw === null) return undefined;
+  const modules = [...raw.matchAll(/^\[modules\.([A-Za-z0-9][A-Za-z0-9_-]*)\]\s*$/gm)].map((match) => match[1]!);
+  return Array.from(new Set(modules));
+}
+
+function selectedBmadModules(repoRoot: string): string[] {
+  const manifest = manifestBmadModules(repoRoot);
+  if (manifest.status === "valid") return manifest.modules;
+  if (manifest.status === "invalid") throw new Error(manifest.error);
+  return configuredBmadModules(repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+}
+
+function requiredBmadSentinels(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
+  return [
+    join("core", "config.yaml"),
+    join("config.toml"),
+    join("_config", "manifest.yaml"),
+    ...modules.map((module) => join(module, "config.yaml")),
+  ];
+}
+
+function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
+  // bmad-method treats a missing/falsy --modules under --yes as "installed +
+  // defaults", which can silently add bmm. The installer-supported explicit
+  // no-optional-modules representation is `--modules core`; core is mandatory
+  // and the installer does not add defaults when the option is truthy.
+  const installerModules = modules.length ? modules.join(",") : "core";
   return [
     "-y",
     `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
@@ -1369,15 +1804,15 @@ function bmadInstallArgs(repoRoot: string): string[] {
     "--directory",
     repoRoot,
     "--modules",
-    "bmm,bmb,cis",
+    installerModules,
     "--tools",
     BMAD_INSTALL_TOOLS.join(","),
   ];
 }
 
 /** Run the non-interactive BMAD installer/upgrader against `repoRoot`. */
-function runBmadInstall(repoRoot: string): { ok: boolean; error?: string } {
-  const result = spawnSync("npx", bmadInstallArgs(repoRoot), { encoding: "utf8" });
+function runBmadInstall(repoRoot: string, modules = selectedBmadModules(repoRoot)): { ok: boolean; error?: string } {
+  const result = spawnSync("npx", bmadInstallArgs(repoRoot, modules), { encoding: "utf8" });
   if (result.status !== 0) {
     return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
   }
@@ -1621,7 +2056,6 @@ function realOrSelf(path: string): string {
 function profileUnits(role: RoleMeta): string[] {
   return [
     `hermes-${role.agentId}-gateway.service`,
-    `hermes-${role.agentId}-consumer.service`,
     `hermes-${role.agentId}-heartbeat.service`,
     `hermes-${role.agentId}-heartbeat.timer`,
     `hermes-${role.agentId}-checkpoint.service`,
@@ -1640,11 +2074,15 @@ function readRegistry(registryPath: string): Record<string, unknown> | null {
 }
 
 function declaredAgentIds(repoRoot: string): string[] {
+  return declaredAgentEntries(repoRoot).map(([agentId]) => agentId);
+}
+
+function declaredAgentEntries(repoRoot: string): [string, Record<string, unknown>][] {
   const raw = safeReadText(join(repoRoot, ".project.json"));
   if (raw === null) return [];
   try {
     const doc = JSON.parse(raw) as { agents?: Record<string, unknown> };
-    return Object.keys(doc.agents ?? {});
+    return Object.entries(doc.agents ?? {}).map(([agentId, entry]) => [agentId, (entry ?? {}) as Record<string, unknown>]);
   } catch {
     return [];
   }
@@ -1668,6 +2106,44 @@ function ownedRegistryEntries(
     owned.push([agentId, entry]);
   }
   return owned;
+}
+
+interface UnprovisionedRoleAgent {
+  agentId: string;
+  roleDir: string;
+  sources: ("registry" | ".project.json")[];
+}
+
+function unprovisionedRoleAgents(
+  registry: Record<string, unknown>,
+  repoRoot: string,
+  canonical: Set<string>,
+): UnprovisionedRoleAgent[] {
+  const blockers = new Map<string, { roleDir: string; sources: Set<"registry" | ".project.json"> }>();
+  const record = (agentId: string, roleDir: string, source: "registry" | ".project.json") => {
+    const current = blockers.get(agentId) ?? { roleDir, sources: new Set<"registry" | ".project.json">() };
+    if (!current.roleDir && roleDir) current.roleDir = roleDir;
+    current.sources.add(source);
+    blockers.set(agentId, current);
+  };
+
+  for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const roleDir = String(entry.role_dir ?? "");
+    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, "registry");
+  }
+  for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
+    if (canonical.has(agentId)) continue;
+    const configured = String(entry.role_dir ?? "");
+    const roleDir = configured ? resolve(repoRoot, configured) : "";
+    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
+  }
+
+  return [...blockers.entries()].map(([agentId, value]) => ({
+    agentId,
+    roleDir: value.roleDir,
+    sources: [...value.sources],
+  }));
 }
 
 // Drop a duplicate agent id from .project.json so the next provisioning run
@@ -2107,6 +2583,59 @@ export function formatMomoReadinessReport(report: MomoReadinessReport): string {
   return lines.join("\n");
 }
 
+interface OpReferenceOccurrence {
+  line: number;
+  value: string;
+  commentOnly: boolean;
+}
+
+function isValidOpReference(value: string): boolean {
+  if (!value.startsWith("op://") || /[\[\]{}<>]/.test(value)) return false;
+  const withoutScheme = value.slice("op://".length);
+  const fragmentIndex = withoutScheme.indexOf("#");
+  if (fragmentIndex >= 0) return false;
+  const queryIndex = withoutScheme.indexOf("?");
+  const pathPart = queryIndex >= 0 ? withoutScheme.slice(0, queryIndex) : withoutScheme;
+  const queryPart = queryIndex >= 0 ? withoutScheme.slice(queryIndex + 1) : "";
+  const parts = pathPart.split("/");
+  if (parts.length < 3 || parts.length > 4 || parts.some((part) => !part)) return false;
+  try {
+    for (const part of parts) decodeURIComponent(part);
+  } catch {
+    return false;
+  }
+  if (queryIndex >= 0 && !/^attribute=[A-Za-z0-9._~-]+$/.test(queryPart)) return false;
+  return true;
+}
+
+function malformedOpReferences(text: string): OpReferenceOccurrence[] {
+  const occurrences: OpReferenceOccurrence[] = [];
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    for (const match of line.matchAll(/op:\/\/[^\s"'`]+/g)) {
+      const value = match[0];
+      if (!isValidOpReference(value)) {
+        occurrences.push({ line: index + 1, value, commentOnly: line.trimStart().startsWith("#") });
+      }
+    }
+  }
+  return occurrences;
+}
+
+function removeMalformedCommentOpReferences(text: string): { text: string; changed: boolean } {
+  let changed = false;
+  const lines = text.split("\n").map((line) => {
+    if (!line.trimStart().startsWith("#")) return line;
+    return line.replace(/op:\/\/[^\s"'`]+/g, (value) => {
+      if (isValidOpReference(value)) return value;
+      changed = true;
+      return "<invalid 1Password reference removed by pjangler>";
+    });
+  });
+  return { text: lines.join("\n"), changed };
+}
+
 const RULES: Rule[] = [
   {
     id: "mise.config-root",
@@ -2265,12 +2794,18 @@ const RULES: Rule[] = [
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
       let fixable = true;
-      const expectedBmad = canonicalBmadSkillEntries(ctx);
-      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
-      if (expectedBmad.length === 0) {
-        details.push(`BMAD Skillex pack ${BMAD_PACK_VERSION} missing or empty at ${bmadPackRoot(ctx)}`);
+      let expectedBmad: SkillManifestEntry[] = [];
+      try {
+        expectedBmad = canonicalBmadSkillEntries(ctx);
+      } catch (error) {
+        details.push(
+          `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${bmadPackRoot(ctx)}: ${error instanceof Error ? error.message : String(error)}`
+        );
         fixable = false;
       }
+      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
+      const expectedNames = new Set(expectedByName.keys());
+      const packRoot = bmadPackRoot(ctx);
 
       const manifest = tryParseJson(safeReadText(manifestPath));
       if (!manifest) {
@@ -2283,7 +2818,7 @@ const RULES: Rule[] = [
         } else {
           const actualBmad = new Map(
             manifest.skills
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isBmadManifestEntry(entry))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, expectedNames, packRoot))
               .map((entry) => [String(entry.name), String(entry.source ?? "")])
           );
           const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
@@ -2293,23 +2828,37 @@ const RULES: Rule[] = [
         }
       }
 
-      let invalidBmadLinks = 0;
+      const invalidBmadLinkNames = new Set<string>();
       if (existsSync(legacyDir)) {
         for (const name of readdirSync(legacyDir)) {
-          if (!name.startsWith("bmad-")) continue;
           const expected = expectedByName.get(name);
           const path = join(legacyDir, name);
+          let linkTargetsPack = false;
           try {
-            if (!expected || !lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinks++;
+            linkTargetsPack = lstatSync(path).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(path), readlinkSync(path)));
           } catch {
-            invalidBmadLinks++;
+            linkTargetsPack = false;
+          }
+          if (!expected && !linkTargetsPack) continue;
+          try {
+            if (!expected || !lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
+          } catch {
+            invalidBmadLinkNames.add(name);
           }
         }
-      } else if (expectedBmad.length > 0) {
-        invalidBmadLinks = expectedBmad.length;
+        for (const [name, expected] of expectedByName) {
+          const path = join(legacyDir, name);
+          try {
+            if (!lstatSync(path).isSymbolicLink() || resolve(dirname(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
+          } catch {
+            invalidBmadLinkNames.add(name);
+          }
+        }
+      } else {
+        for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
       }
-      if (invalidBmadLinks > 0) {
-        details.push(`${invalidBmadLinks} .agents/skills/bmad-* path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
+      if (invalidBmadLinkNames.size > 0) {
+        details.push(`${invalidBmadLinkNames.size} managed BMAD skill path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
 
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
@@ -2324,13 +2873,35 @@ const RULES: Rule[] = [
       const mise = safeReadText(misePath);
       if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
       if (!mise?.includes(PROVISION_BMAD_SKILLS_SCRIPT)) details.push("mise.toml should provision pinned BMAD pack links before syncing skills");
+      if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_BMAD_SKILLS_SCRIPT) && mise.indexOf(PROVISION_BMAD_SKILLS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
+        details.push("mise.toml should run the BMAD provisioner before project skill sync");
+      }
       if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
         details.push("mise.toml still invokes the missing bare sync-skills.py executable");
       }
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
       if (!mise?.includes('[tasks.skills-sync]')) details.push("mise.toml should define a skills-sync task");
-      if (!existsSync(join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py"))) details.push("BMAD Skillex provisioning script is missing");
-      if (!existsSync(join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py"))) details.push("Project-local skills sync engine is missing");
+      if (!mise?.includes('depends = ["skills-provision-bmad"]')) details.push("skills-sync task should depend on skills-provision-bmad");
+      for (const [rel, label] of [
+        [".mise/scripts/provision-bmad-skills.py", "BMAD Skillex provisioning script"],
+        [".mise/scripts/sync-skills.py", "Project-local skills sync engine"],
+      ] as const) {
+        const target = join(ctx.repoRoot, rel);
+        const expected = templateCommonProjectText(ctx, rel);
+        const stat = lstatIfPresent(target);
+        if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+          details.push(`${label} is missing or unsafe`);
+          if (stat) fixable = false;
+        } else {
+          if (expected === undefined || safeReadText(target) !== expected) details.push(`${label} differs from the shipped template`);
+          if ((Number(stat.mode) & 0o111) === 0) details.push(`${label} is not executable`);
+        }
+      }
+      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+      if (topologyIssues.length) {
+        details.push(...topologyIssues.map((issue) => `CLI skill topology: ${issue}`));
+        fixable = false;
+      }
       if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
         details.push("mise.toml still contains legacy skill-link wiring");
       }
@@ -2350,6 +2921,50 @@ const RULES: Rule[] = [
       const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
+      const provisionScriptPath = join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
+      const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
+      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
+      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
+
+      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+      if (topologyIssues.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Unsafe project CLI skill topology must be repaired manually",
+          changedFiles,
+          details: topologyIssues,
+        };
+      }
+
+      if (!expectedProvisionScript || !expectedSyncScript) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "pjangler install is missing a shipped skills executable",
+          changedFiles,
+          details: [
+            ...(!expectedProvisionScript ? ["Missing BMAD Skillex provisioning script template"] : []),
+            ...(!expectedSyncScript ? ["Missing project-local skills sync engine template"] : []),
+          ],
+        };
+      }
+      const unsafeScriptTargets = [provisionScriptPath, syncScriptPath].filter((path) => {
+        const stat = lstatIfPresent(path);
+        return Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
+      });
+      if (unsafeScriptTargets.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Refusing non-regular managed skills executable target",
+          changedFiles,
+          details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`),
+        };
+      }
 
       const provisioned = provisionBmadSkills(ctx);
       if (!provisioned.ok) {
@@ -2380,45 +2995,9 @@ const RULES: Rule[] = [
         if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
       }
 
-      const provisionScriptPath = join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
-      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
-      if (!expectedProvisionScript) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "pjangler install is missing the BMAD Skillex provisioning script",
-          changedFiles,
-          details,
-        };
-      }
-      if (safeReadText(provisionScriptPath) !== expectedProvisionScript) {
-        changedFiles.push(provisionScriptPath);
-        if (!ctx.dryRun) {
-          writeText(provisionScriptPath, expectedProvisionScript);
-          chmodSync(provisionScriptPath, 0o755);
-        }
-      }
+      normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
 
-      const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
-      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
-      if (!expectedSyncScript) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "pjangler install is missing the project-local skills sync engine",
-          changedFiles,
-          details,
-        };
-      }
-      if (safeReadText(syncScriptPath) !== expectedSyncScript) {
-        changedFiles.push(syncScriptPath);
-        if (!ctx.dryRun) {
-          writeText(syncScriptPath, expectedSyncScript);
-          chmodSync(syncScriptPath, 0o755);
-        }
-      }
+      normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
 
       if (!existsSync(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
@@ -2569,16 +3148,20 @@ const RULES: Rule[] = [
       if (!envOp) {
         details.push(".env.op missing");
       } else {
+        const malformed = malformedOpReferences(envOp);
+        if (malformed.length) {
+          details.push(`.env.op has malformed op:// reference(s) on line(s): ${Array.from(new Set(malformed.map((entry) => entry.line))).join(", ")}`);
+        }
         const invalidLines = envOp
           .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line && !line.startsWith("#") && line.includes("="))
-          .filter((line) => {
+          .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+          .filter(({ line }) => line && !line.startsWith("#") && line.includes("="))
+          .filter(({ line }) => {
             const value = line.slice(line.indexOf("=") + 1).trim();
             const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
             return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
-        if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals: ${invalidLines.join(", ")}`);
+        if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals on line(s): ${invalidLines.map((entry) => entry.number).join(", ")}`);
       }
       if (!gitignore?.includes(".env\n") && !gitignore?.includes(".env\r\n")) details.push(".gitignore should ignore .env");
       if (!gitignore?.includes(".env.*")) details.push(".gitignore should ignore .env.*");
@@ -2599,6 +3182,17 @@ const RULES: Rule[] = [
       if (!existsSync(envOpPath)) {
         changedFiles.push(envOpPath);
         if (!ctx.dryRun) writeText(envOpPath, readText(join(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
+      } else {
+        const current = readText(envOpPath);
+        const repaired = removeMalformedCommentOpReferences(current);
+        if (repaired.changed) {
+          changedFiles.push(envOpPath);
+          if (!ctx.dryRun) writeText(envOpPath, repaired.text);
+        }
+        const remaining = malformedOpReferences(repaired.text).filter((entry) => !entry.commentOnly);
+        if (remaining.length) {
+          details.push(`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(remaining.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`);
+        }
       }
       const gitignorePath = join(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
@@ -2672,13 +3266,22 @@ const RULES: Rule[] = [
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
     audit: (ctx) => {
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: "bmad.scaffold",
+          title: "BMAD modules/docs scaffold",
+          status: "fail",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          details: [manifestSelection.error],
+          fixable: false,
+        };
+      }
       const targetRoot = join(ctx.repoRoot, "_bmad");
-      const sentinels = [
-        join("core", "config.yaml"),
-        join("config.toml"),
-        join("_config", "manifest.yaml"),
-        join("bmm", "config.yaml"),
-      ];
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+      const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
       const missing = sentinels.filter((file) => !existsSync(join(targetRoot, file)));
       return {
         id: "bmad.scaffold",
@@ -2691,6 +3294,20 @@ const RULES: Rule[] = [
     },
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          changedFiles,
+          details: [manifestSelection.error],
+        };
+      }
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
       if (ctx.dryRun) {
         for (const detail of finding.details) {
           changedFiles.push(join(ctx.repoRoot, detail));
@@ -2702,7 +3319,7 @@ const RULES: Rule[] = [
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
           ],
         };
       }
@@ -2710,7 +3327,7 @@ const RULES: Rule[] = [
       const preservedSkillsManifest = tryParseJson(
         safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
       );
-      const install = runBmadInstall(ctx.repoRoot);
+      const install = runBmadInstall(ctx.repoRoot, selectedModules);
       if (!install.ok) {
         return {
           id: finding.id,
@@ -2825,6 +3442,20 @@ const RULES: Rule[] = [
       const installed = readInstalledBmadVersion(ctx.repoRoot);
       const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
+      const manifestSelection = manifestBmadModules(ctx.repoRoot);
+      if (manifestSelection.status === "invalid") {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "BMAD module manifest is invalid; refusing fallback module selection",
+          changedFiles: [],
+          details: [manifestSelection.error],
+        };
+      }
+      const selectedModules = manifestSelection.status === "valid"
+        ? manifestSelection.modules
+        : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
 
       if (ctx.dryRun) {
         return {
@@ -2834,7 +3465,7 @@ const RULES: Rule[] = [
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
           changedFiles: [manifestPath],
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
           ],
         };
       }
@@ -2842,7 +3473,7 @@ const RULES: Rule[] = [
       const preservedSkillsManifest = tryParseJson(
         safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
       );
-      const install = runBmadInstall(ctx.repoRoot);
+      const install = runBmadInstall(ctx.repoRoot, selectedModules);
       if (!install.ok) {
         return {
           id: finding.id,
@@ -2890,12 +3521,12 @@ const RULES: Rule[] = [
         return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
       }
       const details: string[] = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
+      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
         if (!existsSync(join(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
       }
-      const runtimeRelPath = relative(ctx.repoRoot, join(role.roleDir, "runtime"));
-      if (isGitTracked(ctx.repoRoot, runtimeRelPath)) details.push(`runtime directory is tracked by git at ${runtimeRelPath}`);
-      if (!isGitIgnored(ctx.repoRoot, runtimeRelPath)) details.push(`runtime directory is not ignored by gitignore at ${runtimeRelPath}`);
+      if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+        details.push(".gitmodules contains retired pm runtime submodule mapping");
+      }
       if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
@@ -2917,6 +3548,18 @@ const RULES: Rule[] = [
       if (!role) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
       }
+      const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      details.push(...retirement.details);
+      if (!retirement.ok) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Failed to retire PM runtime submodule metadata safely",
+          changedFiles,
+          details: [retirement.error ?? "unknown runtime retirement failure"],
+        };
+      }
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
       writeIfDifferent(join(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
       writeIfDifferent(join(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 0o755);
@@ -2935,14 +3578,6 @@ const RULES: Rule[] = [
           .replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
-      const runtimeRelPath = relative(ctx.repoRoot, join(role.roleDir, "runtime"));
-      if (isGitTracked(ctx.repoRoot, runtimeRelPath)) {
-        changedFiles.push(runtimeRelPath);
-        if (!ctx.dryRun) {
-          spawnSync("git", ["rm", "--cached", "-f", "-r", "--ignore-unmatch", runtimeRelPath], { cwd: ctx.repoRoot, encoding: "utf8" });
-        }
-      }
-      removeRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
       const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
@@ -2986,6 +3621,10 @@ const RULES: Rule[] = [
           details.push(`submodule runtime is tracked in Git index at ${runtimeRelPath}`);
         }
 
+        if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+          details.push(`stale .gitmodules mapping exists for ${runtimeRelPath}`);
+        }
+
         // 2. Check if .gitignore ignores runtime/
         const gitignorePath = join(role.roleDir, ".gitignore");
         if (existsSync(gitignorePath)) {
@@ -3014,26 +3653,21 @@ const RULES: Rule[] = [
       const details: string[] = [];
 
       for (const role of roles) {
-        const roleRelDir = relative(ctx.repoRoot, role.roleDir);
-        const runtimeRelPath = join(roleRelDir, "runtime");
-
-        // 1. Untrack if tracked
-        const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
-          cwd: ctx.repoRoot,
-          encoding: "utf8",
-        });
-        if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
-          details.push(`untrack ${runtimeRelPath}`);
-          changedFiles.push(runtimeRelPath);
-          if (!ctx.dryRun) {
-            spawnSync("git", ["rm", "--cached", "-r", runtimeRelPath], {
-              cwd: ctx.repoRoot,
-              encoding: "utf8",
-            });
-          }
+        const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+        details.push(...retirement.details);
+        if (!retirement.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Failed to retire Hermes runtime submodule metadata safely",
+            changedFiles,
+            details: [retirement.error ?? "unknown runtime retirement failure"],
+          };
         }
 
-        // 2. Update .gitignore
+        // Update .gitignore only after index removal is verified and the stale
+        // mapping has been retired.
         const gitignorePath = join(role.roleDir, ".gitignore");
         let content = "";
         let isIgnored = false;
@@ -3080,7 +3714,7 @@ const RULES: Rule[] = [
       }
       const details: string[] = [];
       for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
+        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
           const state = checkUnit(unit);
           if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
         }
@@ -3107,7 +3741,7 @@ const RULES: Rule[] = [
       }
       for (const role of roles) {
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-consumer.service`, `hermes-${role.agentId}-heartbeat.timer`];
+        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync(join(sysDir, unit)));
         if (allUnitsPresent) {
           if (ctx.dryRun) {
@@ -3337,13 +3971,13 @@ const RULES: Rule[] = [
     title: "Fleet registry matches .project.json (no duplicate or stale agents)",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
-      if (!roles.length) {
-        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
-      }
       const details: string[] = [];
       const registryPath = join(ctx.homeDir, ".hermes", "agents-registry.yaml");
       const registry = readRegistry(registryPath);
       if (!registry) {
+        if (!roles.length && declaredAgentIds(ctx.repoRoot).length === 0) {
+          return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles or declared agents present", details: [], fixable: false };
+        }
         return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath}`, details: [], fixable: false };
       }
       // role.yaml is the identity SSOT. discoverRoles() only walks this repo's
@@ -3351,15 +3985,28 @@ const RULES: Rule[] = [
       // a naive role_dir.startsWith(repoRoot) would swallow them and propose
       // deleting perfectly good sibling agents.
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
-      // An empty canonical set means this repo has no role.yaml at all -- the
-      // agent is unprovisioned, NOT duplicated. Deleting its registry entry
-      // would throw away the Plane binding, unit names, and telegram handle.
-      for (const [agentId, entry] of ownedRegistryEntries(registry, ctx.repoRoot)) {
+      const owned = ownedRegistryEntries(registry, ctx.repoRoot);
+      const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: "hermes.registry-parity",
+          title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+          status: "fail",
+          summary: `${unprovisioned.length} unprovisioned Hermes role blocker(s) detected`,
+          details: unprovisioned.map(({ agentId, roleDir, sources }) =>
+            `agent "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role, do not delete its registry/declaration`
+          ),
+          fixable: false,
+        };
+      }
+      if (canonical.size === 0) {
+        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
+      }
+      // With at least one provisioned role, stale sibling identities can be
+      // compared safely against role.yaml. The empty-role case returned above
+      // as a truthful non-fixable blocker and never enters destructive repair.
+      for (const [agentId, entry] of owned) {
         const roleDir = String((entry as Record<string, unknown>)?.role_dir ?? "");
-        if (canonical.size === 0) {
-          details.push(`registry agent "${agentId}" points at an unprovisioned role_dir (no role.yaml at ${roleDir}) -- provision it, do not delete it`);
-          continue;
-        }
         if (!canonical.has(agentId)) {
           details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
         }
@@ -3408,6 +4055,19 @@ const RULES: Rule[] = [
       const agents = (doc?.agents ?? {}) as Record<string, Record<string, unknown>>;
       const roles = discoverRoles(ctx.repoRoot);
       const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+      const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
+      if (unprovisioned.length) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: "Registry parity is blocked by an unprovisioned Hermes role",
+          changedFiles,
+          details: unprovisioned.map(({ agentId, roleDir, sources }) =>
+            `blocked: "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role without pruning registry/declaration state`
+          ),
+        };
+      }
       const fleetBin = fleetBinPath(ctx);
       let dirty = false;
 
@@ -3416,6 +4076,21 @@ const RULES: Rule[] = [
         // the Plane binding and unit names that provisioning cannot rebuild.
         for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
           details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
+        }
+        for (const agentId of declaredAgentIds(ctx.repoRoot)) {
+          if (!details.some((detail) => detail.includes(`"${agentId}"`))) {
+            details.push(`blocked: "${agentId}" is declared but has no role.yaml; provision or restore the role`);
+          }
+        }
+        if (details.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Registry parity is blocked by an unprovisioned Hermes role",
+            changedFiles,
+            details,
+          };
         }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
@@ -3444,10 +4119,12 @@ const RULES: Rule[] = [
         }
       }
 
-      // A .project.json entry with no role.yaml and no registry entry would
-      // otherwise be an audit failure migrate could never clear.
-      for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
-        dropDeclaredAgent(ctx, extra, changedFiles, details);
+      // Once role.yaml establishes the canonical identity, stale declarations
+      // can be retired alongside duplicate registry entries.
+      if (canonical.size > 0) {
+        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+          dropDeclaredAgent(ctx, extra, changedFiles, details);
+        }
       }
 
       if (dirty) {
@@ -3560,7 +4237,24 @@ export function runMigrationForRules(ruleIds: string[], repoArg: string | undefi
 }
 
 export function runMigration(selector: string | undefined, repoArg: string | undefined, dryRun: boolean, all: boolean): MigrationReport {
-  const ruleIds = all ? RULES.map((rule) => rule.id) : selector ? [selector] : [];
+  if (all) {
+    const audit = runAudit(repoArg);
+    const ruleIds = audit.rules
+      .filter((finding) => finding.fixable && (finding.status === "fail" || finding.status === "warn"))
+      .map((finding) => finding.id);
+    if (ruleIds.length === 0) {
+      return {
+        repo: audit.repo,
+        dryRun,
+        ok: true,
+        selectedRules: [],
+        results: [],
+        changedFiles: [],
+      };
+    }
+    return runMigrationForRules(ruleIds, repoArg, dryRun);
+  }
+  const ruleIds = selector ? [selector] : [];
   return runMigrationForRules(ruleIds, repoArg, dryRun);
 }
 

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
+import { BMAD_PACK_VERSION } from "../../parity/bmadPack";
 
 /**
  * "Bootstrap the config if it's not there."
@@ -50,7 +51,7 @@ export function renderHostConfig(): string {
   const scaffoldDir = join(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join(home, ".agents", "skills");
   const pmExternalSkillGlobalDir = join(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", "6.10.2");
+  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
 
   return `# hermes-agent-template — host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).

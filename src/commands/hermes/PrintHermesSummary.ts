@@ -13,7 +13,6 @@ export class PrintHermesSummary extends Command {
     const botHandle = `${targetRepo?.toLowerCase().replace(/-/g, "_")}_${role?.toLowerCase()}_bot`;
     const email = `${targetRepo}-${role}@delo.sh`;
     const gw = `hermes-${agentId}-gateway.service`;
-    const csm = `hermes-${agentId}-consumer.service`;
     const hb = `hermes-${agentId}-heartbeat.timer`;
 
     const lines: string[] = [];
@@ -25,13 +24,13 @@ export class PrintHermesSummary extends Command {
     if (!skipEmail) lines.push(`email        ${email}`);
     lines.push("");
     lines.push("Start daemons:");
-    lines.push(`  systemctl --user start ${csm}`);
     lines.push(`  systemctl --user start ${hb}`);
     if (!skipTelegram) {
       lines.push(`  systemctl --user start ${gw}`);
     } else {
       lines.push(`  # gateway needs Telegram wired first (re-run with --skip-telegram=0)`);
     }
+    lines.push("  # Bloodbank commands arrive through the fleet-shared Hermes gateway");
     lines.push("");
     lines.push("Talk locally:");
     lines.push(`  ${ctx.roleDir}/hermes chat "status"`);

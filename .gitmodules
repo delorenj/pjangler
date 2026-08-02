@@ -1,9 +1,8 @@
 [submodule "templates/commonproject"]
 	path = templates/commonproject
 	url = git@github.com:delorenj/CommonProject.git
+	branch = main
 [submodule "templates/hermes-agent"]
 	path = templates/hermes-agent
 	url = git@github.com:delorenj/hermes-agent-template.git
-[submodule "agents/hermes/pm/runtime"]
-	path = agents/hermes/pm/runtime
-	url = git@github.com:delorenj/agent-hm-pjangler-pm.git
+	branch = main

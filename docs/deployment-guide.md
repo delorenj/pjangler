@@ -5,7 +5,9 @@
 
 ## Distribution model
 
-`@delorenj/pjangler` is published to npm and installed globally (or run via `npx`). Binaries:
+`@delorenj/pjangler` is an npm package published to GitHub Packages via the
+`publishConfig.registry` in `package.json`. It is installed globally (or run
+via `npx`) with that registry configured. Binaries:
 
 | Binary | Maps to | Purpose |
 | --- | --- | --- |
@@ -27,26 +29,61 @@ templates/                    # copier templates (commonproject, hermes-agent)
 
 The parity engine reads these shipped scripts from the package root at runtime (`templateScript()`), so the `files` allowlist is load-bearing — dropping a script silently breaks the corresponding parity rule.
 
-## Build & publish flow
+## Release flow
 
 ```bash
-npm run build          # esbuild → dist/index.js, dist/mcp-server.js (also runs via prepublishOnly)
-npm run typecheck      # tsc --noEmit
-npm test               # 4 regression suites
-# bump version through the managed workflow (keeps package.json + git tag in parity):
-mise run version:bump  # or :bump-minor / :bump-major
-npm publish            # prepublishOnly re-runs build
+git status --short                  # must be clean
+mise run release -- --dry-run       # full non-mutating release gate
+mise run release                    # patch release (or pass minor / major)
 ```
 
-`prepublishOnly: npm run build` guarantees `dist/` is fresh in the tarball. `PJANGLER_VERSION` is read from `package.json` at runtime, so the version reported by `pj --version` and the MCP `serverInfo` always matches the published `package.json` — no separate bump needed in source.
+The release task owns the only supported bump-and-publish transaction:
+
+1. Re-exec the complete release under the pinned Node 24.6/npm 11 runtime;
+   the normal Node 26/npm 12 toolchain currently cannot publish tarballs.
+2. Require a clean main repo and clean initialized submodules.
+3. Prove every supported submodule commit is remotely reachable and archive-safe.
+4. Fetch the explicit release target (`RELEASE_REMOTE=origin`,
+   `RELEASE_BRANCH=main`) and require the candidate to fast-forward it.
+5. Run install, production audit, build, typecheck, tests, strict PG coverage,
+   and an unauthenticated exact-tarball publish dry-run before acquiring a token.
+6. Authenticate to the configured GitHub Packages registry using the active
+   `gh` session. Each registry command receives a newly acquired token only in
+   its own process environment; the temporary npm config
+   contains only `${NODE_AUTH_TOKEN}` and is removed on exit. Authenticated npm
+   commands run from a dedicated temporary directory so a stale project
+   `.npmrc` cannot override the runtime credential.
+7. Strict disposable PostgreSQL coverage uses `PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for
+   the disposable instance. A release fails rather than skipping this database
+   gate.
+8. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
+   parity, and make one `release(PJAN-44): vX.Y.Z` commit.
+9. Build and inspect the actual tarball, run the production audit and
+   tracked/package secret scan.
+10. Create the commit/tag only after those gates, then atomically push both.
+11. Publish that exact `.tgz`, then verify the new registry version. If the
+   atomic push fails locally, rerun with `--resume-push`.
+
+`prepublishOnly` remains a defense-in-depth build/template/secret gate.
+`PJANGLER_VERSION` is read from `package.json` at runtime, so `pj --version`
+and MCP `serverInfo` match the published package without a separate source bump.
+
+If publication fails after the atomic git push, `mise run publish` is a strict
+retry path. It refuses unless the clean HEAD and its annotated version tag are
+already present on the configured remote main ref, reruns the gates, inspects a
+new exact tarball, and confirms the registry version is still unused.
 
 ### Pre-publish checklist
 
 1. `npm run typecheck` clean.
-2. `npm test` green (all four suites).
+2. `npm run check:lock` and `npm test` green.
 3. `mise run version:check` — versioned files in parity.
-4. Inspect the tarball: `npm pack --dry-run` → confirm `dist/`, `templates/`, and both `.mise/scripts/*.sh` are present (PJAN-2 guard).
-5. Confirm `templates/` submodules are populated (a bare submodule ships empty templates).
+4. Run the PG harness in strict mode against a disposable endpoint:
+   `PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 node tests/pg-registry-regressions.mjs`.
+5. Inspect the actual `npm pack --json` tarball (not `--dry-run`) and confirm
+   `dist/`, `templates/`, and both `.mise/scripts/*.sh` are present (PJAN-2 guard).
+6. Confirm `templates/` submodules are populated and remotely reachable.
+7. Confirm the release branch is a fast-forward of the configured remote main.
 
 ## CI
 

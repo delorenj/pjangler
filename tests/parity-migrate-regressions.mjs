@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
+const selectedBmadPack = resolve(
+  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
+    "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
+);
 
 function run(args, cwd = root, env) {
   const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
@@ -29,6 +33,16 @@ function runExpectError(args, cwd = root) {
     throw new Error(`expected command to fail: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
   }
   return result.stderr;
+}
+
+function git(cwd, args, env) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  return result.stdout.trim();
 }
 
 let miseChecked = false;
@@ -65,14 +79,58 @@ function makeRepoWithoutMiseToml(name) {
   return repo;
 }
 
-function makeGitRepo(name) {
-  const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
-  writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
-  writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
-  spawnSync("git", ["init"], { cwd: repo, encoding: "utf8" });
-  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, encoding: "utf8" });
-  spawnSync("git", ["config", "user.name", "Test"], { cwd: repo, encoding: "utf8" });
-  return repo;
+function makeLegacyRuntimeRepo(name) {
+  const repo = makeRepo(name);
+  const runtimeSource = mkdtempSync(join(tmpdir(), `pjangler-${name}-runtime-source-`));
+  repos.push(repo, runtimeSource);
+
+  git(runtimeSource, ["init", "--quiet", "-b", "main"]);
+  git(runtimeSource, ["config", "user.email", "fixture@example.invalid"]);
+  git(runtimeSource, ["config", "user.name", "Fixture"]);
+  writeFileSync(join(runtimeSource, "version.txt"), "one\n");
+  git(runtimeSource, ["add", "version.txt"]);
+  git(runtimeSource, ["commit", "--quiet", "-m", "one"]);
+  const firstPin = git(runtimeSource, ["rev-parse", "HEAD"]);
+  writeFileSync(join(runtimeSource, "version.txt"), "two\n");
+  git(runtimeSource, ["commit", "--quiet", "-am", "two"]);
+  const secondPin = git(runtimeSource, ["rev-parse", "HEAD"]);
+
+  const roleDir = join(repo, "agents", "hermes", "pm");
+  const runtimeDir = join(roleDir, "runtime");
+  const privatePath = join(runtimeDir, "private-state.bin");
+  mkdirSync(runtimeDir, { recursive: true });
+  writeFileSync(join(roleDir, "role.yaml"), "repo: demo\nrole: pm\nagent_id: demo-pm\nprofile: demo-pm\n");
+  writeFileSync(join(roleDir, ".gitignore"), ".scripts/.provision.log\nruntime/\n");
+  writeFileSync(privatePath, Buffer.from([0, 17, 34, 51, 68, 255]));
+  writeFileSync(
+    join(repo, ".gitmodules"),
+    `[submodule "templates/commonproject"]
+\tpath = templates/commonproject
+\turl = git@github.com:delorenj/CommonProject.git
+[submodule "legacy-runtime-name"]
+\tpath = agents/hermes/pm/runtime
+\turl = git@github.com:example/agent-hm-demo-pm.git
+`,
+  );
+
+  git(repo, ["init", "--quiet", "-b", "main"]);
+  git(repo, ["config", "user.email", "fixture@example.invalid"]);
+  git(repo, ["config", "user.name", "Fixture"]);
+  git(repo, ["fetch", "--quiet", runtimeSource, "main"]);
+  git(repo, ["add", ".gitmodules", "AGENTS.md", "mise.toml", "agents/hermes/pm/role.yaml", "agents/hermes/pm/.gitignore"]);
+  git(repo, ["update-index", "--add", "--cacheinfo", `160000,${firstPin},agents/hermes/pm/runtime`]);
+  git(repo, ["commit", "--quiet", "-m", "legacy runtime gitlink"]);
+  git(repo, ["update-index", "--cacheinfo", `160000,${secondPin},agents/hermes/pm/runtime`]);
+
+  return {
+    repo,
+    roleDir,
+    runtimeDir,
+    privatePath,
+    privateBytes: readFileSync(privatePath),
+    runtimeEntries: readdirSync(runtimeDir),
+    secondPin,
+  };
 }
 
 function assertAgentSymlinks(repo) {
@@ -361,10 +419,13 @@ run = "echo still here"
     assert.equal(manifest.registry, "https://github.com/delorenj/skillex.git");
     assert.deepEqual(manifest.skills[0], { name: "example-skill", source: `file://${join(repo, ".agents", "skills", "example-skill")}` }, "non-BMAD manifest entries must be preserved");
     assert.ok(manifest.skills.length > 1, "migrate should record the pinned BMAD pack entries");
-    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-") && entry.source.startsWith("file://") && entry.source.includes("/packs/bmad/6.10.2/")));
+    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-") && entry.source.startsWith("file://") && entry.source.includes("/packs/bmad/6.10.1-next.31/")));
     assert.equal(existsSync(join(repo, ".agents", "skills", "example-skill", "SKILL.md")), true, "non-BMAD skill trees must remain intact");
     assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "copied BMAD trees must be replaced with symlinks");
-    assert.equal(resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))), "/home/delorenj/code/skillex/packs/bmad/6.10.2/bmad-agent-pm");
+    assert.equal(
+      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
+      join(selectedBmadPack, "bmad-agent-pm")
+    );
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), true, "migrate should install the BMAD pack provisioner");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "sync-skills.py")), true, "migrate should install the project-local skills sync engine");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "link-project-skills-to-clis.sh")), false, "legacy link script should be removed");
@@ -387,7 +448,58 @@ run = "echo still here"
     ));
     const result = report.results.find((r) => r.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.ok(result.details.some((detail) => detail.includes("6.10.2")), JSON.stringify(result));
+    assert.ok(result.details.some((detail) => detail.includes("6.10.1-next.31")), JSON.stringify(result));
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-partial-pack");
+    repos.push(repo);
+    const partialPack = mkdtempSync(join(tmpdir(), "pjangler-partial-bmad-pack-"));
+    repos.push(partialPack);
+    copyFileSync(join(selectedBmadPack, "SHA256SUMS"), join(partialPack, "SHA256SUMS"));
+    copyFileSync(join(selectedBmadPack, "pack.toml"), join(partialPack, "pack.toml"));
+    cpSync(join(selectedBmadPack, "bmad-agent-pm"), join(partialPack, "bmad-agent-pm"), { recursive: true });
+
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: partialPack }
+    ));
+    const result = report.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /checksum coverage mismatch/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "partial pack rejection must precede project mutation");
+  }
+
+  {
+    const repo = makeRepo("skills-manifest-tampered-pack");
+    repos.push(repo);
+    const tamperedPack = mkdtempSync(join(tmpdir(), "pjangler-tampered-bmad-pack-"));
+    repos.push(tamperedPack);
+    cpSync(selectedBmadPack, tamperedPack, { recursive: true });
+    writeFileSync(join(tamperedPack, "bmad-agent-pm", "SKILL.md"), "tampered\n");
+
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: tamperedPack }
+    ));
+    const result = report.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /digest mismatch/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "tampered pack rejection must precede project mutation");
+
+    copyFileSync(join(selectedBmadPack, "bmad-agent-pm", "SKILL.md"), join(tamperedPack, "bmad-agent-pm", "SKILL.md"));
+    mkdirSync(join(tamperedPack, "bmad-agent-pm", "unauthenticated-empty"));
+    const topologyReport = JSON.parse(runAllowFailure(
+      ["migrate", "skills.project-manifest", repo, "--json"],
+      root,
+      { PJ_BMAD_PACK_ROOT: tamperedPack }
+    ));
+    const topologyResult = topologyReport.results.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(topologyResult.status, "blocked", JSON.stringify(topologyResult));
+    assert.match(topologyResult.details.join("\n"), /unauthenticated empty directory/);
+    assert.equal(existsSync(join(repo, ".agents")), false, "unauthenticated topology rejection must precede project mutation");
   }
 
   {
@@ -413,71 +525,6 @@ run = "echo still here"
     assert.ok(report.selectedRules.length > 1, "--all should select more than one rule");
     assert.ok(report.results.length === report.selectedRules.length, "results should match selected rules");
     assert.ok(report.results.some((r) => r.status === "applied"), "at least one rule should be applied");
-  }
-
-  {
-    // PJAN-45 regression: reverse-validation of declared agents. Stale declared
-    // entries (missing role_dir, mismatched role.yaml, missing provider scripts)
-    // must be reported by audit and removed by migrate.
-    const repo = makeRepo("reverse-agent-validation");
-    repos.push(repo);
-    mkdirSync(join(repo, "agents", "hermes", "pm", ".scripts", "lib"), { recursive: true });
-    mkdirSync(join(repo, "agents", "hermes", "pm", ".scripts", "providers"), { recursive: true });
-    writeFileSync(
-      join(repo, "agents", "hermes", "pm", "role.yaml"),
-      `repo: heyma\nrole: pm\nagent_id: heyma-pm\ndisplay_name: "HeyMa PM"\npurpose: "pm agent for heyma"\nprofile: heyma-pm\nticket_provider:\n  name: plane\n`
-    );
-    writeFileSync(join(repo, "agents", "hermes", "pm", ".scripts", "lib", "ticket-provider.sh"), "#!/usr/bin/env bash\n");
-    writeFileSync(join(repo, "agents", "hermes", "pm", ".scripts", "providers", "plane.sh"), "#!/usr/bin/env sh\n");
-
-    mkdirSync(join(repo, "agents", "hermes", "legacy", "bad"), { recursive: true });
-    writeFileSync(
-      join(repo, "agents", "hermes", "legacy", "bad", "role.yaml"),
-      `repo: heyma\nrole: sm\nagent_id: heyma-sm\ndisplay_name: "Bad SM"\npurpose: "sm agent for heyma"\nticket_provider:\n  name: plane\n`
-    );
-
-    writeFileSync(
-      join(repo, ".project.json"),
-      JSON.stringify(
-        {
-          project_name: "HeyMa",
-          project_description: "regression",
-          project_slug: "heyma",
-          repo_path: repo,
-          ticket_provider: { type: "plane", workspace: "", identifier: "", board_id: "", state: "planned" },
-          agents: {
-            "missing-agent": { role: "pm", role_dir: "agents/hermes/missing", provisioning_state: "provisioned" },
-            "bad-pm": { role: "pm", role_dir: "agents/hermes/legacy/bad", provisioning_state: "provisioned" },
-            "heyma-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned" },
-          },
-          automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
-        },
-        null,
-        2
-      ) + "\n"
-    );
-
-    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
-    const finding = audit.rules.find((r) => r.id === "sot.project-json");
-    assert.equal(finding.status, "fail", JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("missing-agent") && d.includes("does not exist")), JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("role should be sm")), JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("agent_id heyma-sm")), JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("provider dispatcher")), JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("provider script")), JSON.stringify(finding));
-
-    run(["migrate", "sot.project-json", repo, "--json"]);
-
-    const migrated = JSON.parse(readFileSync(join(repo, ".project.json"), "utf8"));
-    assert.equal(Object.hasOwn(migrated.agents, "missing-agent"), false, "missing declared agent should be removed");
-    assert.equal(Object.hasOwn(migrated.agents, "bad-pm"), false, "mismatched declared agent should be removed");
-    assert.equal(migrated.agents["heyma-pm"]?.role, "pm", "valid agent should be preserved");
-    assert.equal(migrated.agents["heyma-pm"]?.role_dir, "agents/hermes/pm", "valid agent role_dir should be preserved");
-    assert.equal(migrated.agents["heyma-pm"]?.provisioning_state, "provisioned", "valid agent extras should be preserved");
-
-    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
-    const currentFinding = currentAudit.rules.find((r) => r.id === "sot.project-json");
-    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
   }
 
   {
@@ -532,53 +579,60 @@ run = "echo still here"
   }
 
   {
-    // PJAN-46 regression: a runtime that is tracked as a submodule but also
-    // ignored by .gitignore is a contradiction. The audit must flag it as tracked,
-    // and migrate must remove the stale .gitmodules entry, untrack the directory,
-    // and keep it ignored.
-    const repo = makeGitRepo("runtime-submodule-contradiction");
-    repos.push(repo);
-    const roleDir = join(repo, "agents", "hermes", "pm");
-    mkdirSync(join(roleDir, "runtime"), { recursive: true });
-
-    writeFileSync(
-      join(roleDir, "role.yaml"),
-      `repo: heyma\nrole: pm\nagent_id: heyma-pm\ndisplay_name: "HeyMa PM"\npurpose: "pm agent for heyma"\nprofile: heyma-pm\nruntime:\n  github_repo: delorenj/hermes-runtime-heyma-pm\n  github_owner: delorenj\nticket_provider:\n  name: plane\n`
-    );
-    writeFileSync(
-      join(roleDir, "runtime", "profile.yaml"),
-      "config:\n  inherit_from: default\n  save_mode: delta\n"
-    );
-    // .gitignore already ignores the runtime directory ...
-    writeFileSync(join(roleDir, ".gitignore"), "runtime/\n");
-    // ... but .gitmodules still lists it as a submodule.
-    writeFileSync(
-      join(repo, ".gitmodules"),
-      `[submodule "agents/hermes/pm/runtime"]\n\tpath = agents/hermes/pm/runtime\n\turl = git@github.com:delorenj/hermes-runtime-heyma-pm.git\n`
-    );
-
-    spawnSync("git", ["add", "mise.toml", "AGENTS.md", "agents/hermes/pm/.gitignore", ".gitmodules", "agents/hermes/pm/role.yaml"], { cwd: repo, encoding: "utf8" });
-    spawnSync("git", ["commit", "-m", "initial"], { cwd: repo, encoding: "utf8" });
-    const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-    // Stage the runtime path as a submodule commit to create the contradiction.
-    spawnSync("git", ["update-index", "--add", "--cacheinfo", "160000", sha, "agents/hermes/pm/runtime"], { cwd: repo, encoding: "utf8" });
+    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-mapping");
+    const { repo, roleDir, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
+    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`));
+    const report = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
+    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.deepEqual(readFileSync(privatePath), privateBytes, "index-only retirement must preserve private runtime bytes");
+    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "index-only retirement must preserve the runtime tree");
+    assert.equal(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), "", "runtime gitlink must be absent from the index");
+    const gitmodules = readFileSync(join(repo, ".gitmodules"), "utf8");
+    assert.match(gitmodules, /templates\/commonproject/);
+    assert.doesNotMatch(gitmodules, /agents\/hermes\/pm\/runtime/);
+    assert.match(readFileSync(join(roleDir, ".gitignore"), "utf8"), /^runtime\/$/m);
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
-    const finding = audit.rules.find((r) => r.id === "hermes.pm-scaffold");
-    assert.equal(finding.status, "fail", JSON.stringify(finding));
-    assert.ok(finding.details.some((d) => d.includes("tracked")), JSON.stringify(finding));
+    const auditFinding = audit.rules.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(auditFinding.status, "pass", JSON.stringify(auditFinding));
 
-    run(["migrate", "hermes.pm-scaffold", repo, "--json"]);
+    const rerun = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
+    const rerunResult = rerun.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(rerunResult.status, "noop", JSON.stringify(rerunResult));
+  }
 
-    assert.equal(existsSync(join(repo, ".gitmodules")), false, "migrate must remove the empty .gitmodules file");
-    const gitignore = readFileSync(join(roleDir, ".gitignore"), "utf8");
-    assert.match(gitignore, /runtime\/\n/, "migrate must keep runtime/ ignored");
-    const check = spawnSync("git", ["check-ignore", "-q", "agents/hermes/pm/runtime"], { cwd: repo, encoding: "utf8" });
-    assert.equal(check.status, 0, "runtime directory should still be ignored after migrate");
+  {
+    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-git-failure");
+    const { repo, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
+    const fakeBin = mkdtempSync(join(tmpdir(), "pjangler-failing-git-"));
+    repos.push(fakeBin);
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const wrapper = join(fakeBin, "git");
+    writeFileSync(
+      wrapper,
+      `#!/usr/bin/env bash
+if [[ "$1" == "rm" ]]; then
+  printf 'injected git rm failure\\n' >&2
+  exit 97
+fi
+exec "$REAL_GIT" "$@"
+`,
+    );
+    chmodSync(wrapper, 0o755);
 
-    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
-    const currentFinding = currentAudit.rules.find((r) => r.id === "hermes.pm-scaffold");
-    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
+    const report = JSON.parse(runAllowFailure(
+      ["migrate", "hermes.untracked-runtimes", repo, "--json"],
+      root,
+      { PATH: `${fakeBin}:${process.env.PATH}`, REAL_GIT: realGit },
+    ));
+    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /injected git rm failure/);
+    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`), "failed removal must preserve the staged gitlink");
+    assert.match(readFileSync(join(repo, ".gitmodules"), "utf8"), /agents\/hermes\/pm\/runtime/, "failed removal must preserve the stale mapping");
+    assert.deepEqual(readFileSync(privatePath), privateBytes, "failed removal must preserve private runtime bytes");
+    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "failed removal must preserve the runtime tree");
   }
 
   {

@@ -25,6 +25,8 @@ shell_snapshots/
 .claude/skills/
 
 auth.json
+/review.md
+/sessions/
 
 # --- generated plugin cache / staging ---
 plugins/cache/
@@ -46,3 +48,8 @@ _bmad/config.user.yaml
 .bmad-loop/runs/
 .bmad-loop/cache/
 .worktrees/
+
+# Host-local agent caches and memory projections. These are mutable runtime
+# state, never source dependencies or publishable project content (PJAN-41).
+/.tmp/
+/memories/

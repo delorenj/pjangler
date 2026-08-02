@@ -97,10 +97,11 @@ export class RunCopierTemplate extends Command {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
-      // We DO want copier to run runtime-repo + plane + bloodbank + systemd.
+      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
+      // per-profile file consumer, even when an older template still exposes it.
       SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
       SKIP_PLANE: ctx.skipPlane ? "1" : "0",
-      SKIP_BLOODBANK: ctx.skipBloodbank ? "1" : "0",
+      SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0",
     };
 

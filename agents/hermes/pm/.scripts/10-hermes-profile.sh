@@ -84,7 +84,7 @@ CANONICAL_PM_SKILL_SRC="$CANONICAL_SKILLS_DIR/subagent-driven-development"
 LOCAL_PM_SKILL_DST="$PROFILE_HOME/skills/software-development/subagent-driven-development"
 
 if [[ "$ROLE" == "pm" ]]; then
-  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.2")}" 
+  PM_EXTERNAL_SKILL_DIRS="${PM_EXTERNAL_SKILL_DIRS:-$(config_get fleet.pm_external_skill_dirs "$HOME/code/skillex/skill-sets/global/.system $HOME/code/skillex/packs/bmad/6.10.1-next.31")}"
   read -r -a RESOLVED_PM_EXTERNAL_SKILL_DIRS <<< "$PM_EXTERNAL_SKILL_DIRS"
   if [[ ${#RESOLVED_PM_EXTERNAL_SKILL_DIRS[@]} -gt 0 ]]; then
     log "    setting PM skills.external_dirs = ${RESOLVED_PM_EXTERNAL_SKILL_DIRS[*]}"

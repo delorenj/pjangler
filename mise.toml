@@ -77,26 +77,21 @@ run = "npm run build"
 description = "Type-check the source with tsc --noEmit"
 run = "npm run typecheck"
 
-# Cut a release in ONE commit: gate (build+test) -> bump -> commit -> tag the
-# commit -> publish -> push. This is the task you want for shipping a new
-# version — it owns the bump so you never commit twice. Level defaults to patch.
+# Cut a release in ONE commit: clean/remote/auth gates -> build+test -> bump ->
+# commit + annotated tag -> inspect the exact tarball -> atomically push the
+# configured main branch + tag -> publish that tarball. Level defaults to patch.
 #   mise run release            # patch
 #   mise run release minor      # or major
 #   mise run release -- --dry-run   # gates + intent only, mutates nothing
 [tasks.release]
-description = "Cut a release: build+test, bump [patch|minor|major], one commit, tag it, publish, push"
+description = "Cut a release: gate, bump, commit+tag, inspect, push explicit main, publish exact tarball"
 run = "{{config_root}}/.mise/scripts/release.sh"
 
-# Publish the CURRENT package.json version as-is (NO bump). `release` is the
-# normal path; use this only to re-push an already-bumped version.
+# Publish the CURRENT package.json version as-is (NO bump). This is a strict
+# retry path: HEAD and its annotated version tag must already be on origin/main.
 [tasks.publish]
-description = "Publish the current version to npm as-is, no bump (use `mise run release` to cut a version)"
-depends = ["build"]
-run = [
-  "test -f {{config_root}}/templates/commonproject/copier.yml || { echo 'templates/ submodules not initialized; run: git submodule update --init --recursive'; exit 1; }",
-  # --otp resolved at publish time; a TOTP can't be injected statically via env/.npmrc
-  "npm publish --access public --otp=\"$(op item get NPM --vault DeLoSecrets --otp)\"",
-]
+description = "Retry exact-tarball publication for a release commit+tag already pushed to origin/main"
+run = "{{config_root}}/.mise/scripts/release.sh --publish-current"
 
 [tasks.mcp]
 description = "Run the pjangler MCP server from the built bundle"
