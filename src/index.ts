@@ -18,7 +18,7 @@ import {
   createRecipe
 } from "./utils/registry";
 import { cancel, multiselect, text, isCancel } from "@clack/prompts";
-import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
+import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, formatRulePicker, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
 import {
   doctorProjectRegistry,
   executeProjectInitPlan,
@@ -75,24 +75,21 @@ function printMigrationReport(report: MigrationReport, asJson: boolean): void {
 }
 
 async function promptForRuleIds(rules: AuditFinding[]): Promise<string[]> {
-  const options = rules
-    .filter((rule) => rule.fixable)
-    .map((rule) => ({
-      value: rule.id,
-      label: `${rule.id} [${rule.status}] ${rule.title}`,
-      hint: rule.summary,
-    }));
+  // Which rules are offered, and in what order, is unchanged — only how they
+  // are rendered. formatRulePicker is pure presentation over this same list.
+  const fixable = rules.filter((rule) => rule.fixable);
+  const { message, options } = formatRulePicker(fixable);
 
   if (!options.length) {
     return [];
   }
 
-  const initialValues = rules
-    .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
+  const initialValues = fixable
+    .filter((rule) => rule.status !== "pass" && rule.status !== "skip")
     .map((rule) => rule.id);
 
   const selected = await multiselect<string>({
-    message: "Select parity rules to apply (space to toggle, enter to confirm):",
+    message,
     options,
     initialValues,
   });

@@ -4485,3 +4485,146 @@ export function formatMigrationReport(report: MigrationReport): string {
   lines.push("");
   return lines.join("\n");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interactive rule picker presentation
+//
+// Presentation only: this never decides *which* rules are offered or in what
+// order — the caller owns that. It just turns an already-selected list of
+// findings into the label/hint pairs @clack's multiselect renders.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One row of the interactive rule picker, in @clack `Option` shape. */
+export interface RulePickerChoice {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+export interface RulePicker {
+  message: string;
+  options: RulePickerChoice[];
+}
+
+/**
+ * Widest hint the picker will emit before eliding, and the widest title column
+ * it will pad to. Both are caps, not targets: rule titles run from ~20 to ~70
+ * characters, and padding every row out to the longest one turns a short list
+ * into a field of whitespace and pushes rows past any sane terminal width.
+ * Titles longer than the cap are never truncated — that row just goes ragged.
+ */
+const RULE_HINT_WIDTH = 72;
+const RULE_TITLE_COLUMN = 44;
+
+/**
+ * Row-width budget. @clack never wraps, so an over-long row is the terminal's
+ * problem — we keep rows near a comfortable width instead. Fixed rather than
+ * read from `process.stdout.columns`: the picker only ever runs on a TTY, but a
+ * deterministic layout is worth more than a responsive one here (it keeps the
+ * rendering reproducible in tests and identical across operators' terminals).
+ */
+const RULE_ROW_TARGET = 116;
+const RULE_HINT_MIN = 28;
+/** @clack's own gutter + checkbox prefix ("│  ◼ "), plus our " (...)" wrapper. */
+const RULE_ROW_CHROME = 7;
+
+function elide(value: string, width: number): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length <= width ? flat : `${flat.slice(0, Math.max(1, width - 1)).trimEnd()}…`;
+}
+
+/**
+ * Fold a finding's summary + details into ONE bounded line. @clack renders a
+ * hint only for the focused row and for already-selected rows, so this is the
+ * progressive-disclosure layer: enough context to decide, never enough to bury
+ * the list. `pjangler audit` stays the full-detail surface, which is why the
+ * header points at it.
+ *
+ * Detail policy: a lone detail IS the whole story, so it is shown inline; two
+ * or more collapse to a count. Every failing rule is pre-selected, so inlining
+ * detail text unconditionally would put a paragraph on nearly every row — the
+ * exact wall of text this ticket removes.
+ *
+ * Deliberately un-colored: @clack wraps hints in its own dim(), and nesting our
+ * SGR codes inside that renders inconsistently across terminals.
+ */
+function ruleHint(rule: AuditFinding, budget: number): string | undefined {
+  const summary = rule.summary.replace(/\s+/g, " ").trim();
+  const fragments: string[] = [];
+  if (summary) fragments.push(summary);
+  if (rule.details.length === 1) {
+    fragments.push(`${glyph.arrow} ${rule.details[0]}`);
+  } else if (rule.details.length > 1) {
+    fragments.push(`${glyph.arrow} ${rule.details.length} details`);
+  }
+  const hint = elide(fragments.join(` ${glyph.dot} `), budget);
+  return hint || undefined;
+}
+
+/**
+ * Compose the interactive rule picker.
+ *
+ * Row anatomy — the human sentence leads so the list is scannable, the rule id
+ * stays visible (dim, in a column) because the operator still needs it for
+ * `pjangler migrate <rule-id>`, and status drives both icon and color so a
+ * failing rule is obvious. The icon carries the distinction on its own, so a
+ * NO_COLOR / non-TTY terminal (where `src/utils/style` degrades every color
+ * helper to identity) loses no information:
+ *
+ *   ✖ Canonical .project.json         sot.project-json   (1 parity issue …)
+ *   ✔ managed mise versioning block   mise.versioning
+ */
+export function formatRulePicker(rules: AuditFinding[]): RulePicker {
+  const titleColumn = Math.min(
+    RULE_TITLE_COLUMN,
+    rules.reduce((width, rule) => Math.max(width, rule.title.length), 0),
+  );
+
+  const options = rules.map((rule) => {
+    const style = statusStyle(rule.status);
+    // Pad OUTSIDE the color run, so a row never carries styled trailing space.
+    const pad = " ".repeat(Math.max(0, titleColumn - rule.title.length));
+    const headline =
+      rule.status === "fail"
+        ? bold(style.color(rule.title))
+        : rule.status === "warn"
+          ? style.color(rule.title)
+          : rule.status === "skip"
+            ? dim(rule.title)
+            : rule.title;
+
+    // Give the hint whatever row budget the label did not spend, so a long
+    // title costs detail rather than overflowing the terminal.
+    const labelWidth = 2 + rule.title.length + pad.length + 2 + rule.id.length;
+    const budget = Math.min(RULE_HINT_WIDTH, Math.max(RULE_HINT_MIN, RULE_ROW_TARGET - RULE_ROW_CHROME - labelWidth));
+
+    return {
+      value: rule.id,
+      label: `${style.color(style.glyph)} ${headline}${pad}  ${dim(rule.id)}`,
+      hint: ruleHint(rule, budget),
+    };
+  });
+
+  return { message: formatRulePickerMessage(rules), options };
+}
+
+/**
+ * Header line: a status tally so the operator knows what they're looking at
+ * before scanning, plus a pointer to the full-detail surface. @clack already
+ * prints its own "press space to select, enter to submit" instructions, so we
+ * do not repeat them. Single line by construction — a newline here would break
+ * @clack's frame.
+ */
+function formatRulePickerMessage(rules: AuditFinding[]): string {
+  const counts: Record<string, number> = {};
+  for (const rule of rules) counts[rule.status] = (counts[rule.status] ?? 0) + 1;
+
+  const fragments: string[] = [];
+  if (counts.fail) fragments.push(red(`${counts.fail} failing`));
+  if (counts.warn) fragments.push(yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`));
+  if (counts.pass) fragments.push(green(`${counts.pass} passing`));
+  if (counts.skip) fragments.push(gray(`${counts.skip} skipped`));
+  fragments.push(dim("`pjangler audit` for full detail"));
+
+  return `Select parity rules to apply  ${joinDot(fragments)}`;
+}

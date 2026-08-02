@@ -6847,6 +6847,57 @@ function formatMigrationReport(report) {
   lines.push("");
   return lines.join("\n");
 }
+var RULE_HINT_WIDTH = 72;
+var RULE_TITLE_COLUMN = 44;
+var RULE_ROW_TARGET = 116;
+var RULE_HINT_MIN = 28;
+var RULE_ROW_CHROME = 7;
+function elide(value, width) {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length <= width ? flat : `${flat.slice(0, Math.max(1, width - 1)).trimEnd()}\u2026`;
+}
+function ruleHint(rule, budget) {
+  const summary = rule.summary.replace(/\s+/g, " ").trim();
+  const fragments = [];
+  if (summary) fragments.push(summary);
+  if (rule.details.length === 1) {
+    fragments.push(`${glyph.arrow} ${rule.details[0]}`);
+  } else if (rule.details.length > 1) {
+    fragments.push(`${glyph.arrow} ${rule.details.length} details`);
+  }
+  const hint = elide(fragments.join(` ${glyph.dot} `), budget);
+  return hint || void 0;
+}
+function formatRulePicker(rules) {
+  const titleColumn = Math.min(
+    RULE_TITLE_COLUMN,
+    rules.reduce((width, rule) => Math.max(width, rule.title.length), 0)
+  );
+  const options = rules.map((rule) => {
+    const style = statusStyle(rule.status);
+    const pad = " ".repeat(Math.max(0, titleColumn - rule.title.length));
+    const headline = rule.status === "fail" ? bold(style.color(rule.title)) : rule.status === "warn" ? style.color(rule.title) : rule.status === "skip" ? dim(rule.title) : rule.title;
+    const labelWidth = 2 + rule.title.length + pad.length + 2 + rule.id.length;
+    const budget = Math.min(RULE_HINT_WIDTH, Math.max(RULE_HINT_MIN, RULE_ROW_TARGET - RULE_ROW_CHROME - labelWidth));
+    return {
+      value: rule.id,
+      label: `${style.color(style.glyph)} ${headline}${pad}  ${dim(rule.id)}`,
+      hint: ruleHint(rule, budget)
+    };
+  });
+  return { message: formatRulePickerMessage(rules), options };
+}
+function formatRulePickerMessage(rules) {
+  const counts = {};
+  for (const rule of rules) counts[rule.status] = (counts[rule.status] ?? 0) + 1;
+  const fragments = [];
+  if (counts.fail) fragments.push(red(`${counts.fail} failing`));
+  if (counts.warn) fragments.push(yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`));
+  if (counts.pass) fragments.push(green(`${counts.pass} passing`));
+  if (counts.skip) fragments.push(gray(`${counts.skip} skipped`));
+  fragments.push(dim("`pjangler audit` for full detail"));
+  return `Select parity rules to apply  ${joinDot(fragments)}`;
+}
 
 // src/utils/version.ts
 import { readFileSync as readFileSync8 } from "node:fs";
@@ -6880,17 +6931,14 @@ function printMigrationReport(report, asJson) {
   }
 }
 async function promptForRuleIds(rules) {
-  const options = rules.filter((rule) => rule.fixable).map((rule) => ({
-    value: rule.id,
-    label: `${rule.id} [${rule.status}] ${rule.title}`,
-    hint: rule.summary
-  }));
+  const fixable = rules.filter((rule) => rule.fixable);
+  const { message, options } = formatRulePicker(fixable);
   if (!options.length) {
     return [];
   }
-  const initialValues = rules.filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => rule.id);
+  const initialValues = fixable.filter((rule) => rule.status !== "pass" && rule.status !== "skip").map((rule) => rule.id);
   const selected = await multiselect({
-    message: "Select parity rules to apply (space to toggle, enter to confirm):",
+    message,
     options,
     initialValues
   });
