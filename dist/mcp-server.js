@@ -5565,7 +5565,12 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         const sysDir = join15(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync10(join15(sysDir, unit)));
-        if (allUnitsPresent) {
+        const unitsStale = units.some((unit) => {
+          const text2 = safeReadText(join15(sysDir, unit));
+          if (text2 === null) return true;
+          return text2.includes("/agents/hermes/") && !text2.includes(role.roleDir);
+        });
+        if (allUnitsPresent && !unitsStale) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
           } else {
@@ -5577,12 +5582,23 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           continue;
         }
         for (const script of [join15(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!script || !existsSync10(script)) continue;
+          if (!existsSync10(script)) {
+            details.push(`script failed: missing ${script}`);
+            continue;
+          }
           if (ctx.dryRun) {
-            details.push(`would run: bash ${script}`);
+            details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
           } else {
-            const result = spawnSync6("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
-            if (result.status !== 0) details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            const result = spawnSync6("bash", [script], {
+              cwd: role.roleDir,
+              encoding: "utf8",
+              env: { ...process.env, FORCE_SYSTEMD: "1" }
+            });
+            if (result.status !== 0) {
+              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            } else {
+              details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
+            }
           }
         }
       }
@@ -5894,6 +5910,17 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
             changedFiles,
             details
           };
+        }
+      }
+      for (const role of roles) {
+        const entry = agents[role.agentId];
+        if (!entry) continue;
+        const entryRoleDir = String(entry.role_dir ?? "");
+        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+          details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
+          entry.role_dir = role.roleDir;
+          entry.project_path = ctx.repoRoot;
+          dirty = true;
         }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {

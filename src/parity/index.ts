@@ -3743,7 +3743,15 @@ const RULES: Rule[] = [
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
         const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
         const allUnitsPresent = units.every((unit) => existsSync(join(sysDir, unit)));
-        if (allUnitsPresent) {
+        // Existing units can still point at the checkout's former location.
+        // In that case enabling them again preserves the stale ExecStart path,
+        // so regenerate them from the role's current provisioning script.
+        const unitsStale = units.some((unit) => {
+          const text = safeReadText(join(sysDir, unit));
+          if (text === null) return true;
+          return text.includes("/agents/hermes/") && !text.includes(role.roleDir);
+        });
+        if (allUnitsPresent && !unitsStale) {
           if (ctx.dryRun) {
             details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
           } else {
@@ -3755,12 +3763,23 @@ const RULES: Rule[] = [
           continue;
         }
         for (const script of [join(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!script || !existsSync(script)) continue;
+          if (!existsSync(script)) {
+            details.push(`script failed: missing ${script}`);
+            continue;
+          }
           if (ctx.dryRun) {
-            details.push(`would run: bash ${script}`);
+            details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
           } else {
-            const result = spawnSync("bash", [script], { cwd: role.roleDir, encoding: "utf8" });
-            if (result.status !== 0) details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            const result = spawnSync("bash", [script], {
+              cwd: role.roleDir,
+              encoding: "utf8",
+              env: { ...process.env, FORCE_SYSTEMD: "1" },
+            });
+            if (result.status !== 0) {
+              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+            } else {
+              details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
+            }
           }
         }
       }
@@ -4091,6 +4110,21 @@ const RULES: Rule[] = [
             changedFiles,
             details,
           };
+        }
+      }
+      // A moved checkout is deliberately invisible to ownedRegistryEntries(),
+      // because that helper scopes ownership using the registry's role_dir.
+      // role.yaml gives us a safer canonical identity: repair the matching
+      // agent by id first, then let normal ownership-scoped cleanup proceed.
+      for (const role of roles) {
+        const entry = agents[role.agentId] as Record<string, unknown> | undefined;
+        if (!entry) continue;
+        const entryRoleDir = String(entry.role_dir ?? "");
+        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+          details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
+          entry.role_dir = role.roleDir;
+          entry.project_path = ctx.repoRoot;
+          dirty = true;
         }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
