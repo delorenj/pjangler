@@ -197,15 +197,16 @@ server.registerTool(
       ruleId: z.string().optional(),
       all: z.boolean().optional(),
       dryRun: z.boolean().optional(),
+      acceptRegistryMatches: z.boolean().optional(),
     },
   },
-  async ({ targetDir, ruleId, all, dryRun }) => {
+  async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
     try {
       const runAll = all ?? false;
       if (!runAll && !ruleId) throw new Error("Either ruleId or all=true is required");
       if (runAll && ruleId) throw new Error("Pass either ruleId or all=true, not both");
       const resolvedTarget = resolveTargetDir(targetDir);
-      const report = runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll);
+      const report = runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
       return asText({
         ok: report.ok,
         repo: report.repo,

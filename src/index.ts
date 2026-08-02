@@ -831,11 +831,16 @@ program
   .description("Idempotent migration recipe for a parity rule (or open the rule selector)")
   .option("--all", "Apply every migration recipe in order")
   .option("--dry-run", "Preview changes without writing files")
+  .option(
+    "--accept-registry-matches",
+    "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
+  )
   .option("--json", "Output machine-parseable JSON")
   .action(async (ruleId: string | undefined, repo: string | undefined, options) => {
     try {
       const all = options.all ?? false;
       const dryRun = options.dryRun ?? false;
+      const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
 
       if (all) {
         // When --all is used, any positional argument is the repo path, not a rule-id.
@@ -843,7 +848,7 @@ program
         if (ruleId && !actualRepo) {
           actualRepo = ruleId;
         }
-        const report = runMigration(undefined, actualRepo, dryRun, true);
+        const report = runMigration(undefined, actualRepo, dryRun, true, acceptRegistryMatches);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -854,14 +859,14 @@ program
           console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
           process.exit(1);
         }
-        const report = runMigration(ruleId, repo, dryRun, false);
+        const report = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
 
       // Single valid rule-id applies to cwd.
       if (ruleId && getParityRuleIds().includes(ruleId)) {
-        const report = runMigration(ruleId, undefined, dryRun, false);
+        const report = runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -886,7 +891,7 @@ program
         console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
         process.exit(0);
       }
-      const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
+      const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches);
       printMigrationReport(report, false);
       process.exit(report.ok ? 0 : 1);
     } catch (err) {

@@ -3017,6 +3017,7 @@ import { existsSync as existsSync10, lstatSync as lstatSync2, mkdirSync as mkdir
 import { basename as basename4, dirname as dirname6, join as join14, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL } from "node:url";
 import { homedir as homedir5 } from "node:os";
+import { createHash as createHash2 } from "node:crypto";
 import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
@@ -3025,6 +3026,9 @@ var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provi
 var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
+var SKILLS_BACKUP_DIRNAME = "skills.bak";
+var SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"];
+var BMAD_SKILL_NAME_PREFIX = "bmad-";
 var PROJECT_CLI_SKILL_DIRS = [
   ".gemini/skills",
   ".codex/skills",
@@ -3466,6 +3470,180 @@ function canonicalSkillsManifest(ctx, current, packSkills = canonicalBmadSkillEn
     2
   )}
 `;
+}
+function skillsBackupDir(repoRoot) {
+  return join14(repoRoot, ".agents", SKILLS_BACKUP_DIRNAME);
+}
+function skillsRegistryRoots(ctx) {
+  const explicit = process.env.PJ_SKILLS_REGISTRY_ROOT?.trim();
+  if (explicit) return [resolve3(explicit)];
+  const cacheName = SKILLS_REGISTRY_URL.replace(/[^a-zA-Z0-9]/g, "_");
+  return [
+    join14(ctx.homeDir, ".agents", ".cache", "registries", cacheName),
+    join14(ctx.homeDir, "code", "skillex")
+  ];
+}
+function availableSkillsRegistryRoots(ctx) {
+  return skillsRegistryRoots(ctx).filter(
+    (root) => SKILLS_REGISTRY_SKILL_DIRS.some((dir) => existsSync10(join14(root, dir)))
+  );
+}
+function digestSkillEntry(root) {
+  const hash = createHash2("sha256");
+  try {
+    const stat = lstatSync2(root);
+    if (stat.isSymbolicLink()) return null;
+    if (stat.isFile()) {
+      const content = readFileSync7(root);
+      hash.update(`file\0\0${content.length}\0`);
+      hash.update(content);
+      return hash.digest("hex");
+    }
+    if (!stat.isDirectory()) return null;
+    const walk = (dir, rel) => {
+      for (const name of readdirSync3(dir).sort()) {
+        const full = join14(dir, name);
+        const entryRel = rel ? `${rel}/${name}` : name;
+        const entryStat = lstatSync2(full);
+        if (entryStat.isSymbolicLink()) return false;
+        if (entryStat.isDirectory()) {
+          hash.update(`dir\0${entryRel}\0`);
+          if (!walk(full, entryRel)) return false;
+        } else if (entryStat.isFile()) {
+          const content = readFileSync7(full);
+          hash.update(`file\0${entryRel}\0${content.length}\0`);
+          hash.update(content);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    hash.update("dir\0");
+    return walk(root, "") ? hash.digest("hex") : null;
+  } catch {
+    return null;
+  }
+}
+function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot, manifestNames) {
+  const stat = lstatIfPresent(skillsDir);
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return [];
+  const names = [];
+  let entries;
+  try {
+    entries = readdirSync3(skillsDir).sort();
+  } catch {
+    return [];
+  }
+  for (const name of entries) {
+    if (expectedNames.has(name) || manifestNames.has(name)) continue;
+    if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
+    const path = join14(skillsDir, name);
+    let linkTarget = null;
+    try {
+      linkTarget = lstatSync2(path).isSymbolicLink() ? resolve3(dirname6(path), readlinkSync(path)) : null;
+    } catch {
+      linkTarget = null;
+    }
+    if (linkTarget && (isContainedBy(packRoot, linkTarget) || isContainedBy(backupDir, linkTarget))) continue;
+    names.push(name);
+  }
+  return names;
+}
+function planLegacyCommittedSkill(skillsDir, backupDir, registryRoots, name) {
+  const backupTarget = join14(backupDir, name);
+  const localDescription = (reason) => `${name} -> file://${backupTarget} (${reason}; kept local)`;
+  const digest = digestSkillEntry(join14(skillsDir, name));
+  if (!digest) {
+    return { name, description: localDescription("entry is a symlink or is not byte-comparable") };
+  }
+  if (!registryRoots.length) {
+    return { name, description: localDescription("no local registry checkout to compare against") };
+  }
+  for (const root of registryRoots) {
+    for (const dir of SKILLS_REGISTRY_SKILL_DIRS) {
+      const candidate = join14(root, dir, name);
+      if (!existsSync10(candidate)) continue;
+      if (digestSkillEntry(candidate) !== digest) continue;
+      return {
+        name,
+        registryPath: `${dir}/${name}`,
+        description: `${name} -> registry_path ${dir}/${name} (exact content match)`
+      };
+    }
+  }
+  return { name, description: localDescription("no exact registry content match") };
+}
+function migrateLegacyCommittedSkills(ctx, changedFiles) {
+  const details = [];
+  const agentsDir = join14(ctx.repoRoot, ".agents");
+  const skillsDir = join14(agentsDir, "skills");
+  const backupDir = skillsBackupDir(ctx.repoRoot);
+  const manifestPath = join14(agentsDir, "skills.json");
+  let expectedNames = /* @__PURE__ */ new Set();
+  try {
+    expectedNames = new Set(canonicalBmadSkillEntries(ctx).map((entry) => entry.name));
+  } catch {
+  }
+  const packRoot = bmadPackRoot(ctx);
+  const rawManifest = safeReadText(manifestPath);
+  const manifest = tryParseJson(rawManifest);
+  if (rawManifest !== null && manifest === null) {
+    return details;
+  }
+  const manifestSkills = Array.isArray(manifest?.skills) ? [...manifest.skills] : [];
+  const manifestNames = new Set(
+    manifestSkills.map(skillManifestEntryName).filter((name) => Boolean(name))
+  );
+  const names = legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot, manifestNames);
+  if (!names.length) return details;
+  const registryRoots = availableSkillsRegistryRoots(ctx);
+  if (!registryRoots.length) {
+    details.push(
+      `No local ${SKILLS_REGISTRY_URL} checkout is available; registry matching is skipped (set PJ_SKILLS_REGISTRY_ROOT or let skills-sync clone the registry)`
+    );
+  }
+  const plans = names.map((name) => planLegacyCommittedSkill(skillsDir, backupDir, registryRoots, name));
+  if (!ctx.acceptRegistryMatches) {
+    for (const plan of plans) details.push(`proposed mapping: ${plan.description}`);
+    details.push(
+      `${plans.length} legacy committed skill(s) left untouched; re-run with --accept-registry-matches to apply`
+    );
+    return details;
+  }
+  const applied = [];
+  for (const plan of plans) {
+    const from = join14(skillsDir, plan.name);
+    const to = join14(backupDir, plan.name);
+    if (lstatIfPresent(to)) {
+      details.push(`skipped ${plan.name}: ${to} already exists and would be overwritten`);
+      continue;
+    }
+    if (!changedFiles.includes(to)) changedFiles.push(to);
+    if (!ctx.dryRun) {
+      mkdirSync6(backupDir, { recursive: true });
+      renameSync2(from, to);
+    }
+    manifestSkills.push(
+      plan.registryPath ? { name: plan.name, registry_path: plan.registryPath } : { name: plan.name, source: pathToFileURL(to).href }
+    );
+    applied.push(plan);
+    details.push(`mapped ${plan.description}`);
+  }
+  if (!applied.length) return details;
+  const merged = { ...manifest ?? {}, skills: manifestSkills };
+  let nextManifest;
+  try {
+    nextManifest = canonicalSkillsManifest(ctx, merged);
+  } catch {
+    nextManifest = `${JSON.stringify(merged, null, 2)}
+`;
+  }
+  if (nextManifest !== rawManifest) {
+    if (!changedFiles.includes(manifestPath)) changedFiles.push(manifestPath);
+    if (!ctx.dryRun) writeText(manifestPath, nextManifest);
+  }
+  return details;
 }
 function removeProjectEntry(path) {
   const stat = lstatIfPresent(path);
@@ -5471,6 +5649,24 @@ var RULES = [
       if (invalidBmadLinkNames.size > 0) {
         details.push(`${invalidBmadLinkNames.size} managed BMAD skill path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
       }
+      const manifestNames = new Set(
+        (Array.isArray(manifest?.skills) ? manifest.skills : []).map(skillManifestEntryName).filter((name) => Boolean(name))
+      );
+      const unmanagedSkillNames = legacyCommittedSkillNames(
+        legacyDir,
+        skillsBackupDir(ctx.repoRoot),
+        expectedNames,
+        packRoot,
+        manifestNames
+      );
+      for (const name of unmanagedSkillNames) {
+        details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
+      }
+      if (unmanagedSkillNames.length) {
+        details.push(
+          `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+        );
+      }
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         if (existsSync10(join14(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
       }
@@ -5517,7 +5713,7 @@ var RULES = [
         id: "skills.project-manifest",
         title: "Skillex project skills manifest",
         status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Skillex skills manifest parity verified" : `${details.length} Skillex migration issue(s) detected`,
+        summary: details.length === 0 ? "Skillex skills manifest parity verified" : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
         details,
         fixable
       };
@@ -5583,6 +5779,7 @@ var RULES = [
       }
       changedFiles.push(...provisioned.changedFiles);
       if (provisioned.changedFiles.includes(manifestPath)) details.push(`Recorded BMAD pack ${BMAD_PACK_VERSION} in .agents/skills.json`);
+      details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         const path = join14(ctx.repoRoot, rel);
         if (existsSync10(path)) {
@@ -6757,13 +6954,14 @@ function runAudit(repoArg) {
     rules
   };
 }
-function runMigrationForRules(ruleIds, repoArg, dryRun) {
+function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
   const pjanglerRoot = resolvePjanglerRoot2();
   const ctx = {
     repoRoot: resolve3(repoArg ?? process.cwd()),
     dryRun,
     pjanglerRoot,
-    homeDir: homedir5()
+    homeDir: homedir5(),
+    acceptRegistryMatches
   };
   const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
   if (!selected.length) {
@@ -6793,7 +6991,7 @@ function runMigrationForRules(ruleIds, repoArg, dryRun) {
     changedFiles
   };
 }
-function runMigration(selector, repoArg, dryRun, all) {
+function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
   if (all) {
     const audit = runAudit(repoArg);
     const ruleIds2 = audit.rules.filter((finding) => finding.fixable && (finding.status === "fail" || finding.status === "warn")).map((finding) => finding.id);
@@ -6807,10 +7005,10 @@ function runMigration(selector, repoArg, dryRun, all) {
         changedFiles: []
       };
     }
-    return runMigrationForRules(ruleIds2, repoArg, dryRun);
+    return runMigrationForRules(ruleIds2, repoArg, dryRun, acceptRegistryMatches);
   }
   const ruleIds = selector ? [selector] : [];
-  return runMigrationForRules(ruleIds, repoArg, dryRun);
+  return runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches);
 }
 function prettyTimestamp(iso) {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
@@ -7405,16 +7603,20 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
     process.exit(1);
   }
 });
-program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or open the rule selector)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
+program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or open the rule selector)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option(
+  "--accept-registry-matches",
+  "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
+).option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
   try {
     const all = options.all ?? false;
     const dryRun = options.dryRun ?? false;
+    const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
     if (all) {
       let actualRepo = repo;
       if (ruleId && !actualRepo) {
         actualRepo = ruleId;
       }
-      const report2 = runMigration(void 0, actualRepo, dryRun, true);
+      const report2 = runMigration(void 0, actualRepo, dryRun, true, acceptRegistryMatches);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
@@ -7423,12 +7625,12 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
         console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
         process.exit(1);
       }
-      const report2 = runMigration(ruleId, repo, dryRun, false);
+      const report2 = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
     if (ruleId && getParityRuleIds().includes(ruleId)) {
-      const report2 = runMigration(ruleId, void 0, dryRun, false);
+      const report2 = runMigration(ruleId, void 0, dryRun, false, acceptRegistryMatches);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
@@ -7447,7 +7649,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
       console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
       process.exit(0);
     }
-    const report = runMigrationForRules(ruleIds, targetRepo, dryRun);
+    const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches);
     printMigrationReport(report, false);
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
