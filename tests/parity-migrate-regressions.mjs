@@ -215,8 +215,8 @@ run = "echo still here"
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh'"/, "link-agentfiles hook must be single-quoted (space-safe)");
     assert.match(
       mise,
-      /script = "\[ -f '\{\{config_root\}\}\/\.env\.op' \] && command -v op >\/dev\/null 2>&1 && op inject -i '\{\{config_root\}\}\/\.env\.op' > '\{\{config_root\}\}\/\.env' \|\| true"/,
-      "migrate should install the guarded canonical dotenv hook (PJAN-24)"
+      /script = "\[ -f '\{\{config_root\}\}\/\.env\.op' \] && command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\) && op inject -i \.env\.op -o \$t --force && mv \$t \.env \|\| rm -f \$t; \} \|\| true"/,
+      "migrate should install the atomic canonical dotenv hook (PJAN-24)"
     );
     assert.match(
       mise,
@@ -337,7 +337,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml from template should contain link-agentfiles task");
-    assert.match(mise, /command -v op >\/dev\/null 2>&1 && op inject -i '\{\{config_root\}\}\/\.env\.op'/, "mise.toml should be normalized to current AGENTS-linking contract");
+    assert.match(mise, /command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\)/, "mise.toml should be normalized to current AGENTS-linking contract");
     assert.match(mise, /sync-skills\.py' --scope project/, "mise.toml should run project skill sync on enter");
     assert.match(mise, /\[tasks\.skills-sync\]/, "mise.toml should include the skills-sync task");
     assert.match(mise, /patterns = \["\.agents\/skills\.json"\]/, "mise.toml should watch the project skills manifest");
@@ -365,7 +365,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml should still contain the link-agentfiles task");
-    assert.match(mise, /command -v op >\/dev\/null 2>&1 && op inject -i '\{\{config_root\}\}\/\.env\.op'/, "mise.toml should retain the guarded dotenv enter hook");
+    assert.match(mise, /command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\)/, "mise.toml should retain the atomic dotenv enter hook");
     assert.match(mise, /sync-skills\.py' --scope project/, "skills sync should stay enabled even when the hook layer is skipped");
     assert.match(mise, /\[tasks\.skills-sync\]/, "skills-sync task should remain when the hook layer is skipped");
     assert.doesNotMatch(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer OFF should omit the hooks-sync task");

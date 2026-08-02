@@ -87,18 +87,50 @@ interface Rule {
 // expressed as an array of `[[hooks.enter]]` tables — mise mangles the
 // `enter = [ ... ]` array-of-strings form into one broken argv.
 const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-// PJAN-24: the enter hook must never clobber a populated .env. The bare
-// `op inject -i .env.op > .env` form runs the redirection FIRST, so in any repo
-// without a `.env.op` — or on a machine without the `op` CLI — the shell
-// truncates .env to zero bytes before `op` even fails. Guard on both the input
-// file and the binary, and terminate with `|| true` so a failed materialization
-// can never break shell entry under `set -e`.
+// PJAN-24: the enter hook must never clobber a populated .env.
+//
+// v0 (legacy):  op inject -i .env.op > .env
+// v1 (guarded): [ -f .env.op ] && command -v op && op inject ... > .env || true
+//
+// BOTH truncate a populated `.env`, because the shell opens the `>` redirection
+// — destroying the target — BEFORE `op` ever runs. v0 loses `.env` whenever
+// `.env.op` or the `op` CLI is missing. v1 closes those two cases but still
+// loses `.env` on the single most common real failure: an EXPIRED op session,
+// where both guards pass, the redirect truncates, `op inject` exits non-zero,
+// and `|| true` swallows it. v1 is arguably worse than v0 — it looks safe.
+//
+// v2 (canonical, below) never redirects onto `.env`. It materializes into a
+// `mktemp` file inside the project dir and only `mv`s it over `.env` on a
+// genuine `op` success, so `.env` is either replaced wholesale or left
+// byte-for-byte untouched. Notes on the exact shape, which is load-bearing:
+//   * `umask 077` is set BEFORE mktemp so the temp file — and therefore the
+//     resulting `.env` — never exists group/world-readable while holding
+//     resolved secrets.
+//   * `CDPATH= cd` neutralizes a user CDPATH that would make `cd` echo the
+//     resolved path into the hook's stdout.
+//   * After the `cd` the temp name is RELATIVE and matches `.env.inject.XXXXXX`,
+//     so `$t` provably contains no whitespace and needs no double quotes — which
+//     matters because this string is embedded in a TOML basic string and a Jinja
+//     template, where `"` would have to be escaped in four places in lockstep.
+//     `{{config_root}}` itself is still single-quoted (space-safe house style).
+//   * `rm -f $t` cleans up on any failure; with an unset `$t` it degrades to a
+//     no-argument `rm -f`, which POSIX defines as exit 0.
+//   * The trailing `|| true` keeps the whole hook safe under `set -e` — it is an
+//     enter hook and must never break shell entry.
 const OP_INJECT_LEGACY_SCRIPT = "op inject -i .env.op > .env";
-const OP_INJECT_SCRIPT =
+const OP_INJECT_TRUNCATING_GUARD_SCRIPT =
   "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
+const OP_INJECT_SCRIPT =
+  "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
 // Matches the legacy unguarded hook (`-i .env.op`, no `[ -f ... ]` prefix). The
-// guarded form uses `-i '{{config_root}}/.env.op'` so it never matches this.
+// guarded forms use `-i '{{config_root}}/.env.op'` so they never match this.
 const LEGACY_OP_INJECT_PATTERN = /op\s+inject\s+-i\s+\.env\.op\s*>\s*\.env/;
+// Matches ANY op inject hook that redirects stdout onto a `.env` — v0 and v1
+// alike. The canonical v2 form writes via `-o $t` and has no `>` after
+// `op inject`, so it can never match.
+// The trailing boundary accepts a quote so the pattern matches the hook both as
+// a bare shell string and as it appears embedded in mise.toml (`... > .env"`).
+const TRUNCATING_OP_INJECT_PATTERN = /op\s+inject\b[^\n]*?>\s*\S*\.env(?:['"]|\s|$)/;
 const PROVISION_BMAD_SKILLS_SCRIPT =
   "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 const SYNC_SKILLS_SCRIPT =
@@ -1090,14 +1122,16 @@ function stripTomlStringsAndComments(line: string): string {
 
 /**
  * True for any pjangler-owned dotenv materialization hook — the canonical
- * guarded form AND the legacy unguarded one. Both are "managed", so a migrate
- * strips whichever is present and re-installs the canonical guarded command
- * instead of preserving the legacy entry as an unknown user hook.
+ * atomic form AND both truncating ancestors (v0 unguarded, v1 guarded-but-still-
+ * redirecting). All are "managed", so a migrate strips whichever is present and
+ * re-installs the canonical command instead of preserving the older entry as an
+ * unknown user hook.
  */
 function isOpInjectHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
   if (trimmed === OP_INJECT_LEGACY_SCRIPT) return true;
+  if (trimmed === OP_INJECT_TRUNCATING_GUARD_SCRIPT) return true;
   return LEGACY_OP_INJECT_PATTERN.test(trimmed) || (/\bop\s+inject\b/.test(trimmed) && /\.env\.op/.test(trimmed));
 }
 
@@ -2679,16 +2713,18 @@ const RULES: Rule[] = [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      // PJAN-24: the guarded form is the contract. A repo still carrying the
-      // legacy unguarded hook is flagged (it truncates .env on every enter when
-      // .env.op or the `op` CLI is absent) and is auto-fixable to the guard.
+      // PJAN-24: the atomic form is the contract. Any hook that redirects
+      // `op inject` straight onto `.env` is flagged — the shell truncates the
+      // target before `op` runs, so a missing `.env.op`, a missing `op` CLI, or
+      // merely an expired op session silently destroys a populated `.env`.
+      // Both truncating ancestors are auto-fixable to the atomic form.
       if (!text.includes(OP_INJECT_SCRIPT)) {
-        if (LEGACY_OP_INJECT_PATTERN.test(text)) {
+        if (TRUNCATING_OP_INJECT_PATTERN.test(text)) {
           details.push(
-            "hooks.enter op inject is unguarded and truncates .env when .env.op or the op CLI is missing — must test [ -f .env.op ] && command -v op and end with || true",
+            "hooks.enter op inject redirects onto .env and truncates it before op runs (missing .env.op, missing op CLI, or an expired op session all destroy it) — must materialize via mktemp + atomic mv",
           );
         } else {
-          details.push("hooks.enter must materialize .env from .env.op via the guarded op inject hook");
+          details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
         }
       }
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
@@ -3233,7 +3269,9 @@ const RULES: Rule[] = [
       }
       const gitignorePath = join(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
-      const requiredBlock = `# Secrets — .env is materialized by \`op inject -i .env.op > .env\` on mise enter.\n# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.\n.env\n.env.*\n!.env.op\n`;
+      // `.env.*` also covers the `.env.inject.XXXXXX` staging file the atomic
+      // op-inject enter hook creates in the project dir (PJAN-24).
+      const requiredBlock = `# Secrets — .env is materialized from .env.op by \`op inject\` on mise enter.\n# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.\n.env\n.env.*\n!.env.op\n`;
       if (!gitignore.includes("!.env.op") || !gitignore.includes(".env.*")) {
         changedFiles.push(gitignorePath);
         if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);

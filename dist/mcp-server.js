@@ -2663,8 +2663,10 @@ import { spawnSync as spawnSync6 } from "node:child_process";
 import YAML3 from "yaml";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var OP_INJECT_LEGACY_SCRIPT = "op inject -i .env.op > .env";
-var OP_INJECT_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
+var OP_INJECT_TRUNCATING_GUARD_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && op inject -i '{{config_root}}/.env.op' > '{{config_root}}/.env' || true";
+var OP_INJECT_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
 var LEGACY_OP_INJECT_PATTERN = /op\s+inject\s+-i\s+\.env\.op\s*>\s*\.env/;
+var TRUNCATING_OP_INJECT_PATTERN = /op\s+inject\b[^\n]*?>\s*\S*\.env(?:['"]|\s|$)/;
 var PROVISION_BMAD_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
 var SYNC_SKILLS_SCRIPT = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
 var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
@@ -3502,6 +3504,7 @@ function isOpInjectHookEntry(value) {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
   if (trimmed === OP_INJECT_LEGACY_SCRIPT) return true;
+  if (trimmed === OP_INJECT_TRUNCATING_GUARD_SCRIPT) return true;
   return LEGACY_OP_INJECT_PATTERN.test(trimmed) || /\bop\s+inject\b/.test(trimmed) && /\.env\.op/.test(trimmed);
 }
 function isManagedHookEntry(value) {
@@ -4538,12 +4541,12 @@ var RULES = [
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text2.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
       if (!text2.includes(OP_INJECT_SCRIPT)) {
-        if (LEGACY_OP_INJECT_PATTERN.test(text2)) {
+        if (TRUNCATING_OP_INJECT_PATTERN.test(text2)) {
           details.push(
-            "hooks.enter op inject is unguarded and truncates .env when .env.op or the op CLI is missing \u2014 must test [ -f .env.op ] && command -v op and end with || true"
+            "hooks.enter op inject redirects onto .env and truncates it before op runs (missing .env.op, missing op CLI, or an expired op session all destroy it) \u2014 must materialize via mktemp + atomic mv"
           );
         } else {
-          details.push("hooks.enter must materialize .env from .env.op via the guarded op inject hook");
+          details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
         }
       }
       if (!text2.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
@@ -5063,7 +5066,7 @@ var RULES = [
       }
       const gitignorePath = join15(ctx.repoRoot, ".gitignore");
       const gitignore = safeReadText(gitignorePath) ?? "";
-      const requiredBlock = `# Secrets \u2014 .env is materialized by \`op inject -i .env.op > .env\` on mise enter.
+      const requiredBlock = `# Secrets \u2014 .env is materialized from .env.op by \`op inject\` on mise enter.
 # NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
 .env
 .env.*
