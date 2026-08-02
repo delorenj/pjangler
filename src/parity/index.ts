@@ -987,14 +987,6 @@ function validateDeclaredAgent(ctx: Context, declared: DeclaredAgentEntry): { va
   return { valid: details.length === 0, role: roleYaml.role, agentId: roleYaml.agentId, roleDir, details };
 }
 
-function roleAgentsMap(roles: RoleMeta[]): Record<string, { role: string; role_dir: string }> {
-  return Object.fromEntries(
-    roles
-      .filter((role) => role.agentId)
-      .map((role) => [role.agentId, { role: role.role, role_dir: relativeRepo(role.roleDir.startsWith("/") ? dirname(dirname(dirname(role.roleDir))) : process.cwd(), role.roleDir) }])
-  );
-}
-
 function boolSetting(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -1014,10 +1006,10 @@ function numberSetting(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function canonicalProjectJson(ctx: Context): Record<string, unknown> {
+function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename(ctx.repoRoot));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -1044,6 +1036,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
       return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
     })
   );
+  const dropped: string[] = [];
   for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
     const declared: DeclaredAgentEntry = {
       agentId: declaredAgentId,
@@ -1052,7 +1045,10 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
       extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
     };
     const validated = validateDeclaredAgent(ctx, declared);
-    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) continue;
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
+      dropped.push(declaredAgentId);
+      continue;
+    }
     agents[validated.agentId] = {
       role: validated.role,
       role_dir: relative(ctx.repoRoot, validated.roleDir),
@@ -1080,6 +1076,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     ticket_provider: ticketProvider,
     agents,
     automation,
+    dropped,
   };
 }
 
@@ -2511,12 +2508,27 @@ const RULES: Rule[] = [
     audit: projectJsonFinding,
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
-      const details: string[] = [];
+      const blockedDetails: string[] = [];
+      const droppedDetails: string[] = [];
       const path = join(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
+      for (const agentId of canonical.dropped) {
+        const entry = (existing.agents as Record<string, unknown> | undefined)?.[agentId];
+        const entryRecord = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : undefined;
+        const declared: DeclaredAgentEntry = {
+          agentId,
+          role: typeof entryRecord?.role === "string" ? entryRecord.role : undefined,
+          roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : undefined,
+          extras: {},
+        };
+        const validation = validateDeclaredAgent(ctx, declared);
+        const reason = validation.details.join("; ") || "invalid";
+        droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
+      }
       // Merge: canonical keys win, but preserve any extra keys the user added
-      const merged = { ...existing, ...canonical };
+      const { dropped: _dropped, ...canonicalJson } = canonical;
+      const merged = { ...existing, ...canonicalJson };
       const expected = `${JSON.stringify(merged, null, 2)}\n`;
       if (safeReadText(path) !== expected) {
         changedFiles.push(path);
@@ -2526,17 +2538,22 @@ const RULES: Rule[] = [
       if (existsSync(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
         if (existsSync(backup)) {
-          details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
+          blockedDetails.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
           if (!ctx.dryRun) renameSync(planeJson, backup);
         }
       }
+      const details = [...droppedDetails, ...blockedDetails];
       return {
         id: finding.id,
         title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "Project SOT partially blocked" : changedFiles.length ? "Canonical .project.json written" : "No changes required",
+        status: blockedDetails.length ? "blocked" : (changedFiles.length || droppedDetails.length) ? "applied" : "noop",
+        summary: blockedDetails.length
+          ? "Project SOT partially blocked"
+          : (changedFiles.length || droppedDetails.length)
+            ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)`
+            : "No changes required",
         changedFiles,
         details,
       };
@@ -3452,60 +3469,23 @@ const RULES: Rule[] = [
   },
   {
     id: "momo-lifecycle-plane",
-    title: "Momo lifecycle-plane readiness",
-    audit: (ctx) => {
-      const project = tryParseJson(safeReadText(join(ctx.repoRoot, ".project.json")));
-      const agents = project && typeof project === "object" && project.agents && typeof project.agents === "object" ? project.agents : {};
-      if (Object.keys(agents as Record<string, unknown>).length === 0) {
-        return {
-          id: "momo-lifecycle-plane",
-          title: "Momo lifecycle-plane readiness",
-          status: "skip",
-          summary: "No agents declared in .project.json; Momo lifecycle-plane readiness not applicable",
-          details: [],
-          fixable: false,
-        };
-      }
-      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
-      const details: string[] = [];
-      for (const finding of report.findings) {
-        if (finding.status !== "pass" && finding.status !== "skip") {
-          details.push(`${finding.section}: ${finding.summary}`);
-          for (const d of finding.details) details.push(`  - ${d}`);
-        }
-      }
-      return {
-        id: "momo-lifecycle-plane",
-        title: "Momo lifecycle-plane readiness",
-        status: report.ready ? "pass" : "fail",
-        summary: report.ready
-          ? "Momo lifecycle-plane readiness verified"
-          : `${details.length} Momo lifecycle-plane readiness issue(s)`,
-        details,
-        fixable: true,
-      };
-    },
-    migrate: (ctx, finding) => {
-      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
-      const details: string[] = [];
-      for (const f of report.findings) {
-        if (f.status === "pass" || f.status === "skip") continue;
-        if (f.section === "plane-state-mapping" || f.section === "nested-adapter-smoke") {
-          details.push(`${f.section}: skipped in migration; requires live credentials`);
-          continue;
-        }
-        details.push(`${f.section}: missing — ${f.summary}`);
-        for (const d of f.details) details.push(`  - ${d}`);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: "skipped",
-        summary: details.length === 0 ? "No action required" : "Momo readiness migration is report-only; manual changes required",
-        changedFiles: [],
-        details,
-      };
-    },
+    title: "Momo lifecycle-plane readiness profile",
+    audit: () => ({
+      id: "momo-lifecycle-plane",
+      title: "Momo lifecycle-plane readiness profile",
+      status: "skip" as const,
+      summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
+      details: [],
+      fixable: false,
+    }),
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "skipped" as const,
+      summary: "report-only profile; migration is intentionally skipped",
+      changedFiles: [],
+      details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"],
+    }),
   },
 ];
 

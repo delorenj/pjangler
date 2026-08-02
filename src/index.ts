@@ -787,8 +787,8 @@ program
   .command("audit")
   .argument("[repo]", "Path to repo to audit (default: cwd)")
   .description("Deterministic parity audit against 33god project standard")
-  .option("--profile <profile>", "Audit profile (e.g. momo-lifecycle-plane)")
-  .option("--live", "Run credentialed live checks for supported profiles")
+  .option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)")
+  .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
   .option("--json", "Output machine-parseable JSON")
   .action((repo: string | undefined, options) => {
     try {

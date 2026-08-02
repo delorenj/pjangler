@@ -3318,7 +3318,7 @@ function numberSetting(value, fallback) {
 function canonicalProjectJson(ctx) {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = String(existing.project_slug ?? slugifyRepoName(dirname6(ctx.repoRoot) === ctx.repoRoot ? ctx.repoRoot.split("/").pop() ?? "project" : ctx.repoRoot.split("/").pop() ?? "project"));
+  const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename3(ctx.repoRoot));
   const firstRole = roles[0];
   const ticketProvider = {
     type: String((existing.ticket_provider?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
@@ -3345,6 +3345,7 @@ function canonicalProjectJson(ctx) {
       return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
     })
   );
+  const dropped = [];
   for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
     const declared = {
       agentId: declaredAgentId,
@@ -3353,7 +3354,10 @@ function canonicalProjectJson(ctx) {
       extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
     };
     const validated = validateDeclaredAgent(ctx, declared);
-    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) continue;
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
+      dropped.push(declaredAgentId);
+      continue;
+    }
     agents[validated.agentId] = {
       role: validated.role,
       role_dir: relative(ctx.repoRoot, validated.roleDir),
@@ -3380,7 +3384,8 @@ function canonicalProjectJson(ctx) {
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
-    automation
+    automation,
+    dropped
   };
 }
 function projectJsonFinding(ctx) {
@@ -4708,11 +4713,26 @@ var RULES = [
     audit: projectJsonFinding,
     migrate: (ctx, finding) => {
       const changedFiles = [];
-      const details = [];
+      const blockedDetails = [];
+      const droppedDetails = [];
       const path = join13(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
-      const merged = { ...existing, ...canonical };
+      for (const agentId of canonical.dropped) {
+        const entry = existing.agents?.[agentId];
+        const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
+        const declared = {
+          agentId,
+          role: typeof entryRecord?.role === "string" ? entryRecord.role : void 0,
+          roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : void 0,
+          extras: {}
+        };
+        const validation = validateDeclaredAgent(ctx, declared);
+        const reason = validation.details.join("; ") || "invalid";
+        droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
+      }
+      const { dropped: _dropped, ...canonicalJson } = canonical;
+      const merged = { ...existing, ...canonicalJson };
       const expected = `${JSON.stringify(merged, null, 2)}
 `;
       if (safeReadText(path) !== expected) {
@@ -4723,17 +4743,18 @@ var RULES = [
       if (existsSync10(planeJson)) {
         const backup = `${planeJson}.migrated-backup`;
         if (existsSync10(backup)) {
-          details.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
+          blockedDetails.push(`cannot back up .plane.json because ${relative(ctx.repoRoot, backup)} already exists`);
         } else {
           changedFiles.push(backup);
           if (!ctx.dryRun) renameSync2(planeJson, backup);
         }
       }
+      const details = [...droppedDetails, ...blockedDetails];
       return {
         id: finding.id,
         title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "Project SOT partially blocked" : changedFiles.length ? "Canonical .project.json written" : "No changes required",
+        status: blockedDetails.length ? "blocked" : changedFiles.length || droppedDetails.length ? "applied" : "noop",
+        summary: blockedDetails.length ? "Project SOT partially blocked" : changedFiles.length || droppedDetails.length ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)` : "No changes required",
         changedFiles,
         details
       };
@@ -5596,58 +5617,23 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
   },
   {
     id: "momo-lifecycle-plane",
-    title: "Momo lifecycle-plane readiness",
-    audit: (ctx) => {
-      const project = tryParseJson(safeReadText(join13(ctx.repoRoot, ".project.json")));
-      const agents = project && typeof project === "object" && project.agents && typeof project.agents === "object" ? project.agents : {};
-      if (Object.keys(agents).length === 0) {
-        return {
-          id: "momo-lifecycle-plane",
-          title: "Momo lifecycle-plane readiness",
-          status: "skip",
-          summary: "No agents declared in .project.json; Momo lifecycle-plane readiness not applicable",
-          details: [],
-          fixable: false
-        };
-      }
-      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
-      const details = [];
-      for (const finding of report.findings) {
-        if (finding.status !== "pass" && finding.status !== "skip") {
-          details.push(`${finding.section}: ${finding.summary}`);
-          for (const d of finding.details) details.push(`  - ${d}`);
-        }
-      }
-      return {
-        id: "momo-lifecycle-plane",
-        title: "Momo lifecycle-plane readiness",
-        status: report.ready ? "pass" : "fail",
-        summary: report.ready ? "Momo lifecycle-plane readiness verified" : `${details.length} Momo lifecycle-plane readiness issue(s)`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const report = runMomoLifecyclePlaneAudit(ctx.repoRoot, false);
-      const details = [];
-      for (const f of report.findings) {
-        if (f.status === "pass" || f.status === "skip") continue;
-        if (f.section === "plane-state-mapping" || f.section === "nested-adapter-smoke") {
-          details.push(`${f.section}: skipped in migration; requires live credentials`);
-          continue;
-        }
-        details.push(`${f.section}: missing \u2014 ${f.summary}`);
-        for (const d of f.details) details.push(`  - ${d}`);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: "skipped",
-        summary: details.length === 0 ? "No action required" : "Momo readiness migration is report-only; manual changes required",
-        changedFiles: [],
-        details
-      };
-    }
+    title: "Momo lifecycle-plane readiness profile",
+    audit: () => ({
+      id: "momo-lifecycle-plane",
+      title: "Momo lifecycle-plane readiness profile",
+      status: "skip",
+      summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
+      details: [],
+      fixable: false
+    }),
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "skipped",
+      summary: "report-only profile; migration is intentionally skipped",
+      changedFiles: [],
+      details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"]
+    })
   }
 ];
 function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
@@ -6283,7 +6269,7 @@ commandCmd.command("create").argument("<name>", "Command name").argument("<promp
   console.log(`  ${dim("For now, manually create commands in src/commands/")}`);
   console.log("");
 });
-program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--profile <profile>", "Audit profile (e.g. momo-lifecycle-plane)").option("--live", "Run credentialed live checks for supported profiles").option("--json", "Output machine-parseable JSON").action((repo, options) => {
+program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)").option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)").option("--json", "Output machine-parseable JSON").action((repo, options) => {
   try {
     const profile = options.profile;
     const live = options.live ?? false;
