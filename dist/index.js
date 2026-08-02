@@ -3239,6 +3239,65 @@ function upsertLinkAgentfilesBlock(text3, ctx) {
 function readProjectJson(ctx) {
   return tryParseJson(safeReadText(join13(ctx.repoRoot, ".project.json")));
 }
+function readDeclaredAgents(ctx) {
+  const project = readProjectJson(ctx);
+  const agents = project?.agents;
+  if (!agents || typeof agents !== "object") return [];
+  return Object.entries(agents).map(([agentId, value]) => {
+    const entry = typeof value === "object" && value !== null ? value : {};
+    return {
+      agentId,
+      role: typeof entry.role === "string" ? entry.role : void 0,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : void 0,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
+    };
+  });
+}
+function readRoleYamlAt(roleDir) {
+  const roleYamlPath = join13(roleDir, "role.yaml");
+  if (!existsSync10(roleYamlPath)) return null;
+  const text3 = readText(roleYamlPath);
+  return {
+    role: yamlGet(text3, "role"),
+    agentId: yamlGet(text3, "agent_id"),
+    providerName: yamlGet(text3, "ticket_provider.name"),
+    text: text3
+  };
+}
+function validateDeclaredAgent(ctx, declared) {
+  const details = [];
+  if (!declared.roleDir) {
+    details.push(`agents.${declared.agentId}.role_dir missing`);
+    return { valid: false, details };
+  }
+  const roleDir = resolve2(ctx.repoRoot, declared.roleDir);
+  if (!existsSync10(roleDir)) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} does not exist`);
+    return { valid: false, roleDir, details };
+  }
+  const roleYaml = readRoleYamlAt(roleDir);
+  if (!roleYaml) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} missing role.yaml`);
+    return { valid: false, roleDir, details };
+  }
+  if (declared.role !== roleYaml.role) {
+    details.push(`agents.${declared.agentId}.role should be ${roleYaml.role} (declared ${declared.role})`);
+  }
+  if (declared.agentId !== roleYaml.agentId) {
+    details.push(`agents.${declared.agentId} should map to agent_id ${roleYaml.agentId}`);
+  }
+  if (roleYaml.providerName) {
+    const dispatcher = join13(roleDir, ".scripts", "lib", "ticket-provider.sh");
+    if (!existsSync10(dispatcher)) {
+      details.push(`agents.${declared.agentId} provider dispatcher ${relative(ctx.repoRoot, dispatcher)} missing`);
+    }
+    const provider = join13(roleDir, ".scripts", "providers", `${roleYaml.providerName}.sh`);
+    if (!existsSync10(provider)) {
+      details.push(`agents.${declared.agentId} provider script ${relative(ctx.repoRoot, provider)} missing`);
+    }
+  }
+  return { valid: details.length === 0, role: roleYaml.role, agentId: roleYaml.agentId, roleDir, details };
+}
 function boolSetting(value, fallback) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -3279,13 +3338,26 @@ function canonicalProjectJson(ctx) {
       }
     ])
   );
-  const agents = { ...existingAgents };
-  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
-    const existingAgent = existingAgents[agentId] ?? {};
-    agents[agentId] = {
-      role: discovered.role,
-      role_dir: discovered.role_dir,
-      provisioning_state: existingAgent.provisioning_state
+  const agents = Object.fromEntries(
+    Object.entries(discoveredAgents).map(([agentId, discovered]) => {
+      const existingAgent = existingAgents[agentId] ?? {};
+      const extras = Object.fromEntries(Object.entries(existingAgent).filter(([key]) => key !== "role" && key !== "role_dir"));
+      return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
+    })
+  );
+  for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
+    const declared = {
+      agentId: declaredAgentId,
+      role: typeof entry.role === "string" ? entry.role : void 0,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : void 0,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
+    };
+    const validated = validateDeclaredAgent(ctx, declared);
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) continue;
+    agents[validated.agentId] = {
+      role: validated.role,
+      role_dir: relative(ctx.repoRoot, validated.roleDir),
+      ...declared.extras
     };
   }
   const existingAutomation = existing.automation ?? {};
@@ -3337,6 +3409,12 @@ function projectJsonFinding(ctx) {
     if (agent.role !== role.role) details.push(`agents.${role.agentId}.role should be ${role.role}`);
     if (agent.role_dir !== relative(ctx.repoRoot, role.roleDir)) {
       details.push(`agents.${role.agentId}.role_dir should be ${relative(ctx.repoRoot, role.roleDir)}`);
+    }
+  }
+  const declaredAgents = readDeclaredAgents(ctx);
+  if (declaredAgents.length > 0) {
+    for (const declared of declaredAgents) {
+      details.push(...validateDeclaredAgent(ctx, declared).details);
     }
   }
   const ticketProvider = data.ticket_provider ?? {};

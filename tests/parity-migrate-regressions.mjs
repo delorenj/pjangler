@@ -406,6 +406,71 @@ run = "echo still here"
   }
 
   {
+    // PJAN-45 regression: reverse-validation of declared agents. Stale declared
+    // entries (missing role_dir, mismatched role.yaml, missing provider scripts)
+    // must be reported by audit and removed by migrate.
+    const repo = makeRepo("reverse-agent-validation");
+    repos.push(repo);
+    mkdirSync(join(repo, "agents", "hermes", "pm", ".scripts", "lib"), { recursive: true });
+    mkdirSync(join(repo, "agents", "hermes", "pm", ".scripts", "providers"), { recursive: true });
+    writeFileSync(
+      join(repo, "agents", "hermes", "pm", "role.yaml"),
+      `repo: heyma\nrole: pm\nagent_id: heyma-pm\ndisplay_name: "HeyMa PM"\npurpose: "pm agent for heyma"\nprofile: heyma-pm\nticket_provider:\n  name: plane\n`
+    );
+    writeFileSync(join(repo, "agents", "hermes", "pm", ".scripts", "lib", "ticket-provider.sh"), "#!/usr/bin/env bash\n");
+    writeFileSync(join(repo, "agents", "hermes", "pm", ".scripts", "providers", "plane.sh"), "#!/usr/bin/env sh\n");
+
+    mkdirSync(join(repo, "agents", "hermes", "legacy", "bad"), { recursive: true });
+    writeFileSync(
+      join(repo, "agents", "hermes", "legacy", "bad", "role.yaml"),
+      `repo: heyma\nrole: sm\nagent_id: heyma-sm\ndisplay_name: "Bad SM"\npurpose: "sm agent for heyma"\nticket_provider:\n  name: plane\n`
+    );
+
+    writeFileSync(
+      join(repo, ".project.json"),
+      JSON.stringify(
+        {
+          project_name: "HeyMa",
+          project_description: "regression",
+          project_slug: "heyma",
+          repo_path: repo,
+          ticket_provider: { type: "plane", workspace: "", identifier: "", board_id: "", state: "planned" },
+          agents: {
+            "missing-agent": { role: "pm", role_dir: "agents/hermes/missing", provisioning_state: "provisioned" },
+            "bad-pm": { role: "pm", role_dir: "agents/hermes/legacy/bad", provisioning_state: "provisioned" },
+            "heyma-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned" },
+          },
+          automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const finding = audit.rules.find((r) => r.id === "sot.project-json");
+    assert.equal(finding.status, "fail", JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("missing-agent") && d.includes("does not exist")), JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("role should be sm")), JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("agent_id heyma-sm")), JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("provider dispatcher")), JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("bad-pm") && d.includes("provider script")), JSON.stringify(finding));
+
+    run(["migrate", "sot.project-json", repo, "--json"]);
+
+    const migrated = JSON.parse(readFileSync(join(repo, ".project.json"), "utf8"));
+    assert.equal(Object.hasOwn(migrated.agents, "missing-agent"), false, "missing declared agent should be removed");
+    assert.equal(Object.hasOwn(migrated.agents, "bad-pm"), false, "mismatched declared agent should be removed");
+    assert.equal(migrated.agents["heyma-pm"]?.role, "pm", "valid agent should be preserved");
+    assert.equal(migrated.agents["heyma-pm"]?.role_dir, "agents/hermes/pm", "valid agent role_dir should be preserved");
+    assert.equal(migrated.agents["heyma-pm"]?.provisioning_state, "provisioned", "valid agent extras should be preserved");
+
+    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const currentFinding = currentAudit.rules.find((r) => r.id === "sot.project-json");
+    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
+  }
+
+  {
     // bmad.version: detect drift against the target npm channel and offer an
     // upgrade. Seed the dist-tags cache (via XDG_CACHE_HOME) so the rule is
     // deterministic and offline — no live npm lookup in the test.

@@ -918,6 +918,75 @@ function readProjectJson(ctx: Context): Record<string, unknown> | null {
   return tryParseJson(safeReadText(join(ctx.repoRoot, ".project.json")));
 }
 
+interface DeclaredAgentEntry {
+  agentId: string;
+  role?: string;
+  roleDir?: string;
+  extras: Record<string, unknown>;
+}
+
+function readDeclaredAgents(ctx: Context): DeclaredAgentEntry[] {
+  const project = readProjectJson(ctx);
+  const agents = project?.agents as Record<string, unknown> | undefined;
+  if (!agents || typeof agents !== "object") return [];
+  return Object.entries(agents).map(([agentId, value]) => {
+    const entry = (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {}) as Record<string, unknown>;
+    return {
+      agentId,
+      role: typeof entry.role === "string" ? entry.role : undefined,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : undefined,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
+    };
+  });
+}
+
+function readRoleYamlAt(roleDir: string): { role: string; agentId: string; providerName: string; text: string } | null {
+  const roleYamlPath = join(roleDir, "role.yaml");
+  if (!existsSync(roleYamlPath)) return null;
+  const text = readText(roleYamlPath);
+  return {
+    role: yamlGet(text, "role"),
+    agentId: yamlGet(text, "agent_id"),
+    providerName: yamlGet(text, "ticket_provider.name"),
+    text,
+  };
+}
+
+function validateDeclaredAgent(ctx: Context, declared: DeclaredAgentEntry): { valid: boolean; role?: string; agentId?: string; roleDir?: string; details: string[] } {
+  const details: string[] = [];
+  if (!declared.roleDir) {
+    details.push(`agents.${declared.agentId}.role_dir missing`);
+    return { valid: false, details };
+  }
+  const roleDir = resolve(ctx.repoRoot, declared.roleDir);
+  if (!existsSync(roleDir)) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} does not exist`);
+    return { valid: false, roleDir, details };
+  }
+  const roleYaml = readRoleYamlAt(roleDir);
+  if (!roleYaml) {
+    details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} missing role.yaml`);
+    return { valid: false, roleDir, details };
+  }
+  if (declared.role !== roleYaml.role) {
+    details.push(`agents.${declared.agentId}.role should be ${roleYaml.role} (declared ${declared.role})`);
+  }
+  if (declared.agentId !== roleYaml.agentId) {
+    details.push(`agents.${declared.agentId} should map to agent_id ${roleYaml.agentId}`);
+  }
+  if (roleYaml.providerName) {
+    const dispatcher = join(roleDir, ".scripts", "lib", "ticket-provider.sh");
+    if (!existsSync(dispatcher)) {
+      details.push(`agents.${declared.agentId} provider dispatcher ${relative(ctx.repoRoot, dispatcher)} missing`);
+    }
+    const provider = join(roleDir, ".scripts", "providers", `${roleYaml.providerName}.sh`);
+    if (!existsSync(provider)) {
+      details.push(`agents.${declared.agentId} provider script ${relative(ctx.repoRoot, provider)} missing`);
+    }
+  }
+  return { valid: details.length === 0, role: roleYaml.role, agentId: roleYaml.agentId, roleDir, details };
+}
+
 function roleAgentsMap(roles: RoleMeta[]): Record<string, { role: string; role_dir: string }> {
   return Object.fromEntries(
     roles
@@ -958,7 +1027,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
     state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
   };
   if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
-  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; provisioning_state?: string }> | undefined) ?? {};
+  const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; [key: string]: unknown }> | undefined) ?? {};
   const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
     roles.map((role) => [
       role.agentId || `${slug}-${role.role}`,
@@ -968,13 +1037,26 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> {
       },
     ])
   );
-  const agents = { ...existingAgents } as Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
-  for (const [agentId, discovered] of Object.entries(discoveredAgents)) {
-    const existingAgent = existingAgents[agentId] ?? {};
-    agents[agentId] = {
-      role: discovered.role,
-      role_dir: discovered.role_dir,
-      provisioning_state: existingAgent.provisioning_state,
+  const agents: Record<string, { role: string; role_dir: string; [key: string]: unknown }> = Object.fromEntries(
+    Object.entries(discoveredAgents).map(([agentId, discovered]) => {
+      const existingAgent = existingAgents[agentId] ?? {};
+      const extras = Object.fromEntries(Object.entries(existingAgent).filter(([key]) => key !== "role" && key !== "role_dir"));
+      return [agentId, { role: discovered.role, role_dir: discovered.role_dir, ...extras }];
+    })
+  );
+  for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
+    const declared: DeclaredAgentEntry = {
+      agentId: declaredAgentId,
+      role: typeof entry.role === "string" ? entry.role : undefined,
+      roleDir: typeof entry.role_dir === "string" ? entry.role_dir : undefined,
+      extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
+    };
+    const validated = validateDeclaredAgent(ctx, declared);
+    if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) continue;
+    agents[validated.agentId] = {
+      role: validated.role,
+      role_dir: relative(ctx.repoRoot, validated.roleDir),
+      ...declared.extras,
     };
   }
   const existingAutomation = (existing.automation as Record<string, unknown> | undefined) ?? {};
@@ -1027,6 +1109,12 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     if (agent.role !== role.role) details.push(`agents.${role.agentId}.role should be ${role.role}`);
     if (agent.role_dir !== relative(ctx.repoRoot, role.roleDir)) {
       details.push(`agents.${role.agentId}.role_dir should be ${relative(ctx.repoRoot, role.roleDir)}`);
+    }
+  }
+  const declaredAgents = readDeclaredAgents(ctx);
+  if (declaredAgents.length > 0) {
+    for (const declared of declaredAgents) {
+      details.push(...validateDeclaredAgent(ctx, declared).details);
     }
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
