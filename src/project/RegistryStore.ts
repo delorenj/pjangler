@@ -163,6 +163,11 @@ export class PgRegistryStore implements RegistryStore {
           slug,
           repo_path: row.local_path ?? "",
           description: row.description ?? "",
+          // Read-time fallback for legacy rows whose status column is NULL.
+          // Deliberately NOT the new-project default (PJAN-26 = "active"):
+          // load() feeds save()/upsert(), so flipping this would retroactively
+          // rewrite every pre-existing NULL-status row to "active" on the next
+          // write. New records get their status from planProjectInit().
           status: row.status ?? "planned",
           source_artifacts: row.source_artifacts ?? [],
           template: row.template ?? {

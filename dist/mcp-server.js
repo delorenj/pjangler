@@ -1699,6 +1699,11 @@ var PgRegistryStore = class {
           slug,
           repo_path: row.local_path ?? "",
           description: row.description ?? "",
+          // Read-time fallback for legacy rows whose status column is NULL.
+          // Deliberately NOT the new-project default (PJAN-26 = "active"):
+          // load() feeds save()/upsert(), so flipping this would retroactively
+          // rewrite every pre-existing NULL-status row to "active" on the next
+          // write. New records get their status from planProjectInit().
           status: row.status ?? "planned",
           source_artifacts: row.source_artifacts ?? [],
           template: row.template ?? {
@@ -1885,6 +1890,7 @@ var PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 var TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
+var DEFAULT_NEW_PROJECT_STATUS = "active";
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
   join12(homedir3(), ".agents", "skills"),
@@ -2262,7 +2268,14 @@ function planProjectInit(input) {
     slug,
     repo_path: targetDir,
     description: input.description ?? "",
-    status: "planned",
+    // A project the CLI is bootstrapping is being worked on right now, so a
+    // NEW record starts "active" (PJAN-26). This is a default for new records,
+    // NOT a migration: an already-registered project keeps whatever lifecycle
+    // status it has ("planned"/"active"/"archived"), so re-running init (or the
+    // sync path) never rewrites it.
+    // NOTE: unrelated to `ticket_provider.state` and `agents.*.provisioning_state`,
+    // which are different lifecycles and still default to "planned".
+    status: existing?.status ?? DEFAULT_NEW_PROJECT_STATUS,
     source_artifacts: sourceSkillPath ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }] : [],
     template: {
       commonproject: {
