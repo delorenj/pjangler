@@ -3543,19 +3543,50 @@ function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) 
     }
   }
 }
-function upsertSubmodule(repoRoot, role, changedFiles, dryRun) {
+function isGitTracked(repoRoot, relPath) {
+  const result = spawnSync6("git", ["ls-files", "--stage", relPath], { cwd: repoRoot, encoding: "utf8" });
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+function isGitIgnored(repoRoot, relPath) {
+  const result = spawnSync6("git", ["check-ignore", "-q", relPath], { cwd: repoRoot, encoding: "utf8" });
+  return result.status === 0;
+}
+function removeRuntimeSubmodule(repoRoot, role, changedFiles, dryRun) {
   const gitmodulesPath = join13(repoRoot, ".gitmodules");
-  const repoName = role.runtimeRepo || `agent-hm-${role.repo}-${role.role}`;
-  const owner = role.runtimeOwner || "delorenj";
-  const block = `[submodule "agents/hermes/${role.role}/runtime"]
-	path = agents/hermes/${role.role}/runtime
-	url = git@github.com:${owner}/${repoName}.git
-`;
-  const current = safeReadText(gitmodulesPath) ?? "";
+  if (!existsSync10(gitmodulesPath)) return [];
+  const current = readText(gitmodulesPath);
   const header = `[submodule "agents/hermes/${role.role}/runtime"]`;
-  if (current.includes(header)) return [];
+  if (!current.includes(header)) return [];
+  if (!dryRun) {
+    const lines = current.split("\n");
+    const out = [];
+    let skip = false;
+    for (const line of lines) {
+      if (line.startsWith(header)) {
+        skip = true;
+        continue;
+      }
+      if (skip) {
+        if (line.trim() === "") {
+          skip = false;
+          continue;
+        }
+        if (line.startsWith("[submodule")) {
+          skip = false;
+          out.push(line);
+        }
+        continue;
+      }
+      out.push(line);
+    }
+    const remaining = out.join("\n").replace(/\n+$/, "\n");
+    if (!remaining.trim().includes("[submodule")) {
+      unlinkSync3(gitmodulesPath);
+    } else {
+      writeText(gitmodulesPath, remaining);
+    }
+  }
   changedFiles.push(gitmodulesPath);
-  if (!dryRun) writeText(gitmodulesPath, `${current.replace(/\s*$/, "")}${current.trim() ? "\n" : ""}${block}`);
   return [gitmodulesPath];
 }
 function upsertRegistryEntry(role, homeDir, changedFiles, dryRun) {
@@ -4691,8 +4722,9 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
       for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md", "runtime/bloodbank-consumer.py"]) {
         if (!existsSync10(join13(role.roleDir, rel))) details.push(`missing ${relative(ctx.repoRoot, join13(role.roleDir, rel))}`);
       }
-      const gitmodules = safeReadText(join13(ctx.repoRoot, ".gitmodules")) ?? "";
-      if (!gitmodules.includes(`agents/hermes/${role.role}/runtime`)) details.push(".gitmodules missing pm runtime submodule entry");
+      const runtimeRelPath = relative(ctx.repoRoot, join13(role.roleDir, "runtime"));
+      if (isGitTracked(ctx.repoRoot, runtimeRelPath)) details.push(`runtime directory is tracked by git at ${runtimeRelPath}`);
+      if (!isGitIgnored(ctx.repoRoot, runtimeRelPath)) details.push(`runtime directory is not ignored by gitignore at ${runtimeRelPath}`);
       if (!profileMetaInheritsDefault(join13(role.roleDir, "runtime", "profile.yaml"))) {
         details.push("runtime/profile.yaml missing inherited default config metadata");
       }
@@ -4727,7 +4759,14 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo).replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
         writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
       }
-      upsertSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+      const runtimeRelPath = relative(ctx.repoRoot, join13(role.roleDir, "runtime"));
+      if (isGitTracked(ctx.repoRoot, runtimeRelPath)) {
+        changedFiles.push(runtimeRelPath);
+        if (!ctx.dryRun) {
+          spawnSync6("git", ["rm", "--cached", "-f", "-r", "--ignore-unmatch", runtimeRelPath], { cwd: ctx.repoRoot, encoding: "utf8" });
+        }
+      }
+      removeRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
       const profileMetaUpdated = upsertInheritedProfileMeta(join13(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
       if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
       const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);

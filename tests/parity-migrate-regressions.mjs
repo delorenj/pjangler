@@ -65,6 +65,16 @@ function makeRepoWithoutMiseToml(name) {
   return repo;
 }
 
+function makeGitRepo(name) {
+  const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
+  writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
+  writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
+  spawnSync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, encoding: "utf8" });
+  spawnSync("git", ["config", "user.name", "Test"], { cwd: repo, encoding: "utf8" });
+  return repo;
+}
+
 function assertAgentSymlinks(repo) {
   for (const file of ["CLAUDE.md", "GEMINI.md"]) {
     const full = join(repo, file);
@@ -519,6 +529,56 @@ run = "echo still here"
     const noneFinding = noneAudit.rules.find((r) => r.id === "bmad.version");
     assert.equal(noneFinding.status, "skip", JSON.stringify(noneFinding));
     assert.equal(noneFinding.fixable, false, "absent BMAD version rule must not be fixable");
+  }
+
+  {
+    // PJAN-46 regression: a runtime that is tracked as a submodule but also
+    // ignored by .gitignore is a contradiction. The audit must flag it as tracked,
+    // and migrate must remove the stale .gitmodules entry, untrack the directory,
+    // and keep it ignored.
+    const repo = makeGitRepo("runtime-submodule-contradiction");
+    repos.push(repo);
+    const roleDir = join(repo, "agents", "hermes", "pm");
+    mkdirSync(join(roleDir, "runtime"), { recursive: true });
+
+    writeFileSync(
+      join(roleDir, "role.yaml"),
+      `repo: heyma\nrole: pm\nagent_id: heyma-pm\ndisplay_name: "HeyMa PM"\npurpose: "pm agent for heyma"\nprofile: heyma-pm\nruntime:\n  github_repo: delorenj/hermes-runtime-heyma-pm\n  github_owner: delorenj\nticket_provider:\n  name: plane\n`
+    );
+    writeFileSync(
+      join(roleDir, "runtime", "profile.yaml"),
+      "config:\n  inherit_from: default\n  save_mode: delta\n"
+    );
+    // .gitignore already ignores the runtime directory ...
+    writeFileSync(join(roleDir, ".gitignore"), "runtime/\n");
+    // ... but .gitmodules still lists it as a submodule.
+    writeFileSync(
+      join(repo, ".gitmodules"),
+      `[submodule "agents/hermes/pm/runtime"]\n\tpath = agents/hermes/pm/runtime\n\turl = git@github.com:delorenj/hermes-runtime-heyma-pm.git\n`
+    );
+
+    spawnSync("git", ["add", "mise.toml", "AGENTS.md", "agents/hermes/pm/.gitignore", ".gitmodules", "agents/hermes/pm/role.yaml"], { cwd: repo, encoding: "utf8" });
+    spawnSync("git", ["commit", "-m", "initial"], { cwd: repo, encoding: "utf8" });
+    const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    // Stage the runtime path as a submodule commit to create the contradiction.
+    spawnSync("git", ["update-index", "--add", "--cacheinfo", "160000", sha, "agents/hermes/pm/runtime"], { cwd: repo, encoding: "utf8" });
+
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const finding = audit.rules.find((r) => r.id === "hermes.pm-scaffold");
+    assert.equal(finding.status, "fail", JSON.stringify(finding));
+    assert.ok(finding.details.some((d) => d.includes("tracked")), JSON.stringify(finding));
+
+    run(["migrate", "hermes.pm-scaffold", repo, "--json"]);
+
+    assert.equal(existsSync(join(repo, ".gitmodules")), false, "migrate must remove the empty .gitmodules file");
+    const gitignore = readFileSync(join(roleDir, ".gitignore"), "utf8");
+    assert.match(gitignore, /runtime\/\n/, "migrate must keep runtime/ ignored");
+    const check = spawnSync("git", ["check-ignore", "-q", "agents/hermes/pm/runtime"], { cwd: repo, encoding: "utf8" });
+    assert.equal(check.status, 0, "runtime directory should still be ignored after migrate");
+
+    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const currentFinding = currentAudit.rules.find((r) => r.id === "hermes.pm-scaffold");
+    assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
   }
 
   {
