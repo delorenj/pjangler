@@ -27,7 +27,7 @@ PROVIDER="$(yaml_get ticket_provider.name)"; PROVIDER="${PROVIDER:-plane}"
 
 if ! command -v copier >/dev/null 2>&1; then
   warn "[90] copier not on PATH; provision the Scrum Master manually:"
-  warn "     copier copy --trust $SRC $SM_DIR --data role=scrum-master --data target_repo=$REPO --data ticket_provider=$PROVIDER"
+  warn "     copier copy --trust --vcs-ref=HEAD $SRC $SM_DIR --data role=scrum-master --data target_repo=$REPO --data ticket_provider=$PROVIDER"
   mark_done 90-chain-scrum-master; exit 0
 fi
 
@@ -35,7 +35,10 @@ log "[90] chaining Scrum Master provision -> $SM_DIR (provider: $PROVIDER)"
 # --trust is REQUIRED: the hermes-agent template uses copier `tasks`, which copier
 # refuses to run unless explicitly trusted. Without it the chained provision aborts
 # with "Template uses potentially unsafe feature: tasks" and the SM is never created.
-copier copy --defaults --overwrite --trust \
+# --vcs-ref=HEAD keeps the chained SM on the same template revision RunCopierTemplate
+# provisioned the PM from; with no ref copier silently falls back to the newest tag,
+# so the paired agents would drift apart by however many commits trail that tag.
+copier copy --defaults --overwrite --trust --vcs-ref=HEAD \
   --data role=scrum-master \
   --data target_repo="$REPO" \
   --data ticket_provider="$PROVIDER" \
