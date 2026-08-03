@@ -1095,7 +1095,15 @@ export function buildCommonProjectCopierAction(input: {
     primary_language: input.primaryLanguage,
     agent_hooks_layer: (input.agentHooksLayer ?? true) ? "true" : "false",
   };
-  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
+  // `--vcs-ref=HEAD` is load-bearing (PJAN-49). Whenever `templates/commonproject`
+  // resolves to a git repo *root* — a standalone clone rather than a submodule
+  // gitlink — copier treats it as a VCS template and, with no ref, checks out the
+  // latest PEP440 tag instead of the checked-out commit. Every template change
+  // since that tag then silently vanishes from generated projects. Pinning HEAD
+  // renders the commit the superproject actually points at, and is a no-op when
+  // the template is a plain directory. Same treatment as the hermes-agent
+  // template in src/commands/hermes/RunCopierTemplate.ts.
+  const command = ["copier", "copy", "--trust", "--vcs-ref=HEAD", templateDir, input.targetDir, "--defaults"];
   for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
   if (input.overwrite) command.push("--overwrite");
   return {

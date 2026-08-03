@@ -2532,7 +2532,7 @@ function buildCommonProjectCopierAction(input) {
     primary_language: input.primaryLanguage,
     agent_hooks_layer: input.agentHooksLayer ?? true ? "true" : "false"
   };
-  const command = ["copier", "copy", "--trust", templateDir, input.targetDir, "--defaults"];
+  const command = ["copier", "copy", "--trust", "--vcs-ref=HEAD", templateDir, input.targetDir, "--defaults"];
   for (const [key, value] of Object.entries(data)) command.push("--data", `${key}=${value}`);
   if (input.overwrite) command.push("--overwrite");
   return {
