@@ -1,6 +1,6 @@
 {
   "name": "@delorenj/pjangler",
-  "version": "1.2.25",
+  "version": "1.2.26",
   "description": "Project subsystem bootstrapper CLI",
   "type": "module",
   "main": "dist/index.js",
