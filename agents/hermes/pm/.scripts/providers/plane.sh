@@ -6,7 +6,8 @@
 # Board binding (repo-root .project.json `ticket_provider:`):
 #   workspace: <workspace-slug>      (or env PLANE_WORKSPACE)
 #   board_id:  <project-uuid>        (set by create_board / 42-ticket-provider)
-#   state_map: { in_review: "In Review", completed: "Done" }   optional
+#   state_map: { in_review: "In Review", completed: "Done",
+#                cancelled: "Cancelled" }   optional
 #
 # Plane model:  project = board, cycle = milestone, state.group in
 #   backlog|unstarted|started|completed|cancelled.
@@ -70,6 +71,7 @@ WS="$(pj_cfg workspace)"; [ -n "$WS" ] || WS="$(tp_cfg workspace)"; WS="${WS:-${
 PROJ="$(pj_cfg board_id)"; [ -n "$PROJ" ] || PROJ="$(tp_cfg project)"; [ -n "$PROJ" ] || PROJ="$(tp_cfg board_id)"
 SM_IN_REVIEW="$(tp_cfg in_review)"; SM_IN_REVIEW="${SM_IN_REVIEW:-In Review}"
 SM_DONE="$(tp_cfg completed)"; SM_DONE="${SM_DONE:-Done}"
+SM_CANCELLED="$(tp_cfg cancelled)"; SM_CANCELLED="${SM_CANCELLED:-Cancelled}"
 API="$BASE/api/v1/workspaces/$WS"
 
 if [ -z "${PLANE_API_KEY:-}" ]; then
@@ -100,6 +102,7 @@ resolve_state_id() {
   [ -n "$PROJ" ] || die "ticket_provider.project not set"
   case "$want" in
     completed) grp=completed; nm="$SM_DONE" ;;
+    cancelled) grp=cancelled; nm="$SM_CANCELLED" ;;
     in_review) grp=started;   nm="$SM_IN_REVIEW" ;;
     started)   grp=started;   nm="" ;;
     unstarted) grp=unstarted; nm="" ;;
@@ -107,7 +110,7 @@ resolve_state_id() {
     *) die "invalid normalized state: $want" ;;
   esac
   api GET "projects/$PROJ/states/" | GRP="$grp" NM="$nm" python3 -c 'import sys,json,os
-d=json.load(sys.stdin); rows=d.get("results", d if isinstance(d,list) else [])
+d=json.load(sys.stdin); rows=d if isinstance(d,list) else d.get("results", []) if isinstance(d,dict) else []
 grp=os.environ["GRP"]; nm=os.environ.get("NM","")
 named=[s for s in rows if nm and (s.get("name","").lower()==nm.lower())]
 grouped=[s for s in rows if s.get("group")==grp]
@@ -129,7 +132,7 @@ case "$OP" in
   active_milestone)
     [ -n "$PROJ" ] || die "project not set"
     api GET "projects/$PROJ/cycles/" | python3 -c 'import sys,json,datetime
-d=json.load(sys.stdin); rows=d.get("results", d if isinstance(d,list) else [])
+d=json.load(sys.stdin); rows=d if isinstance(d,list) else d.get("results", []) if isinstance(d,dict) else []
 now=datetime.datetime.now(datetime.timezone.utc)
 def cur(c):
     s,e=c.get("start_date"),c.get("end_date")
@@ -146,9 +149,9 @@ print(json.dumps({"id":m.get("id",""),"name":m.get("name",""),"state":"active" i
     ISSUES="$(api GET "projects/$PROJ/issues/")"
     printf '%s\n%s\n' "$STATES" "$ISSUES" | BASE="$BASE" WS="$WS" PROJ="$PROJ" python3 -c 'import sys,json,os
 parts=sys.stdin.read().split("\n",1)
-srows=json.loads(parts[0] or "{}"); srows=srows.get("results", srows if isinstance(srows,list) else [])
+srows=json.loads(parts[0] or "{}"); srows=srows if isinstance(srows,list) else srows.get("results", []) if isinstance(srows,dict) else []
 smap={s.get("id"):(s.get("name",""),s.get("group","")) for s in srows}
-d=json.loads(parts[1] or "{}"); rows=d.get("results", d if isinstance(d,list) else [])
+d=json.loads(parts[1] or "{}"); rows=d if isinstance(d,list) else d.get("results", []) if isinstance(d,dict) else []
 base,ws,proj=os.environ["BASE"],os.environ["WS"],os.environ["PROJ"]
 out=[]
 for n in rows:
@@ -166,19 +169,30 @@ print(json.dumps(out))'
     STATES="$(api GET "projects/$PROJ/states/")"
     ISSUE="$(api GET "projects/$PROJ/issues/$ID/")"
     COMM="$(api GET "projects/$PROJ/issues/$ID/comments/" 2>/dev/null || echo '[]')"
-    printf '%s\n%s\n%s\n' "$STATES" "$ISSUE" "$COMM" | python3 -c 'import sys,json,re
-parts=sys.stdin.read().split("\n",2)
-srows=json.loads(parts[0] or "{}"); srows=srows.get("results", srows if isinstance(srows,list) else [])
+    ATTACH="$(api GET "projects/$PROJ/issues/$ID/issue-attachments/" 2>/dev/null || echo '[]')"
+    printf '%s\n%s\n%s\n%s\n' "$STATES" "$ISSUE" "$COMM" "$ATTACH" | python3 -c 'import sys,json,re
+parts=sys.stdin.read().split("\n",3)
+srows=json.loads(parts[0] or "{}"); srows=srows if isinstance(srows,list) else srows.get("results", []) if isinstance(srows,dict) else []
 smap={s.get("id"):(s.get("name",""),s.get("group","")) for s in srows}
-i=json.loads(parts[1] or "{}"); c=json.loads(parts[2] or "[]")
-rows=c.get("results", c if isinstance(c,list) else [])
+i=json.loads(parts[1] or "{}"); c=json.loads(parts[2] or "[]"); a=json.loads(parts[3] or "[]")
+rows=c if isinstance(c,list) else c.get("results", []) if isinstance(c,dict) else []
+arows=a if isinstance(a,list) else a.get("results", []) if isinstance(a,dict) else []
 def strip(h): return re.sub(r"<[^>]+>","",h or "").strip()
 name,group=smap.get(i.get("state",""),("",""))
 desc=strip(i.get("description_html",""))
 cs=[{"id":x.get("id",""),"body":strip(x.get("comment_html","")),"author":""} for x in rows]
+ats=[]
+for x in arows:
+    attrs=x.get("attributes") or {}
+    ats.append({"id":x.get("id",""),"name":attrs.get("name",x.get("name","")),
+                "type":attrs.get("type",x.get("type","")),
+                "size":attrs.get("size",x.get("size",0)),"asset":x.get("asset",""),
+                "url":x.get("asset_url",x.get("url","")),
+                "created_at":x.get("created_at",""),"updated_at":x.get("updated_at",""),
+                "is_uploaded":x.get("is_uploaded",False)})
 print(json.dumps({"id":i.get("id",""),"key":i.get("sequence_id",""),"title":i.get("name",""),
                   "description":desc,"acceptance":desc,
-                  "state":name,"state_type":group,"comments":cs}))'
+                  "state":name,"state_type":group,"comments":cs,"attachments":ats}))'
     ;;
 
   comment)
@@ -199,10 +213,16 @@ print(json.dumps({"id":i.get("id",""),"key":i.get("sequence_id",""),"title":i.ge
   create_board)
     NAME="${1:?usage: create_board <name> <ident> <desc>}"; IDENT="${2:-}"; DESC="${3:-}"
     [ -n "$WS" ] || die "workspace not set"
-    EXIST="$(api GET "projects/?per_page=200" | IDENT="$IDENT" python3 -c 'import sys,json,os
-d=json.load(sys.stdin); rows=d.get("results", d if isinstance(d,list) else [])
-ident=os.environ["IDENT"].upper()
-print(next((p["id"] for p in rows if (p.get("identifier") or "").upper()==ident), ""))')"
+    EXIST="$(api GET "projects/?per_page=200" | NAME="$NAME" IDENT="$IDENT" python3 -c 'import sys,json,os
+d=json.load(sys.stdin); rows=d if isinstance(d,list) else d.get("results", []) if isinstance(d,dict) else []
+name=os.environ["NAME"].strip().lower(); ident=os.environ["IDENT"].upper()
+# Repo NAME is the primary key — links an existing repo board even if its
+# identifier differs (Plane does not enforce unique names, so this prevents
+# duplicate boards). Fall back to identifier match; empty -> create new.
+pid=next((p["id"] for p in rows if str(p.get("name","")).strip().lower()==name), "")
+if not pid and ident:
+    pid=next((p["id"] for p in rows if (p.get("identifier") or "").upper()==ident), "")
+print(pid)')"
     if [ -n "$EXIST" ]; then PID="$EXIST"; else
       PID="$(api POST "projects/" \
         "$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"identifier":sys.argv[2],"description":sys.argv[3]}))' "$NAME" "$IDENT" "$DESC")" \
@@ -225,7 +245,7 @@ print(next((p["id"] for p in rows if (p.get("identifier") or "").upper()==ident)
     IID=""; SEQ=""; CREATED=true
     if [ "$IF_ABSENT" = 1 ]; then
       HIT="$(api GET "projects/$PROJ/issues/?per_page=200" | TITLE="$TITLE" python3 -c 'import sys,json,os
-d=json.load(sys.stdin); rows=d.get("results", d if isinstance(d,list) else [])
+d=json.load(sys.stdin); rows=d if isinstance(d,list) else d.get("results", []) if isinstance(d,dict) else []
 want=os.environ["TITLE"].strip().lower()
 m=next((i for i in rows if (i.get("name") or "").strip().lower()==want), None)
 print((str(m.get("id","")) + " " + str(m.get("sequence_id","") or "")) if m else "")')"

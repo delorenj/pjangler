@@ -12,10 +12,12 @@
 #   list_issues                   -> JSON [ {id,key,title,state,state_type,
 #                                            updated_at,assignee,url}, ... ]
 #   get_issue <id>                -> JSON {id,key,title,description,acceptance,
-#                                          state,state_type,comments:[...]}
+#                                          state,state_type,comments:[...],
+#                                          attachments:[...]}
 #   comment <id> <body>           -> prints comment id
 #   transition <id> <normalized>  -> moves issue; normalized in
-#                                     backlog|unstarted|started|in_review|completed
+#                                     backlog|unstarted|started|in_review|completed|
+#                                     cancelled
 #   create_board <name> <id> <d>  -> JSON {board_id, board_url}
 #   create_issue [--if-absent] <title> [desc]
 #                                 -> JSON {issue_id, key, issue_url, created}
@@ -98,7 +100,7 @@ tp() {
 }
 
 # Normalized states the engine reasons in. Adapters map these to provider terms.
-TP_STATES="backlog unstarted started in_review completed"
+TP_STATES="backlog unstarted started in_review completed cancelled"
 
 tp_is_valid_state() {
   case " $TP_STATES " in
