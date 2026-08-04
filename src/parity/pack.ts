@@ -272,11 +272,22 @@ export function compareVersions(a: string, b: string): number {
  * Highest version subdirectory of `packs/<name>/`, or `null` when this is not a
  * pure "only subdirectories" version layout (i.e. it is a flat pack).
  *
- * "Only subdirectories" is necessary but NOT sufficient: `packs/Kurzgesagt/` is
- * twelve skill directories and no `pack.toml`, which satisfies that test and is
- * emphatically not a version layout. The discriminator is what those children
- * ARE — a child holding a regular `SKILL.md` is a skill, so the parent is a flat
- * pack and section 3's glob inventory applies instead.
+ * "Only subdirectories" is necessary but NOT sufficient. A `pack.toml`-less
+ * `packs/<name>/` whose children are REAL directories that each hold a regular
+ * `SKILL.md` satisfies that test and is emphatically not a version layout — it is
+ * a flat pack, and section 3's glob inventory applies instead. The discriminator
+ * is what those children ARE: a child holding a regular `SKILL.md` is a skill, so
+ * its parent cannot be a version root. Contrast `packs/bmad/`, also `pack.toml`-less
+ * and also all real directories, but whose children (e.g. `6.10.1-next.31/`) hold
+ * no top-level `SKILL.md` — that IS a version layout.
+ *
+ * Do not cite a retired BMAD version in this docblock: `bmad-version-surface`
+ * regressions scan source for it and will fail the suite.
+ *
+ * `packs/Kurzgesagt/` is NOT an example of this: its twelve children are all
+ * symlinks, so it is disqualified one check earlier by the `isSymbolicLink()` test
+ * below and never reaches the `SKILL.md` test. (Earlier revisions of this comment
+ * cited it as "twelve skill directories"; that was wrong.)
  */
 export function selectPackVersion(packDir: string): string | null {
   const versions: string[] = [];
