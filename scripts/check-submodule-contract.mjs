@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, lstatSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SUPPORTED = new Map([
@@ -119,11 +119,83 @@ function validateRemote(root, contract) {
   }
 }
 
-function validateRecursive(root) {
+// `git submodule status` reports ONLY whether the checked-out commit matches the
+// gitlink recorded in the parent index. A submodule whose working tree carries
+// uncommitted edits or untracked files still reports a clean " " flag, because
+// those changes exist in no commit at all. That gap is exactly how a template
+// change can look shipped locally while `git archive HEAD` — i.e. every fresh
+// clone, and the tarball `npm publish` builds from the pin — still contains the
+// old tree. Enumerate each submodule and demand a genuinely clean worktree.
+function submodulePaths(root) {
   const result = run(root, "git", ["submodule", "status", "--recursive"]);
-  if (result.status !== 0) return fail(result.stderr.trim() || "recursive submodule status failed");
+  if (result.status !== 0) {
+    fail(result.stderr.trim() || "recursive submodule status failed");
+    return null;
+  }
+  const paths = [];
   for (const line of result.stdout.split(/\r?\n/).filter(Boolean)) {
     if (/^[-+U]/.test(line)) fail(`submodule is not initialized at its exact pin: ${line.slice(0, 120)}`);
+    // `<flag><sha1> <path>[ (<describe>)]`. The describe suffix is absent for
+    // uninitialized entries, so strip it only when the line actually ends in ")".
+    const match = line.match(/^[ +\-U][0-9a-f]{40} (.+?)(?: \([^)]*\))?$/);
+    if (!match) {
+      fail(`unparseable submodule status line: ${line.slice(0, 120)}`);
+      continue;
+    }
+    paths.push(match[1]);
+  }
+  return paths;
+}
+
+// Path discipline mirrors the rest of this repo's guards: a submodule path is
+// consumed as data, never trusted to stay inside the tree it came from.
+function resolveInsideRoot(root, relative) {
+  if (relative.startsWith('"')) {
+    fail(`refusing quoted submodule path: ${relative.slice(0, 120)}`);
+    return null;
+  }
+  if (relative.split(/[\\/]/).some((segment) => segment === "" || segment === "." || segment === "..")) {
+    fail(`refusing unsafe submodule path: ${relative.slice(0, 120)}`);
+    return null;
+  }
+  const absolute = resolve(root, relative);
+  if (absolute !== root && !absolute.startsWith(root.endsWith(sep) ? root : root + sep)) {
+    fail(`submodule path escapes the repository root: ${relative.slice(0, 120)}`);
+    return null;
+  }
+  let stat;
+  try {
+    stat = lstatSync(absolute);
+  } catch {
+    return null; // uninitialized; already reported by the pin check above
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail(`submodule path is not a real directory: ${relative.slice(0, 120)}`);
+    return null;
+  }
+  return absolute;
+}
+
+function validateRecursive(root) {
+  const paths = submodulePaths(root);
+  if (!paths) return;
+  for (const relative of paths) {
+    const absolute = resolveInsideRoot(root, relative);
+    if (!absolute) continue;
+    const status = run(absolute, "git", ["status", "--porcelain", "--untracked-files=all"]);
+    if (status.status !== 0) {
+      fail(`${relative} worktree status failed: ${status.stderr.trim() || "unknown error"}`);
+      continue;
+    }
+    const entries = status.stdout.split(/\r?\n/).filter(Boolean);
+    if (!entries.length) continue;
+    // Uncommitted submodule content is unshippable by construction: the parent
+    // can only ever pin a commit, so anything not committed here is silently
+    // dropped from every consumer's checkout.
+    fail(
+      `${relative} worktree is dirty; commit and push it, then bump the parent pin ` +
+        `(${entries.length} uncommitted change(s), e.g. ${entries.slice(0, 5).map((entry) => entry.trim()).join(", ")})`,
+    );
   }
 }
 

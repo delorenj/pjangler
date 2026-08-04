@@ -30,7 +30,7 @@ PORT=$(( (PORT % 60000) + 1025 ))
 
 if ! docker ps --format '{{.Names}}' | grep -q "^$CONTAINER_NAME$"; then
   echo "🚀 Starting CodeGraph MCP Server on port $PORT..."
-  
+
   # Ensure the container isn't lingering in a stopped state
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 

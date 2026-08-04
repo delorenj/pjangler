@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
-import { BMAD_PACK_VERSION } from "../../parity/bmadPack";
+import { BMAD_PACK_VERSION } from "../../parity";
 
 /**
  * "Bootstrap the config if it's not there."

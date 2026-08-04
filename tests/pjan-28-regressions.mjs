@@ -353,7 +353,7 @@ try {
     assert.doesNotMatch(stale.summary, /unmanaged committed skill/, stale.summary);
     assert.match(
       stale.details.join("\n"),
-      new RegExp(`managed BMAD skill path\\(s\\) should be symlinks into the`),
+      new RegExp(`managed pack skill path\\(s\\) should be symlinks into their declared Skillex pack`),
       "pack symlink validation must still fire",
     );
 

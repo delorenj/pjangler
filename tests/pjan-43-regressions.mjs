@@ -82,7 +82,7 @@ function writeCanonicalGitignore(repo) {
 }
 
 try {
-  for (const script of ["provision-bmad-skills.py", "sync-skills.py"]) {
+  for (const script of ["provision-packs.py", "sync-skills.py"]) {
     const packagedTemplate = join(root, "templates", "commonproject", "template", ".mise", "scripts", script);
     assert.notEqual(
       lstatSync(packagedTemplate).mode & 0o111,
@@ -132,7 +132,7 @@ try {
     const second = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(second, "skills.project-manifest").status, "noop");
 
-    const provisionScript = join(repo, ".mise", "scripts", "provision-bmad-skills.py");
+    const provisionScript = join(repo, ".mise", "scripts", "provision-packs.py");
     const syncScript = join(repo, ".mise", "scripts", "sync-skills.py");
     const canonicalProvisionBytes = readFileSync(provisionScript);
     const canonicalSyncBytes = readFileSync(syncScript);
@@ -175,7 +175,7 @@ try {
     const home = makeHome("skills-script-directory-blocker");
     const initial = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(initial, "skills.project-manifest").status, "applied");
-    const target = join(repo, ".mise", "scripts", "provision-bmad-skills.py");
+    const target = join(repo, ".mise", "scripts", "provision-packs.py");
     rmSync(target);
     mkdirSync(target);
     const sentinel = join(target, "user-sentinel.txt");

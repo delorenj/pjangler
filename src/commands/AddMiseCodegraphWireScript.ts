@@ -34,12 +34,12 @@ SSE_URL="http://localhost:\$PORT/sse"
 inject_sse() {
   local target="\$1"
   local agent="\$2"
-  
+
   if [ ! -f "\$target" ]; then
     mkdir -p "\$(dirname "\$target")"
     echo '{"mcpServers": {}}' > "\$target"
   fi
-  
+
   # Ensure the file is valid JSON (fail gracefully if it's garbled)
   if ! jq . "\$target" >/dev/null 2>&1; then
     echo "[mise] WARNING: \$target is not valid JSON, skipping \$agent wiring" >&2

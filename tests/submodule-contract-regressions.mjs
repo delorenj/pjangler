@@ -53,6 +53,55 @@ function fixture() {
   return { root, pin };
 }
 
+// A fixture with REAL initialized submodules, so `--recursive` has actual
+// worktrees to inspect. `.gitmodules` still advertises the canonical GitHub
+// URLs the contract pins, while the local clone URL points at the on-disk
+// source repo, which is all `git submodule status` and `git status` need.
+function worktreeFixture() {
+  const cradle = mkdtempSync(join(tmpdir(), "pjangler-submodule-worktree-"));
+  temporary.push(cradle);
+  const sources = {};
+  for (const template of ["commonproject", "hermes-agent"]) {
+    const source = join(cradle, `${template}.src`);
+    mkdirSync(join(source, "template", ".mise", "scripts"), { recursive: true });
+    git(cradle, ["init", "--quiet", "--initial-branch=main", source]);
+    git(source, ["config", "user.email", "fixture@example.invalid"]);
+    git(source, ["config", "user.name", "Fixture"]);
+    writeFileSync(join(source, "template", ".mise", "scripts", "provision-packs.py"), "#!/usr/bin/env python3\n");
+    git(source, ["add", "-A"]);
+    git(source, ["commit", "--quiet", "-m", "seed template"]);
+    sources[template] = source;
+  }
+
+  const root = join(cradle, "parent");
+  mkdirSync(root, { recursive: true });
+  git(cradle, ["init", "--quiet", "--initial-branch=main", root]);
+  git(root, ["config", "user.email", "fixture@example.invalid"]);
+  git(root, ["config", "user.name", "Fixture"]);
+  git(root, ["config", "protocol.file.allow", "always"]);
+  writeFileSync(join(root, "seed.txt"), "seed\n");
+  git(root, ["add", "seed.txt"]);
+  git(root, ["commit", "--quiet", "-m", "seed"]);
+  for (const template of ["commonproject", "hermes-agent"]) {
+    git(root, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", sources[template], `templates/${template}`]);
+  }
+  writeFileSync(
+    join(root, ".gitmodules"),
+    `[submodule "templates/commonproject"]
+\tpath = templates/commonproject
+\turl = git@github.com:delorenj/CommonProject.git
+\tbranch = main
+[submodule "templates/hermes-agent"]
+\tpath = templates/hermes-agent
+\turl = git@github.com:delorenj/hermes-agent-template.git
+\tbranch = main
+`,
+  );
+  git(root, ["add", ".gitmodules"]);
+  git(root, ["commit", "--quiet", "-m", "wire submodules"]);
+  return { root, sources };
+}
+
 function check(root, ...args) {
   return run(process.execPath, [CHECKER, "--root", root, ...args], ROOT);
 }
@@ -128,6 +177,69 @@ try {
     assert.match(result.stderr, /CodeGraph daemon runtime state/);
     assert.match(result.stderr, /Omo run-continuation state/);
     assert.match(result.stderr, /process or socket runtime state/);
+  }
+
+  // A submodule whose worktree carries uncommitted edits or untracked files is
+  // shipping nothing: the parent can only pin a commit, so `git archive HEAD`,
+  // every fresh clone, and the `npm publish` tarball all get the OLD tree while
+  // the local checkout looks correct. `git submodule status` cannot see this —
+  // it only compares the checked-out commit to the gitlink — so `--recursive`
+  // has to inspect each worktree directly.
+  {
+    const { root } = worktreeFixture();
+    assert.equal(check(root, "--recursive").status, 0, "clean submodule worktrees must verify");
+
+    // 1. An untracked file — exactly the provision-packs.py case: present on
+    //    disk, in no commit, therefore absent from everything that ships.
+    const untracked = join(root, "templates", "commonproject", "template", ".mise", "scripts", "provision-extra.py");
+    writeFileSync(untracked, "#!/usr/bin/env python3\n");
+    let result = check(root, "--recursive");
+    assert.equal(result.status, 1, "untracked submodule payload must fail the gate");
+    assert.match(result.stderr, /templates\/commonproject worktree is dirty/);
+    assert.match(result.stderr, /commit and push it, then bump the parent pin/);
+    assert.match(result.stderr, /provision-extra\.py/);
+
+    // 2. A tracked-but-uncommitted edit is equally unshippable.
+    rmSync(untracked);
+    const tracked = join(root, "templates", "commonproject", "template", ".mise", "scripts", "provision-packs.py");
+    writeFileSync(tracked, "#!/usr/bin/env python3\n# edited\n");
+    result = check(root, "--recursive");
+    assert.equal(result.status, 1, "modified submodule payload must fail the gate");
+    assert.match(result.stderr, /templates\/commonproject worktree is dirty/);
+
+    // 3. Committing the submodule alone is NOT enough — the parent still pins
+    //    the old commit, so the gate must stay red until the pin is bumped.
+    const submodule = join(root, "templates", "commonproject");
+    git(submodule, ["config", "user.email", "fixture@example.invalid"]);
+    git(submodule, ["config", "user.name", "Fixture"]);
+    git(submodule, ["add", "-A"]);
+    git(submodule, ["commit", "--quiet", "-m", "edit template"]);
+    result = check(root, "--recursive");
+    assert.equal(result.status, 1, "an un-bumped parent pin must fail the gate");
+    assert.match(result.stderr, /not initialized at its exact pin/);
+
+    // 4. Clean worktree + bumped pin is the only shippable state.
+    git(root, ["add", "templates/commonproject"]);
+    assert.equal(check(root, "--recursive").status, 0, "committed submodule + bumped pin must verify");
+  }
+
+  // The dirty-worktree probe is deliberately scoped to `--recursive` (the
+  // publish gate: prepublishOnly runs `--remote --recursive --archive --npm`),
+  // so plain `npm test` stays green while a template is being iterated on.
+  {
+    const { root } = worktreeFixture();
+    writeFileSync(join(root, "templates", "commonproject", "stray.txt"), "stray\n");
+    assert.equal(check(root).status, 0, "the default mode must not police worktree cleanliness");
+    assert.equal(check(root, "--recursive").status, 1, "--recursive must police worktree cleanliness");
+  }
+
+  {
+    const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    assert.match(
+      packageJson.scripts.prepublishOnly,
+      /check:submodules -- .*--recursive/,
+      "the publish gate must run the recursive submodule check",
+    );
   }
 
   {

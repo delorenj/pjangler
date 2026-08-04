@@ -6,7 +6,33 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
-import { BMAD_PACK_VERSION, validateTrustedBmadPack } from "./bmadPack";
+import {
+  PackUnavailableError,
+  assertNoSymlinkComponents,
+  assertRealDirectory,
+  isRegularFile,
+  normalizePackEntry,
+  readRegularFile,
+  readPackMetadata,
+  safeRelativePath,
+  selectPackVersion,
+  validatePack,
+  validatePathComponent,
+  type PackManifestEntry,
+  type ValidatedPack,
+} from "./pack";
+
+/**
+ * The BMAD pack pjangler pins when a repo does not declare one in `packs[]`.
+ *
+ * This is now only a DEFAULT: a repo that declares `{"name":"bmad", ...}` in
+ * `.agents/skills.json` `packs[]` takes over completely and this pin is not
+ * consulted. It stays `sealed` from pjangler's side so the pinned release is
+ * still verified byte-for-byte even though its `pack.toml` predates
+ * `[policy] sealed`.
+ */
+export const BMAD_PACK_VERSION = "6.10.1-next.31";
+const BMAD_PACK_NAME = "bmad";
 
 export type RuleStatus = "pass" | "fail" | "warn" | "skip";
 
@@ -128,10 +154,27 @@ const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.s
 //     enter hook and must never break shell entry.
 const OP_INJECT_SCRIPT =
   "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
-const PROVISION_BMAD_SKILLS_SCRIPT =
-  "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'";
+// PACKS-CONTRACT section 7: `provision-bmad-skills.py` is retired in favour of
+// the generic `provision-packs.py`, and the mise task that ran it is renamed
+// from `skills-provision-bmad` to `skills-provision-packs`. Both legacy names
+// are still recognized so `audit` can report them and `migrate` can remove them.
+const PROVISION_PACKS_SCRIPT_REL = ".mise/scripts/provision-packs.py";
+const LEGACY_PROVISION_SCRIPT_REL = ".mise/scripts/provision-bmad-skills.py";
+const SYNC_SKILLS_SCRIPT_REL = ".mise/scripts/sync-skills.py";
+const PROVISION_PACKS_TASK = "skills-provision-packs";
+const LEGACY_PROVISION_TASK = "skills-provision-bmad";
+const PROVISION_PACKS_SCRIPT =
+  `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}'`;
+const LEGACY_PROVISION_BMAD_SKILLS_SCRIPT =
+  `python3 '{{config_root}}/${LEGACY_PROVISION_SCRIPT_REL}'`;
 const SYNC_SKILLS_SCRIPT =
-  "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project";
+  `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project`;
+// PACKS-CONTRACT section 7: the old schemas host 404s. It is accepted on read
+// (so an un-migrated repo still audits) but always rewritten by migrate/init.
+const SKILLS_SCHEMA_URL = "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json";
+const RETIRED_SKILLS_SCHEMA_URLS = [
+  "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+];
 const CODEGRAPH_SCRIPT =
   "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 const SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
@@ -155,15 +198,17 @@ const SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"] as const;
 // manifest and backing them up would be undone by the next BMAD install and
 // re-reported forever — the same drift loop the backup dir exists to avoid.
 const BMAD_SKILL_NAME_PREFIX = "bmad-";
+// PACKS-CONTRACT section 6b: exactly six supported agent CLIs, project scope.
+// `.augment`, `.hermes`, `.openclaw`, `.kimi`, `.crush` and `.cursor` are
+// RETIRED — sync-skills.py never writes them again, so their topology is no
+// longer pjangler's to police (and never was pjangler's to delete).
 const PROJECT_CLI_SKILL_DIRS = [
-  ".gemini/skills",
-  ".codex/skills",
-  ".kimi/skills",
-  ".augment/skills",
-  ".config/opencode/skills",
-  ".hermes/skills",
   ".claude/skills",
-  ".openclaw/skills",
+  ".codex/skills",
+  ".gemini/skills",
+  ".copilot/skills",
+  ".opencode/skills",
+  ".kimi-code/skills",
 ] as const;
 const CANONICAL_CLAUDE_SKILLS_ALIAS = "../.agents/skills";
 
@@ -178,7 +223,7 @@ const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 const LINK_AGENTFILES_HOOK_ENTRIES = [
   LINK_AGENTFILES_SCRIPT,
   OP_INJECT_SCRIPT,
-  PROVISION_BMAD_SKILLS_SCRIPT,
+  PROVISION_PACKS_SCRIPT,
   SYNC_SKILLS_SCRIPT,
 ];
 
@@ -196,12 +241,12 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 
 [tasks.skills-sync]
 description = "Sync skills from manifest to local CLI dirs"
-depends = ["skills-provision-bmad"]
-run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+depends = ["${PROVISION_PACKS_TASK}"]
+run = ${JSON.stringify(SYNC_SKILLS_SCRIPT)}
 
-[tasks.skills-provision-bmad]
-description = "Provision pinned BMAD skills from the Skillex pack"
-run = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"`;
+[tasks.${PROVISION_PACKS_TASK}]
+description = "Provision every Skillex pack declared in .agents/skills.json"
+run = ${JSON.stringify(PROVISION_PACKS_SCRIPT)}`;
 
 const VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
@@ -640,18 +685,369 @@ function projectSkillTopologyIssues(repoRoot: string): string[] {
   return issues;
 }
 
-function bmadPackRoot(ctx: Context): string {
-  return resolve(
-    process.env.PJ_BMAD_PACK_ROOT?.trim() ||
-      join(ctx.homeDir, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION)
-  );
+// ---------------------------------------------------------------------------
+// Skillex packs (PACKS-CONTRACT sections 2, 3, 5 and 6)
+//
+// A repo declares packs in `.agents/skills.json` `packs[]`. Their members are
+// projected into `.agents/skills/<name>` as symlinks and are NOT expanded into
+// `skills[]`. When a repo declares no `bmad` pack, pjangler keeps its historical
+// behaviour and pins BMAD_PACK_VERSION itself, expanded into `skills[]`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-pack root override, e.g. `PJ_PACK_ROOT_HERMES_BASE=/tmp/pack`.
+ *
+ * `PJ_BMAD_PACK_ROOT` predates it and stays a first-class alias for the `bmad`
+ * pack — every regression suite and every developer script sets it.
+ */
+function packRootOverride(name: string): string | undefined {
+  const generic = process.env[`PJ_PACK_ROOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]?.trim();
+  if (generic) return resolve(generic);
+  if (name === BMAD_PACK_NAME) {
+    const legacy = process.env.PJ_BMAD_PACK_ROOT?.trim();
+    if (legacy) return resolve(legacy);
+  }
+  return undefined;
 }
 
-function canonicalBmadSkillEntries(ctx: Context): SkillManifestEntry[] {
-  const root = bmadPackRoot(ctx);
-  const trusted = validateTrustedBmadPack(root);
-  return trusted.skillNames
-    .map((name) => ({ name: validateSkillName(name), source: pathToFileURL(join(root, name)).href }));
+/** The implicit BMAD pin, sealed from pjangler's side (contract section 4). */
+function bmadPackEntry(): PackManifestEntry {
+  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true };
+}
+
+/**
+ * The one normalization that turns a registry URL into its registry-cache
+ * directory name.
+ *
+ * This is a WIRE FORMAT, not an implementation detail: three independent
+ * surfaces address the same directory on the same machine and must compute
+ * byte-identical names, or one manifest resolves to two different checkouts —
+ * and one of them may be a stale, unsealed clone that gets zero integrity
+ * checking. The other two surfaces are:
+ *
+ *   - `sync-skills.py`   -> `registry_cache_dir()`:
+ *         `re.sub(r"[^a-zA-Z0-9]", "_", registry_url)`
+ *   - skillex `paths.py` -> `sanitize_registry_url()`:
+ *         `re.sub(r"[^a-zA-Z0-9]", "_", url)`
+ *
+ * `sync-skills.py` is the only surface allowed to CLONE, so it owns the name on
+ * disk; pjangler and skillex are read-only consumers and follow it. Every
+ * non-alphanumeric byte becomes `_`, so the result is always exactly one safe
+ * path component — no separator, no `.`, no `..`.
+ *
+ * Do not "improve" this here alone. `tests/registry-cache-parity-regressions`
+ * fails the build if the three surfaces disagree.
+ */
+export function registryCacheDirName(registryUrl: string): string {
+  const cacheName = registryUrl.replace(/[^a-zA-Z0-9]/g, "_");
+  if (!cacheName) {
+    throw new Error(`Registry URL has no usable cache directory name: ${JSON.stringify(registryUrl)}`);
+  }
+  return cacheName;
+}
+
+/**
+ * Registry checkout roots for pack resolution, in contract order.
+ *
+ * An audit must NEVER clone or fetch, so an absent checkout means "unavailable",
+ * not "go get it". `sync-skills.py` is the only thing allowed to clone.
+ */
+function packRegistryRoots(ctx: Context, registryUrl: string): string[] {
+  const explicit = process.env.PJ_SKILLS_REGISTRY_ROOT?.trim();
+  if (explicit) return [resolve(explicit)];
+  const cacheName = registryCacheDirName(registryUrl);
+  return [
+    join(ctx.homeDir, ".agents", ".cache", "registries", cacheName),
+    join(ctx.homeDir, "code", "skillex"),
+  ];
+}
+
+/**
+ * THE pack root resolver (contract section 2).
+ *
+ * Every pack — declared in `packs[]` or supplied by pjangler itself, like the
+ * implicit BMAD pin — walks this one ladder, so a given pack name resolves to a
+ * single root per process. Two ladders would mean `bmad@X` could mean the sync
+ * cache when declared and the developer checkout when implicit, which silently
+ * breaks every identity comparison built on the root (ownership, redundancy
+ * pruning, projection targets).
+ */
+function resolvePackRoot(ctx: Context, entry: PackManifestEntry): { root: string; description: string } {
+  const override = packRootOverride(entry.name);
+  if (override) {
+    assertRealDirectory(override, `Pack ${entry.name} root`);
+    return { root: override, description: "env override" };
+  }
+
+  if (entry.source) {
+    if (entry.source.startsWith("file:")) {
+      let local: string;
+      try {
+        local = resolve(fileURLToPath(entry.source));
+      } catch (error) {
+        throw new Error(`Pack ${entry.name} source is not a usable file URI: ${entry.source}`);
+      }
+      assertRealDirectory(local, `Pack ${entry.name} root`);
+      return { root: local, description: entry.source };
+    }
+    // git/https packs live in the sync engine's clone cache. Parity never clones.
+    const cached = join(ctx.homeDir, ".agents", ".cache", "skills", validatePathComponent(entry.name, "Pack name"));
+    assertRealDirectory(cached, `Pack ${entry.name} clone cache`);
+    return { root: cached, description: entry.source };
+  }
+
+  const registryUrl = entry.registry ?? SKILLS_REGISTRY_URL;
+  const matches: RegistryPackMatch[] = [];
+  let firstUnavailable: PackUnavailableError | undefined;
+
+  for (const candidate of packRegistryRoots(ctx, registryUrl)) {
+    const stat = lstatIfPresent(candidate);
+    if (!stat || !(stat.isDirectory() || (stat.isSymbolicLink() && existsSync(candidate)))) continue;
+    try {
+      matches.push(resolvePackRootInRegistry(realpathSync(candidate), entry));
+    } catch (error) {
+      // "This checkout does not carry the pack" is precisely what an ordered
+      // candidate list is FOR — keep walking. Anything else (a symlinked path
+      // component, an escape, a `pack.toml` that is not a regular file) is
+      // hostile rather than absent, and must never be masked by silently
+      // falling through to a different checkout.
+      if (!(error instanceof PackUnavailableError)) throw error;
+      firstUnavailable ??= error;
+    }
+  }
+
+  if (!matches.length) {
+    throw firstUnavailable ?? new PackUnavailableError(`No registry checkout available for ${registryUrl}`);
+  }
+  // Contract order already decided `matches`; attestation only promotes within it.
+  const chosen = matches.find((match) => match.attested) ?? matches[0]!;
+  return { root: chosen.root, description: `${registryUrl}:${chosen.relativePath}` };
+}
+
+interface RegistryPackMatch {
+  root: string;
+  relativePath: string;
+  /** The root carries a `pack.toml` that positively identifies this entry. */
+  attested: boolean;
+}
+
+/**
+ * Does this pack root carry a `pack.toml` that positively attests `entry`?
+ *
+ * Contract section 3 makes `pack.toml` the AUTHORITATIVE identity and inventory
+ * of a pack; a bare `packs/<name>/<version>/` directory is an unattested claim
+ * resting on nothing but a directory name that anyone can create. Several
+ * checkouts routinely carry the same `packs/<name>/<version>/` path while only
+ * one of them holds the RENDERED pack — that is the NORMAL state while a pack is
+ * being cut, because the sync cache is a clone of what has been *pushed*.
+ *
+ * Ranking attested above unattested is what stops `[policy] sealed = true` from
+ * being silently downgraded to "unsealed, structural checks only" by whichever
+ * checkout happens to sort first. It can only ever TIGHTEN: contract order still
+ * breaks every tie, so a sealed pack in a higher-priority checkout always wins,
+ * and a lower-priority checkout can never demote one (unattested is strictly the
+ * lower rank). A manifest `sealed: true` is likewise unaffected — it is enforced
+ * against whichever root wins, and an unsealable root simply fails.
+ */
+function packRootAttests(root: string, entry: PackManifestEntry): boolean {
+  // Throws (does NOT return false) when pack.toml exists but is a symlink, is
+  // not a regular file, or does not parse — those are hard errors everywhere
+  // else and must not be downgraded into "just not attested".
+  const metadata = readPackMetadata(root);
+  if (!metadata) return false;
+  if (metadata.name !== entry.name) {
+    throw new Error(
+      `Pack ${entry.name} pack.toml declares name ${JSON.stringify(metadata.name)}`
+    );
+  }
+  if (entry.version && metadata.version !== entry.version) {
+    throw new Error(
+      `Pack ${entry.name} pack.toml declares version ${JSON.stringify(metadata.version)}, manifest pins ${JSON.stringify(entry.version)}`
+    );
+  }
+  return true;
+}
+
+/**
+ * Resolve `entry` inside ONE registry checkout (contract section 2 step 2).
+ *
+ * Throws `PackUnavailableError` when this checkout simply does not carry the
+ * pack, and a hard error for anything unsafe. Every guard runs against the root
+ * that is actually returned.
+ */
+function resolvePackRootInRegistry(registryRoot: string, entry: PackManifestEntry): RegistryPackMatch {
+  let relativePath: string;
+  if (entry.registryPath) {
+    relativePath = safeRelativePath(entry.registryPath, `pack ${entry.name} registry_path`);
+  } else {
+    relativePath = `packs/${entry.name}`;
+    const packDir = join(registryRoot, relativePath);
+    assertNoSymlinkComponents(registryRoot, relativePath);
+    assertRealDirectory(packDir, `Pack ${entry.name} directory`);
+    if (entry.version) {
+      relativePath = `${relativePath}/${entry.version}`;
+    } else if (!isRegularFile(join(packDir, "pack.toml"))) {
+      // The ONLY implicit choice in the contract: highest version directory.
+      const selected = selectPackVersion(packDir);
+      if (selected !== null) relativePath = `${relativePath}/${selected}`;
+    }
+  }
+
+  assertNoSymlinkComponents(registryRoot, relativePath);
+  const root = join(registryRoot, relativePath);
+  assertRealDirectory(root, `Pack ${entry.name} root`);
+  return { root, relativePath, attested: packRootAttests(root, entry) };
+}
+
+interface ResolvedPackPlanEntry {
+  entry: PackManifestEntry;
+  root: string;
+  pack: ValidatedPack;
+  /** `packs/<name>` when the pack lives under a version directory. */
+  familyRoot?: string;
+}
+
+interface PackPlan {
+  /** Pack skills recorded in `skills[]` — the implicit BMAD pin only. */
+  manifestSkills: SkillManifestEntry[];
+  /** Every projection to materialize in `.agents/skills`: name -> target dir. */
+  projections: Map<string, string>;
+  /** Roots that own a `skills[]` entry or a `.agents/skills` symlink. */
+  ownershipRoots: string[];
+  /** Roots that own the implicit `skills[]` expansion specifically. */
+  implicitRoots: string[];
+  resolved: ResolvedPackPlanEntry[];
+  /** Declared packs that resolved and validated (used for redundancy checks). */
+  declared: ResolvedPackPlanEntry[];
+  errors: string[];
+  warnings: string[];
+  bmadDeclared: boolean;
+}
+
+function manifestPackEntries(manifest: Record<string, unknown> | null | undefined): {
+  entries: PackManifestEntry[];
+  errors: string[];
+} {
+  const raw = manifest?.packs;
+  if (raw === undefined || raw === null) return { entries: [], errors: [] };
+  if (!Array.isArray(raw)) return { entries: [], errors: [".agents/skills.json packs must be an array"] };
+  const entries: PackManifestEntry[] = [];
+  const errors: string[] = [];
+  for (const item of raw) {
+    try {
+      entries.push(normalizePackEntry(item));
+    } catch (error) {
+      errors.push(`.agents/skills.json packs[] entry is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { entries, errors };
+}
+
+/**
+ * Resolve and validate every pack this repo projects.
+ *
+ * Nothing here mutates anything: a plan is built (and every integrity failure
+ * collected) BEFORE the caller is allowed to touch the project, which is what
+ * keeps "one unsafe or broken pack produces zero mutation" true.
+ */
+function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | undefined): PackPlan {
+  const plan: PackPlan = {
+    manifestSkills: [],
+    projections: new Map(),
+    ownershipRoots: [],
+    implicitRoots: [],
+    resolved: [],
+    declared: [],
+    errors: [],
+    warnings: [],
+    bmadDeclared: false,
+  };
+
+  const { entries, errors } = manifestPackEntries(manifest);
+  plan.errors.push(...errors);
+  plan.bmadDeclared = entries.some((entry) => entry.name === BMAD_PACK_NAME);
+
+  // Lowest precedence first: the implicit BMAD pin, when nothing declares bmad.
+  // It resolves through `resolvePackRoot` exactly like a declared pack would, so
+  // adding `packs:[{name:"bmad",...}]` to a manifest can never move the pack.
+  if (!plan.bmadDeclared) {
+    const entry = bmadPackEntry();
+    let root: string | undefined;
+    try {
+      root = resolvePackRoot(ctx, entry).root;
+      const pack = validatePack(root, entry);
+      const resolved: ResolvedPackPlanEntry = { entry, root, pack };
+      plan.resolved.push(resolved);
+      plan.implicitRoots.push(root);
+      plan.ownershipRoots.push(root);
+      for (const name of pack.members) {
+        const target = join(root, validateSkillName(name));
+        plan.projections.set(name, target);
+        plan.manifestSkills.push({ name, source: pathToFileURL(target).href });
+      }
+    } catch (error) {
+      // Resolution itself can fail, in which case there is no root to name — the
+      // underlying message always carries the path that was rejected.
+      plan.errors.push(
+        `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${root ?? "its resolved pack root"}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  // Declared packs, in array order — a later pack wins a name collision.
+  for (const entry of entries) {
+    try {
+      const { root } = resolvePackRoot(ctx, entry);
+      const pack = validatePack(root, entry);
+      const familyRoot = basename(dirname(root)) === entry.name ? dirname(root) : undefined;
+      const resolved: ResolvedPackPlanEntry = { entry, root, pack, familyRoot };
+      plan.resolved.push(resolved);
+      plan.declared.push(resolved);
+      plan.ownershipRoots.push(root);
+      if (familyRoot) plan.ownershipRoots.push(familyRoot);
+      for (const name of pack.members) {
+        plan.projections.set(name, join(root, validateSkillName(name)));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (entry.optional && error instanceof PackUnavailableError) {
+        plan.warnings.push(`Optional pack ${entry.name} is unavailable and was skipped: ${message}`);
+      } else {
+        plan.errors.push(`Skillex pack ${entry.name} could not be resolved: ${message}`);
+      }
+    }
+  }
+
+  // PACKS-CONTRACT section 5: an explicit `skills[]` entry ALWAYS overrides a
+  // pack member of the same name. Only entries that survive section 6 pruning
+  // count — a redundant entry pointing INTO the pack is not an override, and the
+  // implicit BMAD expansion is pjangler's own output, not a user override.
+  if (plan.declared.length) {
+    const managedNames = new Set(plan.manifestSkills.map((entry) => entry.name));
+    for (const entry of Array.isArray(manifest?.skills) ? manifest.skills : []) {
+      const name = skillManifestEntryName(entry);
+      if (!name || !plan.projections.has(name)) continue;
+      if (managedNames.has(name) || isRedundantDeclaredPackEntry(entry, plan)) continue;
+      plan.projections.delete(name);
+    }
+  }
+
+  return plan;
+}
+
+/**
+ * Re-validate every pack the plan projected.
+ *
+ * Called at the mutation boundary so a pack tampered with between preflight and
+ * apply is caught, and the transaction rolled back.
+ */
+function assertPackPlanUnchanged(plan: PackPlan): void {
+  for (const item of plan.resolved) {
+    const again = validatePack(item.root, item.entry);
+    if (JSON.stringify(again.members) !== JSON.stringify(item.pack.members)) {
+      throw new Error(`Pack ${item.entry.name} inventory changed after preflight`);
+    }
+  }
 }
 
 function skillManifestEntryName(entry: unknown): string | undefined {
@@ -661,38 +1057,69 @@ function skillManifestEntryName(entry: unknown): string | undefined {
   return typeof name === "string" ? name : undefined;
 }
 
-function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, packRoot: string): boolean {
+function manifestEntrySourcePath(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const source = (entry as Record<string, unknown>).source;
+  if (typeof source !== "string" || !source.startsWith("file:")) return undefined;
+  try {
+    return resolve(fileURLToPath(source));
+  } catch {
+    return undefined;
+  }
+}
+
+function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, packRoots: string[]): boolean {
   const name = skillManifestEntryName(entry);
   if (!name) return false;
   if (expectedNames.has(name)) return true;
-  if (!entry || typeof entry !== "object") return false;
-  const source = (entry as Record<string, unknown>).source;
-  if (typeof source !== "string" || !source.startsWith("file:")) return false;
-  try {
-    const sourcePath = resolve(fileURLToPath(source));
-    return basename(sourcePath) === name && isContainedBy(packRoot, sourcePath);
-  } catch {
-    return false;
+  const sourcePath = manifestEntrySourcePath(entry);
+  if (!sourcePath) return false;
+  return basename(sourcePath) === name && packRoots.some((root) => isContainedBy(root, sourcePath));
+}
+
+/**
+ * PACKS-CONTRACT section 6: declaring a pack REPLACES hand-expanded per-skill
+ * entries for that pack's members.
+ *
+ * Deliberately narrow. An entry only counts as redundant when its own resolved
+ * source lands inside the pack (or, for a declared member name, inside any
+ * version of the same pack). An entry pointing anywhere else — a local tree, a
+ * different registry, a customized copy — is the user's and is never removed.
+ */
+function isRedundantDeclaredPackEntry(entry: unknown, plan: PackPlan): boolean {
+  const name = skillManifestEntryName(entry);
+  if (!name) return false;
+  const sourcePath = manifestEntrySourcePath(entry);
+  if (!sourcePath) return false;
+  for (const declared of plan.declared) {
+    if (isContainedBy(declared.pack.root, sourcePath)) return true;
+    if (declared.familyRoot && declared.pack.declared.includes(name) && isContainedBy(declared.familyRoot, sourcePath)) {
+      return true;
+    }
   }
+  return false;
 }
 
 function canonicalSkillsManifest(
   ctx: Context,
   current?: Record<string, unknown> | null,
-  packSkills = canonicalBmadSkillEntries(ctx)
+  plan: PackPlan = buildPackPlan(ctx, current)
 ): string {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
-  const expectedNames = new Set(packSkills.map((entry) => entry.name));
-  const packRoot = bmadPackRoot(ctx);
+  const expectedNames = new Set(plan.manifestSkills.map((entry) => entry.name));
   return `${JSON.stringify(
     {
       ...(current ?? {}),
-      $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+      $schema: SKILLS_SCHEMA_URL,
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
       skills: [
-        ...existing.filter((entry) => !isPackManagedManifestEntry(entry, expectedNames, packRoot)),
-        ...packSkills,
+        ...existing.filter(
+          (entry) =>
+            !isPackManagedManifestEntry(entry, expectedNames, plan.implicitRoots) &&
+            !isRedundantDeclaredPackEntry(entry, plan)
+        ),
+        ...plan.manifestSkills,
       ],
     },
     null,
@@ -722,18 +1149,13 @@ function skillsBackupDir(repoRoot: string): string {
  * API and no index, so the only thing that can be matched against is a
  * checkout that already exists on disk. `sync-skills.py` clones it into
  * `~/.agents/.cache/registries/<sanitized-url>`; `~/code/skillex` is the
- * canonical developer checkout (the same one `bmadPackRoot` reads packs from).
- * We NEVER clone or fetch here: a parity audit/migrate must not depend on the
- * network, so an absent checkout simply means "no confident match".
+ * canonical developer checkout. This is deliberately the SAME ladder pack
+ * resolution walks — a second, divergent copy is what let one pack name resolve
+ * two ways. We NEVER clone or fetch here: a parity audit/migrate must not depend
+ * on the network, so an absent checkout simply means "no confident match".
  */
 function skillsRegistryRoots(ctx: Context): string[] {
-  const explicit = process.env.PJ_SKILLS_REGISTRY_ROOT?.trim();
-  if (explicit) return [resolve(explicit)];
-  const cacheName = SKILLS_REGISTRY_URL.replace(/[^a-zA-Z0-9]/g, "_");
-  return [
-    join(ctx.homeDir, ".agents", ".cache", "registries", cacheName),
-    join(ctx.homeDir, "code", "skillex"),
-  ];
+  return packRegistryRoots(ctx, SKILLS_REGISTRY_URL);
 }
 
 function availableSkillsRegistryRoots(ctx: Context): string[] {
@@ -800,7 +1222,7 @@ function legacyCommittedSkillNames(
   skillsDir: string,
   backupDir: string,
   expectedNames: Set<string>,
-  packRoot: string,
+  packRoots: string[],
   manifestNames: Set<string>
 ): string[] {
   const stat = lstatIfPresent(skillsDir);
@@ -822,7 +1244,12 @@ function legacyCommittedSkillNames(
     } catch {
       linkTarget = null;
     }
-    if (linkTarget && (isContainedBy(packRoot, linkTarget) || isContainedBy(backupDir, linkTarget))) continue;
+    if (
+      linkTarget &&
+      (packRoots.some((root) => isContainedBy(root, linkTarget)) || isContainedBy(backupDir, linkTarget))
+    ) {
+      continue;
+    }
     names.push(name);
   }
   return names;
@@ -889,20 +1316,16 @@ function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): str
   const backupDir = skillsBackupDir(ctx.repoRoot);
   const manifestPath = join(agentsDir, "skills.json");
 
-  let expectedNames = new Set<string>();
-  try {
-    expectedNames = new Set(canonicalBmadSkillEntries(ctx).map((entry) => entry.name));
-  } catch {
-    // An untrusted pack blocks later in provisionBmadSkills; treating the pack
-    // inventory as empty here only makes this step more conservative.
-  }
-  const packRoot = bmadPackRoot(ctx);
   const rawManifest = safeReadText(manifestPath);
   const manifest = tryParseJson(rawManifest);
   if (rawManifest !== null && manifest === null) {
     // Invalid JSON: never clobber it. provisionBmadSkills reports the blocker.
     return details;
   }
+  // An unresolvable pack blocks later in provisionBmadSkills; an empty pack
+  // inventory here only makes this step more conservative.
+  const packPlan = buildPackPlan(ctx, manifest);
+  const expectedNames = new Set(packPlan.projections.keys());
   const manifestSkills = Array.isArray(manifest?.skills) ? [...manifest.skills] : [];
   const manifestNames = new Set(
     manifestSkills
@@ -910,7 +1333,7 @@ function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): str
       .filter((name): name is string => Boolean(name))
   );
 
-  const names = legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot, manifestNames);
+  const names = legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packPlan.ownershipRoots, manifestNames);
   if (!names.length) return details;
 
   const registryRoots = availableSkillsRegistryRoots(ctx);
@@ -1028,17 +1451,33 @@ export function provisionBmadSkills(
   preservedManifest?: Record<string, unknown> | null,
   hooks: BmadProvisionHooks = {}
 ): { ok: boolean; changedFiles: string[]; error?: string } {
-  const packRoot = bmadPackRoot(ctx);
-  let packSkills: SkillManifestEntry[];
+  // Destination topology and the manifest's own file type are security
+  // boundaries. Validate them before reading packs[] or resolving any registry
+  // path: a symlinked manifest must never be followed even during planning.
+  let initialDirs: { agentsDir: string; skillsDir: string };
   try {
-    packSkills = canonicalBmadSkillEntries(ctx);
+    initialDirs = prepareSafeProjectSkillsDirs({ ...ctx, dryRun: true });
   } catch (error) {
-    return {
-      ok: false,
-      changedFiles: [],
-      error: `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${packRoot}: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
+  const initialManifestPath = join(initialDirs.agentsDir, "skills.json");
+  const initialManifestStat = lstatIfPresent(initialManifestPath);
+  if (initialManifestStat?.isSymbolicLink() || (initialManifestStat && !initialManifestStat.isFile())) {
+    return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${initialManifestPath}` };
+  }
+
+  // The plan depends on `packs[]`, so the manifest is read (leniently) first.
+  // A manifest that does not parse yields no packs here and is reported with
+  // its proper error below, before anything is created or written.
+  //
+  const declaringManifest =
+    preservedManifest ??
+    tryParseJson(initialManifestStat ? readRegularFile(initialManifestPath).toString("utf8") : null);
+  const plan = buildPackPlan(ctx, declaringManifest);
+  if (plan.errors.length) {
+    return { ok: false, changedFiles: [], error: plan.errors.join("; ") };
+  }
+  const packSkills = plan.manifestSkills;
   hooks.afterPreflight?.();
 
   const projectRoot = realpathSync(ctx.repoRoot);
@@ -1057,7 +1496,7 @@ export function provisionBmadSkills(
   if (manifestStat?.isSymbolicLink() || (manifestStat && !manifestStat.isFile())) {
     return { ok: false, changedFiles: [], error: `Refusing unsafe skills manifest: ${manifestPath}` };
   }
-  const manifestBytes = manifestStat ? readFileSync(manifestPath) : null;
+  const manifestBytes = manifestStat ? readRegularFile(manifestPath) : null;
   const manifestMode = manifestStat ? Number(manifestStat.mode) & 0o777 : 0o644;
   let currentManifest: Record<string, unknown> = {};
   if (manifestBytes !== null) {
@@ -1076,15 +1515,15 @@ export function provisionBmadSkills(
   } catch (error) {
     return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
-  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, packSkills);
+  const nextManifest = canonicalSkillsManifest(ctx, preservedManifest ?? currentManifest, plan);
   const skillsDir = safeDirs.skillsDir;
   const resolvedSkillsDir = ctx.dryRun && !existsSync(skillsDir) ? skillsDir : realpathSync(skillsDir);
-  const expected = new Map(packSkills.map((entry) => [entry.name, fileURLToPath(entry.source)]));
+  const expected = new Map(plan.projections);
   const expectedNames = new Set(expected.keys());
   const ownershipManifest = preservedManifest ?? currentManifest;
   const managedManifestNames = new Set(
     (Array.isArray(ownershipManifest.skills) ? ownershipManifest.skills : [])
-      .filter((entry) => isPackManagedManifestEntry(entry, expectedNames, packRoot))
+      .filter((entry) => isPackManagedManifestEntry(entry, expectedNames, plan.ownershipRoots))
       .map(skillManifestEntryName)
       .filter((name): name is string => Boolean(name))
   );
@@ -1100,7 +1539,9 @@ export function provisionBmadSkills(
       const entryPath = join(skillsDir, name);
       let linkTargetsPack = false;
       try {
-        linkTargetsPack = lstatSync(entryPath).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(entryPath), readlinkSync(entryPath)));
+        const linkTarget =
+          lstatSync(entryPath).isSymbolicLink() ? resolve(dirname(entryPath), readlinkSync(entryPath)) : null;
+        linkTargetsPack = Boolean(linkTarget) && plan.ownershipRoots.some((root) => isContainedBy(root, linkTarget!));
       } catch {
         linkTargetsPack = false;
       }
@@ -1140,10 +1581,7 @@ export function provisionBmadSkills(
   ];
   if (ctx.dryRun || changedFiles.length === 0) {
     try {
-      const postflight = validateTrustedBmadPack(packRoot);
-      if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
-        throw new Error("BMAD pack inventory changed after preflight");
-      }
+      assertPackPlanUnchanged(plan);
       return { ok: true, changedFiles };
     } catch (error) {
       return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
@@ -1222,10 +1660,7 @@ export function provisionBmadSkills(
     if (manifestChanged) {
       atomicWriteBuffer(manifestPath, Buffer.from(nextManifest), manifestMode, join(transaction, "manifest.next"));
     }
-    const postflight = validateTrustedBmadPack(packRoot);
-    if (JSON.stringify(postflight.skillNames) !== JSON.stringify(packSkills.map((entry) => entry.name))) {
-      throw new Error("BMAD pack inventory changed after preflight");
-    }
+    assertPackPlanUnchanged(plan);
     hooks.afterApply?.(manifestPath, skillsDir);
     for (const name of staleManagedNames) {
       if (lstatIfPresent(join(skillsDir, name))) {
@@ -1252,7 +1687,7 @@ export function provisionBmadSkills(
     }
     const finalManifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
     if (
-      finalManifest.$schema !== "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json" ||
+      finalManifest.$schema !== SKILLS_SCHEMA_URL ||
       finalManifest.inherit_global !== true || finalManifest.registry !== SKILLS_REGISTRY_URL ||
       !Array.isArray(finalManifest.skills)
     ) {
@@ -1476,8 +1911,10 @@ function isManagedHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (isOpInjectHookEntry(trimmed)) return true;
   if (trimmed === SYNC_SKILLS_SCRIPT) return true;
-  if (trimmed === PROVISION_BMAD_SKILLS_SCRIPT) return true;
+  if (trimmed === PROVISION_PACKS_SCRIPT) return true;
+  if (trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT) return true;
   if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
+  if (/provision-packs\.py/.test(trimmed)) return true;
   if (/provision-bmad-skills\.py/.test(trimmed)) return true;
   if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
   if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
@@ -1635,6 +2072,7 @@ function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
   // Remove stale AGENTS-linking pieces before appending the canonical block.
   let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, undefined, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-packs\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-bmad\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.unlink-project-skills-from-clis\]$/, undefined, { includePrecedingComments: false });
@@ -3218,36 +3656,57 @@ const RULES: Rule[] = [
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
       let fixable = true;
-      let expectedBmad: SkillManifestEntry[] = [];
-      try {
-        expectedBmad = canonicalBmadSkillEntries(ctx);
-      } catch (error) {
-        details.push(
-          `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${bmadPackRoot(ctx)}: ${error instanceof Error ? error.message : String(error)}`
-        );
-        fixable = false;
-      }
-      const expectedByName = new Map(expectedBmad.map((entry) => [entry.name, fileURLToPath(entry.source)]));
-      const expectedNames = new Set(expectedByName.keys());
-      const packRoot = bmadPackRoot(ctx);
 
       const manifest = tryParseJson(safeReadText(manifestPath));
+      // PACKS-CONTRACT: `packs[]` members are projected as symlinks and are NOT
+      // required to appear in `skills[]`. Only the implicit BMAD pin (a repo
+      // that declares no `bmad` pack) is still expanded into `skills[]`.
+      const plan = buildPackPlan(ctx, manifest);
+      if (plan.errors.length) {
+        details.push(...plan.errors);
+        fixable = false;
+      }
+      // PACKS-CONTRACT section 1: an `optional: true` pack that is missing WARNS,
+      // it does not fail. Keep the advisory in the canonical summary rather
+      // than adding a new AuditFinding field or a permanently failing detail.
+      const optionalPackWarningCount = plan.warnings.length;
+      const expectedBmad = plan.manifestSkills;
+      const expectedByName = new Map(plan.projections);
+      const expectedNames = new Set(expectedByName.keys());
+      const managedManifestNames = new Set(expectedBmad.map((entry) => entry.name));
+
       if (!manifest) {
         details.push(".agents/skills.json missing or invalid JSON");
       } else {
         if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
         if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
+        if (typeof manifest.$schema === "string" && RETIRED_SKILLS_SCHEMA_URLS.includes(manifest.$schema)) {
+          details.push(`.agents/skills.json $schema still points at the retired ${manifest.$schema}; it should be ${SKILLS_SCHEMA_URL}`);
+        } else if (manifest.$schema !== SKILLS_SCHEMA_URL) {
+          details.push(`.agents/skills.json should set $schema to ${SKILLS_SCHEMA_URL}`);
+        }
         if (!Array.isArray(manifest.skills)) {
           details.push(".agents/skills.json should define a skills array");
         } else {
           const actualBmad = new Map(
             manifest.skills
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, expectedNames, packRoot))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, managedManifestNames, plan.implicitRoots))
               .map((entry) => [String(entry.name), String(entry.source ?? "")])
           );
           const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
           if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
             details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+          }
+          // PACKS-CONTRACT section 6: declaring a pack replaces hand-expanded
+          // per-skill entries for that pack's members.
+          const redundant = manifest.skills
+            .filter((entry) => isRedundantDeclaredPackEntry(entry, plan))
+            .map(skillManifestEntryName)
+            .filter((name): name is string => Boolean(name));
+          if (redundant.length) {
+            details.push(
+              `.agents/skills.json skills[] duplicates ${redundant.length} declared pack member(s) and should drop them: ${redundant.join(", ")}`
+            );
           }
         }
       }
@@ -3259,7 +3718,8 @@ const RULES: Rule[] = [
           const path = join(legacyDir, name);
           let linkTargetsPack = false;
           try {
-            linkTargetsPack = lstatSync(path).isSymbolicLink() && isContainedBy(packRoot, resolve(dirname(path), readlinkSync(path)));
+            const linkTarget = lstatSync(path).isSymbolicLink() ? resolve(dirname(path), readlinkSync(path)) : null;
+            linkTargetsPack = Boolean(linkTarget) && plan.ownershipRoots.some((root) => isContainedBy(root, linkTarget!));
           } catch {
             linkTargetsPack = false;
           }
@@ -3282,7 +3742,7 @@ const RULES: Rule[] = [
         for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
       }
       if (invalidBmadLinkNames.size > 0) {
-        details.push(`${invalidBmadLinkNames.size} managed BMAD skill path(s) should be symlinks into the ${BMAD_PACK_VERSION} pack`);
+        details.push(`${invalidBmadLinkNames.size} managed pack skill path(s) should be symlinks into their declared Skillex pack`);
       }
 
       // PJAN-28: the walk above deliberately skips everything that is not a
@@ -3297,7 +3757,7 @@ const RULES: Rule[] = [
         legacyDir,
         skillsBackupDir(ctx.repoRoot),
         expectedNames,
-        packRoot,
+        plan.ownershipRoots,
         manifestNames
       );
       for (const name of unmanagedSkillNames) {
@@ -3318,21 +3778,29 @@ const RULES: Rule[] = [
         details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
       }
 
+      // PACKS-CONTRACT section 7: the BMAD-only provisioner is retired.
+      if (existsSync(join(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL))) {
+        details.push(`${LEGACY_PROVISION_SCRIPT_REL} is the retired BMAD-only provisioner and should be replaced by ${PROVISION_PACKS_SCRIPT_REL}`);
+      }
+
       const mise = safeReadText(misePath);
       if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
-      if (!mise?.includes(PROVISION_BMAD_SKILLS_SCRIPT)) details.push("mise.toml should provision pinned BMAD pack links before syncing skills");
-      if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_BMAD_SKILLS_SCRIPT) && mise.indexOf(PROVISION_BMAD_SKILLS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
-        details.push("mise.toml should run the BMAD provisioner before project skill sync");
+      if (!mise?.includes(PROVISION_PACKS_SCRIPT)) details.push("mise.toml should provision declared Skillex packs before syncing skills");
+      if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_PACKS_SCRIPT) && mise.indexOf(PROVISION_PACKS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
+        details.push("mise.toml should run the pack provisioner before project skill sync");
+      }
+      if (mise?.includes(LEGACY_PROVISION_TASK) || mise?.includes("provision-bmad-skills.py")) {
+        details.push(`mise.toml still references the retired ${LEGACY_PROVISION_TASK} task/provision-bmad-skills.py script`);
       }
       if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
         details.push("mise.toml still invokes the missing bare sync-skills.py executable");
       }
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
       if (!mise?.includes('[tasks.skills-sync]')) details.push("mise.toml should define a skills-sync task");
-      if (!mise?.includes('depends = ["skills-provision-bmad"]')) details.push("skills-sync task should depend on skills-provision-bmad");
+      if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`skills-sync task should depend on ${PROVISION_PACKS_TASK}`);
       for (const [rel, label] of [
-        [".mise/scripts/provision-bmad-skills.py", "BMAD Skillex provisioning script"],
-        [".mise/scripts/sync-skills.py", "Project-local skills sync engine"],
+        [PROVISION_PACKS_SCRIPT_REL, "Skillex pack provisioning script"],
+        [SYNC_SKILLS_SCRIPT_REL, "Project-local skills sync engine"],
       ] as const) {
         const target = join(ctx.repoRoot, rel);
         const expected = templateCommonProjectText(ctx, rel);
@@ -3360,7 +3828,9 @@ const RULES: Rule[] = [
         status: details.length === 0 ? "pass" : "fail",
         summary:
           details.length === 0
-            ? "Skillex skills manifest parity verified"
+            ? `Skillex skills manifest parity verified${
+                optionalPackWarningCount ? ` (${optionalPackWarningCount} optional pack(s) skipped)` : ""
+              }`
             : `${details.length} Skillex migration issue(s) detected${
                 unmanagedSkillNames.length
                   ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})`
@@ -3376,10 +3846,11 @@ const RULES: Rule[] = [
       const manifestPath = join(ctx.repoRoot, ".agents", "skills.json");
       const localExamplePath = join(ctx.repoRoot, ".agents", "local.example.json");
       const misePath = join(ctx.repoRoot, "mise.toml");
-      const provisionScriptPath = join(ctx.repoRoot, ".mise", "scripts", "provision-bmad-skills.py");
-      const syncScriptPath = join(ctx.repoRoot, ".mise", "scripts", "sync-skills.py");
-      const expectedProvisionScript = templateCommonProjectText(ctx, ".mise/scripts/provision-bmad-skills.py");
-      const expectedSyncScript = templateCommonProjectText(ctx, ".mise/scripts/sync-skills.py");
+      const provisionScriptPath = join(ctx.repoRoot, PROVISION_PACKS_SCRIPT_REL);
+      const legacyProvisionScriptPath = join(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL);
+      const syncScriptPath = join(ctx.repoRoot, SYNC_SKILLS_SCRIPT_REL);
+      const expectedProvisionScript = templateCommonProjectText(ctx, PROVISION_PACKS_SCRIPT_REL);
+      const expectedSyncScript = templateCommonProjectText(ctx, SYNC_SKILLS_SCRIPT_REL);
 
       const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
       if (topologyIssues.length) {
@@ -3401,7 +3872,7 @@ const RULES: Rule[] = [
           summary: "pjangler install is missing a shipped skills executable",
           changedFiles,
           details: [
-            ...(!expectedProvisionScript ? ["Missing BMAD Skillex provisioning script template"] : []),
+            ...(!expectedProvisionScript ? [`Missing Skillex pack provisioning script template (${PROVISION_PACKS_SCRIPT_REL})`] : []),
             ...(!expectedSyncScript ? ["Missing project-local skills sync engine template"] : []),
           ],
         };
@@ -3427,13 +3898,13 @@ const RULES: Rule[] = [
           id: finding.id,
           title: finding.title,
           status: "blocked",
-          summary: `BMAD Skillex pack ${BMAD_PACK_VERSION} is unavailable`,
+          summary: "A declared Skillex pack is unavailable or untrusted",
           changedFiles,
-          details: [provisioned.error ?? "Unknown BMAD pack error"],
+          details: [provisioned.error ?? "Unknown Skillex pack error"],
         };
       }
       changedFiles.push(...provisioned.changedFiles);
-      if (provisioned.changedFiles.includes(manifestPath)) details.push(`Recorded BMAD pack ${BMAD_PACK_VERSION} in .agents/skills.json`);
+      if (provisioned.changedFiles.includes(manifestPath)) details.push("Normalized .agents/skills.json against the declared Skillex packs");
 
       // PJAN-28: runs after the BMAD projection so nothing is mutated ahead of
       // the pack blocker above. provisionBmadSkills never touches unmanaged
@@ -3441,6 +3912,9 @@ const RULES: Rule[] = [
       // appending here is stable in both directions.
       details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
 
+      // Retired scripts. `provision-bmad-skills.py` (PACKS-CONTRACT section 7)
+      // is removed only after `provision-packs.py` has been written below, so a
+      // failure part-way through never leaves a repo with neither provisioner.
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         const path = join(ctx.repoRoot, rel);
         if (existsSync(path)) {
@@ -3459,6 +3933,18 @@ const RULES: Rule[] = [
       normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
 
       normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
+
+      // Only now that provision-packs.py exists is the retired one dropped.
+      const legacyProvisionStat = lstatIfPresent(legacyProvisionScriptPath);
+      if (legacyProvisionStat) {
+        if (legacyProvisionStat.isDirectory() && !legacyProvisionStat.isSymbolicLink()) {
+          details.push(`${LEGACY_PROVISION_SCRIPT_REL} is a directory and must be removed manually`);
+        } else {
+          changedFiles.push(legacyProvisionScriptPath);
+          details.push(`Removed the retired ${LEGACY_PROVISION_SCRIPT_REL}`);
+          if (!ctx.dryRun) unlinkSync(legacyProvisionScriptPath);
+        }
+      }
 
       if (!existsSync(misePath)) {
         if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {

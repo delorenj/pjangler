@@ -26,7 +26,15 @@ for (const repository of repositories) {
   for (const relative of trackedFiles(repository.root)) {
     if (!repository.prefix && historicalEvidence.test(relative)) continue;
     const path = join(repository.root, relative);
-    const stat = lstatSync(path);
+    // A tracked path can be absent from the worktree (a deletion that has not
+    // been staged yet). There is no content to scan, so it cannot be stale.
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
     if (!stat.isFile() || stat.isSymbolicLink()) continue;
     const content = readFileSync(path);
     if (content.includes(0)) continue;

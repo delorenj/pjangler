@@ -105,6 +105,26 @@ try {
   }
 
   {
+    const root = join(temporary, "symlinked-manifest");
+    const pack = join(root, "pack");
+    cpSync(sourcePack, pack, { recursive: true });
+    const project = join(root, "project");
+    const agents = join(project, ".agents");
+    mkdirSync(agents, { recursive: true });
+    const outside = join(root, "outside-skills.json");
+    writeFileSync(outside, '{"packs":[{"name":"outside","source":"file:///does/not/exist"}]}\n');
+    symlinkSync(outside, join(agents, "skills.json"));
+    process.env.PJ_BMAD_PACK_ROOT = pack;
+    const before = snapshot(project);
+    const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.match(result.error ?? "", /Refusing unsafe skills manifest/);
+    assert.doesNotMatch(result.error ?? "", /outside.*could not be resolved/);
+    assert.deepEqual(snapshot(project), before, "symlinked manifest must be rejected before pack resolution or mutation");
+    assert.equal(existsSync(join(agents, "skills")), false);
+  }
+
+  {
     const { context, pack, project } = fixture("projection-mismatch");
     process.env.PJ_BMAD_PACK_ROOT = pack;
     const before = snapshot(project);

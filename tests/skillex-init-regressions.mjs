@@ -28,11 +28,18 @@ const sourceBmadPack = resolve(
   explicitBmadPack || "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
 );
 const homeDir = join(tmp, "home");
-const bmadPack = join(homeDir, "code", "skillex", "packs", "bmad", "6.10.1-next.31");
+// The fixture's registry checkout. Pinned as rung 0 of the ONE pack-resolution
+// ladder (PACKS-CONTRACT section 2 step 3) rather than left to the default rungs:
+// the implicit BMAD pin resolves exactly like a declared pack now, so with no pin
+// this hermetic HOME would resolve the pack out of whichever checkout `sync-skills.py`
+// happened to clone into `~/.agents/.cache/registries/`, over the network.
+const fixtureRegistryRoot = join(homeDir, "code", "skillex");
+const bmadPack = join(fixtureRegistryRoot, "packs", "bmad", "6.10.1-next.31");
 
 function cleanBaseEnv() {
   const env = { ...process.env };
   delete env.PJ_BMAD_PACK_ROOT;
+  env.PJ_SKILLS_REGISTRY_ROOT = fixtureRegistryRoot;
   return env;
 }
 
@@ -103,7 +110,7 @@ function assertProjectContract(projectDir, homeDir) {
 
   mkdirSync(join(projectDir, ".codex"), { recursive: true });
   const projectEnv = { HOME: homeDir };
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
     env: projectEnv,
   });
@@ -141,13 +148,13 @@ function assertProjectContract(projectDir, homeDir) {
   const brokenLink = join(skillsDir, "bmad-agent-pm");
   unlinkSync(brokenLink);
   symlinkSync(join(tmp, "missing-bmad-agent-pm"), brokenLink);
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
     env: projectEnv,
   });
   assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "bmad-agent-pm"), "broken BMAD links must self-heal");
   const beforeIdempotent = readFileSync(join(projectDir, ".agents", "skills.json"), "utf8");
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
     env: projectEnv,
   });
@@ -218,7 +225,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
   writeFileSync(join(outsideSkills, "sentinel"), "outside-skills-safe\n");
   rmSync(join(projectDir, ".agents", "skills"), { recursive: true, force: true });
   symlinkSync(outsideSkills, join(projectDir, ".agents", "skills"), "dir");
-  runExpectFailure("python3", [join(projectDir, ".mise", "scripts", "provision-bmad-skills.py")], {
+  runExpectFailure("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
     env,
   });
@@ -255,7 +262,7 @@ function initWith(cli, label, homeDir) {
 }
 
 function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
-  const provisioner = join(projectDir, ".mise", "scripts", "provision-bmad-skills.py");
+  const provisioner = join(projectDir, ".mise", "scripts", "provision-packs.py");
   const manifestPath = join(projectDir, ".agents", "skills.json");
   const originalManifest = readFileSync(manifestPath, "utf8");
 
@@ -268,7 +275,13 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
     cwd: projectDir,
     env: { HOME: homeDir, PJ_BMAD_PACK_ROOT: partialPack },
   });
-  assert.match(partialFailure, /checksum coverage mismatch/);
+  // A partial pack no longer trips a bespoke "coverage" check: under the
+  // generic contract every DECLARED skill directory must exist before the
+  // payload can even be hashed. For a SEALED pack that is an integrity failure,
+  // not "the pack is not installed here" — the seal is a completeness claim, so
+  // `optional: true` must not be able to downgrade it to a warning.
+  assert.match(partialFailure, /failed integrity verification/);
+  assert.match(partialFailure, /is not present/);
   assert.equal(readFileSync(manifestPath, "utf8"), originalManifest, "partial pack rejection must precede manifest mutation");
 
   const tamperedPack = join(tmp, "tampered-bmad-pack");
@@ -287,7 +300,7 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
     cwd: projectDir,
     env: { HOME: homeDir, PJ_BMAD_PACK_ROOT: tamperedPack },
   });
-  assert.match(topologyFailure, /unauthenticated empty directory/);
+  assert.match(topologyFailure, /unauthenticated empty directories/);
   assert.equal(readFileSync(manifestPath, "utf8"), originalManifest, "unauthenticated topology rejection must precede manifest mutation");
 }
 

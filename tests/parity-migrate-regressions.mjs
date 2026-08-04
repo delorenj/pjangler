@@ -412,11 +412,17 @@ run = "echo still here"
       `[env]\n_.path = [".mise/scripts"]\n\n[[hooks.enter]]\nscript = "sync-skills.py --scope project"\n\n[tasks.skills-relink]\nrun = "{{config_root}}/.mise/scripts/link-project-skills-to-clis.sh"\n`
     );
 
-    const staleAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    // Pin the pack root the way every other pack block here does. The implicit
+    // BMAD pin now walks the SAME resolution ladder as a declared pack, so
+    // without a pin this block would assert against whichever registry checkout
+    // happens to exist on the host — which is a property of the machine, not of
+    // the migration under test.
+    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    const staleAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
     const staleFinding = staleAudit.rules.find((r) => r.id === "skills.project-manifest");
     assert.equal(staleFinding.status, "fail", JSON.stringify(staleFinding));
 
-    run(["migrate", "skills.project-manifest", repo, "--json"]);
+    run(["migrate", "skills.project-manifest", repo, "--json"], root, packEnv);
 
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
     assert.equal(manifest.inherit_global, true, "migrate should create the canonical skills manifest");
@@ -430,16 +436,130 @@ run = "echo still here"
       resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
       join(selectedBmadPack, "bmad-agent-pm")
     );
-    assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), true, "migrate should install the BMAD pack provisioner");
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-packs.py")), true, "migrate should install the generic Skillex pack provisioner");
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), false, "migrate should retire the BMAD-only provisioner");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "sync-skills.py")), true, "migrate should install the project-local skills sync engine");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "link-project-skills-to-clis.sh")), false, "legacy link script should be removed");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "unlink-project-skills-from-clis.sh")), false, "legacy unlink script should be removed");
     const localExample = JSON.parse(readFileSync(join(repo, ".agents", "local.example.json"), "utf8"));
     assert.equal(Object.hasOwn(localExample, "skills"), false, "legacy skills overrides should be removed from local.example");
 
-    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
+    const currentAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
     const currentFinding = currentAudit.rules.find((r) => r.id === "skills.project-manifest");
     assert.equal(currentFinding.status, "pass", JSON.stringify(currentFinding));
+  }
+
+  // PACKS-CONTRACT: a repo that declares `packs[]` gets its members projected as
+  // symlinks and must NOT carry them in `skills[]` any more. The audit reports
+  // (a) redundant skills[] entries, (b) the dead $schema host, (c) the retired
+  // provision-bmad-skills.py and (d) the retired skills-provision-bmad task, and
+  // `migrate` fixes all four.
+  {
+    const repo = makeRepo("skills-manifest-declared-pack");
+    repos.push(repo);
+    const localSkill = join(repo, ".agents", "skills", "local-thing");
+    mkdirSync(localSkill, { recursive: true });
+    writeFileSync(join(localSkill, "SKILL.md"), "# local\n");
+    mkdirSync(join(repo, ".mise", "scripts"), { recursive: true });
+    writeFileSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py"), "#!/usr/bin/env python3\n");
+    writeFileSync(
+      join(repo, ".agents", "skills.json"),
+      JSON.stringify(
+        {
+          $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+          inherit_global: true,
+          registry: "https://github.com/delorenj/skillex.git",
+          packs: ["bmad"],
+          skills: [
+            { name: "local-thing", source: `file://${localSkill}` },
+            { name: "bmad-agent-pm", source: `file://${join(selectedBmadPack, "bmad-agent-pm")}` },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    writeFileSync(
+      join(repo, "mise.toml"),
+      `[env]\n_.path = [".mise/scripts"]\n\n[tasks.skills-sync]\ndepends = ["skills-provision-bmad"]\nrun = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"\n\n[tasks.skills-provision-bmad]\nrun = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"\n`,
+    );
+
+    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    const before = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
+    const beforeFinding = before.rules.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(beforeFinding.status, "fail", JSON.stringify(beforeFinding));
+    const beforeDetails = beforeFinding.details.join("\n");
+    assert.match(beforeDetails, /duplicates 1 declared pack member\(s\).*bmad-agent-pm/);
+    assert.match(beforeDetails, /\$schema still points at the retired/);
+    assert.match(beforeDetails, /provision-bmad-skills\.py is the retired BMAD-only provisioner/);
+    assert.match(beforeDetails, /still references the retired skills-provision-bmad/);
+
+    const migrated = JSON.parse(run(["migrate", "skills.project-manifest", repo, "--json"], root, packEnv));
+    assert.equal(
+      migrated.results.find((entry) => entry.id === "skills.project-manifest").status,
+      "applied",
+      JSON.stringify(migrated),
+    );
+
+    const declaredManifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
+    assert.equal(declaredManifest.$schema, "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json");
+    assert.deepEqual(declaredManifest.packs, ["bmad"], "declared packs must be preserved verbatim");
+    assert.deepEqual(
+      declaredManifest.skills,
+      [{ name: "local-thing", source: `file://${localSkill}` }],
+      "a declared pack replaces its hand-expanded members and leaves everything else alone",
+    );
+    assert.equal(
+      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
+      join(selectedBmadPack, "bmad-agent-pm"),
+      "declared pack members must still be projected as symlinks",
+    );
+    assert.equal(existsSync(join(localSkill, "SKILL.md")), true, "non-pack skills must survive");
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-packs.py")), true);
+    assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), false);
+    const declaredMise = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.match(declaredMise, /\[tasks\.skills-provision-packs\]/);
+    assert.doesNotMatch(declaredMise, /skills-provision-bmad/);
+    assert.doesNotMatch(declaredMise, /provision-bmad-skills\.py/);
+
+    const after = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
+    const afterFinding = after.rules.find((entry) => entry.id === "skills.project-manifest");
+    assert.equal(afterFinding.status, "pass", JSON.stringify(afterFinding));
+    const rerun = JSON.parse(run(["migrate", "skills.project-manifest", repo, "--json"], root, packEnv));
+    assert.equal(rerun.results.find((entry) => entry.id === "skills.project-manifest").status, "noop", JSON.stringify(rerun));
+  }
+
+  // A skills[] entry pointing OUTSIDE the declared pack is the user's and must
+  // never be removed, even when its name collides with a pack member.
+  {
+    const repo = makeRepo("skills-manifest-declared-pack-override");
+    repos.push(repo);
+    const override = join(repo, ".agents", "skills.bak", "bmad-agent-pm");
+    mkdirSync(override, { recursive: true });
+    writeFileSync(join(override, "SKILL.md"), "# customized\n");
+    writeFileSync(
+      join(repo, ".agents", "skills.json"),
+      JSON.stringify(
+        {
+          $schema: "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json",
+          inherit_global: true,
+          registry: "https://github.com/delorenj/skillex.git",
+          packs: ["bmad"],
+          skills: [{ name: "bmad-agent-pm", source: `file://${override}` }],
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    run(["migrate", "skills.project-manifest", repo, "--json"], root, packEnv);
+    const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
+    assert.deepEqual(
+      manifest.skills,
+      [{ name: "bmad-agent-pm", source: `file://${override}` }],
+      "an override pointing outside the pack must survive migration",
+    );
+    assert.equal(readFileSync(join(override, "SKILL.md"), "utf8"), "# customized\n");
   }
 
   {
@@ -471,7 +591,10 @@ run = "echo still here"
     ));
     const result = report.results.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.match(result.details.join("\n"), /checksum coverage mismatch/);
+    // Generic contract: every DECLARED skill directory must exist before the
+    // payload is hashed, so a half-copied pack fails to resolve outright.
+    assert.match(result.details.join("\n"), /is not trusted at/);
+    assert.match(result.details.join("\n"), /is not present/);
     assert.equal(existsSync(join(repo, ".agents")), false, "partial pack rejection must precede project mutation");
   }
 
@@ -502,7 +625,7 @@ run = "echo still here"
     ));
     const topologyResult = topologyReport.results.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(topologyResult.status, "blocked", JSON.stringify(topologyResult));
-    assert.match(topologyResult.details.join("\n"), /unauthenticated empty directory/);
+    assert.match(topologyResult.details.join("\n"), /unauthenticated empty directories/);
     assert.equal(existsSync(join(repo, ".agents")), false, "unauthenticated topology rejection must precede project mutation");
   }
 
