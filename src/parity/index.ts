@@ -470,6 +470,18 @@ function fleetEnvPath(homeDir: string): string {
   return join(homeDir, ".hermes", "fleet.env");
 }
 
+// Retired per-agent command-ingress contract. The fleet-shared Bloodbank
+// gateway owns command routing (registry `gateways.bloodbank`, routed by
+// data.target_agent_id); per-agent consumer units and checkpoint timers are
+// legacy. This constant is the ONLY place the legacy key names may appear —
+// tests/fleet-shared-bloodbank-regressions.mjs enforces that scoping so the
+// legacy contract can be detected and cleaned but never provisioned again.
+const LEGACY_SYSTEMD_KEYS = ["consumer_unit", "checkpoint_timer"] as const;
+
+function legacyConsumerUnitPath(homeDir: string, agentId: string): string {
+  return join(homeDir, ".config", "systemd", "user", `hermes-${agentId}-consumer.service`);
+}
+
 function systemctlUser(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const result = spawnSync("systemctl", ["--user", ...args], { encoding: "utf8" });
   return {
@@ -4996,6 +5008,23 @@ const RULES: Rule[] = [
         if (bin && !existsSync(bin)) {
           details.push(`registry hermes.bin for ${role.agentId} does not exist: ${bin}`);
         }
+        // Fleet-bloodbank standard: one shared gateway owns command ingress.
+        // Every agent entry advertises fleet routing; none carries the retired
+        // per-agent consumer/checkpoint contract in the registry or on disk.
+        const bloodbank = (entry.bloodbank ?? {}) as Record<string, unknown>;
+        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+          details.push(`registry entry for ${role.agentId} must advertise bloodbank { gateway_scope: fleet, target_agent_id: ${role.agentId} }`);
+        }
+        const systemd = (entry.systemd ?? {}) as Record<string, unknown>;
+        for (const key of LEGACY_SYSTEMD_KEYS) {
+          if (systemd[key] !== undefined) {
+            details.push(`registry entry for ${role.agentId} carries retired systemd.${key}; the fleet-shared Bloodbank gateway owns command ingress`);
+          }
+        }
+        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+        if (existsSync(legacyUnit)) {
+          details.push(`retired per-agent consumer unit still on disk: ${legacyUnit}`);
+        }
       }
       return {
         id: "hermes.registry-parity",
@@ -5074,6 +5103,38 @@ const RULES: Rule[] = [
           entry.role_dir = role.roleDir;
           entry.project_path = ctx.repoRoot;
           dirty = true;
+        }
+        // Converge on the fleet-bloodbank standard: advertise fleet routing,
+        // drop the retired per-agent consumer/checkpoint contract, and remove
+        // any leftover consumer unit file from disk.
+        const bloodbank = (entry.bloodbank ?? {}) as Record<string, unknown>;
+        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+          details.push(`advertise fleet bloodbank routing for ${role.agentId}`);
+          entry.bloodbank = { gateway_scope: "fleet", target_agent_id: role.agentId };
+          dirty = true;
+        }
+        const systemd = entry.systemd as Record<string, unknown> | undefined;
+        if (systemd) {
+          for (const key of LEGACY_SYSTEMD_KEYS) {
+            if (systemd[key] !== undefined) {
+              details.push(`drop retired systemd.${key} from ${role.agentId}`);
+              delete systemd[key];
+              dirty = true;
+            }
+          }
+        }
+        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+        if (existsSync(legacyUnit)) {
+          if (ctx.dryRun) {
+            details.push(`would remove retired consumer unit ${legacyUnit}`);
+          } else {
+            systemctlUser(["disable", "--now", basename(legacyUnit)]);
+            rmSync(legacyUnit, { force: true });
+            systemctlUser(["daemon-reload"]);
+            systemctlUser(["reset-failed"]);
+            details.push(`removed retired consumer unit ${legacyUnit}`);
+          }
+          changedFiles.push(legacyUnit);
         }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {

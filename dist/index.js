@@ -879,6 +879,10 @@ function discoverRoles(repoRoot) {
 function registryPath(homeDir) {
   return join3(homeDir, ".hermes", "agents-registry.yaml");
 }
+var LEGACY_SYSTEMD_KEYS = ["consumer_unit", "checkpoint_timer"];
+function legacyConsumerUnitPath(homeDir, agentId) {
+  return join3(homeDir, ".config", "systemd", "user", `hermes-${agentId}-consumer.service`);
+}
 function systemctlUser(args) {
   const result = spawnSync("systemctl", ["--user", ...args], { encoding: "utf8" });
   return {
@@ -4642,6 +4646,20 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
         if (bin && !existsSync2(bin)) {
           details.push(`registry hermes.bin for ${role.agentId} does not exist: ${bin}`);
         }
+        const bloodbank = entry.bloodbank ?? {};
+        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+          details.push(`registry entry for ${role.agentId} must advertise bloodbank { gateway_scope: fleet, target_agent_id: ${role.agentId} }`);
+        }
+        const systemd = entry.systemd ?? {};
+        for (const key of LEGACY_SYSTEMD_KEYS) {
+          if (systemd[key] !== void 0) {
+            details.push(`registry entry for ${role.agentId} carries retired systemd.${key}; the fleet-shared Bloodbank gateway owns command ingress`);
+          }
+        }
+        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+        if (existsSync2(legacyUnit)) {
+          details.push(`retired per-agent consumer unit still on disk: ${legacyUnit}`);
+        }
       }
       return {
         id: "hermes.registry-parity",
@@ -4713,6 +4731,35 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
           entry.role_dir = role.roleDir;
           entry.project_path = ctx.repoRoot;
           dirty = true;
+        }
+        const bloodbank = entry.bloodbank ?? {};
+        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+          details.push(`advertise fleet bloodbank routing for ${role.agentId}`);
+          entry.bloodbank = { gateway_scope: "fleet", target_agent_id: role.agentId };
+          dirty = true;
+        }
+        const systemd = entry.systemd;
+        if (systemd) {
+          for (const key of LEGACY_SYSTEMD_KEYS) {
+            if (systemd[key] !== void 0) {
+              details.push(`drop retired systemd.${key} from ${role.agentId}`);
+              delete systemd[key];
+              dirty = true;
+            }
+          }
+        }
+        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+        if (existsSync2(legacyUnit)) {
+          if (ctx.dryRun) {
+            details.push(`would remove retired consumer unit ${legacyUnit}`);
+          } else {
+            systemctlUser(["disable", "--now", basename2(legacyUnit)]);
+            rmSync(legacyUnit, { force: true });
+            systemctlUser(["daemon-reload"]);
+            systemctlUser(["reset-failed"]);
+            details.push(`removed retired consumer unit ${legacyUnit}`);
+          }
+          changedFiles.push(legacyUnit);
         }
       }
       for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
