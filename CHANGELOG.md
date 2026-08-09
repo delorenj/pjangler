@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `feat(PJAN-18)`: enforce fleet-shared Bloodbank gateway contract in registry parity.
 - `feat(PJAN-37)`: generalize skill pack provisioning with flattened pack inventory (section 3b) and hardened skill-name validation before fanout containment.
+- `feat(mise)`: add `projects:backfill` / `projects:register` mise task to bulk-register existing git repos as formal pjangler projects (PR #1).
 - New regression tests for pack-flatten and cross-engine pack-flatten behavior.
 
 ### Changed
