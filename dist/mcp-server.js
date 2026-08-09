@@ -813,6 +813,7 @@ var PackUnavailableError = class extends Error {
     this.name = "PackUnavailableError";
   }
 };
+var CANONICAL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 function sha256(content) {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -904,7 +905,8 @@ function normalizePackEntry(raw) {
   const entry = {
     name,
     optional: optionalBoolean(source.optional, `Pack ${name} optional`),
-    sealed: optionalBoolean(source.sealed, `Pack ${name} sealed`)
+    sealed: optionalBoolean(source.sealed, `Pack ${name} sealed`),
+    flatten: optionalBoolean(source.flatten, `Pack ${name} flatten`)
   };
   if (source.version !== void 0 && source.version !== null) {
     entry.version = validatePathComponent(source.version, `Pack ${name} version`);
@@ -1152,10 +1154,105 @@ function readPackMetadata(root) {
     skills: Array.isArray(declared) ? [...declared] : [],
     // `immutable = true` alone deliberately does NOT imply sealed.
     sealed: policy?.get("sealed") === true,
+    flatten: policy?.get("flatten") === true,
     payloadFiles: typeof payloadFiles === "number" ? payloadFiles : void 0
   };
 }
-function packDeclaredSkills(root, metadata, entry) {
+function packFlattenEnabled(metadata, entry) {
+  return entry.flatten === true || metadata?.flatten === true;
+}
+function packContainerLeaves(containerDir) {
+  const leaves = [];
+  const symlinked = [];
+  const visit = (directory, prefix) => {
+    let children;
+    try {
+      children = readdirSync(directory).sort();
+    } catch {
+      return;
+    }
+    for (const child of children) {
+      if (child.startsWith(".") || child.startsWith("_")) continue;
+      const childPath = join5(directory, child);
+      const relativePath = prefix ? `${prefix}/${child}` : child;
+      let stat;
+      try {
+        stat = lstatSync(childPath);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        symlinked.push(relativePath);
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+      if (isRegularFile(join5(childPath, "SKILL.md"))) {
+        leaves.push(relativePath);
+        continue;
+      }
+      visit(childPath, relativePath);
+    }
+  };
+  visit(containerDir, "");
+  return { leaves, symlinked };
+}
+function hasFlattenableChildren(directory) {
+  return packContainerLeaves(directory).leaves.length > 0;
+}
+function expandPackInventory(root, declared, entry, flatten) {
+  if (!flatten) {
+    return {
+      inventory: declared.map((name) => ({ name, path: name, declaredEntry: name })),
+      warnings: []
+    };
+  }
+  const inventory = [];
+  const warnings = [];
+  const origin = /* @__PURE__ */ new Map();
+  const claim = (member, declaredAsIs = false) => {
+    if (!declaredAsIs && !CANONICAL_NAME_PATTERN.test(member.name)) {
+      warnings.push(
+        `Pack ${entry.name} leaf ${JSON.stringify(member.name)} at ${member.path} is not a canonical skill name (${CANONICAL_NAME_PATTERN.source}); skipping`
+      );
+      return false;
+    }
+    validatePathComponent(member.name, `Pack ${entry.name} skill name`);
+    const previous = origin.get(member.name);
+    if (previous !== void 0) {
+      throw new Error(
+        `Pack ${entry.name} flattens to a duplicate skill name ${JSON.stringify(member.name)}: ${join5(root, previous)} and ${join5(root, member.path)}`
+      );
+    }
+    origin.set(member.name, member.path);
+    inventory.push(member);
+    return true;
+  };
+  for (const declaredEntry of declared) {
+    const declaredDir = join5(root, declaredEntry);
+    assertRealDirectory(declaredDir, `Pack skill ${declaredEntry}`);
+    if (isRegularFile(join5(declaredDir, "SKILL.md"))) {
+      claim({ name: declaredEntry, path: declaredEntry, declaredEntry }, true);
+      continue;
+    }
+    const { leaves, symlinked } = packContainerLeaves(declaredDir);
+    for (const child of symlinked) {
+      warnings.push(`Pack ${entry.name} member ${declaredEntry}/${child} is a symlink; skipping`);
+    }
+    let contributed = 0;
+    for (const leafPath of leaves) {
+      if (claim({ name: basename(leafPath), path: `${declaredEntry}/${leafPath}`, declaredEntry })) {
+        contributed += 1;
+      }
+    }
+    if (contributed === 0) {
+      warnings.push(
+        `Pack ${entry.name} declared entry ${JSON.stringify(declaredEntry)} is a container that contributes no skills`
+      );
+    }
+  }
+  return { inventory, warnings };
+}
+function packDeclaredSkills(root, metadata, entry, flatten = false) {
   if (metadata) {
     if (metadata.name !== entry.name) {
       throw new Error(`Pack ${entry.name} pack.toml declares name ${JSON.stringify(metadata.name ?? null)}`);
@@ -1176,7 +1273,9 @@ function packDeclaredSkills(root, metadata, entry) {
     if (name.startsWith(".") || name.startsWith("_")) continue;
     const stat = lstatSync(join5(root, name));
     if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-    if (!isRegularFile(join5(root, name, "SKILL.md"))) continue;
+    if (!isRegularFile(join5(root, name, "SKILL.md"))) {
+      if (!flatten || !hasFlattenableChildren(join5(root, name))) continue;
+    }
     declared.push(validatePathComponent(name, `Pack ${entry.name} skill name`));
   }
   return declared;
@@ -1201,14 +1300,14 @@ function walkPackSubtree(root, relativeRoot, files, directories) {
   directories.add(relativeRoot);
   visit(join5(root, relativeRoot));
 }
-function packPayload(root, metadata, declared) {
+function packPayload(root, metadata, declared, flatten = false) {
   const files = /* @__PURE__ */ new Map();
   const directories = /* @__PURE__ */ new Set();
   if (metadata) files.set("pack.toml", hashRegularFile(join5(root, "pack.toml")));
   for (const name of declared) {
     const skillDir = join5(root, name);
     assertRealDirectory(skillDir, `Pack skill ${name}`);
-    if (!isRegularFile(join5(skillDir, "SKILL.md"))) {
+    if (!flatten && !isRegularFile(join5(skillDir, "SKILL.md"))) {
       throw new PackUnavailableError(`Pack skill ${name} is missing a regular SKILL.md: ${skillDir}`);
     }
     walkPackSubtree(root, name, files, directories);
@@ -1268,9 +1367,10 @@ function validatePack(packRoot, entry) {
   const root = resolve(packRoot);
   assertRealDirectory(root, `Pack ${entry.name} root`);
   const metadata = readPackMetadata(root);
-  const declared = packDeclaredSkills(root, metadata, entry);
+  const flatten = packFlattenEnabled(metadata, entry);
+  const declared = packDeclaredSkills(root, metadata, entry, flatten);
   const sealed = entry.sealed === true || metadata?.sealed === true;
-  const { files, directories } = packPayload(root, metadata, declared);
+  const { files, directories } = packPayload(root, metadata, declared, flatten);
   if (metadata?.payloadFiles !== void 0) {
     const actual = [...files.keys()].filter((path) => path !== "pack.toml").length;
     if (actual !== metadata.payloadFiles) {
@@ -1281,21 +1381,31 @@ function validatePack(packRoot, entry) {
     if (!isRegularFile(join5(root, "SHA256SUMS"))) throw new Error(`Sealed pack at ${root} has no regular SHA256SUMS`);
     verifySealedPack(root, files, directories);
   }
-  let members = [...declared];
+  const { inventory, warnings } = expandPackInventory(root, declared, entry, flatten);
+  let members = inventory;
   if (entry.include) {
     const wanted = new Set(entry.include);
-    members = members.filter((name) => wanted.has(name));
+    members = members.filter((member) => wanted.has(member.name));
   }
   if (entry.exclude?.length) {
     const unwanted = new Set(entry.exclude);
-    members = members.filter((name) => !unwanted.has(name));
+    members = members.filter((member) => !unwanted.has(member.name));
+  }
+  const memberPaths = /* @__PURE__ */ new Map();
+  for (const member of members) {
+    memberPaths.set(member.name, join5(root, ...member.path.split("/")));
   }
   return {
     name: entry.name,
     version: entry.version,
     root,
     declared,
-    members,
+    inventory,
+    inventoryNames: inventory.map((member) => member.name),
+    members: members.map((member) => member.name),
+    memberPaths,
+    flatten,
+    warnings,
     sealed,
     payloadFiles: [...files.keys()].filter((path) => path !== "pack.toml").length
   };
@@ -1727,7 +1837,15 @@ function packRootOverride(name) {
   return void 0;
 }
 function bmadPackEntry() {
-  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true };
+  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true, flatten: false };
+}
+function packMemberPath(pack, name) {
+  const target = pack.memberPaths.get(validateSkillName(name));
+  if (!target) throw new Error(`Pack ${pack.name} has no resolved path for member ${JSON.stringify(name)}`);
+  return target;
+}
+function packProjectionSignature(pack) {
+  return JSON.stringify(pack.members.map((name) => [name, pack.memberPaths.get(name) ?? null]));
 }
 function registryCacheDirName(registryUrl) {
   const cacheName = registryUrl.replace(/[^a-zA-Z0-9]/g, "_");
@@ -1846,6 +1964,7 @@ function buildPackPlan(ctx, manifest) {
     declared: [],
     errors: [],
     warnings: [],
+    packWarnings: [],
     bmadDeclared: false
   };
   const { entries, errors } = manifestPackEntries(manifest);
@@ -1861,8 +1980,9 @@ function buildPackPlan(ctx, manifest) {
       plan.resolved.push(resolved);
       plan.implicitRoots.push(root);
       plan.ownershipRoots.push(root);
+      plan.packWarnings.push(...pack.warnings);
       for (const name of pack.members) {
-        const target = join6(root, validateSkillName(name));
+        const target = packMemberPath(pack, name);
         plan.projections.set(name, target);
         plan.manifestSkills.push({ name, source: pathToFileURL(target).href });
       }
@@ -1882,8 +2002,9 @@ function buildPackPlan(ctx, manifest) {
       plan.declared.push(resolved);
       plan.ownershipRoots.push(root);
       if (familyRoot) plan.ownershipRoots.push(familyRoot);
+      plan.packWarnings.push(...pack.warnings);
       for (const name of pack.members) {
-        plan.projections.set(name, join6(root, validateSkillName(name)));
+        plan.projections.set(name, packMemberPath(pack, name));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1908,7 +2029,7 @@ function buildPackPlan(ctx, manifest) {
 function assertPackPlanUnchanged(plan) {
   for (const item of plan.resolved) {
     const again = validatePack(item.root, item.entry);
-    if (JSON.stringify(again.members) !== JSON.stringify(item.pack.members)) {
+    if (packProjectionSignature(again) !== packProjectionSignature(item.pack)) {
       throw new Error(`Pack ${item.entry.name} inventory changed after preflight`);
     }
   }
@@ -1944,7 +2065,7 @@ function isRedundantDeclaredPackEntry(entry, plan) {
   if (!sourcePath) return false;
   for (const declared of plan.declared) {
     if (isContainedBy(declared.pack.root, sourcePath)) return true;
-    if (declared.familyRoot && declared.pack.declared.includes(name) && isContainedBy(declared.familyRoot, sourcePath)) {
+    if (declared.familyRoot && declared.pack.inventoryNames.includes(name) && isContainedBy(declared.familyRoot, sourcePath)) {
       return true;
     }
   }
@@ -2290,7 +2411,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
   if (ctx.dryRun || changedFiles.length === 0) {
     try {
       assertPackPlanUnchanged(plan);
-      return { ok: true, changedFiles };
+      return { ok: true, changedFiles, packWarnings: plan.packWarnings };
     } catch (error) {
       return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
@@ -2399,7 +2520,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
     return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
   }
   rmSync(transaction, { recursive: true });
-  return { ok: true, changedFiles };
+  return { ok: true, changedFiles, packWarnings: plan.packWarnings };
 }
 function templateVersionFilesConf(ctx, repoRoot) {
   const packageJson = join6(repoRoot, "package.json");
@@ -3747,7 +3868,10 @@ var RULES = [
         details.push(...plan.errors);
         fixable = false;
       }
-      const optionalPackWarningCount = plan.warnings.length;
+      const packAdvisories = [
+        ...plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : [],
+        ...plan.packWarnings
+      ];
       const expectedBmad = plan.manifestSkills;
       const expectedByName = new Map(plan.projections);
       const expectedNames = new Set(expectedByName.keys());
@@ -3883,7 +4007,7 @@ var RULES = [
         id: "skills.project-manifest",
         title: "Skillex project skills manifest",
         status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? `Skillex skills manifest parity verified${optionalPackWarningCount ? ` (${optionalPackWarningCount} optional pack(s) skipped)` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
+        summary: details.length === 0 ? `Skillex skills manifest parity verified${packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
         details,
         fixable
       };
@@ -3950,6 +4074,7 @@ var RULES = [
       }
       changedFiles.push(...provisioned.changedFiles);
       if (provisioned.changedFiles.includes(manifestPath)) details.push("Normalized .agents/skills.json against the declared Skillex packs");
+      details.push(...provisioned.packWarnings ?? []);
       details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
       for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
         const path = join6(ctx.repoRoot, rel);

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, join, relative, resolve, sep } from "node:path";
 
 /**
- * Generic Skillex pack validator (PACKS-CONTRACT sections 3 and 4).
+ * Generic Skillex pack validator (PACKS-CONTRACT sections 3, 3b and 4).
  *
  * This module used to hard-code one trusted BMAD release. It is now pack-agnostic:
  * every layout that exists in the registry has to work —
@@ -12,6 +12,16 @@ import { basename, join, relative, resolve, sep } from "node:path";
  *   packs/<name>/<skill dirs>                  flat, no pack.toml at all
  *   packs/<name>/<version>/pack.toml           versioned
  *   packs/<name>/<version>/ + stray root files stray non-payload files are IGNORED
+ *   packs/<name>/<container>/.../<skill dirs>  NESTED, projected FLAT (3b)
+ *
+ * The nested layout is opt-in (`[policy] flatten` or a manifest `flatten`) and
+ * exists because upstream Hermes models the container level as a real, named
+ * grouping with its own DESCRIPTION.md, resolved by the depth-agnostic
+ * `agent/skill_utils.py::iter_skill_index_files` (see `agent/prompt_builder.py`
+ * lines 1670 and 1718). Upstream nests three deep in places, so the expansion
+ * here is a DESCENT, not a fixed one-level step. The pack mirrors upstream
+ * verbatim; the mismatch with the five container-less CLIs is resolved here, at
+ * PROJECTION time, never by rewriting the pack on disk.
  *
  * Everything the hardened BMAD validator did is preserved, just generalized:
  *   * every read goes through O_NOFOLLOW, so a symlink can never be read as a file
@@ -48,16 +58,53 @@ export interface PackManifestEntry {
   optional: boolean;
   /** Manifest-level seal. May only TIGHTEN what `[policy] sealed` declares. */
   sealed: boolean;
+  /**
+   * Manifest-level `flatten` (contract section 3b). ORs with `[policy] flatten`;
+   * layout is a property of the pack, so `pack.toml` is the natural home and this
+   * exists for packs that ship no `pack.toml` at all.
+   */
+  flatten: boolean;
+}
+
+/**
+ * One projected skill of a pack (contract section 3b).
+ *
+ * `path` is what makes flattening work end to end: a member is no longer
+ * necessarily `<root>/<name>`, so every consumer that needs a filesystem target
+ * must take it from here rather than re-deriving it from the name.
+ */
+export interface PackMember {
+  /** Projected skill name — the LEAF directory's basename. */
+  name: string;
+  /** `/`-separated path relative to the pack root. Equals `name` when flat. */
+  path: string;
+  /** The DECLARED inventory entry this member came from (`name` when flat). */
+  declaredEntry: string;
 }
 
 export interface ValidatedPack {
   name: string;
   version?: string;
   root: string;
-  /** Full declared inventory, BEFORE include/exclude. */
+  /**
+   * Raw DECLARED inventory, BEFORE include/exclude and BEFORE section 3b
+   * expansion. This — not the flattened inventory — is the sealed payload basis
+   * (contract section 4), because declaring a container already covers its
+   * leaves recursively.
+   */
   declared: string[];
+  /** Section 3b inventory (expanded when flattened), BEFORE include/exclude. */
+  inventory: PackMember[];
+  /** `inventory` names — what a hand-expanded `skills[]` entry would be called. */
+  inventoryNames: string[];
   /** Inventory after include then exclude. */
   members: string[];
+  /** Member name -> ABSOLUTE leaf directory. The only source of member paths. */
+  memberPaths: Map<string, string>;
+  /** Section 3b expansion was enabled for this pack. */
+  flatten: boolean;
+  /** Non-fatal advisories (a container that projects nothing, a skipped symlink). */
+  warnings: string[];
   sealed: boolean;
   /** Payload files excluding `pack.toml` itself. */
   payloadFiles: number;
@@ -70,16 +117,24 @@ export interface PackMetadata {
   skills: string[];
   /** `[policy] sealed = true`. `immutable = true` alone does NOT imply sealed. */
   sealed: boolean;
+  /** `[policy] flatten = true` (contract section 3b). */
+  flatten: boolean;
   /** `[source].payload_files`, when declared as an integer. */
   payloadFiles?: number;
 }
+
+/**
+ * The canonical identifier shape the contract mandates for pack and skill names
+ * (section 1): lowercase alphanumerics and dashes, no leading or trailing dash.
+ */
+export const CANONICAL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 /**
  * Canonical pack identifier shape. Enforced as advisory only so packs that
  * predate the convention stay resolvable; the hard requirement — exactly one
  * safe path component — is enforced by `validatePathComponent`.
  */
-export const PACK_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+export const PACK_NAME_PATTERN = CANONICAL_NAME_PATTERN;
 
 // ---------------------------------------------------------------------------
 // Filesystem primitives (all symlink-hostile)
@@ -202,6 +257,7 @@ export function normalizePackEntry(raw: unknown): PackManifestEntry {
     name,
     optional: optionalBoolean(source.optional, `Pack ${name} optional`),
     sealed: optionalBoolean(source.sealed, `Pack ${name} sealed`),
+    flatten: optionalBoolean(source.flatten, `Pack ${name} flatten`),
   };
   if (source.version !== undefined && source.version !== null) {
     entry.version = validatePathComponent(source.version, `Pack ${name} version`);
@@ -516,18 +572,221 @@ export function readPackMetadata(root: string): PackMetadata | null {
     skills: Array.isArray(declared) ? [...declared] : [],
     // `immutable = true` alone deliberately does NOT imply sealed.
     sealed: policy?.get("sealed") === true,
+    flatten: policy?.get("flatten") === true,
     payloadFiles: typeof payloadFiles === "number" ? payloadFiles : undefined,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Inventory (contract section 3)
+// Inventory (contract sections 3 and 3b)
 // ---------------------------------------------------------------------------
+
+/** `flatten` is enabled by the pack's `[policy]` OR by the manifest entry. */
+export function packFlattenEnabled(
+  metadata: PackMetadata | null,
+  entry: Pick<PackManifestEntry, "flatten">
+): boolean {
+  return entry.flatten === true || metadata?.flatten === true;
+}
+
+/**
+ * Every skill reachable under a CONTAINER, at ANY depth (contract section 3b).
+ *
+ * The descent rule is the whole of the expansion: descend while a node is a
+ * container; a node holding a regular `SKILL.md` IS a skill and is never
+ * descended into. That mirrors upstream `agent/skill_utils.py`'s
+ * `iter_skill_index_files`, which is a depth-agnostic `os.walk`, and it is why
+ * `hermes-base`'s `mlops/evaluation/lm-evaluation-harness` IS a member:
+ * `mlops/evaluation` carries only a `DESCRIPTION.md`, so it is another container
+ * and the walk continues through it.
+ *
+ * Stopping at the first `SKILL.md` on each branch is also what keeps a skill's
+ * own `references/`/`scripts/`/`assets/`/`templates/` subtree from contributing a
+ * second member — the same reason upstream prunes `SKILL_SUPPORT_DIRS` only under
+ * a directory that already has a `SKILL.md`.
+ *
+ * Skip rules match section 3's glob exactly, at every level: `.`/`_` prefixes are
+ * ignored, non-directories are ignored, and a symlink is skipped (never followed)
+ * and reported. Since symlinks are never followed the descent cannot cycle.
+ *
+ * `symlinked` entries are reported as `/`-separated paths relative to the
+ * container, so a skipped grandchild is still identifiable.
+ */
+function packContainerLeaves(containerDir: string): {
+  /** `/`-separated leaf paths relative to `containerDir`, sorted by walk order. */
+  leaves: string[];
+  symlinked: string[];
+} {
+  const leaves: string[] = [];
+  const symlinked: string[] = [];
+  const visit = (directory: string, prefix: string): void => {
+    let children: string[];
+    try {
+      children = readdirSync(directory).sort();
+    } catch {
+      return;
+    }
+    for (const child of children) {
+      if (child.startsWith(".") || child.startsWith("_")) continue;
+      const childPath = join(directory, child);
+      const relativePath = prefix ? `${prefix}/${child}` : child;
+      let stat: ReturnType<typeof lstatSync>;
+      try {
+        stat = lstatSync(childPath);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        symlinked.push(relativePath);
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+      // A symlinked SKILL.md is not a regular file, so the leaf is skipped too.
+      if (isRegularFile(join(childPath, "SKILL.md"))) {
+        leaves.push(relativePath);
+        continue;
+      }
+      // Still a container: keep descending.
+      visit(childPath, relativePath);
+    }
+  };
+  visit(containerDir, "");
+  return { leaves, symlinked };
+}
+
+/**
+ * True when a skill is reachable anywhere under `directory`.
+ *
+ * The discriminator between "a CONTAINER of skills" and "an ordinary directory
+ * that happens to sit in the pack root" (`docs/`, `assets/`, ...). Used on the
+ * section 3 GLOB path, where a container has to be recognized without a
+ * `pack.toml` to declare it.
+ *
+ * Written in terms of `packContainerLeaves` so the glob's notion of "container"
+ * can never drift from what the expansion actually reaches — a directory that
+ * qualifies here always contributes at least one member, and one that does not
+ * qualify could never have contributed any.
+ */
+function hasFlattenableChildren(directory: string): boolean {
+  return packContainerLeaves(directory).leaves.length > 0;
+}
+
+/**
+ * Expand the declared inventory per contract section 3b.
+ *
+ * With `flatten` off this is the identity map, which is what keeps every
+ * existing pack byte-for-byte unchanged: no released `bmad` pack declares
+ * `[policy] flatten`, so each takes the early return below and never sees a
+ * single new filesystem read.
+ *
+ * (Do not name a specific BMAD version here: `bmad-version-surface` regressions
+ * scan source for retired version literals and will fail the suite.)
+ */
+export function expandPackInventory(
+  root: string,
+  declared: string[],
+  entry: Pick<PackManifestEntry, "name">,
+  flatten: boolean
+): { inventory: PackMember[]; warnings: string[] } {
+  if (!flatten) {
+    return {
+      inventory: declared.map((name) => ({ name, path: name, declaredEntry: name })),
+      warnings: [],
+    };
+  }
+
+  const inventory: PackMember[] = [];
+  const warnings: string[] = [];
+  const origin = new Map<string, string>();
+  /**
+   * Project one leaf. Returns true when it was actually claimed.
+   *
+   * `declaredAsIs` marks the one case where the name was NOT lifted off the
+   * filesystem: a declared entry that is already a skill keeps the author's
+   * string, exactly as it would without flatten. It defaults to false so the
+   * canonical gate is the fail-safe direction for any future call site.
+   */
+  const claim = (member: PackMember, declaredAsIs = false): boolean => {
+    if (!declaredAsIs && !CANONICAL_NAME_PATTERN.test(member.name)) {
+      // Contract 3b. Flatten is the ONLY place a projected skill name is lifted
+      // straight off the filesystem — without it a pack.toml pack projects
+      // exactly the strings its author typed into `[freeform].skills`.
+      // `validatePathComponent` only asks for one safe path component, which
+      // happily admits `-rf`, `--help`, `*`, and names carrying newlines or
+      // tabs; those become argv- and glob-hostile symlink names in all six CLI
+      // skill directories. Skipped rather than thrown so one odd upstream
+      // directory cannot brick a whole pack. JSON.stringify keeps control
+      // characters escaped in the warning itself.
+      warnings.push(
+        `Pack ${entry.name} leaf ${JSON.stringify(member.name)} at ${member.path} is not a canonical skill name (${CANONICAL_NAME_PATTERN.source}); skipping`
+      );
+      return false;
+    }
+    validatePathComponent(member.name, `Pack ${entry.name} skill name`);
+    const previous = origin.get(member.name);
+    if (previous !== undefined) {
+      // Ambiguous pack: two leaves would project onto one CLI destination, and
+      // which one won would depend on inventory order. Refuse rather than
+      // silently pick. (ACROSS packs this is fine — section 5 precedence
+      // decides — but within ONE pack there is no rule to apply.)
+      throw new Error(
+        `Pack ${entry.name} flattens to a duplicate skill name ${JSON.stringify(member.name)}: ${join(root, previous)} and ${join(root, member.path)}`
+      );
+    }
+    origin.set(member.name, member.path);
+    inventory.push(member);
+    return true;
+  };
+
+  for (const declaredEntry of declared) {
+    const declaredDir = join(root, declaredEntry);
+    // Defence in depth: `packPayload` has already asserted this, but
+    // `expandPackInventory` is exported and must be safe standalone.
+    assertRealDirectory(declaredDir, `Pack skill ${declaredEntry}`);
+    // Entry HAS a regular SKILL.md -> it IS a skill, taken as-is.
+    if (isRegularFile(join(declaredDir, "SKILL.md"))) {
+      // The name is the author's declared string, not a filesystem basename.
+      claim({ name: declaredEntry, path: declaredEntry, declaredEntry }, true);
+      continue;
+    }
+    // Entry has NO SKILL.md -> it is a CONTAINER. Descend it to ANY depth: the
+    // walk stops on each branch at the first directory that carries a SKILL.md,
+    // so a container of containers (hermes-base's `mlops/`) resolves the same way
+    // upstream's depth-agnostic `iter_skill_index_files` does.
+    const { leaves, symlinked } = packContainerLeaves(declaredDir);
+    // Section 4 is STRICTER than 3b's "skip a symlink with a warning": a symlink
+    // anywhere under a DECLARED entry is a payload violation, and `packPayload`
+    // has already thrown on it by the time `validatePack` gets here. This arm
+    // therefore only ever runs for a direct caller that did not walk the payload
+    // first; dropping it would make such a caller silently lose a member.
+    for (const child of symlinked) {
+      warnings.push(`Pack ${entry.name} member ${declaredEntry}/${child} is a symlink; skipping`);
+    }
+    let contributed = 0;
+    for (const leafPath of leaves) {
+      // The NAME is the leaf's basename; the PATH may be any number of segments
+      // deep. Nothing downstream may re-derive one from the other.
+      if (claim({ name: basename(leafPath), path: `${declaredEntry}/${leafPath}`, declaredEntry })) {
+        contributed += 1;
+      }
+    }
+    if (contributed === 0) {
+      // A container whose ENTIRE subtree yields no PROJECTABLE skill — either it
+      // holds none at all, or every leaf it holds was rejected by the
+      // canonical-name gate. Never silently dropped — contract section 3b.
+      warnings.push(
+        `Pack ${entry.name} declared entry ${JSON.stringify(declaredEntry)} is a container that contributes no skills`
+      );
+    }
+  }
+  return { inventory, warnings };
+}
 
 export function packDeclaredSkills(
   root: string,
   metadata: PackMetadata | null,
-  entry: Pick<PackManifestEntry, "name" | "version">
+  entry: Pick<PackManifestEntry, "name" | "version">,
+  flatten = false
 ): string[] {
   if (metadata) {
     if (metadata.name !== entry.name) {
@@ -551,7 +810,15 @@ export function packDeclaredSkills(
     const stat = lstatSync(join(root, name));
     // A symlinked child is never a pack member; it is skipped, not followed.
     if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-    if (!isRegularFile(join(root, name, "SKILL.md"))) continue;
+    if (!isRegularFile(join(root, name, "SKILL.md"))) {
+      // A `pack.toml`-less pack has no declared list to expand, so section 3b's
+      // container level has to be admitted by the glob itself or the manifest
+      // `flatten` flag — which section 3b says exists precisely for packs with
+      // no `pack.toml` — could never do anything. A container qualifies on the
+      // same descent test section 3b expands it with, so the glob admits exactly
+      // the directories that go on to contribute at least one member.
+      if (!flatten || !hasFlattenableChildren(join(root, name))) continue;
+    }
     declared.push(validatePathComponent(name, `Pack ${entry.name} skill name`));
   }
   return declared;
@@ -587,11 +854,25 @@ function walkPackSubtree(
   visit(join(root, relativeRoot));
 }
 
-/** payload = `pack.toml` + every file recursively under each DECLARED skill dir. */
+/**
+ * payload = `pack.toml` + every file recursively under each DECLARED skill dir.
+ *
+ * UNCHANGED by section 3b: a container is a declared entry, and walking it
+ * recursively already covers every leaf underneath it. That is why a flattened
+ * pack seals and verifies with no change to section 4 at all.
+ *
+ * The one thing `flatten` moves is WHERE the `SKILL.md` requirement is enforced.
+ * With flatten off, a declared entry must be a skill, so its missing `SKILL.md`
+ * is reported here (and, inside a seal, becomes an integrity failure). With
+ * flatten on, a declared entry legitimately may be a container, so the
+ * requirement moves to `expandPackInventory`, which finds members BY their
+ * `SKILL.md`. Declaring a container must never raise `SKILL_MD_MISSING`.
+ */
 export function packPayload(
   root: string,
   metadata: PackMetadata | null,
-  declared: string[]
+  declared: string[],
+  flatten = false
 ): { files: Map<string, string>; directories: Set<string> } {
   const files = new Map<string, string>();
   const directories = new Set<string>();
@@ -599,7 +880,7 @@ export function packPayload(
   for (const name of declared) {
     const skillDir = join(root, name);
     assertRealDirectory(skillDir, `Pack skill ${name}`);
-    if (!isRegularFile(join(skillDir, "SKILL.md"))) {
+    if (!flatten && !isRegularFile(join(skillDir, "SKILL.md"))) {
       throw new PackUnavailableError(`Pack skill ${name} is missing a regular SKILL.md: ${skillDir}`);
     }
     walkPackSubtree(root, name, files, directories);
@@ -679,11 +960,12 @@ export function validatePack(packRoot: string, entry: PackManifestEntry): Valida
   assertRealDirectory(root, `Pack ${entry.name} root`);
 
   const metadata = readPackMetadata(root);
-  const declared = packDeclaredSkills(root, metadata, entry);
+  const flatten = packFlattenEnabled(metadata, entry);
+  const declared = packDeclaredSkills(root, metadata, entry, flatten);
   // The manifest may only TIGHTEN: `sealed: false` cannot disable a sealed pack.
   const sealed = entry.sealed === true || metadata?.sealed === true;
 
-  const { files, directories } = packPayload(root, metadata, declared);
+  const { files, directories } = packPayload(root, metadata, declared, flatten);
   if (metadata?.payloadFiles !== undefined) {
     const actual = [...files.keys()].filter((path) => path !== "pack.toml").length;
     if (actual !== metadata.payloadFiles) {
@@ -695,14 +977,25 @@ export function validatePack(packRoot: string, entry: PackManifestEntry): Valida
     verifySealedPack(root, files, directories);
   }
 
-  let members = [...declared];
+  // Expansion runs AFTER integrity verification so a tampered pack can never be
+  // enumerated, and so a flattening error can never mask a digest mismatch.
+  const { inventory, warnings } = expandPackInventory(root, declared, entry, flatten);
+
+  // Contract section 3b: include/exclude apply to the FINAL flattened names.
+  let members = inventory;
   if (entry.include) {
     const wanted = new Set(entry.include);
-    members = members.filter((name) => wanted.has(name));
+    members = members.filter((member) => wanted.has(member.name));
   }
   if (entry.exclude?.length) {
     const unwanted = new Set(entry.exclude);
-    members = members.filter((name) => !unwanted.has(name));
+    members = members.filter((member) => !unwanted.has(member.name));
+  }
+
+  const memberPaths = new Map<string, string>();
+  for (const member of members) {
+    // Every segment was validated as one safe path component on the way in.
+    memberPaths.set(member.name, join(root, ...member.path.split("/")));
   }
 
   return {
@@ -710,7 +1003,12 @@ export function validatePack(packRoot: string, entry: PackManifestEntry): Valida
     version: entry.version,
     root,
     declared,
-    members,
+    inventory,
+    inventoryNames: inventory.map((member) => member.name),
+    members: members.map((member) => member.name),
+    memberPaths,
+    flatten,
+    warnings,
     sealed,
     payloadFiles: [...files.keys()].filter((path) => path !== "pack.toml").length,
   };

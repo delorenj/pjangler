@@ -724,7 +724,25 @@ function packRootOverride(name: string): string | undefined {
 
 /** The implicit BMAD pin, sealed from pjangler's side (contract section 4). */
 function bmadPackEntry(): PackManifestEntry {
-  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true };
+  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true, flatten: false };
+}
+
+/**
+ * The projection target for one pack member.
+ *
+ * Contract section 3b makes `<root>/<name>` WRONG for a flattened pack, so this
+ * is the only place a member path may come from. Deriving it from the name
+ * again anywhere else is exactly how the two engines would drift.
+ */
+function packMemberPath(pack: ValidatedPack, name: string): string {
+  const target = pack.memberPaths.get(validateSkillName(name));
+  if (!target) throw new Error(`Pack ${pack.name} has no resolved path for member ${JSON.stringify(name)}`);
+  return target;
+}
+
+/** Stable, order-sensitive identity of a pack's projection, for revalidation. */
+function packProjectionSignature(pack: ValidatedPack): string {
+  return JSON.stringify(pack.members.map((name) => [name, pack.memberPaths.get(name) ?? null]));
 }
 
 /**
@@ -932,7 +950,15 @@ interface PackPlan {
   /** Declared packs that resolved and validated (used for redundancy checks). */
   declared: ResolvedPackPlanEntry[];
   errors: string[];
+  /** Optional packs that were unavailable and skipped (contract section 1). */
   warnings: string[];
+  /**
+   * Advisories from a pack that resolved fine — today, section 3b's "this
+   * container projects nothing" and "this container child is a symlink". Kept
+   * apart from `warnings` because those two mean different things to the audit
+   * summary, and because a pack advisory must not read as a skipped pack.
+   */
+  packWarnings: string[];
   bmadDeclared: boolean;
 }
 
@@ -972,6 +998,7 @@ function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | 
     declared: [],
     errors: [],
     warnings: [],
+    packWarnings: [],
     bmadDeclared: false,
   };
 
@@ -992,8 +1019,9 @@ function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | 
       plan.resolved.push(resolved);
       plan.implicitRoots.push(root);
       plan.ownershipRoots.push(root);
+      plan.packWarnings.push(...pack.warnings);
       for (const name of pack.members) {
-        const target = join(root, validateSkillName(name));
+        const target = packMemberPath(pack, name);
         plan.projections.set(name, target);
         plan.manifestSkills.push({ name, source: pathToFileURL(target).href });
       }
@@ -1017,8 +1045,9 @@ function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | 
       plan.declared.push(resolved);
       plan.ownershipRoots.push(root);
       if (familyRoot) plan.ownershipRoots.push(familyRoot);
+      plan.packWarnings.push(...pack.warnings);
       for (const name of pack.members) {
-        plan.projections.set(name, join(root, validateSkillName(name)));
+        plan.projections.set(name, packMemberPath(pack, name));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1056,7 +1085,9 @@ function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | 
 function assertPackPlanUnchanged(plan: PackPlan): void {
   for (const item of plan.resolved) {
     const again = validatePack(item.root, item.entry);
-    if (JSON.stringify(again.members) !== JSON.stringify(item.pack.members)) {
+    // Names AND paths: under section 3b a member can move between containers
+    // without its name changing, which would silently repoint a live symlink.
+    if (packProjectionSignature(again) !== packProjectionSignature(item.pack)) {
       throw new Error(`Pack ${item.entry.name} inventory changed after preflight`);
     }
   }
@@ -1097,6 +1128,15 @@ function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, 
  * source lands inside the pack (or, for a declared member name, inside any
  * version of the same pack). An entry pointing anywhere else — a local tree, a
  * different registry, a customized copy — is the user's and is never removed.
+ *
+ * The family-root arm matches `inventoryNames` — under section 3b those are the
+ * FLATTENED names, because that is what the pack PROVIDES and clause (b) asks
+ * what a pack provides. The container names it was declared with are an
+ * implementation detail of the pack's on-disk layout, and no `skills[]` entry is
+ * ever named after one, so they deliberately do NOT match. Clause (a) is
+ * unaffected: a leaf at `<root>/apple/apple-notes` is still contained by
+ * `<root>`. With flatten off, `inventoryNames` IS the declared list, so nothing
+ * about a pre-existing pack changes.
  */
 function isRedundantDeclaredPackEntry(entry: unknown, plan: PackPlan): boolean {
   const name = skillManifestEntryName(entry);
@@ -1105,7 +1145,11 @@ function isRedundantDeclaredPackEntry(entry: unknown, plan: PackPlan): boolean {
   if (!sourcePath) return false;
   for (const declared of plan.declared) {
     if (isContainedBy(declared.pack.root, sourcePath)) return true;
-    if (declared.familyRoot && declared.pack.declared.includes(name) && isContainedBy(declared.familyRoot, sourcePath)) {
+    if (
+      declared.familyRoot &&
+      declared.pack.inventoryNames.includes(name) &&
+      isContainedBy(declared.familyRoot, sourcePath)
+    ) {
       return true;
     }
   }
@@ -1462,7 +1506,7 @@ export function provisionBmadSkills(
   ctx: Context,
   preservedManifest?: Record<string, unknown> | null,
   hooks: BmadProvisionHooks = {}
-): { ok: boolean; changedFiles: string[]; error?: string } {
+): { ok: boolean; changedFiles: string[]; error?: string; packWarnings?: string[] } {
   // Destination topology and the manifest's own file type are security
   // boundaries. Validate them before reading packs[] or resolving any registry
   // path: a symlinked manifest must never be followed even during planning.
@@ -1594,7 +1638,7 @@ export function provisionBmadSkills(
   if (ctx.dryRun || changedFiles.length === 0) {
     try {
       assertPackPlanUnchanged(plan);
-      return { ok: true, changedFiles };
+      return { ok: true, changedFiles, packWarnings: plan.packWarnings };
     } catch (error) {
       return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
@@ -1715,7 +1759,7 @@ export function provisionBmadSkills(
   }
 
   rmSync(transaction, { recursive: true });
-  return { ok: true, changedFiles };
+  return { ok: true, changedFiles, packWarnings: plan.packWarnings };
 }
 
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
@@ -3679,9 +3723,14 @@ const RULES: Rule[] = [
         fixable = false;
       }
       // PACKS-CONTRACT section 1: an `optional: true` pack that is missing WARNS,
-      // it does not fail. Keep the advisory in the canonical summary rather
-      // than adding a new AuditFinding field or a permanently failing detail.
-      const optionalPackWarningCount = plan.warnings.length;
+      // it does not fail. Section 3b adds a second advisory class: a declared
+      // container that projects nothing, or a symlinked container child that was
+      // skipped. Both belong in the canonical summary, never in `details` —
+      // a detail is a FAILURE here, and neither of these is one.
+      const packAdvisories = [
+        ...(plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : []),
+        ...plan.packWarnings,
+      ];
       const expectedBmad = plan.manifestSkills;
       const expectedByName = new Map(plan.projections);
       const expectedNames = new Set(expectedByName.keys());
@@ -3841,7 +3890,7 @@ const RULES: Rule[] = [
         summary:
           details.length === 0
             ? `Skillex skills manifest parity verified${
-                optionalPackWarningCount ? ` (${optionalPackWarningCount} optional pack(s) skipped)` : ""
+                packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""
               }`
             : `${details.length} Skillex migration issue(s) detected${
                 unmanagedSkillNames.length
@@ -3917,6 +3966,10 @@ const RULES: Rule[] = [
       }
       changedFiles.push(...provisioned.changedFiles);
       if (provisioned.changedFiles.includes(manifestPath)) details.push("Normalized .agents/skills.json against the declared Skillex packs");
+      // Section 3b advisories: a declared container that projected nothing must
+      // be reported, not silently dropped. It is not a failure, so it only ever
+      // annotates the result.
+      details.push(...(provisioned.packWarnings ?? []));
 
       // PJAN-28: runs after the BMAD projection so nothing is mutated ahead of
       // the pack blocker above. provisionBmadSkills never touches unmanaged

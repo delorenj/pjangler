@@ -147,7 +147,10 @@ try {
     assert.equal(first.ok, true, JSON.stringify(first));
     const after = snapshot(project);
     const second = provisionBmadSkills(context);
-    assert.deepEqual(second, { ok: true, changedFiles: [] });
+    // `packWarnings` carries PACKS-CONTRACT section 3b advisories. BMAD is not a
+    // flattened pack, so an EMPTY array here is itself the assertion: nothing in
+    // a flat pack may ever produce one.
+    assert.deepEqual(second, { ok: true, changedFiles: [], packWarnings: [] });
     assert.deepEqual(snapshot(project), after, "successful rerun must be idempotent");
     const skills = join(project, ".agents", "skills");
     assert.equal(readdirSync(skills).filter((name) => name.startsWith("bmad-")).length, 76);
