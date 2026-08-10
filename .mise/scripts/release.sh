@@ -106,13 +106,24 @@ next_version() {
 # different userconfig is supplied. Run every authenticated command outside the
 # repository so stale project credentials cannot override the runtime gh token.
 registry_npm() (
-  local token
-  [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ] || die "registry auth directory is unavailable"
-  token="$(gh auth token 2>/dev/null)" ||
-    die "GitHub Packages auth unavailable; run gh auth login"
-  [ -n "$token" ] || die "gh returned an empty auth token"
-  cd "$AUTH_DIR"
-  NODE_AUTH_TOKEN="$token" NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm "$@"
+  case "${REGISTRY%/}" in
+    https://registry.npmjs.org)
+      # Public registry; no auth needed for view. Publishing happens in CI via OIDC.
+      npm "$@"
+      ;;
+    https://npm.pkg.github.com)
+      local token
+      [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ] || die "registry auth directory is unavailable"
+      token="$(gh auth token 2>/dev/null)" ||
+        die "GitHub Packages auth unavailable; run gh auth login"
+      [ -n "$token" ] || die "gh returned an empty auth token"
+      cd "$AUTH_DIR"
+      NODE_AUTH_TOKEN="$token" NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm "$@"
+      ;;
+    *)
+      die "unsupported registry in registry_npm: $REGISTRY"
+      ;;
+  esac
 )
 
 registry_config() {
@@ -124,8 +135,11 @@ registry_config() {
     https://npm.pkg.github.com)
       command -v gh >/dev/null 2>&1 || die "gh is required for GitHub Packages auth"
       ;;
+    https://registry.npmjs.org)
+      : # OIDC trusted publishing; auth happens in CI only
+      ;;
     *)
-      die "unsupported publishConfig.registry: $REGISTRY (expected GitHub Packages)"
+      die "unsupported publishConfig.registry: $REGISTRY (expected GitHub Packages or npmjs.org)"
       ;;
   esac
 }
@@ -141,6 +155,9 @@ registry_auth() {
       chmod 600 "$AUTH_CONFIG"
       registry_npm whoami --registry="$REGISTRY" >/dev/null ||
         die "GitHub Packages authentication failed"
+      ;;
+    https://registry.npmjs.org)
+      log "OIDC trusted publishing: no local auth needed; publish happens in CI"
       ;;
     *)
       die "registry configuration was not initialized"
@@ -273,11 +290,32 @@ ensure_version_unused
 
 if [ -n "$DRY" ]; then
   if [ -n "$PUBLISH_CURRENT" ]; then
-    log "DRY RUN — gates passed; would inspect and publish the exact $TARGET tarball from the already-pushed HEAD/tag. Nothing mutated."
+    case "${REGISTRY%/}" in
+      https://registry.npmjs.org)
+        log "DRY RUN — gates passed; would inspect the exact $TARGET tarball from the already-pushed HEAD/tag. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
+        ;;
+      *)
+        log "DRY RUN — gates passed; would inspect and publish the exact $TARGET tarball from the already-pushed HEAD/tag. Nothing mutated."
+        ;;
+    esac
   elif [ -n "$RESUME_PUSH" ]; then
-    log "DRY RUN — gates passed; would atomically resume pushing HEAD+$TARGET, then publish the inspected tarball. Nothing mutated."
+    case "${REGISTRY%/}" in
+      https://registry.npmjs.org)
+        log "DRY RUN — gates passed; would atomically resume pushing HEAD+$TARGET. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
+        ;;
+      *)
+        log "DRY RUN — gates passed; would atomically resume pushing HEAD+$TARGET, then publish the inspected tarball. Nothing mutated."
+        ;;
+    esac
   else
-    log "DRY RUN — gates passed; would bump $CUR -> $NEXT, commit package+lock, inspect tarball, atomically push HEAD to $REMOTE/$BRANCH with $NEXT, then publish the exact tarball. Nothing mutated."
+    case "${REGISTRY%/}" in
+      https://registry.npmjs.org)
+        log "DRY RUN — gates passed; would bump $CUR -> $NEXT, commit package+lock, inspect tarball, atomically push HEAD to $REMOTE/$BRANCH with $NEXT. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
+        ;;
+      *)
+        log "DRY RUN — gates passed; would bump $CUR -> $NEXT, commit package+lock, inspect tarball, atomically push HEAD to $REMOTE/$BRANCH with $NEXT, then publish the exact tarball. Nothing mutated."
+        ;;
+    esac
   fi
   exit 0
 fi
@@ -289,13 +327,22 @@ if [ -n "$PUBLISH_CURRENT" ] || [ -n "$RESUME_PUSH" ]; then
       "HEAD:refs/heads/$BRANCH" \
       "refs/tags/$TARGET:refs/tags/$TARGET"
   fi
-  registry_npm publish "$TARBALL" \
-    --registry="$REGISTRY" --access public
-  PUBLISHED="$(registry_npm view \
-    "$PACKAGE_NAME@${TARGET#v}" version --registry="$REGISTRY")"
-  [ "$PUBLISHED" = "${TARGET#v}" ] || die "registry verification failed for $PACKAGE_NAME@$TARGET"
-  log "published and verified $PACKAGE_NAME@$TARGET from $TARBALL"
-  exit 0
+  case "${REGISTRY%/}" in
+    https://registry.npmjs.org)
+      log "tag pushed; GitHub Actions OIDC workflow will publish $PACKAGE_NAME@$TARGET"
+      log "if the workflow did not publish, re-run the workflow from the GitHub Actions UI"
+      exit 0
+      ;;
+    *)
+      registry_npm publish "$TARBALL" \
+        --registry="$REGISTRY" --access public
+      PUBLISHED="$(registry_npm view \
+        "$PACKAGE_NAME@${TARGET#v}" version --registry="$REGISTRY")"
+      [ "$PUBLISHED" = "${TARGET#v}" ] || die "registry verification failed for $PACKAGE_NAME@$TARGET"
+      log "published and verified $PACKAGE_NAME@$TARGET from $TARBALL"
+      exit 0
+      ;;
+  esac
 fi
 
 NEW="$("$SCRIPTS_DIR/versioning.sh" bump "$LEVEL")"
@@ -331,10 +378,16 @@ git push --atomic "$REMOTE" \
   "HEAD:refs/heads/$BRANCH" \
   "refs/tags/$NEW:refs/tags/$NEW"
 
-registry_npm publish "$TARBALL" \
-  --registry="$REGISTRY" --access public
-PUBLISHED="$(registry_npm view \
-  "$PACKAGE_NAME@${NEW#v}" version --registry="$REGISTRY")"
-[ "$PUBLISHED" = "${NEW#v}" ] || die "registry verification failed for $PACKAGE_NAME@$NEW"
-
-log "published and verified $PACKAGE_NAME@$NEW from $TARBALL"
+case "${REGISTRY%/}" in
+  https://registry.npmjs.org)
+    log "tag pushed; GitHub Actions OIDC workflow will publish $PACKAGE_NAME@$NEW"
+    ;;
+  *)
+    registry_npm publish "$TARBALL" \
+      --registry="$REGISTRY" --access public
+    PUBLISHED="$(registry_npm view \
+      "$PACKAGE_NAME@${NEW#v}" version --registry="$REGISTRY")"
+    [ "$PUBLISHED" = "${NEW#v}" ] || die "registry verification failed for $PACKAGE_NAME@$NEW"
+    log "published and verified $PACKAGE_NAME@$NEW from $TARBALL"
+    ;;
+esac

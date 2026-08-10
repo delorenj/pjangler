@@ -62,6 +62,6 @@
     "url": "https://github.com/delorenj/pjangler.git"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org"
   }
 }

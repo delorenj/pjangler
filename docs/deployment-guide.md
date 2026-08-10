@@ -5,9 +5,13 @@
 
 ## Distribution model
 
-`@delorenj/pjangler` is an npm package published to GitHub Packages via the
-`publishConfig.registry` in `package.json`. It is installed globally (or run
-via `npx`) with that registry configured. Binaries:
+`@delorenj/pjangler` is an npm package published to the public npmjs.org registry
+via `publishConfig.registry` in `package.json`. Publishing uses **npm OIDC
+Trusted Publishing** (GA since July 2025) — no API tokens or 2FA are required.
+A GitHub Actions workflow (`.github/workflows/publish.yml`) triggered by tag
+pushes (`v*`) runs `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under
+the `release` environment with `id-token: write` permission. The package is
+installed globally (or run via `npx`) from npmjs.org. Binaries:
 
 | Binary | Maps to | Purpose |
 | --- | --- | --- |
@@ -47,31 +51,36 @@ The release task owns the only supported bump-and-publish transaction:
    `RELEASE_BRANCH=main`) and require the candidate to fast-forward it.
 5. Run install, production audit, build, typecheck, tests, strict PG coverage,
    and an unauthenticated exact-tarball publish dry-run before acquiring a token.
-6. Authenticate to the configured GitHub Packages registry using the active
-   `gh` session. Each registry command receives a newly acquired token only in
-   its own process environment; the temporary npm config
-   contains only `${NODE_AUTH_TOKEN}` and is removed on exit. Authenticated npm
-   commands run from a dedicated temporary directory so a stale project
-   `.npmrc` cannot override the runtime credential.
-7. Strict disposable PostgreSQL coverage uses `PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for
-   the disposable instance. A release fails rather than skipping this database
-   gate.
+6. Authenticate to the configured registry. For GitHub Packages, authenticate
+   using the active `gh` session with a short-lived token. For npmjs.org (OIDC
+   trusted publishing), no local auth is needed — publishing happens in CI.
+7. Strict disposable PostgreSQL coverage uses `PGHOST`, `PGPORT`, `PGUSER`, and
+   `PGPASSWORD` for the disposable instance. A release fails rather than
+   skipping this database gate.
 8. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
    parity, and make one `release(PJAN-44): vX.Y.Z` commit.
 9. Build and inspect the actual tarball, run the production audit and
    tracked/package secret scan.
 10. Create the commit/tag only after those gates, then atomically push both.
-11. Publish that exact `.tgz`, then verify the new registry version. If the
-   atomic push fails locally, rerun with `--resume-push`.
+11. **For npmjs.org (OIDC):** the local release stops here — the tag push
+    triggers the GitHub Actions `publish.yml` workflow, which runs
+    `npm ci`, `npm run build`, `npm run typecheck`, `npm test`, then
+    `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
+    environment. The local script logs "tag pushed; GitHub Actions OIDC
+    workflow will publish" and exits. For GitHub Packages, publish that exact
+    `.tgz` locally and verify the new registry version. If the atomic push
+    fails locally, rerun with `--resume-push`.
 
 `prepublishOnly` remains a defense-in-depth build/template/secret gate.
 `PJANGLER_VERSION` is read from `package.json` at runtime, so `pj --version`
 and MCP `serverInfo` match the published package without a separate source bump.
 
-If publication fails after the atomic git push, `mise run publish` is a strict
-retry path. It refuses unless the clean HEAD and its annotated version tag are
-already present on the configured remote main ref, reruns the gates, inspects a
-new exact tarball, and confirms the registry version is still unused.
+If publication fails after the atomic git push, `mise run release -- --publish-current`
+is a strict retry path. It refuses unless the clean HEAD and its annotated version tag
+are already present on the configured remote main ref, reruns the gates, inspects a
+new exact tarball, and confirms the registry version is still unused. For npmjs.org
+(OIDC), the retry path skips local publish and directs the user to re-run the GitHub
+Actions workflow from the Actions UI.
 
 ### Pre-publish checklist
 
@@ -87,12 +96,18 @@ new exact tarball, and confirms the registry version is still unused.
 
 ## CI
 
-`.github/workflows/` contains Claude Code automation, not a build/test/publish pipeline:
+`.github/workflows/` contains Claude Code automation and the OIDC publish pipeline:
 
 - `claude.yml` — Claude Code interactive workflow
 - `claude-code-review.yml` — automated PR code review
+- `publish.yml` — npm OIDC Trusted Publishing workflow; triggers on tag push (`v*`),
+  runs `npm ci`, `npm run build`, `npm run typecheck`, `npm test`, then
+  `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
+  environment (`id-token: write`, `contents: read`)
 
-There is **no GitHub Actions test/publish job** at time of scan — build, test, and publish are run locally via the commands above. (Adding a CI test gate that runs `npm run typecheck && npm test` on PRs would be a reasonable hardening step.)
+Build, test, and the release commit/tag are run locally via the commands above;
+publishing to npmjs.org happens in CI via the `publish.yml` workflow triggered by
+the tag push.
 
 ## Runtime dependencies at the install site
 
