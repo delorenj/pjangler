@@ -303,7 +303,11 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
-    const result = await recipeRegistry.initRecipe(name, lifecycleContext(context.targetDir, Boolean(context.dryRun)), {});
+    const result = await recipeRegistry.initRecipe(
+      name,
+      lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context),
+      {},
+    );
     for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
     for (const error of result.errors) console.error(`${xmark} ${error}`);
     if (!result.ok) process.exitCode = 1;
@@ -515,7 +519,11 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       };
       const result = await recipeRegistry.initRecipe(
         "project",
-        lifecycleContext(target.targetDir, false),
+        lifecycleContext(target.targetDir, false, false, {
+          force: options.force ?? false,
+          live: options.live ?? false,
+          quiet: Boolean(options.json),
+        }),
         projectInput,
       ) as ProjectRecipeResult;
       if (options.json) {
@@ -940,7 +948,7 @@ program
       skipSystemd: options.skipSystemd ?? (local || isDarwin),
     };
     try {
-      const lifecycle = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+      const lifecycle = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context);
       const result = await recipeRegistry.initRecipe("hermes-agent", lifecycle, {});
       for (const line of result.logs) console.log(line);
       for (const error of result.errors) console.error(`${xmark} ${error}`);

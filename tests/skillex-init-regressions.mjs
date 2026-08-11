@@ -15,18 +15,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import {
+  BMAD_FIXTURE_SKILLS,
+  createBmadInstallerFixture,
+  createBmadPackFixture,
+} from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceCli = join(root, "dist", "index.js");
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-skillex-init-"));
-const explicitBmadPack = process.env.PJ_BMAD_PACK_ROOT?.trim();
 const runMiseIntegration = process.env.PJ_RUN_MISE_INTEGRATION === "1";
-const sourceBmadPack = resolve(
-  explicitBmadPack || "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
-);
 const homeDir = join(tmp, "home");
 // The fixture's registry checkout. Pinned as rung 0 of the ONE pack-resolution
 // ladder (PACKS-CONTRACT section 2 step 3) rather than left to the default rungs:
@@ -34,12 +35,23 @@ const homeDir = join(tmp, "home");
 // this hermetic HOME would resolve the pack out of whichever checkout `sync-skills.py`
 // happened to clone into `~/.agents/.cache/registries/`, over the network.
 const fixtureRegistryRoot = join(homeDir, "code", "skillex");
-const bmadPack = join(fixtureRegistryRoot, "packs", "bmad", "6.10.1-next.31");
+const bmadPack = createBmadPackFixture(fixtureRegistryRoot);
+const bmadInstaller = createBmadInstallerFixture(tmp);
+const bmadFixtureVersion = basename(bmadPack);
+const cacheRoot = join(homeDir, ".cache");
+mkdirSync(join(cacheRoot, "pjangler"), { recursive: true });
+writeFileSync(
+  join(cacheRoot, "pjangler", "bmad-dist-tags.json"),
+  JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: bmadFixtureVersion, next: bmadFixtureVersion } }),
+);
 
 function cleanBaseEnv() {
   const env = { ...process.env };
   delete env.PJ_BMAD_PACK_ROOT;
+  delete env.PJ_PACK_ROOT_BMAD;
   env.PJ_SKILLS_REGISTRY_ROOT = fixtureRegistryRoot;
+  env.PJ_BMAD_INSTALLER = bmadInstaller;
+  env.XDG_CACHE_HOME = cacheRoot;
   return env;
 }
 
@@ -129,7 +141,7 @@ function assertProjectContract(projectDir, homeDir) {
     XDG_DATA_HOME: join(homeDir, ".local", "share"),
     XDG_STATE_HOME: join(homeDir, ".local", "state"),
     MISE_GLOBAL_CONFIG_FILE: miseGlobalConfig,
-    MISE_IGNORED_CONFIG_PATHS: "/home/delorenj/.config/mise/config.toml",
+    MISE_IGNORED_CONFIG_PATHS: join(tmp, "ignored-mise-config.toml"),
     MISE_CEILING_PATHS: tmp,
     MISE_TRUSTED_CONFIG_PATHS: tmp,
   };
@@ -305,10 +317,11 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
 }
 
 try {
-  assert.equal(existsSync(sourceBmadPack), true, `canonical BMAD pack is required at ${sourceBmadPack}`);
-  mkdirSync(dirname(bmadPack), { recursive: true });
-  cpSync(sourceBmadPack, bmadPack, { recursive: true });
-  assert.equal(bmadSkillNames().length, 76, "BMAD 6.10.1-next.31 pack must expose its exact authenticated inventory");
+  assert.deepEqual(
+    bmadSkillNames(),
+    [...BMAD_FIXTURE_SKILLS].sort(),
+    "generated BMAD pack must expose its authenticated fixture inventory",
+  );
   assert.equal(
     existsSync(join(homeDir, ".agents", "scripts", "sync-skills.py")),
     false,
@@ -335,7 +348,7 @@ try {
   assertProvisionerRejectsUntrustedPacks(source.projectDir, homeDir);
 
   const miseMode = runMiseIntegration ? "mise integration exercised" : "mise integration skipped";
-  console.log(`Skillex init regressions passed (fresh HOME default next.31 pack; ${miseMode})`);
+  console.log(`Skillex init regressions passed (fresh HOME generated BMAD pack; ${miseMode})`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

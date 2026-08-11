@@ -11,9 +11,9 @@ const neutralTemplate = readFileSync(join(root, "templates", "commonproject", "t
 const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
 const temporary = mkdtempSync(join(tmpdir(), "pjan-57-dogfood-"));
 
-function runCli(args, env = {}) {
+function runCli(args, env = {}, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
-    cwd: root,
+    cwd,
     encoding: "utf8",
     env: { ...process.env, ...env },
     maxBuffer: 20 * 1024 * 1024,
@@ -37,6 +37,21 @@ function makeEnvRepo(name, envOp) {
 }
 
 try {
+  {
+    const repo = join(temporary, "cli-force-propagation");
+    mkdirSync(repo, { recursive: true });
+    const sentinel = '{"name":"keep-me"}\n';
+    writeFileSync(join(repo, "package.json"), sentinel);
+
+    const preserved = runCli(["add", "node"], {}, repo);
+    assert.notEqual(preserved.status, 0, "add node without --force must refuse an existing package.json");
+    assert.equal(readFileSync(join(repo, "package.json"), "utf8"), sentinel, "no-force must preserve existing output byte-for-byte");
+
+    const replaced = runCli(["add", "node", "--force"], {}, repo);
+    assert.equal(replaced.status, 0, `${replaced.stdout}${replaced.stderr}`);
+    assert.equal(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).name, "my-project", "--force must reach the Node recipe and replace existing output");
+  }
+
   for (const [label, initial, expected] of [
     ["missing", undefined, neutralTemplate],
     ["zero", "", neutralTemplate],

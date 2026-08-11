@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
+import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 // PJAN-31a: the CommonProject template shipped no .github at all, so no project
 // pjangler created ever got PR review. These guards render a REAL project with
@@ -22,12 +23,13 @@ const templateWorkflow = join(
   "workflows",
   "code-review.yml.jinja",
 );
+let lifecycleEnv = {};
 
 function run(args, env = {}, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...lifecycleEnv, ...env },
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.status !== 0) {
@@ -38,6 +40,18 @@ function run(args, env = {}, cwd = root) {
 
 const tmp = mkdtempSync(join(tmpdir(), "pjan-31a-"));
 try {
+  const homeDir = join(tmp, "home");
+  const fixtureRoot = join(tmp, "bmad-fixtures");
+  lifecycleEnv = {
+    HOME: homeDir,
+    XDG_CACHE_HOME: join(homeDir, ".cache"),
+    XDG_CONFIG_HOME: join(homeDir, ".config"),
+    PJ_AGENT_HOOKS_LAYER: "0",
+    PJ_BMAD_PACK_ROOT: createBmadPackFixture(fixtureRoot),
+    PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
+    npm_config_cache: join(tmp, "empty-npm-cache"),
+    npm_config_offline: "true",
+  };
   // --- template source: the raw-block wrapping is the whole defect surface ---
   assert.ok(existsSync(templateWorkflow), "CommonProject template must ship .github/workflows/code-review.yml.jinja");
   const source = readFileSync(templateWorkflow, "utf8");

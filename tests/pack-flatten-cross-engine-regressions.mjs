@@ -1,7 +1,8 @@
 // PACKS-CONTRACT section 3b: CROSS-ENGINE conformance gate.
 //
 // Three independent engines implement section 3b, in two languages and three
-// repos:
+// repos. The first two ship in this repository and are always compared; the
+// third is added only when PJ_SKILLEX_REPO explicitly selects a checkout:
 //
 //   1. pjangler TypeScript   src/parity/pack.ts       -> expandPackInventory()
 //   2. the fanout engine     templates/commonproject/template/.mise/scripts/
@@ -15,9 +16,11 @@
 // Every suite passed. Nothing in CI could see it, because nothing in CI ever
 // compared one engine's answer to another's.
 //
-// This suite is that comparison. It runs all three engines over the SAME pack
-// root and requires byte-identical `(name, relpath)` output. A constant is not
-// evidence of agreement; only a diff is.
+// This suite is that comparison. It always runs pjangler and sync-skills.py over
+// the SAME generated pack root, optionally adding Skillex and its real
+// hermes-base reference pack. Every enabled engine must produce byte-identical
+// `(name, relpath)` output. A constant is not evidence of agreement; only a diff
+// is.
 //
 // It is deliberately NOT a count assertion. A count would still pass if two
 // engines projected the same NUMBER of skills from different paths.
@@ -37,6 +40,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -49,34 +53,28 @@ const syncSkills = join(
   "scripts",
   "sync-skills.py"
 );
-const skillexRepo = resolve(
-  process.env.PJ_SKILLEX_REPO?.trim() || "/home/delorenj/code/skillex"
-);
+const explicitSkillexRepo = process.env.PJ_SKILLEX_REPO?.trim();
+const explicitHermesBasePack = process.env.PJ_PACK_ROOT_HERMES_BASE?.trim();
+const skillexRepo = explicitSkillexRepo ? resolve(explicitSkillexRepo) : undefined;
+const hermesBasePack = explicitHermesBasePack ? resolve(explicitHermesBasePack) : undefined;
+const temporaries = [];
 // `pj migrate` also materializes the implicit BMAD pin, which has to resolve
 // somewhere before it will project anything at all. Irrelevant to section 3b —
 // `linksUnder` filters it back out — but it must be satisfied for the run to
 // reach the pack under test. `sync-skills.py` carries no such implicit pin.
-const selectedBmadPack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
-    join(skillexRepo, "packs", "bmad", "6.10.1-next.31")
-);
-const hermesBasePack = resolve(
-  process.env.PJ_PACK_ROOT_HERMES_BASE?.trim() ||
-    join(skillexRepo, "packs", "hermes-base", "0.18.2")
-);
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-xengine-bmad-fixture-"));
+temporaries.push(bmadFixtureRoot);
+const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
 // The SSOT projection, committed in the skillex checkout and regenerated with
 //   skillex pack inventory packs/hermes-base/0.18.2 --json > <this file>
 // Both this suite and skillex's own pytest suite read it, so the reference pack's
 // expected projection exists exactly ONCE across the two repos.
-const goldenPath = join(
-  skillexRepo,
-  "tests",
-  "fixtures",
-  "flatten-reference-hermes-base-0.18.2.json"
-);
-
-const temporaries = [];
+const goldenPath = skillexRepo
+  ? join(skillexRepo, "tests", "fixtures", "flatten-reference-hermes-base-0.18.2.json")
+  : undefined;
+const runHermesReferenceCheck = Boolean(skillexRepo && hermesBasePack && goldenPath);
 let checked = 0;
+let maximumEngineCount = 2;
 
 function makeTemp(label) {
   const dir = mkdtempSync(join(tmpdir(), `pjangler-${label}-`));
@@ -169,7 +167,11 @@ function makeRepo(label, packEntry) {
 function projectWithPjangler(packEntry, packRoot, registryRoot) {
   const repo = makeRepo("xengine-ts", packEntry);
   run("node", [cli, "migrate", "skills.project-manifest", repo, "--json"], {
-    env: { PJ_SKILLS_REGISTRY_ROOT: registryRoot, PJ_BMAD_PACK_ROOT: selectedBmadPack },
+    env: {
+      PJ_SKILLS_REGISTRY_ROOT: registryRoot,
+      PJ_BMAD_PACK_ROOT: selectedBmadPack,
+      PJ_PACK_ROOT_BMAD: selectedBmadPack,
+    },
   });
   return linksUnder(join(repo, ".agents", "skills"), packRoot);
 }
@@ -188,6 +190,7 @@ function projectWithSyncSkills(packEntry, packRoot, registryRoot) {
 
 /** Engine 3: the skillex library, via `skillex pack inventory --json`. */
 function projectWithSkillex(packRoot) {
+  assert.ok(skillexRepo, "PJ_SKILLEX_REPO is required for the optional Skillex engine");
   const stdout = run("uv", ["run", "--project", skillexRepo, "skillex", "pack", "inventory", packRoot, "--json"], {
     cwd: skillexRepo,
   });
@@ -244,16 +247,17 @@ function makeThreeLevelRegistry() {
   return { registry, pack };
 }
 
-/** Run all three engines over one pack root and require them to agree exactly. */
+/** Run both repository-contained engines, plus Skillex when explicitly enabled. */
 function assertEnginesAgree(label, packEntry, packRoot, registryRoot) {
   const engines = [
     ["pjangler (TypeScript)", projectWithPjangler(packEntry, packRoot, registryRoot)],
     ["sync-skills.py (fanout)", projectWithSyncSkills(packEntry, packRoot, registryRoot)],
-    ["skillex (Python library)", projectWithSkillex(packRoot)],
-  ].map(([name, pairs]) => [name, canonical(pairs)]);
+  ];
+  if (skillexRepo) engines.push(["skillex (Python library)", projectWithSkillex(packRoot)]);
+  const renderedEngines = engines.map(([name, pairs]) => [name, canonical(pairs)]);
 
-  const [referenceName, reference] = engines[0];
-  for (const [name, rendered] of engines.slice(1)) {
+  const [referenceName, reference] = renderedEngines[0];
+  for (const [name, rendered] of renderedEngines.slice(1)) {
     if (rendered !== reference) {
       // Print the actual disagreement: a bare "not equal" on two 73-element
       // arrays is unreadable, and the useful signal is always the few paths
@@ -272,10 +276,14 @@ function assertEnginesAgree(label, packEntry, packRoot, registryRoot) {
     }
   }
   checked += 1;
+  maximumEngineCount = Math.max(maximumEngineCount, renderedEngines.length);
   return JSON.parse(reference);
 }
 
 try {
+  if (!skillexRepo) {
+    console.log("optional Skillex engine skipped; set PJ_SKILLEX_REPO to enable it");
+  }
   // -------------------------------------------------------------------------
   // 1. The synthetic three-level pack. Always runs, depends on no checkout.
   // -------------------------------------------------------------------------
@@ -319,7 +327,9 @@ try {
   //    "how many leaves does hermes-base flatten to" is written down once rather
   //    than once per engine — the arrangement that let 67 and 73 coexist.
   // -------------------------------------------------------------------------
-  if (existsSync(join(hermesBasePack, "pack.toml")) && existsSync(goldenPath)) {
+  if (runHermesReferenceCheck) {
+    assert.equal(existsSync(join(hermesBasePack, "pack.toml")), true, `explicit Hermes pack is invalid: ${hermesBasePack}`);
+    assert.equal(existsSync(goldenPath), true, `explicit Skillex golden projection is missing: ${goldenPath}`);
     const registryRoot = resolve(hermesBasePack, "..", "..", "..");
     const projection = assertEnginesAgree(
       "hermes-base 0.18.2",
@@ -350,13 +360,15 @@ try {
     );
   } else {
     console.log(
-      `hermes-base reference pack or golden projection not present ` +
-        `(${hermesBasePack}, ${goldenPath}); real-pack cross-engine check skipped`
+      "optional Hermes real-pack comparison skipped; set both PJ_PACK_ROOT_HERMES_BASE and PJ_SKILLEX_REPO"
     );
   }
 
   assert.ok(checked >= 1, "the cross-engine gate must actually compare at least one pack");
-  console.log(`pack flatten cross-engine (PACKS-CONTRACT 3b) regressions passed (${checked} pack(s), 3 engines)`);
+  console.log(
+    `pack flatten cross-engine (PACKS-CONTRACT 3b) regressions passed ` +
+      `(${checked} pack(s), up to ${maximumEngineCount} engines)`,
+  );
 } finally {
   for (const dir of temporaries) rmSync(dir, { recursive: true, force: true });
 }

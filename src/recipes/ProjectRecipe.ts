@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   executeProjectInitPlan,
@@ -9,7 +9,14 @@ import {
   type ProjectManifest,
   type ProjectTicketProvider,
 } from "../project/index";
-import { createProjectChecks, type AuditReport, type MigrationReport } from "../parity/rules";
+import {
+  BMAD_INSTALLER_VERSION,
+  createProjectChecks,
+  preflightBmadLifecycle,
+  type AuditReport,
+  type BmadLifecyclePreflightResult,
+  type MigrationReport,
+} from "../parity/rules";
 import { Recipe } from "./Recipe";
 import type { RecipeRegistry } from "./registry";
 import type {
@@ -41,13 +48,30 @@ export interface ProjectRecipeResult extends RecipeInitResult {
 
 export interface ProjectRecipeRuntime {
   executePlan(plan: ProjectInitPlan): Promise<ProjectInitExecutionResult>;
-  runGit(cwd: string, args: readonly string[]): { status: number | null; stdout: string; stderr: string; error?: Error };
+  preflightBmad(ctx: LifecycleContext): BmadLifecyclePreflightResult;
+  runGit(
+    cwd: string,
+    args: readonly string[],
+    options?: { env?: NodeJS.ProcessEnv },
+  ): { status: number | null; stdout: string; stderr: string; error?: Error };
 }
+
+const BOOTSTRAP_GIT_IDENTITY: NodeJS.ProcessEnv = {
+  GIT_AUTHOR_NAME: "Pjangler Lifecycle",
+  GIT_AUTHOR_EMAIL: "pjangler@localhost.invalid",
+  GIT_COMMITTER_NAME: "Pjangler Lifecycle",
+  GIT_COMMITTER_EMAIL: "pjangler@localhost.invalid",
+};
 
 const PRODUCTION_RUNTIME: ProjectRecipeRuntime = {
   executePlan: executeProjectInitPlan,
-  runGit(cwd, args) {
-    const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
+  preflightBmad: preflightBmadLifecycle,
+  runGit(cwd, args, options) {
+    const result = spawnSync("git", [...args], {
+      cwd,
+      encoding: "utf8",
+      env: options?.env ? { ...process.env, ...options.env } : process.env,
+    });
     return {
       status: result.status,
       stdout: result.stdout ?? "",
@@ -165,171 +189,225 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
     const logs: string[] = [];
     const errors: string[] = [];
     const changedFiles: string[] = [];
-
-    const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
-    const filesystemPlan: ProjectInitPlan = {
-      ...plan,
-      actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent"),
+    const targetExistedAtStart = existsSync(targetDir);
+    const transactionContext: LifecycleContext = {
+      ...ctx,
+      targetDir,
+      repoRoot: targetDir,
+      bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin,
     };
-    const executed = filesystemPlan.actions.length
-      ? await this.runtime.executePlan(filesystemPlan)
-      : { ok: true, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
-    logs.push(...executed.logs);
-    errors.push(...executed.errors);
-    changedFiles.push(...executed.changedFiles);
-    phases.push({
-      id: "project.plan",
-      status: executed.ok ? (executed.changedFiles.length ? "changed" : "unchanged") : "failed",
-      changedFiles: executed.ok ? executed.changedFiles : [],
-      message: executed.ok ? "Project plan executed" : executed.errors.join("; "),
-    });
-
-    if (executed.ok && mode === "create") {
-      const dependencyResult = await this.registry.initDependencies(this.metadata.id, { ...ctx, targetDir, repoRoot: targetDir }, normalized);
-      logs.push(...dependencyResult.logs);
-      errors.push(...dependencyResult.errors);
-      changedFiles.push(...dependencyResult.changedFiles);
-      phases.push(...dependencyResult.phases);
-    }
-
     let agentResult: RecipeInitResult | undefined;
-    const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
-    if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
-      const agentContext: HermesAgentContext = {
-        targetRepo: agentAction.targetRepo,
-        role: agentAction.role,
-        agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
-        ticketProvider: plan.project.ticket_provider.type as "plane" | "trello",
-        local: agentAction.local,
-        force: Boolean(ctx.force),
-        skipTelegram: true,
-        skipEmail: true,
-        skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
-        skipPlane: agentAction.context.skipPlane,
-        skipBloodbank: agentAction.context.skipBloodbank,
-        skipSystemd: agentAction.context.skipSystemd,
-        quiet: normalized.quiet,
-        ...(normalized.agentContext ?? {}),
-        targetDir,
-        yes: true,
-        dryRun: false,
-      };
-      agentResult = await this.registry.initRecipe(
-        "hermes-agent",
-        { ...ctx, ...agentContext, targetDir, repoRoot: targetDir },
-        agentContext,
-      );
-      logs.push(...agentResult.logs);
-      errors.push(...agentResult.errors);
-      changedFiles.push(...agentResult.changedFiles);
-      phases.push(...agentResult.phases);
-    }
-
-    // A fresh scaffold and an agent-provisioning action both create state
-    // governed by this recipe. Close only ProjectRecipe's own checks here;
-    // existing syncs without such an action still require explicitly selected
-    // migrations and never receive an implicit migrate-all repair pass.
-    if (errors.length === 0 && (mode === "create" || agentResult)) {
-      const projectLifecycle = await this.initializeOwnedChecks({ ...ctx, targetDir, repoRoot: targetDir });
-      logs.push(...projectLifecycle.logs);
-      errors.push(...projectLifecycle.errors);
-      changedFiles.push(...projectLifecycle.changedFiles);
-      phases.push(...projectLifecycle.phases);
-      if (projectLifecycle.ok) {
-        try {
-          refreshPlanFromCanonicalManifest(plan);
-        } catch (error) {
-          errors.push(`project manifest refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-          phases.push({
-            id: "project.manifest-refresh",
-            status: "failed",
-            changedFiles: [],
-            message: errors.at(-1),
-          });
-        }
-      }
-    }
-
     let migrationReport: MigrationReport | undefined;
-    if (errors.length === 0 && normalized.selectedRuleIds?.length) {
-      migrationReport = publicMigration(await this.registry.migrateRules(
-        { ...ctx, targetDir, repoRoot: targetDir, dryRun: false },
-        normalized.selectedRuleIds,
-      ));
-      changedFiles.push(...migrationReport.changedFiles);
-      phases.push(...migrationReport.results.map((result) => ({
-        id: result.id,
-        status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
-        changedFiles: result.status === "applied" ? result.changedFiles : [],
-        message: result.summary,
-      } as RecipePhaseOutcome)));
-      errors.push(...migrationReport.results
-        .filter((result) => result.status === "blocked")
-        .map((result) => `${result.id}: ${result.summary}`));
-    }
+    let audit: AuditReport | undefined;
 
-    const audit = errors.length === 0
-      ? publicAudit(this.registry.auditRecipes({ ...ctx, targetDir, repoRoot: targetDir, dryRun: true }))
-      : undefined;
-    if (audit && !audit.ok) {
-      errors.push(...audit.rules
-        .filter((finding) => finding.status === "fail" || finding.status === "warn")
-        .map((finding) => `${finding.id}: ${finding.summary}`));
-    }
-    phases.push({
-      id: "project.audit",
-      status: audit?.ok ? "unchanged" : "failed",
-      changedFiles: [],
-      message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped",
-    });
+    try {
+      if (mode === "create") {
+        const preflight = this.runtime.preflightBmad(transactionContext);
+        phases.push({
+          id: "project.preflight:bmad",
+          status: preflight.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: preflight.ok ? "Pinned BMAD installer and sealed pack are available" : preflight.error,
+        });
+        if (!preflight.ok) errors.push(`BMAD preflight failed: ${preflight.error ?? "unknown error"}`);
+      }
 
-    if (errors.length === 0 && mode === "create") {
-      if (hasGitRepository(this.runtime, targetDir)) {
-        phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
-      } else {
-        const gitPath = join(targetDir, ".git");
-        for (const [args, label] of [
-          [["init", "--initial-branch=main"], "git init"],
-          [["config", "user.name", "pjangler"], "git config user.name"],
-          [["config", "user.email", "pjangler@localhost"], "git config user.email"],
-          [["add", "-A"], "git add"],
-          [["commit", "-m", "chore: initialize project"], "git commit"],
-        ] as const) {
-          const result = this.runtime.runGit(targetDir, args);
-          if (result.status !== 0) {
-            errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
-            phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
-            break;
-          }
-          if (label === "git init" && existsSync(gitPath)) changedFiles.push(gitPath);
-          logs.push(`${label}: ok`);
-        }
-        if (errors.length === 0) {
-          const repositoryReady = hasGitRepository(this.runtime, targetDir);
-          const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
-          if (!headReady) {
-            errors.push("git postcondition failed: repository or initial commit is missing");
-            phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync(gitPath) ? [gitPath] : [], message: errors.at(-1) });
-          } else {
-            if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
-            phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
+      const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
+      const filesystemPlan: ProjectInitPlan = {
+        ...plan,
+        actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent"),
+      };
+      const planBlocked = errors.length > 0;
+      const executed = !planBlocked && filesystemPlan.actions.length
+        ? await this.runtime.executePlan(filesystemPlan)
+        : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
+      logs.push(...executed.logs);
+      errors.push(...executed.errors);
+      changedFiles.push(...executed.changedFiles);
+      phases.push({
+        id: "project.plan",
+        status: planBlocked ? "skipped" : executed.ok ? (executed.changedFiles.length ? "changed" : "unchanged") : "failed",
+        changedFiles: executed.ok ? executed.changedFiles : [],
+        message: planBlocked ? "Project plan skipped after failed preflight" : executed.ok ? "Project plan executed" : executed.errors.join("; "),
+      });
+
+      if (errors.length === 0 && executed.ok && mode === "create") {
+        const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized);
+        logs.push(...dependencyResult.logs);
+        errors.push(...dependencyResult.errors);
+        changedFiles.push(...dependencyResult.changedFiles);
+        phases.push(...dependencyResult.phases);
+      }
+
+      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
+      if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
+        const agentContext: HermesAgentContext = {
+          targetRepo: agentAction.targetRepo,
+          role: agentAction.role,
+          agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
+          ticketProvider: plan.project.ticket_provider.type as "plane" | "trello",
+          local: agentAction.local,
+          force: Boolean(ctx.force),
+          skipTelegram: true,
+          skipEmail: true,
+          skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
+          skipPlane: agentAction.context.skipPlane,
+          skipBloodbank: agentAction.context.skipBloodbank,
+          skipSystemd: agentAction.context.skipSystemd,
+          quiet: normalized.quiet,
+          ...(normalized.agentContext ?? {}),
+          targetDir,
+          yes: true,
+          dryRun: false,
+        };
+        agentResult = await this.registry.initRecipe(
+          "hermes-agent",
+          { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir },
+          agentContext,
+        );
+        logs.push(...agentResult.logs);
+        errors.push(...agentResult.errors);
+        changedFiles.push(...agentResult.changedFiles);
+        phases.push(...agentResult.phases);
+      }
+
+      // A fresh scaffold and an agent-provisioning action both create state
+      // governed by this recipe. Close only ProjectRecipe's own checks here;
+      // existing syncs without such an action still require explicitly selected
+      // migrations and never receive an implicit migrate-all repair pass.
+      if (errors.length === 0 && (mode === "create" || agentResult)) {
+        const projectLifecycle = await this.initializeOwnedChecks(transactionContext);
+        logs.push(...projectLifecycle.logs);
+        errors.push(...projectLifecycle.errors);
+        changedFiles.push(...projectLifecycle.changedFiles);
+        phases.push(...projectLifecycle.phases);
+        if (projectLifecycle.ok) {
+          try {
+            refreshPlanFromCanonicalManifest(plan);
+          } catch (error) {
+            errors.push(`project manifest refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+            phases.push({
+              id: "project.manifest-refresh",
+              status: "failed",
+              changedFiles: [],
+              message: errors.at(-1),
+            });
           }
         }
       }
+
+      if (errors.length === 0 && normalized.selectedRuleIds?.length) {
+        migrationReport = publicMigration(await this.registry.migrateRules(
+          { ...transactionContext, dryRun: false },
+          normalized.selectedRuleIds,
+        ));
+        changedFiles.push(...migrationReport.changedFiles);
+        phases.push(...migrationReport.results.map((result) => ({
+          id: result.id,
+          status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
+          changedFiles: result.status === "applied" ? result.changedFiles : [],
+          message: result.summary,
+        } as RecipePhaseOutcome)));
+        errors.push(...migrationReport.results
+          .filter((result) => result.status === "blocked")
+          .map((result) => `${result.id}: ${result.summary}`));
+      }
+
+      audit = errors.length === 0
+        ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
+        : undefined;
+      if (audit && !audit.ok) {
+        errors.push(...audit.rules
+          .filter((finding) => finding.status === "fail" || finding.status === "warn")
+          .map((finding) => `${finding.id}: ${finding.summary}`));
+      }
+      phases.push({
+        id: "project.audit",
+        status: audit?.ok ? "unchanged" : "failed",
+        changedFiles: [],
+        message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped",
+      });
+
+      if (errors.length === 0 && mode === "create") {
+        if (hasGitRepository(this.runtime, targetDir)) {
+          phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
+        } else {
+          const gitPath = join(targetDir, ".git");
+          for (const { args, label, options } of [
+            { args: ["init", "--initial-branch=main"], label: "git init" },
+            { args: ["add", "-A"], label: "git add" },
+            {
+              args: ["commit", "--no-gpg-sign", "-m", "chore: initialize project"],
+              label: "git commit",
+              options: { env: BOOTSTRAP_GIT_IDENTITY },
+            },
+          ] as const) {
+            const result = this.runtime.runGit(targetDir, args, options);
+            if (result.status !== 0) {
+              errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
+              phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+              break;
+            }
+            if (label === "git init" && existsSync(gitPath)) changedFiles.push(gitPath);
+            logs.push(`${label}: ok`);
+          }
+          if (errors.length === 0) {
+            const repositoryReady = hasGitRepository(this.runtime, targetDir);
+            const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
+            if (!headReady) {
+              errors.push("git postcondition failed: repository or initial commit is missing");
+              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+            } else {
+              if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
+              phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
+            }
+          }
+        }
+      }
+
+      if (errors.length === 0 && registryActions.length) {
+        const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
+        const persisted = await this.runtime.executePlan(registryPlan);
+        logs.push(...persisted.logs);
+        errors.push(...persisted.errors);
+        changedFiles.push(...persisted.changedFiles);
+        phases.push({
+          id: "project.registry",
+          status: persisted.ok ? (persisted.changedFiles.length ? "changed" : "unchanged") : "failed",
+          changedFiles: persisted.ok ? persisted.changedFiles : [],
+          message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; "),
+        });
+      }
+    } catch (error) {
+      errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
+      phases.push({
+        id: "project.transaction",
+        status: "failed",
+        changedFiles: [],
+        message: errors.at(-1),
+      });
     }
 
-    if (errors.length === 0 && registryActions.length) {
-      const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
-      const persisted = await this.runtime.executePlan(registryPlan);
-      logs.push(...persisted.logs);
-      errors.push(...persisted.errors);
-      changedFiles.push(...persisted.changedFiles);
-      phases.push({
-        id: "project.registry",
-        status: persisted.ok ? (persisted.changedFiles.length ? "changed" : "unchanged") : "failed",
-        changedFiles: persisted.ok ? persisted.changedFiles : [],
-        message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; "),
-      });
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync(targetDir)) {
+      try {
+        rmSync(targetDir, { recursive: true, force: true });
+        changedFiles.length = 0;
+        logs.push(`Rolled back newly-created target: ${targetDir}`);
+        phases.push({
+          id: "project.rollback",
+          status: "changed",
+          changedFiles: [],
+          message: "Removed the newly-created target after transaction failure",
+        });
+      } catch (error) {
+        errors.push(`fresh-target rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+        phases.push({
+          id: "project.rollback",
+          status: "failed",
+          changedFiles: [],
+          message: errors.at(-1),
+        });
+      }
     }
 
     return {

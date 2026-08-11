@@ -15,14 +15,13 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const selectedBmadPack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
-    "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31",
-);
-const cleanup = [];
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjan-43-bmad-fixture-"));
+const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const cleanup = [bmadFixtureRoot];
 
 function makeHome(name) {
   const home = mkdtempSync(join(tmpdir(), `pjan-43-${name}-home-`));
@@ -54,6 +53,7 @@ function command(args, { cwd = root, home = makeHome("default"), extraEnv = {} }
       HOME: home,
       XDG_CACHE_HOME: join(home, ".cache"),
       PJ_BMAD_PACK_ROOT: selectedBmadPack,
+      PJ_PACK_ROOT_BMAD: selectedBmadPack,
       ...extraEnv,
     },
   });

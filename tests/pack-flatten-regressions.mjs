@@ -25,30 +25,31 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const selectedBmadPack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() || "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
-);
-const hermesBasePack = resolve(
-  process.env.PJ_PACK_ROOT_HERMES_BASE?.trim() || "/home/delorenj/code/skillex/packs/hermes-base/0.18.2"
-);
+const temporaries = [];
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-flatten-bmad-fixture-"));
+temporaries.push(bmadFixtureRoot);
+const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const explicitHermesBasePack = process.env.PJ_PACK_ROOT_HERMES_BASE?.trim();
+const explicitSkillexRepo = process.env.PJ_SKILLEX_REPO?.trim();
+const hermesBasePack = explicitHermesBasePack ? resolve(explicitHermesBasePack) : undefined;
 // The SSOT projection for the reference pack, committed in the skillex checkout
 // and regenerated with `skillex pack inventory <pack> --json`. Read here AND by
 // skillex's pytest suite, so the expected answer exists in exactly one file.
-const skillexRepo = resolve(process.env.PJ_SKILLEX_REPO?.trim() || "/home/delorenj/code/skillex");
-const goldenProjectionPath = join(
-  skillexRepo, "tests", "fixtures", "flatten-reference-hermes-base-0.18.2.json",
-);
-
-const temporaries = [];
+const skillexRepo = explicitSkillexRepo ? resolve(explicitSkillexRepo) : undefined;
+const goldenProjectionPath = skillexRepo
+  ? join(skillexRepo, "tests", "fixtures", "flatten-reference-hermes-base-0.18.2.json")
+  : undefined;
+const runHermesReferenceCheck = Boolean(hermesBasePack && goldenProjectionPath);
 
 function run(args, env) {
   const result = spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, PJ_PACK_ROOT_BMAD: selectedBmadPack, ...env },
   });
   if (result.status !== 0) {
     throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -60,7 +61,7 @@ function runAllowFailure(args, env) {
   const result = spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, PJ_PACK_ROOT_BMAD: selectedBmadPack, ...env },
   });
   if (!result.stdout.trim()) {
     throw new Error(`command produced no stdout: node ${cli} ${args.join(" ")}\nstderr:\n${result.stderr}`);
@@ -424,7 +425,7 @@ try {
   }
 
   // ---------------------------------------------------------------------------
-  // 7. The real reference pack, when this checkout carries it.
+  // 7. The real reference pack, when explicitly selected.
   //
   //    hermes-base/0.18.2 declares 18 entries: 4 already carry their own
   //    SKILL.md and 14 are containers. The descent resolves every SKILL.md root
@@ -437,9 +438,11 @@ try {
   //    suite reads too. Two suites keeping two private copies of this number is
   //    exactly how 67 (here) and 73 (there) stayed green side by side; there is
   //    now one copy, and `pack-flatten-cross-engine-regressions.mjs` proves all
-  //    three engines actually reproduce it.
+  //    enabled engines reproduce it (pjangler/sync always, Skillex explicitly).
   // ---------------------------------------------------------------------------
-  if (existsSync(join(hermesBasePack, "pack.toml")) && existsSync(goldenProjectionPath)) {
+  if (runHermesReferenceCheck) {
+    assert.equal(existsSync(join(hermesBasePack, "pack.toml")), true, `explicit Hermes pack is invalid: ${hermesBasePack}`);
+    assert.equal(existsSync(goldenProjectionPath), true, `explicit Skillex golden projection is missing: ${goldenProjectionPath}`);
     const repo = makeRepo("flatten-hermes-base");
     writeManifest(repo, { packs: [{ name: "hermes-base", version: "0.18.2" }], skills: [] });
     const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_HERMES_BASE: hermesBasePack };
@@ -511,7 +514,9 @@ try {
       "every hermes-base container resolves; nothing is reported as unreachable",
     );
   } else {
-    console.log(`hermes-base reference pack not present at ${hermesBasePack}; real-pack assertions skipped`);
+    console.log(
+      "optional Hermes reference assertions skipped; set both PJ_PACK_ROOT_HERMES_BASE and PJ_SKILLEX_REPO",
+    );
   }
 
   // ---------------------------------------------------------------------------

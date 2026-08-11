@@ -17,6 +17,7 @@ import {
   projectRegistryPath,
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
+import type { LifecycleContext } from "./recipes/types";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -58,6 +59,7 @@ function asText(payload: unknown) {
 async function executeRegisteredProjectPlan(
   plan: ReturnType<typeof planProjectInit>,
   agentContext?: Partial<HermesAgentContext>,
+  lifecycleOverrides: Partial<LifecycleContext> = {},
 ) {
   const projectInput: ProjectRecipeInput = {
     plan,
@@ -69,7 +71,13 @@ async function executeRegisteredProjectPlan(
   };
   return await recipeRegistry.initRecipe(
     "project",
-    lifecycleContext(plan.project.repo_path, false),
+    lifecycleContext(plan.project.repo_path, false, false, {
+      ...agentContext,
+      ...lifecycleOverrides,
+      force: lifecycleOverrides.force ?? agentContext?.force ?? plan.actions.some((action) => action.kind === "copier.copy.commonproject" && action.overwrite),
+      live: lifecycleOverrides.live ?? plan.live,
+      quiet: lifecycleOverrides.quiet ?? true,
+    }),
     projectInput,
   ) as ProjectRecipeResult;
 }
@@ -115,7 +123,7 @@ async function runRecipeWithCapture(recipeName: string, context: CommandContext)
     };
   }
   try {
-    const ctx = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context);
     const result = await recipeRegistry.initRecipe(recipeName, ctx, {});
     return { success: result.ok, logs: result.logs, errors: result.errors };
   } catch (err) {
@@ -311,7 +319,11 @@ server.registerTool(
         skipPlane: skipPlane || local,
         skipBloodbank: local,
         skipSystemd: local || process.platform === "darwin",
-      } : undefined);
+      } : undefined, {
+        force: overwrite,
+        live: input.live ?? false,
+        quiet: true,
+      });
       if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
 
       const agentResult = input.provisionAgent
@@ -377,7 +389,11 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(plan);
-      return asText(await executeRegisteredProjectPlan(plan));
+      return asText(await executeRegisteredProjectPlan(plan, undefined, {
+        force: input.force ?? false,
+        live: input.live ?? false,
+        quiet: true,
+      }));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }

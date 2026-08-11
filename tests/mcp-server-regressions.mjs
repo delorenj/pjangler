@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,6 +9,10 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const serverPath = resolve(root, "dist", "mcp-server.js");
 const mcpTmp = mkdtempSync(join(tmpdir(), "pjangler-mcp-registry-"));
+const fakeBin = join(mcpTmp, "bin");
+mkdirSync(fakeBin);
+writeFileSync(join(fakeBin, "copier"), "#!/bin/sh\nexit 97\n", "utf8");
+chmodSync(join(fakeBin, "copier"), 0o755);
 const sourceSkill = join(mcpTmp, "skills", "civilwar-letterifier");
 mkdirSync(sourceSkill, { recursive: true });
 writeFileSync(join(sourceSkill, "SKILL.md"), "---\nname: civilwar-letterifier\n---\n# Civil War Letterifier\n", "utf8");
@@ -17,7 +21,11 @@ const transport = new StdioClientTransport({
   command: "node",
   args: [serverPath],
   cwd: root,
-  env: { ...process.env, PJ_PROJECT_REGISTRY: join(mcpTmp, "projects.yaml") },
+  env: {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    PJ_PROJECT_REGISTRY: join(mcpTmp, "projects.yaml"),
+  },
 });
 const client = new Client({ name: "pjangler-mcp-regression", version: "1.0.0" });
 
@@ -86,6 +94,43 @@ try {
   const projectList = await client.callTool({ name: "pjangler_project_list", arguments: {} });
   const projectListPayload = JSON.parse(projectList.content[0].text);
   assert.deepEqual(projectListPayload.projects, {});
+
+  // PJAN-57: MCP recipe dispatch must preserve the caller's force flag.
+  const forceRecipeTarget = join(mcpTmp, "force-recipe");
+  mkdirSync(forceRecipeTarget);
+  const forceSentinel = '{"name":"keep-me"}\n';
+  writeFileSync(join(forceRecipeTarget, "package.json"), forceSentinel);
+  const noForceRecipe = await client.callTool({
+    name: "pjangler_run_recipe",
+    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: false },
+  });
+  assert.equal(noForceRecipe.isError, true, "MCP recipe without force must refuse existing output");
+  assert.equal(readFileSync(join(forceRecipeTarget, "package.json"), "utf8"), forceSentinel);
+  const forceRecipe = await client.callTool({
+    name: "pjangler_run_recipe",
+    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: true },
+  });
+  assert.notEqual(forceRecipe.isError, true, JSON.stringify(forceRecipe));
+  assert.equal(JSON.parse(readFileSync(join(forceRecipeTarget, "package.json"), "utf8")).name, "my-project");
+
+  // The Hermes dry-run exposes copier argv without performing external writes.
+  // With no existing role, --overwrite can only come from the MCP force input.
+  const hermesForceTarget = join(mcpTmp, "hermes-force");
+  mkdirSync(hermesForceTarget);
+  const hermesForced = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: { targetDir: hermesForceTarget, role: "pm", local: true, dryRun: true, force: true },
+  });
+  const hermesForcedPayload = JSON.parse(hermesForced.content[0].text);
+  assert.equal(hermesForcedPayload.success, true, JSON.stringify(hermesForcedPayload));
+  assert.match(hermesForcedPayload.logs.join("\n"), /copier .*--overwrite/, "MCP Hermes force must reach RunCopierTemplate");
+  const hermesUnforced = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: { targetDir: hermesForceTarget, role: "dev", local: true, dryRun: true, force: false },
+  });
+  const hermesUnforcedPayload = JSON.parse(hermesUnforced.content[0].text);
+  assert.equal(hermesUnforcedPayload.success, true, JSON.stringify(hermesUnforcedPayload));
+  assert.doesNotMatch(hermesUnforcedPayload.logs.join("\n"), /--overwrite/, "MCP Hermes no-force dispatch must remain non-overwriting");
 
   // PJAN-57: applying project registration to an existing Git repository goes
   // through ProjectRecipe but must not silently turn into migrate-all. The

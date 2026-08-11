@@ -40,16 +40,22 @@ function resolvePjanglerRoot(): string {
   return resolve(process.cwd());
 }
 
-export function lifecycleContext(repoArg: string | undefined, dryRun: boolean, acceptRegistryMatches = false): LifecycleContext {
+export function lifecycleContext(
+  repoArg: string | undefined,
+  dryRun: boolean,
+  acceptRegistryMatches = false,
+  overrides: Partial<LifecycleContext> = {},
+): LifecycleContext {
   const repoRoot = resolve(repoArg ?? process.cwd());
   return {
+    ...overrides,
     targetDir: repoRoot,
     repoRoot,
-    dryRun,
-    force: false,
-    pjanglerRoot: resolvePjanglerRoot(),
-    homeDir: homedir(),
-    acceptRegistryMatches,
+    dryRun: overrides.dryRun ?? dryRun,
+    force: overrides.force ?? false,
+    pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot(),
+    homeDir: overrides.homeDir ?? homedir(),
+    acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches,
   };
 }
 

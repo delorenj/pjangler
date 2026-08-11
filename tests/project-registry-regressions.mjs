@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
+import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
+let portableLifecycleEnv = {};
 
 function spawnCli(args, env, cwd = root) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...portableLifecycleEnv, ...env },
     maxBuffer: 10 * 1024 * 1024,
   });
 }
@@ -61,6 +63,16 @@ function git(args, cwd) {
 
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-project-registry-"));
 try {
+  const fixtureRoot = join(tmp, "bmad-fixtures");
+  portableLifecycleEnv = {
+    HOME: join(tmp, "isolated-home"),
+    XDG_CACHE_HOME: join(tmp, "isolated-home", ".cache"),
+    XDG_CONFIG_HOME: join(tmp, "isolated-home", ".config"),
+    PJ_BMAD_PACK_ROOT: createBmadPackFixture(fixtureRoot),
+    PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
+    npm_config_cache: join(tmp, "empty-npm-cache"),
+    npm_config_offline: "true",
+  };
   const projectSource = readFileSync(join(root, "src", "project", "index.ts"), "utf8");
   assert.doesNotMatch(projectSource, /CoachingAgentFramework/, "generic source-skill lookup must not hard-code project-local skill roots");
 
@@ -328,7 +340,6 @@ try {
     HOME: multiAgentHome,
     XDG_CONFIG_HOME: join(multiAgentHome, ".config"),
     HERMES_HOME: join(multiAgentHome, ".hermes"),
-    PJ_BMAD_PACK_ROOT: "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31",
   };
   const multiAgentFirst = JSON.parse(run([
     "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "pm", "--json",

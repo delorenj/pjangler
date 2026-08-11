@@ -100,6 +100,8 @@ export interface Context {
   dryRun: boolean;
   pjanglerRoot: string;
   homeDir: string;
+  /** Exact BMAD package version used by an in-flight fresh-project transaction. */
+  bmadVersionPin?: string;
   // PJAN-28: opt-in gate for mapping legacy committed skills into
   // .agents/skills.json. Absent/false => migrate only REPORTS the proposal.
   acceptRegistryMatches?: boolean;
@@ -2690,8 +2692,11 @@ function checkUnit(unit: string): { enabled: boolean; active: boolean } {
 // ---------------------------------------------------------------------------
 
 const BMAD_NPM_PACKAGE = "bmad-method";
-// pjangler always installs the `next` channel, so parity == what a fresh
-// install yields today. Change this one constant to retarget the whole toolchain.
+// Installer and Skillex pack are independently pinned artifacts. Their current
+// versions happen to match, but neither lifecycle is derived from the other.
+export const BMAD_INSTALLER_VERSION = "6.10.1-next.31";
+// Legacy BMAD currency checks continue to report the moving next channel; fresh
+// bootstrap uses the exact installer pin above so mutation is reproducible.
 const BMAD_TARGET_CHANNEL = "next";
 const BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1000; // 1h — mirrors the starship BMAD indicator cache
 const DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
@@ -2803,15 +2808,27 @@ function bmadProjectNameIssues(repoRoot: string): { paths: string[]; details: st
   return { paths: [...new Set(paths)].sort(), details };
 }
 
-function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
+interface BmadInstallerInvocation {
+  command: string;
+  prefixArgs: string[];
+}
+
+function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION): BmadInstallerInvocation {
+  const explicit = process.env.PJ_BMAD_INSTALLER?.trim();
+  if (explicit) return { command: resolve(explicit), prefixArgs: [] };
+  return {
+    command: "npx",
+    prefixArgs: ["-y", `${BMAD_NPM_PACKAGE}@${version}`],
+  };
+}
+
+function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
   // bmad-method treats a missing/falsy --modules under --yes as "installed +
   // defaults", which can silently add bmm. The installer-supported explicit
   // no-optional-modules representation is `--modules core`; core is mandatory
   // and the installer does not add defaults when the option is truthy.
   const installerModules = modules.length ? modules.join(",") : "core";
   return [
-    "-y",
-    `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
     "install",
     "--yes",
     "--directory",
@@ -2825,9 +2842,64 @@ function bmadInstallArgs(repoRoot: string, modules = selectedBmadModules(repoRoo
   ];
 }
 
+function bmadInstallDisplay(
+  repoRoot: string,
+  modules = selectedBmadModules(repoRoot),
+  version = BMAD_INSTALLER_VERSION,
+): string {
+  const invocation = bmadInstallerInvocation(version);
+  return [invocation.command, ...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)]
+    .join(" ")
+    .replace(BMAD_INSTALL_TOOLS.join(","), "...");
+}
+
+export interface BmadLifecyclePreflightResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Prove the exact fresh-project BMAD inputs before Copier can create a target.
+ * Pack validation is read-only and sealed; the installer probe either uses an
+ * explicit local executable or resolves the exact pinned npm version up front.
+ */
+export function preflightBmadLifecycle(ctx: Context): BmadLifecyclePreflightResult {
+  const packPlan = buildPackPlan(ctx, null);
+  if (packPlan.errors.length) {
+    return { ok: false, error: packPlan.errors.join("; ") };
+  }
+
+  const invocation = bmadInstallerInvocation();
+  const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (probe.status !== 0) {
+    const detail = String(probe.stderr || probe.stdout || probe.error?.message || "installer probe failed").trim();
+    return {
+      ok: false,
+      error: `Pinned BMAD installer ${BMAD_NPM_PACKAGE}@${BMAD_INSTALLER_VERSION} is unavailable: ${detail}`,
+    };
+  }
+  const versionOutput = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
+  const reportedVersions: string[] = versionOutput.match(/\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b/g) ?? [];
+  if (!reportedVersions.includes(BMAD_INSTALLER_VERSION)) {
+    return {
+      ok: false,
+      error: `BMAD installer version mismatch: expected ${BMAD_INSTALLER_VERSION}, received ${versionOutput.trim() || "no version output"}`,
+    };
+  }
+  return { ok: true };
+}
+
 /** Run the non-interactive BMAD installer/upgrader against `repoRoot`. */
-function runBmadInstall(repoRoot: string, modules = selectedBmadModules(repoRoot)): { ok: boolean; error?: string } {
-  const result = spawnSync("npx", bmadInstallArgs(repoRoot, modules), { encoding: "utf8" });
+function runBmadInstall(
+  repoRoot: string,
+  modules = selectedBmadModules(repoRoot),
+  version = BMAD_INSTALLER_VERSION,
+): { ok: boolean; error?: string } {
+  const invocation = bmadInstallerInvocation(version);
+  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
   if (result.status !== 0) {
     return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
   }
@@ -4806,7 +4878,7 @@ return [
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules)}`,
           ],
         };
       }
@@ -4875,8 +4947,9 @@ return [
         };
       }
 
-      const resolved = resolveBmadDistTags(ctx.homeDir);
-      const available = resolved?.distTags?.[BMAD_TARGET_CHANNEL];
+      const pinned = ctx.bmadVersionPin?.trim();
+      const resolved = pinned ? undefined : resolveBmadDistTags(ctx.homeDir);
+      const available = pinned ?? resolved?.distTags?.[BMAD_TARGET_CHANNEL];
       if (!available) {
         return {
           id: "bmad.version",
@@ -4888,27 +4961,32 @@ return [
         };
       }
 
-      const staleNote = resolved!.stale ? `  ${glyph.dot} cached` : "";
-      if (compareBmadVersions(installed, available) >= 0) {
+      const targetLabel = pinned ? `pinned ${available}` : `${BMAD_TARGET_CHANNEL} ${available}`;
+      const staleNote = resolved?.stale ? `  ${glyph.dot} cached` : "";
+      const comparison = compareBmadVersions(installed, available);
+      if (pinned ? comparison === 0 : comparison >= 0) {
         return {
           id: "bmad.version",
           title: "BMAD version currency",
           status: "pass",
-          summary: `BMAD ${installed} is current (${BMAD_TARGET_CHANNEL} ${available})${staleNote}`,
+          summary: `BMAD ${installed} is current (${targetLabel})${staleNote}`,
           details: [],
           fixable: false,
         };
       }
 
+      const pinnedMismatch = Boolean(pinned && comparison > 0);
       return {
         id: "bmad.version",
         title: "BMAD version currency",
         status: "warn",
-        summary: `BMAD ${installed} is behind ${BMAD_TARGET_CHANNEL} ${available} — upgrade available`,
+        summary: pinnedMismatch
+          ? `BMAD ${installed} does not match ${targetLabel}`
+          : `BMAD ${installed} is behind ${targetLabel} — upgrade available`,
         details: [
           `installed: ${installed}`,
-          `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
-          resolved!.distTags.latest ? `stable latest: ${resolved!.distTags.latest}` : "",
+          pinned ? `required transaction pin: ${available}` : `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+          !pinned && resolved?.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
           "run `pj migrate bmad.version` to upgrade",
         ].filter(Boolean),
         fixable: true,
@@ -4929,7 +5007,7 @@ return [
       }
 
       const installed = readInstalledBmadVersion(ctx.repoRoot);
-      const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+      const available = ctx.bmadVersionPin?.trim() ?? resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
       const manifestSelection = manifestBmadModules(ctx.repoRoot);
       if (manifestSelection.status === "invalid") {
@@ -4954,7 +5032,7 @@ return [
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
           changedFiles: [manifestPath],
           details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`,
+            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL)}`,
           ],
         };
       }
@@ -4962,7 +5040,7 @@ return [
       const preservedSkillsManifest = tryParseJson(
         safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
       );
-      const install = runBmadInstall(ctx.repoRoot, selectedModules);
+      const install = runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL);
       if (!install.ok) {
         return {
           id: finding.id,

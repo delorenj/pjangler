@@ -3,14 +3,18 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { provisionBmadSkills, type BmadProvisionHooks, type Context } from "../src/parity/index";
+import { BMAD_FIXTURE_SKILLS, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const pjanglerRoot = resolve(import.meta.dirname, "..");
-const sourcePack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() || "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
-);
-assert.equal(existsSync(sourcePack), true, `candidate pack missing: ${sourcePack}`);
 const temporary = mkdtempSync(join(tmpdir(), "pjangler-bmad-transaction-"));
+const sourcePack = createBmadPackFixture(join(temporary, "registry"));
 const previousPack = process.env.PJ_BMAD_PACK_ROOT;
+const previousGenericPack = process.env.PJ_PACK_ROOT_BMAD;
+
+function selectPack(pack: string): void {
+  process.env.PJ_BMAD_PACK_ROOT = pack;
+  process.env.PJ_PACK_ROOT_BMAD = pack;
+}
 
 function snapshot(path: string): unknown {
   if (!existsSync(path) && !lstatMaybe(path)) return ["missing"];
@@ -56,7 +60,7 @@ function fixture(label: string): { context: Context; pack: string; project: stri
 try {
   {
     const { context, pack, project } = fixture("link-failure");
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const before = snapshot(project);
     const hooks: BmadProvisionHooks = {
       createLink(target, link, index) {
@@ -72,7 +76,7 @@ try {
 
   {
     const { context, pack, project } = fixture("pack-mutation");
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const before = snapshot(project);
     const result = provisionBmadSkills(context, null, {
       afterPreflight() {
@@ -94,7 +98,7 @@ try {
     const manifest = join(agents, "skills.json");
     writeFileSync(manifest, "{malformed\n");
     chmodSync(manifest, 0o600);
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const before = snapshot(project);
     const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
     assert.equal(result.ok, false, JSON.stringify(result));
@@ -114,7 +118,7 @@ try {
     const outside = join(root, "outside-skills.json");
     writeFileSync(outside, '{"packs":[{"name":"outside","source":"file:///does/not/exist"}]}\n');
     symlinkSync(outside, join(agents, "skills.json"));
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const before = snapshot(project);
     const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
     assert.equal(result.ok, false, JSON.stringify(result));
@@ -126,7 +130,7 @@ try {
 
   {
     const { context, pack, project } = fixture("projection-mismatch");
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const before = snapshot(project);
     const result = provisionBmadSkills(context, null, {
       afterApply(_manifest, skills) {
@@ -142,7 +146,7 @@ try {
 
   {
     const { context, pack, project } = fixture("success");
-    process.env.PJ_BMAD_PACK_ROOT = pack;
+    selectPack(pack);
     const first = provisionBmadSkills(context);
     assert.equal(first.ok, true, JSON.stringify(first));
     const after = snapshot(project);
@@ -153,12 +157,17 @@ try {
     assert.deepEqual(second, { ok: true, changedFiles: [], packWarnings: [] });
     assert.deepEqual(snapshot(project), after, "successful rerun must be idempotent");
     const skills = join(project, ".agents", "skills");
-    assert.equal(readdirSync(skills).filter((name) => name.startsWith("bmad-")).length, 76);
+    assert.equal(
+      readdirSync(skills).filter((name) => name.startsWith("bmad-")).length,
+      BMAD_FIXTURE_SKILLS.length,
+    );
   }
 
   console.log("BMAD transactional projection regressions passed");
 } finally {
   if (previousPack === undefined) delete process.env.PJ_BMAD_PACK_ROOT;
   else process.env.PJ_BMAD_PACK_ROOT = previousPack;
+  if (previousGenericPack === undefined) delete process.env.PJ_PACK_ROOT_BMAD;
+  else process.env.PJ_PACK_ROOT_BMAD = previousGenericPack;
   rmSync(temporary, { recursive: true, force: true });
 }

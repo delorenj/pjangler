@@ -14,6 +14,7 @@ export interface LifecycleContext extends CommandContext {
   pjanglerRoot: string;
   homeDir: string;
   live?: boolean;
+  bmadVersionPin?: string;
   acceptRegistryMatches?: boolean;
 }
 

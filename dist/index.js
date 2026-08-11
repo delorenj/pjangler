@@ -2807,6 +2807,7 @@ function checkUnit(unit) {
   return { enabled, active };
 }
 var BMAD_NPM_PACKAGE = "bmad-method";
+var BMAD_INSTALLER_VERSION = "6.10.1-next.31";
 var BMAD_TARGET_CHANNEL = "next";
 var BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
@@ -2900,11 +2901,17 @@ function bmadProjectNameIssues(repoRoot) {
   }
   return { paths: [...new Set(paths)].sort(), details };
 }
-function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
+function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION) {
+  const explicit = process.env.PJ_BMAD_INSTALLER?.trim();
+  if (explicit) return { command: resolve3(explicit), prefixArgs: [] };
+  return {
+    command: "npx",
+    prefixArgs: ["-y", `${BMAD_NPM_PACKAGE}@${version}`]
+  };
+}
+function bmadInstallerArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
   const installerModules = modules.length ? modules.join(",") : "core";
   return [
-    "-y",
-    `${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL}`,
     "install",
     "--yes",
     "--directory",
@@ -2917,8 +2924,41 @@ function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
     `core.project_name=${canonicalBmadProjectName(repoRoot)}`
   ];
 }
-function runBmadInstall(repoRoot, modules = selectedBmadModules(repoRoot)) {
-  const result = spawnSync("npx", bmadInstallArgs(repoRoot, modules), { encoding: "utf8" });
+function bmadInstallDisplay(repoRoot, modules = selectedBmadModules(repoRoot), version = BMAD_INSTALLER_VERSION) {
+  const invocation = bmadInstallerInvocation(version);
+  return [invocation.command, ...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)].join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...");
+}
+function preflightBmadLifecycle(ctx) {
+  const packPlan = buildPackPlan(ctx, null);
+  if (packPlan.errors.length) {
+    return { ok: false, error: packPlan.errors.join("; ") };
+  }
+  const invocation = bmadInstallerInvocation();
+  const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
+    encoding: "utf8",
+    timeout: 3e4
+  });
+  if (probe.status !== 0) {
+    const detail = String(probe.stderr || probe.stdout || probe.error?.message || "installer probe failed").trim();
+    return {
+      ok: false,
+      error: `Pinned BMAD installer ${BMAD_NPM_PACKAGE}@${BMAD_INSTALLER_VERSION} is unavailable: ${detail}`
+    };
+  }
+  const versionOutput = `${probe.stdout ?? ""}
+${probe.stderr ?? ""}`;
+  const reportedVersions = versionOutput.match(/\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b/g) ?? [];
+  if (!reportedVersions.includes(BMAD_INSTALLER_VERSION)) {
+    return {
+      ok: false,
+      error: `BMAD installer version mismatch: expected ${BMAD_INSTALLER_VERSION}, received ${versionOutput.trim() || "no version output"}`
+    };
+  }
+  return { ok: true };
+}
+function runBmadInstall(repoRoot, modules = selectedBmadModules(repoRoot), version = BMAD_INSTALLER_VERSION) {
+  const invocation = bmadInstallerInvocation(version);
+  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
   if (result.status !== 0) {
     return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
   }
@@ -4636,7 +4676,7 @@ function createBmadChecks() {
             summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
             changedFiles,
             details: [
-              `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+              `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules)}`
             ]
           };
         }
@@ -4696,8 +4736,9 @@ function createBmadChecks() {
             fixable: false
           };
         }
-        const resolved = resolveBmadDistTags(ctx.homeDir);
-        const available = resolved?.distTags?.[BMAD_TARGET_CHANNEL];
+        const pinned = ctx.bmadVersionPin?.trim();
+        const resolved = pinned ? void 0 : resolveBmadDistTags(ctx.homeDir);
+        const available = pinned ?? resolved?.distTags?.[BMAD_TARGET_CHANNEL];
         if (!available) {
           return {
             id: "bmad.version",
@@ -4708,26 +4749,29 @@ function createBmadChecks() {
             fixable: false
           };
         }
-        const staleNote = resolved.stale ? `  ${glyph.dot} cached` : "";
-        if (compareBmadVersions(installed, available) >= 0) {
+        const targetLabel = pinned ? `pinned ${available}` : `${BMAD_TARGET_CHANNEL} ${available}`;
+        const staleNote = resolved?.stale ? `  ${glyph.dot} cached` : "";
+        const comparison = compareBmadVersions(installed, available);
+        if (pinned ? comparison === 0 : comparison >= 0) {
           return {
             id: "bmad.version",
             title: "BMAD version currency",
             status: "pass",
-            summary: `BMAD ${installed} is current (${BMAD_TARGET_CHANNEL} ${available})${staleNote}`,
+            summary: `BMAD ${installed} is current (${targetLabel})${staleNote}`,
             details: [],
             fixable: false
           };
         }
+        const pinnedMismatch = Boolean(pinned && comparison > 0);
         return {
           id: "bmad.version",
           title: "BMAD version currency",
           status: "warn",
-          summary: `BMAD ${installed} is behind ${BMAD_TARGET_CHANNEL} ${available} \u2014 upgrade available`,
+          summary: pinnedMismatch ? `BMAD ${installed} does not match ${targetLabel}` : `BMAD ${installed} is behind ${targetLabel} \u2014 upgrade available`,
           details: [
             `installed: ${installed}`,
-            `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
-            resolved.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
+            pinned ? `required transaction pin: ${available}` : `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+            !pinned && resolved?.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
             "run `pj migrate bmad.version` to upgrade"
           ].filter(Boolean),
           fixable: true
@@ -4745,7 +4789,7 @@ function createBmadChecks() {
           };
         }
         const installed = readInstalledBmadVersion(ctx.repoRoot);
-        const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+        const available = ctx.bmadVersionPin?.trim() ?? resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
         const manifestPath = join3(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
         const manifestSelection = manifestBmadModules(ctx.repoRoot);
         if (manifestSelection.status === "invalid") {
@@ -4767,14 +4811,14 @@ function createBmadChecks() {
             summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
             changedFiles: [manifestPath],
             details: [
-              `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+              `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL)}`
             ]
           };
         }
         const preservedSkillsManifest = tryParseJson(
           safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
         );
-        const install = runBmadInstall(ctx.repoRoot, selectedModules);
+        const install = runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL);
         if (!install.ok) {
           return {
             id: finding.id,
@@ -6734,7 +6778,7 @@ var NodeRecipe = class extends Recipe {
 
 // src/recipes/ProjectRecipe.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync9, readFileSync as readFileSync8 } from "node:fs";
+import { existsSync as existsSync9, readFileSync as readFileSync8, rmSync as rmSync3 } from "node:fs";
 import { join as join11 } from "node:path";
 
 // src/project/index.ts
@@ -7763,10 +7807,21 @@ function isRecord(value) {
 }
 
 // src/recipes/ProjectRecipe.ts
+var BOOTSTRAP_GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: "Pjangler Lifecycle",
+  GIT_AUTHOR_EMAIL: "pjangler@localhost.invalid",
+  GIT_COMMITTER_NAME: "Pjangler Lifecycle",
+  GIT_COMMITTER_EMAIL: "pjangler@localhost.invalid"
+};
 var PRODUCTION_RUNTIME = {
   executePlan: executeProjectInitPlan,
-  runGit(cwd, args) {
-    const result = spawnSync7("git", [...args], { cwd, encoding: "utf8" });
+  preflightBmad: preflightBmadLifecycle,
+  runGit(cwd, args, options) {
+    const result = spawnSync7("git", [...args], {
+      cwd,
+      encoding: "utf8",
+      env: options?.env ? { ...process.env, ...options.env } : process.env
+    });
     return {
       status: result.status,
       stdout: result.stdout ?? "",
@@ -7858,151 +7913,203 @@ var ProjectRecipe = class extends Recipe {
     const logs = [];
     const errors = [];
     const changedFiles = [];
-    const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
-    const filesystemPlan = {
-      ...plan,
-      actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent")
+    const targetExistedAtStart = existsSync9(targetDir);
+    const transactionContext = {
+      ...ctx,
+      targetDir,
+      repoRoot: targetDir,
+      bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin
     };
-    const executed = filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: true, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
-    logs.push(...executed.logs);
-    errors.push(...executed.errors);
-    changedFiles.push(...executed.changedFiles);
-    phases.push({
-      id: "project.plan",
-      status: executed.ok ? executed.changedFiles.length ? "changed" : "unchanged" : "failed",
-      changedFiles: executed.ok ? executed.changedFiles : [],
-      message: executed.ok ? "Project plan executed" : executed.errors.join("; ")
-    });
-    if (executed.ok && mode === "create") {
-      const dependencyResult = await this.registry.initDependencies(this.metadata.id, { ...ctx, targetDir, repoRoot: targetDir }, normalized);
-      logs.push(...dependencyResult.logs);
-      errors.push(...dependencyResult.errors);
-      changedFiles.push(...dependencyResult.changedFiles);
-      phases.push(...dependencyResult.phases);
-    }
     let agentResult;
-    const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
-    if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
-      const agentContext = {
-        targetRepo: agentAction.targetRepo,
-        role: agentAction.role,
-        agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
-        ticketProvider: plan.project.ticket_provider.type,
-        local: agentAction.local,
-        force: Boolean(ctx.force),
-        skipTelegram: true,
-        skipEmail: true,
-        skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
-        skipPlane: agentAction.context.skipPlane,
-        skipBloodbank: agentAction.context.skipBloodbank,
-        skipSystemd: agentAction.context.skipSystemd,
-        quiet: normalized.quiet,
-        ...normalized.agentContext ?? {},
-        targetDir,
-        yes: true,
-        dryRun: false
-      };
-      agentResult = await this.registry.initRecipe(
-        "hermes-agent",
-        { ...ctx, ...agentContext, targetDir, repoRoot: targetDir },
-        agentContext
-      );
-      logs.push(...agentResult.logs);
-      errors.push(...agentResult.errors);
-      changedFiles.push(...agentResult.changedFiles);
-      phases.push(...agentResult.phases);
-    }
-    if (errors.length === 0 && (mode === "create" || agentResult)) {
-      const projectLifecycle = await this.initializeOwnedChecks({ ...ctx, targetDir, repoRoot: targetDir });
-      logs.push(...projectLifecycle.logs);
-      errors.push(...projectLifecycle.errors);
-      changedFiles.push(...projectLifecycle.changedFiles);
-      phases.push(...projectLifecycle.phases);
-      if (projectLifecycle.ok) {
-        try {
-          refreshPlanFromCanonicalManifest(plan);
-        } catch (error) {
-          errors.push(`project manifest refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-          phases.push({
-            id: "project.manifest-refresh",
-            status: "failed",
-            changedFiles: [],
-            message: errors.at(-1)
-          });
-        }
-      }
-    }
     let migrationReport;
-    if (errors.length === 0 && normalized.selectedRuleIds?.length) {
-      migrationReport = publicMigration(await this.registry.migrateRules(
-        { ...ctx, targetDir, repoRoot: targetDir, dryRun: false },
-        normalized.selectedRuleIds
-      ));
-      changedFiles.push(...migrationReport.changedFiles);
-      phases.push(...migrationReport.results.map((result) => ({
-        id: result.id,
-        status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
-        changedFiles: result.status === "applied" ? result.changedFiles : [],
-        message: result.summary
-      })));
-      errors.push(...migrationReport.results.filter((result) => result.status === "blocked").map((result) => `${result.id}: ${result.summary}`));
-    }
-    const audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...ctx, targetDir, repoRoot: targetDir, dryRun: true })) : void 0;
-    if (audit && !audit.ok) {
-      errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
-    }
-    phases.push({
-      id: "project.audit",
-      status: audit?.ok ? "unchanged" : "failed",
-      changedFiles: [],
-      message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped"
-    });
-    if (errors.length === 0 && mode === "create") {
-      if (hasGitRepository(this.runtime, targetDir)) {
-        phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
-      } else {
-        const gitPath = join11(targetDir, ".git");
-        for (const [args, label] of [
-          [["init", "--initial-branch=main"], "git init"],
-          [["config", "user.name", "pjangler"], "git config user.name"],
-          [["config", "user.email", "pjangler@localhost"], "git config user.email"],
-          [["add", "-A"], "git add"],
-          [["commit", "-m", "chore: initialize project"], "git commit"]
-        ]) {
-          const result = this.runtime.runGit(targetDir, args);
-          if (result.status !== 0) {
-            errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
-            phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
-            break;
-          }
-          if (label === "git init" && existsSync9(gitPath)) changedFiles.push(gitPath);
-          logs.push(`${label}: ok`);
-        }
-        if (errors.length === 0) {
-          const repositoryReady = hasGitRepository(this.runtime, targetDir);
-          const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
-          if (!headReady) {
-            errors.push("git postcondition failed: repository or initial commit is missing");
-            phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync9(gitPath) ? [gitPath] : [], message: errors.at(-1) });
-          } else {
-            if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
-            phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
+    let audit;
+    try {
+      if (mode === "create") {
+        const preflight = this.runtime.preflightBmad(transactionContext);
+        phases.push({
+          id: "project.preflight:bmad",
+          status: preflight.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: preflight.ok ? "Pinned BMAD installer and sealed pack are available" : preflight.error
+        });
+        if (!preflight.ok) errors.push(`BMAD preflight failed: ${preflight.error ?? "unknown error"}`);
+      }
+      const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
+      const filesystemPlan = {
+        ...plan,
+        actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent")
+      };
+      const planBlocked = errors.length > 0;
+      const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
+      logs.push(...executed.logs);
+      errors.push(...executed.errors);
+      changedFiles.push(...executed.changedFiles);
+      phases.push({
+        id: "project.plan",
+        status: planBlocked ? "skipped" : executed.ok ? executed.changedFiles.length ? "changed" : "unchanged" : "failed",
+        changedFiles: executed.ok ? executed.changedFiles : [],
+        message: planBlocked ? "Project plan skipped after failed preflight" : executed.ok ? "Project plan executed" : executed.errors.join("; ")
+      });
+      if (errors.length === 0 && executed.ok && mode === "create") {
+        const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized);
+        logs.push(...dependencyResult.logs);
+        errors.push(...dependencyResult.errors);
+        changedFiles.push(...dependencyResult.changedFiles);
+        phases.push(...dependencyResult.phases);
+      }
+      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
+      if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
+        const agentContext = {
+          targetRepo: agentAction.targetRepo,
+          role: agentAction.role,
+          agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
+          ticketProvider: plan.project.ticket_provider.type,
+          local: agentAction.local,
+          force: Boolean(ctx.force),
+          skipTelegram: true,
+          skipEmail: true,
+          skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
+          skipPlane: agentAction.context.skipPlane,
+          skipBloodbank: agentAction.context.skipBloodbank,
+          skipSystemd: agentAction.context.skipSystemd,
+          quiet: normalized.quiet,
+          ...normalized.agentContext ?? {},
+          targetDir,
+          yes: true,
+          dryRun: false
+        };
+        agentResult = await this.registry.initRecipe(
+          "hermes-agent",
+          { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir },
+          agentContext
+        );
+        logs.push(...agentResult.logs);
+        errors.push(...agentResult.errors);
+        changedFiles.push(...agentResult.changedFiles);
+        phases.push(...agentResult.phases);
+      }
+      if (errors.length === 0 && (mode === "create" || agentResult)) {
+        const projectLifecycle = await this.initializeOwnedChecks(transactionContext);
+        logs.push(...projectLifecycle.logs);
+        errors.push(...projectLifecycle.errors);
+        changedFiles.push(...projectLifecycle.changedFiles);
+        phases.push(...projectLifecycle.phases);
+        if (projectLifecycle.ok) {
+          try {
+            refreshPlanFromCanonicalManifest(plan);
+          } catch (error) {
+            errors.push(`project manifest refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+            phases.push({
+              id: "project.manifest-refresh",
+              status: "failed",
+              changedFiles: [],
+              message: errors.at(-1)
+            });
           }
         }
       }
-    }
-    if (errors.length === 0 && registryActions.length) {
-      const registryPlan = { ...plan, actions: registryActions };
-      const persisted = await this.runtime.executePlan(registryPlan);
-      logs.push(...persisted.logs);
-      errors.push(...persisted.errors);
-      changedFiles.push(...persisted.changedFiles);
+      if (errors.length === 0 && normalized.selectedRuleIds?.length) {
+        migrationReport = publicMigration(await this.registry.migrateRules(
+          { ...transactionContext, dryRun: false },
+          normalized.selectedRuleIds
+        ));
+        changedFiles.push(...migrationReport.changedFiles);
+        phases.push(...migrationReport.results.map((result) => ({
+          id: result.id,
+          status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
+          changedFiles: result.status === "applied" ? result.changedFiles : [],
+          message: result.summary
+        })));
+        errors.push(...migrationReport.results.filter((result) => result.status === "blocked").map((result) => `${result.id}: ${result.summary}`));
+      }
+      audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
+      if (audit && !audit.ok) {
+        errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
+      }
       phases.push({
-        id: "project.registry",
-        status: persisted.ok ? persisted.changedFiles.length ? "changed" : "unchanged" : "failed",
-        changedFiles: persisted.ok ? persisted.changedFiles : [],
-        message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; ")
+        id: "project.audit",
+        status: audit?.ok ? "unchanged" : "failed",
+        changedFiles: [],
+        message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped"
       });
+      if (errors.length === 0 && mode === "create") {
+        if (hasGitRepository(this.runtime, targetDir)) {
+          phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
+        } else {
+          const gitPath = join11(targetDir, ".git");
+          for (const { args, label, options } of [
+            { args: ["init", "--initial-branch=main"], label: "git init" },
+            { args: ["add", "-A"], label: "git add" },
+            {
+              args: ["commit", "--no-gpg-sign", "-m", "chore: initialize project"],
+              label: "git commit",
+              options: { env: BOOTSTRAP_GIT_IDENTITY }
+            }
+          ]) {
+            const result = this.runtime.runGit(targetDir, args, options);
+            if (result.status !== 0) {
+              errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
+              phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+              break;
+            }
+            if (label === "git init" && existsSync9(gitPath)) changedFiles.push(gitPath);
+            logs.push(`${label}: ok`);
+          }
+          if (errors.length === 0) {
+            const repositoryReady = hasGitRepository(this.runtime, targetDir);
+            const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
+            if (!headReady) {
+              errors.push("git postcondition failed: repository or initial commit is missing");
+              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync9(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+            } else {
+              if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
+              phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
+            }
+          }
+        }
+      }
+      if (errors.length === 0 && registryActions.length) {
+        const registryPlan = { ...plan, actions: registryActions };
+        const persisted = await this.runtime.executePlan(registryPlan);
+        logs.push(...persisted.logs);
+        errors.push(...persisted.errors);
+        changedFiles.push(...persisted.changedFiles);
+        phases.push({
+          id: "project.registry",
+          status: persisted.ok ? persisted.changedFiles.length ? "changed" : "unchanged" : "failed",
+          changedFiles: persisted.ok ? persisted.changedFiles : [],
+          message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; ")
+        });
+      }
+    } catch (error) {
+      errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
+      phases.push({
+        id: "project.transaction",
+        status: "failed",
+        changedFiles: [],
+        message: errors.at(-1)
+      });
+    }
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync9(targetDir)) {
+      try {
+        rmSync3(targetDir, { recursive: true, force: true });
+        changedFiles.length = 0;
+        logs.push(`Rolled back newly-created target: ${targetDir}`);
+        phases.push({
+          id: "project.rollback",
+          status: "changed",
+          changedFiles: [],
+          message: "Removed the newly-created target after transaction failure"
+        });
+      } catch (error) {
+        errors.push(`fresh-target rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+        phases.push({
+          id: "project.rollback",
+          status: "failed",
+          changedFiles: [],
+          message: errors.at(-1)
+        });
+      }
     }
     return {
       recipeId: this.metadata.id,
@@ -8229,16 +8336,17 @@ function resolvePjanglerRoot2() {
   }
   return resolve6(process.cwd());
 }
-function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false) {
+function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
   const repoRoot = resolve6(repoArg ?? process.cwd());
   return {
+    ...overrides,
     targetDir: repoRoot,
     repoRoot,
-    dryRun,
-    force: false,
-    pjanglerRoot: resolvePjanglerRoot2(),
-    homeDir: homedir4(),
-    acceptRegistryMatches
+    dryRun: overrides.dryRun ?? dryRun,
+    force: overrides.force ?? false,
+    pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot2(),
+    homeDir: overrides.homeDir ?? homedir4(),
+    acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches
   };
 }
 function getParityRuleIds() {
@@ -9092,7 +9200,11 @@ async function runRecipeSubsystem(name, options) {
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
-    const result = await recipeRegistry.initRecipe(name, lifecycleContext(context.targetDir, Boolean(context.dryRun)), {});
+    const result = await recipeRegistry.initRecipe(
+      name,
+      lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context),
+      {}
+    );
     for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
     for (const error of result.errors) console.error(`${xmark} ${error}`);
     if (!result.ok) process.exitCode = 1;
@@ -9209,7 +9321,11 @@ async function runProjectInit(name, options) {
     };
     const result = await recipeRegistry.initRecipe(
       "project",
-      lifecycleContext(target.targetDir, false),
+      lifecycleContext(target.targetDir, false, false, {
+        force: options.force ?? false,
+        live: options.live ?? false,
+        quiet: Boolean(options.json)
+      }),
       projectInput
     );
     if (options.json) {
@@ -9495,7 +9611,7 @@ program.command("hermes-agent").alias("hermes").description("Provision the PM ag
     skipSystemd: options.skipSystemd ?? (local || isDarwin)
   };
   try {
-    const lifecycle = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+    const lifecycle = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context);
     const result = await recipeRegistry.initRecipe("hermes-agent", lifecycle, {});
     for (const line of result.logs) console.log(line);
     for (const error of result.errors) console.error(`${xmark} ${error}`);

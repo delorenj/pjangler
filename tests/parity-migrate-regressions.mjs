@@ -3,16 +3,28 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const selectedBmadPack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
-    "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
-);
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
+const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+
+function childEnv(env = {}) {
+  const merged = {
+    ...process.env,
+    PJ_BMAD_PACK_ROOT: selectedBmadPack,
+    PJ_PACK_ROOT_BMAD: selectedBmadPack,
+    ...env,
+  };
+  if (env.PJ_BMAD_PACK_ROOT && !env.PJ_PACK_ROOT_BMAD) {
+    merged.PJ_PACK_ROOT_BMAD = env.PJ_BMAD_PACK_ROOT;
+  }
+  return merged;
+}
 
 function run(args, cwd = root, env) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: childEnv(env) });
   if (result.status !== 0) {
     throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
@@ -20,7 +32,7 @@ function run(args, cwd = root, env) {
 }
 
 function runAllowFailure(args, cwd = root, env) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: childEnv(env) });
   if (!result.stdout.trim()) {
     throw new Error(`command produced no stdout: node ${cli} ${args.join(" ")}\nstderr:\n${result.stderr}`);
   }
@@ -28,7 +40,7 @@ function runAllowFailure(args, cwd = root, env) {
 }
 
 function runExpectError(args, cwd = root) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: childEnv() });
   if (result.status === 0) {
     throw new Error(`expected command to fail: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
   }
@@ -434,7 +446,11 @@ run = "echo still here"
     assert.equal(manifest.registry, "https://github.com/delorenj/skillex.git");
     assert.deepEqual(manifest.skills[0], { name: "example-skill", source: `file://${join(repo, ".agents", "skills", "example-skill")}` }, "non-BMAD manifest entries must be preserved");
     assert.ok(manifest.skills.length > 1, "migrate should record the pinned BMAD pack entries");
-    assert.ok(manifest.skills.slice(1).every((entry) => entry.name.startsWith("bmad-") && entry.source.startsWith("file://") && entry.source.includes("/packs/bmad/6.10.1-next.31/")));
+    assert.ok(
+      manifest.skills.slice(1).every(
+        (entry) => entry.name.startsWith("bmad-") && entry.source === `file://${join(selectedBmadPack, entry.name)}`,
+      ),
+    );
     assert.equal(existsSync(join(repo, ".agents", "skills", "example-skill", "SKILL.md")), true, "non-BMAD skill trees must remain intact");
     assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "copied BMAD trees must be replaced with symlinks");
     assert.equal(
@@ -782,4 +798,5 @@ exec "$REAL_GIT" "$@"
   console.log("parity migrate regressions passed");
 } finally {
   for (const repo of repos) rmSync(repo, { recursive: true, force: true });
+  rmSync(bmadFixtureRoot, { recursive: true, force: true });
 }

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { Command, type InvokeResult } from "../src/commands/Command";
 import { Recipe } from "../src/recipes/Recipe";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
 import { recipeRegistry } from "../src/recipes/catalog";
 import { RecipeRegistry } from "../src/recipes/registry";
+import { lifecycleContext } from "../src/parity/index";
+import { BMAD_INSTALLER_VERSION, createBmadChecks } from "../src/parity/rules";
 import type {
   LifecycleAuditFinding,
   LifecycleContext,
@@ -28,6 +31,60 @@ const ctx = (repoRoot: string): LifecycleContext => ({
   dryRun: false,
   force: false,
 });
+
+{
+  const overrides = lifecycleContext(tmpdir(), true, false, {
+    force: true,
+    dryRun: false,
+    quiet: true,
+    live: true,
+    acceptRegistryMatches: true,
+  });
+  assert.equal(overrides.force, true);
+  assert.equal(overrides.dryRun, false);
+  assert.equal(overrides.quiet, true);
+  assert.equal(overrides.live, true);
+  assert.equal(overrides.acceptRegistryMatches, true);
+}
+
+{
+  const repo = mkdtempSync(join(tmpdir(), "pjan-57-bmad-pin-"));
+  const homeDir = join(repo, "home");
+  mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
+  mkdirSync(join(homeDir, ".cache", "pjangler"), { recursive: true });
+  writeFileSync(
+    join(repo, "_bmad", "_config", "manifest.yaml"),
+    `installation:\n  version: ${BMAD_INSTALLER_VERSION}\n`,
+  );
+  writeFileSync(
+    join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { next: "99.0.0-next.1" } }),
+  );
+  const versionCheck = createBmadChecks().find((candidate) => candidate.id === "bmad.version");
+  assert.ok(versionCheck);
+  const pinned = versionCheck.audit({
+    repoRoot: repo,
+    pjanglerRoot: root,
+    homeDir,
+    dryRun: true,
+    bmadVersionPin: BMAD_INSTALLER_VERSION,
+  });
+  assert.equal(pinned.status, "pass", "fresh transactions compare BMAD against their exact preflight pin");
+  assert.match(pinned.summary, /pinned/);
+  const movingChannel = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  assert.equal(movingChannel.status, "warn", "standalone legacy audits must retain moving-next currency behavior");
+  writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 100.0.0\n");
+  const aheadOfPin = versionCheck.audit({
+    repoRoot: repo,
+    pjanglerRoot: root,
+    homeDir,
+    dryRun: true,
+    bmadVersionPin: BMAD_INSTALLER_VERSION,
+  });
+  assert.equal(aheadOfPin.status, "warn", "an exact transaction pin must reject unexpectedly newer installer output");
+  assert.match(aheadOfPin.summary, /does not match pinned/);
+  rmSync(repo, { recursive: true, force: true });
+}
 
 const initResult = (id: string, ok = true): RecipeInitResult => ({
   recipeId: id,
@@ -195,6 +252,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
   const gitCalls: string[][] = [];
   const runtime: ProjectRecipeRuntime = {
     async executePlan(plan) { return { ok: true, plan, logs: [], errors: [], changedFiles: [] }; },
+    preflightBmad() { return { ok: true }; },
     runGit(_cwd, args) {
       gitCalls.push([...args]);
       return { status: args[0] === "commit" ? 1 : 0, stdout: "", stderr: args[0] === "commit" ? "injected commit failure" : "" };
@@ -207,7 +265,65 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /injected commit failure/);
   assert.equal(gitCalls.filter((call) => call[0] === "init").length, 1, "ProjectRecipe owns Git initialization exactly once");
+  assert.equal(gitCalls.some((call) => call[0] === "config"), false, "bootstrap must not mutate repository-local Git identity");
   rmSync(fixture.dir, { recursive: true, force: true });
+}
+
+{
+  const fixture = projectFixture();
+  writeFileSync(join(fixture.dir, "preexisting-sentinel.txt"), "keep\n");
+  let planExecuted = false;
+  let observedPin: string | undefined;
+  const runtime: ProjectRecipeRuntime = {
+    async executePlan(plan) {
+      planExecuted = true;
+      return { ok: true, plan, logs: [], errors: [], changedFiles: [] };
+    },
+    preflightBmad(context) {
+      observedPin = context.bmadVersionPin;
+      return { ok: false, error: "fixture installer unavailable" };
+    },
+    runGit() { return { status: 0, stdout: "", stderr: "" }; },
+  };
+  const registry = new RecipeRegistry([
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+  ]);
+  const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
+  assert.equal(result.ok, false);
+  assert.equal(observedPin, BMAD_INSTALLER_VERSION, "fresh transaction preflight must receive the exact installer pin");
+  assert.equal(planExecuted, false, "fresh-project preflight must run before the filesystem plan");
+  assert.equal(readFileSync(join(fixture.dir, "preexisting-sentinel.txt"), "utf8"), "keep\n", "a pre-existing target must never be removed on preflight failure");
+  rmSync(fixture.dir, { recursive: true, force: true });
+}
+
+{
+  const fixture = projectFixture();
+  rmSync(fixture.dir, { recursive: true, force: true });
+  fixture.plan.actions = [{
+    kind: "project.write-manifest",
+    path: join(fixture.dir, ".project.json"),
+    manifest: fixture.plan.manifest,
+  }];
+  const events: string[] = [];
+  const runtime: ProjectRecipeRuntime = {
+    async executePlan(plan) {
+      events.push("execute");
+      mkdirSync(fixture.dir, { recursive: true });
+      const partial = join(fixture.dir, "partial.txt");
+      writeFileSync(partial, "partial\n");
+      return { ok: false, plan, logs: [], errors: ["injected downstream failure"], changedFiles: [partial] };
+    },
+    preflightBmad() { events.push("preflight"); return { ok: true }; },
+    runGit() { return { status: 0, stdout: "", stderr: "" }; },
+  };
+  const registry = new RecipeRegistry([
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+  ]);
+  const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(events, ["preflight", "execute"]);
+  assert.equal(existsSync(fixture.dir), false, "a failed transaction must roll back only the newly-created target");
+  assert.deepEqual(result.changedFiles, [], "rolled-back paths must not survive in changedFiles");
 }
 
 {
@@ -216,6 +332,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
   const failingAudit = check("dependency.audit", "fail", false);
   const runtime: ProjectRecipeRuntime = {
     async executePlan(plan) { return { ok: true, plan, logs: [], errors: [], changedFiles: [] }; },
+    preflightBmad() { return { ok: true }; },
     runGit() { gitCalls++; return { status: 0, stdout: "", stderr: "" }; },
   };
   const registry = new RecipeRegistry([
@@ -231,6 +348,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
   const fixture = projectFixture();
   const runtime: ProjectRecipeRuntime = {
     async executePlan(plan) { return { ok: true, plan, logs: [], errors: [], changedFiles: [] }; },
+    preflightBmad() { return { ok: true }; },
     // A successful process status is insufficient: this fake deliberately
     // creates neither .git nor HEAD so the production postcondition must fail.
     runGit() { return { status: 0, stdout: "", stderr: "" }; },
@@ -241,6 +359,48 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /git postcondition failed/, "Git success requires a real repository and HEAD");
+  rmSync(fixture.dir, { recursive: true, force: true });
+}
+
+{
+  const fixture = projectFixture();
+  const isolatedGitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  const runtime: ProjectRecipeRuntime = {
+    async executePlan(plan) { return { ok: true, plan, logs: [], errors: [], changedFiles: [] }; },
+    preflightBmad() { return { ok: true }; },
+    runGit(cwd, args, options?: { env?: NodeJS.ProcessEnv }) {
+      const result = spawnSync("git", [...args], {
+        cwd,
+        encoding: "utf8",
+        env: { ...isolatedGitEnv, ...(options?.env ?? {}) },
+      });
+      return {
+        status: result.status,
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        error: result.error,
+      };
+    },
+  };
+  const registry = new RecipeRegistry([
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+  ]);
+  const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const identity = runtime.runGit(fixture.dir, ["log", "-1", "--format=%an <%ae>%n%cn <%ce>"]).stdout.trim();
+  assert.equal(
+    identity,
+    "Pjangler Lifecycle <pjangler@localhost.invalid>\nPjangler Lifecycle <pjangler@localhost.invalid>",
+    "bootstrap commit must use deterministic non-routable author and committer identities",
+  );
+  for (const key of ["user.name", "user.email"]) {
+    const local = runtime.runGit(fixture.dir, ["config", "--local", "--get", key]);
+    assert.notEqual(local.status, 0, `${key} must not persist in repository-local Git config`);
+  }
   rmSync(fixture.dir, { recursive: true, force: true });
 }
 

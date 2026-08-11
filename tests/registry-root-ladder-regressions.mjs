@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 /**
  * Contract section 2 step 3 is an ORDERED LADDER of registry checkouts, not a
@@ -38,10 +39,10 @@ const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const CACHE_DIR_NAME = "https://github.com/delorenj/skillex.git".replace(/[^a-zA-Z0-9]/g, "_");
 // The implicit BMAD pin runs whenever a manifest does not declare `bmad`; point
-// it at the real pinned pack so these fixtures exercise the ladder, not the pin.
-const bmadPackRoot = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() || "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31"
-);
+// it at a generated authenticated pack so these fixtures exercise the ladder,
+// not a machine-specific registry checkout.
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-ladder-bmad-fixture-"));
+const bmadPackRoot = createBmadPackFixture(bmadFixtureRoot);
 
 const PACK = "demo";
 const VERSION = "2.0.0";
@@ -104,10 +105,17 @@ function makeFixture(label) {
 }
 
 function pj(args, fixture) {
+  const env = {
+    ...process.env,
+    HOME: fixture.home,
+    PJ_BMAD_PACK_ROOT: bmadPackRoot,
+    PJ_PACK_ROOT_BMAD: bmadPackRoot,
+  };
+  delete env.PJ_SKILLS_REGISTRY_ROOT;
   return spawnSync("node", [cli, ...args], {
     cwd: fixture.repo,
     encoding: "utf8",
-    env: { ...process.env, HOME: fixture.home, PJ_BMAD_PACK_ROOT: bmadPackRoot },
+    env,
   });
 }
 
@@ -139,7 +147,7 @@ function assertNoMutation(fixture, label) {
   assert.deepEqual(entries, [], `${label}: a rejected pack must produce ZERO mutation`);
 }
 
-const cleanup = [];
+const cleanup = [bmadFixtureRoot];
 function fixture(label) {
   const made = makeFixture(label);
   cleanup.push(made.home);
@@ -203,6 +211,7 @@ function fixture(label) {
       ...process.env,
       HOME: f.home,
       PJ_BMAD_PACK_ROOT: bmadPackRoot,
+      PJ_PACK_ROOT_BMAD: bmadPackRoot,
       PJ_SKILLS_REGISTRY_ROOT: join(f.home, "empty-registry"),
     },
   });

@@ -27,14 +27,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const selectedBmadPack = resolve(
-  process.env.PJ_BMAD_PACK_ROOT?.trim() ||
-    "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31",
-);
-const cleanup = [];
+const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjan-28-bmad-fixture-"));
+const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const cleanup = [bmadFixtureRoot];
 
 /** Byte-for-byte content of the upstream skill the fixture registry publishes. */
 const UPSTREAM_SKILL = {
@@ -87,18 +86,21 @@ function committedSkill(repo, name, files) {
 }
 
 function command(args, { home, registryRoot } = {}) {
+  const env = {
+    ...process.env,
+    HOME: home,
+    XDG_CACHE_HOME: join(home, ".cache"),
+    PJ_BMAD_PACK_ROOT: selectedBmadPack,
+    PJ_PACK_ROOT_BMAD: selectedBmadPack,
+  };
+  delete env.PJ_SKILLS_REGISTRY_ROOT;
+  if (registryRoot) env.PJ_SKILLS_REGISTRY_ROOT = registryRoot;
   return spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: home,
-      XDG_CACHE_HOME: join(home, ".cache"),
-      PJ_BMAD_PACK_ROOT: selectedBmadPack,
-      // An absent override must never fall back to a live clone; the two cases
-      // below that omit it prove the "no local checkout" path stays offline.
-      ...(registryRoot ? { PJ_SKILLS_REGISTRY_ROOT: registryRoot } : {}),
-    },
+    // An absent override must never fall back to a live clone; the two cases
+    // below that omit it prove the "no local checkout" path stays offline.
+    env,
   });
 }
 

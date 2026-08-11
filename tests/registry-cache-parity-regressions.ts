@@ -1,5 +1,7 @@
 // Contract section 2 step 3: `~/.agents/.cache/registries/<sanitized-url>` is
-// addressed by THREE independent surfaces on one machine —
+// addressed by three independent surfaces. The two repository-contained
+// surfaces are always compared; Skillex joins only when PJ_SKILLEX_ROOT
+// explicitly selects its checkout —
 //
 //   * pjangler        src/parity/index.ts        registryCacheDirName()
 //   * sync-skills.py  registry_cache_dir()
@@ -16,8 +18,9 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { registryCacheDirName } from "../src/parity/index";
 
 const pjanglerRoot = resolve(import.meta.dirname, "..");
@@ -32,7 +35,7 @@ const URLS = [
   "git@github.com:delorenj/skillex.git",
   "ssh://git@github.com:22/delorenj/skillex.git",
   "https://example.com/a/b/../c.git",
-  "file:///home/delorenj/code/skillex",
+  pathToFileURL(join(tmpdir(), "registry-cache-skillex-fixture")).href,
   "https://user:tok@example.com/x.git?ref=main#frag",
   "HTTPS://GitHub.com/DeLorenJ/Skillex.GIT",
   "../../../etc/passwd",
@@ -42,7 +45,8 @@ const syncSkills = resolve(
   process.env.PJ_SYNC_SKILLS_PATH?.trim() ||
     join(pjanglerRoot, "templates", "commonproject", "template", ".mise", "scripts", "sync-skills.py")
 );
-const skillexRoot = resolve(process.env.PJ_SKILLEX_ROOT?.trim() || join(homedir(), "code", "skillex"));
+const explicitSkillexRoot = process.env.PJ_SKILLEX_ROOT?.trim();
+const skillexRoot = explicitSkillexRoot ? resolve(explicitSkillexRoot) : undefined;
 
 function python(code: string): string {
   const run = spawnSync("python3", ["-c", code], { encoding: "utf8" });
@@ -66,6 +70,7 @@ function syncSkillsNames(urls: string[]): string[] {
 }
 
 function skillexNames(urls: string[]): string[] {
+  assert.ok(skillexRoot, "PJ_SKILLEX_ROOT is required for the optional Skillex parity layer");
   const payload = JSON.stringify(urls);
   return JSON.parse(
     python(
@@ -101,28 +106,34 @@ URLS.forEach((url, i) => {
   );
 });
 
-// --- skillex ---------------------------------------------------------------
+// --- skillex (optional cross-repo layer) -----------------------------------
 
-assert.equal(
-  existsSync(join(skillexRoot, "src", "skillex", "paths.py")),
-  true,
-  `skillex checkout missing: ${skillexRoot} (set PJ_SKILLEX_ROOT)`
-);
-const fromSkillex = skillexNames(URLS);
-URLS.forEach((url, i) => {
+if (skillexRoot) {
   assert.equal(
-    fromSkillex[i],
-    registryCacheDirName(url),
-    `skillex disagrees with pjangler for ${url}: ${fromSkillex[i]} vs ${registryCacheDirName(url)}`
+    existsSync(join(skillexRoot, "src", "skillex", "paths.py")),
+    true,
+    `explicit Skillex checkout is invalid: ${skillexRoot}`,
   );
-});
+  const fromSkillex = skillexNames(URLS);
+  URLS.forEach((url, i) => {
+    assert.equal(
+      fromSkillex[i],
+      registryCacheDirName(url),
+      `skillex disagrees with pjangler for ${url}: ${fromSkillex[i]} vs ${registryCacheDirName(url)}`,
+    );
+  });
+} else {
+  console.log("optional Skillex registry-cache parity skipped; set PJ_SKILLEX_ROOT to enable it");
+}
 
-// --- three-way, on the URL that actually ships -----------------------------
+// --- repository-contained parity on the URL that actually ships ------------
 
+const canonicalNames = [registryCacheDirName(CANONICAL_URL), syncSkillsNames([CANONICAL_URL])[0]];
+if (skillexRoot) canonicalNames.push(skillexNames([CANONICAL_URL])[0]);
 assert.deepEqual(
-  [registryCacheDirName(CANONICAL_URL), syncSkillsNames([CANONICAL_URL])[0], skillexNames([CANONICAL_URL])[0]],
-  [CANONICAL_NAME, CANONICAL_NAME, CANONICAL_NAME],
-  "the three surfaces must name the same registry cache directory"
+  canonicalNames,
+  canonicalNames.map(() => CANONICAL_NAME),
+  "every enabled surface must name the same registry cache directory",
 );
 
 console.log("registry-cache parity regressions passed");
