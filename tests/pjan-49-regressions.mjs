@@ -83,6 +83,28 @@ try {
   //     detached at the commit the superproject pins ---
   const pinned = git(templateDir, ["rev-parse", "HEAD"]);
   const templateGitDir = git(templateDir, ["rev-parse", "--absolute-git-dir"]);
+  const templateTags = git(templateDir, ["tag", "--list"])
+    .split("\n")
+    .filter(Boolean);
+  assert.ok(
+    templateTags.length > 0,
+    "PJAN-49 infrastructure precondition failed: templates/commonproject has no real tag refs; " +
+      "the checkout must fetch the published CommonProject tag history before this behavior regression runs",
+  );
+  let nearestPublishedTag;
+  try {
+    nearestPublishedTag = git(templateDir, ["describe", "--tags", "--abbrev=0", "HEAD"]);
+  } catch (error) {
+    throw new Error(
+      "PJAN-49 infrastructure precondition failed: CommonProject tag refs exist but none are reachable " +
+        "from the pinned template commit; fetch complete submodule history before diagnosing pjangler behavior",
+      { cause: error },
+    );
+  }
+  assert.ok(
+    templateTags.includes(nearestPublishedTag),
+    `PJAN-49 infrastructure precondition failed: nearest reachable tag ${nearestPublishedTag} is not a fetched tag ref`,
+  );
   const repoRootTemplate = join(tmp, "commonproject");
   git(tmp, ["clone", "--quiet", templateGitDir, repoRootTemplate]);
   git(repoRootTemplate, ["checkout", "--quiet", "--detach", pinned]);
@@ -90,7 +112,16 @@ try {
     existsSync(join(repoRootTemplate, ".git", "HEAD")),
     "the clone must expose .git as a directory — that is the shape that trips copier's VCS path",
   );
-  const describePinned = git(repoRootTemplate, ["describe", "--tags"]);
+  let describePinned;
+  try {
+    describePinned = git(repoRootTemplate, ["describe", "--tags"]);
+  } catch (error) {
+    throw new Error(
+      "PJAN-49 infrastructure precondition failed: the standalone CommonProject clone cannot describe the " +
+        "pinned commit from real tag history; this is checkout/tag infrastructure, not a --vcs-ref behavior defect",
+      { cause: error },
+    );
+  }
 
   // Reuse the planned command verbatim, only swapping in the repo-root template.
   const withRefTarget = join(tmp, "with-ref");

@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 const releasePath = join(root, ".mise", "scripts", "release.sh");
@@ -49,6 +50,48 @@ try {
   const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
   const npmTestStep = publishWorkflow.indexOf("npm test");
   const npmPublishStep = publishWorkflow.indexOf("npm publish --provenance");
+  const workflow = YAML.parse(publishWorkflow);
+  const publishSteps = workflow.jobs.publish.steps;
+  const checkoutStep = publishSteps.find((step) => step.uses === "actions/checkout@v4");
+  assert.ok(checkoutStep, "publish workflow must check out the release commit");
+  assert.deepEqual(
+    checkoutStep.with,
+    { submodules: "recursive", "fetch-depth": 0, "fetch-tags": true },
+    "publish checkout must fetch complete parent history/tags while retaining recursive submodules",
+  );
+  const fetchSubmoduleTagsStep = publishSteps.findIndex(
+    (step) => step.name === "Fetch recursive submodule history and tags",
+  );
+  const verifyTemplateTagsStep = publishSteps.findIndex(
+    (step) => step.name === "Verify CommonProject tag history",
+  );
+  const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm test");
+  const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish --provenance");
+  assert.match(
+    packageJson.scripts.test,
+    /node tests\/pjan-49-regressions\.mjs/,
+    "the post-verification npm test gate must include the PJAN-49 tag-drift regression",
+  );
+  assert.notEqual(fetchSubmoduleTagsStep, -1, "publish workflow must fetch real recursive submodule tags");
+  assert.match(
+    publishSteps[fetchSubmoduleTagsStep].run,
+    /git submodule foreach --recursive[\s\S]*git fetch --unshallow --tags --force origin/,
+    "publish workflow must unshallow recursive submodules and fetch their real tag refs",
+  );
+  assert.notEqual(verifyTemplateTagsStep, -1, "publish workflow must prove CommonProject tags exist");
+  assert.match(
+    publishSteps[verifyTemplateTagsStep].run,
+    /git -C templates\/commonproject describe --tags --abbrev=0 HEAD/,
+    "publish workflow must prove a real CommonProject tag is reachable before PJAN-49",
+  );
+  assert.ok(
+    fetchSubmoduleTagsStep < verifyTemplateTagsStep && verifyTemplateTagsStep < npmTestStepIndex,
+    "PJAN-49's npm test gate must run only after recursive tag fetch and CommonProject tag verification",
+  );
+  assert.ok(
+    npmTestStepIndex < npmPublishStepIndex,
+    "OIDC publication must remain behind the structurally verified npm test gate",
+  );
   assert.ok(miseVersion > miseSetupStep, "publish workflow must request the known-compatible pinned mise version");
   assert.ok(
     miseSetupStep < miseVerificationStep && miseVerificationStep < npmTestStep,
