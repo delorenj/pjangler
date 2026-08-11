@@ -19,6 +19,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Bridge canonical SSH submodule URLs to checkout HTTPS credentials
+        run: |
+          test -n "$(git config --local --get http.https://github.com/.extraheader)"
+          git config --local url."https://github.com/".insteadOf "git@github.com:"
+          test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"
+
       - name: Fetch recursive submodule history and tags
         run: >-
           git submodule foreach --recursive

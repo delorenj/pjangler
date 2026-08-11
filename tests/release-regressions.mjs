@@ -18,6 +18,7 @@ const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const publishWorkflow = readFileSync(join(root, ".github", "workflows", "publish.yml"), "utf8");
+const gitmodules = readFileSync(join(root, ".gitmodules"), "utf8");
 const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "pjangler-release-regression-"));
 
@@ -62,11 +63,30 @@ try {
   const fetchSubmoduleTagsStep = publishSteps.findIndex(
     (step) => step.name === "Fetch recursive submodule history and tags",
   );
+  const transportBridgeStep = publishSteps.findIndex(
+    (step) => step.name === "Bridge canonical SSH submodule URLs to checkout HTTPS credentials",
+  );
   const verifyTemplateTagsStep = publishSteps.findIndex(
     (step) => step.name === "Verify CommonProject tag history",
   );
   const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm test");
   const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish --provenance");
+  assert.match(
+    gitmodules,
+    /^\[submodule "templates\/commonproject"\]\n\tpath = templates\/commonproject\n\turl = git@github\.com:delorenj\/CommonProject\.git\n\tbranch = main\n\[submodule "templates\/hermes-agent"\]\n\tpath = templates\/hermes-agent\n\turl = git@github\.com:delorenj\/hermes-agent-template\.git\n\tbranch = main\n$/,
+    "canonical submodule metadata must retain the exact SSH URLs",
+  );
+  assert.notEqual(transportBridgeStep, -1, "publish workflow must bridge canonical SSH URLs to HTTPS");
+  assert.equal(
+    publishSteps[transportBridgeStep].run,
+    [
+      'test -n "$(git config --local --get http.https://github.com/.extraheader)"',
+      'git config --local url."https://github.com/".insteadOf "git@github.com:"',
+      'test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"',
+      "",
+    ].join("\n"),
+    "publish transport bridge must be local, exact, and require checkout's persisted HTTPS credential",
+  );
   assert.match(
     packageJson.scripts.test,
     /node tests\/pjan-49-regressions\.mjs/,
@@ -85,12 +105,14 @@ try {
     "publish workflow must prove a real CommonProject tag is reachable before PJAN-49",
   );
   assert.ok(
-    fetchSubmoduleTagsStep < verifyTemplateTagsStep && verifyTemplateTagsStep < npmTestStepIndex,
-    "PJAN-49's npm test gate must run only after recursive tag fetch and CommonProject tag verification",
+    transportBridgeStep < fetchSubmoduleTagsStep &&
+      fetchSubmoduleTagsStep < verifyTemplateTagsStep &&
+      verifyTemplateTagsStep < npmTestStepIndex,
+    "the transport bridge must precede recursive fetch, tag verification, and PJAN-49's npm test gate",
   );
   assert.ok(
-    npmTestStepIndex < npmPublishStepIndex,
-    "OIDC publication must remain behind the structurally verified npm test gate",
+    transportBridgeStep < npmPublishStepIndex && npmTestStepIndex < npmPublishStepIndex,
+    "OIDC publication must remain behind the transport bridge and structurally verified npm test gate",
   );
   assert.ok(miseVersion > miseSetupStep, "publish workflow must request the known-compatible pinned mise version");
   assert.ok(
