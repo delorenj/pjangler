@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
@@ -51,6 +51,66 @@ function createSkillFixture(baseDir) {
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(join(skillDir, "SKILL.md"), "---\nname: civilwar-letterifier\n---\n# Civil War Letterifier\n", "utf8");
   return skillDir;
+}
+
+function createFakeHermes(homeDir) {
+  const hermesRepo = join(homeDir, "code", "hermes-agent");
+  const hermesBin = join(hermesRepo, "venv", "bin", "hermes");
+  const callsFile = join(homeDir, "fake-hermes-calls.jsonl");
+  mkdirSync(dirname(hermesBin), { recursive: true });
+  writeFileSync(hermesBin, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+const args = process.argv.slice(2);
+const callsFile = process.env.FAKE_HERMES_CALLS;
+const profileCreate = args.length === 5 && args[0] === "profile" && args[1] === "create" && args[2] && args[3] === "--clone" && args[4] === "--no-alias";
+const configSet = args.length === 4 && args[0] === "config" && args[1] === "set" && process.env.HERMES_HOME;
+if (!callsFile || (!profileCreate && !configSet)) {
+  process.stderr.write("fake hermes: unsupported invocation: " + JSON.stringify(args) + "\\n");
+  process.exit(64);
+}
+fs.appendFileSync(callsFile, JSON.stringify({
+  args,
+  bin: path.resolve(process.argv[1]),
+  hermes_home: process.env.HERMES_HOME || "",
+  home: process.env.HOME || "",
+}) + "\\n");
+
+if (profileCreate) {
+  const fleetHome = path.join(process.env.HOME, ".hermes");
+  const profileHome = path.join(fleetHome, "profiles", args[2]);
+  if (fs.existsSync(profileHome)) {
+    process.stderr.write("fake hermes: profile already exists: " + profileHome + "\\n");
+    process.exit(65);
+  }
+  fs.mkdirSync(profileHome, { recursive: true });
+  fs.mkdirSync(path.join(fleetHome, "skills"), { recursive: true });
+  for (const [name, contents] of [["config.yaml", "{}\\n"], [".env", "\\n"]]) {
+    const shared = path.join(fleetHome, name);
+    if (!fs.existsSync(shared)) fs.writeFileSync(shared, contents);
+    fs.copyFileSync(shared, path.join(profileHome, name));
+  }
+  process.exit(0);
+}
+
+const configPath = path.join(process.env.HERMES_HOME, "config.yaml");
+fs.mkdirSync(process.env.HERMES_HOME, { recursive: true });
+let config = {};
+try { config = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch {}
+let cursor = config;
+const parts = args[2].split(".");
+for (const part of parts.slice(0, -1)) cursor = cursor[part] ||= {};
+cursor[parts.at(-1)] = args[3];
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\\n");
+`, "utf8");
+  chmodSync(hermesBin, 0o755);
+  return { hermesBin, hermesRepo, callsFile };
+}
+
+function readFakeHermesCalls(callsFile) {
+  if (!existsSync(callsFile)) return [];
+  return readFileSync(callsFile, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
 function git(args, cwd) {
@@ -327,7 +387,9 @@ try {
   const secondSyncManifest = JSON.parse(readFileSync(join(syncUpdateRepo, ".project.json"), "utf8"));
   assert.equal(secondSyncManifest.project_description, "Updated description");
 
-  // Regression: provisioning a second agent role must preserve existing agents
+  // Regression: provisioning a second agent role must preserve existing agents.
+  // The fake lives at the path discovered by EnsureTemplateConfig, so this exercises
+  // the production HERMES_BIN/HERMES_AGENT_REPO resolution without a host checkout.
   const multiAgentRepo = join(tmp, "MultiAgent");
   mkdirSync(multiAgentRepo, { recursive: true });
   git(["init"], multiAgentRepo);
@@ -335,11 +397,38 @@ try {
   const multiAgentRegistry = join(tmp, "multi-agent-projects.yaml");
   const multiAgentHome = join(tmp, "multi-agent-home");
   mkdirSync(multiAgentHome, { recursive: true });
+  const { hermesBin: fakeHermesBin, hermesRepo: fakeHermesRepo, callsFile: fakeHermesCalls } = createFakeHermes(multiAgentHome);
+  const fleetHome = join(multiAgentHome, ".hermes");
+  const fleetRegistry = join(fleetHome, "agents-registry.yaml");
   const multiAgentEnv = {
     PJ_PROJECT_REGISTRY: multiAgentRegistry,
     HOME: multiAgentHome,
+    XDG_CACHE_HOME: join(multiAgentHome, ".cache"),
     XDG_CONFIG_HOME: join(multiAgentHome, ".config"),
-    HERMES_HOME: join(multiAgentHome, ".hermes"),
+    HERMES_HOME: fleetHome,
+    HERMES_FLEET_HOME: fleetHome,
+    HERMES_TEMPLATE_CONFIG: "",
+    HERMES_FLEET_ENV: "",
+    HERMES_BIN: "",
+    HERMES_FLEET_BIN: "",
+    HERMES_AGENT_REPO: "",
+    HERMES_FLEET_REPO: "",
+    HERMES_OAUTH_FILE: "",
+    CODEX_HOME: "",
+    REGISTRY_FILE: "",
+    PJANGLER_HERMES_TEMPLATE: "",
+    FAKE_HERMES_CALLS: fakeHermesCalls,
+    CANONICAL_SKILLS_DIR: join(multiAgentHome, "absent-canonical-skills"),
+    VOXXY_PLUGIN_DIR: join(multiAgentHome, "absent-voxxy-plugin"),
+    PLANE_API_KEY: "",
+    PLANE_33GOD_API_KEY: "",
+    TELEGRAM_BOT_TOKEN: "",
+    TELEGRAM_ALLOWED_USERS: "",
+    SLACK_BOT_TOKEN: "",
+    SLACK_APP_TOKEN: "",
+    SLACK_ALLOWED_USERS: "",
+    SKIP_SLACK: "0",
+    ENABLE_SLACK: "0",
   };
   const multiAgentFirst = JSON.parse(run([
     "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "pm", "--json",
@@ -347,17 +436,51 @@ try {
   assert.equal(multiAgentFirst.ok, true, JSON.stringify(multiAgentFirst.errors));
   const firstMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
   assert.equal(firstMultiRegistry.projects["multi-agent"].agents.pm.role, "pm");
+  const firstFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
+  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.bin, fakeHermesBin, "fleet registry must record the template-resolved Hermes binary");
+  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.repo, fakeHermesRepo, "fleet registry must record the matching Hermes checkout");
+  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].telegram.provisioning_status, "disabled");
+  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].slack.provisioning_status, "deferred");
 
   const multiAgentSecond = JSON.parse(run([
     "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "dev", "--json",
   ], multiAgentEnv, multiAgentRepo));
   assert.equal(multiAgentSecond.ok, true, JSON.stringify(multiAgentSecond.errors));
+  const hermesCalls = readFakeHermesCalls(fakeHermesCalls);
+  assert.deepEqual(hermesCalls, [
+    {
+      args: ["profile", "create", "multi-agent-pm", "--clone", "--no-alias"],
+      bin: fakeHermesBin,
+      hermes_home: fleetHome,
+      home: multiAgentHome,
+    },
+    {
+      args: ["config", "set", "terminal.cwd", multiAgentRepo],
+      bin: fakeHermesBin,
+      hermes_home: join(fleetHome, "profiles", "multi-agent-pm"),
+      home: multiAgentHome,
+    },
+    {
+      args: ["profile", "create", "multi-agent-dev", "--clone", "--no-alias"],
+      bin: fakeHermesBin,
+      hermes_home: fleetHome,
+      home: multiAgentHome,
+    },
+    {
+      args: ["config", "set", "terminal.cwd", multiAgentRepo],
+      bin: fakeHermesBin,
+      hermes_home: join(fleetHome, "profiles", "multi-agent-dev"),
+      home: multiAgentHome,
+    },
+  ], `provisioning must use only the portable Hermes profile contract\n${JSON.stringify(hermesCalls, null, 2)}`);
   const secondMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
   assert.equal(secondMultiRegistry.projects["multi-agent"].agents.pm.role, "pm", "existing pm agent must be preserved in registry");
   assert.equal(secondMultiRegistry.projects["multi-agent"].agents.dev.role, "dev", "new dev agent must be added to registry");
   const secondMultiManifest = JSON.parse(readFileSync(join(multiAgentRepo, ".project.json"), "utf8"));
   assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
   assert.equal(secondMultiManifest.agents["multi-agent-dev"].role, "dev", "new dev agent must be added to manifest");
+  const secondFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
+  assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-dev", "multi-agent-pm"], "both isolated fleet profiles must be registered");
 
   // PJAN-26: "active" is a default for NEW records, never a migration.
   // A project already recorded as "planned" keeps that status through a load
