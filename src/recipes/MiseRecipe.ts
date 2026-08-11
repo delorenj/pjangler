@@ -1,26 +1,25 @@
 import { Recipe } from "./Recipe";
-import { AddMiseToml } from "../commands/AddMiseToml";
-import { AddDotenv } from "../commands/AddDotenv";
-import { AddMiseTasksStructure } from "../commands/AddMiseTasksStructure";
-import { AddMiseBaseToml } from "../commands/AddMiseBaseToml";
-import { AddMiseBaseScript } from "../commands/AddMiseBaseScript";
-import { AddMiseCodegraphScript } from "../commands/AddMiseCodegraphScript";
-import { AddMiseCodegraphWireScript } from "../commands/AddMiseCodegraphWireScript";
-import { WireMiseOpInject } from "../commands/WireMiseOpInject";
 import type { CommandContext } from "../commands/Command";
+import { createMiseChecks } from "../parity/rules";
+import type { LifecycleContext, RecipeInitResult, RecipeMetadata } from "./types";
 
 export class MiseRecipe extends Recipe {
-  constructor(context: CommandContext) {
+  readonly checks = createMiseChecks();
+  readonly metadata: RecipeMetadata = {
+    id: "mise",
+    name: "mise",
+    description: "Mise task runner and environment setup",
+    dependencies: ["mise-op-inject"],
+    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript", "AddMiseCodegraphWireScript"],
+    publicRuleIds: this.checks.map((check) => check.id),
+  };
+
+  constructor(context?: CommandContext) {
     super(context);
-    this
-      .addIngredient(AddMiseToml)
-      .addIngredient(AddDotenv)
-      .addIngredient(AddMiseTasksStructure)
-      .addIngredient(AddMiseBaseToml)
-      .addIngredient(AddMiseBaseScript)
-      .addIngredient(AddMiseCodegraphScript)
-      .addIngredient(AddMiseCodegraphWireScript)
-      .addIngredient(WireMiseOpInject);
+  }
+
+  override init(ctx: LifecycleContext, _input: unknown): Promise<RecipeInitResult> {
+    return this.initializeOwnedChecks(ctx);
   }
 
   protected printNextSteps(): void {

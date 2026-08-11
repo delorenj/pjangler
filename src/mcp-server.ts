@@ -5,18 +5,18 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { createRecipe, getRecipeInfo, getRecipeNames, COMMAND_REGISTRY, RECIPE_REGISTRY } from "./utils/registry";
+import { getRecipeInfo, getRecipeNames, COMMAND_REGISTRY, RECIPE_REGISTRY } from "./utils/registry";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext, TicketProvider } from "./commands/hermes/types";
 import { PJANGLER_VERSION } from "./utils/version";
-import { formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
+import { lifecycleContext, recipeRegistry, formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
 import {
-  executeProjectInitPlan,
   getProject,
   loadProjectRegistry,
   planProjectInit,
   projectRegistryPath,
 } from "./project/index";
+import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -55,6 +55,25 @@ function asText(payload: unknown) {
   return { content: [{ type: "text" as const, text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) }] };
 }
 
+async function executeRegisteredProjectPlan(
+  plan: ReturnType<typeof planProjectInit>,
+  agentContext?: Partial<HermesAgentContext>,
+) {
+  const projectInput: ProjectRecipeInput = {
+    plan,
+    mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
+    selectedRuleIds: [],
+    selectedOperations: plan.actions.map((action) => action.kind),
+    agentContext,
+    quiet: true,
+  };
+  return await recipeRegistry.initRecipe(
+    "project",
+    lifecycleContext(plan.project.repo_path, false),
+    projectInput,
+  ) as ProjectRecipeResult;
+}
+
 function auditSummary(report: ReturnType<typeof runAudit>) {
   const counts = report.rules.reduce<Record<string, number>>((acc, rule) => {
     acc[rule.status] = (acc[rule.status] ?? 0) + 1;
@@ -88,38 +107,19 @@ function parityGuidance() {
 }
 
 async function runRecipeWithCapture(recipeName: string, context: CommandContext): Promise<{ success: boolean; logs: string[]; errors: string[] }> {
-  const recipe = createRecipe(recipeName, context);
-  if (!recipe) {
+  if (!recipeRegistry.get(recipeName)) {
     return {
       success: false,
       logs: [],
       errors: [`Unknown recipe: ${recipeName}. Available: ${getRecipeNames().join(", ")}`],
     };
   }
-
-  const logs: string[] = [];
-  const errors: string[] = [];
-  const origLog = console.log;
-  const origError = console.error;
-
-  console.log = (...args: unknown[]) => {
-    logs.push(args.map((a) => String(a)).join(" "));
-  };
-  console.error = (...args: unknown[]) => {
-    errors.push(args.map((a) => String(a)).join(" "));
-  };
-
   try {
-    await recipe.execute();
-    const combined = [...logs, ...errors].join("\n");
-    const success = !combined.match(/(^|\n)✗/);
-    return { success, logs, errors };
+    const ctx = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+    const result = await recipeRegistry.initRecipe(recipeName, ctx, {});
+    return { success: result.ok, logs: result.logs, errors: result.errors };
   } catch (err) {
-    errors.push(err instanceof Error ? err.message : String(err));
-    return { success: false, logs, errors };
-  } finally {
-    console.log = origLog;
-    console.error = origError;
+    return { success: false, logs: [], errors: [err instanceof Error ? err.message : String(err)] };
   }
 }
 
@@ -299,31 +299,29 @@ server.registerTool(
         return asText({ ...plan, guidance: parityGuidance() });
       }
 
-      const result = await executeProjectInitPlan(plan);
+      const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
+        targetRepo: projectSlug,
+        role: input.agentRole ?? "pm",
+        agentPurpose: input.agentPurpose ?? `Project manager for ${input.projectName}`,
+        local,
+        force: overwrite,
+        skipTelegram: true,
+        skipEmail: true,
+        skipRuntimeRepo: local,
+        skipPlane: skipPlane || local,
+        skipBloodbank: local,
+        skipSystemd: local || process.platform === "darwin",
+      } : undefined);
       if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
 
-      let agentResult: Awaited<ReturnType<typeof runRecipeWithCapture>> | undefined;
-      if (input.provisionAgent) {
-        const context: HermesAgentContext = {
-          targetDir,
-          yes: true,
-          targetRepo: projectSlug,
-          role: input.agentRole ?? "pm",
-          agentPurpose: input.agentPurpose ?? `Project manager for ${input.projectName}`,
-          local,
-          force: overwrite,
-          dryRun: false,
-          skipTelegram: true,
-          skipEmail: true,
-          skipRuntimeRepo: local,
-          skipPlane: skipPlane || local,
-          skipBloodbank: local,
-          skipSystemd: local || process.platform === "darwin",
-        };
-        agentResult = await runRecipeWithCapture("hermes-agent", context);
-      }
-
-      return asText({ ...result, ok: result.ok && (!agentResult || agentResult.success), agentResult, guidance: parityGuidance() });
+      const agentResult = input.provisionAgent
+        ? {
+            success: Boolean(result.agentResult?.ok),
+            logs: result.agentResult?.logs ?? [],
+            errors: result.agentResult?.errors ?? (result.ok ? [] : result.errors),
+          }
+        : undefined;
+      return asText({ ...result, agentResult, guidance: parityGuidance() });
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -376,9 +374,10 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
+        scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(plan);
-      return asText(await executeProjectInitPlan(plan));
+      return asText(await executeRegisteredProjectPlan(plan));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }

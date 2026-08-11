@@ -15,13 +15,11 @@ import {
   getCommandNames,
   getCommandInfo,
   getCommandsByGroup,
-  createRecipe
 } from "./utils/registry";
 import { cancel, multiselect, text, isCancel } from "@clack/prompts";
-import { runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, formatRulePicker, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
+import { recipeRegistry, lifecycleContext, runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, formatRulePicker, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
 import {
   doctorProjectRegistry,
-  executeProjectInitPlan,
   formatProjectInitPlan,
   formatProjectList,
   getProject,
@@ -29,6 +27,7 @@ import {
   planProjectInit,
   projectRegistryPath,
 } from "./project/index";
+import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
@@ -299,13 +298,15 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
     dryRun: options.dryRun || false,
   };
   try {
-    const recipe = createRecipe(name, context);
-    if (!recipe) {
+    if (!recipeRegistry.get(name)) {
       console.error(`${xmark} Unknown subsystem: ${bold(name)}`);
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
-    await recipe.execute();
+    const result = await recipeRegistry.initRecipe(name, lifecycleContext(context.targetDir, Boolean(context.dryRun)), {});
+    for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
+    for (const error of result.errors) console.error(`${xmark} ${error}`);
+    if (!result.ok) process.exitCode = 1;
   } catch (error) {
     console.error(`${xmark} Error scaffolding ${bold(name)}:`, error);
     process.exit(1);
@@ -462,10 +463,10 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         cwd: process.cwd(),
         scaffold: !target.syncMode,
       });
-      const audit = target.syncMode ? runAudit(target.targetDir) : undefined;
+      const preAudit = target.syncMode ? runAudit(target.targetDir) : undefined;
       const selection = await selectProjectInitOperations({
         plan,
-        auditRules: audit?.rules ?? [],
+        auditRules: preAudit?.rules ?? [],
         syncMode: target.syncMode,
         options,
       });
@@ -481,12 +482,12 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         const payload = {
           ...plan,
           mode: target.syncMode ? "sync" : "create",
-          audit,
+          audit: preAudit,
           proposedOperations: [
             ...plan.actions
               .filter((action) => actionNeedsRun(plan, action.kind, target.syncMode))
               .map((action) => action.kind),
-            ...(audit?.rules ?? [])
+            ...(preAudit?.rules ?? [])
               .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
               .map((rule) => `parity:${rule.id}`),
           ],
@@ -505,40 +506,27 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         return;
       }
 
-      const initResult = selectedPlan.actions.length
-        ? await executeProjectInitPlan(selectedPlan)
-        : { ok: true, plan: selectedPlan, logs: [], errors: [], changedFiles: [] };
-      const migrationReport = selection.selectedParityRules.length
-        ? runMigrationForRules(selection.selectedParityRules, target.targetDir, false)
-        : undefined;
-      const migrationErrors = migrationReport?.results
-        .filter((result) => result.status === "blocked")
-        .map((result) => `${result.id}: ${result.summary}`) ?? [];
-      const changedFiles = Array.from(new Set([
-        ...initResult.changedFiles,
-        ...(migrationReport?.changedFiles ?? []),
-      ])).sort();
-      const result = {
-        ok: initResult.ok && (migrationReport?.ok ?? true),
-        mode: target.syncMode ? "sync" : "create",
+      const projectInput: ProjectRecipeInput = {
         plan: selectedPlan,
-        audit,
+        mode: target.syncMode ? "sync" : "create",
+        selectedRuleIds: selection.selectedParityRules,
         selectedOperations: selection.selectedOperations,
-        selectedParityRules: selection.selectedParityRules,
-        logs: initResult.logs,
-        errors: [...initResult.errors, ...migrationErrors],
-        changedFiles,
-        migrationReport,
+        quiet: Boolean(options.json),
       };
+      const result = await recipeRegistry.initRecipe(
+        "project",
+        lifecycleContext(target.targetDir, false),
+        projectInput,
+      ) as ProjectRecipeResult;
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
         console.log(formatProjectInitPlan(selectedPlan));
         for (const line of result.logs) console.log(line);
         for (const line of result.errors) console.error(`  ${xmark} ${line}`);
-        if (migrationReport) console.log(formatMigrationReport(migrationReport));
-        if (result.ok && changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
-        if (result.ok && changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
+        if (result.migrationReport) console.log(formatMigrationReport(result.migrationReport));
+        if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
+        if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
       }
       process.exitCode = result.ok ? 0 : 1;
     } catch (err) {
@@ -952,12 +940,11 @@ program
       skipSystemd: options.skipSystemd ?? (local || isDarwin),
     };
     try {
-      const recipe = createRecipe("hermes-agent", context);
-      if (!recipe) {
-        console.error(`${xmark} hermes-agent recipe not registered`);
-        process.exit(1);
-      }
-      await recipe.execute();
+      const lifecycle = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+      const result = await recipeRegistry.initRecipe("hermes-agent", lifecycle, {});
+      for (const line of result.logs) console.log(line);
+      for (const error of result.errors) console.error(`${xmark} ${error}`);
+      if (!result.ok) process.exit(1);
     } catch (err) {
       console.error(`${xmark} hermes-agent failed:`, err);
       process.exit(1);

@@ -5,12 +5,16 @@ export interface InvokeResult {
   success: boolean;
   message: string;
   filePath?: string;
+  /** Structured lifecycle outcome. Message text is presentation only. */
+  outcome?: "changed" | "unchanged" | "planned" | "skipped" | "failed" | "cancelled";
 }
 
 export interface CommandContext {
   targetDir: string;
   force?: boolean;
   dryRun?: boolean;
+  /** Suppress presentation output when a structured caller owns stdout. */
+  quiet?: boolean;
 }
 
 export abstract class Command {

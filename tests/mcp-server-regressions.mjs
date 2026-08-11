@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = resolve(root, "dist", "mcp-server.js");
@@ -85,6 +86,27 @@ try {
   const projectList = await client.callTool({ name: "pjangler_project_list", arguments: {} });
   const projectListPayload = JSON.parse(projectList.content[0].text);
   assert.deepEqual(projectListPayload.projects, {});
+
+  // PJAN-57: applying project registration to an existing Git repository goes
+  // through ProjectRecipe but must not silently turn into migrate-all. The
+  // postcondition may fail and recommend explicit migrations; user files and
+  // unrelated parity drift stay untouched.
+  const existingRepo = join(mcpTmp, "existing-sync");
+  mkdirSync(existingRepo);
+  assert.equal(spawnSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: existingRepo }).status, 0);
+  writeFileSync(join(existingRepo, "package.json"), '{"name":"existing-sync","description":"MCP sync fixture"}\n');
+  writeFileSync(join(existingRepo, "mise.toml"), "# user-owned sentinel\n[env]\nVALUE = \"keep\"\n");
+  const existingSync = await client.callTool({
+    name: "pjangler_project_init",
+    arguments: { name: "Existing Sync", targetDir: existingRepo, apply: true },
+  });
+  const existingPayload = JSON.parse(existingSync.content[0].text);
+  assert.equal(existingPayload.mode, "sync");
+  assert.equal(existingPayload.ok, false, "dirty existing repo should fail the final audit without implicit repair");
+  assert.equal(existingPayload.migrationReport, undefined);
+  assert.deepEqual(existingPayload.selectedParityRules, []);
+  assert.equal(existsSync(join(existingRepo, ".env.op")), false, "MCP sync must not run migrate-all");
+  assert.equal(readFileSync(join(existingRepo, "mise.toml"), "utf8"), "# user-owned sentinel\n[env]\nVALUE = \"keep\"\n");
 
   const repo = mkdtempSync(join(tmpdir(), "pjangler-mcp-audit-"));
   try {

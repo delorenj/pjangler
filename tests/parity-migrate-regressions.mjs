@@ -147,6 +147,7 @@ try {
     const repo = makeRepo("link-script");
     repos.push(repo);
     run(["migrate", "mise.config-root", repo, "--json"]);
+    run(["migrate", "secrets.env-op", repo, "--json"]);
     run(["migrate", "sot.agent-symlinks", repo, "--json"]);
 
     const script = join(repo, ".mise", "scripts", "link-agentfiles.sh");
@@ -205,6 +206,7 @@ leave = [
 run = "echo still here"
 `);
     run(["migrate", "mise.config-root", repo, "--json"]);
+    run(["migrate", "secrets.env-op", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.match(mise, /\[\[hooks\.enter\]\]/, "migrate should emit [[hooks.enter]] tables");
@@ -215,8 +217,8 @@ run = "echo still here"
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh'"/, "link-agentfiles hook must be single-quoted (space-safe)");
     assert.match(
       mise,
-      /script = "\[ -f '\{\{config_root\}\}\/\.env\.op' \] && command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\) && op inject -i \.env\.op -o \$t --force && mv \$t \.env \|\| rm -f \$t; \} \|\| true"/,
-      "migrate should install the atomic canonical dotenv hook (PJAN-24)"
+      /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/,
+      "the env materialization recipe should install the managed script hook"
     );
     assert.match(
       mise,
@@ -253,8 +255,11 @@ run = "echo still here"
     assert.doesNotMatch(mise, /\]\s*\n\s*\]/, "migrate must not emit a duplicate closing bracket");
     assert.match(mise, /\[\[hooks\.enter\]\]/, "migrate should convert the array to [[hooks.enter]] tables");
     assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "migrate must not emit the invalid enter = [ ... ] array form");
-    // Codegraph guard is normalized to the single-quoted, space-safe form.
-    assert.match(mise, /\[ -f '\{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh' \] && '\{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh' \|\| true/, "migrate must preserve+quote the codegraph hook entry");
+    assert.match(
+      mise,
+      /script = "\[ -f \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \] && \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \|\| true"/,
+      "migrate must preserve a foreign codegraph hook entry verbatim",
+    );
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
     // Bracket balance (ignoring quoted strings) must be even — a stray `]` breaks it.
     const structural = mise.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
@@ -337,7 +342,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml from template should contain link-agentfiles task");
-    assert.match(mise, /command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\)/, "mise.toml should be normalized to current AGENTS-linking contract");
+    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /sync-skills\.py' --scope project/, "mise.toml should run project skill sync on enter");
     assert.match(mise, /\[tasks\.skills-sync\]/, "mise.toml should include the skills-sync task");
     assert.match(mise, /patterns = \["\.agents\/skills\.json"\]/, "mise.toml should watch the project skills manifest");
@@ -365,7 +370,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml should still contain the link-agentfiles task");
-    assert.match(mise, /command -v op >\/dev\/null 2>&1 && \{ CDPATH= cd '\{\{config_root\}\}' && umask 077 && t=\$\(mktemp \.env\.inject\.XXXXXX\)/, "mise.toml should retain the atomic dotenv enter hook");
+    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /sync-skills\.py' --scope project/, "skills sync should stay enabled even when the hook layer is skipped");
     assert.match(mise, /\[tasks\.skills-sync\]/, "skills-sync task should remain when the hook layer is skipped");
     assert.doesNotMatch(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer OFF should omit the hooks-sync task");

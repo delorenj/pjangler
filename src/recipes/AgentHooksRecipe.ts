@@ -1,6 +1,7 @@
 import { Recipe } from "./Recipe";
-import { CopyAgentHooksTree, WireMiseAgentHooks } from "../commands/AgentHooksCommands";
 import type { CommandContext } from "../commands/Command";
+import { createAgentHooksChecks } from "../parity/rules";
+import type { LifecycleContext, RecipeInitResult, RecipeMetadata } from "./types";
 
 /**
  * Retrofit an existing repo with the project-scoped agent-hooks + skill manifest
@@ -9,11 +10,22 @@ import type { CommandContext } from "../commands/Command";
  * for repos created before the template carried it.
  */
 export class AgentHooksRecipe extends Recipe {
-  constructor(context: CommandContext) {
+  readonly checks = createAgentHooksChecks();
+  readonly metadata: RecipeMetadata = {
+    id: "agent-hooks",
+    name: "agent-hooks",
+    description: "Project-scoped agent hooks and six-CLI skill topology",
+    dependencies: ["mise"],
+    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"],
+    publicRuleIds: this.checks.map((check) => check.id),
+  };
+
+  constructor(context?: CommandContext) {
     super(context);
-    this
-      .addIngredient(CopyAgentHooksTree)
-      .addIngredient(WireMiseAgentHooks);
+  }
+
+  override init(ctx: LifecycleContext, _input: unknown): Promise<RecipeInitResult> {
+    return this.initializeOwnedChecks(ctx);
   }
 
   protected printNextSteps(): void {

@@ -243,7 +243,9 @@ try {
   }
 
   {
-    const source = readFileSync(join(ROOT, "src", "parity", "index.ts"), "utf8");
+    const source = ["index.ts", "rules.ts"]
+      .map((name) => readFileSync(join(ROOT, "src", "parity", name), "utf8"))
+      .join("\n");
     const command = readFileSync(join(ROOT, "src", "commands", "hermes", "UntrackHermesRuntimes.ts"), "utf8");
     const active = readFileSync(join(ROOT, "agents", "hermes", "pm", ".scripts", "20-runtime-repo.sh"), "utf8");
     assert.doesNotMatch(source, /function upsertSubmodule/);

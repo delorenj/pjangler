@@ -4,16 +4,9 @@
  */
 
 import type { CommandContext } from "../commands/Command";
-import type { Recipe } from "../recipes/Recipe";
+import type { LifecycleRecipe } from "../recipes/types";
+import { recipeRegistry } from "../recipes/catalog";
 import { Command as Cmd } from "../commands/Command";
-
-// Import all recipes
-import { MiseRecipe } from "../recipes/MiseRecipe";
-import { DockerRecipe } from "../recipes/DockerRecipe";
-import { NodeRecipe } from "../recipes/NodeRecipe";
-import { HermesAgentRecipe } from "../recipes/HermesAgentRecipe";
-import { AgentHooksRecipe } from "../recipes/AgentHooksRecipe";
-import { MiseOpInjectRecipe } from "../recipes/MiseOpInjectRecipe";
 
 // Import all commands
 import { CopyAgentHooksTree, WireMiseAgentHooks } from "../commands/AgentHooksCommands";
@@ -31,7 +24,7 @@ import { WireMiseOpInject } from "../commands/WireMiseOpInject";
 export interface RecipeInfo {
   name: string;
   description: string;
-  class: new (context: CommandContext) => Recipe;
+  instance: LifecycleRecipe;
   commands: string[];
 }
 
@@ -45,51 +38,21 @@ export interface CommandInfo {
 /**
  * Registry of all available recipes
  */
-export const RECIPE_REGISTRY: Record<string, RecipeInfo> = {
-  mise: {
-    name: "mise",
-    description: "Mise task runner and environment setup",
-    class: MiseRecipe,
-    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript"]
-  },
-  docker: {
-    name: "docker",
-    description: "Docker containerization setup",
-    class: DockerRecipe,
-    commands: ["AddDockerfile", "AddDockerCompose", "AddDockerignore"]
-  },
-  node: {
-    name: "node",
-    description: "Node.js project template",
-    class: NodeRecipe,
-    commands: ["NodeCommands"]  // Placeholder - actual commands in NodeCommands.ts
-  },
-  "hermes-agent": {
-    name: "hermes-agent",
-    description: "Add a Hermes agent role to this repo (copier + BotFather + CF email + submodule)",
-    class: HermesAgentRecipe,
-    commands: [
-      "EnsureTemplateConfig",
-      "PromptForAgentConfig",
-      "RunCopierTemplate",
-      "WireTelegram",
-      "WireEmail",
-      "PrintHermesSummary",
-    ]
-  },
-  "agent-hooks": {
-    name: "agent-hooks",
-    description: "Retrofit the project-scoped agent-hooks + skill fan-out layer (Claude/Codex/Kimi/Hermes hooks via mise enter/leave)",
-    class: AgentHooksRecipe,
-    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"]
-  },
-  "mise-op-inject": {
-    name: "mise-op-inject",
-    description: "Wire up op-inject script to mise.toml for 1Password secret resolution",
-    class: MiseOpInjectRecipe,
-    commands: ["WireMiseOpInject"]
-  }
-};
+const LEGACY_PUBLIC_RECIPE_IDS = ["mise", "docker", "node", "hermes-agent", "agent-hooks", "mise-op-inject"] as const;
+
+/** Read-only compatibility facade over the exact production recipe instances. */
+export const RECIPE_REGISTRY: Readonly<Record<string, RecipeInfo>> = Object.freeze(Object.fromEntries(
+  LEGACY_PUBLIC_RECIPE_IDS.map((id) => {
+    const instance = recipeRegistry.get(id);
+    if (!instance) throw new Error(`Production recipe registry is missing ${id}`);
+    return [id, Object.freeze({
+      name: instance.metadata.name,
+      description: instance.metadata.description,
+      instance,
+      commands: [...instance.metadata.commands],
+    })];
+  }),
+));
 
 /**
  * Registry of all available commands
@@ -216,8 +179,9 @@ export function getCommandsByGroup(): Record<string, CommandInfo[]> {
 /**
  * Create recipe instance by name
  */
-export function createRecipe(name: string, context: CommandContext): Recipe | null {
+export function createRecipe(name: string, context: CommandContext): LifecycleRecipe | null {
+  void context;
   const info = getRecipeInfo(name);
   if (!info) return null;
-  return new info.class(context);
+  return info.instance;
 }

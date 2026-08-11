@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
+import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveProfileName, type HermesAgentContext } from "./types";
 
@@ -65,6 +66,7 @@ export class RunCopierTemplate extends Command {
     if (which.status !== 0) {
       return {
         success: false,
+        outcome: "failed",
         message:
           "✗ copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`",
       };
@@ -84,6 +86,7 @@ export class RunCopierTemplate extends Command {
         if (p.isCancel(proceed) || !proceed) {
           return {
             success: false,
+            outcome: "cancelled",
             message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`,
           };
         }
@@ -141,6 +144,8 @@ export class RunCopierTemplate extends Command {
     if (ctx.dryRun) {
       return {
         success: true,
+        outcome: "planned",
+        filePath: roleDir,
         message: this.formatMessage(`Would run: copier ${args.join(" ")}`),
       };
     }
@@ -150,19 +155,35 @@ export class RunCopierTemplate extends Command {
     // permission issues earlier).
     mkdirSync(join(ctx.targetDir, "agents", "hermes"), { recursive: true });
 
-    const spinner = p.spinner();
-    spinner.start(`Running copier copy  (target: agents/hermes/${role})`);
-    const result = spawnSync("copier", args, {
-      stdio: "inherit",   // pass the interactive output through; copier prints its own progress
-      env,
-      cwd: ctx.targetDir,
-    });
-    spinner.stop(result.status === 0 ? "✓ copier run complete" : "✗ copier failed");
+    const spinner = ctx.quiet ? undefined : p.spinner();
+    spinner?.start(`Running copier copy  (target: agents/hermes/${role})`);
+    const result = spawnSync("copier", args, ctx.quiet
+      ? { encoding: "utf8", env, cwd: ctx.targetDir }
+      : { stdio: "inherit", env, cwd: ctx.targetDir });
+    spinner?.stop(result.status === 0 ? "✓ copier run complete" : "✗ copier failed");
 
     if (result.status !== 0) {
       return {
         success: false,
-        message: `✗ copier exited with status ${result.status}.  Check the output above; re-run with the same flags after fixing.`,
+        outcome: "failed",
+        message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`,
+      };
+    }
+
+    const roleManifest = join(roleDir, "role.yaml");
+    try {
+      const current = readFileSync(roleManifest, "utf8");
+      const document = YAML.parseDocument(current);
+      if (document.errors.length) throw document.errors[0];
+      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
+      const next = String(document);
+      if (next !== current) writeFileSync(roleManifest, next, "utf8");
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to record Hermes deployment mode in ${roleManifest}: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
 

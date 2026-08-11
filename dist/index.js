@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // src/index.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync11, readFileSync as readFileSync9, statSync as statSync2 } from "node:fs";
-import { basename as basename5, join as join16, resolve as resolve4 } from "node:path";
+import { spawnSync as spawnSync8 } from "node:child_process";
+import { existsSync as existsSync13, readFileSync as readFileSync11, statSync as statSync2 } from "node:fs";
+import { basename as basename5, join as join17, resolve as resolve7 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -17,9 +17,9 @@ function deriveProfileName(repo, role) {
 }
 
 // src/commands/hermes/EnsureTemplateConfig.ts
-import { homedir as homedir2, platform } from "node:os";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4, dirname as dirname3 } from "node:path";
+import { homedir as homedir5, platform } from "node:os";
+import { existsSync as existsSync11, mkdirSync as mkdirSync5, writeFileSync as writeFileSync6 } from "node:fs";
+import { join as join13, dirname as dirname6 } from "node:path";
 
 // src/commands/Command.ts
 import { existsSync, writeFileSync, mkdirSync } from "fs";
@@ -58,13 +58,14 @@ var Command = class {
 };
 
 // src/parity/index.ts
-import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, mkdtempSync, readFileSync as readFileSync2, readlinkSync, readdirSync as readdirSync2, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync as writeFileSync2, chmodSync, copyFileSync, rmSync } from "node:fs";
-import { basename as basename2, dirname as dirname2, join as join3, relative as relative2, resolve as resolve2 } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync as existsSync10 } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { dirname as dirname5, join as join12, resolve as resolve6 } from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+
+// src/recipes/Recipe.ts
 import { homedir } from "node:os";
-import { createHash as createHash2 } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import YAML from "yaml";
+import { resolve } from "node:path";
 
 // src/utils/style.ts
 var env = process.env;
@@ -138,10 +139,166 @@ function joinDot(fragments) {
   return fragments.join(dim(` ${glyph.dot} `));
 }
 
+// src/recipes/Recipe.ts
+function commandStatus(result, dryRun) {
+  if (result.outcome) return result.outcome;
+  if (!result.success) return "failed";
+  if (dryRun && result.filePath) return "planned";
+  return result.filePath ? "changed" : "unchanged";
+}
+function mergeInitResults(recipeId, dryRun, results) {
+  return {
+    recipeId,
+    ok: results.every((result) => result.ok),
+    dryRun,
+    changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort(),
+    logs: results.flatMap((result) => result.logs),
+    errors: results.flatMap((result) => result.errors),
+    phases: results.flatMap((result) => result.phases)
+  };
+}
+var Recipe = class {
+  ingredientTypes = [];
+  compatibilityContext;
+  constructor(context) {
+    this.compatibilityContext = context;
+  }
+  addIngredient(CommandClass) {
+    this.ingredientTypes.push(CommandClass);
+    return this;
+  }
+  async invokeIngredients(ctx) {
+    const phases = [];
+    const logs = [];
+    const errors = [];
+    const changedFiles = [];
+    for (const CommandClass of this.ingredientTypes) {
+      const command = new CommandClass(ctx);
+      const result = await command.invoke();
+      const status = commandStatus(result, Boolean(ctx.dryRun));
+      const phaseChangedFiles = status === "changed" && result.filePath ? [resolve(ctx.targetDir, result.filePath)] : [];
+      phases.push({ id: CommandClass.name, status, changedFiles: phaseChangedFiles, message: result.message || void 0 });
+      if (result.message) logs.push(result.message);
+      changedFiles.push(...phaseChangedFiles);
+      if (status === "failed" || status === "cancelled") errors.push(result.message || `${CommandClass.name} ${status}`);
+      if (status === "failed" || status === "cancelled") break;
+    }
+    return {
+      recipeId: this.metadata.id,
+      ok: errors.length === 0,
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [...new Set(changedFiles)].sort(),
+      logs,
+      errors,
+      phases
+    };
+  }
+  /** Initialize missing/drifted state using only this recipe's owned checks. */
+  async initializeOwnedChecks(ctx) {
+    const phases = [];
+    const logs = [];
+    const errors = [];
+    const changedFiles = [];
+    for (const check of this.checks) {
+      const finding = check.audit(ctx);
+      if (finding.status === "pass" || finding.status === "skip") {
+        phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: finding.summary });
+        continue;
+      }
+      if (!finding.fixable) {
+        phases.push({ id: check.id, status: "failed", changedFiles: [], message: finding.summary });
+        errors.push(`${check.id}: ${finding.summary}`);
+        break;
+      }
+      const migrated = await check.migrate(ctx, finding);
+      const status = migrated.status === "applied" ? ctx.dryRun ? "planned" : "changed" : migrated.status === "noop" ? "unchanged" : migrated.status === "skipped" ? "skipped" : "failed";
+      const actualChanges = status === "changed" ? migrated.changedFiles : [];
+      phases.push({ id: check.id, status, changedFiles: actualChanges, message: migrated.summary });
+      logs.push(`${check.id}: ${migrated.summary}`);
+      changedFiles.push(...actualChanges);
+      if (status === "failed") {
+        errors.push(`${check.id}: ${migrated.summary}`);
+        break;
+      }
+      if (!ctx.dryRun) {
+        const postcondition = check.audit(ctx);
+        if (postcondition.status !== "pass" && postcondition.status !== "skip") {
+          const detail = postcondition.details.length ? ` (${postcondition.details.join("; ")})` : "";
+          errors.push(`${check.id}: init postcondition failed: ${postcondition.summary}${detail}`);
+          phases.push({ id: `${check.id}:postcondition`, status: "failed", changedFiles: [], message: postcondition.summary });
+          break;
+        }
+      }
+    }
+    return {
+      recipeId: this.metadata.id,
+      ok: errors.length === 0,
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [...new Set(changedFiles)].sort(),
+      logs,
+      errors,
+      phases
+    };
+  }
+  audit(ctx) {
+    return this.checks.map((check) => ({ ...check.audit(ctx), recipeId: this.metadata.id }));
+  }
+  migrate(ctx, ruleIds) {
+    const selected = this.checks.filter((check) => ruleIds.includes(check.id));
+    return selected.map((check) => ({ ...check.migrate(ctx, check.audit(ctx)), recipeId: this.metadata.id }));
+  }
+  /** @deprecated Compatibility alias; registry dispatch is authoritative. */
+  async execute(input) {
+    if (!this.compatibilityContext) throw new Error(`${this.metadata.id}.execute requires a compatibility context`);
+    const targetDir = resolve(this.compatibilityContext.targetDir);
+    const ctx = {
+      ...this.compatibilityContext,
+      targetDir,
+      repoRoot: targetDir,
+      pjanglerRoot: resolve(new URL("../..", import.meta.url).pathname),
+      homeDir: homedir(),
+      dryRun: Boolean(this.compatibilityContext.dryRun),
+      force: Boolean(this.compatibilityContext.force)
+    };
+    console.log("");
+    console.log(`  ${cyan(bold(glyph.chevron))} ${bold(`Initializing ${this.metadata.id} subsystem`)}${ctx.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
+    console.log("");
+    const result = await this.init(ctx, input);
+    for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
+    for (const error of result.errors) console.error(error);
+    if (!ctx.dryRun && result.ok) this.printNextSteps();
+    if (ctx.dryRun) {
+      console.log("");
+      console.log(`  ${green(glyph.pass)} ${dim("Dry-run complete \u2014 no files were modified.")}`);
+      console.log(`  ${dim("Remove --dry-run to apply changes.")}`);
+    }
+  }
+};
+
+// src/parity/rules.ts
+import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, mkdtempSync, readFileSync as readFileSync2, readlinkSync, readdirSync as readdirSync2, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync as writeFileSync2, chmodSync, copyFileSync, rmSync } from "node:fs";
+import { basename as basename2, dirname as dirname2, join as join3, relative as relative2, resolve as resolve3 } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createHash as createHash2 } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import YAML from "yaml";
+
+// src/recipes/supported-clis.ts
+var SUPPORTED_CLIS = Object.freeze([
+  { id: "claude", name: "Claude", bmadTool: "claude-code", projectRoot: ".claude", skillsRoot: ".claude/skills" },
+  { id: "codex", name: "Codex", bmadTool: "codex", projectRoot: ".codex", skillsRoot: ".codex/skills" },
+  { id: "gemini", name: "Gemini", bmadTool: "gemini", projectRoot: ".gemini", skillsRoot: ".gemini/skills" },
+  { id: "copilot", name: "Copilot", bmadTool: "github-copilot", projectRoot: ".copilot", skillsRoot: ".copilot/skills" },
+  { id: "opencode", name: "OpenCode", bmadTool: "opencode", projectRoot: ".opencode", skillsRoot: ".opencode/skills" },
+  { id: "kimi", name: "Kimi", bmadTool: "kimi-code", projectRoot: ".kimi-code", skillsRoot: ".kimi-code/skills" }
+]);
+var SUPPORTED_BMAD_TOOLS = SUPPORTED_CLIS.map((cli) => cli.bmadTool);
+var SUPPORTED_CLI_ROOTS = SUPPORTED_CLIS.map((cli) => cli.projectRoot);
+
 // src/parity/pack.ts
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, join as join2, relative, resolve, sep } from "node:path";
+import { basename, join as join2, relative, resolve as resolve2, sep } from "node:path";
 var PackUnavailableError = class extends Error {
   constructor(message) {
     super(message);
@@ -699,7 +856,7 @@ function verifySealedPack(root, files, directories) {
   }
 }
 function validatePack(packRoot, entry) {
-  const root = resolve(packRoot);
+  const root = resolve2(packRoot);
   assertRealDirectory(root, `Pack ${entry.name} root`);
   const metadata = readPackMetadata(root);
   const flatten = packFlattenEnabled(metadata, entry);
@@ -746,11 +903,12 @@ function validatePack(packRoot, entry) {
   };
 }
 
-// src/parity/index.ts
+// src/parity/rules.ts
 var BMAD_PACK_VERSION = "6.10.1-next.31";
 var BMAD_PACK_NAME = "bmad";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
-var OP_INJECT_SCRIPT = "[ -f '{{config_root}}/.env.op' ] && command -v op >/dev/null 2>&1 && { CDPATH= cd '{{config_root}}' && umask 077 && t=$(mktemp .env.inject.XXXXXX) && op inject -i .env.op -o $t --force && mv $t .env || rm -f $t; } || true";
+var MATERIALIZE_ENV_SCRIPT_REL = ".mise/scripts/materialize-env.sh";
+var OP_INJECT_SCRIPT = `'{{config_root}}/${MATERIALIZE_ENV_SCRIPT_REL}'`;
 var PROVISION_PACKS_SCRIPT_REL = ".mise/scripts/provision-packs.py";
 var LEGACY_PROVISION_SCRIPT_REL = ".mise/scripts/provision-bmad-skills.py";
 var SYNC_SKILLS_SCRIPT_REL = ".mise/scripts/sync-skills.py";
@@ -763,7 +921,6 @@ var SKILLS_SCHEMA_URL = "https://raw.githubusercontent.com/delorenj/skillex/main
 var RETIRED_SKILLS_SCHEMA_URLS = [
   "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json"
 ];
-var CODEGRAPH_SCRIPT = "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
 var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 var SKILLS_BACKUP_DIRNAME = "skills.bak";
 var SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"];
@@ -776,7 +933,7 @@ var PROJECT_CLI_SKILL_DIRS = [
   ".opencode/skills",
   ".kimi-code/skills"
 ];
-var CANONICAL_CLAUDE_SKILLS_ALIAS = "../.agents/skills";
+var CANONICAL_CLI_SKILLS_ALIAS = "../.agents/skills";
 var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
@@ -785,7 +942,6 @@ var HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # any given level of nesting.`;
 var LINK_AGENTFILES_HOOK_ENTRIES = [
   LINK_AGENTFILES_SCRIPT,
-  OP_INJECT_SCRIPT,
   PROVISION_PACKS_SCRIPT,
   SYNC_SKILLS_SCRIPT
 ];
@@ -835,16 +991,6 @@ run = "'{{config_root}}/.mise/scripts/versioning.sh' check"
 description = "Force every versioned file up to the highest version"
 run = "'{{config_root}}/.mise/scripts/versioning.sh' sync"
 # <<< mise-versioning <<<`;
-function resolvePjanglerRoot() {
-  let dir = dirname2(fileURLToPath(import.meta.url));
-  while (dir !== dirname2(dir)) {
-    if (existsSync2(join3(dir, "package.json")) && existsSync2(join3(dir, "templates", "commonproject", "copier.yml"))) {
-      return dir;
-    }
-    dir = dirname2(dir);
-  }
-  throw new Error("Unable to resolve pjangler root");
-}
 function normalizeNewlines(value) {
   return value.replace(/\r\n/g, "\n");
 }
@@ -978,6 +1124,7 @@ function discoverRoles(repoRoot) {
       ticketProviderName: yamlGet(text3, "ticket_provider.name"),
       ticketProviderBoardId: yamlGet(text3, "ticket_provider.board_id"),
       ticketProviderIdentifier: yamlGet(text3, "plane.identifier"),
+      deploymentSystemd: yamlGet(text3, "deployment.systemd"),
       legacyReconcileEnabled: yamlGet(text3, "reconcile.enabled"),
       legacyReconcileGraceHours: yamlGet(text3, "reconcile.grace_hours"),
       legacyReconcileAutoReview: yamlGet(text3, "reconcile.auto_review"),
@@ -1010,6 +1157,10 @@ function templateVersioningScript(ctx) {
 }
 function templateLinkAgentfilesScript(ctx) {
   return templateScript(ctx, "link-agentfiles.sh");
+}
+function templateMaterializeEnvScript(ctx) {
+  const source = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", MATERIALIZE_ENV_SCRIPT_REL);
+  return existsSync2(source) ? readText(source) : void 0;
 }
 function resolveAgentHooksLayer(ctx) {
   const override = process.env.PJ_AGENT_HOOKS_LAYER;
@@ -1134,7 +1285,7 @@ function projectSkillTopologyIssues(repoRoot) {
         issues.push(`${rel} is an unreadable skills directory symlink`);
         continue;
       }
-      if (rel !== ".claude/skills" || rawTarget !== CANONICAL_CLAUDE_SKILLS_ALIAS) {
+      if (rawTarget !== CANONICAL_CLI_SKILLS_ALIAS) {
         issues.push(`${rel} is an unsupported skills directory symlink`);
         continue;
       }
@@ -1164,10 +1315,10 @@ function projectSkillTopologyIssues(repoRoot) {
 }
 function packRootOverride(name) {
   const generic = process.env[`PJ_PACK_ROOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]?.trim();
-  if (generic) return resolve2(generic);
+  if (generic) return resolve3(generic);
   if (name === BMAD_PACK_NAME) {
     const legacy = process.env.PJ_BMAD_PACK_ROOT?.trim();
-    if (legacy) return resolve2(legacy);
+    if (legacy) return resolve3(legacy);
   }
   return void 0;
 }
@@ -1191,7 +1342,7 @@ function registryCacheDirName(registryUrl) {
 }
 function packRegistryRoots(ctx, registryUrl) {
   const explicit = process.env.PJ_SKILLS_REGISTRY_ROOT?.trim();
-  if (explicit) return [resolve2(explicit)];
+  if (explicit) return [resolve3(explicit)];
   const cacheName = registryCacheDirName(registryUrl);
   return [
     join3(ctx.homeDir, ".agents", ".cache", "registries", cacheName),
@@ -1208,7 +1359,7 @@ function resolvePackRoot(ctx, entry) {
     if (entry.source.startsWith("file:")) {
       let local;
       try {
-        local = resolve2(fileURLToPath(entry.source));
+        local = resolve3(fileURLToPath(entry.source));
       } catch (error) {
         throw new Error(`Pack ${entry.name} source is not a usable file URI: ${entry.source}`);
       }
@@ -1380,7 +1531,7 @@ function manifestEntrySourcePath(entry) {
   const source = entry.source;
   if (typeof source !== "string" || !source.startsWith("file:")) return void 0;
   try {
-    return resolve2(fileURLToPath(source));
+    return resolve3(fileURLToPath(source));
   } catch {
     return void 0;
   }
@@ -1491,7 +1642,7 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
     const path = join3(skillsDir, name);
     let linkTarget = null;
     try {
-      linkTarget = lstatSync2(path).isSymbolicLink() ? resolve2(dirname2(path), readlinkSync(path)) : null;
+      linkTarget = lstatSync2(path).isSymbolicLink() ? resolve3(dirname2(path), readlinkSync(path)) : null;
     } catch {
       linkTarget = null;
     }
@@ -1705,7 +1856,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       const entryPath = join3(skillsDir, name);
       let linkTargetsPack = false;
       try {
-        const linkTarget = lstatSync2(entryPath).isSymbolicLink() ? resolve2(dirname2(entryPath), readlinkSync(entryPath)) : null;
+        const linkTarget = lstatSync2(entryPath).isSymbolicLink() ? resolve3(dirname2(entryPath), readlinkSync(entryPath)) : null;
         linkTargetsPack = Boolean(linkTarget) && plan.ownershipRoots.some((root) => isContainedBy(root, linkTarget));
       } catch {
         linkTargetsPack = false;
@@ -1714,7 +1865,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       const target = expected.get(name);
       let correct = false;
       try {
-        correct = Boolean(target) && lstatSync2(entryPath).isSymbolicLink() && resolve2(dirname2(entryPath), readlinkSync(entryPath)) === target;
+        correct = Boolean(target) && lstatSync2(entryPath).isSymbolicLink() && resolve3(dirname2(entryPath), readlinkSync(entryPath)) === target;
       } catch {
         correct = false;
       }
@@ -1732,7 +1883,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
     }
     let correct = false;
     try {
-      correct = lstatSync2(link).isSymbolicLink() && resolve2(dirname2(link), readlinkSync(link)) === target;
+      correct = lstatSync2(link).isSymbolicLink() && resolve3(dirname2(link), readlinkSync(link)) === target;
     } catch {
       correct = false;
     }
@@ -1810,7 +1961,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       const link = join3(skillsDir, name);
       let correct = false;
       try {
-        correct = lstatSync2(link).isSymbolicLink() && resolve2(skillsDir, readlinkSync(link)) === target;
+        correct = lstatSync2(link).isSymbolicLink() && resolve3(skillsDir, readlinkSync(link)) === target;
       } catch {
         correct = false;
       }
@@ -1832,7 +1983,7 @@ function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
       const link = join3(skillsDir, name);
       let correct = false;
       try {
-        correct = lstatSync2(link).isSymbolicLink() && resolve2(skillsDir, readlinkSync(link)) === target;
+        correct = lstatSync2(link).isSymbolicLink() && resolve3(skillsDir, readlinkSync(link)) === target;
       } catch {
         correct = false;
       }
@@ -1962,6 +2113,21 @@ ${text3.slice(versioningIndex)}`;
 ${block}
 `;
 }
+function insertHookBlock(text3, block) {
+  const structural = /^(?:\[\[watch_files\]\]|\[tasks(?:\.|\]))/m.exec(text3);
+  const versioningIndex = text3.indexOf("# >>> mise-versioning >>>");
+  const candidates = [structural?.index, versioningIndex >= 0 ? versioningIndex : void 0].filter((value) => value !== void 0);
+  if (candidates.length) {
+    const index = Math.min(...candidates);
+    return `${text3.slice(0, index).replace(/\s*$/, "\n\n")}${block}
+
+${text3.slice(index)}`;
+  }
+  return `${text3.replace(/\s*$/, "")}
+
+${block}
+`;
+}
 function extractTomlStrings(text3) {
   const values = [];
   const stringPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'/g;
@@ -2010,25 +2176,6 @@ function isOpInjectHookEntry(value) {
 function truncatingOpInjectEntries(enterHooks) {
   return enterHooks.filter((value) => value.trim() !== OP_INJECT_SCRIPT && isOpInjectHookEntry(value));
 }
-function isManagedHookEntry(value) {
-  const trimmed = value.trim();
-  if (isOpInjectHookEntry(trimmed)) return true;
-  if (trimmed === SYNC_SKILLS_SCRIPT) return true;
-  if (trimmed === PROVISION_PACKS_SCRIPT) return true;
-  if (trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT) return true;
-  if (/sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)) return true;
-  if (/provision-packs\.py/.test(trimmed)) return true;
-  if (/provision-bmad-skills\.py/.test(trimmed)) return true;
-  if (/link-project-skills-to-clis\.sh'?\s*$/.test(trimmed)) return true;
-  if (/unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed)) return true;
-  return /link-agentfiles\.sh'?\s*$/.test(trimmed);
-}
-function normalizeHookScript(script, kind) {
-  const trimmed = script.trim();
-  if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
-  if (kind === "enter" && isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
-  return trimmed;
-}
 function tomlValueSpanEnd(lines, start, limit) {
   let depth = 0;
   let j = start;
@@ -2045,34 +2192,34 @@ function stripHookBlocks(text3) {
   const lines = text3.split("\n");
   const enter = [];
   const leave = [];
+  const records = [];
   const drop = new Array(lines.length).fill(false);
   const isHeader = (line) => /^\[/.test(line.trim());
-  const dropPrecedingComments = (idx) => {
-    for (let k = idx - 1; k >= 0 && !drop[k] && lines[k].trim().startsWith("#"); k--) drop[k] = true;
-  };
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
     const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed);
     if (tableMatch) {
-      const bucket = tableMatch[1] === "enter" ? enter : leave;
-      dropPrecedingComments(i);
-      drop[i] = true;
+      const kind = tableMatch[1];
+      const bucket = kind === "enter" ? enter : leave;
+      let recordScript;
       let j = i + 1;
-      for (; j < lines.length; j++) {
-        const body = lines[j].trim();
-        if (body === "" || body.startsWith("#") || isHeader(lines[j])) break;
-        drop[j] = true;
+      for (; j < lines.length && !isHeader(lines[j]); j++) {
+        if (lines[j].trim().startsWith("# >>> mise-versioning >>>")) break;
         const scriptMatch = /^\s*script\s*=\s*(.+)$/.exec(lines[j]);
         if (scriptMatch) {
           const value = extractTomlStrings(scriptMatch[1])[0];
-          if (value !== void 0) bucket.push(value);
+          if (value !== void 0) {
+            recordScript = value;
+            bucket.push(value);
+          }
         }
       }
+      for (let k = i; k < j; k++) drop[k] = true;
+      records.push({ kind, script: recordScript, raw: lines.slice(i, j).join("\n").replace(/\n+$/, "") });
       i = j - 1;
       continue;
     }
     if (trimmed === "[hooks]") {
-      dropPrecedingComments(i);
       let j = i + 1;
       let lastDrop = i;
       while (j < lines.length && !isHeader(lines[j])) {
@@ -2081,7 +2228,11 @@ function stripHookBlocks(text3) {
           const bucket = keyMatch[1] === "enter" ? enter : leave;
           const end = tomlValueSpanEnd(lines, j, lines.length);
           const chunk = lines.slice(j, end).filter((line) => !/^\s*#/.test(line)).join("\n");
-          for (const value of extractTomlStrings(chunk)) bucket.push(value);
+          for (const value of extractTomlStrings(chunk)) {
+            bucket.push(value);
+            records.push({ kind: keyMatch[1], script: value, raw: `[[hooks.${keyMatch[1]}]]
+script = ${JSON.stringify(value)}` });
+          }
           lastDrop = end - 1;
           j = end;
         } else if (/^\s*\]\s*$/.test(lines[j])) {
@@ -2097,30 +2248,83 @@ function stripHookBlocks(text3) {
     }
   }
   const kept = lines.filter((_, idx) => !drop[idx]).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
-  return { text: kept, enter, leave };
+  return { text: kept, enter, leave, records };
+}
+function ownedOpInjectScriptsOutsideEnter(text3) {
+  const findings = [];
+  let table = "";
+  for (const [index, line] of text3.split("\n").entries()) {
+    const header = /^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      table = header[1].replace(/[\[\]\s]/g, "");
+      continue;
+    }
+    const script = /^\s*script\s*=\s*(.+)$/.exec(line);
+    if (!script || table === "hooks.enter") continue;
+    const value = extractTomlStrings(script[1])[0];
+    if (value !== void 0 && isOpInjectHookEntry(value)) findings.push({ line: index + 1, value });
+  }
+  return findings;
+}
+function removeOwnedOpInjectScriptsOutsideEnter(text3) {
+  let table = "";
+  return text3.split("\n").filter((line) => {
+    const header = /^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      table = header[1].replace(/[\[\]\s]/g, "");
+      return true;
+    }
+    const script = /^\s*script\s*=\s*(.+)$/.exec(line);
+    if (!script || table === "hooks.enter") return true;
+    const value = extractTomlStrings(script[1])[0];
+    return value === void 0 || !isOpInjectHookEntry(value);
+  }).join("\n");
 }
 function renderHookTables(scripts, kind) {
   return scripts.map((script) => `[[hooks.${kind}]]
 script = ${JSON.stringify(script)}`);
 }
-function dedupePreserve(scripts) {
-  const out = [];
-  for (const script of scripts) {
-    if (script && !out.includes(script)) out.push(script);
+function isMiseCoreHookEntry(value) {
+  const trimmed = value.trim();
+  if (isOpInjectHookEntry(trimmed)) return false;
+  return trimmed === SYNC_SKILLS_SCRIPT || trimmed === PROVISION_PACKS_SCRIPT || trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed) || /provision-(?:packs|bmad-skills)\.py/.test(trimmed) || /link-(?:project-skills-to-clis|agentfiles)\.sh'?\s*$/.test(trimmed) || /unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed);
+}
+function reconcileHookOwner(text3, owns, canonicalScripts, header = "") {
+  const { text: stripped, records } = stripHookBlocks(text3);
+  const canonicalRecords = renderHookTables(canonicalScripts, "enter");
+  const output = [];
+  let inserted = false;
+  for (const record of records) {
+    if (owns(record)) {
+      if (!inserted) {
+        output.push(...canonicalRecords);
+        inserted = true;
+      }
+      continue;
+    }
+    output.push(record.raw);
   }
-  return out;
+  if (!inserted) output.unshift(...canonicalRecords);
+  const effectiveHeader = header || (stripped.includes(HOOKS_COMMENT_HEADER) ? HOOKS_COMMENT_HEADER : "");
+  const withoutManagedHeader = effectiveHeader ? stripped.replace(HOOKS_COMMENT_HEADER, "").replace(/\n{3,}/g, "\n\n") : stripped;
+  const block = [effectiveHeader, ...output].filter(Boolean).join("\n");
+  return insertHookBlock(withoutManagedHeader, block);
 }
 function upsertLinkAgentfilesHooks(text3) {
-  const { text: stripped, enter, leave } = stripHookBlocks(text3);
-  const preservedEnter = enter.map((script) => normalizeHookScript(script, "enter")).filter((script) => !isManagedHookEntry(script));
-  const enterScripts = dedupePreserve([...LINK_AGENTFILES_HOOK_ENTRIES, ...preservedEnter]);
-  const leaveScripts = dedupePreserve(leave.map((script) => normalizeHookScript(script, "leave")));
-  const block = [
-    HOOKS_COMMENT_HEADER,
-    ...renderHookTables(enterScripts, "enter"),
-    ...renderHookTables(leaveScripts, "leave")
-  ].join("\n");
-  return insertTomlBlockBeforeVersioning(stripped, block);
+  return reconcileHookOwner(
+    text3,
+    (record) => record.kind === "enter" && Boolean(record.script && isMiseCoreHookEntry(record.script)),
+    LINK_AGENTFILES_HOOK_ENTRIES,
+    HOOKS_COMMENT_HEADER
+  );
+}
+function upsertOpInjectHook(text3) {
+  const withoutStrays = removeOwnedOpInjectScriptsOutsideEnter(text3);
+  return reconcileHookOwner(
+    withoutStrays,
+    (record) => record.kind === "enter" && Boolean(record.script && isOpInjectHookEntry(record.script)),
+    [OP_INJECT_SCRIPT]
+  );
 }
 function upsertLinkAgentfilesBlock(text3, ctx) {
   const withPath = upsertMisePath(text3, requiredMisePathEntries(ctx));
@@ -2170,7 +2374,7 @@ function validateDeclaredAgent(ctx, declared) {
     details.push(`agents.${declared.agentId}.role_dir missing`);
     return { valid: false, details };
   }
-  const roleDir = resolve2(ctx.repoRoot, declared.roleDir);
+  const roleDir = resolve3(ctx.repoRoot, declared.roleDir);
   if (!existsSync2(roleDir)) {
     details.push(`agents.${declared.agentId}.role_dir ${declared.roleDir} does not exist`);
     return { valid: false, roleDir, details };
@@ -2606,53 +2810,7 @@ var BMAD_NPM_PACKAGE = "bmad-method";
 var BMAD_TARGET_CHANNEL = "next";
 var BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
-var BMAD_INSTALL_TOOLS = [
-  "claude-code",
-  "codex",
-  "cursor",
-  "github-copilot",
-  "adal",
-  "antigravity-cli",
-  "auggie",
-  "goose",
-  "cline",
-  "codebuddy",
-  "codewhale",
-  "command-code",
-  "crush",
-  "droid",
-  "firebender",
-  "gemini",
-  "antigravity",
-  "hermes",
-  "bob",
-  "iflow",
-  "junie",
-  "kilo",
-  "kimi-code",
-  "kiro",
-  "kode",
-  "mistral-vibe",
-  "mux",
-  "neovate",
-  "ona",
-  "openclaw",
-  "opencode",
-  "openhands",
-  "pi",
-  "pochi",
-  "qoder",
-  "qwen",
-  "replit",
-  "roo",
-  "rovo-dev",
-  "cortex",
-  "amp",
-  "trae",
-  "warp",
-  "windsurf",
-  "zencoder"
-];
+var BMAD_INSTALL_TOOLS = SUPPORTED_BMAD_TOOLS;
 function manifestBmadModules(repoRoot) {
   const manifestPath = join3(repoRoot, "_bmad", "_config", "manifest.yaml");
   const raw = safeReadText(manifestPath);
@@ -2698,6 +2856,50 @@ function requiredBmadSentinels(repoRoot, modules = selectedBmadModules(repoRoot)
     ...modules.map((module) => join3(module, "config.yaml"))
   ];
 }
+function canonicalBmadProjectName(repoRoot) {
+  const project = readProjectJson({ repoRoot });
+  const declared = typeof project?.project_name === "string" ? project.project_name.trim() : "";
+  return declared || basename2(repoRoot);
+}
+function bmadProjectNameIssues(repoRoot) {
+  const expected = canonicalBmadProjectName(repoRoot);
+  const paths = [];
+  const details = [];
+  const configToml = join3(repoRoot, "_bmad", "config.toml");
+  const tomlText = safeReadText(configToml);
+  const tomlMatch = tomlText?.match(/^project_name\s*=\s*"((?:\\.|[^"\\])*)"\s*$/m);
+  let tomlName;
+  if (tomlMatch) {
+    try {
+      tomlName = JSON.parse(`"${tomlMatch[1]}"`);
+    } catch {
+      tomlName = void 0;
+    }
+  }
+  if (tomlName !== expected) {
+    paths.push(configToml);
+    details.push(`_bmad/config.toml project_name must be ${JSON.stringify(expected)}`);
+  }
+  const bmadRoot = join3(repoRoot, "_bmad");
+  if (existsSync2(bmadRoot)) {
+    for (const name of readdirSync2(bmadRoot)) {
+      const configPath = join3(bmadRoot, name, "config.yaml");
+      const raw = safeReadText(configPath);
+      if (raw === null) continue;
+      let actual;
+      try {
+        actual = YAML.parse(raw)?.project_name;
+      } catch {
+        actual = void 0;
+      }
+      if (actual !== expected) {
+        paths.push(configPath);
+        details.push(`_bmad/${name}/config.yaml project_name must be ${JSON.stringify(expected)}`);
+      }
+    }
+  }
+  return { paths: [...new Set(paths)].sort(), details };
+}
 function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
   const installerModules = modules.length ? modules.join(",") : "core";
   return [
@@ -2710,7 +2912,9 @@ function bmadInstallArgs(repoRoot, modules = selectedBmadModules(repoRoot)) {
     "--modules",
     installerModules,
     "--tools",
-    BMAD_INSTALL_TOOLS.join(",")
+    BMAD_INSTALL_TOOLS.join(","),
+    "--set",
+    `core.project_name=${canonicalBmadProjectName(repoRoot)}`
   ];
 }
 function runBmadInstall(repoRoot, modules = selectedBmadModules(repoRoot)) {
@@ -2950,7 +3154,7 @@ function unprovisionedRoleAgents(registry, repoRoot, canonical) {
   for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
     if (canonical.has(agentId)) continue;
     const configured = String(entry.role_dir ?? "");
-    const roleDir = configured ? resolve2(repoRoot, configured) : "";
+    const roleDir = configured ? resolve3(repoRoot, configured) : "";
     if (!roleDir || !existsSync2(join3(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
   }
   return [...blockers.entries()].map(([agentId, value]) => ({
@@ -3089,7 +3293,7 @@ function auditManifestRoleConsistency(repoRoot) {
       details.push(`agents.${agentId}.role_dir missing`);
       continue;
     }
-    const roleDir = resolve2(repoRoot, agent.role_dir);
+    const roleDir = resolve3(repoRoot, agent.role_dir);
     if (!existsSync2(roleDir)) {
       details.push(`agents.${agentId}.role_dir does not exist: ${agent.role_dir}`);
       continue;
@@ -3307,14 +3511,14 @@ function runMomoLifecyclePlaneAudit(repoRoot, live = false) {
   return {
     ready,
     profile: "momo-lifecycle-plane",
-    repo: resolve2(repoRoot),
+    repo: resolve3(repoRoot),
     live,
     auditedAt: (/* @__PURE__ */ new Date()).toISOString(),
     findings
   };
 }
 function runMomoReadinessAudit(repoRoot, live = false) {
-  return runMomoLifecyclePlaneAudit(resolve2(repoRoot ?? process.cwd()), live);
+  return runMomoLifecyclePlaneAudit(resolve3(repoRoot ?? process.cwd()), live);
 }
 function formatMomoReadinessReport(report) {
   const sectionWidth = report.findings.reduce((max, f) => Math.max(max, f.section.length), 0);
@@ -3372,1035 +3576,1344 @@ function removeMalformedCommentOpReferences(text3) {
   });
   return { text: lines.join("\n"), changed };
 }
-var RULES = [
-  {
-    id: "mise.config-root",
-    title: "mise config_root + AGENTS link hooks",
-    audit: (ctx) => {
-      const misePath = join3(ctx.repoRoot, "mise.toml");
-      if (!existsSync2(misePath)) {
-        return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
-      }
-      const text3 = readText(misePath);
-      const details = [];
-      const linkAgentfilesPath = join3(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
-      if (!existsSync2(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
-      const pathValues = [...(text3.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-      const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
-      if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
-      if (!text3.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      const enterHookValues = stripHookBlocks(text3).enter;
-      const truncating = truncatingOpInjectEntries(enterHookValues);
-      if (truncating.length) {
-        details.push(
-          `hooks.enter has ${truncating.length} op inject hook(s) that write .env non-atomically and truncate it before op runs (a missing .env.op, a missing op CLI, or merely an expired op session destroys it) \u2014 must materialize via mktemp + atomic mv`
-        );
-      }
-      if (!enterHookValues.some((value) => value.trim() === OP_INJECT_SCRIPT)) {
-        details.push("hooks.enter must materialize .env from .env.op via the atomic op inject hook");
-      }
-      if (!text3.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
-      if (!text3.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
-      return {
-        id: "mise.config-root",
-        title: "mise config_root + AGENTS link hooks",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "mise AGENTS-linking parity verified" : `${details.length} issue(s) detected in mise AGENTS-linking contract`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const path = join3(ctx.repoRoot, "mise.toml");
-      const changedFiles = [];
-      const details = [];
-      if (!existsSync2(path)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
-          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
-        }
-        details.push("Initialized mise.toml from generated-project template");
-        if (ctx.dryRun) {
-          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
-        }
-      }
-      let text3 = readText(path);
-      const next = upsertLinkAgentfilesBlock(text3, ctx);
-      if (next !== text3) {
-        if (!changedFiles.includes(path)) changedFiles.push(path);
-        if (!ctx.dryRun) writeText(path, next);
-        text3 = next;
-      }
-      const linkAgentfilesPath = join3(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
-      const expectedScript = templateLinkAgentfilesScript(ctx);
-      if (expectedScript === void 0) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
-      }
-      if (safeReadText(linkAgentfilesPath) !== expectedScript) {
-        changedFiles.push(linkAgentfilesPath);
-        if (!ctx.dryRun) {
-          writeText(linkAgentfilesPath, expectedScript);
-          chmodSync(linkAgentfilesPath, 493);
-        }
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
-        changedFiles,
-        details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block and script"] : []
-      };
-    }
-  },
-  {
-    id: "mise.versioning",
-    title: "managed mise versioning block",
-    audit: (ctx) => {
-      const details = [];
-      const misePath = join3(ctx.repoRoot, "mise.toml");
-      const versioningPath = join3(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
-      const manifestPath = join3(ctx.repoRoot, ".mise", "version-files.conf");
-      const text3 = safeReadText(misePath);
-      if (!text3?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
-      if (!existsSync2(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
-      if (!existsSync2(manifestPath)) details.push(".mise/version-files.conf missing");
-      return {
-        id: "mise.versioning",
-        title: "managed mise versioning block",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "mise versioning parity verified" : `${details.length} versioning issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const details = [];
-      const misePath = join3(ctx.repoRoot, "mise.toml");
-      if (!existsSync2(misePath)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
-          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
-        }
-        details.push("Initialized mise.toml from generated-project template");
-        if (ctx.dryRun) {
-          return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
-        }
-      }
-      const currentMise = readText(misePath);
-      let cleanedMise = currentMise;
-      if (!currentMise.includes("# >>> mise-versioning >>>")) {
-        const taskNames = ["version", "version:bump", "version:bump-patch", "version:bump-minor", "version:bump-major", "version:check", "version:sync"];
-        for (const taskName of taskNames) {
-          const escaped = taskName.replace(/:/g, "\\:");
-          const headerPattern = new RegExp(`^\\[tasks\\.(?:"${escaped}"|'${escaped}'|${escaped})\\]$`);
-          cleanedMise = removeTomlSection(cleanedMise, headerPattern);
-        }
-      }
-      const nextMise = replaceOrAppendManagedBlock(cleanedMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
-      if (nextMise !== currentMise) {
-        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
-        if (!ctx.dryRun) writeText(misePath, nextMise);
-      }
-      const versioningPath = join3(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
-      const expectedScript = templateVersioningScript(ctx);
-      if (expectedScript === void 0) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
-      }
-      if (safeReadText(versioningPath) !== expectedScript) {
-        changedFiles.push(versioningPath);
-        if (!ctx.dryRun) {
-          writeText(versioningPath, expectedScript);
-          chmodSync(versioningPath, 493);
-        }
-      }
-      const manifestPath = join3(ctx.repoRoot, ".mise", "version-files.conf");
-      const expectedManifest = templateVersionFilesConf(ctx, ctx.repoRoot);
-      if (safeReadText(manifestPath) !== expectedManifest) {
-        changedFiles.push(manifestPath);
-        if (!ctx.dryRun) writeText(manifestPath, expectedManifest);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
-        changedFiles,
-        details: []
-      };
-    }
-  },
-  {
-    id: "skills.project-manifest",
-    title: "Skillex project skills manifest",
-    audit: (ctx) => {
-      const details = [];
-      const manifestPath = join3(ctx.repoRoot, ".agents", "skills.json");
-      const legacyDir = join3(ctx.repoRoot, ".agents", "skills");
-      const localExamplePath = join3(ctx.repoRoot, ".agents", "local.example.json");
-      const misePath = join3(ctx.repoRoot, "mise.toml");
-      let fixable = true;
-      const manifest = tryParseJson(safeReadText(manifestPath));
-      const plan = buildPackPlan(ctx, manifest);
-      if (plan.errors.length) {
-        details.push(...plan.errors);
-        fixable = false;
-      }
-      const packAdvisories = [
-        ...plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : [],
-        ...plan.packWarnings
-      ];
-      const expectedBmad = plan.manifestSkills;
-      const expectedByName = new Map(plan.projections);
-      const expectedNames = new Set(expectedByName.keys());
-      const managedManifestNames = new Set(expectedBmad.map((entry) => entry.name));
-      if (!manifest) {
-        details.push(".agents/skills.json missing or invalid JSON");
+var UNSUPPORTED_BMAD_ROOTS = {
+  ".agent": "antigravity",
+  ".adal": "adal",
+  ".bob": "bob",
+  ".cline": "cline",
+  ".codebuddy": "codebuddy",
+  ".codewhale": "codewhale",
+  ".cortex": "cortex",
+  ".cursor": "cursor",
+  ".factory": "droid",
+  ".firebender": "firebender",
+  ".iflow": "iflow",
+  ".junie": "junie",
+  ".kiro": "kiro",
+  ".kode": "kode",
+  ".neovate": "neovate",
+  ".ona": "ona",
+  ".qoder": "qoder",
+  ".qwen": "qwen",
+  ".trae": "trae",
+  ".zcode": "zcode",
+  ".zencoder": "zencoder"
+};
+function parseCsvRows(text3) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < text3.length; index++) {
+    const char = text3[index];
+    if (quoted) {
+      if (char === '"' && text3[index + 1] === '"') {
+        field += '"';
+        index++;
+      } else if (char === '"') {
+        quoted = false;
       } else {
-        if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
-        if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
-        if (typeof manifest.$schema === "string" && RETIRED_SKILLS_SCHEMA_URLS.includes(manifest.$schema)) {
-          details.push(`.agents/skills.json $schema still points at the retired ${manifest.$schema}; it should be ${SKILLS_SCHEMA_URL}`);
-        } else if (manifest.$schema !== SKILLS_SCHEMA_URL) {
-          details.push(`.agents/skills.json should set $schema to ${SKILLS_SCHEMA_URL}`);
+        field += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\n") {
+      row.push(field.replace(/\r$/, ""));
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+  if (field || row.length) {
+    row.push(field.replace(/\r$/, ""));
+    rows.push(row);
+  }
+  return rows;
+}
+function csvObjects(text3) {
+  const [headers, ...rows] = parseCsvRows(text3);
+  if (!headers?.length) return [];
+  return rows.filter((row) => row.some(Boolean)).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])));
+}
+function installedBmadTools(repoRoot) {
+  const raw = safeReadText(join3(repoRoot, "_bmad", "_config", "manifest.yaml"));
+  if (!raw) return /* @__PURE__ */ new Set();
+  try {
+    const parsed = YAML.parse(raw);
+    return new Set(Array.isArray(parsed?.ides) ? parsed.ides.filter((entry) => typeof entry === "string") : []);
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+function bmadCliProjectionInventory(repoRoot) {
+  const filesText = safeReadText(join3(repoRoot, "_bmad", "_config", "files-manifest.csv"));
+  const skillsText = safeReadText(join3(repoRoot, "_bmad", "_config", "skill-manifest.csv"));
+  if (!filesText || !skillsText) return { files: /* @__PURE__ */ new Map(), error: "BMAD files/skill manifests are missing" };
+  const fileHashes = /* @__PURE__ */ new Map();
+  for (const row of csvObjects(filesText)) {
+    const hash = row.hash ?? "";
+    if (row.path && /^[a-f0-9]{64}$/i.test(hash)) fileHashes.set(row.path.replace(/^_bmad\//, ""), hash.toLowerCase());
+  }
+  const projected = /* @__PURE__ */ new Map();
+  for (const row of csvObjects(skillsText)) {
+    const canonicalId = row.canonicalId ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(canonicalId)) continue;
+    const skillPath = (row.path ?? "").replace(/^_bmad\//, "");
+    if (!skillPath.endsWith("/SKILL.md")) continue;
+    const sourceRoot = dirname2(skillPath);
+    for (const [sourcePath, hash] of fileHashes) {
+      if (sourcePath !== `${sourceRoot}/SKILL.md` && !sourcePath.startsWith(`${sourceRoot}/`)) continue;
+      const suffix = relative2(sourceRoot, sourcePath);
+      if (!suffix || suffix.startsWith("..")) continue;
+      projected.set(join3("skills", canonicalId, suffix), hash);
+    }
+  }
+  return projected.size ? { files: projected } : { files: projected, error: "BMAD manifests contain no projected skill inventory" };
+}
+function inventoryFilesUnder(root, current = root) {
+  if (!existsSync2(current)) return { files: [], unsafe: [] };
+  const stat = lstatSync2(current);
+  const rel = relative2(root, current) || ".";
+  if (stat.isSymbolicLink()) return { files: [], unsafe: [rel] };
+  if (stat.isFile()) return { files: [relative2(root, current)], unsafe: [] };
+  if (!stat.isDirectory()) return { files: [], unsafe: [rel] };
+  const result = { files: [], unsafe: [] };
+  for (const name of readdirSync2(current)) {
+    const child = inventoryFilesUnder(root, join3(current, name));
+    result.files.push(...child.files);
+    result.unsafe.push(...child.unsafe);
+  }
+  return result;
+}
+function unsupportedRootAttestation(repoRoot, rootName) {
+  const root = join3(repoRoot, rootName);
+  const stat = lstatSync2(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return { safe: false, reason: `${rootName} is not a regular generated directory` };
+  const installerTool = UNSUPPORTED_BMAD_ROOTS[rootName];
+  if (!installedBmadTools(repoRoot).has(installerTool)) {
+    return { safe: false, reason: `BMAD installer metadata does not declare tool ${installerTool}` };
+  }
+  const inventory = bmadCliProjectionInventory(repoRoot);
+  if (inventory.error) return { safe: false, reason: inventory.error };
+  const walked = inventoryFilesUnder(root);
+  if (walked.unsafe.length) return { safe: false, reason: `${rootName}/${walked.unsafe[0]} is a symlink or non-regular entry` };
+  if (!walked.files.length) return { safe: false, reason: `${rootName} has no installer-owned files` };
+  for (const rel of walked.files) {
+    const expectedHash = inventory.files.get(rel);
+    if (!expectedHash) return { safe: false, reason: `${rootName}/${rel} is outside the BMAD generated inventory` };
+    const actualHash = createHash2("sha256").update(readFileSync2(join3(root, rel))).digest("hex");
+    if (actualHash !== expectedHash) return { safe: false, reason: `${rootName}/${rel} was locally modified after generation` };
+  }
+  return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
+}
+function createMiseChecks() {
+  return [
+    {
+      id: "mise.config-root",
+      title: "mise config_root + AGENTS link hooks",
+      audit: (ctx) => {
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        if (!existsSync2(misePath)) {
+          return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
         }
-        if (!Array.isArray(manifest.skills)) {
-          details.push(".agents/skills.json should define a skills array");
-        } else {
-          const actualBmad = new Map(
-            manifest.skills.filter((entry) => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, managedManifestNames, plan.implicitRoots)).map((entry) => [String(entry.name), String(entry.source ?? "")])
-          );
-          const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
-          if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
-            details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+        const text3 = readText(misePath);
+        const details = [];
+        const linkAgentfilesPath = join3(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+        if (!existsSync2(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
+        const pathValues = [...(text3.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+        const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
+        if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
+        if (!text3.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
+        if (!text3.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
+        if (!text3.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
+        return {
+          id: "mise.config-root",
+          title: "mise config_root + AGENTS link hooks",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "mise AGENTS-linking parity verified" : `${details.length} issue(s) detected in mise AGENTS-linking contract`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const path = join3(ctx.repoRoot, "mise.toml");
+        const changedFiles = [];
+        const details = [];
+        if (!existsSync2(path)) {
+          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+            return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
           }
-          const redundant = manifest.skills.filter((entry) => isRedundantDeclaredPackEntry(entry, plan)).map(skillManifestEntryName).filter((name) => Boolean(name));
-          if (redundant.length) {
-            details.push(
-              `.agents/skills.json skills[] duplicates ${redundant.length} declared pack member(s) and should drop them: ${redundant.join(", ")}`
+          details.push("Initialized mise.toml from generated-project template");
+          if (ctx.dryRun) {
+            return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+          }
+        }
+        let text3 = readText(path);
+        const next = upsertLinkAgentfilesBlock(text3, ctx);
+        if (next !== text3) {
+          if (!changedFiles.includes(path)) changedFiles.push(path);
+          if (!ctx.dryRun) writeText(path, next);
+          text3 = next;
+        }
+        const linkAgentfilesPath = join3(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
+        const expectedScript = templateLinkAgentfilesScript(ctx);
+        if (expectedScript === void 0) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
+        }
+        if (safeReadText(linkAgentfilesPath) !== expectedScript) {
+          changedFiles.push(linkAgentfilesPath);
+          if (!ctx.dryRun) {
+            writeText(linkAgentfilesPath, expectedScript);
+            chmodSync(linkAgentfilesPath, 493);
+          }
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
+          changedFiles,
+          details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block and script"] : []
+        };
+      }
+    },
+    {
+      id: "mise.versioning",
+      title: "managed mise versioning block",
+      audit: (ctx) => {
+        const details = [];
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        const versioningPath = join3(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+        const manifestPath = join3(ctx.repoRoot, ".mise", "version-files.conf");
+        const text3 = safeReadText(misePath);
+        if (!text3?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
+        if (!existsSync2(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
+        if (!existsSync2(manifestPath)) details.push(".mise/version-files.conf missing");
+        return {
+          id: "mise.versioning",
+          title: "managed mise versioning block",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "mise versioning parity verified" : `${details.length} versioning issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const details = [];
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        if (!existsSync2(misePath)) {
+          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+            return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
+          }
+          details.push("Initialized mise.toml from generated-project template");
+          if (ctx.dryRun) {
+            return { id: finding.id, title: finding.title, status: "applied", summary: "Would initialize mise.toml from generated-project template", changedFiles, details };
+          }
+        }
+        const currentMise = readText(misePath);
+        let cleanedMise = currentMise;
+        if (!currentMise.includes("# >>> mise-versioning >>>")) {
+          const taskNames = ["version", "version:bump", "version:bump-patch", "version:bump-minor", "version:bump-major", "version:check", "version:sync"];
+          for (const taskName of taskNames) {
+            const escaped = taskName.replace(/:/g, "\\:");
+            const headerPattern = new RegExp(`^\\[tasks\\.(?:"${escaped}"|'${escaped}'|${escaped})\\]$`);
+            cleanedMise = removeTomlSection(cleanedMise, headerPattern);
+          }
+        }
+        const nextMise = replaceOrAppendManagedBlock(cleanedMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
+        if (nextMise !== currentMise) {
+          if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+          if (!ctx.dryRun) writeText(misePath, nextMise);
+        }
+        const versioningPath = join3(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
+        const expectedScript = templateVersioningScript(ctx);
+        if (expectedScript === void 0) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/versioning.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
+        }
+        if (safeReadText(versioningPath) !== expectedScript) {
+          changedFiles.push(versioningPath);
+          if (!ctx.dryRun) {
+            writeText(versioningPath, expectedScript);
+            chmodSync(versioningPath, 493);
+          }
+        }
+        const manifestPath = join3(ctx.repoRoot, ".mise", "version-files.conf");
+        const expectedManifest = templateVersionFilesConf(ctx, ctx.repoRoot);
+        if (safeReadText(manifestPath) !== expectedManifest) {
+          changedFiles.push(manifestPath);
+          if (!ctx.dryRun) writeText(manifestPath, expectedManifest);
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
+          changedFiles,
+          details: []
+        };
+      }
+    }
+  ];
+}
+function createAgentHooksChecks() {
+  return [
+    {
+      id: "skills.project-manifest",
+      title: "Skillex project skills manifest",
+      audit: (ctx) => {
+        const details = [];
+        const manifestPath = join3(ctx.repoRoot, ".agents", "skills.json");
+        const legacyDir = join3(ctx.repoRoot, ".agents", "skills");
+        const localExamplePath = join3(ctx.repoRoot, ".agents", "local.example.json");
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        let fixable = true;
+        const manifest = tryParseJson(safeReadText(manifestPath));
+        const plan = buildPackPlan(ctx, manifest);
+        if (plan.errors.length) {
+          details.push(...plan.errors);
+          fixable = false;
+        }
+        const packAdvisories = [
+          ...plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : [],
+          ...plan.packWarnings
+        ];
+        const expectedBmad = plan.manifestSkills;
+        const expectedByName = new Map(plan.projections);
+        const expectedNames = new Set(expectedByName.keys());
+        const managedManifestNames = new Set(expectedBmad.map((entry) => entry.name));
+        if (!manifest) {
+          details.push(".agents/skills.json missing or invalid JSON");
+        } else {
+          if (manifest.inherit_global !== true) details.push(".agents/skills.json should set inherit_global: true");
+          if (manifest.registry !== SKILLS_REGISTRY_URL) details.push(`.agents/skills.json should set registry to ${SKILLS_REGISTRY_URL}`);
+          if (typeof manifest.$schema === "string" && RETIRED_SKILLS_SCHEMA_URLS.includes(manifest.$schema)) {
+            details.push(`.agents/skills.json $schema still points at the retired ${manifest.$schema}; it should be ${SKILLS_SCHEMA_URL}`);
+          } else if (manifest.$schema !== SKILLS_SCHEMA_URL) {
+            details.push(`.agents/skills.json should set $schema to ${SKILLS_SCHEMA_URL}`);
+          }
+          if (!Array.isArray(manifest.skills)) {
+            details.push(".agents/skills.json should define a skills array");
+          } else {
+            const actualBmad = new Map(
+              manifest.skills.filter((entry) => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, managedManifestNames, plan.implicitRoots)).map((entry) => [String(entry.name), String(entry.source ?? "")])
             );
+            const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
+            if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
+              details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+            }
+            const redundant = manifest.skills.filter((entry) => isRedundantDeclaredPackEntry(entry, plan)).map(skillManifestEntryName).filter((name) => Boolean(name));
+            if (redundant.length) {
+              details.push(
+                `.agents/skills.json skills[] duplicates ${redundant.length} declared pack member(s) and should drop them: ${redundant.join(", ")}`
+              );
+            }
           }
         }
-      }
-      const invalidBmadLinkNames = /* @__PURE__ */ new Set();
-      if (existsSync2(legacyDir)) {
-        for (const name of readdirSync2(legacyDir)) {
-          const expected = expectedByName.get(name);
-          const path = join3(legacyDir, name);
-          let linkTargetsPack = false;
-          try {
-            const linkTarget = lstatSync2(path).isSymbolicLink() ? resolve2(dirname2(path), readlinkSync(path)) : null;
-            linkTargetsPack = Boolean(linkTarget) && plan.ownershipRoots.some((root) => isContainedBy(root, linkTarget));
-          } catch {
-            linkTargetsPack = false;
+        const invalidBmadLinkNames = /* @__PURE__ */ new Set();
+        if (existsSync2(legacyDir)) {
+          for (const name of readdirSync2(legacyDir)) {
+            const expected = expectedByName.get(name);
+            const path = join3(legacyDir, name);
+            let linkTargetsPack = false;
+            try {
+              const linkTarget = lstatSync2(path).isSymbolicLink() ? resolve3(dirname2(path), readlinkSync(path)) : null;
+              linkTargetsPack = Boolean(linkTarget) && plan.ownershipRoots.some((root) => isContainedBy(root, linkTarget));
+            } catch {
+              linkTargetsPack = false;
+            }
+            if (!expected && !linkTargetsPack) continue;
+            try {
+              if (!expected || !lstatSync2(path).isSymbolicLink() || resolve3(dirname2(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
+            } catch {
+              invalidBmadLinkNames.add(name);
+            }
           }
-          if (!expected && !linkTargetsPack) continue;
-          try {
-            if (!expected || !lstatSync2(path).isSymbolicLink() || resolve2(dirname2(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
-          } catch {
-            invalidBmadLinkNames.add(name);
+          for (const [name, expected] of expectedByName) {
+            const path = join3(legacyDir, name);
+            try {
+              if (!lstatSync2(path).isSymbolicLink() || resolve3(dirname2(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
+            } catch {
+              invalidBmadLinkNames.add(name);
+            }
           }
+        } else {
+          for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
         }
-        for (const [name, expected] of expectedByName) {
-          const path = join3(legacyDir, name);
-          try {
-            if (!lstatSync2(path).isSymbolicLink() || resolve2(dirname2(path), readlinkSync(path)) !== expected) invalidBmadLinkNames.add(name);
-          } catch {
-            invalidBmadLinkNames.add(name);
-          }
+        if (invalidBmadLinkNames.size > 0) {
+          details.push(`${invalidBmadLinkNames.size} managed pack skill path(s) should be symlinks into their declared Skillex pack`);
         }
-      } else {
-        for (const name of expectedByName.keys()) invalidBmadLinkNames.add(name);
-      }
-      if (invalidBmadLinkNames.size > 0) {
-        details.push(`${invalidBmadLinkNames.size} managed pack skill path(s) should be symlinks into their declared Skillex pack`);
-      }
-      const manifestNames = new Set(
-        (Array.isArray(manifest?.skills) ? manifest.skills : []).map(skillManifestEntryName).filter((name) => Boolean(name))
-      );
-      const unmanagedSkillNames = legacyCommittedSkillNames(
-        legacyDir,
-        skillsBackupDir(ctx.repoRoot),
-        expectedNames,
-        plan.ownershipRoots,
-        manifestNames
-      );
-      for (const name of unmanagedSkillNames) {
-        details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
-      }
-      if (unmanagedSkillNames.length) {
-        details.push(
-          `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+        const manifestNames = new Set(
+          (Array.isArray(manifest?.skills) ? manifest.skills : []).map(skillManifestEntryName).filter((name) => Boolean(name))
         );
-      }
-      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
-        if (existsSync2(join3(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
-      }
-      const localExample = tryParseJson(safeReadText(localExamplePath));
-      if (localExample && Object.prototype.hasOwnProperty.call(localExample, "skills")) {
-        details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
-      }
-      if (existsSync2(join3(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL))) {
-        details.push(`${LEGACY_PROVISION_SCRIPT_REL} is the retired BMAD-only provisioner and should be replaced by ${PROVISION_PACKS_SCRIPT_REL}`);
-      }
-      const mise = safeReadText(misePath);
-      if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
-      if (!mise?.includes(PROVISION_PACKS_SCRIPT)) details.push("mise.toml should provision declared Skillex packs before syncing skills");
-      if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_PACKS_SCRIPT) && mise.indexOf(PROVISION_PACKS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
-        details.push("mise.toml should run the pack provisioner before project skill sync");
-      }
-      if (mise?.includes(LEGACY_PROVISION_TASK) || mise?.includes("provision-bmad-skills.py")) {
-        details.push(`mise.toml still references the retired ${LEGACY_PROVISION_TASK} task/provision-bmad-skills.py script`);
-      }
-      if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
-        details.push("mise.toml still invokes the missing bare sync-skills.py executable");
-      }
-      if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
-      if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
-      if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`skills-sync task should depend on ${PROVISION_PACKS_TASK}`);
-      for (const [rel, label] of [
-        [PROVISION_PACKS_SCRIPT_REL, "Skillex pack provisioning script"],
-        [SYNC_SKILLS_SCRIPT_REL, "Project-local skills sync engine"]
-      ]) {
-        const target = join3(ctx.repoRoot, rel);
-        const expected = templateCommonProjectText(ctx, rel);
-        const stat = lstatIfPresent(target);
-        if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
-          details.push(`${label} is missing or unsafe`);
-          if (stat) fixable = false;
-        } else {
-          if (expected === void 0 || safeReadText(target) !== expected) details.push(`${label} differs from the shipped template`);
-          if ((Number(stat.mode) & 73) === 0) details.push(`${label} is not executable`);
+        const unmanagedSkillNames = legacyCommittedSkillNames(
+          legacyDir,
+          skillsBackupDir(ctx.repoRoot),
+          expectedNames,
+          plan.ownershipRoots,
+          manifestNames
+        );
+        for (const name of unmanagedSkillNames) {
+          details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
         }
+        if (unmanagedSkillNames.length) {
+          details.push(
+            `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+          );
+        }
+        for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+          if (existsSync2(join3(ctx.repoRoot, rel))) details.push(`${rel} is a legacy symlink-era script and should be removed`);
+        }
+        const localExample = tryParseJson(safeReadText(localExamplePath));
+        if (localExample && Object.prototype.hasOwnProperty.call(localExample, "skills")) {
+          details.push(".agents/local.example.json still documents legacy skills overrides; drop the skills section");
+        }
+        if (existsSync2(join3(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL))) {
+          details.push(`${LEGACY_PROVISION_SCRIPT_REL} is the retired BMAD-only provisioner and should be replaced by ${PROVISION_PACKS_SCRIPT_REL}`);
+        }
+        const mise = safeReadText(misePath);
+        if (!mise?.includes(SYNC_SKILLS_SCRIPT)) details.push("mise.toml should run the shipped project-local sync-skills.py engine via config_root");
+        if (!mise?.includes(PROVISION_PACKS_SCRIPT)) details.push("mise.toml should provision declared Skillex packs before syncing skills");
+        if (mise?.includes(SYNC_SKILLS_SCRIPT) && mise.includes(PROVISION_PACKS_SCRIPT) && mise.indexOf(PROVISION_PACKS_SCRIPT) > mise.indexOf(SYNC_SKILLS_SCRIPT)) {
+          details.push("mise.toml should run the pack provisioner before project skill sync");
+        }
+        if (mise?.includes(LEGACY_PROVISION_TASK) || mise?.includes("provision-bmad-skills.py")) {
+          details.push(`mise.toml still references the retired ${LEGACY_PROVISION_TASK} task/provision-bmad-skills.py script`);
+        }
+        if (mise?.includes('script = "sync-skills.py --scope project"') || mise?.includes('run = "sync-skills.py --scope project"')) {
+          details.push("mise.toml still invokes the missing bare sync-skills.py executable");
+        }
+        if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
+        if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
+        if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`skills-sync task should depend on ${PROVISION_PACKS_TASK}`);
+        for (const [rel, label] of [
+          [PROVISION_PACKS_SCRIPT_REL, "Skillex pack provisioning script"],
+          [SYNC_SKILLS_SCRIPT_REL, "Project-local skills sync engine"]
+        ]) {
+          const target = join3(ctx.repoRoot, rel);
+          const expected = templateCommonProjectText(ctx, rel);
+          const stat = lstatIfPresent(target);
+          if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+            details.push(`${label} is missing or unsafe`);
+            if (stat) fixable = false;
+          } else {
+            if (expected === void 0 || safeReadText(target) !== expected) details.push(`${label} differs from the shipped template`);
+            if ((Number(stat.mode) & 73) === 0) details.push(`${label} is not executable`);
+          }
+        }
+        const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+        if (topologyIssues.length) {
+          details.push(...topologyIssues.map((issue) => `CLI skill topology: ${issue}`));
+          fixable = false;
+        }
+        if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
+          details.push("mise.toml still contains legacy skill-link wiring");
+        }
+        return {
+          id: "skills.project-manifest",
+          title: "Skillex project skills manifest",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? `Skillex skills manifest parity verified${packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
+          details,
+          fixable
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const details = [];
+        const manifestPath = join3(ctx.repoRoot, ".agents", "skills.json");
+        const localExamplePath = join3(ctx.repoRoot, ".agents", "local.example.json");
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        const provisionScriptPath = join3(ctx.repoRoot, PROVISION_PACKS_SCRIPT_REL);
+        const legacyProvisionScriptPath = join3(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL);
+        const syncScriptPath = join3(ctx.repoRoot, SYNC_SKILLS_SCRIPT_REL);
+        const expectedProvisionScript = templateCommonProjectText(ctx, PROVISION_PACKS_SCRIPT_REL);
+        const expectedSyncScript = templateCommonProjectText(ctx, SYNC_SKILLS_SCRIPT_REL);
+        const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
+        if (topologyIssues.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Unsafe project CLI skill topology must be repaired manually",
+            changedFiles,
+            details: topologyIssues
+          };
+        }
+        if (!expectedProvisionScript || !expectedSyncScript) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "pjangler install is missing a shipped skills executable",
+            changedFiles,
+            details: [
+              ...!expectedProvisionScript ? [`Missing Skillex pack provisioning script template (${PROVISION_PACKS_SCRIPT_REL})`] : [],
+              ...!expectedSyncScript ? ["Missing project-local skills sync engine template"] : []
+            ]
+          };
+        }
+        const unsafeScriptTargets = [provisionScriptPath, syncScriptPath].filter((path) => {
+          const stat = lstatIfPresent(path);
+          return Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
+        });
+        if (unsafeScriptTargets.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Refusing non-regular managed skills executable target",
+            changedFiles,
+            details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`)
+          };
+        }
+        const provisioned = provisionBmadSkills(ctx);
+        if (!provisioned.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "A declared Skillex pack is unavailable or untrusted",
+            changedFiles,
+            details: [provisioned.error ?? "Unknown Skillex pack error"]
+          };
+        }
+        changedFiles.push(...provisioned.changedFiles);
+        if (provisioned.changedFiles.includes(manifestPath)) details.push("Normalized .agents/skills.json against the declared Skillex packs");
+        details.push(...provisioned.packWarnings ?? []);
+        details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
+        for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
+          const path = join3(ctx.repoRoot, rel);
+          if (existsSync2(path)) {
+            changedFiles.push(path);
+            if (!ctx.dryRun) unlinkSync(path);
+          }
+        }
+        const templateLocalExample = templateCommonProjectText(ctx, ".agents/local.example.json");
+        const currentLocalExample = safeReadText(localExamplePath);
+        if (templateLocalExample && currentLocalExample && currentLocalExample !== templateLocalExample) {
+          changedFiles.push(localExamplePath);
+          if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
+        }
+        normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
+        normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
+        const legacyProvisionStat = lstatIfPresent(legacyProvisionScriptPath);
+        if (legacyProvisionStat) {
+          if (legacyProvisionStat.isDirectory() && !legacyProvisionStat.isSymbolicLink()) {
+            details.push(`${LEGACY_PROVISION_SCRIPT_REL} is a directory and must be removed manually`);
+          } else {
+            changedFiles.push(legacyProvisionScriptPath);
+            details.push(`Removed the retired ${LEGACY_PROVISION_SCRIPT_REL}`);
+            if (!ctx.dryRun) unlinkSync(legacyProvisionScriptPath);
+          }
+        }
+        if (!existsSync2(misePath)) {
+          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+            return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
+          }
+        }
+        const currentMise = readText(misePath);
+        const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
+        if (nextMise !== currentMise) {
+          if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+          if (!ctx.dryRun) writeText(misePath, nextMise);
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "Skillex skills manifest contract normalized" : "No changes required",
+          changedFiles,
+          details
+        };
       }
-      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
-      if (topologyIssues.length) {
-        details.push(...topologyIssues.map((issue) => `CLI skill topology: ${issue}`));
-        fixable = false;
-      }
-      if (mise?.includes("link-project-skills-to-clis.sh") || mise?.includes("unlink-project-skills-from-clis.sh") || mise?.includes("[tasks.skills-relink]")) {
-        details.push("mise.toml still contains legacy skill-link wiring");
-      }
-      return {
-        id: "skills.project-manifest",
-        title: "Skillex project skills manifest",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? `Skillex skills manifest parity verified${packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
-        details,
-        fixable
-      };
     },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const details = [];
-      const manifestPath = join3(ctx.repoRoot, ".agents", "skills.json");
-      const localExamplePath = join3(ctx.repoRoot, ".agents", "local.example.json");
-      const misePath = join3(ctx.repoRoot, "mise.toml");
-      const provisionScriptPath = join3(ctx.repoRoot, PROVISION_PACKS_SCRIPT_REL);
-      const legacyProvisionScriptPath = join3(ctx.repoRoot, LEGACY_PROVISION_SCRIPT_REL);
-      const syncScriptPath = join3(ctx.repoRoot, SYNC_SKILLS_SCRIPT_REL);
-      const expectedProvisionScript = templateCommonProjectText(ctx, PROVISION_PACKS_SCRIPT_REL);
-      const expectedSyncScript = templateCommonProjectText(ctx, SYNC_SKILLS_SCRIPT_REL);
-      const topologyIssues = projectSkillTopologyIssues(ctx.repoRoot);
-      if (topologyIssues.length) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "Unsafe project CLI skill topology must be repaired manually",
-          changedFiles,
-          details: topologyIssues
-        };
-      }
-      if (!expectedProvisionScript || !expectedSyncScript) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "pjangler install is missing a shipped skills executable",
-          changedFiles,
-          details: [
-            ...!expectedProvisionScript ? [`Missing Skillex pack provisioning script template (${PROVISION_PACKS_SCRIPT_REL})`] : [],
-            ...!expectedSyncScript ? ["Missing project-local skills sync engine template"] : []
-          ]
-        };
-      }
-      const unsafeScriptTargets = [provisionScriptPath, syncScriptPath].filter((path) => {
-        const stat = lstatIfPresent(path);
-        return Boolean(stat && (!stat.isFile() || stat.isSymbolicLink()));
-      });
-      if (unsafeScriptTargets.length) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "Refusing non-regular managed skills executable target",
-          changedFiles,
-          details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`)
-        };
-      }
-      const provisioned = provisionBmadSkills(ctx);
-      if (!provisioned.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "A declared Skillex pack is unavailable or untrusted",
-          changedFiles,
-          details: [provisioned.error ?? "Unknown Skillex pack error"]
-        };
-      }
-      changedFiles.push(...provisioned.changedFiles);
-      if (provisioned.changedFiles.includes(manifestPath)) details.push("Normalized .agents/skills.json against the declared Skillex packs");
-      details.push(...provisioned.packWarnings ?? []);
-      details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
-      for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
-        const path = join3(ctx.repoRoot, rel);
-        if (existsSync2(path)) {
-          changedFiles.push(path);
-          if (!ctx.dryRun) unlinkSync(path);
+    {
+      id: "sot.agent-symlinks",
+      title: "AGENTS/CLAUDE/GEMINI symlink contract",
+      audit: (ctx) => {
+        const agentsPath = join3(ctx.repoRoot, "AGENTS.md");
+        if (!existsSync2(agentsPath)) {
+          const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync2(join3(ctx.repoRoot, file)));
+          if (fallbackSources.length === 0) {
+            return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
+          }
+          return {
+            id: "sot.agent-symlinks",
+            title: "AGENTS/CLAUDE/GEMINI symlink contract",
+            status: "fail",
+            summary: "AGENTS.md missing but can be derived from existing project documentation",
+            details: [`AGENTS.md can be created from ${fallbackSources[0]}`],
+            fixable: true
+          };
         }
-      }
-      const templateLocalExample = templateCommonProjectText(ctx, ".agents/local.example.json");
-      const currentLocalExample = safeReadText(localExamplePath);
-      if (templateLocalExample && currentLocalExample && currentLocalExample !== templateLocalExample) {
-        changedFiles.push(localExamplePath);
-        if (!ctx.dryRun) writeText(localExamplePath, templateLocalExample);
-      }
-      normalizeExecutableTemplate(ctx, provisionScriptPath, expectedProvisionScript, changedFiles);
-      normalizeExecutableTemplate(ctx, syncScriptPath, expectedSyncScript, changedFiles);
-      const legacyProvisionStat = lstatIfPresent(legacyProvisionScriptPath);
-      if (legacyProvisionStat) {
-        if (legacyProvisionStat.isDirectory() && !legacyProvisionStat.isSymbolicLink()) {
-          details.push(`${LEGACY_PROVISION_SCRIPT_REL} is a directory and must be removed manually`);
-        } else {
-          changedFiles.push(legacyProvisionScriptPath);
-          details.push(`Removed the retired ${LEGACY_PROVISION_SCRIPT_REL}`);
-          if (!ctx.dryRun) unlinkSync(legacyProvisionScriptPath);
-        }
-      }
-      if (!existsSync2(misePath)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
-          return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
-        }
-      }
-      const currentMise = readText(misePath);
-      const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
-      if (nextMise !== currentMise) {
-        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
-        if (!ctx.dryRun) writeText(misePath, nextMise);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Skillex skills manifest contract normalized" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "sot.agent-symlinks",
-    title: "AGENTS/CLAUDE/GEMINI symlink contract",
-    audit: (ctx) => {
-      const agentsPath = join3(ctx.repoRoot, "AGENTS.md");
-      if (!existsSync2(agentsPath)) {
-        const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync2(join3(ctx.repoRoot, file)));
-        if (fallbackSources.length === 0) {
-          return { id: "sot.agent-symlinks", title: "AGENTS/CLAUDE/GEMINI symlink contract", status: "skip", summary: "AGENTS.md missing; symlink contract not applicable", details: [], fixable: false };
+        const details = [];
+        for (const file of ["CLAUDE.md", "GEMINI.md"]) {
+          const full = join3(ctx.repoRoot, file);
+          const target = readSymlinkTarget(full);
+          if (target !== "AGENTS.md") details.push(`${file} should be a symlink to AGENTS.md`);
         }
         return {
           id: "sot.agent-symlinks",
           title: "AGENTS/CLAUDE/GEMINI symlink contract",
-          status: "fail",
-          summary: "AGENTS.md missing but can be derived from existing project documentation",
-          details: [`AGENTS.md can be created from ${fallbackSources[0]}`],
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Agent documentation symlinks are in parity" : `${details.length} symlink issue(s) detected`,
+          details,
           fixable: true
         };
-      }
-      const details = [];
-      for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join3(ctx.repoRoot, file);
-        const target = readSymlinkTarget(full);
-        if (target !== "AGENTS.md") details.push(`${file} should be a symlink to AGENTS.md`);
-      }
-      return {
-        id: "sot.agent-symlinks",
-        title: "AGENTS/CLAUDE/GEMINI symlink contract",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Agent documentation symlinks are in parity" : `${details.length} symlink issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const details = [];
-      const blockedDetails = [];
-      const bootstrap = bootstrapAgentsFile(ctx.repoRoot, ctx.dryRun);
-      changedFiles.push(...bootstrap.changedFiles);
-      details.push(...bootstrap.details);
-      if (bootstrap.blocked) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot derive canonical agent file", changedFiles, details: [bootstrap.blocked] };
-      }
-      for (const file of ["CLAUDE.md", "GEMINI.md"]) {
-        const full = join3(ctx.repoRoot, file);
-        const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
-        if (result.blocked) blockedDetails.push(result.blocked);
-        if (result.changed) changedFiles.push(full);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: blockedDetails.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: blockedDetails.length ? "One or more files could not be replaced safely" : changedFiles.length ? "Symlink contract repaired" : "No changes required",
-        changedFiles,
-        details: [...details, ...blockedDetails]
-      };
-    }
-  },
-  {
-    id: "sot.project-json",
-    title: "Canonical .project.json",
-    audit: projectJsonFinding,
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const blockedDetails = [];
-      const droppedDetails = [];
-      const path = join3(ctx.repoRoot, ".project.json");
-      const existing = readProjectJson(ctx) ?? {};
-      const canonical = canonicalProjectJson(ctx);
-      for (const agentId of canonical.dropped) {
-        const entry = existing.agents?.[agentId];
-        const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
-        const declared = {
-          agentId,
-          role: typeof entryRecord?.role === "string" ? entryRecord.role : void 0,
-          roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : void 0,
-          extras: {}
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const details = [];
+        const blockedDetails = [];
+        const bootstrap = bootstrapAgentsFile(ctx.repoRoot, ctx.dryRun);
+        changedFiles.push(...bootstrap.changedFiles);
+        details.push(...bootstrap.details);
+        if (bootstrap.blocked) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "AGENTS.md missing; cannot derive canonical agent file", changedFiles, details: [bootstrap.blocked] };
+        }
+        for (const file of ["CLAUDE.md", "GEMINI.md"]) {
+          const full = join3(ctx.repoRoot, file);
+          const result = ensureSymlink(full, "AGENTS.md", ctx.dryRun);
+          if (result.blocked) blockedDetails.push(result.blocked);
+          if (result.changed) changedFiles.push(full);
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: blockedDetails.length ? "blocked" : changedFiles.length ? "applied" : "noop",
+          summary: blockedDetails.length ? "One or more files could not be replaced safely" : changedFiles.length ? "Symlink contract repaired" : "No changes required",
+          changedFiles,
+          details: [...details, ...blockedDetails]
         };
-        const validation = validateDeclaredAgent(ctx, declared);
-        const reason = validation.details.join("; ") || "invalid";
-        droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
       }
-      const { dropped: _dropped, ...canonicalJson } = canonical;
-      const merged = { ...existing, ...canonicalJson };
-      const expected = `${JSON.stringify(merged, null, 2)}
-`;
-      if (safeReadText(path) !== expected) {
-        changedFiles.push(path);
-        if (!ctx.dryRun) writeText(path, expected);
-      }
-      const planeJson = join3(ctx.repoRoot, ".plane.json");
-      if (existsSync2(planeJson)) {
-        const backup = `${planeJson}.migrated-backup`;
-        if (existsSync2(backup)) {
-          blockedDetails.push(`cannot back up .plane.json because ${relative2(ctx.repoRoot, backup)} already exists`);
-        } else {
-          changedFiles.push(backup);
-          if (!ctx.dryRun) renameSync(planeJson, backup);
-        }
-      }
-      const details = [...droppedDetails, ...blockedDetails];
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: blockedDetails.length ? "blocked" : changedFiles.length || droppedDetails.length ? "applied" : "noop",
-        summary: blockedDetails.length ? "Project SOT partially blocked" : changedFiles.length || droppedDetails.length ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)` : "No changes required",
-        changedFiles,
-        details
-      };
     }
-  },
-  {
-    id: "secrets.env-op",
-    title: ".env.op + gitignore secrets contract",
-    audit: (ctx) => {
-      const details = [];
-      const envOp = safeReadText(join3(ctx.repoRoot, ".env.op"));
-      const gitignore = safeReadText(join3(ctx.repoRoot, ".gitignore"));
-      if (!envOp) {
-        details.push(".env.op missing");
-      } else {
-        const malformed = malformedOpReferences(envOp);
-        if (malformed.length) {
-          details.push(`.env.op has malformed op:// reference(s) on line(s): ${Array.from(new Set(malformed.map((entry) => entry.line))).join(", ")}`);
+  ];
+}
+function createProjectJsonChecks() {
+  return [
+    {
+      id: "sot.project-json",
+      title: "Canonical .project.json",
+      audit: projectJsonFinding,
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const blockedDetails = [];
+        const droppedDetails = [];
+        const path = join3(ctx.repoRoot, ".project.json");
+        const existing = readProjectJson(ctx) ?? {};
+        const canonical = canonicalProjectJson(ctx);
+        for (const agentId of canonical.dropped) {
+          const entry = existing.agents?.[agentId];
+          const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
+          const declared = {
+            agentId,
+            role: typeof entryRecord?.role === "string" ? entryRecord.role : void 0,
+            roleDir: typeof entryRecord?.role_dir === "string" ? entryRecord.role_dir : void 0,
+            extras: {}
+          };
+          const validation = validateDeclaredAgent(ctx, declared);
+          const reason = validation.details.join("; ") || "invalid";
+          droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
         }
-        const invalidLines = envOp.split("\n").map((line, index) => ({ line: line.trim(), number: index + 1 })).filter(({ line }) => line && !line.startsWith("#") && line.includes("=")).filter(({ line }) => {
-          const value = line.slice(line.indexOf("=") + 1).trim();
-          const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
-          return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
-        });
-        if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals on line(s): ${invalidLines.map((entry) => entry.number).join(", ")}`);
+        const { dropped: _dropped, ...canonicalJson } = canonical;
+        const merged = { ...existing, ...canonicalJson };
+        const expected = `${JSON.stringify(merged, null, 2)}
+`;
+        if (safeReadText(path) !== expected) {
+          changedFiles.push(path);
+          if (!ctx.dryRun) writeText(path, expected);
+        }
+        const planeJson = join3(ctx.repoRoot, ".plane.json");
+        if (existsSync2(planeJson)) {
+          const backup = `${planeJson}.migrated-backup`;
+          if (existsSync2(backup)) {
+            blockedDetails.push(`cannot back up .plane.json because ${relative2(ctx.repoRoot, backup)} already exists`);
+          } else {
+            changedFiles.push(backup);
+            if (!ctx.dryRun) renameSync(planeJson, backup);
+          }
+        }
+        const details = [...droppedDetails, ...blockedDetails];
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: blockedDetails.length ? "blocked" : changedFiles.length || droppedDetails.length ? "applied" : "noop",
+          summary: blockedDetails.length ? "Project SOT partially blocked" : changedFiles.length || droppedDetails.length ? `Canonical .project.json written; dropped ${droppedDetails.length} invalid declared agent(s)` : "No changes required",
+          changedFiles,
+          details
+        };
       }
-      if (!gitignore?.includes(".env\n") && !gitignore?.includes(".env\r\n")) details.push(".gitignore should ignore .env");
-      if (!gitignore?.includes(".env.*")) details.push(".gitignore should ignore .env.*");
-      if (!gitignore?.includes("!.env.op")) details.push(".gitignore should unignore .env.op");
-      return {
-        id: "secrets.env-op",
-        title: ".env.op + gitignore secrets contract",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Secret reference file and ignore rules are in parity" : `${details.length} env parity issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const details = [];
-      const envOpPath = join3(ctx.repoRoot, ".env.op");
-      if (!existsSync2(envOpPath)) {
-        changedFiles.push(envOpPath);
-        if (!ctx.dryRun) writeText(envOpPath, readText(join3(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op")));
-      } else {
-        const current = readText(envOpPath);
-        const repaired = removeMalformedCommentOpReferences(current);
-        if (repaired.changed) {
+    }
+  ];
+}
+function createMiseOpInjectChecks() {
+  return [
+    {
+      id: "secrets.env-op",
+      title: ".env.op + gitignore secrets contract",
+      audit: (ctx) => {
+        const details = [];
+        const envOpPath = join3(ctx.repoRoot, ".env.op");
+        const envOpExists = existsSync2(envOpPath);
+        const envOp = envOpExists ? readText(envOpPath) : void 0;
+        const gitignore = safeReadText(join3(ctx.repoRoot, ".gitignore"));
+        if (!envOpExists) {
+          details.push(".env.op missing");
+        } else if (!envOp?.trim()) {
+          details.push(".env.op is empty or whitespace-only");
+        } else {
+          const malformed = malformedOpReferences(envOp);
+          if (malformed.length) {
+            details.push(`.env.op has malformed op:// reference(s) on line(s): ${Array.from(new Set(malformed.map((entry) => entry.line))).join(", ")}`);
+          }
+          const invalidLines = envOp.split("\n").map((line, index) => ({ line: line.trim(), number: index + 1 })).filter(({ line }) => line && !line.startsWith("#") && line.includes("=")).filter(({ line }) => {
+            const value = line.slice(line.indexOf("=") + 1).trim();
+            const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
+          });
+          if (invalidLines.length) details.push(`.env.op has non-reference values that do not look like safe literals on line(s): ${invalidLines.map((entry) => entry.number).join(", ")}`);
+        }
+        if (!gitignore?.includes(".env\n") && !gitignore?.includes(".env\r\n")) details.push(".gitignore should ignore .env");
+        if (!gitignore?.includes(".env.*")) details.push(".gitignore should ignore .env.*");
+        if (!gitignore?.includes("!.env.op")) details.push(".gitignore should unignore .env.op");
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        const miseText = safeReadText(misePath);
+        if (!miseText) {
+          details.push("mise.toml missing for .env materialization hook");
+        } else {
+          const enterHookValues = stripHookBlocks(miseText).enter;
+          const truncating = truncatingOpInjectEntries(enterHookValues);
+          if (truncating.length) details.push(`hooks.enter has ${truncating.length} unsafe legacy .env op-inject hook(s)`);
+          const canonicalCount = enterHookValues.filter((value) => value.trim() === OP_INJECT_SCRIPT).length;
+          if (canonicalCount !== 1) details.push(`hooks.enter must contain exactly one managed materialize-env hook (found ${canonicalCount})`);
+          const strayOwned = ownedOpInjectScriptsOutsideEnter(miseText);
+          if (strayOwned.length) details.push(`owned .env materialization appears outside [[hooks.enter]] on line(s): ${strayOwned.map((entry) => entry.line).join(", ")}`);
+        }
+        const materializePath = join3(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
+        const expectedMaterializer = templateMaterializeEnvScript(ctx);
+        if (!expectedMaterializer) {
+          details.push("pjangler package is missing the managed materialize-env.sh source");
+        } else if (safeReadText(materializePath) !== expectedMaterializer) {
+          details.push(`${MATERIALIZE_ENV_SCRIPT_REL} missing or drifted`);
+        } else if ((lstatSync2(materializePath).mode & 73) === 0) {
+          details.push(`${MATERIALIZE_ENV_SCRIPT_REL} is not executable`);
+        }
+        return {
+          id: "secrets.env-op",
+          title: ".env.op + gitignore secrets contract",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Secret reference file and ignore rules are in parity" : `${details.length} env parity issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const details = [];
+        const envOpPath = join3(ctx.repoRoot, ".env.op");
+        const canonicalEnvOpPath = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op");
+        if (!existsSync2(canonicalEnvOpPath)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler package is missing the neutral .env.op template", changedFiles: [], details: [] };
+        }
+        const canonicalEnvOp = readText(canonicalEnvOpPath);
+        if (!existsSync2(envOpPath) || !readText(envOpPath).trim()) {
           changedFiles.push(envOpPath);
-          if (!ctx.dryRun) writeText(envOpPath, repaired.text);
+          if (!ctx.dryRun) writeText(envOpPath, canonicalEnvOp);
+        } else {
+          const current = readText(envOpPath);
+          const activeMalformed = malformedOpReferences(current).filter((entry) => !entry.commentOnly);
+          const invalidActive = current.split("\n").map((line, index) => ({ line: line.trim(), number: index + 1 })).filter(({ line }) => line && !line.startsWith("#") && line.includes("=")).filter(({ line }) => {
+            const value = line.slice(line.indexOf("=") + 1).trim();
+            const quotedLiteral = /^"[^"\r\n]*"$/.test(value) || /^'[^'\r\n]*'$/.test(value);
+            return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
+          });
+          if (activeMalformed.length || invalidActive.length) {
+            details.push(...activeMalformed.length ? [`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(activeMalformed.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`] : []);
+            details.push(...invalidActive.length ? [`Unsafe active value(s) remain on line(s) ${invalidActive.map((entry) => entry.number).join(", ")}; repair them manually`] : []);
+            return { id: finding.id, title: finding.title, status: "blocked", summary: "Manual cleanup still required", changedFiles: [], details };
+          } else {
+            const repaired = removeMalformedCommentOpReferences(current);
+            const next = repaired.text;
+            if (next !== current) {
+              changedFiles.push(envOpPath);
+              if (!ctx.dryRun) writeText(envOpPath, next);
+            }
+          }
         }
-        const remaining = malformedOpReferences(repaired.text).filter((entry) => !entry.commentOnly);
-        if (remaining.length) {
-          details.push(`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(remaining.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`);
-        }
-      }
-      const gitignorePath = join3(ctx.repoRoot, ".gitignore");
-      const gitignore = safeReadText(gitignorePath) ?? "";
-      const requiredBlock = `# Secrets \u2014 .env is materialized from .env.op by \`op inject\` on mise enter,
+        const gitignorePath = join3(ctx.repoRoot, ".gitignore");
+        const gitignore = safeReadText(gitignorePath) ?? "";
+        const requiredBlock = `# Secrets \u2014 .env is materialized from .env.op by \`op inject\` on mise enter,
 # staged through a mktemp file and moved into place only on success.
 # NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
 .env
 .env.*
 !.env.op
 `;
-      if (!gitignore.includes("!.env.op") || !gitignore.includes(".env.*")) {
-        changedFiles.push(gitignorePath);
-        if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);
+        if (!gitignore.includes("!.env.op") || !gitignore.includes(".env.*")) {
+          changedFiles.push(gitignorePath);
+          if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);
+        }
+        const misePath = join3(ctx.repoRoot, "mise.toml");
+        if (!existsSync2(misePath)) {
+          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+            return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and the packaged template is unavailable", changedFiles: [], details: [] };
+          }
+        }
+        if (existsSync2(misePath)) {
+          const currentMise = readText(misePath);
+          const nextMise = upsertOpInjectHook(currentMise);
+          if (nextMise !== currentMise) {
+            changedFiles.push(misePath);
+            if (!ctx.dryRun) writeText(misePath, nextMise);
+          }
+        }
+        const materializePath = join3(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
+        const expectedMaterializer = templateMaterializeEnvScript(ctx);
+        if (!expectedMaterializer) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler package is missing materialize-env.sh", changedFiles: [], details: [] };
+        }
+        if (safeReadText(materializePath) !== expectedMaterializer || existsSync2(materializePath) && (lstatSync2(materializePath).mode & 73) === 0) {
+          changedFiles.push(materializePath);
+          if (!ctx.dryRun) {
+            writeText(materializePath, expectedMaterializer);
+            chmodSync(materializePath, 493);
+          }
+        }
+        const uniqueChangedFiles = [...new Set(changedFiles)].sort();
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: uniqueChangedFiles.length ? "applied" : "noop",
+          summary: uniqueChangedFiles.length ? "Reconciled the canonical .env materialization contract" : "No changes required",
+          changedFiles: uniqueChangedFiles,
+          details
+        };
       }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: details.length ? "blocked" : changedFiles.length ? "applied" : "noop",
-        summary: details.length ? "Manual cleanup still required" : changedFiles.length ? "Wrote .env.op/gitignore parity files" : "No changes required",
-        changedFiles,
-        details
-      };
     }
-  },
-  {
-    id: "provenance.copier",
-    title: ".copier-answers.yml provenance + drift report",
-    audit: (ctx) => {
-      const details = [];
-      const path = join3(ctx.repoRoot, ".copier-answers.yml");
-      const text3 = safeReadText(path);
-      const project = readProjectJson(ctx);
-      if (!text3) {
-        details.push(".copier-answers.yml missing");
-      } else {
-        if (!text3.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY")) details.push("missing Copier overwrite warning header");
-        if (!text3.includes("_src_path:")) details.push("_src_path missing");
-        if (project?.project_name) {
-          const nameMatch = text3.match(/project_name:\s*(.+)/);
-          if (!nameMatch || nameMatch[1]?.trim() !== String(project.project_name)) details.push("project_name drift between .copier-answers.yml and .project.json");
+  ];
+}
+function createProjectProvenanceChecks() {
+  return [
+    {
+      id: "provenance.copier",
+      title: ".copier-answers.yml provenance + drift report",
+      audit: (ctx) => {
+        const details = [];
+        const path = join3(ctx.repoRoot, ".copier-answers.yml");
+        const text3 = safeReadText(path);
+        const project = readProjectJson(ctx);
+        if (!text3) {
+          details.push(".copier-answers.yml missing");
+        } else {
+          if (!text3.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY")) details.push("missing Copier overwrite warning header");
+          if (!text3.includes("_src_path:")) details.push("_src_path missing");
+          if (project?.project_name) {
+            const nameMatch = text3.match(/project_name:\s*(.+)/);
+            if (!nameMatch || nameMatch[1]?.trim() !== String(project.project_name)) details.push("project_name drift between .copier-answers.yml and .project.json");
+          }
+          if (project?.project_description) {
+            const descMatch = text3.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
+            const yamlDesc = descMatch?.[1]?.replace(/\n\s+/g, " ").trim() ?? "";
+            if (yamlDesc !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
+          }
         }
-        if (project?.project_description) {
-          const descMatch = text3.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
-          const yamlDesc = descMatch?.[1]?.replace(/\n\s+/g, " ").trim() ?? "";
-          if (yamlDesc !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
-        }
-      }
-      return {
-        id: "provenance.copier",
-        title: ".copier-answers.yml provenance + drift report",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Copier provenance is in parity" : `${details.length} provenance issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const project = canonicalProjectJson(ctx);
-      const text3 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+        return {
+          id: "provenance.copier",
+          title: ".copier-answers.yml provenance + drift report",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Copier provenance is in parity" : `${details.length} provenance issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const project = canonicalProjectJson(ctx);
+        const text3 = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
 _src_path: ${join3(ctx.pjanglerRoot, "templates", "commonproject")}
 project_description: ${String(project.project_description)}
 project_name: ${String(project.project_name)}
 ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
 `;
-      const path = join3(ctx.repoRoot, ".copier-answers.yml");
-      if (safeReadText(path) !== text3) {
-        changedFiles.push(path);
-        if (!ctx.dryRun) writeText(path, text3);
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Copier provenance file refreshed" : "No changes required",
-        changedFiles,
-        details: []
-      };
-    }
-  },
-  {
-    id: "bmad.scaffold",
-    title: "BMAD modules/docs scaffold",
-    audit: (ctx) => {
-      const manifestSelection = manifestBmadModules(ctx.repoRoot);
-      if (manifestSelection.status === "invalid") {
-        return {
-          id: "bmad.scaffold",
-          title: "BMAD modules/docs scaffold",
-          status: "fail",
-          summary: "BMAD module manifest is invalid; refusing fallback module selection",
-          details: [manifestSelection.error],
-          fixable: false
-        };
-      }
-      const targetRoot = join3(ctx.repoRoot, "_bmad");
-      const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
-      const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
-      const missing = sentinels.filter((file) => !existsSync2(join3(targetRoot, file)));
-      return {
-        id: "bmad.scaffold",
-        title: "BMAD modules/docs scaffold",
-        status: missing.length === 0 ? "pass" : "fail",
-        summary: missing.length === 0 ? "BMAD scaffold parity verified" : `${missing.length} BMAD sentinel file(s) missing`,
-        details: missing.map((file) => `_bmad/${file}`),
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const manifestSelection = manifestBmadModules(ctx.repoRoot);
-      if (manifestSelection.status === "invalid") {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "BMAD module manifest is invalid; refusing fallback module selection",
-          changedFiles,
-          details: [manifestSelection.error]
-        };
-      }
-      const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
-      if (ctx.dryRun) {
-        for (const detail of finding.details) {
-          changedFiles.push(join3(ctx.repoRoot, detail));
+        const path = join3(ctx.repoRoot, ".copier-answers.yml");
+        if (safeReadText(path) !== text3) {
+          changedFiles.push(path);
+          if (!ctx.dryRun) writeText(path, text3);
         }
         return {
           id: finding.id,
           title: finding.title,
           status: changedFiles.length ? "applied" : "noop",
-          summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
+          summary: changedFiles.length ? "Copier provenance file refreshed" : "No changes required",
           changedFiles,
-          details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
-          ]
-        };
-      }
-      const preservedSkillsManifest = tryParseJson(
-        safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
-      );
-      const install = runBmadInstall(ctx.repoRoot, selectedModules);
-      if (!install.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: `Failed to run bmad-method install`,
-          changedFiles: [],
-          details: [install.error ?? "Unknown error"]
-        };
-      }
-      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-      if (!provisioned.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: `BMAD installed but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-          changedFiles: [],
-          details: [provisioned.error ?? "Unknown BMAD pack error"]
-        };
-      }
-      for (const detail of finding.details) {
-        if (existsSync2(join3(ctx.repoRoot, detail))) {
-          changedFiles.push(join3(ctx.repoRoot, detail));
-        }
-      }
-      changedFiles.push(...provisioned.changedFiles);
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? `Installed BMAD scaffold with Skillex pack ${BMAD_PACK_VERSION} skills` : "No changes required",
-        changedFiles,
-        details: []
-      };
-    }
-  },
-  {
-    id: "bmad.version",
-    title: "BMAD version currency",
-    audit: (ctx) => {
-      const installed = readInstalledBmadVersion(ctx.repoRoot);
-      if (!installed) {
-        return {
-          id: "bmad.version",
-          title: "BMAD version currency",
-          status: "skip",
-          summary: existsSync2(join3(ctx.repoRoot, "_bmad")) ? "BMAD installed but version manifest unreadable" : "No BMAD install present",
-          details: [],
-          fixable: false
-        };
-      }
-      const resolved = resolveBmadDistTags(ctx.homeDir);
-      const available = resolved?.distTags?.[BMAD_TARGET_CHANNEL];
-      if (!available) {
-        return {
-          id: "bmad.version",
-          title: "BMAD version currency",
-          status: "skip",
-          summary: `BMAD ${installed} installed; latest ${BMAD_TARGET_CHANNEL} version unknown (npm unreachable)`,
-          details: [`Could not resolve ${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL} from npm`],
-          fixable: false
-        };
-      }
-      const staleNote = resolved.stale ? `  ${glyph.dot} cached` : "";
-      if (compareBmadVersions(installed, available) >= 0) {
-        return {
-          id: "bmad.version",
-          title: "BMAD version currency",
-          status: "pass",
-          summary: `BMAD ${installed} is current (${BMAD_TARGET_CHANNEL} ${available})${staleNote}`,
-          details: [],
-          fixable: false
-        };
-      }
-      return {
-        id: "bmad.version",
-        title: "BMAD version currency",
-        status: "warn",
-        summary: `BMAD ${installed} is behind ${BMAD_TARGET_CHANNEL} ${available} \u2014 upgrade available`,
-        details: [
-          `installed: ${installed}`,
-          `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
-          resolved.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
-          "run `pj migrate bmad.version` to upgrade"
-        ].filter(Boolean),
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      if (finding.status !== "warn") {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "noop",
-          summary: finding.status === "skip" ? finding.summary : "BMAD already current",
-          changedFiles: [],
           details: []
         };
       }
-      const installed = readInstalledBmadVersion(ctx.repoRoot);
-      const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
-      const manifestPath = join3(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
-      const manifestSelection = manifestBmadModules(ctx.repoRoot);
-      if (manifestSelection.status === "invalid") {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "BMAD module manifest is invalid; refusing fallback module selection",
-          changedFiles: [],
-          details: [manifestSelection.error]
-        };
-      }
-      const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
-      if (ctx.dryRun) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "applied",
-          summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
-          changedFiles: [manifestPath],
-          details: [
-            `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
-          ]
-        };
-      }
-      const preservedSkillsManifest = tryParseJson(
-        safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
-      );
-      const install = runBmadInstall(ctx.repoRoot, selectedModules);
-      if (!install.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: "Failed to upgrade BMAD via installer",
-          changedFiles: [],
-          details: [install.error ?? "Unknown error"]
-        };
-      }
-      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-      if (!provisioned.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: `BMAD upgraded but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-          changedFiles: [],
-          details: [provisioned.error ?? "Unknown BMAD pack error"]
-        };
-      }
-      const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
-      const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: upgraded ? "applied" : "noop",
-        summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
-        changedFiles: Array.from(/* @__PURE__ */ new Set([
-          ...upgraded ? [manifestPath] : [],
-          ...provisioned.changedFiles
-        ])),
-        details: []
-      };
     }
-  },
-  {
-    id: "hermes.pm-scaffold",
-    title: "Hermes PM scaffold parity",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const role = roles.find((item) => item.role === "pm");
-      if (!role) {
-        return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
+  ];
+}
+function supportedCliProjectionIssues(repoRoot) {
+  const issues = [];
+  const managedSkills = join3(repoRoot, ".agents", "skills");
+  for (const rootName of SUPPORTED_CLI_ROOTS) {
+    const root = join3(repoRoot, rootName);
+    const rootStat = lstatIfPresent(root);
+    if (!rootStat) {
+      issues.push(`${rootName} missing`);
+      continue;
+    }
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      issues.push(`${rootName} must be a real configuration directory`);
+      continue;
+    }
+    const skills = join3(root, "skills");
+    const skillsStat = lstatIfPresent(skills);
+    if (!skillsStat) {
+      issues.push(`${rootName}/skills missing`);
+      continue;
+    }
+    let projectedSkills = skills;
+    if (skillsStat.isSymbolicLink()) {
+      let rawTarget = "";
+      try {
+        rawTarget = readlinkSync(skills);
+      } catch {
+        issues.push(`${rootName}/skills is an unreadable symlink`);
+        continue;
       }
-      const details = [];
-      for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
-        if (!existsSync2(join3(role.roleDir, rel))) details.push(`missing ${relative2(ctx.repoRoot, join3(role.roleDir, rel))}`);
+      if (rawTarget !== CANONICAL_CLI_SKILLS_ALIAS) {
+        issues.push(`${rootName}/skills must target ${CANONICAL_CLI_SKILLS_ALIAS}`);
+        continue;
       }
-      if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
-        details.push(".gitmodules contains retired pm runtime submodule mapping");
+      const targetStat = lstatIfPresent(managedSkills);
+      if (!targetStat || targetStat.isSymbolicLink() || !targetStat.isDirectory()) {
+        issues.push(`${rootName}/skills alias target .agents/skills is missing or unsafe`);
+        continue;
       }
-      if (!profileMetaInheritsDefault(join3(role.roleDir, "runtime", "profile.yaml"))) {
-        details.push("runtime/profile.yaml missing inherited default config metadata");
+      try {
+        if (realpathSync(skills) !== realpathSync(managedSkills)) {
+          issues.push(`${rootName}/skills resolves outside .agents/skills`);
+          continue;
+        }
+      } catch {
+        issues.push(`${rootName}/skills alias is broken`);
+        continue;
       }
-      const registry = safeReadText(registryPath(ctx.homeDir));
-      if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
-      return {
-        id: "hermes.pm-scaffold",
-        title: "Hermes PM scaffold parity",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "PM scaffold parity verified" : `${details.length} PM scaffold issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "pm");
-      const changedFiles = [];
-      const details = [];
-      if (!role) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
+      projectedSkills = managedSkills;
+    } else if (!skillsStat.isDirectory()) {
+      issues.push(`${rootName}/skills is not a directory`);
+      continue;
+    }
+    const hasGeneratedSkill = existsSync2(projectedSkills) && readdirSync2(projectedSkills).some((name) => {
+      const skillFile = join3(projectedSkills, name, "SKILL.md");
+      return existsSync2(skillFile) && lstatSync2(skillFile).isFile();
+    });
+    if (!hasGeneratedSkill) issues.push(`${rootName}/skills contains no BMAD skill configuration`);
+  }
+  return issues;
+}
+var SUPPORTED_CLI_GITIGNORE_BLOCK = `# PJAN-57: all six generated CLI configurations are durable project state.
+${SUPPORTED_CLI_ROOTS.flatMap((root) => [`!${root}/`, `!${root}/**`]).join("\n")}`;
+function supportedCliGitignoreIssues(repoRoot) {
+  const text3 = safeReadText(join3(repoRoot, ".gitignore")) ?? "";
+  return SUPPORTED_CLI_ROOTS.flatMap((root) => [
+    ...!text3.split(/\r?\n/).includes(`!${root}/`) ? [`.gitignore must unignore ${root}/`] : [],
+    ...!text3.split(/\r?\n/).includes(`!${root}/**`) ? [`.gitignore must unignore ${root}/**`] : []
+  ]);
+}
+function ensureSupportedCliGitignore(ctx) {
+  if (!supportedCliGitignoreIssues(ctx.repoRoot).length) return [];
+  const path = join3(ctx.repoRoot, ".gitignore");
+  const current = safeReadText(path) ?? "";
+  const next = `${current.replace(/\s*$/, "")}${current.trim() ? "\n\n" : ""}${SUPPORTED_CLI_GITIGNORE_BLOCK}
+`;
+  if (!ctx.dryRun) writeText(path, next);
+  return [path];
+}
+function ensureSupportedCliProjections(ctx) {
+  const changedFiles = [];
+  const blockers = [];
+  const managedSkills = join3(ctx.repoRoot, ".agents", "skills");
+  const managedStat = lstatIfPresent(managedSkills);
+  if (!managedStat || managedStat.isSymbolicLink() || !managedStat.isDirectory()) {
+    return { changedFiles, blockers: [".agents/skills must be a real BMAD-generated directory before CLI projections can be created"] };
+  }
+  for (const rootName of SUPPORTED_CLI_ROOTS) {
+    const root = join3(ctx.repoRoot, rootName);
+    const rootStat = lstatIfPresent(root);
+    if (rootStat && (rootStat.isSymbolicLink() || !rootStat.isDirectory())) {
+      blockers.push(`${rootName} is not a real configuration directory`);
+      continue;
+    }
+    if (!rootStat) {
+      changedFiles.push(root);
+      if (!ctx.dryRun) mkdirSync2(root, { recursive: false });
+    }
+    const skills = join3(root, "skills");
+    const skillsStat = lstatIfPresent(skills);
+    if (!skillsStat) {
+      changedFiles.push(skills);
+      if (!ctx.dryRun) symlinkSync(CANONICAL_CLI_SKILLS_ALIAS, skills, "dir");
+      continue;
+    }
+    if (skillsStat.isSymbolicLink()) {
+      try {
+        if (readlinkSync(skills) !== CANONICAL_CLI_SKILLS_ALIAS || realpathSync(skills) !== realpathSync(managedSkills)) {
+          blockers.push(`${rootName}/skills is not the managed .agents/skills alias`);
+        }
+      } catch {
+        blockers.push(`${rootName}/skills is an unreadable or broken symlink`);
       }
-      const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
-      details.push(...retirement.details);
-      if (!retirement.ok) {
+    } else if (!skillsStat.isDirectory()) {
+      blockers.push(`${rootName}/skills is not a directory`);
+    }
+  }
+  return { changedFiles: [...new Set(changedFiles)].sort(), blockers };
+}
+function createBmadChecks() {
+  return [
+    {
+      id: "bmad.scaffold",
+      title: "BMAD modules/docs scaffold",
+      audit: (ctx) => {
+        const manifestSelection = manifestBmadModules(ctx.repoRoot);
+        if (manifestSelection.status === "invalid") {
+          return {
+            id: "bmad.scaffold",
+            title: "BMAD modules/docs scaffold",
+            status: "fail",
+            summary: "BMAD module manifest is invalid; refusing fallback module selection",
+            details: [manifestSelection.error],
+            fixable: false
+          };
+        }
+        const targetRoot = join3(ctx.repoRoot, "_bmad");
+        const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+        const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
+        const missing = sentinels.filter((file) => !existsSync2(join3(targetRoot, file)));
+        const projectNameIssues = bmadProjectNameIssues(ctx.repoRoot);
+        const details = [
+          ...missing.map((file) => `_bmad/${file}`),
+          ...projectNameIssues.details
+        ];
+        return {
+          id: "bmad.scaffold",
+          title: "BMAD modules/docs scaffold",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "BMAD scaffold and project identity parity verified" : `${details.length} BMAD scaffold issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const manifestSelection = manifestBmadModules(ctx.repoRoot);
+        if (manifestSelection.status === "invalid") {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "BMAD module manifest is invalid; refusing fallback module selection",
+            changedFiles,
+            details: [manifestSelection.error]
+          };
+        }
+        const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+        if (ctx.dryRun) {
+          const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
+          changedFiles.push(...sentinels.map((file) => join3(ctx.repoRoot, "_bmad", file)).filter((path) => !existsSync2(path)));
+          changedFiles.push(...bmadProjectNameIssues(ctx.repoRoot).paths);
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: changedFiles.length ? "applied" : "noop",
+            summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
+            changedFiles,
+            details: [
+              `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+            ]
+          };
+        }
+        const preservedSkillsManifest = tryParseJson(
+          safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
+        );
+        const expectedChangedPaths = [
+          ...requiredBmadSentinels(ctx.repoRoot, selectedModules).map((file) => join3(ctx.repoRoot, "_bmad", file)).filter((path) => !existsSync2(path)),
+          ...bmadProjectNameIssues(ctx.repoRoot).paths
+        ];
+        const install = runBmadInstall(ctx.repoRoot, selectedModules);
+        if (!install.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: `Failed to run bmad-method install`,
+            changedFiles: [],
+            details: [install.error ?? "Unknown error"]
+          };
+        }
+        const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
+        if (!provisioned.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: `BMAD installed but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
+            changedFiles: [],
+            details: [provisioned.error ?? "Unknown BMAD pack error"]
+          };
+        }
+        changedFiles.push(...expectedChangedPaths.filter(existsSync2));
+        changedFiles.push(...provisioned.changedFiles);
         return {
           id: finding.id,
           title: finding.title,
-          status: "blocked",
-          summary: "Failed to retire PM runtime submodule metadata safely",
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? `Installed BMAD scaffold with Skillex pack ${BMAD_PACK_VERSION} skills` : "No changes required",
           changedFiles,
-          details: [retirement.error ?? "unknown runtime retirement failure"]
+          details: []
         };
       }
-      const templateRoleDir = join3(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      writeIfDifferent(join3(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
-      writeIfDifferent(join3(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
-      writeIfDifferent(join3(role.roleDir, ".gitignore"), readText(join3(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
-      copyMissingRecursive(join3(templateRoleDir, ".runtime-scaffold"), join3(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join3(templateRoleDir, ".runtime-scaffold"), join3(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
-      copyMissingRecursive(join3(templateRoleDir, ".scripts"), join3(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
-      const promptSource = join3(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
-      const promptTarget = join3(role.roleDir, ".scripts", "sentinel.prompt.md");
-      if (existsSync2(promptSource) && !existsSync2(promptTarget)) {
-        const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo).replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
-        writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
-      }
-      const profileMetaUpdated = upsertInheritedProfileMeta(join3(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
-      if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
-      const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
-      if (registryUpdated) details.push(`updated ${registryUpdated}`);
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "hermes.untracked-runtimes",
-    title: "Hermes agent runtimes untracked + gitignored",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      if (roles.length === 0) {
+    },
+    {
+      id: "bmad.version",
+      title: "BMAD version currency",
+      audit: (ctx) => {
+        const installed = readInstalledBmadVersion(ctx.repoRoot);
+        if (!installed) {
+          return {
+            id: "bmad.version",
+            title: "BMAD version currency",
+            status: "skip",
+            summary: existsSync2(join3(ctx.repoRoot, "_bmad")) ? "BMAD installed but version manifest unreadable" : "No BMAD install present",
+            details: [],
+            fixable: false
+          };
+        }
+        const resolved = resolveBmadDistTags(ctx.homeDir);
+        const available = resolved?.distTags?.[BMAD_TARGET_CHANNEL];
+        if (!available) {
+          return {
+            id: "bmad.version",
+            title: "BMAD version currency",
+            status: "skip",
+            summary: `BMAD ${installed} installed; latest ${BMAD_TARGET_CHANNEL} version unknown (npm unreachable)`,
+            details: [`Could not resolve ${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL} from npm`],
+            fixable: false
+          };
+        }
+        const staleNote = resolved.stale ? `  ${glyph.dot} cached` : "";
+        if (compareBmadVersions(installed, available) >= 0) {
+          return {
+            id: "bmad.version",
+            title: "BMAD version currency",
+            status: "pass",
+            summary: `BMAD ${installed} is current (${BMAD_TARGET_CHANNEL} ${available})${staleNote}`,
+            details: [],
+            fixable: false
+          };
+        }
         return {
-          id: "hermes.untracked-runtimes",
-          title: "Hermes agent runtimes untracked + gitignored",
-          status: "skip",
-          summary: "No Hermes roles present",
-          details: [],
-          fixable: false
+          id: "bmad.version",
+          title: "BMAD version currency",
+          status: "warn",
+          summary: `BMAD ${installed} is behind ${BMAD_TARGET_CHANNEL} ${available} \u2014 upgrade available`,
+          details: [
+            `installed: ${installed}`,
+            `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+            resolved.distTags.latest ? `stable latest: ${resolved.distTags.latest}` : "",
+            "run `pj migrate bmad.version` to upgrade"
+          ].filter(Boolean),
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        if (finding.status !== "warn") {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "noop",
+            summary: finding.status === "skip" ? finding.summary : "BMAD already current",
+            changedFiles: [],
+            details: []
+          };
+        }
+        const installed = readInstalledBmadVersion(ctx.repoRoot);
+        const available = resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+        const manifestPath = join3(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
+        const manifestSelection = manifestBmadModules(ctx.repoRoot);
+        if (manifestSelection.status === "invalid") {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "BMAD module manifest is invalid; refusing fallback module selection",
+            changedFiles: [],
+            details: [manifestSelection.error]
+          };
+        }
+        const selectedModules = manifestSelection.status === "valid" ? manifestSelection.modules : configuredBmadModules(ctx.repoRoot) ?? [...DEFAULT_BMAD_MODULES];
+        if (ctx.dryRun) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "applied",
+            summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
+            changedFiles: [manifestPath],
+            details: [
+              `Would run: npx ${bmadInstallArgs(ctx.repoRoot, selectedModules).join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...")}`
+            ]
+          };
+        }
+        const preservedSkillsManifest = tryParseJson(
+          safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
+        );
+        const install = runBmadInstall(ctx.repoRoot, selectedModules);
+        if (!install.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Failed to upgrade BMAD via installer",
+            changedFiles: [],
+            details: [install.error ?? "Unknown error"]
+          };
+        }
+        const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
+        if (!provisioned.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: `BMAD upgraded but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
+            changedFiles: [],
+            details: [provisioned.error ?? "Unknown BMAD pack error"]
+          };
+        }
+        const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
+        const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: upgraded ? "applied" : "noop",
+          summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
+          changedFiles: Array.from(/* @__PURE__ */ new Set([
+            ...upgraded ? [manifestPath] : [],
+            ...provisioned.changedFiles
+          ])),
+          details: []
         };
       }
-      const details = [];
-      for (const role of roles) {
-        const roleRelDir = relative2(ctx.repoRoot, role.roleDir);
-        const runtimeRelPath = join3(roleRelDir, "runtime");
-        const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
-          cwd: ctx.repoRoot,
-          encoding: "utf8"
-        });
-        if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
-          details.push(`submodule runtime is tracked in Git index at ${runtimeRelPath}`);
+    },
+    {
+      id: "bmad.cli-roots",
+      title: "Supported BMAD CLI projection roots",
+      audit: (ctx) => {
+        const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS);
+        const present = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
+        const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
+        const supportedIssues = supportedCliProjectionIssues(ctx.repoRoot);
+        const details = [
+          ...supportedIssues,
+          ...supportedCliGitignoreIssues(ctx.repoRoot),
+          ...attestations.map((entry) => `${entry.name}: ${entry.safe ? "generated and safely removable" : `ambiguous/user-owned \u2014 ${entry.reason}`}`)
+        ];
+        return {
+          id: "bmad.cli-roots",
+          title: "Supported BMAD CLI projection roots",
+          status: details.length ? "fail" : "pass",
+          summary: details.length ? `${supportedIssues.length} supported projection issue(s); ${present.length} unsupported root(s)` : "All six supported CLI projections are configured and no unsupported roots are present",
+          details,
+          fixable: attestations.every((entry) => entry.safe)
+        };
+      },
+      migrate: (ctx, finding) => {
+        const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS);
+        const present = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
+        const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
+        const blocked = attestations.filter((entry) => !entry.safe);
+        if (blocked.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Refusing to remove ambiguous or user-owned CLI projection roots",
+            changedFiles: [],
+            details: blocked.map((entry) => `${entry.name}: ${entry.reason}`)
+          };
+        }
+        const projectionResult = ensureSupportedCliProjections(ctx);
+        if (projectionResult.blockers.length) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: "Supported CLI projections contain unsafe or user-owned conflicts",
+            changedFiles: [],
+            details: projectionResult.blockers
+          };
+        }
+        const gitignoreChanges = ensureSupportedCliGitignore(ctx);
+        const removedRoots = attestations.map((entry) => join3(ctx.repoRoot, entry.name));
+        if (!ctx.dryRun) for (const path of removedRoots) rmSync(path, { recursive: true, force: true });
+        const changedFiles = [.../* @__PURE__ */ new Set([...projectionResult.changedFiles, ...gitignoreChanges, ...removedRoots])].sort();
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? `Reconciled six supported projections and removed ${removedRoots.length} attested unsupported root(s)` : "No changes required",
+          changedFiles,
+          details: attestations.map((entry) => `${entry.name}: ${entry.reason}`)
+        };
+      }
+    }
+  ];
+}
+function createHermesChecks() {
+  return [
+    {
+      id: "hermes.pm-scaffold",
+      title: "Hermes PM scaffold parity",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        const role = roles.find((item) => item.role === "pm");
+        if (!role) {
+          return { id: "hermes.pm-scaffold", title: "Hermes PM scaffold parity", status: "skip", summary: "No pm role present", details: [], fixable: false };
+        }
+        const details = [];
+        for (const rel of ["role.yaml", "SOUL.md", "hermes", ".gitignore", ".scripts/70-systemd.sh", ".scripts/heartbeat.sh", ".scripts/checkpoint.sh", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
+          if (!existsSync2(join3(role.roleDir, rel))) details.push(`missing ${relative2(ctx.repoRoot, join3(role.roleDir, rel))}`);
         }
         if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
-          details.push(`stale .gitmodules mapping exists for ${runtimeRelPath}`);
+          details.push(".gitmodules contains retired pm runtime submodule mapping");
         }
-        const gitignorePath = join3(role.roleDir, ".gitignore");
-        if (existsSync2(gitignorePath)) {
-          const content = safeReadText(gitignorePath) ?? "";
-          const lines = content.split(/\r?\n/).map((line) => line.trim());
-          if (!lines.includes("runtime/") && !lines.includes("runtime")) {
-            details.push(`.gitignore missing runtime/ ignore entry in ${relative2(ctx.repoRoot, gitignorePath)}`);
-          }
-        } else {
-          details.push(`.gitignore is missing in ${relative2(ctx.repoRoot, gitignorePath)}`);
+        if (!profileMetaInheritsDefault(join3(role.roleDir, "runtime", "profile.yaml"))) {
+          details.push("runtime/profile.yaml missing inherited default config metadata");
         }
-      }
-      return {
-        id: "hermes.untracked-runtimes",
-        title: "Hermes agent runtimes untracked + gitignored",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "All Hermes agent runtimes are untracked and gitignored" : `${details.length} issue(s) with untracked/ignored runtimes detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const changedFiles = [];
-      const details = [];
-      for (const role of roles) {
+        const registry = safeReadText(registryPath(ctx.homeDir));
+        if (!registry?.includes(`${role.agentId}:`)) details.push(`fleet registry missing ${role.agentId}`);
+        return {
+          id: "hermes.pm-scaffold",
+          title: "Hermes PM scaffold parity",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "PM scaffold parity verified" : `${details.length} PM scaffold issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const role = discoverRoles(ctx.repoRoot).find((item) => item.role === "pm");
+        const changedFiles = [];
+        const details = [];
+        if (!role) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "No pm role present", changedFiles, details: [] };
+        }
         const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
         details.push(...retirement.details);
         if (!retirement.ok) {
@@ -4408,549 +4921,667 @@ ticket_provider: ${String(project.ticket_provider?.type ?? "plane")}
             id: finding.id,
             title: finding.title,
             status: "blocked",
-            summary: "Failed to retire Hermes runtime submodule metadata safely",
+            summary: "Failed to retire PM runtime submodule metadata safely",
             changedFiles,
             details: [retirement.error ?? "unknown runtime retirement failure"]
           };
         }
-        const gitignorePath = join3(role.roleDir, ".gitignore");
-        let content = "";
-        let isIgnored = false;
-        if (existsSync2(gitignorePath)) {
-          content = safeReadText(gitignorePath) ?? "";
-          const lines = content.split(/\r?\n/).map((line) => line.trim());
-          isIgnored = lines.includes("runtime/") || lines.includes("runtime");
+        const templateRoleDir = join3(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+        writeIfDifferent(join3(role.roleDir, "SOUL.md"), renderSoul(role), ctx.dryRun, changedFiles);
+        writeIfDifferent(join3(role.roleDir, "hermes"), renderHermesWrapper(role), ctx.dryRun, changedFiles, 493);
+        writeIfDifferent(join3(role.roleDir, ".gitignore"), readText(join3(templateRoleDir, ".gitignore.jinja")).replace(/\{\{ role \}\}/g, role.role), ctx.dryRun, changedFiles);
+        copyMissingRecursive(join3(templateRoleDir, ".runtime-scaffold"), join3(role.roleDir, ".runtime-scaffold"), changedFiles, ctx.dryRun);
+        copyMissingRecursive(join3(templateRoleDir, ".runtime-scaffold"), join3(role.roleDir, "runtime"), changedFiles, ctx.dryRun);
+        copyMissingRecursive(join3(templateRoleDir, ".scripts"), join3(role.roleDir, ".scripts"), changedFiles, ctx.dryRun, (source) => source.endsWith("sentinel.prompt.md.jinja"));
+        const promptSource = join3(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja");
+        const promptTarget = join3(role.roleDir, ".scripts", "sentinel.prompt.md");
+        if (existsSync2(promptSource) && !existsSync2(promptTarget)) {
+          const prompt = readText(promptSource).replace(/\{\{ agent_id \}\}/g, role.agentId).replace(/\{\{ role \}\}/g, role.role).replace(/\{\{ target_repo \}\}/g, role.repo).replace(/\{\{ display_name \}\}/g, role.displayName || role.agentId);
+          writeIfDifferent(promptTarget, prompt, ctx.dryRun, changedFiles);
         }
-        if (!isIgnored) {
-          details.push(`ignore runtime/ in ${relative2(ctx.repoRoot, gitignorePath)}`);
-          changedFiles.push(gitignorePath);
-          if (!ctx.dryRun) {
-            if (content && !content.endsWith("\n")) {
-              content += "\n";
-            }
-            content += "runtime/\n";
-            writeText(gitignorePath, content);
-          }
-        }
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Hermes agent runtimes made untracked and ignored" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "systemd.sentinel",
-    title: "Hermes systemd/sentinel units enabled + active",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      if (!roles.length) {
-        return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
-      }
-      const probe = systemctlUser(["is-system-running"]);
-      if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
-        return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "warn", summary: "systemd --user unavailable; unit state not auditable here", details: [], fixable: false };
-      }
-      const details = [];
-      for (const role of roles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
-          const state = checkUnit(unit);
-          if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
-        }
-      }
-      return {
-        id: "systemd.sentinel",
-        title: "Hermes systemd/sentinel units enabled + active",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Hermes user units are enabled and active" : `${details.length} systemd parity issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const changedFiles = [];
-      const details = [];
-      if (!roles.length) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "No Hermes roles present", changedFiles, details };
-      }
-      const probe = systemctlUser(["is-system-running"]);
-      if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
-      }
-      for (const role of roles) {
-        const sysDir = join3(ctx.homeDir, ".config", "systemd", "user");
-        const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
-        const allUnitsPresent = units.every((unit) => existsSync2(join3(sysDir, unit)));
-        const unitsStale = units.some((unit) => {
-          const text3 = safeReadText(join3(sysDir, unit));
-          if (text3 === null) return true;
-          return text3.includes("/agents/hermes/") && !text3.includes(role.roleDir);
-        });
-        if (allUnitsPresent && !unitsStale) {
-          if (ctx.dryRun) {
-            details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
-          } else {
-            systemctlUser(["daemon-reload"]);
-            for (const unit of units) {
-              systemctlUser(["enable", "--now", unit]);
-            }
-          }
-          continue;
-        }
-        for (const script of [join3(role.roleDir, ".scripts", "70-systemd.sh")]) {
-          if (!existsSync2(script)) {
-            details.push(`script failed: missing ${script}`);
-            continue;
-          }
-          if (ctx.dryRun) {
-            details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
-          } else {
-            const result = spawnSync("bash", [script], {
-              cwd: role.roleDir,
-              encoding: "utf8",
-              env: { ...process.env, FORCE_SYSTEMD: "1" }
-            });
-            if (result.status !== 0) {
-              details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
-            } else {
-              details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
-            }
-          }
-        }
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: details.some((detail) => detail.includes("failed:")) ? "blocked" : details.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
-        summary: details.length ? ctx.dryRun ? "Planned systemd remediation commands" : "Attempted systemd remediation" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "hermes.runtime-singleton",
-    title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      if (!roles.length) {
-        return { id: "hermes.runtime-singleton", title: "Hermes singleton runtime (shared config/auth, per-agent memory)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
-      }
-      const details = [];
-      for (const role of roles) {
-        const plan = singletonPlan(ctx, role);
-        if (!existsSync2(plan.fleetRoot)) {
-          details.push(`fleet root missing at ${plan.fleetRoot}`);
-          continue;
-        }
-        if (!existsSync2(plan.profileDir)) {
-          details.push(`profile dir missing: ${plan.profileDir}`);
-        } else if (lstatSync2(plan.profileDir).isSymbolicLink()) {
-          details.push(`profile dir is a symlink (must be a real dir): ${plan.profileDir}`);
-        }
-        for (const link of plan.links) {
-          const state = linkState(link.path, link.target);
-          if (state !== "ok") details.push(`${state}: ${link.path} -> ${link.target}`);
-        }
-      }
-      return {
-        id: "hermes.runtime-singleton",
-        title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Singleton runtime contract satisfied" : `${details.length} singleton-runtime issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const changedFiles = [];
-      const details = [];
-      for (const role of roles) {
-        const plan = singletonPlan(ctx, role);
-        if (!existsSync2(plan.fleetRoot)) {
-          details.push(`blocked: fleet root missing at ${plan.fleetRoot}`);
-          continue;
-        }
-        for (const shared of plan.sharedSeeds) {
-          if (existsSync2(shared.rootPath)) continue;
-          const donor = existsSync2(shared.runtimePath) ? shared.runtimePath : null;
-          if (!donor) continue;
-          details.push(`seed fleet ${basename2(shared.rootPath)} from ${donor}`);
-          changedFiles.push(shared.rootPath);
-          if (!ctx.dryRun) copyFileSync(donor, shared.rootPath);
-        }
-        if (existsSync2(plan.profileDir) && lstatSync2(plan.profileDir).isSymbolicLink()) {
-          details.push(`convert profile symlink to real dir: ${plan.profileDir}`);
-          changedFiles.push(plan.profileDir);
-          if (!ctx.dryRun) unlinkSync(plan.profileDir);
-        }
-        if (!existsSync2(plan.profileDir)) {
-          details.push(`create profile dir: ${plan.profileDir}`);
-          changedFiles.push(plan.profileDir);
-          if (!ctx.dryRun) mkdirSync2(plan.profileDir, { recursive: true });
-        }
-        for (const link of plan.links) {
-          const state = linkState(link.path, link.target);
-          if (state === "ok") continue;
-          if (link.ensureTargetDir && !existsSync2(link.target) && !ctx.dryRun) {
-            mkdirSync2(link.target, { recursive: true });
-          }
-          details.push(`link ${link.path} -> ${link.target}`);
-          changedFiles.push(link.path);
-          if (ctx.dryRun) continue;
-          if (existsSync2(link.path) || isDanglingLink(link.path)) {
-            const lst = lstatSync2(link.path);
-            if (lst.isSymbolicLink()) {
-              unlinkSync(link.path);
-            } else {
-              const parked = `${link.path}.pre-singleton`;
-              renameSync(link.path, parked);
-              details.push(`parked pre-existing ${link.path} at ${parked}`);
-            }
-          }
-          ensureParent(link.path);
-          symlinkSync(link.target, link.path);
-        }
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: details.some((d) => d.startsWith("blocked:")) ? "blocked" : changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
-        summary: changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "hermes.profile-wiring",
-    title: "Launcher + systemd HERMES_HOME points at the named profile",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      if (!roles.length) {
-        return { id: "hermes.profile-wiring", title: "Launcher + systemd HERMES_HOME points at the named profile", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
-      }
-      const details = [];
-      for (const role of roles) {
-        const plan = singletonPlan(ctx, role);
-        const launcher = join3(role.roleDir, "hermes");
-        const text3 = safeReadText(launcher);
-        if (text3 === null) {
-          details.push(`launcher missing: ${relative2(ctx.repoRoot, launcher)}`);
-        } else {
-          if (/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m.test(text3)) {
-            details.push(`launcher sets HERMES_HOME to the raw runtime path (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher)}`);
-          }
-          if (/HERMES_OAUTH_FILE/.test(text3)) {
-            details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative2(ctx.repoRoot, launcher)}`);
-          }
-        }
-        for (const unit of profileUnits(role)) {
-          const unitPath = join3(ctx.homeDir, ".config", "systemd", "user", unit);
-          const unitText = safeReadText(unitPath);
-          if (unitText === null) continue;
-          const current = /^Environment=HERMES_HOME=(.*)$/m.exec(unitText)?.[1]?.trim();
-          if (current && current !== plan.profileDir) {
-            details.push(`${unit} HERMES_HOME=${current} (expected ${plan.profileDir})`);
-          }
-          if (/^Environment=HERMES_OAUTH_FILE=/m.test(unitText)) {
-            details.push(`${unit} sets HERMES_OAUTH_FILE (dead config)`);
-          }
-        }
-      }
-      return {
-        id: "hermes.profile-wiring",
-        title: "Launcher + systemd HERMES_HOME points at the named profile",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "HERMES_HOME wiring is in parity" : `${details.length} HERMES_HOME wiring issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const changedFiles = [];
-      const details = [];
-      let unitsTouched = false;
-      for (const role of roles) {
-        const plan = singletonPlan(ctx, role);
-        const launcher = join3(role.roleDir, "hermes");
-        const text3 = safeReadText(launcher);
-        if (text3 !== null) {
-          const rewritten = rewriteLauncher(text3);
-          if (rewritten !== text3) {
-            details.push(`rewrite launcher HERMES_HOME -> profile path: ${relative2(ctx.repoRoot, launcher)}`);
-            writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 493);
-          }
-        }
-        for (const unit of profileUnits(role)) {
-          const unitPath = join3(ctx.homeDir, ".config", "systemd", "user", unit);
-          const unitText = safeReadText(unitPath);
-          if (unitText === null) continue;
-          let next = unitText.replace(/^Environment=HERMES_HOME=.*$/m, `Environment=HERMES_HOME=${plan.profileDir}`);
-          next = next.replace(/^Environment=HERMES_OAUTH_FILE=.*\n/m, "");
-          if (next !== unitText) {
-            details.push(`repoint ${unit} HERMES_HOME -> ${plan.profileDir}`);
-            writeIfDifferent(unitPath, next, ctx.dryRun, changedFiles);
-            unitsTouched = true;
-          }
-        }
-      }
-      if (unitsTouched && !ctx.dryRun) {
-        systemctlUser(["daemon-reload"]);
-        details.push("systemctl --user daemon-reload (restart units to pick up the new HERMES_HOME)");
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
-        summary: changedFiles.length ? ctx.dryRun ? "Planned HERMES_HOME rewiring" : "HERMES_HOME rewired to named profiles" : "No changes required",
-        changedFiles,
-        details
-      };
-    }
-  },
-  {
-    id: "hermes.registry-parity",
-    title: "Fleet registry matches .project.json (no duplicate or stale agents)",
-    audit: (ctx) => {
-      const roles = discoverRoles(ctx.repoRoot);
-      const details = [];
-      const registryPath2 = join3(ctx.homeDir, ".hermes", "agents-registry.yaml");
-      const registry = readRegistry(registryPath2);
-      if (!registry) {
-        if (!roles.length && declaredAgentIds(ctx.repoRoot).length === 0) {
-          return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles or declared agents present", details: [], fixable: false };
-        }
-        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath2}`, details: [], fixable: false };
-      }
-      const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
-      const owned = ownedRegistryEntries(registry, ctx.repoRoot);
-      const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
-      if (unprovisioned.length) {
-        return {
-          id: "hermes.registry-parity",
-          title: "Fleet registry matches .project.json (no duplicate or stale agents)",
-          status: "fail",
-          summary: `${unprovisioned.length} unprovisioned Hermes role blocker(s) detected`,
-          details: unprovisioned.map(
-            ({ agentId, roleDir, sources }) => `agent "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role, do not delete its registry/declaration`
-          ),
-          fixable: false
-        };
-      }
-      if (canonical.size === 0) {
-        return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
-      }
-      for (const [agentId, entry] of owned) {
-        const roleDir = String(entry?.role_dir ?? "");
-        if (!canonical.has(agentId)) {
-          details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
-        }
-      }
-      for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
-        details.push(`.project.json declares agent "${extra}" that no role.yaml claims`);
-      }
-      for (const role of roles) {
-        const entry = registry[role.agentId];
-        if (!entry) {
-          details.push(`registry is missing an entry for ${role.agentId}`);
-          continue;
-        }
-        const entryRoleDir = String(entry.role_dir ?? "");
-        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
-          details.push(`registry role_dir for ${role.agentId} is ${entryRoleDir} (expected ${role.roleDir})`);
-        }
-        const bin = String(entry.hermes?.bin ?? "");
-        if (bin && !existsSync2(bin)) {
-          details.push(`registry hermes.bin for ${role.agentId} does not exist: ${bin}`);
-        }
-        const bloodbank = entry.bloodbank ?? {};
-        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
-          details.push(`registry entry for ${role.agentId} must advertise bloodbank { gateway_scope: fleet, target_agent_id: ${role.agentId} }`);
-        }
-        const systemd = entry.systemd ?? {};
-        for (const key of LEGACY_SYSTEMD_KEYS) {
-          if (systemd[key] !== void 0) {
-            details.push(`registry entry for ${role.agentId} carries retired systemd.${key}; the fleet-shared Bloodbank gateway owns command ingress`);
-          }
-        }
-        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
-        if (existsSync2(legacyUnit)) {
-          details.push(`retired per-agent consumer unit still on disk: ${legacyUnit}`);
-        }
-      }
-      return {
-        id: "hermes.registry-parity",
-        title: "Fleet registry matches .project.json (no duplicate or stale agents)",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Fleet registry is in parity" : `${details.length} registry parity issue(s) detected`,
-        details,
-        fixable: true
-      };
-    },
-    migrate: (ctx, finding) => {
-      const changedFiles = [];
-      const details = [];
-      const registryPath2 = join3(ctx.homeDir, ".hermes", "agents-registry.yaml");
-      const raw = safeReadText(registryPath2);
-      if (raw === null) {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: `registry unreadable at ${registryPath2}`, changedFiles, details };
-      }
-      let doc;
-      try {
-        doc = YAML.parse(raw);
-      } catch {
-        return { id: finding.id, title: finding.title, status: "blocked", summary: "registry is not valid YAML", changedFiles, details };
-      }
-      const agents = doc?.agents ?? {};
-      const roles = discoverRoles(ctx.repoRoot);
-      const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
-      const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
-      if (unprovisioned.length) {
+        const profileMetaUpdated = upsertInheritedProfileMeta(join3(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
+        if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
+        const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
+        if (registryUpdated) details.push(`updated ${registryUpdated}`);
         return {
           id: finding.id,
           title: finding.title,
-          status: "blocked",
-          summary: "Registry parity is blocked by an unprovisioned Hermes role",
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "PM scaffold normalized" : "No changes required",
           changedFiles,
-          details: unprovisioned.map(
-            ({ agentId, roleDir, sources }) => `blocked: "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role without pruning registry/declaration state`
-          )
+          details
         };
       }
-      const fleetBin = fleetBinPath(ctx);
-      let dirty = false;
-      if (canonical.size === 0) {
-        for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
-          details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
+    },
+    {
+      id: "hermes.untracked-runtimes",
+      title: "Hermes agent runtimes untracked + gitignored",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        if (roles.length === 0) {
+          return {
+            id: "hermes.untracked-runtimes",
+            title: "Hermes agent runtimes untracked + gitignored",
+            status: "skip",
+            summary: "No Hermes roles present",
+            details: [],
+            fixable: false
+          };
         }
-        for (const agentId of declaredAgentIds(ctx.repoRoot)) {
-          if (!details.some((detail) => detail.includes(`"${agentId}"`))) {
-            details.push(`blocked: "${agentId}" is declared but has no role.yaml; provision or restore the role`);
+        const details = [];
+        for (const role of roles) {
+          const roleRelDir = relative2(ctx.repoRoot, role.roleDir);
+          const runtimeRelPath = join3(roleRelDir, "runtime");
+          const lsResult = spawnSync("git", ["ls-files", "--stage", runtimeRelPath], {
+            cwd: ctx.repoRoot,
+            encoding: "utf8"
+          });
+          if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
+            details.push(`submodule runtime is tracked in Git index at ${runtimeRelPath}`);
+          }
+          if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) {
+            details.push(`stale .gitmodules mapping exists for ${runtimeRelPath}`);
+          }
+          const gitignorePath = join3(role.roleDir, ".gitignore");
+          if (existsSync2(gitignorePath)) {
+            const content = safeReadText(gitignorePath) ?? "";
+            const lines = content.split(/\r?\n/).map((line) => line.trim());
+            if (!lines.includes("runtime/") && !lines.includes("runtime")) {
+              details.push(`.gitignore missing runtime/ ignore entry in ${relative2(ctx.repoRoot, gitignorePath)}`);
+            }
+          } else {
+            details.push(`.gitignore is missing in ${relative2(ctx.repoRoot, gitignorePath)}`);
           }
         }
-        if (details.length) {
+        return {
+          id: "hermes.untracked-runtimes",
+          title: "Hermes agent runtimes untracked + gitignored",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "All Hermes agent runtimes are untracked and gitignored" : `${details.length} issue(s) with untracked/ignored runtimes detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        const changedFiles = [];
+        const details = [];
+        for (const role of roles) {
+          const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
+          details.push(...retirement.details);
+          if (!retirement.ok) {
+            return {
+              id: finding.id,
+              title: finding.title,
+              status: "blocked",
+              summary: "Failed to retire Hermes runtime submodule metadata safely",
+              changedFiles,
+              details: [retirement.error ?? "unknown runtime retirement failure"]
+            };
+          }
+          const gitignorePath = join3(role.roleDir, ".gitignore");
+          let content = "";
+          let isIgnored = false;
+          if (existsSync2(gitignorePath)) {
+            content = safeReadText(gitignorePath) ?? "";
+            const lines = content.split(/\r?\n/).map((line) => line.trim());
+            isIgnored = lines.includes("runtime/") || lines.includes("runtime");
+          }
+          if (!isIgnored) {
+            details.push(`ignore runtime/ in ${relative2(ctx.repoRoot, gitignorePath)}`);
+            changedFiles.push(gitignorePath);
+            if (!ctx.dryRun) {
+              if (content && !content.endsWith("\n")) {
+                content += "\n";
+              }
+              content += "runtime/\n";
+              writeText(gitignorePath, content);
+            }
+          }
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? "applied" : "noop",
+          summary: changedFiles.length ? "Hermes agent runtimes made untracked and ignored" : "No changes required",
+          changedFiles,
+          details
+        };
+      }
+    },
+    {
+      id: "systemd.sentinel",
+      title: "Hermes systemd/sentinel units enabled + active",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        if (!roles.length) {
+          return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+        }
+        const requiredRoles = roles.filter((role) => role.deploymentSystemd !== "deferred");
+        if (!requiredRoles.length) {
+          return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "pass", summary: "systemd is intentionally deferred for every local-only Hermes role", details: [], fixable: false };
+        }
+        const probe = systemctlUser(["is-system-running"]);
+        if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+          return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "warn", summary: "systemd --user unavailable; unit state not auditable here", details: [], fixable: false };
+        }
+        const details = [];
+        for (const role of requiredRoles) {
+          for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
+            const state = checkUnit(unit);
+            if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
+          }
+        }
+        return {
+          id: "systemd.sentinel",
+          title: "Hermes systemd/sentinel units enabled + active",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Hermes user units are enabled and active" : `${details.length} systemd parity issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const roles = discoverRoles(ctx.repoRoot).filter((role) => role.deploymentSystemd !== "deferred");
+        const changedFiles = [];
+        const details = [];
+        if (!roles.length) {
+          return { id: finding.id, title: finding.title, status: "skipped", summary: "systemd is intentionally deferred for local-only Hermes roles", changedFiles, details };
+        }
+        const probe = systemctlUser(["is-system-running"]);
+        if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
+        }
+        for (const role of roles) {
+          const sysDir = join3(ctx.homeDir, ".config", "systemd", "user");
+          const units = [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`];
+          const allUnitsPresent = units.every((unit) => existsSync2(join3(sysDir, unit)));
+          const unitsStale = units.some((unit) => {
+            const text3 = safeReadText(join3(sysDir, unit));
+            if (text3 === null) return true;
+            return text3.includes("/agents/hermes/") && !text3.includes(role.roleDir);
+          });
+          if (allUnitsPresent && !unitsStale) {
+            if (ctx.dryRun) {
+              details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
+            } else {
+              systemctlUser(["daemon-reload"]);
+              for (const unit of units) {
+                systemctlUser(["enable", "--now", unit]);
+              }
+            }
+            continue;
+          }
+          for (const script of [join3(role.roleDir, ".scripts", "70-systemd.sh")]) {
+            if (!existsSync2(script)) {
+              details.push(`script failed: missing ${script}`);
+              continue;
+            }
+            if (ctx.dryRun) {
+              details.push(`would run: FORCE_SYSTEMD=1 bash ${script}`);
+            } else {
+              const result = spawnSync("bash", [script], {
+                cwd: role.roleDir,
+                encoding: "utf8",
+                env: { ...process.env, FORCE_SYSTEMD: "1" }
+              });
+              if (result.status !== 0) {
+                details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
+              } else {
+                details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
+              }
+            }
+          }
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: details.some((detail) => detail.includes("failed:")) ? "blocked" : details.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+          summary: details.length ? ctx.dryRun ? "Planned systemd remediation commands" : "Attempted systemd remediation" : "No changes required",
+          changedFiles,
+          details
+        };
+      }
+    },
+    {
+      id: "hermes.runtime-singleton",
+      title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        if (!roles.length) {
+          return { id: "hermes.runtime-singleton", title: "Hermes singleton runtime (shared config/auth, per-agent memory)", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+        }
+        const details = [];
+        for (const role of roles) {
+          const plan = singletonPlan(ctx, role);
+          if (!existsSync2(plan.fleetRoot)) {
+            details.push(`fleet root missing at ${plan.fleetRoot}`);
+            continue;
+          }
+          if (!existsSync2(plan.profileDir)) {
+            details.push(`profile dir missing: ${plan.profileDir}`);
+          } else if (lstatSync2(plan.profileDir).isSymbolicLink()) {
+            details.push(`profile dir is a symlink (must be a real dir): ${plan.profileDir}`);
+          }
+          for (const link of plan.links) {
+            const state = linkState(link.path, link.target);
+            if (state !== "ok") details.push(`${state}: ${link.path} -> ${link.target}`);
+          }
+        }
+        return {
+          id: "hermes.runtime-singleton",
+          title: "Hermes singleton runtime (shared config/auth, per-agent memory)",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Singleton runtime contract satisfied" : `${details.length} singleton-runtime issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        const changedFiles = [];
+        const details = [];
+        for (const role of roles) {
+          const plan = singletonPlan(ctx, role);
+          if (!existsSync2(plan.fleetRoot)) {
+            details.push(`blocked: fleet root missing at ${plan.fleetRoot}`);
+            continue;
+          }
+          for (const shared of plan.sharedSeeds) {
+            if (existsSync2(shared.rootPath)) continue;
+            const donor = existsSync2(shared.runtimePath) ? shared.runtimePath : null;
+            if (!donor) continue;
+            details.push(`seed fleet ${basename2(shared.rootPath)} from ${donor}`);
+            changedFiles.push(shared.rootPath);
+            if (!ctx.dryRun) copyFileSync(donor, shared.rootPath);
+          }
+          if (existsSync2(plan.profileDir) && lstatSync2(plan.profileDir).isSymbolicLink()) {
+            details.push(`convert profile symlink to real dir: ${plan.profileDir}`);
+            changedFiles.push(plan.profileDir);
+            if (!ctx.dryRun) unlinkSync(plan.profileDir);
+          }
+          if (!existsSync2(plan.profileDir)) {
+            details.push(`create profile dir: ${plan.profileDir}`);
+            changedFiles.push(plan.profileDir);
+            if (!ctx.dryRun) mkdirSync2(plan.profileDir, { recursive: true });
+          }
+          for (const link of plan.links) {
+            const state = linkState(link.path, link.target);
+            if (state === "ok") continue;
+            if (link.ensureTargetDir && !existsSync2(link.target) && !ctx.dryRun) {
+              mkdirSync2(link.target, { recursive: true });
+            }
+            details.push(`link ${link.path} -> ${link.target}`);
+            changedFiles.push(link.path);
+            if (ctx.dryRun) continue;
+            if (existsSync2(link.path) || isDanglingLink(link.path)) {
+              const lst = lstatSync2(link.path);
+              if (lst.isSymbolicLink()) {
+                unlinkSync(link.path);
+              } else {
+                const parked = `${link.path}.pre-singleton`;
+                renameSync(link.path, parked);
+                details.push(`parked pre-existing ${link.path} at ${parked}`);
+              }
+            }
+            ensureParent(link.path);
+            symlinkSync(link.target, link.path);
+          }
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: details.some((d) => d.startsWith("blocked:")) ? "blocked" : changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+          summary: changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
+          changedFiles,
+          details
+        };
+      }
+    },
+    {
+      id: "hermes.profile-wiring",
+      title: "Launcher + systemd HERMES_HOME points at the named profile",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        if (!roles.length) {
+          return { id: "hermes.profile-wiring", title: "Launcher + systemd HERMES_HOME points at the named profile", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+        }
+        const details = [];
+        for (const role of roles) {
+          const plan = singletonPlan(ctx, role);
+          const launcher = join3(role.roleDir, "hermes");
+          const text3 = safeReadText(launcher);
+          if (text3 === null) {
+            details.push(`launcher missing: ${relative2(ctx.repoRoot, launcher)}`);
+          } else {
+            if (/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m.test(text3)) {
+              details.push(`launcher sets HERMES_HOME to the raw runtime path (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher)}`);
+            }
+            if (/HERMES_OAUTH_FILE/.test(text3)) {
+              details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative2(ctx.repoRoot, launcher)}`);
+            }
+          }
+          for (const unit of profileUnits(role)) {
+            const unitPath = join3(ctx.homeDir, ".config", "systemd", "user", unit);
+            const unitText = safeReadText(unitPath);
+            if (unitText === null) continue;
+            const current = /^Environment=HERMES_HOME=(.*)$/m.exec(unitText)?.[1]?.trim();
+            if (current && current !== plan.profileDir) {
+              details.push(`${unit} HERMES_HOME=${current} (expected ${plan.profileDir})`);
+            }
+            if (/^Environment=HERMES_OAUTH_FILE=/m.test(unitText)) {
+              details.push(`${unit} sets HERMES_OAUTH_FILE (dead config)`);
+            }
+          }
+        }
+        return {
+          id: "hermes.profile-wiring",
+          title: "Launcher + systemd HERMES_HOME points at the named profile",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "HERMES_HOME wiring is in parity" : `${details.length} HERMES_HOME wiring issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        const changedFiles = [];
+        const details = [];
+        let unitsTouched = false;
+        for (const role of roles) {
+          const plan = singletonPlan(ctx, role);
+          const launcher = join3(role.roleDir, "hermes");
+          const text3 = safeReadText(launcher);
+          if (text3 !== null) {
+            const rewritten = rewriteLauncher(text3);
+            if (rewritten !== text3) {
+              details.push(`rewrite launcher HERMES_HOME -> profile path: ${relative2(ctx.repoRoot, launcher)}`);
+              writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 493);
+            }
+          }
+          for (const unit of profileUnits(role)) {
+            const unitPath = join3(ctx.homeDir, ".config", "systemd", "user", unit);
+            const unitText = safeReadText(unitPath);
+            if (unitText === null) continue;
+            let next = unitText.replace(/^Environment=HERMES_HOME=.*$/m, `Environment=HERMES_HOME=${plan.profileDir}`);
+            next = next.replace(/^Environment=HERMES_OAUTH_FILE=.*\n/m, "");
+            if (next !== unitText) {
+              details.push(`repoint ${unit} HERMES_HOME -> ${plan.profileDir}`);
+              writeIfDifferent(unitPath, next, ctx.dryRun, changedFiles);
+              unitsTouched = true;
+            }
+          }
+        }
+        if (unitsTouched && !ctx.dryRun) {
+          systemctlUser(["daemon-reload"]);
+          details.push("systemctl --user daemon-reload (restart units to pick up the new HERMES_HOME)");
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+          summary: changedFiles.length ? ctx.dryRun ? "Planned HERMES_HOME rewiring" : "HERMES_HOME rewired to named profiles" : "No changes required",
+          changedFiles,
+          details
+        };
+      }
+    },
+    {
+      id: "hermes.registry-parity",
+      title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        const details = [];
+        const registryPath2 = join3(ctx.homeDir, ".hermes", "agents-registry.yaml");
+        const registry = readRegistry(registryPath2);
+        if (!registry) {
+          if (!roles.length && declaredAgentIds(ctx.repoRoot).length === 0) {
+            return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles or declared agents present", details: [], fixable: false };
+          }
+          return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath2}`, details: [], fixable: false };
+        }
+        const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const owned = ownedRegistryEntries(registry, ctx.repoRoot);
+        const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
+        if (unprovisioned.length) {
+          return {
+            id: "hermes.registry-parity",
+            title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+            status: "fail",
+            summary: `${unprovisioned.length} unprovisioned Hermes role blocker(s) detected`,
+            details: unprovisioned.map(
+              ({ agentId, roleDir, sources }) => `agent "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role, do not delete its registry/declaration`
+            ),
+            fixable: false
+          };
+        }
+        if (canonical.size === 0) {
+          return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
+        }
+        for (const [agentId, entry] of owned) {
+          const roleDir = String(entry?.role_dir ?? "");
+          if (!canonical.has(agentId)) {
+            details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
+          }
+        }
+        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+          details.push(`.project.json declares agent "${extra}" that no role.yaml claims`);
+        }
+        for (const role of roles) {
+          const entry = registry[role.agentId];
+          if (!entry) {
+            details.push(`registry is missing an entry for ${role.agentId}`);
+            continue;
+          }
+          const entryRoleDir = String(entry.role_dir ?? "");
+          if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+            details.push(`registry role_dir for ${role.agentId} is ${entryRoleDir} (expected ${role.roleDir})`);
+          }
+          const bin = String(entry.hermes?.bin ?? "");
+          if (bin && !existsSync2(bin)) {
+            details.push(`registry hermes.bin for ${role.agentId} does not exist: ${bin}`);
+          }
+          const bloodbank = entry.bloodbank ?? {};
+          if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+            details.push(`registry entry for ${role.agentId} must advertise bloodbank { gateway_scope: fleet, target_agent_id: ${role.agentId} }`);
+          }
+          const systemd = entry.systemd ?? {};
+          for (const key of LEGACY_SYSTEMD_KEYS) {
+            if (systemd[key] !== void 0) {
+              details.push(`registry entry for ${role.agentId} carries retired systemd.${key}; the fleet-shared Bloodbank gateway owns command ingress`);
+            }
+          }
+          const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+          if (existsSync2(legacyUnit)) {
+            details.push(`retired per-agent consumer unit still on disk: ${legacyUnit}`);
+          }
+        }
+        return {
+          id: "hermes.registry-parity",
+          title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Fleet registry is in parity" : `${details.length} registry parity issue(s) detected`,
+          details,
+          fixable: true
+        };
+      },
+      migrate: (ctx, finding) => {
+        const changedFiles = [];
+        const details = [];
+        const registryPath2 = join3(ctx.homeDir, ".hermes", "agents-registry.yaml");
+        let raw = safeReadText(registryPath2);
+        if (raw === null) {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: `registry unreadable at ${registryPath2}`, changedFiles, details };
+        }
+        const roles = discoverRoles(ctx.repoRoot);
+        const missingRoles = roles.filter((role) => !raw.includes(`${role.agentId}:`));
+        for (const role of missingRoles) {
+          const updated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
+          if (updated) details.push(`add missing fleet registry entry for ${role.agentId}`);
+          if (!ctx.dryRun) raw = safeReadText(registryPath2) ?? raw;
+        }
+        if (ctx.dryRun && missingRoles.length) {
+          return { id: finding.id, title: finding.title, status: "skipped", summary: "Planned missing fleet registry entries", changedFiles: [...new Set(changedFiles)], details };
+        }
+        let doc;
+        try {
+          doc = YAML.parse(raw);
+        } catch {
+          return { id: finding.id, title: finding.title, status: "blocked", summary: "registry is not valid YAML", changedFiles, details };
+        }
+        const agents = doc?.agents ?? {};
+        const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
+        if (unprovisioned.length) {
           return {
             id: finding.id,
             title: finding.title,
             status: "blocked",
             summary: "Registry parity is blocked by an unprovisioned Hermes role",
             changedFiles,
-            details
+            details: unprovisioned.map(
+              ({ agentId, roleDir, sources }) => `blocked: "${agentId}" (${sources.join(" + ")}) has no role.yaml${roleDir ? ` at ${roleDir}` : ""}; provision or restore the role without pruning registry/declaration state`
+            )
           };
         }
-      }
-      for (const role of roles) {
-        const entry = agents[role.agentId];
-        if (!entry) continue;
-        const entryRoleDir = String(entry.role_dir ?? "");
-        if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
-          details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
-          entry.role_dir = role.roleDir;
-          entry.project_path = ctx.repoRoot;
-          dirty = true;
-        }
-        const bloodbank = entry.bloodbank ?? {};
-        if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
-          details.push(`advertise fleet bloodbank routing for ${role.agentId}`);
-          entry.bloodbank = { gateway_scope: "fleet", target_agent_id: role.agentId };
-          dirty = true;
-        }
-        const systemd = entry.systemd;
-        if (systemd) {
-          for (const key of LEGACY_SYSTEMD_KEYS) {
-            if (systemd[key] !== void 0) {
-              details.push(`drop retired systemd.${key} from ${role.agentId}`);
-              delete systemd[key];
-              dirty = true;
+        const fleetBin = fleetBinPath(ctx);
+        let dirty = false;
+        if (canonical.size === 0) {
+          for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
+            details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
+          }
+          for (const agentId of declaredAgentIds(ctx.repoRoot)) {
+            if (!details.some((detail) => detail.includes(`"${agentId}"`))) {
+              details.push(`blocked: "${agentId}" is declared but has no role.yaml; provision or restore the role`);
             }
           }
-        }
-        const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
-        if (existsSync2(legacyUnit)) {
-          if (ctx.dryRun) {
-            details.push(`would remove retired consumer unit ${legacyUnit}`);
-          } else {
-            systemctlUser(["disable", "--now", basename2(legacyUnit)]);
-            rmSync(legacyUnit, { force: true });
-            systemctlUser(["daemon-reload"]);
-            systemctlUser(["reset-failed"]);
-            details.push(`removed retired consumer unit ${legacyUnit}`);
+          if (details.length) {
+            return {
+              id: finding.id,
+              title: finding.title,
+              status: "blocked",
+              summary: "Registry parity is blocked by an unprovisioned Hermes role",
+              changedFiles,
+              details
+            };
           }
-          changedFiles.push(legacyUnit);
         }
+        for (const role of roles) {
+          const entry = agents[role.agentId];
+          if (!entry) continue;
+          const entryRoleDir = String(entry.role_dir ?? "");
+          if (entryRoleDir && realOrSelf(entryRoleDir) !== realOrSelf(role.roleDir)) {
+            details.push(`repoint ${role.agentId} role_dir -> ${role.roleDir}`);
+            entry.role_dir = role.roleDir;
+            entry.project_path = ctx.repoRoot;
+            dirty = true;
+          }
+          const bloodbank = entry.bloodbank ?? {};
+          if (bloodbank.gateway_scope !== "fleet" || bloodbank.target_agent_id !== role.agentId) {
+            details.push(`advertise fleet bloodbank routing for ${role.agentId}`);
+            entry.bloodbank = { gateway_scope: "fleet", target_agent_id: role.agentId };
+            dirty = true;
+          }
+          const systemd = entry.systemd;
+          if (systemd) {
+            for (const key of LEGACY_SYSTEMD_KEYS) {
+              if (systemd[key] !== void 0) {
+                details.push(`drop retired systemd.${key} from ${role.agentId}`);
+                delete systemd[key];
+                dirty = true;
+              }
+            }
+          }
+          const legacyUnit = legacyConsumerUnitPath(ctx.homeDir, role.agentId);
+          if (existsSync2(legacyUnit)) {
+            if (ctx.dryRun) {
+              details.push(`would remove retired consumer unit ${legacyUnit}`);
+            } else {
+              systemctlUser(["disable", "--now", basename2(legacyUnit)]);
+              rmSync(legacyUnit, { force: true });
+              systemctlUser(["daemon-reload"]);
+              systemctlUser(["reset-failed"]);
+              details.push(`removed retired consumer unit ${legacyUnit}`);
+            }
+            changedFiles.push(legacyUnit);
+          }
+        }
+        for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
+          if (canonical.size > 0 && !canonical.has(agentId)) {
+            details.push(`drop stale/duplicate registry agent "${agentId}"`);
+            delete agents[agentId];
+            dropDeclaredAgent(ctx, agentId, changedFiles, details);
+            dirty = true;
+            continue;
+          }
+          const hermes = entry.hermes ?? {};
+          if (fleetBin && String(hermes.bin ?? "") !== fleetBin && !existsSync2(String(hermes.bin ?? ""))) {
+            details.push(`repoint ${agentId} hermes.bin -> ${fleetBin}`);
+            hermes.bin = fleetBin;
+            entry.hermes = hermes;
+            dirty = true;
+          }
+          if (hermes.oauth_file) {
+            details.push(`drop dead hermes.oauth_file from ${agentId}`);
+            delete hermes.oauth_file;
+            dirty = true;
+          }
+        }
+        if (canonical.size > 0) {
+          for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+            dropDeclaredAgent(ctx, extra, changedFiles, details);
+          }
+        }
+        if (dirty) {
+          changedFiles.push(registryPath2);
+          if (!ctx.dryRun) {
+            doc.agents = agents;
+            writeText(registryPath2, YAML.stringify(doc));
+          }
+        }
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
+          summary: changedFiles.length ? ctx.dryRun ? "Planned registry repair" : "Fleet registry repaired" : "No changes required",
+          changedFiles,
+          details
+        };
       }
-      for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
-        if (canonical.size > 0 && !canonical.has(agentId)) {
-          details.push(`drop stale/duplicate registry agent "${agentId}"`);
-          delete agents[agentId];
-          dropDeclaredAgent(ctx, agentId, changedFiles, details);
-          dirty = true;
-          continue;
-        }
-        const hermes = entry.hermes ?? {};
-        if (fleetBin && String(hermes.bin ?? "") !== fleetBin && !existsSync2(String(hermes.bin ?? ""))) {
-          details.push(`repoint ${agentId} hermes.bin -> ${fleetBin}`);
-          hermes.bin = fleetBin;
-          entry.hermes = hermes;
-          dirty = true;
-        }
-        if (hermes.oauth_file) {
-          details.push(`drop dead hermes.oauth_file from ${agentId}`);
-          delete hermes.oauth_file;
-          dirty = true;
-        }
-      }
-      if (canonical.size > 0) {
-        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
-          dropDeclaredAgent(ctx, extra, changedFiles, details);
-        }
-      }
-      if (dirty) {
-        changedFiles.push(registryPath2);
-        if (!ctx.dryRun) {
-          doc.agents = agents;
-          writeText(registryPath2, YAML.stringify(doc));
-        }
-      }
-      return {
-        id: finding.id,
-        title: finding.title,
-        status: changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
-        summary: changedFiles.length ? ctx.dryRun ? "Planned registry repair" : "Fleet registry repaired" : "No changes required",
-        changedFiles,
-        details
-      };
     }
-  },
-  {
-    id: "momo-lifecycle-plane",
-    title: "Momo lifecycle-plane readiness profile",
-    audit: () => ({
+  ];
+}
+function createProjectMomoChecks() {
+  return [
+    {
       id: "momo-lifecycle-plane",
       title: "Momo lifecycle-plane readiness profile",
-      status: "skip",
-      summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
-      details: [],
-      fixable: false
-    }),
-    migrate: (ctx, finding) => ({
-      id: finding.id,
-      title: finding.title,
-      status: "skipped",
-      summary: "report-only profile; migration is intentionally skipped",
-      changedFiles: [],
-      details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"]
-    })
-  }
-];
+      audit: () => ({
+        id: "momo-lifecycle-plane",
+        title: "Momo lifecycle-plane readiness profile",
+        status: "skip",
+        summary: "Momo readiness is an audit-only profile; use audit --profile momo-lifecycle-plane",
+        details: [],
+        fixable: false
+      }),
+      migrate: (ctx, finding) => ({
+        id: finding.id,
+        title: finding.title,
+        status: "skipped",
+        summary: "report-only profile; migration is intentionally skipped",
+        changedFiles: [],
+        details: ["Momo lifecycle-plane readiness checks are credential-bearing and are performed only by `audit --profile momo-lifecycle-plane`"]
+      })
+    }
+  ];
+}
+function createProjectChecks() {
+  return [
+    ...createProjectJsonChecks(),
+    ...createProjectProvenanceChecks(),
+    ...createProjectMomoChecks()
+  ];
+}
 function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
   const normalized = content.endsWith("\n") ? content : `${content}
 `;
@@ -4960,81 +5591,6 @@ function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
     writeText(path, normalized);
     if (mode) chmodSync(path, mode);
   }
-}
-function getParityRuleIds() {
-  return RULES.map((rule) => rule.id);
-}
-function runAudit(repoArg) {
-  const pjanglerRoot = resolvePjanglerRoot();
-  const ctx = {
-    repoRoot: resolve2(repoArg ?? process.cwd()),
-    dryRun: true,
-    pjanglerRoot,
-    homeDir: homedir()
-  };
-  const rules = RULES.map((rule) => rule.audit(ctx));
-  return {
-    repo: ctx.repoRoot,
-    ok: rules.every((rule) => rule.status === "pass" || rule.status === "skip"),
-    auditedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    rules
-  };
-}
-function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
-  const pjanglerRoot = resolvePjanglerRoot();
-  const ctx = {
-    repoRoot: resolve2(repoArg ?? process.cwd()),
-    dryRun,
-    pjanglerRoot,
-    homeDir: homedir(),
-    acceptRegistryMatches
-  };
-  const selected = RULES.filter((rule) => ruleIds.includes(rule.id));
-  if (!selected.length) {
-    throw new Error(`Unknown parity rules: ${ruleIds.join(", ")}`);
-  }
-  const results = selected.map((rule) => {
-    try {
-      return rule.migrate(ctx, rule.audit(ctx));
-    } catch (err) {
-      return {
-        id: rule.id,
-        title: rule.title,
-        status: "blocked",
-        summary: `migrate threw: ${err instanceof Error ? err.message : String(err)}`,
-        changedFiles: [],
-        details: []
-      };
-    }
-  });
-  const changedFiles = Array.from(new Set(results.flatMap((result) => result.changedFiles))).sort();
-  return {
-    repo: ctx.repoRoot,
-    dryRun,
-    ok: results.every((result) => result.status !== "blocked"),
-    selectedRules: selected.map((rule) => rule.id),
-    results,
-    changedFiles
-  };
-}
-function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
-  if (all) {
-    const audit = runAudit(repoArg);
-    const ruleIds2 = audit.rules.filter((finding) => finding.fixable && (finding.status === "fail" || finding.status === "warn")).map((finding) => finding.id);
-    if (ruleIds2.length === 0) {
-      return {
-        repo: audit.repo,
-        dryRun,
-        ok: true,
-        selectedRules: [],
-        results: [],
-        changedFiles: []
-      };
-    }
-    return runMigrationForRules(ruleIds2, repoArg, dryRun, acceptRegistryMatches);
-  }
-  const ruleIds = selector ? [selector] : [];
-  return runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches);
 }
 function prettyTimestamp(iso) {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
@@ -5136,571 +5692,53 @@ function formatRulePickerMessage(rules) {
   return `Select parity rules to apply  ${joinDot(fragments)}`;
 }
 
-// src/commands/hermes/EnsureTemplateConfig.ts
-function resolveTemplateConfigPath() {
-  const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-  const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  const base = xdg && xdg.length ? xdg : join4(homedir2(), ".config");
-  return join4(base, "hermes-agent-template", "config.toml");
-}
-function detectHermesBin(home) {
-  const candidates = [
-    join4(home, "code", "hermes-agent", "venv", "bin", "hermes"),
-    join4(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
-    join4(home, ".local", "bin", "hermes")
-  ];
-  for (const c of candidates) {
-    if (existsSync3(c)) return c;
-  }
-  return candidates[0];
-}
-function renderHostConfig() {
-  const home = homedir2();
-  const hermesBin = detectHermesBin(home);
-  const hermesRepo = join4(home, "code", "hermes-agent");
-  const scaffoldDir = join4(home, "code", "hermes-agent-template", "runtime-scaffold");
-  const skillsDir = join4(home, ".agents", "skills");
-  const pmExternalSkillGlobalDir = join4(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join4(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
-  return `# hermes-agent-template \u2014 host configuration
-# Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
-#
-# [fleet] paths below were derived from THIS machine. The identity values in
-# [github]/[plane]/[bloodbank] are intentionally left to be confirmed before a
-# CLOUD provision (\`pjangler hermes\` without --local); they are unused by the
-# default local-only provision.
-#
-# Resolution precedence per value: env var > ~/.hermes/fleet.env > this file > fallback.
-
-[fleet]
-home = "~/.hermes"
-hermes_bin = "${hermesBin}"
-hermes_repo = "${hermesRepo}"
-runtime_scaffold_dir = "${scaffoldDir}"
-# Shared fleet source-of-truth env file + fleet registry. ~ is expanded.
-fleet_env = "~/.hermes/fleet.env"
-registry_file = "~/.hermes/agents-registry.yaml"
-canonical_skills_dir = "${skillsDir}"
-pm_external_skill_dirs = [
-  "${pmExternalSkillGlobalDir}",
-  "${pmExternalSkillBmadDir}",
-]
-symlinked_runtime_skills = []
-
-[github]
-# Owner of the per-agent runtime repos (creates <owner>/agent-hm-<repo>-<role>).
-# REQUIRED before a cloud provision. Leave empty for local-only runs.
-runtime_repo_owner = ""
-
-[plane]
-# Plane instance + workspace (one project per agent). Confirm before cloud provision.
-base = "https://plane.delo.sh"
-workspace = "33god"
-
-[bloodbank]
-# NATS endpoint the consumer connects to. For a remote fleet node, point this at
-# the bloodbank host over Tailscale rather than localhost.
-nats_host = "127.0.0.1"
-nats_port = 4222
-compose_dir = "~/code/33GOD/bloodbank"
-`;
-}
-var EnsureTemplateConfig = class extends Command {
-  async invoke() {
-    const ctx = this.context;
-    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
-    const path = resolveTemplateConfigPath();
-    const exists = existsSync3(path);
-    if (exists && !force) {
-      console.log(`\u2713 Config present: ${path}`);
-      return { success: true, message: "" };
-    }
-    if (ctx.dryRun) {
-      console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
-      return { success: true, message: "" };
-    }
-    try {
-      mkdirSync3(dirname3(path), { recursive: true });
-      writeFileSync3(path, renderHostConfig());
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { success: false, message: `\u2717 Failed to write ${path}: ${msg}` };
-    }
-    console.log(`\u2713 Bootstrapped config: ${path}`);
-    console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
-    return { success: true, message: "" };
-  }
-};
-
-// src/recipes/Recipe.ts
-var Recipe = class {
-  context;
-  ingredients = [];
-  constructor(context) {
-    this.context = context;
-  }
-  addIngredient(CommandClass) {
-    this.ingredients.push(new CommandClass(this.context));
-    return this;
-  }
-  async execute() {
-    const subsystem = this.constructor.name.replace("Recipe", "").toLowerCase();
-    const dryRun = this.context.dryRun;
-    console.log("");
-    console.log(`  ${cyan(bold(glyph.chevron))} ${bold(`Initializing ${subsystem} subsystem`)}${dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
-    console.log("");
-    for (const command of this.ingredients) {
-      const result = await command.invoke();
-      console.log(result.message.split("\n").map((line) => line ? `  ${line}` : line).join("\n"));
-    }
-    if (!dryRun) {
-      this.printNextSteps();
-    } else {
-      console.log("");
-      console.log(`  ${green(glyph.pass)} ${dim("Dry-run complete \u2014 no files were modified.")}`);
-      console.log(`  ${dim("Remove --dry-run to apply changes.")}`);
-      console.log("");
-    }
-  }
-};
-
-// src/commands/AddMiseToml.ts
-var AddMiseToml = class extends Command {
-  async invoke() {
-    const filePath = "mise.toml";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  mise.toml already exists"),
-        filePath
-      };
-    }
-    const content = `# Mise configuration
-[tools]
-python = "3.11"
-node = "20"
-
-[env]
-NODE_ENV = "development"
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create mise.toml" : "\u2705 Created mise.toml"),
-      filePath
-    };
-  }
-};
-
-// src/commands/AddDotenv.ts
-var AddDotenv = class extends Command {
-  async invoke() {
-    const filePath = ".env";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  .env already exists"),
-        filePath
-      };
-    }
-    const content = `# Environment variables
-DATABASE_URL=""
-API_KEY=""
-SECRET_KEY=""
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .env" : "\u2705 Created .env"),
-      filePath
-    };
-  }
-};
-
-// src/commands/AddMiseTasksStructure.ts
-var AddMiseTasksStructure = class extends Command {
-  async invoke() {
-    this.createDirectory(".mise/tasks/scripts");
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .mise directory structure" : "\u2705 Created .mise directory structure"),
-      filePath: ".mise/tasks/scripts"
-    };
-  }
-};
-
-// src/commands/AddMiseBaseToml.ts
-var AddMiseBaseToml = class extends Command {
-  async invoke() {
-    const filePath = ".mise/tasks/base.toml";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  .mise/tasks/base.toml already exists"),
-        filePath
-      };
-    }
-    const content = `# Base tasks configuration
-[tasks.setup]
-run = "python scripts/base.py"
-description = "Setup base environment"
-
-[tasks.clean]
-run = "rm -rf node_modules dist build"
-description = "Clean build artifacts"
-
-[tasks.dev]
-run = "mise run setup"
-description = "Initialize development environment"
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .mise/tasks/base.toml" : "\u2705 Created .mise/tasks/base.toml"),
-      filePath
-    };
-  }
-};
-
-// src/commands/AddMiseBaseScript.ts
-var AddMiseBaseScript = class extends Command {
-  async invoke() {
-    const filePath = ".mise/tasks/scripts/base.py";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  .mise/tasks/scripts/base.py already exists"),
-        filePath
-      };
-    }
-    const content = `#!/usr/bin/env python3
-"""Base setup script"""
-import os
-import sys
-from pathlib import Path
-
-def main():
-    print("\u{1F527} Setting up base environment...")
-
-    dirs_to_create = ["logs", "temp", "data"]
-    for dir_name in dirs_to_create:
-        Path(dir_name).mkdir(exist_ok=True)
-        print(f"  Created {dir_name}/ directory")
-
-    print("  Base environment setup complete!")
-    print("  Run 'mise run dev' to start development")
-
-if __name__ == "__main__":
-    main()
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .mise/tasks/scripts/base.py" : "\u2705 Created .mise/tasks/scripts/base.py"),
-      filePath
-    };
-  }
-};
-
-// src/commands/AddMiseCodegraphScript.ts
-import { chmodSync as chmodSync2 } from "fs";
-import { join as join5 } from "path";
-var AddMiseCodegraphScript = class extends Command {
-  async invoke() {
-    const filePath = ".mise/scripts/codegraph.sh";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  .mise/scripts/codegraph.sh already exists"),
-        filePath
-      };
-    }
-    const content = `#!/usr/bin/env bash
-# Auto-generated by pjangler
-
-REPO_ROOT="$(pwd)"
-PROJECT_NAME="$(basename "$REPO_ROOT")"
-CONTAINER_NAME="codegraph-mcp-$PROJECT_NAME"
-CACHE_DIR="$REPO_ROOT/.codegraph"
-
-# Deterministically generate a port based on the repository path
-PORT=$(echo -n "$REPO_ROOT" | md5sum | awk '{print $1}' | tr -d 'a-f' | cut -c1-4)
-# Ensure port is > 1024
-PORT=$(( (PORT % 60000) + 1025 ))
-
-if ! docker ps --format '{{.Names}}' | grep -q "^$CONTAINER_NAME$"; then
-  echo "\u{1F680} Starting CodeGraph MCP Server on port $PORT..."
-
-  # Ensure the container isn't lingering in a stopped state
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-  # Run the true Colby McHenry CodeGraph Docker image
-  # which we built locally as colbymchenry-codegraph-mcp:latest
-  docker run -d \\
-    --name "$CONTAINER_NAME" \\
-    --restart unless-stopped \\
-    -p "$PORT:8045" \\
-    -v "$REPO_ROOT:/repo" \\
-    colbymchenry-codegraph-mcp:latest >/dev/null
-
-  echo "\u2705 CodeGraph MCP running in background. SSE URL: http://localhost:$PORT/sse"
-fi
-
-# Run init inside the container to ensure the index is bootstrapped.
-# We run this using the standard codegraph CLI inside the container
-docker exec "$CONTAINER_NAME" codegraph init -i /repo >/dev/null 2>&1 || true
-
-# Wire up the MCP server to local agents
-WIRE_SCRIPT="$(dirname "$0")/codegraph-wire.sh"
-if [ -x "$WIRE_SCRIPT" ]; then
-  "$WIRE_SCRIPT"
-fi
-`;
-    this.writeFile(filePath, content);
-    if (!this.context.dryRun) {
-      chmodSync2(join5(this.context.targetDir, filePath), 493);
-    }
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .mise/scripts/codegraph.sh" : "\u2705 Created .mise/scripts/codegraph.sh"),
-      filePath
-    };
-  }
-};
-
-// src/commands/AddMiseCodegraphWireScript.ts
-import { chmodSync as chmodSync3 } from "fs";
-import { join as join6 } from "path";
-var AddMiseCodegraphWireScript = class extends Command {
-  async invoke() {
-    const filePath = ".mise/scripts/codegraph-wire.sh";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: this.formatMessage("\u26A0\uFE0F  .mise/scripts/codegraph-wire.sh already exists"),
-        filePath
-      };
-    }
-    const content = `#!/usr/bin/env bash
-# Mise enter hook: Auto-wire CodeGraph MCP Server to local agents.
-# Detects Claude Code, Codex, Gemini, Kimi, and OpenCode and configures
-# them to use the local SSE endpoint for the current project.
-
-set -euo pipefail
-
-REPO_ROOT="\${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-
-# Compute the same port as the container script
-PORT_HASH=$(echo -n "$REPO_ROOT" | md5sum | awk '{print $1}')
-PORT_DEC=$(printf "%d" "0x\${PORT_HASH:0:4}")
-PORT=$(( 8045 + (PORT_DEC % 955) ))
-
-SSE_URL="http://localhost:$PORT/sse"
-
-inject_sse() {
-  local target="$1"
-  local agent="$2"
-
-  if [ ! -f "$target" ]; then
-    mkdir -p "$(dirname "$target")"
-    echo '{"mcpServers": {}}' > "$target"
-  fi
-
-  # Ensure the file is valid JSON (fail gracefully if it's garbled)
-  if ! jq . "$target" >/dev/null 2>&1; then
-    echo "[mise] WARNING: $target is not valid JSON, skipping $agent wiring" >&2
-    return
-  fi
-
-  # Inject or update the codegraph server
-  jq --arg url "$SSE_URL" '.mcpServers.codegraph = {"type": "sse", "url": $url}' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
-  echo "[mise] Wired CodeGraph SSE for $agent -> $target"
-}
-
-# 1. Claude Code (Project-scoped)
-inject_sse "$REPO_ROOT/.claude.json" "Claude Code"
-
-# 2. Codex (Global)
-inject_sse "$HOME/.codex/mcp.json" "Codex"
-
-# 3. Gemini (Global)
-inject_sse "$HOME/.gemini/config/mcp.json" "Gemini"
-
-# 4. Kimi (Global)
-inject_sse "$HOME/.kimi-code/mcp.json" "Kimi"
-
-# 5. OpenCode (Global)
-inject_sse "$HOME/.opencode/mcp.json" "OpenCode"
-
-# 6. Cursor (Global)
-inject_sse "$HOME/.cursor/mcp.json" "Cursor"
-
-# 7. VSCode native MCP (Global)
-inject_sse "$HOME/.vscode/mcp.json" "VSCode"
-
-# 8. Cline (VSCode extension)
-inject_sse "$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" "Cline"
-
-# 9. Roo (VSCode extension)
-inject_sse "$HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" "Roo Code"
-`;
-    this.writeFile(filePath, content);
-    if (!this.context.dryRun) {
-      chmodSync3(join6(this.context.targetDir, filePath), 493);
-    }
-    return {
-      success: true,
-      message: this.formatMessage(this.context.dryRun ? "Would create .mise/scripts/codegraph-wire.sh" : "\u2705 Created .mise/scripts/codegraph-wire.sh"),
-      filePath
-    };
-  }
-};
-
-// src/commands/WireMiseOpInject.ts
-import { join as join7 } from "node:path";
-import { existsSync as existsSync4, readFileSync as readFileSync3, writeFileSync as writeFileSync4, chmodSync as chmodSync4 } from "node:fs";
-var WireMiseOpInject = class _WireMiseOpInject extends Command {
-  static MARKER = "# pjangler:op-inject";
-  static CR = "{{config_root}}";
-  async invoke() {
-    const scriptPath = ".mise/scripts/inject-op-secrets.sh";
-    const fullScriptPath = join7(this.context.targetDir, scriptPath);
-    const scriptContent = `#!/usr/bin/env bash
-# Resolve 1Password \`op://\` references in .env.op into .env.secrets, which mise
-# loads via \`_.file\`.
-#
-# Runs from the mise enter hook: fail-open and non-interactive.
-# No .env.op means no 1Password, so this exits before spending anything.
-
-set -euo pipefail
-
-REPO_ROOT="\${MISE_PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-SRC="$REPO_ROOT/.env.op"
-OUT="$REPO_ROOT/.env.secrets"
-
-TTL_HOURS="\${OP_INJECT_TTL_HOURS:-12}"
-
-[[ -f "$SRC" ]] || exit 0
-command -v op >/dev/null 2>&1 || exit 0
-
-if [[ -f "$OUT" && "$SRC" -ot "$OUT" ]]; then
-  if [[ "$TTL_HOURS" != "0" ]] && [[ -z "$(find "$OUT" -mmin "+$((TTL_HOURS * 60))" 2>/dev/null)" ]]; then
-    exit 0
-  fi
-fi
-
-op account list >/dev/null 2>&1 || exit 0
-
-tmp="$(mktemp "\${OUT}.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
-chmod 600 "$tmp"
-
-if op inject -i "$SRC" -o "$tmp" --force >/dev/null 2>&1; then
-  mv "$tmp" "$OUT"
-  trap - EXIT
-else
-  echo "mise: op inject from .env.op failed \u2014 $(basename "$OUT") unchanged." >&2
-  echo "      Check 'op signin', or that .env.op's op:// items are readable." >&2
-  echo "      To disable: rm .env.op" >&2
-fi
-`;
-    this.writeFile(scriptPath, scriptContent);
-    if (!this.context.dryRun) {
-      chmodSync4(fullScriptPath, 493);
-    }
-    const misePath = join7(this.context.targetDir, "mise.toml");
-    if (!existsSync4(misePath)) {
-      return {
-        success: false,
-        message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pj init mise` first, then re-run."
-      };
-    }
-    let content = readFileSync3(misePath, "utf8");
-    if (content.includes(_WireMiseOpInject.MARKER)) {
-      return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for op-inject") };
-    }
-    const cr = _WireMiseOpInject.CR;
-    const envRe = /\[env\]\s*\n([\s\S]*?(?=\n\[|$))/;
-    if (envRe.test(content)) {
-      content = content.replace(envRe, (m) => {
-        let block = m;
-        if (!block.includes("_.file")) {
-          block += `
-_.file = ['.env', '.env.secrets']
-`;
-        } else if (!block.includes(".env.secrets")) {
-          block = block.replace(/(_\.file\s*=\s*\[)([^\]]*?)(\])/, (m2, prefix, files, suffix) => {
-            const added = files.trim() ? `${files}, '.env.secrets'` : `'.env.secrets'`;
-            return `${prefix}${added}${suffix}`;
-          });
-        }
-        return block;
-      });
-    } else {
-      const envBlock = `[env]
-_.file = ['.env', '.env.secrets']
-
-`;
-      if (content.includes("[tools]")) {
-        content = content.replace(/(\[tools\][\s\S]*?(?=\n\[|$))/, `$1
-${envBlock}`);
-      } else {
-        content = envBlock + content;
-      }
-    }
-    const enterAdds = `  '${cr}/.mise/scripts/inject-op-secrets.sh',`;
-    const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
-    if (enterRe.test(content)) {
-      content = content.replace(enterRe, (_m, head, close) => {
-        const sep2 = /[,[]\s*$/.test(head) ? "" : ",";
-        return `${head}${sep2}
-${enterAdds}${close}`;
-      });
-    } else {
-      if (content.includes("[hooks]")) {
-        content = content.replace(/\[hooks\]/, `[hooks]
-enter = [
-${enterAdds}
-]`);
-      } else {
-        content += `
-[hooks]
-enter = [
-${enterAdds}
-]
-`;
-      }
-    }
-    const appended = [
-      "",
-      _WireMiseOpInject.MARKER,
-      "[tasks.secrets-inject]",
-      'description = "Re-resolve .env.op secrets from 1Password into .env.secrets"',
-      `run = "OP_INJECT_TTL_HOURS=0 .mise/scripts/inject-op-secrets.sh"`,
-      _WireMiseOpInject.MARKER + ":end",
-      ""
-    ].join("\n");
-    content = content.replace(/\n*$/, "\n") + appended;
-    if (!this.context.dryRun) writeFileSync4(misePath, content);
-    return {
-      success: true,
-      message: this.formatMessage("\u2705 Wired mise.toml for op-inject (_.file, [hooks] enter, tasks.secrets-inject)")
-    };
-  }
-};
-
-// src/recipes/MiseRecipe.ts
-var MiseRecipe = class extends Recipe {
+// src/recipes/AgentHooksRecipe.ts
+var AgentHooksRecipe = class extends Recipe {
+  checks = createAgentHooksChecks();
+  metadata = {
+    id: "agent-hooks",
+    name: "agent-hooks",
+    description: "Project-scoped agent hooks and six-CLI skill topology",
+    dependencies: ["mise"],
+    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
   constructor(context) {
     super(context);
-    this.addIngredient(AddMiseToml).addIngredient(AddDotenv).addIngredient(AddMiseTasksStructure).addIngredient(AddMiseBaseToml).addIngredient(AddMiseBaseScript).addIngredient(AddMiseCodegraphScript).addIngredient(AddMiseCodegraphWireScript).addIngredient(WireMiseOpInject);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
   }
   printNextSteps() {
-    console.log("\u{1F389} Mise subsystem initialized successfully!");
+    console.log("\u{1FA9D} Agent-hooks layer installed!");
     console.log("   Next steps:");
-    console.log("   1. mise install");
-    console.log("   2. mise run dev");
+    console.log("   1. mise run skills-sync  # sync .agents/skills.json into local CLI dirs");
+    console.log("   2. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
+    console.log("   3. git add .claude/settings.json .agents/hooks .agents/skills.json && commit (codex/kimi/hermes are per-dev)");
+    console.log("   4. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
+    console.log("   5. Optional per-dev hook opt-out: copy .agents/local.example.json -> .agents/local.json");
+  }
+};
+
+// src/recipes/BmadRecipe.ts
+var BmadRecipe = class extends Recipe {
+  checks = createBmadChecks();
+  metadata = {
+    id: "bmad",
+    name: "bmad",
+    description: "BMAD methodology and six supported CLI projections",
+    dependencies: ["agent-hooks"],
+    commands: [],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  constructor(context) {
+    super(context);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
+  }
+  printNextSteps() {
+    console.log("BMAD lifecycle initialized for the six supported CLIs.");
   }
 };
 
@@ -5813,9 +5851,21 @@ build
 
 // src/recipes/DockerRecipe.ts
 var DockerRecipe = class extends Recipe {
+  checks = [];
+  metadata = {
+    id: "docker",
+    name: "docker",
+    description: "Docker containerization setup",
+    dependencies: [],
+    commands: ["AddDockerfile", "AddDockerCompose", "AddDockerignore"],
+    publicRuleIds: []
+  };
   constructor(context) {
     super(context);
     this.addIngredient(AddDockerfile).addIngredient(AddDockerCompose).addIngredient(AddDockerignore);
+  }
+  init(ctx, _input) {
+    return this.invokeIngredients(ctx);
   }
   printNextSteps() {
     console.log("\u{1F389} Docker subsystem initialized successfully!");
@@ -5825,109 +5875,13 @@ var DockerRecipe = class extends Recipe {
   }
 };
 
-// src/commands/NodeCommands.ts
-var AddPackageJson = class extends Command {
-  async invoke() {
-    const filePath = "package.json";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: "\u26A0\uFE0F  package.json already exists",
-        filePath
-      };
-    }
-    const content = `{
-  "name": "my-project",
-  "version": "1.0.0",
-  "description": "A new project",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
-    "test": "echo \\"Error: no test specified\\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
-}
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: "\u2705 Created package.json",
-      filePath
-    };
-  }
-};
-var AddReadme = class extends Command {
-  async invoke() {
-    const filePath = "README.md";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: "\u26A0\uFE0F  README.md already exists",
-        filePath
-      };
-    }
-    const content = `# My Project
-
-A new project initialized with pjangler.
-
-## Getting Started
-
-1. Install dependencies: \`mise install\`
-2. Start development: \`mise run dev\`
-
-## Project Structure
-
-- \`mise.toml\` - Environment configuration
-- \`.mise/tasks/\` - Task definitions
-- \`src/\` - Source code
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: "\u2705 Created README.md",
-      filePath
-    };
-  }
-};
-var AddSrcDirectory = class extends Command {
-  async invoke() {
-    this.createDirectory("src");
-    const indexJsPath = "src/index.js";
-    const content = `console.log("Hello, World!");
-`;
-    this.writeFile(indexJsPath, content);
-    return {
-      success: true,
-      message: "\u2705 Created src/ directory with index.js",
-      filePath: "src/index.js"
-    };
-  }
-};
-
-// src/recipes/NodeRecipe.ts
-var NodeRecipe = class extends Recipe {
-  constructor(context) {
-    super(context);
-    this.addIngredient(AddPackageJson).addIngredient(AddReadme).addIngredient(AddSrcDirectory);
-  }
-  printNextSteps() {
-    console.log("\u{1F389} Node.js project initialized successfully!");
-    console.log("   Next steps:");
-    console.log("   1. mise install");
-    console.log("   2. mise run dev");
-  }
-};
-
 // src/commands/hermes/PromptForAgentConfig.ts
-import { basename as basename3, join as join8 } from "node:path";
-import { readFileSync as readFileSync4 } from "node:fs";
+import { basename as basename3, join as join4 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
 import * as p from "@clack/prompts";
 function detectTicketProvider(targetDir) {
   try {
-    const t = JSON.parse(readFileSync4(join8(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
+    const t = JSON.parse(readFileSync3(join4(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
     return t === "plane" || t === "trello" ? t : void 0;
   } catch {
     return void 0;
@@ -5984,22 +5938,23 @@ var PromptForAgentConfig = class extends Command {
 
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { homedir as homedir3 } from "node:os";
-import { join as join9, dirname as dirname4 } from "node:path";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join5, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import * as p2 from "@clack/prompts";
+import YAML2 from "yaml";
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname4(fileURLToPath2(import.meta.url));
+    dir = dirname3(fileURLToPath2(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join9(dir, "templates", name);
-    if (existsSync5(join9(candidate, "copier.yml"))) return candidate;
-    const parent = dirname4(dir);
+    const candidate = join5(dir, "templates", name);
+    if (existsSync3(join5(candidate, "copier.yml"))) return candidate;
+    const parent = dirname3(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -6017,17 +5972,18 @@ var RunCopierTemplate = class extends Command {
         message: "PromptForAgentConfig must run before RunCopierTemplate (targetRepo/role unset)"
       };
     }
-    const roleDir = join9(ctx.targetDir, "agents", "hermes", role);
+    const roleDir = join5(ctx.targetDir, "agents", "hermes", role);
     ctx.roleDir = roleDir;
     ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${role}`;
     const which = spawnSync2("which", ["copier"], { encoding: "utf8" });
     if (which.status !== 0) {
       return {
         success: false,
+        outcome: "failed",
         message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
       };
     }
-    if (existsSync5(join9(roleDir, "role.yaml")) && !ctx.force) {
+    if (existsSync3(join5(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
         ctx.force = true;
       } else {
@@ -6038,6 +5994,7 @@ var RunCopierTemplate = class extends Command {
         if (p2.isCancel(proceed) || !proceed) {
           return {
             success: false,
+            outcome: "cancelled",
             message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`
           };
         }
@@ -6055,9 +6012,9 @@ var RunCopierTemplate = class extends Command {
       SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
     };
-    const LOCAL_TEMPLATE = join9(homedir3(), "code", "hermes-agent-template");
+    const LOCAL_TEMPLATE = join5(homedir2(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync5(join9(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync3(join5(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -6085,23 +6042,37 @@ var RunCopierTemplate = class extends Command {
     if (ctx.dryRun) {
       return {
         success: true,
+        outcome: "planned",
+        filePath: roleDir,
         message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
       };
     }
-    mkdirSync4(join9(ctx.targetDir, "agents", "hermes"), { recursive: true });
-    const spinner4 = p2.spinner();
-    spinner4.start(`Running copier copy  (target: agents/hermes/${role})`);
-    const result = spawnSync2("copier", args, {
-      stdio: "inherit",
-      // pass the interactive output through; copier prints its own progress
-      env: env2,
-      cwd: ctx.targetDir
-    });
-    spinner4.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
+    mkdirSync3(join5(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    const spinner4 = ctx.quiet ? void 0 : p2.spinner();
+    spinner4?.start(`Running copier copy  (target: agents/hermes/${role})`);
+    const result = spawnSync2("copier", args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
     if (result.status !== 0) {
       return {
         success: false,
-        message: `\u2717 copier exited with status ${result.status}.  Check the output above; re-run with the same flags after fixing.`
+        outcome: "failed",
+        message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
+      };
+    }
+    const roleManifest = join5(roleDir, "role.yaml");
+    try {
+      const current = readFileSync4(roleManifest, "utf8");
+      const document = YAML2.parseDocument(current);
+      if (document.errors.length) throw document.errors[0];
+      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
+      const next = String(document);
+      if (next !== current) writeFileSync3(roleManifest, next, "utf8");
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to record Hermes deployment mode in ${roleManifest}: ${error instanceof Error ? error.message : String(error)}`
       };
     }
     return {
@@ -6112,8 +6083,8 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync6, readFileSync as readFileSync5, writeFileSync as writeFileSync5, readdirSync as readdirSync3 } from "fs";
-import { join as join10 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync4, readdirSync as readdirSync3 } from "fs";
+import { join as join6 } from "path";
 import { spawnSync as spawnSync3 } from "node:child_process";
 function sectionHasPath(section, targetPath) {
   return section.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -6124,8 +6095,8 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join10(targetDir, "agents", "hermes");
-    if (!existsSync6(rolesDir)) {
+    const rolesDir = join6(targetDir, "agents", "hermes");
+    if (!existsSync4(rolesDir)) {
       return {
         success: true,
         message: "No Hermes agents found (no agents/hermes directory)."
@@ -6141,10 +6112,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join10("agents", "hermes", role);
-      const runtimePath = join10(roleDir, "runtime");
-      const gitignorePath = join10(roleDir, ".gitignore");
-      const gitmodulesPath = join10(targetDir, ".gitmodules");
+      const roleDir = join6("agents", "hermes", role);
+      const runtimePath = join6(roleDir, "runtime");
+      const gitignorePath = join6(roleDir, ".gitignore");
+      const gitmodulesPath = join6(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync3("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -6161,14 +6132,14 @@ var UntrackHermesRuntimes = class extends Command {
       }
       let hasStaleMapping = false;
       let gitmodulesContent = "";
-      if (existsSync6(gitmodulesPath)) {
+      if (existsSync4(gitmodulesPath)) {
         gitmodulesContent = readFileSync5(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
         hasStaleMapping = sections.some((section) => sectionHasPath(section, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join10(targetDir, gitignorePath);
-      if (existsSync6(fullGitignorePath)) {
+      const fullGitignorePath = join6(targetDir, gitignorePath);
+      if (existsSync4(fullGitignorePath)) {
         const content = readFileSync5(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
         isIgnored = lines.includes("runtime/") || lines.includes("runtime");
@@ -6204,7 +6175,7 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
           if (!this.context.dryRun) {
             const next = removeSubmodulePath(gitmodulesContent, runtimePath);
-            writeFileSync5(gitmodulesPath, next ? `${next}
+            writeFileSync4(gitmodulesPath, next ? `${next}
 ` : "", "utf8");
           }
         }
@@ -6212,14 +6183,14 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
           if (!this.context.dryRun) {
             let content = "";
-            if (existsSync6(fullGitignorePath)) {
+            if (existsSync4(fullGitignorePath)) {
               content = readFileSync5(fullGitignorePath, "utf8");
             }
             if (content && !content.endsWith("\n")) {
               content += "\n";
             }
             content += "runtime/\n";
-            writeFileSync5(fullGitignorePath, content, "utf8");
+            writeFileSync4(fullGitignorePath, content, "utf8");
           }
         }
       }
@@ -6241,8 +6212,8 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { join as join11 } from "node:path";
-import { existsSync as existsSync7, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join7 } from "node:path";
+import { existsSync as existsSync5, unlinkSync as unlinkSync2 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -6330,15 +6301,15 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join11(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync7(script)) {
+    const script = join7(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync5(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
       };
     }
-    const marker = join11(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync7(marker)) unlinkSync2(marker);
+    const marker = join7(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync5(marker)) unlinkSync2(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync4("bash", [script], {
@@ -6365,8 +6336,8 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { join as join12 } from "node:path";
-import { existsSync as existsSync8, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join8 } from "node:path";
+import { existsSync as existsSync6, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p4 from "@clack/prompts";
 var WireEmail = class extends Command {
   async invoke() {
@@ -6381,8 +6352,8 @@ var WireEmail = class extends Command {
     if (!targetRepo || !role || !roleDir) {
       return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
     }
-    const script = join12(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync8(script)) {
+    const script = join8(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync6(script)) {
       return { success: false, message: `\u2717 ${script} not found` };
     }
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -6444,8 +6415,8 @@ var WireEmail = class extends Command {
         }
       }
     }
-    const marker = join12(roleDir, ".scripts", ".done-50-email");
-    if (existsSync8(marker)) unlinkSync3(marker);
+    const marker = join8(roleDir, ".scripts", ".done-50-email");
+    if (existsSync6(marker)) unlinkSync3(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync5("bash", [script], {
@@ -6497,55 +6468,286 @@ var PrintHermesSummary = class extends Command {
       lines.push("Wire Telegram later:");
       lines.push("  pjangler hermes-agent          # re-run and answer yes when asked");
     }
-    p5.note(lines.join("\n"), `Provisioned ${agentId}`);
-    p5.outro("Done.");
-    return { success: true, message: "" };
+    if (!ctx.quiet) {
+      p5.note(lines.join("\n"), `Provisioned ${agentId}`);
+      p5.outro("Done.");
+    }
+    return { success: true, outcome: "unchanged", message: "" };
   }
 };
 
 // src/recipes/HermesAgentRecipe.ts
-var HermesAgentRecipe = class extends Recipe {
-  constructor(context) {
-    super(context);
-    this.addIngredient(EnsureTemplateConfig).addIngredient(PromptForAgentConfig).addIngredient(RunCopierTemplate).addIngredient(UntrackHermesRuntimes).addIngredient(WireTelegram).addIngredient(WireEmail).addIngredient(PrintHermesSummary);
+import { resolve as resolve4 } from "node:path";
+
+// src/utils/tree-diff.ts
+import { createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync7, lstatSync as lstatSync3, readFileSync as readFileSync6, readdirSync as readdirSync4, readlinkSync as readlinkSync2 } from "node:fs";
+import { join as join9, relative as relative3 } from "node:path";
+function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
+  if (!existsSync7(current)) return snapshot;
+  const rel = relative3(root, current) || ".";
+  if (rel === ".git" || rel.startsWith(`.git${process.platform === "win32" ? "\\" : "/"}`)) return snapshot;
+  const stat = lstatSync3(current);
+  if (stat.isSymbolicLink()) {
+    snapshot.set(rel, `link:${readlinkSync2(current)}`);
+  } else if (stat.isFile()) {
+    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync6(current)).digest("hex")}:${stat.mode & 511}`);
+  } else if (stat.isDirectory()) {
+    snapshot.set(rel, `dir:${stat.mode & 511}`);
+    for (const name of readdirSync4(current)) snapshotTree(root, join9(current, name), snapshot);
+  } else {
+    snapshot.set(rel, `other:${stat.mode}`);
   }
-  // Override execute() to suppress the base class's per-command logging since
-  // our commands already render their own UI via @clack/prompts.
-  async execute() {
-    for (const command of this.ingredients) {
-      const result = await command.invoke();
-      if (!result.success && result.message.startsWith("\u2717")) {
-        console.error(result.message);
-        return;
+  return snapshot;
+}
+function changedTreePaths(root, before, after) {
+  return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join9(root, path)).sort();
+}
+
+// src/recipes/HermesAgentRecipe.ts
+var HermesAgentRecipe = class extends Recipe {
+  checks = createHermesChecks();
+  metadata = {
+    id: "hermes-agent",
+    name: "hermes-agent",
+    description: "Add and reconcile a Hermes agent role",
+    dependencies: [],
+    commands: [
+      "EnsureTemplateConfig",
+      "PromptForAgentConfig",
+      "RunCopierTemplate",
+      "UntrackHermesRuntimes",
+      "WireTelegram",
+      "WireEmail",
+      "PrintHermesSummary"
+    ],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  /** Hermes sequencing is fatal/cancel short-circuiting under registry init. */
+  async init(ctx, _input) {
+    const phases = [];
+    const logs = [];
+    const errors = [];
+    const changedFiles = [];
+    const ingredients = [
+      EnsureTemplateConfig,
+      PromptForAgentConfig,
+      RunCopierTemplate,
+      UntrackHermesRuntimes,
+      WireTelegram,
+      WireEmail,
+      PrintHermesSummary
+    ];
+    for (const [ingredientIndex, CommandClass] of ingredients.entries()) {
+      if (typeof CommandClass !== "function") {
+        throw new TypeError(`Hermes ingredient ${ingredientIndex} is not constructable`);
       }
-      if (result.message && !result.message.startsWith("\u2713 Collected")) {
-        if (result.message.startsWith("\u2192") || result.message.startsWith("\u2713 Provisioned")) {
-          console.log(result.message);
-        }
+      const before = ctx.dryRun ? void 0 : snapshotTree(ctx.targetDir);
+      const result = await new CommandClass(ctx).invoke();
+      const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
+      let status = result.outcome ?? (result.success ? ctx.dryRun && result.filePath ? "planned" : result.filePath ? "changed" : "unchanged" : "failed");
+      if (result.success && !ctx.dryRun && observedChanges.length) status = "changed";
+      const declaredChanges = status === "changed" && result.filePath ? [resolve4(ctx.targetDir, result.filePath)] : [];
+      const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
+      phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result.message || void 0 });
+      changedFiles.push(...actualChanges);
+      if (result.message) logs.push(result.message);
+      if (status === "failed" || status === "cancelled") {
+        errors.push(result.message || `${CommandClass.name} ${status}`);
+        break;
       }
     }
+    const commandResult = {
+      recipeId: this.metadata.id,
+      ok: errors.length === 0,
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [...new Set(changedFiles)].sort(),
+      logs,
+      errors,
+      phases
+    };
+    if (!commandResult.ok) return commandResult;
+    const lifecycle = await this.initializeOwnedChecks(ctx);
+    return mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
   }
   printNextSteps() {
   }
 };
 
-// src/commands/AgentHooksCommands.ts
-import { homedir as homedir5 } from "node:os";
-import { join as join14, dirname as dirname6 } from "node:path";
-import { existsSync as existsSync10, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync7, writeFileSync as writeFileSync7 } from "node:fs";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+// src/recipes/MiseOpInjectRecipe.ts
+var MiseOpInjectRecipe = class extends Recipe {
+  checks = createMiseOpInjectChecks();
+  metadata = {
+    id: "mise-op-inject",
+    name: "mise-op-inject",
+    description: "Canonical .env.op to .env materialization lifecycle",
+    dependencies: [],
+    commands: ["WireMiseOpInject"],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  constructor(context) {
+    super(context);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Wired up .env.op 1Password resolution via mise!");
+    console.log("   Next steps:");
+    console.log("   1. Create .env.op with your op:// secret references");
+    console.log("   2. Re-enter the project to run the managed materialization hook");
+  }
+};
+
+// src/recipes/MiseRecipe.ts
+var MiseRecipe = class extends Recipe {
+  checks = createMiseChecks();
+  metadata = {
+    id: "mise",
+    name: "mise",
+    description: "Mise task runner and environment setup",
+    dependencies: ["mise-op-inject"],
+    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript", "AddMiseCodegraphWireScript"],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  constructor(context) {
+    super(context);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Mise subsystem initialized successfully!");
+    console.log("   Next steps:");
+    console.log("   1. mise install");
+    console.log("   2. mise run dev");
+  }
+};
+
+// src/commands/NodeCommands.ts
+var AddPackageJson = class extends Command {
+  async invoke() {
+    const filePath = "package.json";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: "\u26A0\uFE0F  package.json already exists",
+        filePath
+      };
+    }
+    const content = `{
+  "name": "my-project",
+  "version": "1.0.0",
+  "description": "A new project",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "echo \\"Error: no test specified\\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: "\u2705 Created package.json",
+      filePath
+    };
+  }
+};
+var AddReadme = class extends Command {
+  async invoke() {
+    const filePath = "README.md";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: "\u26A0\uFE0F  README.md already exists",
+        filePath
+      };
+    }
+    const content = `# My Project
+
+A new project initialized with pjangler.
+
+## Getting Started
+
+1. Install dependencies: \`mise install\`
+2. Start development: \`mise run dev\`
+
+## Project Structure
+
+- \`mise.toml\` - Environment configuration
+- \`.mise/tasks/\` - Task definitions
+- \`src/\` - Source code
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: "\u2705 Created README.md",
+      filePath
+    };
+  }
+};
+var AddSrcDirectory = class extends Command {
+  async invoke() {
+    this.createDirectory("src");
+    const indexJsPath = "src/index.js";
+    const content = `console.log("Hello, World!");
+`;
+    this.writeFile(indexJsPath, content);
+    return {
+      success: true,
+      message: "\u2705 Created src/ directory with index.js",
+      filePath: "src/index.js"
+    };
+  }
+};
+
+// src/recipes/NodeRecipe.ts
+var NodeRecipe = class extends Recipe {
+  checks = [];
+  metadata = {
+    id: "node",
+    name: "node",
+    description: "Node.js project template",
+    dependencies: [],
+    commands: ["NodeCommands"],
+    publicRuleIds: []
+  };
+  constructor(context) {
+    super(context);
+    this.addIngredient(AddPackageJson).addIngredient(AddReadme).addIngredient(AddSrcDirectory);
+  }
+  init(ctx, _input) {
+    return this.invokeIngredients(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Node.js project initialized successfully!");
+    console.log("   Next steps:");
+    console.log("   1. mise install");
+    console.log("   2. mise run dev");
+  }
+};
+
+// src/recipes/ProjectRecipe.ts
+import { spawnSync as spawnSync7 } from "node:child_process";
+import { existsSync as existsSync9, readFileSync as readFileSync8 } from "node:fs";
+import { join as join11 } from "node:path";
 
 // src/project/index.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync9, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync6 } from "node:fs";
-import { homedir as homedir4, tmpdir } from "node:os";
-import { basename as basename4, delimiter, dirname as dirname5, join as join13, resolve as resolve3 } from "node:path";
+import { copyFileSync as copyFileSync2, existsSync as existsSync8, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync7, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir3, tmpdir } from "node:os";
+import { basename as basename4, delimiter, dirname as dirname4, join as join10, resolve as resolve5 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import YAML3 from "yaml";
+import YAML4 from "yaml";
 
 // src/project/RegistryStore.ts
 import { Pool } from "pg";
-import YAML2 from "yaml";
+import YAML3 from "yaml";
 function pgRegistryConfigFromEnv(env2 = process.env) {
   return {
     host: env2.PGHOST || "localhost",
@@ -6780,20 +6982,36 @@ var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 var TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_NEW_PROJECT_STATUS = "active";
+function synchronizeCopierIdentity(manifestPath, manifest) {
+  const answersPath = join10(dirname4(manifestPath), ".copier-answers.yml");
+  if (!existsSync8(answersPath)) return [];
+  const current = readFileSync7(answersPath, "utf8");
+  const document = YAML4.parseDocument(current);
+  if (document.errors.length) return [];
+  const name = String(document.get("project_name") ?? "");
+  const description = String(document.get("project_description") ?? "");
+  if (name === manifest.project_name && description === manifest.project_description) return [];
+  document.set("project_name", manifest.project_name);
+  document.set("project_description", manifest.project_description);
+  const next = String(document);
+  if (next === current) return [];
+  writeFileSync5(answersPath, next, "utf8");
+  return [answersPath];
+}
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join13(homedir4(), ".agents", "skills"),
-  join13(homedir4(), ".codex", "skills")
+  join10(homedir3(), ".agents", "skills"),
+  join10(homedir3(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join13(homedir4(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join10(homedir3(), ".config", "pjangler", "projects.yaml"));
 }
 function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync9(path)) return emptyProjectRegistry();
-  const raw = YAML3.parse(readFileSync6(path, "utf8"));
+  if (!existsSync8(path)) return emptyProjectRegistry();
+  const raw = YAML4.parse(readFileSync7(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -6806,9 +7024,9 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync5(dirname5(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync6(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync5(temp, YAML4.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -6823,7 +7041,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve3(project.repo_path);
+    const repoKey = resolve5(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -6872,15 +7090,15 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join13(env2.HOME || homedir4(), ".config");
-  return join13(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join10(env2.HOME || homedir3(), ".config");
+  return join10(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
   const found = {};
-  if (!existsSync9(path)) return found;
+  if (!existsSync8(path)) return found;
   let text3;
   try {
-    text3 = readFileSync6(path, "utf8");
+    text3 = readFileSync7(path, "utf8");
   } catch {
     return found;
   }
@@ -6916,7 +7134,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join13(input.repoPath, ".env"), label: join13(input.repoPath, ".env") });
+  if (input.repoPath) candidates.push({ path: join10(input.repoPath, ".env"), label: join10(input.repoPath, ".env") });
   const secrets = ticketProviderSecretsPath(env2);
   candidates.push({ path: secrets, label: secrets });
   for (const candidate of candidates) {
@@ -6934,25 +7152,25 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join13(override, file));
+  if (override) candidates.push(join10(override, file));
   const relativeRoots = [
-    join13("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join13("agents", "hermes", "pm", ".scripts", "providers")
+    join10("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join10("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname5(fileURLToPath3(import.meta.url));
+    let dir = dirname4(fileURLToPath3(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join13(dir, relativeRoot, file));
-      const parent = dirname5(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join10(dir, relativeRoot, file));
+      const parent = dirname4(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join13(homedir4(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join10(homedir3(), "code", "pjangler", relativeRoot, file));
   }
-  return candidates.find((candidate) => existsSync9(candidate));
+  return candidates.find((candidate) => existsSync8(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
@@ -6967,7 +7185,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join13(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join10(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -6981,12 +7199,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text3) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text3);
-  const staging = mkdtempSync2(join13(tmpdir(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join10(tmpdir(), "pjangler-tp-"));
   try {
-    const providersDir = join13(staging, "agents", "hermes", "pm", ".scripts", "providers");
-    mkdirSync5(providersDir, { recursive: true });
-    writeFileSync6(
-      join13(staging, ".project.json"),
+    const providersDir = join10(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    mkdirSync4(providersDir, { recursive: true });
+    writeFileSync5(
+      join10(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -7005,12 +7223,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join13(providersDir, `${provider}.sh`);
+    const staged = join10(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
     const result = spawnSync6("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
-      cwd: existsSync9(action.repoPath) ? action.repoPath : staging,
+      cwd: existsSync8(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
     });
@@ -7090,7 +7308,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync9(join13(homedir4(), ".agents", "hooks"));
+  return !existsSync8(join10(homedir3(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -7103,14 +7321,14 @@ function projectRecordEquivalent(a, b) {
 }
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
-  return resolve3(dirname5(resolve3(cwd)), compactName);
+  return resolve5(dirname4(resolve5(cwd)), compactName);
 }
 function sourceSkillRoots(env2 = process.env) {
   const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve3(expandHome(root));
+    const normalized = resolve5(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -7120,13 +7338,13 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve3(expanded);
-  if (existsSync9(direct)) return direct;
+  const direct = resolve5(expanded);
+  if (existsSync8(direct)) return direct;
   const name = basename4(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join13(root, name);
-    if (existsSync9(candidate)) return candidate;
+    const candidate = join10(root, name);
+    if (existsSync8(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
   const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
@@ -7134,11 +7352,11 @@ function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
 }
 function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
-  const registryPath2 = resolve3(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
   const slug = input.projectSlug ?? slugifyProjectName(input.name);
-  const targetDir = resolve3(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = registry.projects[slug];
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
@@ -7191,7 +7409,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve3(input.pjanglerRoot ?? resolvePjanglerRoot2());
+  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -7217,7 +7435,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join13(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join10(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: live,
@@ -7267,12 +7485,12 @@ function linkTicketProviderBoard(plan, action, boardId) {
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join13(action.repoPath, ".project.json");
+  const manifestPath = join10(action.repoPath, ".project.json");
   let next;
-  if (existsSync9(manifestPath)) {
+  if (existsSync8(manifestPath)) {
     let existing = {};
     try {
-      const parsed = JSON.parse(readFileSync6(manifestPath, "utf8"));
+      const parsed = JSON.parse(readFileSync7(manifestPath, "utf8"));
       if (isRecord(parsed)) existing = parsed;
     } catch {
       existing = {};
@@ -7280,13 +7498,13 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync5(dirname5(manifestPath), { recursive: true });
+    mkdirSync4(dirname4(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text3 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync9(manifestPath) || readFileSync6(manifestPath, "utf8") !== text3) {
-    writeFileSync6(manifestPath, text3, "utf8");
+  if (!existsSync8(manifestPath) || readFileSync7(manifestPath, "utf8") !== text3) {
+    writeFileSync5(manifestPath, text3, "utf8");
     return [manifestPath];
   }
   return [];
@@ -7303,8 +7521,11 @@ async function executeProjectInitPlan(plan) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync5(dirname5(action.targetDir), { recursive: true });
+      mkdirSync4(dirname4(action.targetDir), { recursive: true });
+      const before = snapshotTree(action.targetDir);
       const result = spawnSync6(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
+      changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
       if (result.stderr?.trim()) logs.push(result.stderr.trim());
       if (result.error) {
@@ -7316,19 +7537,18 @@ async function executeProjectInitPlan(plan) {
       }
       if (result.status !== 0) {
         errors.push(`copier exited with status ${result.status ?? "unknown"}`);
-        if (existsSync9(action.targetDir)) changedFiles.push(action.targetDir);
         break;
       }
-      changedFiles.push(action.targetDir);
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync5(dirname5(action.path), { recursive: true });
+      mkdirSync4(dirname4(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-      const current = existsSync9(action.path) ? readFileSync6(action.path, "utf8") : void 0;
+      const current = existsSync8(action.path) ? readFileSync7(action.path, "utf8") : void 0;
       if (current !== next) {
-        writeFileSync6(action.path, next, "utf8");
+        writeFileSync5(action.path, next, "utf8");
         changedFiles.push(action.path);
       }
+      changedFiles.push(...synchronizeCopierIdentity(action.path, action.manifest));
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
@@ -7372,7 +7592,7 @@ async function executeProjectInitPlan(plan) {
       }
     }
   }
-  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
+  return { ok: errors.length === 0, plan, logs, errors, changedFiles: [...new Set(changedFiles)].sort() };
 }
 function projectManifestFromRegistryProject(project) {
   const agents = Object.fromEntries(
@@ -7452,16 +7672,16 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   const registry = loadProjectRegistry(registryPath2);
   const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
   for (const [projectSlug, project] of projects) {
-    if (!existsSync9(project.repo_path)) {
+    if (!existsSync8(project.repo_path)) {
       issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
     } else if (!statSync(project.repo_path).isDirectory()) {
       issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
     } else {
-      const manifestPath = join13(project.repo_path, ".project.json");
-      if (!existsSync9(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+      const manifestPath = join10(project.repo_path, ".project.json");
+      if (!existsSync8(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
     }
     for (const artifact of project.source_artifacts) {
-      if (artifact.path && !existsSync9(artifact.path)) {
+      if (artifact.path && !existsSync8(artifact.path)) {
         issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
       }
     }
@@ -7474,7 +7694,7 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   };
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join13(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join10(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -7500,22 +7720,22 @@ function buildCommonProjectCopierAction(input) {
     overwrite: input.overwrite
   };
 }
-function resolvePjanglerRoot2() {
-  let dir = dirname5(new URL(import.meta.url).pathname);
-  while (dir !== dirname5(dir)) {
-    if (existsSync9(join13(dir, "package.json")) && existsSync9(join13(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname5(dir);
+function resolvePjanglerRoot() {
+  let dir = dirname4(new URL(import.meta.url).pathname);
+  while (dir !== dirname4(dir)) {
+    if (existsSync8(join10(dir, "package.json")) && existsSync8(join10(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname4(dir);
   }
-  return resolve3(process.cwd());
+  return resolve5(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = registry.projects[project.slug];
-  if (existingSameSlug && !overwrite && resolve3(existingSameSlug.repo_path) !== resolve3(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve3(existing.repo_path) === resolve3(project.repo_path)) {
+    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
@@ -7534,15 +7754,626 @@ function validateProjectRecord(project, key) {
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
 }
 function expandHome(path) {
-  if (path === "~") return homedir4();
-  if (path.startsWith("~/")) return join13(homedir4(), path.slice(2));
+  if (path === "~") return homedir3();
+  if (path.startsWith("~/")) return join10(homedir3(), path.slice(2));
   return path;
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/recipes/ProjectRecipe.ts
+var PRODUCTION_RUNTIME = {
+  executePlan: executeProjectInitPlan,
+  runGit(cwd, args) {
+    const result = spawnSync7("git", [...args], { cwd, encoding: "utf8" });
+    return {
+      status: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      error: result.error
+    };
+  }
+};
+function publicAudit(report) {
+  return {
+    ...report,
+    rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding)
+  };
+}
+function publicMigration(report) {
+  return {
+    ...report,
+    results: report.results.map(({ recipeId: _recipeId, ...result }) => result)
+  };
+}
+function hasGitRepository(runtime, targetDir) {
+  if (!existsSync9(join11(targetDir, ".git"))) return false;
+  return runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]).status === 0;
+}
+function refreshPlanFromCanonicalManifest(plan) {
+  const manifestPath = join11(plan.project.repo_path, ".project.json");
+  const manifest = JSON.parse(readFileSync8(manifestPath, "utf8"));
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`${manifestPath} must contain a JSON object`);
+  }
+  const agents = {};
+  for (const [agentId, entry] of Object.entries(manifest.agents ?? {})) {
+    const role = typeof entry?.role === "string" ? entry.role.trim() : "";
+    if (!role) throw new Error(`${manifestPath} agents.${agentId}.role is missing`);
+    if (agents[role]) throw new Error(`${manifestPath} declares more than one ${role} agent`);
+    agents[role] = {
+      role,
+      role_dir: entry.role_dir,
+      provisioning_state: entry.provisioning_state ?? "provisioned"
+    };
+  }
+  const manifestTicket = manifest.ticket_provider;
+  if (!manifestTicket || typeof manifestTicket !== "object") {
+    throw new Error(`${manifestPath} ticket_provider is missing`);
+  }
+  const ticketProvider = {
+    type: String(manifestTicket.type ?? ""),
+    workspace: String(manifestTicket.workspace ?? ""),
+    identifier: String(manifestTicket.identifier ?? ""),
+    board_id: String(manifestTicket.board_id ?? ""),
+    state: manifestTicket.state
+  };
+  plan.manifest = manifest;
+  plan.project.agents = agents;
+  plan.project.ticket_provider = ticketProvider;
+  for (const action of plan.actions) {
+    if (action.kind === "project.write-manifest") action.manifest = manifest;
+    if (action.kind === "registry.upsert") action.project = plan.project;
+  }
+}
+var ProjectRecipe = class extends Recipe {
+  constructor(runtime = PRODUCTION_RUNTIME) {
+    super();
+    this.runtime = runtime;
+  }
+  orchestratesDependencies = true;
+  checks = createProjectChecks();
+  metadata = {
+    id: "project",
+    name: "project",
+    description: "CommonProject plan, lifecycle composition, audit, and Git boundary",
+    dependencies: ["mise", "agent-hooks", "bmad"],
+    commands: [],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  registry;
+  attachRegistry(registry) {
+    this.registry = registry;
+  }
+  async init(ctx, input) {
+    if (!this.registry) throw new Error("ProjectRecipe is not attached to a RecipeRegistry");
+    const normalized = "plan" in input ? input : {
+      plan: input,
+      mode: input.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync"
+    };
+    const { plan, mode } = normalized;
+    const targetDir = plan.project.repo_path;
+    const phases = [];
+    const logs = [];
+    const errors = [];
+    const changedFiles = [];
+    const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
+    const filesystemPlan = {
+      ...plan,
+      actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent")
+    };
+    const executed = filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: true, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
+    logs.push(...executed.logs);
+    errors.push(...executed.errors);
+    changedFiles.push(...executed.changedFiles);
+    phases.push({
+      id: "project.plan",
+      status: executed.ok ? executed.changedFiles.length ? "changed" : "unchanged" : "failed",
+      changedFiles: executed.ok ? executed.changedFiles : [],
+      message: executed.ok ? "Project plan executed" : executed.errors.join("; ")
+    });
+    if (executed.ok && mode === "create") {
+      const dependencyResult = await this.registry.initDependencies(this.metadata.id, { ...ctx, targetDir, repoRoot: targetDir }, normalized);
+      logs.push(...dependencyResult.logs);
+      errors.push(...dependencyResult.errors);
+      changedFiles.push(...dependencyResult.changedFiles);
+      phases.push(...dependencyResult.phases);
+    }
+    let agentResult;
+    const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
+    if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
+      const agentContext = {
+        targetRepo: agentAction.targetRepo,
+        role: agentAction.role,
+        agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
+        ticketProvider: plan.project.ticket_provider.type,
+        local: agentAction.local,
+        force: Boolean(ctx.force),
+        skipTelegram: true,
+        skipEmail: true,
+        skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
+        skipPlane: agentAction.context.skipPlane,
+        skipBloodbank: agentAction.context.skipBloodbank,
+        skipSystemd: agentAction.context.skipSystemd,
+        quiet: normalized.quiet,
+        ...normalized.agentContext ?? {},
+        targetDir,
+        yes: true,
+        dryRun: false
+      };
+      agentResult = await this.registry.initRecipe(
+        "hermes-agent",
+        { ...ctx, ...agentContext, targetDir, repoRoot: targetDir },
+        agentContext
+      );
+      logs.push(...agentResult.logs);
+      errors.push(...agentResult.errors);
+      changedFiles.push(...agentResult.changedFiles);
+      phases.push(...agentResult.phases);
+    }
+    if (errors.length === 0 && (mode === "create" || agentResult)) {
+      const projectLifecycle = await this.initializeOwnedChecks({ ...ctx, targetDir, repoRoot: targetDir });
+      logs.push(...projectLifecycle.logs);
+      errors.push(...projectLifecycle.errors);
+      changedFiles.push(...projectLifecycle.changedFiles);
+      phases.push(...projectLifecycle.phases);
+      if (projectLifecycle.ok) {
+        try {
+          refreshPlanFromCanonicalManifest(plan);
+        } catch (error) {
+          errors.push(`project manifest refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+          phases.push({
+            id: "project.manifest-refresh",
+            status: "failed",
+            changedFiles: [],
+            message: errors.at(-1)
+          });
+        }
+      }
+    }
+    let migrationReport;
+    if (errors.length === 0 && normalized.selectedRuleIds?.length) {
+      migrationReport = publicMigration(await this.registry.migrateRules(
+        { ...ctx, targetDir, repoRoot: targetDir, dryRun: false },
+        normalized.selectedRuleIds
+      ));
+      changedFiles.push(...migrationReport.changedFiles);
+      phases.push(...migrationReport.results.map((result) => ({
+        id: result.id,
+        status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
+        changedFiles: result.status === "applied" ? result.changedFiles : [],
+        message: result.summary
+      })));
+      errors.push(...migrationReport.results.filter((result) => result.status === "blocked").map((result) => `${result.id}: ${result.summary}`));
+    }
+    const audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...ctx, targetDir, repoRoot: targetDir, dryRun: true })) : void 0;
+    if (audit && !audit.ok) {
+      errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
+    }
+    phases.push({
+      id: "project.audit",
+      status: audit?.ok ? "unchanged" : "failed",
+      changedFiles: [],
+      message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped"
+    });
+    if (errors.length === 0 && mode === "create") {
+      if (hasGitRepository(this.runtime, targetDir)) {
+        phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
+      } else {
+        const gitPath = join11(targetDir, ".git");
+        for (const [args, label] of [
+          [["init", "--initial-branch=main"], "git init"],
+          [["config", "user.name", "pjangler"], "git config user.name"],
+          [["config", "user.email", "pjangler@localhost"], "git config user.email"],
+          [["add", "-A"], "git add"],
+          [["commit", "-m", "chore: initialize project"], "git commit"]
+        ]) {
+          const result = this.runtime.runGit(targetDir, args);
+          if (result.status !== 0) {
+            errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
+            phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+            break;
+          }
+          if (label === "git init" && existsSync9(gitPath)) changedFiles.push(gitPath);
+          logs.push(`${label}: ok`);
+        }
+        if (errors.length === 0) {
+          const repositoryReady = hasGitRepository(this.runtime, targetDir);
+          const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
+          if (!headReady) {
+            errors.push("git postcondition failed: repository or initial commit is missing");
+            phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync9(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+          } else {
+            if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
+            phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
+          }
+        }
+      }
+    }
+    if (errors.length === 0 && registryActions.length) {
+      const registryPlan = { ...plan, actions: registryActions };
+      const persisted = await this.runtime.executePlan(registryPlan);
+      logs.push(...persisted.logs);
+      errors.push(...persisted.errors);
+      changedFiles.push(...persisted.changedFiles);
+      phases.push({
+        id: "project.registry",
+        status: persisted.ok ? persisted.changedFiles.length ? "changed" : "unchanged" : "failed",
+        changedFiles: persisted.ok ? persisted.changedFiles : [],
+        message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; ")
+      });
+    }
+    return {
+      recipeId: this.metadata.id,
+      ok: errors.length === 0 && Boolean(audit?.ok),
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [...new Set(changedFiles)].sort(),
+      logs,
+      errors,
+      phases,
+      plan,
+      mode,
+      audit,
+      selectedOperations: normalized.selectedOperations ?? [],
+      selectedParityRules: normalized.selectedRuleIds ?? [],
+      migrationReport,
+      agentResult
+    };
+  }
+  printNextSteps() {
+  }
+};
+
+// src/recipes/registry.ts
+var RecipeRegistry = class {
+  recipes = /* @__PURE__ */ new Map();
+  ruleOwners = /* @__PURE__ */ new Map();
+  validated = false;
+  constructor(recipes = []) {
+    for (const recipe of recipes) this.register(recipe);
+    if (recipes.length) this.validate();
+  }
+  register(recipe) {
+    if (this.recipes.has(recipe.metadata.id)) throw new Error(`Duplicate recipe id: ${recipe.metadata.id}`);
+    const seenLocal = /* @__PURE__ */ new Set();
+    for (let index = 0; index < recipe.checks.length; index++) {
+      const check = recipe.checks[index];
+      if (seenLocal.has(check.id) || this.ruleOwners.has(check.id)) throw new Error(`Duplicate parity rule id: ${check.id}`);
+      seenLocal.add(check.id);
+      this.ruleOwners.set(check.id, { recipe, checkIndex: index });
+    }
+    const declared = [...recipe.metadata.publicRuleIds];
+    const actual = recipe.checks.map((check) => check.id);
+    if (JSON.stringify(declared) !== JSON.stringify(actual)) {
+      throw new Error(`Recipe ${recipe.metadata.id} publicRuleIds do not match its checks`);
+    }
+    this.recipes.set(recipe.metadata.id, recipe);
+    const registryAware = recipe;
+    registryAware.attachRegistry?.(this);
+    this.validated = false;
+    return this;
+  }
+  validate() {
+    for (const recipe of this.recipes.values()) {
+      for (const dependency of recipe.metadata.dependencies) {
+        if (!this.recipes.has(dependency)) throw new Error(`Unknown dependency ${dependency} for recipe ${recipe.metadata.id}`);
+      }
+    }
+    const visiting = /* @__PURE__ */ new Set();
+    const visited = /* @__PURE__ */ new Set();
+    const visit = (id, path) => {
+      if (visiting.has(id)) throw new Error(`Recipe dependency cycle: ${[...path, id].join(" -> ")}`);
+      if (visited.has(id)) return;
+      visiting.add(id);
+      const recipe = this.recipes.get(id);
+      for (const dependency of recipe.metadata.dependencies) visit(dependency, [...path, id]);
+      visiting.delete(id);
+      visited.add(id);
+    };
+    for (const id of this.recipes.keys()) visit(id, []);
+    this.validated = true;
+  }
+  ensureValid() {
+    if (!this.validated) this.validate();
+  }
+  list() {
+    this.ensureValid();
+    return [...this.recipes.values()].map((recipe) => recipe.metadata);
+  }
+  get(recipeId) {
+    return this.recipes.get(recipeId);
+  }
+  ownerOf(ruleId) {
+    const owner = this.ruleOwners.get(ruleId);
+    if (!owner) return void 0;
+    return { recipe: owner.recipe, check: owner.recipe.checks[owner.checkIndex] };
+  }
+  resolveOrder(recipeId) {
+    this.ensureValid();
+    if (!this.recipes.has(recipeId)) throw new Error(`Unknown recipe: ${recipeId}`);
+    const ordered = [];
+    const seen = /* @__PURE__ */ new Set();
+    const visit = (id) => {
+      if (seen.has(id)) return;
+      const recipe = this.recipes.get(id);
+      for (const dependency of recipe.metadata.dependencies) visit(dependency);
+      seen.add(id);
+      ordered.push(recipe);
+    };
+    visit(recipeId);
+    return ordered;
+  }
+  resolveDependencies(recipeId) {
+    return this.resolveOrder(recipeId).filter((recipe) => recipe.metadata.id !== recipeId);
+  }
+  aggregateInit(recipeId, ctx, results) {
+    const selected = results.at(-1) ?? {
+      recipeId,
+      ok: true,
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [],
+      logs: [],
+      errors: [],
+      phases: []
+    };
+    return {
+      ...selected,
+      recipeId,
+      ok: results.every((result) => result.ok),
+      changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort(),
+      logs: results.flatMap((result) => result.logs),
+      errors: results.flatMap((result) => result.errors),
+      phases: results.flatMap((result) => result.phases),
+      dependencyResults: results.slice(0, -1)
+    };
+  }
+  async initDependencies(recipeId, ctx, input) {
+    const results = [];
+    for (const dependency of this.resolveDependencies(recipeId)) {
+      const result = await dependency.init(ctx, input);
+      results.push(result);
+      if (!result.ok) break;
+    }
+    return this.aggregateInit(recipeId, ctx, results);
+  }
+  async initRecipe(recipeId, ctx, input) {
+    this.ensureValid();
+    const selected = this.recipes.get(recipeId);
+    if (!selected) throw new Error(`Unknown recipe: ${recipeId}`);
+    if (selected.orchestratesDependencies) return selected.init(ctx, input);
+    const results = [];
+    for (const recipe of this.resolveOrder(recipeId)) {
+      const result = await recipe.init(ctx, input);
+      results.push(result);
+      if (!result.ok) break;
+    }
+    return this.aggregateInit(recipeId, ctx, results);
+  }
+  auditRecipes(ctx, recipeIds) {
+    this.ensureValid();
+    const selected = recipeIds ? recipeIds.map((id) => {
+      const recipe = this.recipes.get(id);
+      if (!recipe) throw new Error(`Unknown recipe: ${id}`);
+      return recipe;
+    }) : [...this.recipes.values()];
+    const rules = selected.flatMap((recipe) => recipe.audit(ctx).map((finding) => ({ ...finding, recipeId: finding.recipeId ?? recipe.metadata.id })));
+    return {
+      repo: ctx.repoRoot,
+      ok: rules.every((rule) => rule.status === "pass" || rule.status === "skip"),
+      auditedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      rules
+    };
+  }
+  migrateRules(ctx, ruleIds) {
+    this.ensureValid();
+    const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
+    if (unknown.length) throw new Error(`Unknown parity rules: ${unknown.join(", ")}`);
+    const results = [];
+    for (const id of ruleIds) {
+      const owner = this.ruleOwners.get(id);
+      try {
+        const migrated = owner.recipe.migrate(ctx, [id]);
+        results.push(...migrated.map((result) => ({ ...result, recipeId: result.recipeId ?? owner.recipe.metadata.id })));
+      } catch (err) {
+        const check = owner.recipe.checks[owner.checkIndex];
+        results.push({
+          id,
+          recipeId: owner.recipe.metadata.id,
+          title: check.title,
+          status: "blocked",
+          summary: `migrate threw: ${err instanceof Error ? err.message : String(err)}`,
+          changedFiles: [],
+          details: []
+        });
+      }
+    }
+    return {
+      repo: ctx.repoRoot,
+      dryRun: Boolean(ctx.dryRun),
+      ok: results.every((result) => result.status !== "blocked"),
+      selectedRules: [...ruleIds],
+      results,
+      changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort()
+    };
+  }
+  migrateAll(ctx) {
+    const audit = this.auditRecipes(ctx);
+    const ids = audit.rules.filter((rule) => rule.fixable && (rule.status === "fail" || rule.status === "warn")).map((rule) => rule.id);
+    return this.migrateRules(ctx, ids);
+  }
+  listRuleIds() {
+    this.ensureValid();
+    return [...this.recipes.values()].flatMap((recipe) => recipe.checks.map((check) => check.id));
+  }
+};
+
+// src/recipes/catalog.ts
+var recipeRegistry = new RecipeRegistry([
+  new MiseOpInjectRecipe(),
+  new MiseRecipe(),
+  new AgentHooksRecipe(),
+  new BmadRecipe(),
+  new DockerRecipe(),
+  new NodeRecipe(),
+  new HermesAgentRecipe(),
+  new ProjectRecipe()
+]);
+
+// src/parity/index.ts
+function resolvePjanglerRoot2() {
+  let dir = dirname5(fileURLToPath4(import.meta.url));
+  while (dir !== dirname5(dir)) {
+    if (existsSync10(join12(dir, "package.json")) && existsSync10(join12(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname5(dir);
+  }
+  return resolve6(process.cwd());
+}
+function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false) {
+  const repoRoot = resolve6(repoArg ?? process.cwd());
+  return {
+    targetDir: repoRoot,
+    repoRoot,
+    dryRun,
+    force: false,
+    pjanglerRoot: resolvePjanglerRoot2(),
+    homeDir: homedir4(),
+    acceptRegistryMatches
+  };
+}
+function getParityRuleIds() {
+  return [...recipeRegistry.listRuleIds()];
+}
+function publicAudit2(report) {
+  return {
+    ...report,
+    rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding)
+  };
+}
+function publicMigration2(report) {
+  return {
+    ...report,
+    results: report.results.map(({ recipeId: _recipeId, ...result }) => result)
+  };
+}
+function runAudit(repoArg) {
+  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
+}
+function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
+  return publicMigration2(recipeRegistry.migrateRules(
+    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
+    ruleIds
+  ));
+}
+function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
+  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
+  return publicMigration2(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
+}
+
+// src/commands/hermes/EnsureTemplateConfig.ts
+function resolveTemplateConfigPath() {
+  const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join13(homedir5(), ".config");
+  return join13(base, "hermes-agent-template", "config.toml");
+}
+function detectHermesBin(home) {
+  const candidates = [
+    join13(home, "code", "hermes-agent", "venv", "bin", "hermes"),
+    join13(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
+    join13(home, ".local", "bin", "hermes")
+  ];
+  for (const c of candidates) {
+    if (existsSync11(c)) return c;
+  }
+  return candidates[0];
+}
+function renderHostConfig() {
+  const home = homedir5();
+  const hermesBin = detectHermesBin(home);
+  const hermesRepo = join13(home, "code", "hermes-agent");
+  const scaffoldDir = join13(home, "code", "hermes-agent-template", "runtime-scaffold");
+  const skillsDir = join13(home, ".agents", "skills");
+  const pmExternalSkillGlobalDir = join13(home, "code", "skillex", "skill-sets", "global", ".system");
+  const pmExternalSkillBmadDir = join13(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
+  return `# hermes-agent-template \u2014 host configuration
+# Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
+#
+# [fleet] paths below were derived from THIS machine. The identity values in
+# [github]/[plane]/[bloodbank] are intentionally left to be confirmed before a
+# CLOUD provision (\`pjangler hermes\` without --local); they are unused by the
+# default local-only provision.
+#
+# Resolution precedence per value: env var > ~/.hermes/fleet.env > this file > fallback.
+
+[fleet]
+home = "~/.hermes"
+hermes_bin = "${hermesBin}"
+hermes_repo = "${hermesRepo}"
+runtime_scaffold_dir = "${scaffoldDir}"
+# Shared fleet source-of-truth env file + fleet registry. ~ is expanded.
+fleet_env = "~/.hermes/fleet.env"
+registry_file = "~/.hermes/agents-registry.yaml"
+canonical_skills_dir = "${skillsDir}"
+pm_external_skill_dirs = [
+  "${pmExternalSkillGlobalDir}",
+  "${pmExternalSkillBmadDir}",
+]
+symlinked_runtime_skills = []
+
+[github]
+# Owner of the per-agent runtime repos (creates <owner>/agent-hm-<repo>-<role>).
+# REQUIRED before a cloud provision. Leave empty for local-only runs.
+runtime_repo_owner = ""
+
+[plane]
+# Plane instance + workspace (one project per agent). Confirm before cloud provision.
+base = "https://plane.delo.sh"
+workspace = "33god"
+
+[bloodbank]
+# NATS endpoint the consumer connects to. For a remote fleet node, point this at
+# the bloodbank host over Tailscale rather than localhost.
+nats_host = "127.0.0.1"
+nats_port = 4222
+compose_dir = "~/code/33GOD/bloodbank"
+`;
+}
+var EnsureTemplateConfig = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
+    const path = resolveTemplateConfigPath();
+    const exists = existsSync11(path);
+    if (exists && !force) {
+      if (!ctx.quiet) console.log(`\u2713 Config present: ${path}`);
+      return { success: true, outcome: "unchanged", message: "" };
+    }
+    if (ctx.dryRun) {
+      if (!ctx.quiet) console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
+      return { success: true, outcome: "planned", filePath: path, message: "" };
+    }
+    try {
+      mkdirSync5(dirname6(path), { recursive: true });
+      writeFileSync6(path, renderHostConfig());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, outcome: "failed", message: `Failed to write ${path}: ${msg}` };
+    }
+    if (!ctx.quiet) {
+      console.log(`\u2713 Bootstrapped config: ${path}`);
+      console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
+    }
+    return { success: true, outcome: "changed", filePath: path, message: "" };
+  }
+};
+
 // src/commands/AgentHooksCommands.ts
+import { homedir as homedir6 } from "node:os";
+import { join as join14, dirname as dirname7 } from "node:path";
+import { existsSync as existsSync12, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 var AGENT_HOOKS_SKIP_MESSAGE = "\u21B7 agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 function resolveTemplateRoot() {
   const candidates = [];
@@ -7550,18 +8381,18 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname6(fileURLToPath4(import.meta.url));
+    let dir = dirname7(fileURLToPath5(import.meta.url));
     for (let i = 0; i < 8; i++) {
       candidates.push(join14(dir, "templates", "commonproject", "template"));
-      const parent = dirname6(dir);
+      const parent = dirname7(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
-  candidates.push(join14(homedir5(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join14(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
-    if (existsSync10(join14(c, ".agents", "hooks", "hooks.master.json"))) return c;
+    if (existsSync12(join14(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
   throw new Error(
     "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
@@ -7589,13 +8420,13 @@ var CopyAgentHooksTree = class extends Command {
     for (const { rel, dir } of items) {
       const src = join14(templateRoot, rel);
       const dest = join14(this.context.targetDir, rel);
-      if (!existsSync10(src)) continue;
-      if (existsSync10(dest) && !this.context.force) {
+      if (!existsSync12(src)) continue;
+      if (existsSync12(dest) && !this.context.force) {
         skipped.push(rel);
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync6(dirname6(dest), { recursive: true });
+        mkdirSync6(dirname7(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -7617,13 +8448,13 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
       return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
     }
     const misePath = join14(this.context.targetDir, "mise.toml");
-    if (!existsSync10(misePath)) {
+    if (!existsSync12(misePath)) {
       return {
         success: false,
         message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pjangler init mise` first, then re-run."
       };
     }
-    let content = readFileSync7(misePath, "utf8");
+    let content = readFileSync9(misePath, "utf8");
     if (content.includes(_WireMiseAgentHooks.MARKER)) {
       return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for agent-hooks") };
     }
@@ -7706,84 +8537,244 @@ ${leaveBlock}`);
   }
 };
 
-// src/recipes/AgentHooksRecipe.ts
-var AgentHooksRecipe = class extends Recipe {
-  constructor(context) {
-    super(context);
-    this.addIngredient(CopyAgentHooksTree).addIngredient(WireMiseAgentHooks);
-  }
-  printNextSteps() {
-    console.log("\u{1FA9D} Agent-hooks layer installed!");
-    console.log("   Next steps:");
-    console.log("   1. mise run skills-sync  # sync .agents/skills.json into local CLI dirs");
-    console.log("   2. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
-    console.log("   3. git add .claude/settings.json .agents/hooks .agents/skills.json && commit (codex/kimi/hermes are per-dev)");
-    console.log("   4. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
-    console.log("   5. Optional per-dev hook opt-out: copy .agents/local.example.json -> .agents/local.json");
+// src/commands/AddMiseToml.ts
+var AddMiseToml = class extends Command {
+  async invoke() {
+    const filePath = "mise.toml";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: this.formatMessage("\u26A0\uFE0F  mise.toml already exists"),
+        filePath
+      };
+    }
+    const content = `# Mise configuration
+[tools]
+python = "3.11"
+node = "20"
+
+[env]
+NODE_ENV = "development"
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create mise.toml" : "\u2705 Created mise.toml"),
+      filePath
+    };
   }
 };
 
-// src/recipes/MiseOpInjectRecipe.ts
-var MiseOpInjectRecipe = class extends Recipe {
-  constructor(context) {
-    super(context);
-    this.addIngredient(WireMiseOpInject);
+// src/commands/AddMiseBaseToml.ts
+var AddMiseBaseToml = class extends Command {
+  async invoke() {
+    const filePath = ".mise/tasks/base.toml";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: this.formatMessage("\u26A0\uFE0F  .mise/tasks/base.toml already exists"),
+        filePath
+      };
+    }
+    const content = `# Base tasks configuration
+[tasks.setup]
+run = "python scripts/base.py"
+description = "Setup base environment"
+
+[tasks.clean]
+run = "rm -rf node_modules dist build"
+description = "Clean build artifacts"
+
+[tasks.dev]
+run = "mise run setup"
+description = "Initialize development environment"
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise/tasks/base.toml" : "\u2705 Created .mise/tasks/base.toml"),
+      filePath
+    };
   }
-  printNextSteps() {
-    console.log("\u{1F389} Wired up .env.op 1Password resolution via mise!");
-    console.log("   Next steps:");
-    console.log("   1. Create .env.op with your op:// secret references");
-    console.log("   2. Run `mise run secrets-inject` or simply cd out and back in to trigger the hook");
+};
+
+// src/commands/AddMiseTasksStructure.ts
+var AddMiseTasksStructure = class extends Command {
+  async invoke() {
+    this.createDirectory(".mise/tasks/scripts");
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise directory structure" : "\u2705 Created .mise directory structure"),
+      filePath: ".mise/tasks/scripts"
+    };
+  }
+};
+
+// src/commands/AddMiseBaseScript.ts
+var AddMiseBaseScript = class extends Command {
+  async invoke() {
+    const filePath = ".mise/tasks/scripts/base.py";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: this.formatMessage("\u26A0\uFE0F  .mise/tasks/scripts/base.py already exists"),
+        filePath
+      };
+    }
+    const content = `#!/usr/bin/env python3
+"""Base setup script"""
+import os
+import sys
+from pathlib import Path
+
+def main():
+    print("\u{1F527} Setting up base environment...")
+
+    dirs_to_create = ["logs", "temp", "data"]
+    for dir_name in dirs_to_create:
+        Path(dir_name).mkdir(exist_ok=True)
+        print(f"  Created {dir_name}/ directory")
+
+    print("  Base environment setup complete!")
+    print("  Run 'mise run dev' to start development")
+
+if __name__ == "__main__":
+    main()
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise/tasks/scripts/base.py" : "\u2705 Created .mise/tasks/scripts/base.py"),
+      filePath
+    };
+  }
+};
+
+// src/commands/AddMiseCodegraphScript.ts
+import { chmodSync as chmodSync2 } from "fs";
+import { join as join15 } from "path";
+var AddMiseCodegraphScript = class extends Command {
+  async invoke() {
+    const filePath = ".mise/scripts/codegraph.sh";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: this.formatMessage("\u26A0\uFE0F  .mise/scripts/codegraph.sh already exists"),
+        filePath
+      };
+    }
+    const content = `#!/usr/bin/env bash
+# Auto-generated by pjangler
+
+REPO_ROOT="$(pwd)"
+PROJECT_NAME="$(basename "$REPO_ROOT")"
+CONTAINER_NAME="codegraph-mcp-$PROJECT_NAME"
+CACHE_DIR="$REPO_ROOT/.codegraph"
+
+# Deterministically generate a port based on the repository path
+PORT=$(echo -n "$REPO_ROOT" | md5sum | awk '{print $1}' | tr -d 'a-f' | cut -c1-4)
+# Ensure port is > 1024
+PORT=$(( (PORT % 60000) + 1025 ))
+
+if ! docker ps --format '{{.Names}}' | grep -q "^$CONTAINER_NAME$"; then
+  echo "\u{1F680} Starting CodeGraph MCP Server on port $PORT..."
+
+  # Ensure the container isn't lingering in a stopped state
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  # Run the true Colby McHenry CodeGraph Docker image
+  # which we built locally as colbymchenry-codegraph-mcp:latest
+  docker run -d \\
+    --name "$CONTAINER_NAME" \\
+    --restart unless-stopped \\
+    -p "$PORT:8045" \\
+    -v "$REPO_ROOT:/repo" \\
+    colbymchenry-codegraph-mcp:latest >/dev/null
+
+  echo "\u2705 CodeGraph MCP running in background. SSE URL: http://localhost:$PORT/sse"
+fi
+
+# Run init inside the container to ensure the index is bootstrapped.
+# We run this using the standard codegraph CLI inside the container
+docker exec "$CONTAINER_NAME" codegraph init -i /repo >/dev/null 2>&1 || true
+
+# Wire up the MCP server to local agents
+WIRE_SCRIPT="$(dirname "$0")/codegraph-wire.sh"
+if [ -x "$WIRE_SCRIPT" ]; then
+  "$WIRE_SCRIPT"
+fi
+`;
+    this.writeFile(filePath, content);
+    if (!this.context.dryRun) {
+      chmodSync2(join15(this.context.targetDir, filePath), 493);
+    }
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create .mise/scripts/codegraph.sh" : "\u2705 Created .mise/scripts/codegraph.sh"),
+      filePath
+    };
+  }
+};
+
+// src/commands/AddDotenv.ts
+var AddDotenv = class extends Command {
+  async invoke() {
+    const filePath = ".env";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: this.formatMessage("\u26A0\uFE0F  .env already exists"),
+        filePath
+      };
+    }
+    const content = `# Environment variables
+DATABASE_URL=""
+API_KEY=""
+SECRET_KEY=""
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: this.formatMessage(this.context.dryRun ? "Would create .env" : "\u2705 Created .env"),
+      filePath
+    };
+  }
+};
+
+// src/commands/WireMiseOpInject.ts
+var WireMiseOpInject = class extends Command {
+  async invoke() {
+    const report = runMigrationForRules(
+      ["mise.config-root", "secrets.env-op"],
+      this.context.targetDir,
+      Boolean(this.context.dryRun)
+    );
+    const blocked = report.results.filter((result) => result.status === "blocked");
+    return {
+      success: blocked.length === 0,
+      outcome: blocked.length ? "failed" : report.changedFiles.length ? this.context.dryRun ? "planned" : "changed" : "unchanged",
+      message: blocked.length ? `\u2717 op-inject lifecycle blocked: ${blocked.map((result) => `${result.id}: ${result.summary}`).join("; ")}` : this.formatMessage(
+        `${this.context.dryRun ? "Would wire" : "\u2713 Wired"} atomic .env materialization from .env.op`
+      ),
+      filePath: report.changedFiles[0]
+    };
   }
 };
 
 // src/utils/registry.ts
-var RECIPE_REGISTRY = {
-  mise: {
-    name: "mise",
-    description: "Mise task runner and environment setup",
-    class: MiseRecipe,
-    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript"]
-  },
-  docker: {
-    name: "docker",
-    description: "Docker containerization setup",
-    class: DockerRecipe,
-    commands: ["AddDockerfile", "AddDockerCompose", "AddDockerignore"]
-  },
-  node: {
-    name: "node",
-    description: "Node.js project template",
-    class: NodeRecipe,
-    commands: ["NodeCommands"]
-    // Placeholder - actual commands in NodeCommands.ts
-  },
-  "hermes-agent": {
-    name: "hermes-agent",
-    description: "Add a Hermes agent role to this repo (copier + BotFather + CF email + submodule)",
-    class: HermesAgentRecipe,
-    commands: [
-      "EnsureTemplateConfig",
-      "PromptForAgentConfig",
-      "RunCopierTemplate",
-      "WireTelegram",
-      "WireEmail",
-      "PrintHermesSummary"
-    ]
-  },
-  "agent-hooks": {
-    name: "agent-hooks",
-    description: "Retrofit the project-scoped agent-hooks + skill fan-out layer (Claude/Codex/Kimi/Hermes hooks via mise enter/leave)",
-    class: AgentHooksRecipe,
-    commands: ["CopyAgentHooksTree", "WireMiseAgentHooks"]
-  },
-  "mise-op-inject": {
-    name: "mise-op-inject",
-    description: "Wire up op-inject script to mise.toml for 1Password secret resolution",
-    class: MiseOpInjectRecipe,
-    commands: ["WireMiseOpInject"]
-  }
-};
+var LEGACY_PUBLIC_RECIPE_IDS = ["mise", "docker", "node", "hermes-agent", "agent-hooks", "mise-op-inject"];
+var RECIPE_REGISTRY = Object.freeze(Object.fromEntries(
+  LEGACY_PUBLIC_RECIPE_IDS.map((id) => {
+    const instance = recipeRegistry.get(id);
+    if (!instance) throw new Error(`Production recipe registry is missing ${id}`);
+    return [id, Object.freeze({
+      name: instance.metadata.name,
+      description: instance.metadata.description,
+      instance,
+      commands: [...instance.metadata.commands]
+    })];
+  })
+));
 var COMMAND_REGISTRY = {
   CopyAgentHooksTree: {
     name: "CopyAgentHooksTree",
@@ -7880,28 +8871,23 @@ function getCommandsByGroup() {
   }
   return grouped;
 }
-function createRecipe(name, context) {
-  const info = getRecipeInfo(name);
-  if (!info) return null;
-  return new info.class(context);
-}
 
 // src/index.ts
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/utils/version.ts
-import { readFileSync as readFileSync8 } from "node:fs";
-import { dirname as dirname7, join as join15 } from "node:path";
-import { fileURLToPath as fileURLToPath5 } from "node:url";
+import { readFileSync as readFileSync10 } from "node:fs";
+import { dirname as dirname8, join as join16 } from "node:path";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname7(fileURLToPath5(import.meta.url));
+    let dir = dirname8(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync8(join15(dir, "package.json"), "utf8");
+        const raw = readFileSync10(join16(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname7(dir);
+        const parent = dirname8(dir);
         if (parent === dir) break;
         dir = parent;
       }
@@ -7938,18 +8924,18 @@ async function promptForRuleIds(rules) {
   return selected;
 }
 function readJson(path) {
-  if (!existsSync11(path)) return void 0;
+  if (!existsSync13(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync9(path, "utf8"));
+    const parsed = JSON.parse(readFileSync11(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
   }
 }
 function findGitRoot(cwd) {
-  const result = spawnSync7("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  const result = spawnSync8("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result.status !== 0) return void 0;
-  return resolve4(result.stdout.trim());
+  return resolve7(result.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -7957,8 +8943,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson(join16(targetDir, ".project.json"));
-  const pkg = readJson(join16(targetDir, "package.json"));
+  const manifest = readJson(join17(targetDir, ".project.json"));
+  const pkg = readJson(join17(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename5(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -8014,7 +9000,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync11(action.path) || readFileSync9(action.path, "utf8") !== next;
+    return !existsSync13(action.path) || readFileSync11(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -8062,25 +9048,25 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve4(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve7(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename5(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join16(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join17(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve4(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve7(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync11(targetDir);
+  const targetExists = existsSync13(targetDir);
   if (targetExists && !statSync2(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve4(targetGitRoot) === resolve4(targetDir));
+  const syncMode = Boolean(targetGitRoot && resolve7(targetGitRoot) === resolve7(targetDir));
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename5(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
@@ -8101,13 +9087,15 @@ async function runRecipeSubsystem(name, options) {
     dryRun: options.dryRun || false
   };
   try {
-    const recipe = createRecipe(name, context);
-    if (!recipe) {
+    if (!recipeRegistry.get(name)) {
       console.error(`${xmark} Unknown subsystem: ${bold(name)}`);
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
       process.exit(1);
     }
-    await recipe.execute();
+    const result = await recipeRegistry.initRecipe(name, lifecycleContext(context.targetDir, Boolean(context.dryRun)), {});
+    for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
+    for (const error of result.errors) console.error(`${xmark} ${error}`);
+    if (!result.ok) process.exitCode = 1;
   } catch (error) {
     console.error(`${xmark} Error scaffolding ${bold(name)}:`, error);
     process.exit(1);
@@ -8175,10 +9163,10 @@ async function runProjectInit(name, options) {
       cwd: process.cwd(),
       scaffold: !target.syncMode
     });
-    const audit = target.syncMode ? runAudit(target.targetDir) : void 0;
+    const preAudit = target.syncMode ? runAudit(target.targetDir) : void 0;
     const selection = await selectProjectInitOperations({
       plan,
-      auditRules: audit?.rules ?? [],
+      auditRules: preAudit?.rules ?? [],
       syncMode: target.syncMode,
       options
     });
@@ -8193,10 +9181,10 @@ async function runProjectInit(name, options) {
       const payload = {
         ...plan,
         mode: target.syncMode ? "sync" : "create",
-        audit,
+        audit: preAudit,
         proposedOperations: [
           ...plan.actions.filter((action) => actionNeedsRun(plan, action.kind, target.syncMode)).map((action) => action.kind),
-          ...(audit?.rules ?? []).filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => `parity:${rule.id}`)
+          ...(preAudit?.rules ?? []).filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip").map((rule) => `parity:${rule.id}`)
         ]
       };
       if (options.json) console.log(JSON.stringify(payload, null, 2));
@@ -8212,35 +9200,28 @@ async function runProjectInit(name, options) {
       }
       return;
     }
-    const initResult = selectedPlan.actions.length ? await executeProjectInitPlan(selectedPlan) : { ok: true, plan: selectedPlan, logs: [], errors: [], changedFiles: [] };
-    const migrationReport = selection.selectedParityRules.length ? runMigrationForRules(selection.selectedParityRules, target.targetDir, false) : void 0;
-    const migrationErrors = migrationReport?.results.filter((result2) => result2.status === "blocked").map((result2) => `${result2.id}: ${result2.summary}`) ?? [];
-    const changedFiles = Array.from(/* @__PURE__ */ new Set([
-      ...initResult.changedFiles,
-      ...migrationReport?.changedFiles ?? []
-    ])).sort();
-    const result = {
-      ok: initResult.ok && (migrationReport?.ok ?? true),
-      mode: target.syncMode ? "sync" : "create",
+    const projectInput = {
       plan: selectedPlan,
-      audit,
+      mode: target.syncMode ? "sync" : "create",
+      selectedRuleIds: selection.selectedParityRules,
       selectedOperations: selection.selectedOperations,
-      selectedParityRules: selection.selectedParityRules,
-      logs: initResult.logs,
-      errors: [...initResult.errors, ...migrationErrors],
-      changedFiles,
-      migrationReport
+      quiet: Boolean(options.json)
     };
+    const result = await recipeRegistry.initRecipe(
+      "project",
+      lifecycleContext(target.targetDir, false),
+      projectInput
+    );
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(formatProjectInitPlan(selectedPlan));
       for (const line of result.logs) console.log(line);
       for (const line of result.errors) console.error(`  ${xmark} ${line}`);
-      if (migrationReport) console.log(formatMigrationReport(migrationReport));
-      if (result.ok && changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
+      if (result.migrationReport) console.log(formatMigrationReport(result.migrationReport));
+      if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
 `);
-      if (result.ok && changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
+      if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}
 `);
     }
     process.exitCode = result.ok ? 0 : 1;
@@ -8514,12 +9495,11 @@ program.command("hermes-agent").alias("hermes").description("Provision the PM ag
     skipSystemd: options.skipSystemd ?? (local || isDarwin)
   };
   try {
-    const recipe = createRecipe("hermes-agent", context);
-    if (!recipe) {
-      console.error(`${xmark} hermes-agent recipe not registered`);
-      process.exit(1);
-    }
-    await recipe.execute();
+    const lifecycle = { ...context, ...lifecycleContext(context.targetDir, Boolean(context.dryRun)) };
+    const result = await recipeRegistry.initRecipe("hermes-agent", lifecycle, {});
+    for (const line of result.logs) console.log(line);
+    for (const error of result.errors) console.error(`${xmark} ${error}`);
+    if (!result.ok) process.exit(1);
   } catch (err) {
     console.error(`${xmark} hermes-agent failed:`, err);
     process.exit(1);

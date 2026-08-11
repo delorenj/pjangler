@@ -43,4 +43,7 @@ for (const required of [
   assert.match(source, new RegExp(required), `mcp-server.ts should reference ${required}`);
 }
 
+assert.match(source, /recipeRegistry\.initRecipe\(\s*["']project["']/, "MCP project init must dispatch through ProjectRecipe");
+assert.doesNotMatch(source, /executeProjectInitPlan\(/, "MCP must not duplicate ProjectRecipe plan execution");
+
 console.log("mcp catalog regressions passed");

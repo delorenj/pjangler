@@ -105,13 +105,13 @@ export class EnsureTemplateConfig extends Command {
     const exists = existsSync(path);
 
     if (exists && !force) {
-      console.log(`✓ Config present: ${path}`);
-      return { success: true, message: "" };
+      if (!ctx.quiet) console.log(`✓ Config present: ${path}`);
+      return { success: true, outcome: "unchanged", message: "" };
     }
 
     if (ctx.dryRun) {
-      console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
-      return { success: true, message: "" };
+      if (!ctx.quiet) console.log(`[DRY RUN] Would ${exists ? "overwrite" : "create"} config: ${path}`);
+      return { success: true, outcome: "planned", filePath: path, message: "" };
     }
 
     try {
@@ -119,11 +119,13 @@ export class EnsureTemplateConfig extends Command {
       writeFileSync(path, renderHostConfig());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { success: false, message: `✗ Failed to write ${path}: ${msg}` };
+      return { success: false, outcome: "failed", message: `Failed to write ${path}: ${msg}` };
     }
 
-    console.log(`✓ Bootstrapped config: ${path}`);
-    console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
-    return { success: true, message: "" };
+    if (!ctx.quiet) {
+      console.log(`✓ Bootstrapped config: ${path}`);
+      console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
+    }
+    return { success: true, outcome: "changed", filePath: path, message: "" };
   }
 }

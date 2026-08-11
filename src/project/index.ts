@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
+import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import {
   isPgRegistryEnabled,
   PgRegistryStore,
@@ -209,6 +210,23 @@ export interface ProjectDoctorResult {
   registryPath: string;
   checkedProjects: string[];
   issues: Array<{ level: "error" | "warn"; slug?: string; message: string }>;
+}
+
+function synchronizeCopierIdentity(manifestPath: string, manifest: ProjectManifest): string[] {
+  const answersPath = join(dirname(manifestPath), ".copier-answers.yml");
+  if (!existsSync(answersPath)) return [];
+  const current = readFileSync(answersPath, "utf8");
+  const document = YAML.parseDocument(current);
+  if (document.errors.length) return [];
+  const name = String(document.get("project_name") ?? "");
+  const description = String(document.get("project_description") ?? "");
+  if (name === manifest.project_name && description === manifest.project_description) return [];
+  document.set("project_name", manifest.project_name);
+  document.set("project_description", manifest.project_description);
+  const next = String(document);
+  if (next === current) return [];
+  writeFileSync(answersPath, next, "utf8");
+  return [answersPath];
 }
 
 const DEFAULT_SOURCE_SKILL_ROOTS = [
@@ -887,7 +905,10 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
           : "commonproject: agent-hooks layer included"
       );
       mkdirSync(dirname(action.targetDir), { recursive: true });
+      const before = snapshotTree(action.targetDir);
       const result = spawnSync(action.command[0]!, action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
+      changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
       if (result.stderr?.trim()) logs.push(result.stderr.trim());
       if (result.error) {
@@ -901,10 +922,8 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
       }
       if (result.status !== 0) {
         errors.push(`copier exited with status ${result.status ?? "unknown"}`);
-        if (existsSync(action.targetDir)) changedFiles.push(action.targetDir);
         break;
       }
-      changedFiles.push(action.targetDir);
     } else if (action.kind === "project.write-manifest") {
       mkdirSync(dirname(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}\n`;
@@ -913,6 +932,7 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
         writeFileSync(action.path, next, "utf8");
         changedFiles.push(action.path);
       }
+      changedFiles.push(...synchronizeCopierIdentity(action.path, action.manifest));
     } else if (action.kind === "registry.upsert") {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
@@ -959,7 +979,7 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
     }
   }
 
-  return { ok: errors.length === 0, plan, logs, errors, changedFiles };
+  return { ok: errors.length === 0, plan, logs, errors, changedFiles: [...new Set(changedFiles)].sort() };
 }
 
 export function projectManifestFromRegistryProject(project: ProjectRecord): ProjectManifest {

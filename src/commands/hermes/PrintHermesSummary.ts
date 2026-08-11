@@ -40,8 +40,10 @@ export class PrintHermesSummary extends Command {
       lines.push("  pjangler hermes-agent          # re-run and answer yes when asked");
     }
 
-    p.note(lines.join("\n"), `Provisioned ${agentId}`);
-    p.outro("Done.");
-    return { success: true, message: "" };
+    if (!ctx.quiet) {
+      p.note(lines.join("\n"), `Provisioned ${agentId}`);
+      p.outro("Done.");
+    }
+    return { success: true, outcome: "unchanged", message: "" };
   }
 }

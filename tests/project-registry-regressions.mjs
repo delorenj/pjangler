@@ -20,7 +20,14 @@ function spawnCli(args, env, cwd = root) {
 function run(args, env, cwd = root) {
   const result = spawnCli(args, env, cwd);
   if (result.status !== 0) {
-    throw new Error(`command failed: ${process.execPath} ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    let summary = result.stdout;
+    try {
+      const payload = JSON.parse(result.stdout);
+      summary = JSON.stringify({ ok: payload.ok, errors: payload.errors, failedRules: payload.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status)) }, null, 2);
+    } catch {
+      // Preserve raw output for commands that are intentionally not JSON.
+    }
+    throw new Error(`command failed: ${process.execPath} ${cli} ${args.join(" ")}\nstdout:\n${summary}\nstderr:\n${result.stderr}`);
   }
   return result.stdout;
 }
@@ -314,7 +321,15 @@ try {
   git(["init"], multiAgentRepo);
   writeFileSync(join(multiAgentRepo, "package.json"), JSON.stringify({ name: "multi-agent", description: "Multi agent test" }, null, 2), "utf8");
   const multiAgentRegistry = join(tmp, "multi-agent-projects.yaml");
-  const multiAgentEnv = { PJ_PROJECT_REGISTRY: multiAgentRegistry };
+  const multiAgentHome = join(tmp, "multi-agent-home");
+  mkdirSync(multiAgentHome, { recursive: true });
+  const multiAgentEnv = {
+    PJ_PROJECT_REGISTRY: multiAgentRegistry,
+    HOME: multiAgentHome,
+    XDG_CONFIG_HOME: join(multiAgentHome, ".config"),
+    HERMES_HOME: join(multiAgentHome, ".hermes"),
+    PJ_BMAD_PACK_ROOT: "/home/delorenj/code/skillex/packs/bmad/6.10.1-next.31",
+  };
   const multiAgentFirst = JSON.parse(run([
     "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "pm", "--json",
   ], multiAgentEnv, multiAgentRepo));

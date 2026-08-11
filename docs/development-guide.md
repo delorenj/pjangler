@@ -20,7 +20,7 @@ npm install           # install deps (esbuild, typescript, @types/node + runtime
 mise run setup        # trust + setup-plane.py; "Project ready."
 ```
 
-`mise tasks` lists available tasks. The enter hook links agent files (`AGENTS.md` ← `CLAUDE.md`/`GEMINI.md`) and materializes `.env` from `.env.op` with `op inject`, staging through a `mktemp` file and replacing `.env` only on success — a failed or expired `op` session leaves `.env` untouched (PJAN-24).
+`mise tasks` lists available tasks. The enter hook links agent files (`AGENTS.md` ← `CLAUDE.md`/`GEMINI.md`) and invokes `.mise/scripts/materialize-env.sh`. The script materializes `.env` from active `.env.op` assignments through a quoted `mktemp`, cleanup trap, successful `op inject`, and atomic move. A nonempty comment-only `.env.op` is the intentional no-secrets opt-out and leaves `.env` untouched; missing or blank input is normalized to the neutral template.
 
 ## Everyday commands
 
@@ -43,16 +43,16 @@ Both entry points bundle to ESM in `dist/`; runtime deps stay external (installe
 
 ## Testing
 
-There is **no unit-test framework**. Correctness is guarded by four Node regression suites (`npm test` runs all four in sequence):
+There is **no unit-test framework**. Correctness is guarded by Node regression suites (`npm test` runs the full package contract). The PJAN-57 lifecycle gates are:
 
 ```bash
-node tests/parity-migrate-regressions.mjs      # parity audit/migrate matrix (largest, ~18.5 KB)
-node tests/mcp-catalog-regressions.mjs         # MCP catalog/capabilities stay in sync
-node tests/mcp-server-regressions.mjs          # MCP tool behavior
-node tests/project-registry-regressions.mjs    # registry validation, plan/apply, doctor
+node tests/pjan-57-lifecycle-recipes-regressions.mjs # registry/dispatch + audit/Git failure gates
+node tests/pjan-57-dogfood-regressions.mjs           # real mise/fake-op + TOML/provenance
+node tests/generated-project-lifecycle-regressions.mjs # packed CLI + actual Copier lifecycle
+npm test                                             # all regression and package gates
 ```
 
-When you change parity rules, the registry, or the MCP surface, **update/extend the matching regression suite** — it is the de-facto contract. Run `npm run typecheck` before committing.
+The packed lifecycle suite builds and packs the CLI, installs it under an isolated HOME and npm prefix, renders through actual Copier, then proves six supported roots, preserved project identity, Git/HEAD, immediate clean audit, and idempotent re-init/migrate. When you change lifecycle checks, the registry, project orchestration, or MCP, update the matching regression suite. Run `npm run typecheck` before committing.
 
 ## Project conventions (from `AGENTS.md`)
 
@@ -79,20 +79,29 @@ mise run version:sync       # force every versioned file to the highest version
 
 ## Adding a subsystem (recipe)
 
-1. Add `Command` subclass(es) under `src/commands/` (implement `invoke()`, use the dry-run-aware `writeFile`/`createDirectory`).
-2. Add a `Recipe` subclass under `src/recipes/` chaining them via `addIngredient(...)` + `printNextSteps()`.
-3. Register both in `src/utils/registry.ts` (`RECIPE_REGISTRY`, `COMMAND_REGISTRY`).
-4. Extend the relevant regression suite; `npm run typecheck` + `npm test`.
+1. Add `Command` subclass(es) under `src/commands/` when initialization needs atomic command ingredients. Return structured outcomes; display messages must not control lifecycle state.
+2. Add a `Recipe` subclass under `src/recipes/` that explicitly owns initialization, checks, and migrations.
+3. Declare truthful dependencies in recipe metadata and register one production instance in `src/recipes/catalog.ts`.
+4. Keep legacy `src/utils/registry.ts` aliases as a read-only facade over that same instance.
+5. Extend duplicate/unknown/cycle/order/dispatch and module-specific regression coverage; run `npm run typecheck` + `npm test`.
 
 See the **`project-jangler`** skill for the full authoring workflow.
 
 ## Adding / changing a parity rule
 
-Edit the `RULES` array in `src/parity/index.ts`. Each rule needs an `audit(ctx)` returning an `AuditFinding` and a `migrate(ctx, finding)` returning a `MigrationRuleResult`. **Migrations must be idempotent** (re-run → `noop`) and honor `ctx.dryRun`. Add cases to `tests/parity-migrate-regressions.mjs`.
+Add the check to its owning concrete recipe. Shared parsers and filesystem helpers may live in `src/parity/rules.ts`, but there is no global lifecycle-owner table. Each check needs `audit(ctx)` and `migrate(ctx, finding)`; migrations must be idempotent and honor `ctx.dryRun`. CLI/MCP selected migration goes through `RecipeRegistry.migrateRules`; migrate-all goes through `RecipeRegistry.migrateAll`.
+
+## Project transaction contract
+
+CLI and MCP both call `recipeRegistry.initRecipe("project", …)`. `ProjectRecipe` owns plan execution and composition. Fresh init initializes declared dependencies, proves a clean final audit, initializes Git and creates HEAD exactly once, and persists the central registry last. Init must produce its own audit-clean output; do not add a closure migrate-all. Existing-repo sync applies only explicitly selected migrations.
+
+The supported generated CLI matrix lives only in `src/recipes/supported-clis.ts`: Claude/`claude-code`/`.claude`, Codex/`codex`/`.codex`, Gemini/`gemini`/`.gemini`, Copilot/`github-copilot`/`.copilot`, OpenCode/`opencode`/`.opencode`, and Kimi/`kimi-code`/`.kimi-code`.
 
 ## Gotchas
 
 - **README is partially stale** — it says `bun`; the project is npm-only. It lists 4 MCP tools; there are 11. Trust the code.
 - **`templates/*` are git submodules** — run `git submodule update --init --recursive` if `templates/commonproject` / `templates/hermes-agent` are empty (they are in some worktrees).
-- **Generated mise hooks are space-safe** — if you touch the mise TOML surgery in `src/parity/index.ts`, keep `{{config_root}}` single-quoted and use `[[hooks.enter]]` tables (see `architecture.md` → Known gotchas). The repo's own `mise.toml` still uses the legacy form.
+- **Generated mise normalization is ownership-based** — preserve full foreign `[[hooks.enter]]`/leave records, comments, blank lines, `condition`, `shell`, and unknown keys. Replace only positively owned records.
+- **Do not inline secret shell complexity into TOML** — keep `.env` materialization in the managed script and retain its temp-file cleanup/atomic-move contract.
+- **CommonProject carries source inputs, not generated BMAD output** — never vendor `template/_bmad` or stale installer snapshots. Runtime package inventory must exclude the submodule's development-only root content.
 - **`copier` must be on PATH** for any scaffolding/apply path to work; dry-runs don't need it.

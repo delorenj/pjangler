@@ -7,7 +7,7 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 
 const copier = read("src/commands/hermes/RunCopierTemplate.ts");
 const summary = read("src/commands/hermes/PrintHermesSummary.ts");
-const parity = read("src/parity/index.ts");
+const parity = read("src/parity/rules.ts");
 
 assert.match(copier, /SKIP_BLOODBANK:\s*"1"/);
 assert.doesNotMatch(summary, /consumer\.service/);

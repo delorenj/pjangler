@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
@@ -261,11 +261,12 @@ try {
 
   {
     const repo = makeRepo("bmad-selected-module");
+    const projectName = basename(repo);
     const home = makeHome("bmad-selected-module");
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
     mkdirSync(join(repo, "_bmad", "core"), { recursive: true });
-    writeFileSync(join(repo, "_bmad", "core", "config.yaml"), "core: true\n");
-    writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "fixture"\n\n[modules.tea]\ntest_artifacts = "out"\n');
+    writeFileSync(join(repo, "_bmad", "core", "config.yaml"), `project_name: ${projectName}\ncore: true\n`);
+    writeFileSync(join(repo, "_bmad", "config.toml"), `[core]\nproject_name = "${projectName}"\n\n[modules.tea]\ntest_artifacts = "out"\n`);
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),
       "installation:\n  version: 6.10.1-next.31\nmodules:\n  - name: core\n  - name: tea\n",
@@ -297,7 +298,7 @@ IFS=',' read -ra selected <<< "$modules"
 for module in "${'${selected[@]}'}"; do
   [[ -z "$module" ]] && continue
   mkdir -p "$repo/_bmad/$module"
-  printf 'module: %s\\n' "$module" > "$repo/_bmad/$module/config.yaml"
+  printf 'project_name: ${projectName}\\nmodule: %s\\n' "$module" > "$repo/_bmad/$module/config.yaml"
 done
 `,
     );
@@ -365,9 +366,10 @@ done
     { name: "custom-only", modules: "  - core\n  - custom\n" },
   ]) {
     const repo = makeRepo(`bmad-${selection.name}`);
+    const projectName = basename(repo);
     const home = makeHome(`bmad-${selection.name}`);
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
-    writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "fixture"\n\n[custom]\n');
+    writeFileSync(join(repo, "_bmad", "config.toml"), `[core]\nproject_name = "${projectName}"\n\n[custom]\n`);
     const manifestPath = join(repo, "_bmad", "_config", "manifest.yaml");
     writeFileSync(
       manifestPath,
@@ -397,7 +399,7 @@ while (( $# )); do
 done
 [[ "$modules" == "core" ]] || { printf 'expected explicit core-only selection, got %s\\n' "$modules" >&2; exit 91; }
 mkdir -p "$repo/_bmad/core"
-printf 'core: true\\n' > "$repo/_bmad/core/config.yaml"
+printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config.yaml"
 `,
     );
     chmodSync(fakeNpx, 0o755);
@@ -508,7 +510,7 @@ printf 'core: true\\n' > "$repo/_bmad/core/config.yaml"
     symlinkSync("../.agents/skills", join(repo, ".claude", "skills"), "dir");
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
     mkdirSync(join(repo, "_bmad", "core"), { recursive: true });
-    writeFileSync(join(repo, "_bmad", "core", "config.yaml"), "core: true\n");
+    writeFileSync(join(repo, "_bmad", "core", "config.yaml"), "project_name: HeyMa Fixture\ncore: true\n");
     writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "HeyMa Fixture"\n');
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),
