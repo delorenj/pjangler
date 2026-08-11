@@ -27,6 +27,15 @@ function jsonCli(args, env = {}) {
   return { result, payload: JSON.parse(result.stdout) };
 }
 
+function spawnDiagnostics(command, result) {
+  const details = [];
+  if (result.error) details.push(`spawn error: ${result.error.stack ?? result.error.message}`);
+  if (result.signal) details.push(`signal: ${result.signal}`);
+  if (result.stdout) details.push(`stdout:\n${result.stdout}`);
+  if (result.stderr) details.push(`stderr:\n${result.stderr}`);
+  return `${command} failed with status ${String(result.status)}${details.length ? `\n${details.join("\n")}` : ""}`;
+}
+
 function makeEnvRepo(name, envOp) {
   const repo = join(temporary, name);
   mkdirSync(repo, { recursive: true });
@@ -135,9 +144,9 @@ run = "echo untouched"
       MISE_STATE_DIR: join(parseState, "state"),
     };
     const trusted = spawnSync("mise", ["trust", join(repo, "mise.toml")], { env: parseEnv, encoding: "utf8" });
-    assert.equal(trusted.status, 0, trusted.stderr);
+    assert.equal(trusted.status, 0, spawnDiagnostics("mise trust", trusted));
     const parsed = spawnSync("mise", ["config", "ls"], { cwd: repo, env: parseEnv, encoding: "utf8" });
-    assert.equal(parsed.status, 0, parsed.stderr);
+    assert.equal(parsed.status, 0, spawnDiagnostics("mise config ls", parsed));
     assert.equal(parsed.stderr, "", `mise must not emit interpolation/TOML warnings: ${parsed.stderr}`);
   }
 
@@ -204,14 +213,14 @@ printf 'FROM_MISE=1\\n' > "$out"
       MISE_STATE_DIR: join(miseState, "state"),
     };
     const trust = spawnSync("mise", ["trust", join(repo, "mise.toml")], { env: miseEnv, encoding: "utf8" });
-    assert.equal(trust.status, 0, trust.stderr);
+    assert.equal(trust.status, 0, spawnDiagnostics("mise trust", trust));
     const hook = spawnSync("bash", [
       "-c",
       'eval "$(mise activate --no-hook-env bash)"; cd "$1"; eval "$(mise hook-env --force --shell bash)"',
       "pjan-57-mise-hook",
       repo,
     ], { cwd: repo, env: miseEnv, encoding: "utf8" });
-    assert.equal(hook.status, 0, hook.stderr);
+    assert.equal(hook.status, 0, spawnDiagnostics("mise hook-env", hook));
     assert.equal(hook.stderr, "", `actual mise hook must be warning-free: ${hook.stderr}`);
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), "FROM_MISE=1\n");
   }

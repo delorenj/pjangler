@@ -37,6 +37,30 @@ try {
     /bmad-installer-contract/,
     "ordinary npm test must remain hermetic and offline-safe",
   );
+  const miseAction = publishWorkflow.match(/jdx\/mise-action@([0-9a-f]{40})/);
+  assert.ok(miseAction, "publish workflow must pin the official mise action to a full commit SHA");
+  assert.doesNotMatch(
+    publishWorkflow,
+    /jdx\/mise-action@(?![0-9a-f]{40}(?:\s|#|$))\S+/,
+    "publish workflow must not use a mutable mise action tag",
+  );
+  const miseSetupStep = publishWorkflow.indexOf(miseAction[0]);
+  const miseVersion = publishWorkflow.indexOf("version: '2026.7.5'", miseSetupStep);
+  const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
+  const npmTestStep = publishWorkflow.indexOf("npm test");
+  const npmPublishStep = publishWorkflow.indexOf("npm publish --provenance");
+  assert.ok(miseVersion > miseSetupStep, "publish workflow must request the known-compatible pinned mise version");
+  assert.ok(
+    miseSetupStep < miseVerificationStep && miseVerificationStep < npmTestStep,
+    "publish workflow must set up and explicitly verify mise before npm test",
+  );
+  assert.match(publishWorkflow, /permissions:\n\s+id-token: write\n\s+contents: read/);
+  assert.ok(npmTestStep < npmPublishStep, "OIDC publication must remain behind the complete npm test gate");
+  assert.match(
+    publishWorkflow.slice(npmPublishStep),
+    /env:\n\s+NODE_AUTH_TOKEN: ""/,
+    "OIDC publication must retain the explicitly empty npm auth token",
+  );
   const contractStep = publishWorkflow.indexOf("npm run test:bmad-installer-contract");
   assert.notEqual(contractStep, -1, "publish workflow must run the actual pinned BMAD installer contract");
   assert.ok(
