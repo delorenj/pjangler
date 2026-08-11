@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
-  BMAD_FIXTURE_VERSION,
+  BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
   createBmadPackFixture,
 } from "./helpers/bmad-fixture.mjs";
@@ -157,7 +157,10 @@ try {
   assert.equal(initialized.migrationReport, undefined, "fresh init must not use selected/closure migration as repair");
   assert.deepEqual(initialized.selectedParityRules, []);
   assert.equal(initialized.phases.some((phase) => /migrate.?all/i.test(phase.id)), false);
-  assert.equal(readFileSync(join(target, "_bmad", "_config", "manifest.yaml"), "utf8").includes(`version: ${BMAD_FIXTURE_VERSION}`), true);
+  assert.equal(
+    readFileSync(join(target, "_bmad", "_config", "manifest.yaml"), "utf8").includes(`version: ${BMAD_INSTALLER_FIXTURE_VERSION}`),
+    true,
+  );
 
   for (const cliRoot of supportedRoots) {
     const rootPath = join(target, cliRoot);
@@ -171,11 +174,14 @@ try {
 
   const configToml = readFileSync(join(target, "_bmad", "config.toml"), "utf8");
   assert.match(configToml, /^project_name = "Requested PJAN 57 Name"$/m);
-  for (const name of readdirSync(join(target, "_bmad"))) {
+  for (const name of ["core", "bmm", "bmb", "cis"]) {
     const config = join(target, "_bmad", name, "config.yaml");
-    if (existsSync(config) && /^project_name:/m.test(readFileSync(config, "utf8"))) {
-      assert.match(readFileSync(config, "utf8"), /^project_name: "Requested PJAN 57 Name"$/m, `${name} project_name`);
-    }
+    assert.equal(existsSync(config), true, `${name} config must exist for the enabled installer contract`);
+    assert.match(
+      readFileSync(config, "utf8"),
+      /^project_name: "Requested PJAN 57 Name"$/m,
+      `${name} must inherit the requested project_name rather than ${JSON.stringify(basename(target))}`,
+    );
   }
   assert.equal(run("git", ["rev-list", "--count", "HEAD"], { cwd: target, env: retryEnv }).stdout.trim(), "1");
   assert.equal(run("git", ["status", "--porcelain"], { cwd: target, env: retryEnv }).stdout, "");

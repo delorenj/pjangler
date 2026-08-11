@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export const BMAD_FIXTURE_VERSION = "6.10.1-next.31";
+export const BMAD_PACK_FIXTURE_VERSION = "6.10.1-next.31";
+export const BMAD_INSTALLER_FIXTURE_VERSION = "6.11.1-next.1";
 
 // A deliberately small authenticated pack. It exercises inventory, integrity,
 // projections, and multi-link rollback without vendoring the upstream BMAD tree.
@@ -22,12 +23,12 @@ function sha256(bytes) {
 }
 
 export function createBmadPackFixture(parentDir) {
-  const root = join(parentDir, "packs", "bmad", BMAD_FIXTURE_VERSION);
+  const root = join(parentDir, "packs", "bmad", BMAD_PACK_FIXTURE_VERSION);
   mkdirSync(root, { recursive: true });
   const packToml = [
     "[pack]",
     'name = "bmad"',
-    `version = "${BMAD_FIXTURE_VERSION}"`,
+    `version = "${BMAD_PACK_FIXTURE_VERSION}"`,
     'description = "Hermetic PJAN-57 release-gate fixture."',
     "",
     "[freeform]",
@@ -60,9 +61,9 @@ export function createBmadInstallerFixture(parentDir) {
   mkdirSync(dirname(executable), { recursive: true });
   writeFileSync(executable, `#!${process.execPath}
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-const version = ${JSON.stringify(BMAD_FIXTURE_VERSION)};
+const version = ${JSON.stringify(BMAD_INSTALLER_FIXTURE_VERSION)};
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write(version + "\\n");
@@ -78,7 +79,7 @@ const valueAfter = (flag) => {
 };
 const target = valueAfter("--directory");
 const modulesValue = valueAfter("--modules") || "core";
-const projectSetting = valueAfter("--set") || "core.project_name=Project";
+const projectSetting = valueAfter("--set");
 if (!target) {
   process.stderr.write("missing --directory\\n");
   process.exit(2);
@@ -90,9 +91,9 @@ if (failOnce && !existsSync(failOnce)) {
   process.stderr.write("injected hermetic BMAD install failure\\n");
   process.exit(42);
 }
-const projectName = projectSetting.startsWith("core.project_name=")
+const projectName = projectSetting?.startsWith("core.project_name=")
   ? projectSetting.slice("core.project_name=".length)
-  : "Project";
+  : basename(resolve(target));
 const modules = [...new Set(["core", ...modulesValue.split(",").filter((name) => name && name !== "core")])];
 const bmadRoot = join(target, "_bmad");
 mkdirSync(join(bmadRoot, "_config"), { recursive: true });
@@ -102,7 +103,7 @@ for (const moduleName of modules) {
 }
 writeFileSync(
   join(bmadRoot, "config.toml"),
-  "project_name = " + JSON.stringify(projectName) + "\\n\\n" +
+  "[core]\\nproject_name = " + JSON.stringify(projectName) + "\\n\\n" +
     modules.filter((name) => name !== "core").map((name) => "[modules." + name + "]\\n").join("\\n"),
 );
 writeFileSync(

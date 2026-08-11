@@ -31,7 +31,7 @@ function makeHome(name) {
   mkdirSync(cache, { recursive: true });
   writeFileSync(
     join(cache, "bmad-dist-tags.json"),
-    JSON.stringify({ fetchedAt: Date.now(), distTags: { next: "6.10.1-next.31" } }),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { next: "6.11.1-next.1" } }),
   );
   return home;
 }
@@ -269,7 +269,7 @@ try {
     writeFileSync(join(repo, "_bmad", "config.toml"), `[core]\nproject_name = "${projectName}"\n\n[modules.tea]\ntest_artifacts = "out"\n`);
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),
-      "installation:\n  version: 6.10.1-next.31\nmodules:\n  - name: core\n  - name: tea\n",
+      "installation:\n  version: 6.11.1-next.1\nmodules:\n  - name: core\n  - name: tea\n",
     );
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     const stale = finding(audit, "bmad.scaffold");
@@ -331,7 +331,7 @@ done
     const home = makeHome("bmad-malformed-module-manifest");
     const manifestPath = join(repo, "_bmad", "_config", "manifest.yaml");
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
-    const malformed = "installation:\n  version: 6.10.1-next.31\nmodules:\n  - name: tea\n  - [unterminated\n";
+    const malformed = "installation:\n  version: 6.11.1-next.1\nmodules:\n  - name: tea\n  - [unterminated\n";
     writeFileSync(manifestPath, malformed);
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     const blocker = finding(audit, "bmad.scaffold");
@@ -373,7 +373,7 @@ done
     const manifestPath = join(repo, "_bmad", "_config", "manifest.yaml");
     writeFileSync(
       manifestPath,
-      `installation:\n  version: 6.10.1-next.31\nmodules:\n${selection.modules}`,
+      `installation:\n  version: 6.11.1-next.1\nmodules:\n${selection.modules}`,
     );
     const manifestBefore = readFileSync(manifestPath, "utf8");
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
@@ -514,7 +514,7 @@ printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config
     writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "HeyMa Fixture"\n');
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),
-      "installation:\n  version: 6.10.1-next.31\nmodules:\n  - name: core\n",
+      "installation:\n  version: 6.11.1-next.1\nmodules:\n  - name: core\n",
     );
 
     const migrated = jsonCommand(["migrate", "--all", repo, "--json"], { home }).json;

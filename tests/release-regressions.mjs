@@ -15,6 +15,8 @@ import { delimiter, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
+const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const publishWorkflow = readFileSync(join(root, ".github", "workflows", "publish.yml"), "utf8");
 const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "pjangler-release-regression-"));
 
@@ -25,6 +27,22 @@ const indexOf = (needle) => {
 };
 
 try {
+  assert.equal(
+    packageJson.scripts["test:bmad-installer-contract"],
+    "node tests/bmad-installer-contract-regressions.mjs",
+    "the actual pinned-installer contract must remain an explicit release script",
+  );
+  assert.doesNotMatch(
+    packageJson.scripts.test,
+    /bmad-installer-contract/,
+    "ordinary npm test must remain hermetic and offline-safe",
+  );
+  const contractStep = publishWorkflow.indexOf("npm run test:bmad-installer-contract");
+  assert.notEqual(contractStep, -1, "publish workflow must run the actual pinned BMAD installer contract");
+  assert.ok(
+    publishWorkflow.indexOf("npm ci") < contractStep && contractStep < publishWorkflow.indexOf("npm test"),
+    "publish workflow must install dependencies, run the real BMAD contract, then run hermetic npm test",
+  );
   assert.ok(
     indexOf("require_clean_tree") < indexOf("versioning.sh\" bump"),
     "clean-tree gate must precede the version bump",

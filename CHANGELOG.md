@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `fix(PJAN-57)`: preserve foreign mise hook records, comments, additional TOML keys, leave hooks, and non-owned env scripts while replacing only positively owned enter hooks.
 - `fix(PJAN-57)`: restore fatal/cancel short-circuiting for Hermes lifecycle init and derive changed-file reports from observed filesystem changes rather than display glyphs.
+- `fix(PJAN-57)`: pin fresh initialization to verified `bmad-method@6.11.1-next.1`, model its multi-module project-name behavior hermetically, and gate publication on the real package contract.
 
 ## [1.2.27] - 2026-08-09
 

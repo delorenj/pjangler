@@ -110,7 +110,7 @@ Representative checks (use `pjangler recipe list` / `pjangler_list_parity_rules`
 | `provenance.copier` | copier answers/provenance present |
 | `bmad.scaffold` | BMAD (`bmm,bmb,cis`) installed from source inputs |
 | `bmad.cli-roots` | Exactly six supported CLI projections, with manifest/inventory provenance for safe cleanup |
-| `bmad.version` | Installed BMAD version matches the `next` channel (cached npm dist-tags, <1h TTL) |
+| `bmad.version` | Standalone audit follows cached `next`; a fresh transaction must match its exact installer pin |
 | `hermes.pm-scaffold` | The PM role scaffold under `agents/hermes/pm` is complete |
 | `hermes.untracked-runtimes` | Hermes runtime submodules are untracked/gitignored, not committed |
 | `systemd.sentinel` | Hermes `--user` gateway/consumer/heartbeat units are enabled + active |
@@ -130,7 +130,7 @@ TOML normalization operates on complete hook array-of-table records. It replaces
 | OpenCode | `opencode` | `.opencode` |
 | Kimi | `kimi-code` | `.kimi-code` |
 
-Fresh init must create all six and no unsupported integration root. Legacy cleanup is allowed only when BMAD manifests, inventories, and installer metadata prove ownership and every owned file remains unmodified.
+Fresh init must create all six and no unsupported integration root. It preflights and installs the immutable, contract-tested `bmad-method@6.11.1-next.1`; the independently authenticated Skillex pack remains separately pinned. Core plus every enabled optional module must retain the requested project name rather than the target basename. Legacy cleanup is allowed only when BMAD manifests, inventories, and installer metadata prove ownership and every owned file remains unmodified.
 
 ### 4. Hermes agent provisioning (`src/commands/hermes/`)
 
@@ -202,7 +202,8 @@ No unit-test framework; correctness is guarded by Node `.mjs` regression suites 
 
 - `pjan-57-lifecycle-recipes-regressions.mjs` — registry validation/order/dispatch, structured outcomes, ProjectRecipe audit and Git failure gates
 - `pjan-57-dogfood-regressions.mjs` — real mise/fake-op behavior, temp cleanup, path spaces, TOML preservation, and six-root provenance
-- `generated-project-lifecycle-regressions.mjs` — built and packed CLI, isolated HOME/registry, actual Copier, six roots, Git/HEAD, immediate clean audit, and idempotency
+- `generated-project-lifecycle-regressions.mjs` — built and packed CLI, isolated HOME/registry, actual Copier, faithful pinned-installer fixture, explicit core/`bmm`/`bmb`/`cis` project-name assertions, six roots, Git/HEAD, immediate clean audit, and idempotency
+- `bmad-installer-contract-regressions.mjs` — release-only npm metadata/integrity and real `bmad-method@6.11.1-next.1` multi-module project-name contract; the publish workflow runs it before the hermetic suite
 - existing parity, project-registry, MCP, submodule, security, and package-contract suites
 
 `npm run typecheck` (`tsc --noEmit`) is the type gate. See `development-guide.md`.

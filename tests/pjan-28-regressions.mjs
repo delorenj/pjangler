@@ -49,7 +49,7 @@ function makeHome(name) {
   mkdirSync(cache, { recursive: true });
   writeFileSync(
     join(cache, "bmad-dist-tags.json"),
-    JSON.stringify({ fetchedAt: Date.now(), distTags: { next: "6.10.1-next.31" } }),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { next: "6.11.1-next.1" } }),
   );
   return home;
 }

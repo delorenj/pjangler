@@ -48,11 +48,12 @@ There is **no unit-test framework**. Correctness is guarded by Node regression s
 ```bash
 node tests/pjan-57-lifecycle-recipes-regressions.mjs # registry/dispatch + audit/Git failure gates
 node tests/pjan-57-dogfood-regressions.mjs           # real mise/fake-op + TOML/provenance
-node tests/generated-project-lifecycle-regressions.mjs # packed CLI + actual Copier lifecycle
+node tests/generated-project-lifecycle-regressions.mjs # packed CLI + actual Copier + hermetic BMAD lifecycle
+npm run test:bmad-installer-contract                 # actual immutable BMAD package; network/cache required
 npm test                                             # all regression and package gates
 ```
 
-The packed lifecycle suite builds and packs the CLI, installs it under an isolated HOME and npm prefix, renders through actual Copier, then proves six supported roots, preserved project identity, Git/HEAD, immediate clean audit, and idempotent re-init/migrate. When you change lifecycle checks, the registry, project orchestration, or MCP, update the matching regression suite. Run `npm run typecheck` before committing.
+The packed lifecycle suite builds and extracts the CLI under an isolated HOME, renders through actual Copier, then uses a faithful local installer fixture to prove all six supported roots, the requested project name in core plus `bmm`, `bmb`, and `cis`, Git/HEAD, immediate clean audit, and idempotent re-init/migrate. Ordinary `npm test` stays hermetic and offline-safe. The publish workflow separately resolves the immutable `bmad-method@6.11.1-next.1` package through npm metadata/cache and runs the real installer contract; inability to resolve that artifact is a release-gate failure, never a skip. Run `npm run typecheck` before committing.
 
 ## Project conventions (from `AGENTS.md`)
 

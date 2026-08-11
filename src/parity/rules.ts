@@ -2692,9 +2692,10 @@ function checkUnit(unit: string): { enabled: boolean; active: boolean } {
 // ---------------------------------------------------------------------------
 
 const BMAD_NPM_PACKAGE = "bmad-method";
-// Installer and Skillex pack are independently pinned artifacts. Their current
-// versions happen to match, but neither lifecycle is derived from the other.
-export const BMAD_INSTALLER_VERSION = "6.10.1-next.31";
+// Installer and Skillex pack are independently pinned artifacts. Do not derive
+// either lifecycle from the other: the installer is advanced only after its
+// real multi-module configuration contract is verified.
+export const BMAD_INSTALLER_VERSION = "6.11.1-next.1";
 // Legacy BMAD currency checks continue to report the moving next channel; fresh
 // bootstrap uses the exact installer pin above so mutation is reproducible.
 const BMAD_TARGET_CHANNEL = "next";

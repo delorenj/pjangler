@@ -2773,7 +2773,7 @@ function checkUnit(unit) {
   return { enabled, active };
 }
 var BMAD_NPM_PACKAGE = "bmad-method";
-var BMAD_INSTALLER_VERSION = "6.10.1-next.31";
+var BMAD_INSTALLER_VERSION = "6.11.1-next.1";
 var BMAD_TARGET_CHANNEL = "next";
 var BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1e3;
 var DEFAULT_BMAD_MODULES = ["bmm", "bmb", "cis"];
