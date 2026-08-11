@@ -19,10 +19,37 @@ function run(command, args, cwd, options = {}) {
   });
 }
 
-function git(cwd, args) {
-  const result = run("git", args, cwd);
+function git(cwd, args, options = {}) {
+  const result = run("git", args, cwd, options);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   return result.stdout.trim();
+}
+
+function standaloneBareSnapshot(source, bare) {
+  git(resolve(bare, ".."), ["init", "--quiet", "--bare", "--initial-branch=main", bare]);
+  const tree = git(source, ["rev-parse", "HEAD^{tree}"]);
+  const objects = git(source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
+  const env = {
+    ...process.env,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: objects,
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+  };
+  const pin = git(bare, ["commit-tree", tree, "-m", "standalone tree snapshot"], { env });
+  git(bare, ["update-ref", "refs/heads/main", pin], { env });
+  git(bare, ["repack", "-a", "-d", "--quiet"], { env });
+  assertStandaloneBare(bare);
+  return pin;
+}
+
+function assertStandaloneBare(bare) {
+  git(bare, ["fsck", "--full", "--strict"]);
+  assert.equal(git(bare, ["rev-list", "--count", "HEAD"]), "1", "fixture snapshot must be a fresh root commit");
+  assert.notEqual(run("git", ["cat-file", "-e", "HEAD^"], bare).status, 0, "fixture snapshot must not name a parent");
 }
 
 function fixture() {
@@ -265,17 +292,16 @@ try {
     temporary.push(cloneRoot);
     const commonBare = join(cloneRoot, "common.git");
     const hermesBare = join(cloneRoot, "hermes.git");
-    const commonBundle = join(cloneRoot, "common.bundle");
-    const hermesBundle = join(cloneRoot, "hermes.bundle");
     const clone = join(cloneRoot, "pjangler");
-    git(join(ROOT, "templates", "commonproject"), ["bundle", "create", commonBundle, "HEAD"]);
-    git(join(ROOT, "templates", "hermes-agent"), ["bundle", "create", hermesBundle, "HEAD"]);
-    git(cloneRoot, ["clone", "--quiet", "--bare", commonBundle, commonBare]);
-    git(cloneRoot, ["clone", "--quiet", "--bare", hermesBundle, hermesBare]);
-    git(commonBare, ["update-ref", "refs/heads/main", git(join(ROOT, "templates", "commonproject"), ["rev-parse", "HEAD"])]);
-    git(hermesBare, ["update-ref", "refs/heads/main", git(join(ROOT, "templates", "hermes-agent"), ["rev-parse", "HEAD"])]);
+    const commonPin = standaloneBareSnapshot(join(ROOT, "templates", "commonproject"), commonBare);
+    const hermesPin = standaloneBareSnapshot(join(ROOT, "templates", "hermes-agent"), hermesBare);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
+    git(clone, ["config", "user.email", "fixture@example.invalid"]);
+    git(clone, ["config", "user.name", "Fixture"]);
+    git(clone, ["update-index", "--cacheinfo", `160000,${commonPin},templates/commonproject`]);
+    git(clone, ["update-index", "--cacheinfo", `160000,${hermesPin},templates/hermes-agent`]);
+    git(clone, ["commit", "--quiet", "-m", "pin standalone template snapshots"]);
     git(clone, ["config", "submodule.templates/commonproject.url", `file://${commonBare}`]);
     git(clone, ["config", "submodule.templates/hermes-agent.url", `file://${hermesBare}`]);
     git(clone, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
@@ -286,6 +312,29 @@ try {
     );
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.equal(git(clone, ["status", "--porcelain"]), "");
+  }
+
+  // Reproduce the CI precondition explicitly: a depth-1 source has a HEAD
+  // whose named parent object is unavailable. Rooting a snapshot at its tree
+  // must still produce an internally complete bare repository.
+  {
+    const shallowRoot = mkdtempSync(join(tmpdir(), "pjangler-shallow-snapshot-contract-"));
+    temporary.push(shallowRoot);
+    const source = join(shallowRoot, "source");
+    const shallow = join(shallowRoot, "shallow");
+    const bare = join(shallowRoot, "snapshot.git");
+    git(shallowRoot, ["init", "--quiet", "--initial-branch=main", source]);
+    git(source, ["config", "user.email", "fixture@example.invalid"]);
+    git(source, ["config", "user.name", "Fixture"]);
+    writeFileSync(join(source, "fixture.txt"), "first\n");
+    git(source, ["add", "fixture.txt"]);
+    git(source, ["commit", "--quiet", "-m", "first"]);
+    writeFileSync(join(source, "fixture.txt"), "second\n");
+    git(source, ["commit", "--quiet", "-am", "second"]);
+    git(shallowRoot, ["clone", "--quiet", "--depth=1", `file://${source}`, shallow]);
+    assert.equal(git(shallow, ["rev-parse", "--is-shallow-repository"]), "true");
+    assert.notEqual(run("git", ["cat-file", "-e", "HEAD^"], shallow).status, 0, "depth-1 fixture must omit HEAD's parent");
+    standaloneBareSnapshot(shallow, bare);
   }
 
   console.log("submodule contract regressions: passed");
