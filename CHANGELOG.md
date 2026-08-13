@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `fix(PJAN-58)`: advance the Hermes agent template and checked-in PM profile so the Plane adapter reads only the workspace-scoped credential from shared fleet dotenv data instead of sourcing and executing the whole file.
 - `refactor(PJAN-57)`: route CLI and MCP project operations through one `ProjectRecipe` transaction that composes dependencies, closes fresh output, performs the final audit, initializes and commits Git exactly once, then persists the central registry.
 - `refactor(PJAN-57)`: make `MiseOpInjectRecipe` the sole owner of `.env.op` materialization through an atomic, collision-resistant managed script; a nonempty comment-only template is the intentional no-secrets opt-out.
 - `refactor(PJAN-57)`: generate exactly Claude, Codex, Gemini, Copilot, OpenCode, and Kimi configuration roots from one supported-CLI matrix, with manifest-backed provenance for legacy cleanup.
