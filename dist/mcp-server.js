@@ -3186,8 +3186,30 @@ function dropDeclaredAgent(ctx, agentId, changedFiles, details) {
   if (!ctx.dryRun) writeText(path, `${JSON.stringify(doc, null, 2)}
 `);
 }
-function rewriteLauncher(text2) {
-  let next = text2.replace(/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m, 'HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"');
+function isProfileHomeExpr(assigned) {
+  const bare = assigned.replace(/^["']|["']$/g, "");
+  return bare === "$FLEET_HOME/profiles/$PROFILE_NAME" || /^\$\{?HERMES_FLEET_HOME.*\}?\/profiles\//.test(bare) || /\/\.hermes\/profiles\/[^/]+$/.test(bare);
+}
+function rewriteLauncher(text2, profileName) {
+  let next = text2;
+  const assigned = /^HERMES_HOME=(.*)$/m.exec(next)?.[1]?.trim();
+  if (assigned !== void 0 && !isProfileHomeExpr(assigned)) {
+    const name = profileName ? `\${HERMES_PROFILE_NAME:-${profileName}}` : '${HERMES_PROFILE_NAME:-$(basename "$ROLE_DIR")}';
+    next = next.replace(
+      /^HERMES_HOME=(.*)$/m,
+      [
+        `RUNTIME_HOME=$1`,
+        `FLEET_HOME="\${HERMES_FLEET_HOME:-$HOME/.hermes}"`,
+        `PROFILE_NAME="${name}"`,
+        `# Singleton-runtime contract: HERMES_HOME MUST be the named profile dir.`,
+        `HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"`
+      ].join("\n")
+    );
+    next = next.replace(
+      /if \[\[ ! -d "\$HERMES_HOME" \]\]; then\n(\s*)echo "hermes: local runtime not provisioned at \$HERMES_HOME"/,
+      'if [[ ! -d "$RUNTIME_HOME" ]]; then\n$1echo "hermes: local runtime not provisioned at $RUNTIME_HOME"'
+    );
+  }
   next = next.replace(/^HERMES_OAUTH_FILE=.*\n/m, "");
   next = next.replace(/\s*HERMES_OAUTH_FILE="\$HERMES_OAUTH_FILE"/g, "");
   next = next.replace(
@@ -4922,8 +4944,9 @@ function createHermesChecks() {
           if (text2 === null) {
             details.push(`launcher missing: ${relative2(ctx.repoRoot, launcher)}`);
           } else {
-            if (/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m.test(text2)) {
-              details.push(`launcher sets HERMES_HOME to the raw runtime path (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher)}`);
+            const assigned = /^HERMES_HOME=(.*)$/m.exec(text2)?.[1]?.trim();
+            if (assigned !== void 0 && !isProfileHomeExpr(assigned)) {
+              details.push(`launcher sets HERMES_HOME=${assigned} instead of the named profile dir (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher)}`);
             }
             if (/HERMES_OAUTH_FILE/.test(text2)) {
               details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative2(ctx.repoRoot, launcher)}`);
@@ -4961,9 +4984,16 @@ function createHermesChecks() {
           const launcher = join3(role.roleDir, "hermes");
           const text2 = safeReadText(launcher);
           if (text2 !== null) {
-            const rewritten = rewriteLauncher(text2);
+            const before = /^HERMES_HOME=(.*)$/m.exec(text2)?.[1]?.trim();
+            const rewritten = rewriteLauncher(text2, role.profileName || role.agentId);
             if (rewritten !== text2) {
-              details.push(`rewrite launcher HERMES_HOME -> profile path: ${relative2(ctx.repoRoot, launcher)}`);
+              const rel = relative2(ctx.repoRoot, launcher);
+              if (before !== void 0 && !isProfileHomeExpr(before)) {
+                details.push(`rewrite launcher HERMES_HOME ${before} -> ${plan.profileDir}: ${rel}`);
+              }
+              if (/HERMES_OAUTH_FILE/.test(text2)) {
+                details.push(`strip dead HERMES_OAUTH_FILE export: ${rel}`);
+              }
               writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 493);
             }
           }

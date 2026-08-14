@@ -3253,8 +3253,40 @@ function dropDeclaredAgent(ctx: Context, agentId: string, changedFiles: string[]
   if (!ctx.dryRun) writeText(path, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
-function rewriteLauncher(text: string): string {
-  let next = text.replace(/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m, 'HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"');
+// The one correct right-hand side for HERMES_HOME: the named profile dir,
+// either as the canonical expression or already expanded to a literal path.
+function isProfileHomeExpr(assigned: string): boolean {
+  const bare = assigned.replace(/^["']|["']$/g, "");
+  return bare === "$FLEET_HOME/profiles/$PROFILE_NAME"
+    || /^\$\{?HERMES_FLEET_HOME.*\}?\/profiles\//.test(bare)
+    || /\/\.hermes\/profiles\/[^/]+$/.test(bare);
+}
+
+function rewriteLauncher(text: string, profileName?: string): string {
+  let next = text;
+  const assigned = /^HERMES_HOME=(.*)$/m.exec(next)?.[1]?.trim();
+  if (assigned !== undefined && !isProfileHomeExpr(assigned)) {
+    // A bare substitution would leave $FLEET_HOME/$PROFILE_NAME undefined, and
+    // these launchers run under `set -u`. Emit the definitions with it, and
+    // keep the old value as RUNTIME_HOME — the provisioning guard still needs
+    // the repo runtime path.
+    const name = profileName ? `\${HERMES_PROFILE_NAME:-${profileName}}` : "${HERMES_PROFILE_NAME:-$(basename \"$ROLE_DIR\")}";
+    next = next.replace(
+      /^HERMES_HOME=(.*)$/m,
+      [
+        `RUNTIME_HOME=$1`,
+        `FLEET_HOME="\${HERMES_FLEET_HOME:-$HOME/.hermes}"`,
+        `PROFILE_NAME="${name}"`,
+        `# Singleton-runtime contract: HERMES_HOME MUST be the named profile dir.`,
+        `HERMES_HOME="$FLEET_HOME/profiles/$PROFILE_NAME"`,
+      ].join("\n"),
+    );
+    // The provisioning guard referenced HERMES_HOME when it meant the runtime.
+    next = next.replace(
+      /if \[\[ ! -d "\$HERMES_HOME" \]\]; then\n(\s*)echo "hermes: local runtime not provisioned at \$HERMES_HOME"/,
+      'if [[ ! -d "$RUNTIME_HOME" ]]; then\n$1echo "hermes: local runtime not provisioned at $RUNTIME_HOME"',
+    );
+  }
   next = next.replace(/^HERMES_OAUTH_FILE=.*\n/m, "");
   next = next.replace(/\s*HERMES_OAUTH_FILE="\$HERMES_OAUTH_FILE"/g, "");
   next = next.replace(/^.*\/home\/delorenj\/code\/hermes-agent\/\.venv\/bin\/hermes.*$/m, (line) =>
@@ -5556,8 +5588,14 @@ return [
         if (text === null) {
           details.push(`launcher missing: ${relative(ctx.repoRoot, launcher)}`);
         } else {
-          if (/^HERMES_HOME="\$RUNTIME_HOME"\s*$/m.test(text)) {
-            details.push(`launcher sets HERMES_HOME to the raw runtime path (disables shared auth + profile identity): ${relative(ctx.repoRoot, launcher)}`);
+          // Match the ASSIGNMENT, not one known-bad spelling of it. Earlier
+          // revisions only tested for `HERMES_HOME="$RUNTIME_HOME"`, so every
+          // launcher still carrying the older `HERMES_HOME="$ROLE_DIR/runtime"`
+          // form — which is what the fleet template emitted — passed this audit
+          // while running split-brain against its own systemd unit.
+          const assigned = /^HERMES_HOME=(.*)$/m.exec(text)?.[1]?.trim();
+          if (assigned !== undefined && !isProfileHomeExpr(assigned)) {
+            details.push(`launcher sets HERMES_HOME=${assigned} instead of the named profile dir (disables shared auth + profile identity): ${relative(ctx.repoRoot, launcher)}`);
           }
           if (/HERMES_OAUTH_FILE/.test(text)) {
             details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative(ctx.repoRoot, launcher)}`);
@@ -5595,9 +5633,19 @@ return [
         const launcher = join(role.roleDir, "hermes");
         const text = safeReadText(launcher);
         if (text !== null) {
-          const rewritten = rewriteLauncher(text);
+          const before = /^HERMES_HOME=(.*)$/m.exec(text)?.[1]?.trim();
+          const rewritten = rewriteLauncher(text, role.profileName || role.agentId);
           if (rewritten !== text) {
-            details.push(`rewrite launcher HERMES_HOME -> profile path: ${relative(ctx.repoRoot, launcher)}`);
+            // Say which change actually happened — the previous single message
+            // claimed a HERMES_HOME rewrite even when only the dead
+            // HERMES_OAUTH_FILE export was stripped.
+            const rel = relative(ctx.repoRoot, launcher);
+            if (before !== undefined && !isProfileHomeExpr(before)) {
+              details.push(`rewrite launcher HERMES_HOME ${before} -> ${plan.profileDir}: ${rel}`);
+            }
+            if (/HERMES_OAUTH_FILE/.test(text)) {
+              details.push(`strip dead HERMES_OAUTH_FILE export: ${rel}`);
+            }
             writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 0o755);
           }
         }
