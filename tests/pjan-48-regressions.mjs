@@ -30,12 +30,12 @@ function makeRepo(name) {
   return repo;
 }
 
-function makeRole(repo, agentId) {
-  const roleDir = join(repo, "agents", "hermes", "pm");
+function makeRole(repo, agentId, roleName = "pm") {
+  const roleDir = join(repo, "agents", "hermes", roleName);
   mkdirSync(join(roleDir, ".scripts"), { recursive: true });
   writeFileSync(
     join(roleDir, "role.yaml"),
-    `repo: fixture\nrole: pm\nagent_id: ${agentId}\nprofile: ${agentId}\n`,
+    `repo: fixture\nrole: ${roleName}\nagent_id: ${agentId}\nprofile: ${agentId}\n`,
   );
   writeFileSync(
     join(repo, ".project.json"),
@@ -44,8 +44,8 @@ function makeRole(repo, agentId) {
       repo_path: repo,
       agents: {
         [agentId]: {
-          role: "pm",
-          role_dir: "agents/hermes/pm",
+          role: roleName,
+          role_dir: `agents/hermes/${roleName}`,
           provisioning_state: "provisioned",
         },
       },
@@ -82,6 +82,48 @@ function migrationResult(report, id) {
 }
 
 try {
+  {
+    for (const roleName of ["pm", "director"]) {
+      const repo = makeRepo(`bloodbank-gate-${roleName}`);
+      const home = makeHome(`bloodbank-gate-${roleName}`);
+      const agentId = `pjan48-gate-${roleName}`;
+      const roleDir = makeRole(repo, agentId, roleName);
+      const registryPath = join(home, ".hermes", "agents-registry.yaml");
+      writeFileSync(
+        registryPath,
+        `agents:\n  ${agentId}:\n    project_path: ${repo}\n    role_dir: ${roleDir}\n    bloodbank:\n      enabled: true\n      gateway_scope: fleet\n      target_agent_id: ${agentId}\n`,
+      );
+
+      const plannedAudit = jsonCommand(["audit", repo, "--json"], { cwd: repo, home }).json;
+      assert.equal(finding(plannedAudit, "hermes.registry-parity").status, "fail");
+      const plannedMigration = jsonCommand(["migrate", "hermes.registry-parity", repo, "--json"], { cwd: repo, home }).json;
+      assert.equal(migrationResult(plannedMigration, "hermes.registry-parity").status, "applied");
+      assert.match(readFileSync(registryPath, "utf8"), /enabled: false/);
+
+      writeFileSync(
+        join(roleDir, "role.yaml"),
+        `${readFileSync(join(roleDir, "role.yaml"), "utf8")}bloodbank:\n  enabled: true\n`,
+      );
+      const activeMigration = jsonCommand(["migrate", "hermes.registry-parity", repo, "--json"], { cwd: repo, home }).json;
+      assert.equal(migrationResult(activeMigration, "hermes.registry-parity").status, "applied");
+      assert.match(readFileSync(registryPath, "utf8"), /enabled: true/);
+
+      const beforeMalformed = readFileSync(registryPath, "utf8");
+      writeFileSync(
+        join(roleDir, "role.yaml"),
+        readFileSync(join(roleDir, "role.yaml"), "utf8").replace("enabled: true", "enabled: yes"),
+      );
+      const malformedAudit = jsonCommand(["audit", repo, "--json"], { cwd: repo, home }).json;
+      const malformedFinding = finding(malformedAudit, "hermes.registry-parity");
+      assert.equal(malformedFinding.status, "fail");
+      assert.equal(malformedFinding.fixable, false);
+      assert.match(malformedFinding.details.join("\n"), /strict YAML boolean/);
+      const blocked = jsonCommand(["migrate", "hermes.registry-parity", repo, "--json"], { cwd: repo, home }).json;
+      assert.equal(migrationResult(blocked, "hermes.registry-parity").status, "blocked");
+      assert.equal(readFileSync(registryPath, "utf8"), beforeMalformed);
+    }
+  }
+
   {
     const repo = makeRepo("moved-registry");
     const home = makeHome("moved-registry");

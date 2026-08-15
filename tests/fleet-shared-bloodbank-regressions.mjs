@@ -20,10 +20,11 @@ assert.equal((parity.match(/checkpoint_timer/g) ?? []).length, 1, "checkpoint_ti
 assert.doesNotMatch(parity, /bloodbank-consumer\.py/);
 assert.match(parity, /gateway_scope:\s*fleet/);
 assert.match(parity, /target_agent_id:/);
+assert.match(parity, /enabled:/);
 // The registry-parity rule enforces the fleet-bloodbank standard on existing
 // agents: audit flags drift, migrate converges it.
 assert.match(parity, /must advertise bloodbank \{ gateway_scope: fleet/);
-assert.match(parity, /advertise fleet bloodbank routing for/);
+assert.match(parity, /normalize fleet bloodbank routing for/);
 assert.match(parity, /retired per-agent consumer unit still on disk/);
 
 console.log("fleet-shared Bloodbank provisioning regressions: ok");

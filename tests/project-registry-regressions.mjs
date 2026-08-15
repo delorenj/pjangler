@@ -446,6 +446,11 @@ try {
     { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
     "noninteractive PM provisioning must explicitly render safe model-route defaults",
   );
+  assert.equal(
+    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "pm", "role.yaml"), "utf8")).bloodbank.enabled,
+    false,
+    "new PM Bloodbank ingress must remain quarantined",
+  );
 
   const multiAgentSecond = JSON.parse(run([
     "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "director", "--json",
@@ -460,21 +465,9 @@ try {
       home: multiAgentHome,
     },
     {
-      args: ["config", "set", "terminal.cwd", multiAgentRepo],
-      bin: fakeHermesBin,
-      hermes_home: join(fleetHome, "profiles", "multi-agent-pm"),
-      home: multiAgentHome,
-    },
-    {
       args: ["profile", "create", "multi-agent-director", "--clone", "--no-alias"],
       bin: fakeHermesBin,
       hermes_home: fleetHome,
-      home: multiAgentHome,
-    },
-    {
-      args: ["config", "set", "terminal.cwd", multiAgentRepo],
-      bin: fakeHermesBin,
-      hermes_home: join(fleetHome, "profiles", "multi-agent-director"),
       home: multiAgentHome,
     },
   ], `provisioning must use only the portable Hermes profile contract\n${JSON.stringify(hermesCalls, null, 2)}`);
@@ -489,8 +482,15 @@ try {
     { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
     "noninteractive Director provisioning must explicitly render safe model-route defaults",
   );
+  assert.equal(
+    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "director", "role.yaml"), "utf8")).bloodbank.enabled,
+    false,
+    "new Director Bloodbank ingress must remain quarantined",
+  );
   const secondFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
   assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-director", "multi-agent-pm"], "both isolated fleet profiles must be registered");
+  assert.equal(secondFleetRegistry.agents["multi-agent-pm"].bloodbank.enabled, false);
+  assert.equal(secondFleetRegistry.agents["multi-agent-director"].bloodbank.enabled, false);
 
   // PJAN-26: "active" is a default for NEW records, never a migration.
   // A project already recorded as "planned" keeps that status through a load

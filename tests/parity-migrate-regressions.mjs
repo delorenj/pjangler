@@ -727,6 +727,68 @@ run = "echo still here"
   }
 
   {
+    const repo = makeRepo("director-scaffold-parity");
+    const home = mkdtempSync(join(tmpdir(), "pjangler-director-scaffold-home-"));
+    repos.push(repo, home);
+    git(repo, ["init", "--quiet", "-b", "main"]);
+    const roleDir = join(repo, "agents", "hermes", "director");
+    mkdirSync(join(roleDir, ".scripts"), { recursive: true });
+    mkdirSync(join(roleDir, ".runtime-scaffold"), { recursive: true });
+    mkdirSync(join(roleDir, "runtime", "memories"), { recursive: true });
+    writeFileSync(
+      join(roleDir, "role.yaml"),
+      "repo: demo\nrole: director\nagent_id: demo-director\nprofile: demo-director\ndisplay_name: Demo Director\nbloodbank:\n  enabled: false\nticket_provider:\n  name: plane\n",
+    );
+    writeFileSync(join(roleDir, "SOUL.md"), "custom director soul\n");
+    writeFileSync(join(roleDir, "hermes"), "#!/usr/bin/env bash\n# stale wrapper\n");
+    writeFileSync(join(roleDir, ".gitignore"), "stale\n");
+    writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "#!/usr/bin/env bash\n# stale systemd\n");
+    writeFileSync(join(roleDir, ".runtime-scaffold", "README.md"), "scaffold\n");
+    writeFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "private state\n");
+    writeFileSync(join(roleDir, "runtime", "profile.yaml"), "config:\n  inherit_from: default\n  save_mode: delta\n");
+    writeFileSync(
+      join(repo, ".project.json"),
+      `${JSON.stringify({
+        project_name: "Demo",
+        repo_path: repo,
+        agents: {
+          "demo-director": {
+            role: "director",
+            role_dir: "agents/hermes/director",
+            provisioning_state: "planned",
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(
+      join(home, ".hermes", "agents-registry.yaml"),
+      `schema_version: 1\nagents:\n  demo-director:\n    bloodbank:\n      enabled: false\n      gateway_scope: fleet\n      target_agent_id: demo-director\n`,
+    );
+    const env = { HOME: home, XDG_CACHE_HOME: join(home, ".cache") };
+
+    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
+    const finding = audit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
+    assert.equal(finding.status, "fail", JSON.stringify(finding));
+    assert.match(finding.details.join("\n"), /demo-director: stale agents\/hermes\/director\/hermes/);
+    assert.match(finding.details.join("\n"), /demo-director: stale agents\/hermes\/director\/\.scripts\/70-systemd\.sh/);
+    assert.match(finding.details.join("\n"), /demo-director: missing agents\/hermes\/director\/\.scripts\/20-runtime-repo\.sh/);
+
+    const migrated = JSON.parse(run(["migrate", "hermes.pm-scaffold", repo, "--json"], root, env));
+    const result = migrated.results.find((entry) => entry.id === "hermes.pm-scaffold");
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.equal(readFileSync(join(roleDir, "SOUL.md"), "utf8"), "custom director soul\n", "existing role contract must be preserved");
+    assert.match(readFileSync(join(roleDir, "hermes"), "utf8"), /TERMINAL_CWD="\$REPO_ROOT"/);
+    assert.match(readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8"), /Environment="TERMINAL_CWD=\$REPO_ROOT"/);
+    assert.match(readFileSync(join(roleDir, ".scripts", "20-runtime-repo.sh"), "utf8"), /migrate hermes\.runtime-singleton/);
+    assert.equal(readFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "utf8"), "private state\n");
+
+    const postAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
+    const postFinding = postAudit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
+    assert.equal(postFinding.status, "pass", JSON.stringify(postFinding));
+  }
+
+  {
     const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-mapping");
     const { repo, roleDir, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
     assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`));
