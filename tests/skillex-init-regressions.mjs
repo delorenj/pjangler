@@ -146,7 +146,7 @@ function assertProjectContract(projectDir, homeDir) {
     MISE_TRUSTED_CONFIG_PATHS: tmp,
   };
   if (runMiseIntegration) {
-    run("mise", ["run", "skills-sync"], {
+    run("mise", ["run", "skills:sync"], {
       cwd: projectDir,
       env: miseEnv,
     });

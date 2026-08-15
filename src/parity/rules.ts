@@ -136,8 +136,46 @@ const OP_INJECT_SCRIPT = `'{{config_root}}/${MATERIALIZE_ENV_SCRIPT_REL}'`;
 const PROVISION_PACKS_SCRIPT_REL = ".mise/scripts/provision-packs.py";
 const LEGACY_PROVISION_SCRIPT_REL = ".mise/scripts/provision-bmad-skills.py";
 const SYNC_SKILLS_SCRIPT_REL = ".mise/scripts/sync-skills.py";
-const PROVISION_PACKS_TASK = "skills-provision-packs";
+// PJAN-61: managed mise task names are unified on the COLON namespace form.
+// The dash-era names below are retired. This is not cosmetic — the 33GOD root
+// had already moved to colons, and the mismatch left `depends` pointing at a
+// task name that no longer existed, so `mise run skills:sync` died with
+// "task not found". Only the TASK names change; the `.mise/scripts/*.sh`
+// FILENAMES stay dashed, so never match a task name by bare substring.
+const LINK_AGENTFILES_TASK = "link:agentfiles";
+const SKILLS_SYNC_TASK = "skills:sync";
+const PROVISION_PACKS_TASK = "skills:provision:packs";
 const LEGACY_PROVISION_TASK = "skills-provision-bmad";
+/**
+ * Retired dash-era task name -> current colon name. `migrate` renames every
+ * occurrence (section header, `task =` dispatch, `depends` entry); `audit`
+ * reports them. `skills-provision-bmad` is absent on purpose: its task is
+ * deleted outright, not renamed, because its script is retired too.
+ */
+const RETIRED_TASK_RENAMES: ReadonlyArray<readonly [string, string]> = [
+  ["link-agentfiles", LINK_AGENTFILES_TASK],
+  ["skills-sync", SKILLS_SYNC_TASK],
+  ["skills-provision-packs", PROVISION_PACKS_TASK],
+  ["hooks-sync", "hooks:sync"],
+  ["hooks-check", "hooks:check"],
+  ["hooks-uninstall", "hooks:uninstall"],
+  ["hindsight-setup", "hindsight:setup"],
+];
+
+/**
+ * TOML section header for a managed task. A bare TOML key may not contain `:`,
+ * so every colon-namespaced task MUST be quoted — `[tasks."skills:sync"]`.
+ * Emitting the bare form produces a file mise refuses to parse at all.
+ */
+function taskHeader(name: string): string {
+  return `[tasks."${name}"]`;
+}
+
+/** Matches a task's section header in either the bare or the quoted TOML form. */
+function taskHeaderPattern(name: string): RegExp {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]$`);
+}
 const PROVISION_PACKS_SCRIPT =
   `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}'`;
 const LEGACY_PROVISION_BMAD_SKILLS_SCRIPT =
@@ -203,22 +241,22 @@ const LINK_AGENTFILES_HOOK_ENTRIES = [
 
 const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
-task = "link-agentfiles"
+task = "${LINK_AGENTFILES_TASK}"
 
 [[watch_files]]
 patterns = [".agents/skills.json"]
-task = "skills-sync"
+task = "${SKILLS_SYNC_TASK}"
 
-[tasks.link-agentfiles]
+${taskHeader(LINK_AGENTFILES_TASK)}
 description = "Symlink all agent files to AGENTS.md"
 run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 
-[tasks.skills-sync]
+${taskHeader(SKILLS_SYNC_TASK)}
 description = "Sync skills from manifest to local CLI dirs"
 depends = ["${PROVISION_PACKS_TASK}"]
 run = ${JSON.stringify(SYNC_SKILLS_SCRIPT)}
 
-[tasks.${PROVISION_PACKS_TASK}]
+${taskHeader(PROVISION_PACKS_TASK)}
 description = "Provision every Skillex pack declared in .agents/skills.json"
 run = ${JSON.stringify(PROVISION_PACKS_SCRIPT)}`;
 
@@ -2201,11 +2239,60 @@ function upsertOpInjectHook(text: string): string {
   );
 }
 
+/**
+ * PJAN-61: rewrite retired dash-era mise task names to their colon form in
+ * place — section headers, `task = "..."` watch dispatches, `depends` entries,
+ * and `mise run <name>` invocations. Deliberately anchored to those syntactic
+ * positions: a bare substring pass would also rewrite
+ * `.mise/scripts/link-agentfiles.sh`, whose FILENAME is still dashed and must
+ * stay that way.
+ */
+/**
+ * Report every retired dash-era task name still present in a mise.toml, in the
+ * same three syntactic positions `renameRetiredMiseTasks` rewrites. Anything
+ * this reports is fixable by that function, so audit and migrate never disagree.
+ */
+function retiredTaskNameIssues(text: string): string[] {
+  const issues: string[] = [];
+  for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const present = new RegExp(
+      `^\\[tasks\\.(?:"${esc}"|${esc})\\]|^\\s*task\\s*=\\s*"${esc}"|^\\s*depends\\s*=\\s*\\[[^\\]]*"${esc}"`,
+      "m",
+    ).test(text);
+    if (present) issues.push(`mise.toml still uses the retired task name "${oldName}" (renamed to "${newName}")`);
+  }
+  return issues;
+}
+
+export function renameRetiredMiseTasks(text: string): string {
+  let out = text;
+  for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]`, "gm"), taskHeader(newName));
+    out = out.replace(new RegExp(`^(\\s*task\\s*=\\s*)"${esc}"`, "gm"), `$1"${newName}"`);
+    out = out.replace(new RegExp(`\\bmise run ${esc}\\b`, "g"), `mise run ${newName}`);
+  }
+  // `depends = [...]` holds bare task names; rewrite inside the array only.
+  return out.replace(/^(\s*depends\s*=\s*)(\[[^\]]*\])/gm, (_whole, head: string, arr: string) => {
+    let next = arr;
+    for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+      next = next.split(`"${oldName}"`).join(`"${newName}"`);
+    }
+    return head + next;
+  });
+}
+
 function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
-  const withPath = upsertMisePath(text, requiredMisePathEntries(ctx));
+  const withPath = upsertMisePath(renameRetiredMiseTasks(text), requiredMisePathEntries(ctx));
   // Remove stale AGENTS-linking pieces before appending the canonical block.
-  let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  // Both the colon and the retired dash header forms are matched so a
+  // half-migrated file can never end up holding two copies of the same task.
+  let cleaned = removeTomlSection(withPath, taskHeaderPattern(LINK_AGENTFILES_TASK), /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, taskHeaderPattern(SKILLS_SYNC_TASK), undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, undefined, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, taskHeaderPattern(PROVISION_PACKS_TASK), undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-packs\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-bmad\]$/, undefined, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, undefined, { includePrecedingComments: false });
@@ -3956,7 +4043,8 @@ return [
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
-      if (!text.includes("task = \"link-agentfiles\"")) details.push("watch_files must dispatch link-agentfiles task");
+      if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
+      details.push(...retiredTaskNameIssues(text));
       return {
         id: "mise.config-root",
         title: "mise config_root + AGENTS link hooks",
@@ -4004,7 +4092,7 @@ return [
         status: changedFiles.length ? "applied" : "noop",
         summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
         changedFiles,
-        details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block and script"] : [],
+        details: changedFiles.length ? [`Normalized hooks/watch_files/tasks."${LINK_AGENTFILES_TASK}" block and script`] : [],
       };
     },
   },
@@ -4245,8 +4333,9 @@ return [
         details.push("mise.toml still invokes the missing bare sync-skills.py executable");
       }
       if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
-      if (!mise?.includes('[tasks.skills-sync]')) details.push("mise.toml should define a skills-sync task");
-      if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`skills-sync task should depend on ${PROVISION_PACKS_TASK}`);
+      if (!mise?.includes(taskHeader(SKILLS_SYNC_TASK))) details.push(`mise.toml should define a ${SKILLS_SYNC_TASK} task`);
+      if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`${SKILLS_SYNC_TASK} task should depend on ${PROVISION_PACKS_TASK}`);
+      if (mise) details.push(...retiredTaskNameIssues(mise));
       for (const [rel, label] of [
         [PROVISION_PACKS_SCRIPT_REL, "Skillex pack provisioning script"],
         [SYNC_SKILLS_SCRIPT_REL, "Project-local skills sync engine"],

@@ -912,8 +912,26 @@ var OP_INJECT_SCRIPT = `'{{config_root}}/${MATERIALIZE_ENV_SCRIPT_REL}'`;
 var PROVISION_PACKS_SCRIPT_REL = ".mise/scripts/provision-packs.py";
 var LEGACY_PROVISION_SCRIPT_REL = ".mise/scripts/provision-bmad-skills.py";
 var SYNC_SKILLS_SCRIPT_REL = ".mise/scripts/sync-skills.py";
-var PROVISION_PACKS_TASK = "skills-provision-packs";
+var LINK_AGENTFILES_TASK = "link:agentfiles";
+var SKILLS_SYNC_TASK = "skills:sync";
+var PROVISION_PACKS_TASK = "skills:provision:packs";
 var LEGACY_PROVISION_TASK = "skills-provision-bmad";
+var RETIRED_TASK_RENAMES = [
+  ["link-agentfiles", LINK_AGENTFILES_TASK],
+  ["skills-sync", SKILLS_SYNC_TASK],
+  ["skills-provision-packs", PROVISION_PACKS_TASK],
+  ["hooks-sync", "hooks:sync"],
+  ["hooks-check", "hooks:check"],
+  ["hooks-uninstall", "hooks:uninstall"],
+  ["hindsight-setup", "hindsight:setup"]
+];
+function taskHeader(name) {
+  return `[tasks."${name}"]`;
+}
+function taskHeaderPattern(name) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]$`);
+}
 var PROVISION_PACKS_SCRIPT = `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}'`;
 var LEGACY_PROVISION_BMAD_SKILLS_SCRIPT = `python3 '{{config_root}}/${LEGACY_PROVISION_SCRIPT_REL}'`;
 var SYNC_SKILLS_SCRIPT = `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project`;
@@ -947,22 +965,22 @@ var LINK_AGENTFILES_HOOK_ENTRIES = [
 ];
 var LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
 patterns = ["AGENTS.md"]
-task = "link-agentfiles"
+task = "${LINK_AGENTFILES_TASK}"
 
 [[watch_files]]
 patterns = [".agents/skills.json"]
-task = "skills-sync"
+task = "${SKILLS_SYNC_TASK}"
 
-[tasks.link-agentfiles]
+${taskHeader(LINK_AGENTFILES_TASK)}
 description = "Symlink all agent files to AGENTS.md"
 run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 
-[tasks.skills-sync]
+${taskHeader(SKILLS_SYNC_TASK)}
 description = "Sync skills from manifest to local CLI dirs"
 depends = ["${PROVISION_PACKS_TASK}"]
 run = ${JSON.stringify(SYNC_SKILLS_SCRIPT)}
 
-[tasks.${PROVISION_PACKS_TASK}]
+${taskHeader(PROVISION_PACKS_TASK)}
 description = "Provision every Skillex pack declared in .agents/skills.json"
 run = ${JSON.stringify(PROVISION_PACKS_SCRIPT)}`;
 var VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block \u2014 do not edit by hand; re-run init to update)
@@ -2327,10 +2345,41 @@ function upsertOpInjectHook(text3) {
     [OP_INJECT_SCRIPT]
   );
 }
+function retiredTaskNameIssues(text3) {
+  const issues = [];
+  for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const present = new RegExp(
+      `^\\[tasks\\.(?:"${esc}"|${esc})\\]|^\\s*task\\s*=\\s*"${esc}"|^\\s*depends\\s*=\\s*\\[[^\\]]*"${esc}"`,
+      "m"
+    ).test(text3);
+    if (present) issues.push(`mise.toml still uses the retired task name "${oldName}" (renamed to "${newName}")`);
+  }
+  return issues;
+}
+function renameRetiredMiseTasks(text3) {
+  let out = text3;
+  for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]`, "gm"), taskHeader(newName));
+    out = out.replace(new RegExp(`^(\\s*task\\s*=\\s*)"${esc}"`, "gm"), `$1"${newName}"`);
+    out = out.replace(new RegExp(`\\bmise run ${esc}\\b`, "g"), `mise run ${newName}`);
+  }
+  return out.replace(/^(\s*depends\s*=\s*)(\[[^\]]*\])/gm, (_whole, head, arr) => {
+    let next = arr;
+    for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
+      next = next.split(`"${oldName}"`).join(`"${newName}"`);
+    }
+    return head + next;
+  });
+}
 function upsertLinkAgentfilesBlock(text3, ctx) {
-  const withPath = upsertMisePath(text3, requiredMisePathEntries(ctx));
-  let cleaned = removeTomlSection(withPath, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  const withPath = upsertMisePath(renameRetiredMiseTasks(text3), requiredMisePathEntries(ctx));
+  let cleaned = removeTomlSection(withPath, taskHeaderPattern(LINK_AGENTFILES_TASK), /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, taskHeaderPattern(SKILLS_SYNC_TASK), void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, void 0, { includePrecedingComments: false });
+  cleaned = removeTomlSection(cleaned, taskHeaderPattern(PROVISION_PACKS_TASK), void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-packs\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-bmad\]$/, void 0, { includePrecedingComments: false });
   cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, void 0, { includePrecedingComments: false });
@@ -3812,7 +3861,8 @@ function createMiseChecks() {
         if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
         if (!text3.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
         if (!text3.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
-        if (!text3.includes('task = "link-agentfiles"')) details.push("watch_files must dispatch link-agentfiles task");
+        if (!text3.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
+        details.push(...retiredTaskNameIssues(text3));
         return {
           id: "mise.config-root",
           title: "mise config_root + AGENTS link hooks",
@@ -3860,7 +3910,7 @@ function createMiseChecks() {
           status: changedFiles.length ? "applied" : "noop",
           summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
           changedFiles,
-          details: changedFiles.length ? ["Normalized hooks/watch_files/tasks.link-agentfiles block and script"] : []
+          details: changedFiles.length ? [`Normalized hooks/watch_files/tasks."${LINK_AGENTFILES_TASK}" block and script`] : []
         };
       }
     },
@@ -4071,8 +4121,9 @@ function createAgentHooksChecks() {
           details.push("mise.toml still invokes the missing bare sync-skills.py executable");
         }
         if (!mise?.includes('patterns = [".agents/skills.json"]')) details.push("mise.toml should watch .agents/skills.json");
-        if (!mise?.includes("[tasks.skills-sync]")) details.push("mise.toml should define a skills-sync task");
-        if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`skills-sync task should depend on ${PROVISION_PACKS_TASK}`);
+        if (!mise?.includes(taskHeader(SKILLS_SYNC_TASK))) details.push(`mise.toml should define a ${SKILLS_SYNC_TASK} task`);
+        if (!mise?.includes(`depends = ["${PROVISION_PACKS_TASK}"]`)) details.push(`${SKILLS_SYNC_TASK} task should depend on ${PROVISION_PACKS_TASK}`);
+        if (mise) details.push(...retiredTaskNameIssues(mise));
         for (const [rel, label] of [
           [PROVISION_PACKS_SCRIPT_REL, "Skillex pack provisioning script"],
           [SYNC_SKILLS_SCRIPT_REL, "Project-local skills sync engine"]
@@ -5846,10 +5897,10 @@ var AgentHooksRecipe = class extends Recipe {
   printNextSteps() {
     console.log("\u{1FA9D} Agent-hooks layer installed!");
     console.log("   Next steps:");
-    console.log("   1. mise run skills-sync  # sync .agents/skills.json into local CLI dirs");
-    console.log("   2. mise run hooks-sync   # generate .claude/settings.json + inject codex/kimi/hermes");
+    console.log("   1. mise run skills:sync  # sync .agents/skills.json into local CLI dirs");
+    console.log("   2. mise run hooks:sync   # generate .claude/settings.json + inject codex/kimi/hermes");
     console.log("   3. git add .claude/settings.json .agents/hooks .agents/skills.json && commit (codex/kimi/hermes are per-dev)");
-    console.log("   4. mise run hindsight-setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
+    console.log("   4. mise run hindsight:setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
     console.log("   5. Optional per-dev hook opt-out: copy .agents/local.example.json -> .agents/local.json");
   }
 };
@@ -8706,31 +8757,33 @@ ${leaveBlock}`);
     const appended = [
       "",
       _WireMiseAgentHooks.MARKER + " (generated \u2014 see .agents/hooks/README.md)",
+      // PJAN-61: task names use the colon namespace form. A colon is not legal
+      // in a BARE toml key, so every header here MUST stay quoted.
       "[[watch_files]]",
       'patterns = [".agents/skills.json"]',
-      'task = "skills-sync"',
+      'task = "skills:sync"',
       "",
-      "[tasks.skills-sync]",
+      '[tasks."skills:sync"]',
       'description = "Sync skills from manifest to local CLI dirs"',
       'run = "sync-skills.py --scope project"',
       "",
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
-      'task = "hooks-sync"',
+      'task = "hooks:sync"',
       "",
-      "[tasks.hooks-sync]",
+      '[tasks."hooks:sync"]',
       'description = "Fan out hooks.master.json to each agent CLI (claude/codex/kimi/hermes)"',
       `run = "${cr}/.agents/hooks/sync.py --install"`,
       "",
-      "[tasks.hooks-check]",
+      '[tasks."hooks:check"]',
       'description = "Drift gate: verify generated hook configs match hooks.master.json"',
       `run = "${cr}/.agents/hooks/sync.py --check"`,
       "",
-      "[tasks.hooks-uninstall]",
+      '[tasks."hooks:uninstall"]',
       'description = "Remove per-user agent-hook injections (codex/kimi/hermes)"',
       `run = "${cr}/.agents/hooks/sync.py --uninstall"`,
       "",
-      "[tasks.hindsight-setup]",
+      '[tasks."hindsight:setup"]',
       `description = "Provision this dev's shared project Hindsight key from 1Password into .env"`,
       `run = "${cr}/.mise/scripts/hindsight-setup.sh"`,
       "",

@@ -237,7 +237,7 @@ run = "echo still here"
       /script = "python3 '\{\{config_root\}\}\/\.mise\/scripts\/sync-skills\.py' --scope project"/,
       "migrate should install the shipped project-local skills sync engine"
     );
-    assert.match(mise, /\[tasks\.skills-sync\]/, "migrate should add the canonical skills-sync task");
+    assert.match(mise, /\[tasks\."skills:sync"\]/, "migrate should add the canonical skills:sync task");
     assertMiseParses(repo, "preserve-hooks");
   }
 
@@ -353,15 +353,15 @@ run = "echo still here"
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
-    assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml from template should contain link-agentfiles task");
+    assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml from template should contain the link:agentfiles task");
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /sync-skills\.py' --scope project/, "mise.toml should run project skill sync on enter");
-    assert.match(mise, /\[tasks\.skills-sync\]/, "mise.toml should include the skills-sync task");
+    assert.match(mise, /\[tasks\."skills:sync"\]/, "mise.toml should include the skills:sync task");
     assert.match(mise, /patterns = \["\.agents\/skills\.json"\]/, "mise.toml should watch the project skills manifest");
     assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
     assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
-    assert.match(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer ON should wire the hooks-sync task");
+    assert.match(mise, /\[tasks\."hooks:sync"\]/, "agent-hooks layer ON should wire the hooks:sync task");
 
     const script = join(repo, ".mise", "scripts", "link-agentfiles.sh");
     assert.equal(existsSync(script), true, "migrate must copy .mise/scripts/link-agentfiles.sh");
@@ -381,11 +381,11 @@ run = "echo still here"
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
-    assert.match(mise, /\[tasks\.link-agentfiles\]/, "mise.toml should still contain the link-agentfiles task");
+    assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml should still contain the link:agentfiles task");
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /sync-skills\.py' --scope project/, "skills sync should stay enabled even when the hook layer is skipped");
-    assert.match(mise, /\[tasks\.skills-sync\]/, "skills-sync task should remain when the hook layer is skipped");
-    assert.doesNotMatch(mise, /\[tasks\.hooks-sync\]/, "agent-hooks layer OFF should omit the hooks-sync task");
+    assert.match(mise, /\[tasks\."skills:sync"\]/, "skills:sync task should remain when the hook layer is skipped");
+    assert.doesNotMatch(mise, /\[tasks\."hooks:sync"\]/, "agent-hooks layer OFF should omit the hooks:sync task");
     assert.doesNotMatch(mise, /link-project-skills-to-clis/, "agent-hooks layer OFF should omit the legacy skill fan-out wiring");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, { PJ_AGENT_HOOKS_LAYER: "0" }));
@@ -539,7 +539,7 @@ run = "echo still here"
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-packs.py")), true);
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), false);
     const declaredMise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.match(declaredMise, /\[tasks\.skills-provision-packs\]/);
+    assert.match(declaredMise, /\[tasks\."skills:provision:packs"\]/);
     assert.doesNotMatch(declaredMise, /skills-provision-bmad/);
     assert.doesNotMatch(declaredMise, /provision-bmad-skills\.py/);
 
@@ -850,6 +850,104 @@ exec "$REAL_GIT" "$@"
     repos.push(repo);
     const stderr = runExpectError(["migrate", "not-a-real-rule", repo]);
     assert.match(stderr, /Unknown parity rule/);
+  }
+
+  // PJAN-61: a dash-era repo must be renamed onto the colon namespace in every
+  // syntactic position mise resolves a task name from — section header,
+  // watch_files dispatch, and depends entry — while the dashed SCRIPT filenames
+  // (link-agentfiles.sh, provision-packs.py) are left alone. The dash/colon
+  // split is what left `depends` pointing at a task that no longer existed.
+  {
+    const repo = makeRepo("retired-task-names");
+    repos.push(repo);
+    writeFileSync(
+      join(repo, "mise.toml"),
+      [
+        "[env]",
+        '_.path = [".mise/scripts"]',
+        "",
+        "[[watch_files]]",
+        'patterns = ["AGENTS.md"]',
+        'task = "link-agentfiles"',
+        "",
+        "[[watch_files]]",
+        'patterns = [".agents/skills.json"]',
+        'task = "skills-sync"',
+        "",
+        "[tasks.link-agentfiles]",
+        `run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"`,
+        "",
+        "[tasks.skills-sync]",
+        'depends = ["skills-provision-packs"]',
+        `run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"`,
+        "",
+        "[tasks.skills-provision-packs]",
+        `run = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"`,
+        "",
+        "[tasks.hooks-check]",
+        `run = "'{{config_root}}/.agents/hooks/sync.py' --check"`,
+        "",
+      ].join("\n"),
+    );
+
+    const before = JSON.parse(runAllowFailure(["audit", repo, "--json"], root));
+    const beforeFinding = before.rules.find((entry) => entry.id === "mise.config-root");
+    assert.equal(beforeFinding.status, "fail", JSON.stringify(beforeFinding));
+    const beforeDetails = beforeFinding.details.join("\n");
+    for (const retired of ["link-agentfiles", "skills-sync", "skills-provision-packs", "hooks-check"]) {
+      assert.match(
+        beforeDetails,
+        new RegExp(`still uses the retired task name "${retired}"`),
+        `audit should report the retired ${retired} task: ${beforeDetails}`,
+      );
+    }
+
+    run(["migrate", "mise.config-root", repo, "--json"], root);
+    const mise = readFileSync(join(repo, "mise.toml"), "utf8");
+
+    for (const name of ["link:agentfiles", "skills:sync", "skills:provision:packs", "hooks:check"]) {
+      assert.match(mise, new RegExp(`\\[tasks\\."${name.replace(/:/g, ":")}"\\]`), `${name} task header must be quoted-colon: ${mise}`);
+    }
+    assert.match(mise, /task = "link:agentfiles"/, "watch_files must dispatch the renamed task");
+    assert.match(mise, /task = "skills:sync"/, "watch_files must dispatch the renamed skills task");
+    assert.match(mise, /depends = \["skills:provision:packs"\]/, "depends must follow the rename");
+    // A bare TOML key may not contain `:` — an unquoted header would make the
+    // whole file unparseable, which is worse than the drift it replaced. The
+    // real mise binary is the only honest check that the rename is loadable.
+    assert.doesNotMatch(mise, /^\[tasks\.[a-z]+:[^\]]*\]$/m, `colon task headers must stay quoted: ${mise}`);
+    assertMiseParses(repo, "retired task rename");
+    // Parsing is not enough: the renamed tasks must actually be ADDRESSABLE by
+    // their new names, or `mise run skills:sync` dies with "task not found" —
+    // the exact failure the dash/colon split caused.
+    if (miseAvailable()) {
+      const listed = spawnSync("mise", ["tasks", "--no-header"], { cwd: repo, encoding: "utf8" });
+      assert.equal(listed.status, 0, `mise tasks must succeed after the rename\n${listed.stderr}`);
+      for (const name of ["link:agentfiles", "skills:sync", "skills:provision:packs", "hooks:check"]) {
+        assert.match(listed.stdout, new RegExp(`^${name}\\b`, "m"), `mise must list ${name}:\n${listed.stdout}`);
+      }
+    }
+    for (const retired of ["link-agentfiles", "skills-sync", "skills-provision-packs", "hooks-check"]) {
+      assert.doesNotMatch(
+        mise,
+        new RegExp(`^\\[tasks\\.(?:"${retired}"|${retired})\\]`, "m"),
+        `retired ${retired} task header must be gone: ${mise}`,
+      );
+      assert.doesNotMatch(mise, new RegExp(`task = "${retired}"`), `retired ${retired} dispatch must be gone`);
+    }
+    // Script FILENAMES stay dashed — only task names moved.
+    assert.match(mise, /link-agentfiles\.sh/, "the dashed script filename must survive the task rename");
+    assert.match(mise, /provision-packs\.py/, "the dashed provisioner filename must survive the task rename");
+
+    const after = JSON.parse(runAllowFailure(["audit", repo, "--json"], root));
+    const afterDetails = (after.rules.find((entry) => entry.id === "mise.config-root").details ?? []).join("\n");
+    assert.doesNotMatch(afterDetails, /still uses the retired task name/, afterDetails);
+
+    const rerun = JSON.parse(run(["migrate", "mise.config-root", repo, "--json"], root));
+    assert.equal(
+      rerun.results.find((entry) => entry.id === "mise.config-root").status,
+      "noop",
+      `rename must be idempotent: ${JSON.stringify(rerun)}`,
+    );
   }
 
   {
