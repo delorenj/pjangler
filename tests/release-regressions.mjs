@@ -203,6 +203,20 @@ try {
       indexOf('git -c core.hooksPath=/dev/null commit'),
     "exact-tarball preflight must precede the final commit",
   );
+  // PJAN-61: the PRE-bump preflight must stay gated to the retry paths. On the
+  // bump path the tree still carries CUR — the version just published — so an
+  // ungated `npm publish --dry-run` there returns E403 forever, which broke
+  // both `release` and `release --dry-run` from the first release onward.
+  assert.match(
+    source,
+    /if \[ -n "\$PUBLISH_CURRENT" \] \|\| \[ -n "\$RESUME_PUSH" \]; then\n\s*preflight_publish_cli\n\s*fi/,
+    "the pre-bump publish preflight must run only on --publish-current/--resume-push",
+  );
+  assert.ok(
+    source.lastIndexOf("preflight_publish_cli") >
+      source.lastIndexOf('NEW="$("$SCRIPTS_DIR/versioning.sh" bump'),
+    "the bump path must still preflight the exact tarball AFTER the version bump",
+  );
   assert.ok(
     source.lastIndexOf("npm run check:tracked-secrets") <
       indexOf('git -c core.hooksPath=/dev/null commit'),

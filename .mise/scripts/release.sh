@@ -280,7 +280,18 @@ PJAN21_PG_HARNESS_SELF_TEST=0 PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 \
 # release commit.
 require_clean_tree
 inspect_tarball
-preflight_publish_cli
+# The exact-tarball publish preflight can only run here on the retry paths,
+# where TARGET is CUR and the working tree already carries that version. On the
+# bump path the tree is still at CUR — the version that was just published —
+# so `npm publish --dry-run` returns E403 "cannot publish over the previously
+# published versions" no matter how healthy the release is. That made the gate
+# fail permanently from the first successful release onward, taking `release`
+# and `release --dry-run` down with it. The bump path gets the same preflight
+# after the bump (see below), where it checks the version actually being
+# published; inspect_tarball above still smoke-tests packing early on all paths.
+if [ -n "$PUBLISH_CURRENT" ] || [ -n "$RESUME_PUSH" ]; then
+  preflight_publish_cli
+fi
 
 # Only trusted, isolated registry commands receive a fresh token. All package
 # installation, lifecycle scripts, builds, tests, and PG checks above ran with
