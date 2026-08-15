@@ -441,9 +441,14 @@ try {
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.repo, fakeHermesRepo, "fleet registry must record the matching Hermes checkout");
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].telegram.provisioning_status, "disabled");
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].slack.provisioning_status, "deferred");
+  assert.deepEqual(
+    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "pm", "role.yaml"), "utf8")).model,
+    { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
+    "noninteractive PM provisioning must explicitly render safe model-route defaults",
+  );
 
   const multiAgentSecond = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "dev", "--json",
+    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "director", "--json",
   ], multiAgentEnv, multiAgentRepo));
   assert.equal(multiAgentSecond.ok, true, JSON.stringify(multiAgentSecond.errors));
   const hermesCalls = readFakeHermesCalls(fakeHermesCalls);
@@ -461,7 +466,7 @@ try {
       home: multiAgentHome,
     },
     {
-      args: ["profile", "create", "multi-agent-dev", "--clone", "--no-alias"],
+      args: ["profile", "create", "multi-agent-director", "--clone", "--no-alias"],
       bin: fakeHermesBin,
       hermes_home: fleetHome,
       home: multiAgentHome,
@@ -469,18 +474,23 @@ try {
     {
       args: ["config", "set", "terminal.cwd", multiAgentRepo],
       bin: fakeHermesBin,
-      hermes_home: join(fleetHome, "profiles", "multi-agent-dev"),
+      hermes_home: join(fleetHome, "profiles", "multi-agent-director"),
       home: multiAgentHome,
     },
   ], `provisioning must use only the portable Hermes profile contract\n${JSON.stringify(hermesCalls, null, 2)}`);
   const secondMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
   assert.equal(secondMultiRegistry.projects["multi-agent"].agents.pm.role, "pm", "existing pm agent must be preserved in registry");
-  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.dev.role, "dev", "new dev agent must be added to registry");
+  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.director.role, "director", "new director agent must be added to registry");
   const secondMultiManifest = JSON.parse(readFileSync(join(multiAgentRepo, ".project.json"), "utf8"));
   assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
-  assert.equal(secondMultiManifest.agents["multi-agent-dev"].role, "dev", "new dev agent must be added to manifest");
+  assert.equal(secondMultiManifest.agents["multi-agent-director"].role, "director", "new director agent must be added to manifest");
+  assert.deepEqual(
+    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "director", "role.yaml"), "utf8")).model,
+    { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
+    "noninteractive Director provisioning must explicitly render safe model-route defaults",
+  );
   const secondFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
-  assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-dev", "multi-agent-pm"], "both isolated fleet profiles must be registered");
+  assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-director", "multi-agent-pm"], "both isolated fleet profiles must be registered");
 
   // PJAN-26: "active" is a default for NEW records, never a migration.
   // A project already recorded as "planned" keeps that status through a load

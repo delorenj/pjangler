@@ -5692,6 +5692,9 @@ var PromptForAgentConfig = class extends Command {
     ctx.soulTone ??= "direct";
     ctx.modelProvider ??= "";
     ctx.modelName ??= "";
+    ctx.modelBaseUrl ??= "";
+    ctx.modelApiMode ??= "";
+    ctx.modelKeyEnv ??= "";
     ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
     ctx.skipEmail ??= true;
     ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
@@ -5758,7 +5761,17 @@ function resolveVendoredTemplate(name) {
 var RunCopierTemplate = class extends Command {
   async invoke() {
     const ctx = this.context;
-    const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
+    const {
+      targetRepo,
+      role,
+      agentPurpose,
+      soulTone,
+      modelProvider,
+      modelName,
+      modelBaseUrl,
+      modelApiMode,
+      modelKeyEnv
+    } = ctx;
     const ticketProvider = ctx.ticketProvider ?? "plane";
     const profileName = ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : void 0);
     if (!targetRepo || !role) {
@@ -5824,6 +5837,12 @@ var RunCopierTemplate = class extends Command {
       `model_provider=${modelProvider ?? ""}`,
       "--data",
       `model_name=${modelName ?? ""}`,
+      "--data",
+      `model_base_url=${modelBaseUrl ?? ""}`,
+      "--data",
+      `model_api_mode=${modelApiMode ?? ""}`,
+      "--data",
+      `model_key_env=${modelKeyEnv ?? ""}`,
       "--data",
       `profile_name=${profileName ?? ""}`,
       "--data",
@@ -8972,11 +8991,14 @@ server.registerTool(
     inputSchema: {
       targetDir: z.string(),
       targetRepo: z.string().optional(),
-      role: z.enum(["pm", "dev", "review", "ops", "qa"]),
+      role: z.enum(["pm", "director", "dev", "review", "ops", "qa"]),
       agentPurpose: z.string().optional(),
       soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
       modelProvider: z.string().optional(),
       modelName: z.string().optional(),
+      modelBaseUrl: z.string().optional(),
+      modelApiMode: z.enum(["", "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"]).optional(),
+      modelKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
       local: z.boolean().optional(),
       force: z.boolean().optional(),
       dryRun: z.boolean().optional(),
@@ -9003,6 +9025,9 @@ server.registerTool(
         soulTone: input.soulTone,
         modelProvider: input.modelProvider,
         modelName: input.modelName,
+        modelBaseUrl: input.modelBaseUrl,
+        modelApiMode: input.modelApiMode,
+        modelKeyEnv: input.modelKeyEnv,
         ticketProvider: input.ticketProvider,
         force: input.force ?? false,
         dryRun: input.dryRun ?? false,

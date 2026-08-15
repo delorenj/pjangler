@@ -43,7 +43,17 @@ function resolveVendoredTemplate(name: string): string | undefined {
 export class RunCopierTemplate extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
-    const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
+    const {
+      targetRepo,
+      role,
+      agentPurpose,
+      soulTone,
+      modelProvider,
+      modelName,
+      modelBaseUrl,
+      modelApiMode,
+      modelKeyEnv,
+    } = ctx;
     const ticketProvider = ctx.ticketProvider ?? "plane";
     const profileName =
       ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : undefined);
@@ -133,6 +143,9 @@ export class RunCopierTemplate extends Command {
       "--data", `agent_purpose=${agentPurpose ?? ""}`,
       "--data", `model_provider=${modelProvider ?? ""}`,
       "--data", `model_name=${modelName ?? ""}`,
+      "--data", `model_base_url=${modelBaseUrl ?? ""}`,
+      "--data", `model_api_mode=${modelApiMode ?? ""}`,
+      "--data", `model_key_env=${modelKeyEnv ?? ""}`,
       "--data", `profile_name=${profileName ?? ""}`,
       "--data", `soul_tone=${soulTone ?? "direct"}`,
       "--data", `ticket_provider=${ticketProvider}`,

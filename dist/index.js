@@ -5971,6 +5971,9 @@ var PromptForAgentConfig = class extends Command {
     ctx.soulTone ??= "direct";
     ctx.modelProvider ??= "";
     ctx.modelName ??= "";
+    ctx.modelBaseUrl ??= "";
+    ctx.modelApiMode ??= "";
+    ctx.modelKeyEnv ??= "";
     ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
     ctx.skipEmail ??= true;
     ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
@@ -6037,7 +6040,17 @@ function resolveVendoredTemplate(name) {
 var RunCopierTemplate = class extends Command {
   async invoke() {
     const ctx = this.context;
-    const { targetRepo, role, agentPurpose, soulTone, modelProvider, modelName } = ctx;
+    const {
+      targetRepo,
+      role,
+      agentPurpose,
+      soulTone,
+      modelProvider,
+      modelName,
+      modelBaseUrl,
+      modelApiMode,
+      modelKeyEnv
+    } = ctx;
     const ticketProvider = ctx.ticketProvider ?? "plane";
     const profileName = ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : void 0);
     if (!targetRepo || !role) {
@@ -6103,6 +6116,12 @@ var RunCopierTemplate = class extends Command {
       `model_provider=${modelProvider ?? ""}`,
       "--data",
       `model_name=${modelName ?? ""}`,
+      "--data",
+      `model_base_url=${modelBaseUrl ?? ""}`,
+      "--data",
+      `model_api_mode=${modelApiMode ?? ""}`,
+      "--data",
+      `model_key_env=${modelKeyEnv ?? ""}`,
       "--data",
       `profile_name=${profileName ?? ""}`,
       "--data",
@@ -9611,7 +9630,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
     process.exit(1);
   }
 });
-program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating or linking the ticket board").option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
+program.command("hermes-agent").alias("hermes").description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)").option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)").option("--target-repo <name>", "Target repo name (default: basename of cwd)").option("--role <role>", "Agent role override (default: pm \u2014 the only role in the fleet)").option("--purpose <text>", 'One-line agent purpose (default: "pm agent for <repo>")').option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`).option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)').option("--model-name <name>", 'Model name override ("" = inherit shared default profile)').option("--model-base-url <url>", 'Inference API base URL override ("" = inherit shared default profile)').option("--model-api-mode <mode>", 'Inference API mode override ("" = inherit shared default profile)').option("--model-key-env <name>", "Environment variable name holding the scoped model credential").option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)").option("--email", "Also provision the delo.sh email address (off by default; never prompted)").option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo").option("--skip-plane", "Skip creating or linking the ticket board").option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway").option("--skip-systemd", "Skip installing systemd --user units").option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)").option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists").option("--dry-run", "Preview what would run; don't execute copier").option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists").action(async (options) => {
   const isDarwin = process.platform === "darwin";
   const local = options.local ?? false;
   const context = {
@@ -9627,6 +9646,9 @@ program.command("hermes-agent").alias("hermes").description("Provision the PM ag
     soulTone: options.tone,
     modelProvider: options.modelProvider,
     modelName: options.modelName,
+    modelBaseUrl: options.modelBaseUrl,
+    modelApiMode: options.modelApiMode,
+    modelKeyEnv: options.modelKeyEnv,
     skipTelegram: options.skipTelegram,
     // Email is opt-in only: `--email` wires it, otherwise it's never done.
     skipEmail: options.email ? false : void 0,

@@ -46,6 +46,8 @@ try {
   ]) {
     assert.ok(toolNames.has(tool), `${tool} should be exposed by the MCP server`);
   }
+  const deployTool = listed.tools.find((tool) => tool.name === "pjangler_deploy_hermes_agent");
+  assert.ok(deployTool.inputSchema.properties.role.enum.includes("director"), "direct MCP deployment must accept the director role");
 
   const rulesResult = await client.callTool({ name: "pjangler_list_parity_rules", arguments: {} });
   const rulesPayload = JSON.parse(rulesResult.content[0].text);
@@ -131,6 +133,29 @@ try {
   const hermesUnforcedPayload = JSON.parse(hermesUnforced.content[0].text);
   assert.equal(hermesUnforcedPayload.success, true, JSON.stringify(hermesUnforcedPayload));
   assert.doesNotMatch(hermesUnforcedPayload.logs.join("\n"), /--overwrite/, "MCP Hermes no-force dispatch must remain non-overwriting");
+  const directorDryRun = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: {
+      targetDir: hermesForceTarget,
+      role: "director",
+      local: true,
+      dryRun: true,
+      modelProvider: "custom",
+      modelName: "hermes",
+      modelBaseUrl: "https://gateway.example.test/v1",
+      modelApiMode: "chat_completions",
+      modelKeyEnv: "DIRECTOR_LITELLM_KEY",
+    },
+  });
+  const directorPayload = JSON.parse(directorDryRun.content[0].text);
+  assert.equal(directorPayload.success, true, JSON.stringify(directorPayload));
+  const directorCopier = directorPayload.logs.join("\n");
+  for (const expected of [
+    "role=director",
+    "model_base_url=https://gateway.example.test/v1",
+    "model_api_mode=chat_completions",
+    "model_key_env=DIRECTOR_LITELLM_KEY",
+  ]) assert.match(directorCopier, new RegExp(expected));
 
   // PJAN-57: applying project registration to an existing Git repository goes
   // through ProjectRecipe but must not silently turn into migrate-all. The

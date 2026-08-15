@@ -15,6 +15,9 @@ export interface HermesAgentContext extends CommandContext {
   soulTone?: "direct" | "playful" | "formal" | "terse";
   modelProvider?: string;
   modelName?: string;
+  modelBaseUrl?: string;
+  modelApiMode?: string;
+  modelKeyEnv?: string;
   ticketProvider?: TicketProvider;  // "plane" by default — board lives here
 
   // --- behavior toggles ---

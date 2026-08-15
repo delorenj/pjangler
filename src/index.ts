@@ -908,6 +908,9 @@ program
   .option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`)
   .option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)')
   .option("--model-name <name>", 'Model name override ("" = inherit shared default profile)')
+  .option("--model-base-url <url>", 'Inference API base URL override ("" = inherit shared default profile)')
+  .option("--model-api-mode <mode>", 'Inference API mode override ("" = inherit shared default profile)')
+  .option("--model-key-env <name>", "Environment variable name holding the scoped model credential")
   .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
   .option("--email", "Also provision the delo.sh email address (off by default; never prompted)")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
@@ -934,6 +937,9 @@ program
       soulTone: options.tone,
       modelProvider: options.modelProvider,
       modelName: options.modelName,
+      modelBaseUrl: options.modelBaseUrl,
+      modelApiMode: options.modelApiMode,
+      modelKeyEnv: options.modelKeyEnv,
       skipTelegram: options.skipTelegram,
       // Email is opt-in only: `--email` wires it, otherwise it's never done.
       skipEmail: options.email ? false : undefined,

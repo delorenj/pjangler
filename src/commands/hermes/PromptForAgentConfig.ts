@@ -51,6 +51,9 @@ export class PromptForAgentConfig extends Command {
     ctx.soulTone ??= "direct";
     ctx.modelProvider ??= ""; // inherit shared default profile
     ctx.modelName ??= ""; // inherit shared default profile
+    ctx.modelBaseUrl ??= ""; // inherit shared default profile
+    ctx.modelApiMode ??= ""; // inherit shared default profile
+    ctx.modelKeyEnv ??= ""; // no profile-scoped credential override
     // Board provider: honor an explicit flag, else inherit the repo's existing
     // .project.json provider, else plane.
     ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
