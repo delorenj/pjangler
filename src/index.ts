@@ -28,6 +28,8 @@ import {
   projectRegistryPath,
 } from "./project/index";
 import { describeProject, formatProjectDescription } from "./describe/index";
+import { computeRepoActivityBatch } from "./describe/activity";
+import { runChecklist } from "./describe/checklist";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
@@ -553,11 +555,19 @@ projectCmd
   .description("List projects in the pjangler registry")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
-  .action((options) => {
+  .action(async (options) => {
     try {
       const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
-      if (options.json) console.log(JSON.stringify(registry, null, 2));
-      else console.log(formatProjectList(registry));
+      if (options.json) {
+        console.log(JSON.stringify(registry, null, 2));
+        return;
+      }
+      // Scan every registered repo concurrently so ordering by real recency
+      // does not cost a visible stall on a registry this size.
+      const activity = await computeRepoActivityBatch(
+        Object.values(registry.projects).map((project) => project.repo_path),
+      );
+      console.log(formatProjectList(registry, activity));
     } catch (err) {
       console.error(`${xmark} project list failed:`, err instanceof Error ? err.message : err);
       process.exit(1);
@@ -1002,11 +1012,52 @@ program
   .description("Describe the current project (for AI context)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
-  .action((repo: string | undefined, options) => {
+  .option("-i, --interactive", "Tick off fixable findings and apply them")
+  .action(async (repo: string | undefined, options) => {
     try {
       const description = describeProject({ repoArg: repo, registryPath: options.registry });
-      if (options.json) console.log(JSON.stringify(description, null, 2));
-      else console.log(formatProjectDescription(description));
+
+      if (options.json) {
+        if (options.interactive) {
+          console.error(`${xmark} --interactive cannot be combined with --json`);
+          process.exit(1);
+        }
+        console.log(JSON.stringify(description, null, 2));
+        return;
+      }
+
+      console.log(formatProjectDescription(description));
+      if (!options.interactive) return;
+
+      // Interactive mode expands the collapsed "migrate --all" step back into
+      // per-rule choices: the read-only report wants one line, but a checklist
+      // is only worth showing if each finding can be ticked on its own.
+      const fixable = description.subsystems
+        .flatMap((subsystem) => subsystem.rules)
+        .filter((rule) => (rule.status === "fail" || rule.status === "warn") && rule.fixable);
+
+      if (!fixable.length) {
+        console.log(`  ${green(glyph.pass)} ${dim("Nothing fixable to apply.")}`);
+        return;
+      }
+      // Follows `migrate`'s established precedent: refuse rather than guess.
+      if (!process.stdin.isTTY) {
+        console.error(`${xmark} --interactive needs a TTY; use \`pjangler migrate --all\` non-interactively`);
+        process.exit(1);
+      }
+
+      const result = await runChecklist({
+        items: fixable.map((rule) => ({ id: rule.id, title: rule.id, detail: rule.summary })),
+        title: "Select parity migrations to apply",
+      });
+      if (result.outcome === "cancel" || !result.selected.length) {
+        console.log(`  ${dim("Nothing applied.")}`);
+        return;
+      }
+
+      const report = runMigrationForRules(result.selected, description.repo, false);
+      printMigrationReport(report, false);
+      if (!report.ok) process.exit(1);
     } catch (err) {
       console.error(`${xmark} describe failed:`, err instanceof Error ? err.message : err);
       process.exit(1);

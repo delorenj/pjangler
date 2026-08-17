@@ -16,7 +16,6 @@
 // missing and when it is present but drifted, so collapsing the two would make
 // `describe` claim "broken" where the truth is "never installed".
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { recipeRegistry, lifecycleContext } from "../parity/index";
@@ -26,7 +25,21 @@ import {
   projectRegistryPath,
   type ProjectRecord,
 } from "../project/index";
-import { bold, cyan, dim, gray, glyph, green, heading, red, yellow } from "../utils/style";
+import { computeRepoActivity, gitLine, isGitRepo, type RepoActivity } from "./activity";
+import {
+  bold,
+  cyan,
+  dim,
+  gray,
+  glyph,
+  green,
+  red,
+  terminalWidth,
+  truncateVisible,
+  visibleWidth,
+  wrapVisible,
+  yellow,
+} from "../utils/style";
 
 /** Headline answer to "is this subsystem in this repo?". */
 export type SubsystemStatus = "installed" | "drifted" | "absent";
@@ -105,7 +118,11 @@ export interface DescribeIdentity {
   slug?: string;
   name?: string;
   description?: string;
-  status?: string;
+  // No `status` here on purpose. The registry carries one, but it reads
+  // "planned" for every project ever registered — a repo in the registry is by
+  // definition past planning — so it was a field that never varied and never
+  // informed. `ProjectDescription.activity` answers the question it pretended
+  // to, and answers it from git rather than from a value nobody updates.
   ticketProvider?: {
     type: string;
     workspace?: string;
@@ -131,6 +148,8 @@ export interface ProjectDescription {
   repo: string;
   describedAt: string;
   git: DescribeGit;
+  /** When work last happened here, across every branch, worktree, and edit. */
+  activity: RepoActivity;
   type: DescribeType;
   identity: DescribeIdentity;
   subsystems: DescribeSubsystem[];
@@ -145,6 +164,8 @@ export interface ProjectDescription {
 export interface DescribeInput {
   repoArg?: string;
   registryPath?: string;
+  /** Injected clock, so relative ages are deterministic under test. */
+  now?: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,26 +260,16 @@ function readJson(path: string): Record<string, unknown> | undefined {
   }
 }
 
-/** Run a git subcommand in `repo`, returning trimmed stdout or undefined. */
-function git(repo: string, args: string[]): string | undefined {
-  const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", timeout: 5_000 });
-  if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
-  const value = result.stdout.trim();
-  return value === "" ? undefined : value;
-}
-
-function describeGit(repo: string): DescribeGit {
-  if (git(repo, ["rev-parse", "--is-inside-work-tree"]) !== "true") return { isRepo: false };
-  const porcelain = spawnSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8", timeout: 5_000 });
-  const dirtyFiles = porcelain.status === 0
-    ? porcelain.stdout.split("\n").filter((line) => line.trim() !== "").length
-    : undefined;
+function describeGit(repo: string, activity: RepoActivity): DescribeGit {
+  if (!isGitRepo(repo)) return { isRepo: false };
+  // The activity scan already counted dirty files; re-running `git status`
+  // here would be a second scan of the same working tree for the same number.
   return {
     isRepo: true,
-    branch: git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    head: git(repo, ["rev-parse", "--short", "HEAD"]),
-    remote: git(repo, ["remote", "get-url", "origin"]),
-    dirtyFiles,
+    branch: gitLine(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    head: gitLine(repo, ["rev-parse", "--short", "HEAD"]),
+    remote: gitLine(repo, ["remote", "get-url", "origin"]),
+    dirtyFiles: activity.scanned.dirtyFiles,
   };
 }
 
@@ -415,7 +426,6 @@ function describeIdentity(repo: string, registryPath: string): DescribeIdentity 
     slug: record?.slug ?? (manifest?.project_slug as string | undefined),
     name: record?.name ?? (manifest?.project_name as string | undefined),
     description: record?.description ?? (manifest?.project_description as string | undefined),
-    status: record?.status,
     ticketProvider: provider
       ? {
           type: provider.type,
@@ -577,10 +587,12 @@ export function describeProject(input: DescribeInput = {}): ProjectDescription {
   const counts: Record<LifecycleStatus, number> = { pass: 0, fail: 0, warn: 0, skip: 0 };
   for (const finding of findings) counts[finding.status] += 1;
 
+  const activity = computeRepoActivity(repo, { now: input.now });
   const partial = {
     repo,
     describedAt: report.auditedAt,
-    git: describeGit(repo),
+    git: describeGit(repo, activity),
+    activity,
     type: describeType(repo),
     identity: describeIdentity(repo, registryPath),
     subsystems: describeSubsystems(repo, findings),
@@ -593,7 +605,22 @@ export function describeProject(input: DescribeInput = {}): ProjectDescription {
 
 // ---------------------------------------------------------------------------
 // Presentation
+//
+// Laid out like a `gh` subcommand: a header that answers "what am I looking
+// at" in three lines, then labelled sections with an aligned key column. No box
+// drawing — alignment, weight and color carry the structure, which survives
+// NO_COLOR and a narrow terminal in a way ASCII frames do not.
+//
+// `renderDescribe` takes width as a PARAMETER and never reads process.stdout,
+// so the same renderer serves the terminal, the MCP transport, and tests
+// without any of them disagreeing about how wide the world is.
 // ---------------------------------------------------------------------------
+
+const MIN_WIDTH = 60;
+const MAX_WIDTH = 120;
+
+/** Label column for the header key/value block. */
+const LABEL = 11;
 
 const SUBSYSTEM_STYLE: Record<SubsystemStatus, { glyph: string; color: (value: string | number) => string }> = {
   installed: { glyph: glyph.pass, color: green },
@@ -601,101 +628,158 @@ const SUBSYSTEM_STYLE: Record<SubsystemStatus, { glyph: string; color: (value: s
   absent: { glyph: glyph.skip, color: gray },
 };
 
-/** Render a description as the human-facing `pjangler describe` report. */
-export function formatProjectDescription(description: ProjectDescription): string {
-  const lines = [""];
-  const { identity, type, git } = description;
+export interface RenderOptions {
+  /** Visible columns to lay out within. Clamped to a readable range. */
+  width?: number;
+  /** Home directory to abbreviate as `~` in paths. */
+  home?: string;
+}
 
+/** `~/code/x` instead of `/home/someone/code/x` — shorter and less noisy. */
+function shortenPath(path: string, home?: string): string {
+  const base = home ?? process.env.HOME;
+  return base && path.startsWith(`${base}/`) ? `~${path.slice(base.length)}` : path;
+}
+
+function section(title: string, count?: string): string {
+  return `${bold(title)}${count ? `  ${dim(count)}` : ""}`;
+}
+
+function field(label: string, value: string): string {
+  return `  ${dim(padEndRaw(label, LABEL))}${value}`;
+}
+
+/** Pad the RAW label before it is colored — see the note in utils/style. */
+function padEndRaw(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
+/**
+ * Render the report as lines.
+ *
+ * Returns an array rather than a string so the interactive layer can splice in
+ * its own footer without re-parsing text it just produced.
+ */
+export function renderDescribe(description: ProjectDescription, options: RenderOptions = {}): string[] {
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, options.width ?? 100));
+  const { identity, type, git, activity } = description;
+  const lines: string[] = [""];
+
+  // --- Header ---------------------------------------------------------------
   const title = identity.name ?? description.repo.split("/").pop() ?? description.repo;
-  lines.push(`  ${heading(title)}${identity.slug ? ` ${dim(`(${identity.slug})`)}` : ""}`);
-  lines.push(`  ${dim(description.repo)}`);
-  if (identity.description) lines.push(`  ${identity.description}`);
+  const badge = identity.ticketProvider?.identifier ? `  ${cyan(identity.ticketProvider.identifier)}` : "";
+  const pulse = activity.updatedUnix
+    ? `${activity.active ? green("●") : yellow("○")} ${activity.active ? green(activity.relative) : yellow(activity.relative)}`
+    : dim(`${glyph.skip} never`);
+  const left = `  ${bold(title)}${badge}`;
+  const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(pulse) - 2);
+  lines.push(`${left}${" ".repeat(gap)}${pulse}`);
+  if (identity.description) lines.push(`  ${dim(truncateVisible(identity.description, width - 4))}`);
+  lines.push(`  ${dim(truncateVisible(shortenPath(description.repo, options.home), width - 4))}`);
   lines.push("");
 
-  // --- Type -----------------------------------------------------------------
-  const typeFacts: string[] = [];
-  if (type.primaryLanguage) typeFacts.push(cyan(type.primaryLanguage));
-  for (const role of type.roles) typeFacts.push(cyan(role));
-  lines.push(`  ${bold("Type")}`);
-  lines.push(`     ${typeFacts.length ? typeFacts.join(dim(" · ")) : dim("undetermined — no language or role markers found")}`);
-  if (type.languages.length > 1) lines.push(`     ${dim(`languages: ${type.languages.join(", ")}`)}`);
-  lines.push("");
+  // --- Facts ----------------------------------------------------------------
+  const typeFacts = [type.primaryLanguage, ...type.roles].filter(Boolean) as string[];
+  lines.push(field("type", typeFacts.length
+    ? typeFacts.map((fact) => cyan(fact)).join(dim(" · "))
+    : dim("undetermined — no language or role markers found")));
 
-  // --- Identity -------------------------------------------------------------
-  lines.push(`  ${bold("Identity")}`);
-  lines.push(`     ${dim("manifest".padEnd(10))} ${identity.manifest ? green(".project.json") : dim("(none)")}`);
-  lines.push(`     ${dim("registry".padEnd(10))} ${identity.registered ? green("registered") : yellow("not registered")}  ${dim(identity.registryPath)}`);
-  if (identity.status) lines.push(`     ${dim("status".padEnd(10))} ${cyan(identity.status)}`);
+  if (activity.source) {
+    lines.push(field("updated", `${activity.relative} ${dim(`${glyph.dot} ${activity.source.label}`)}`));
+  }
+
   if (identity.ticketProvider) {
     const provider = identity.ticketProvider;
     const board = [provider.type, provider.workspace, provider.identifier].filter(Boolean).join("/");
-    lines.push(`     ${dim("board".padEnd(10))} ${cyan(board)}${provider.state ? `  ${dim(provider.state)}` : ""}`);
+    lines.push(field("board", `${cyan(board)}${provider.state ? `  ${dim(provider.state)}` : ""}`));
   }
-  for (const agent of identity.agents) {
-    const state = agent.provisioningState === "provisioned" ? green(agent.provisioningState) : yellow(agent.provisioningState);
-    lines.push(`     ${dim("agent".padEnd(10))} ${cyan(agent.name)} ${dim(agent.role)}  ${state}`);
-  }
+
   if (git.isRepo) {
-    const clean = git.dirtyFiles === 0 ? green("clean") : yellow(`${git.dirtyFiles} uncommitted`);
-    lines.push(`     ${dim("git".padEnd(10))} ${cyan(git.branch ?? "?")}${git.head ? dim(` @ ${git.head}`) : ""}  ${clean}`);
-    if (git.remote) lines.push(`     ${dim("remote".padEnd(10))} ${dim(git.remote)}`);
+    const facts = [cyan(git.branch ?? "?")];
+    if (git.head) facts.push(dim(git.head));
+    facts.push(git.dirtyFiles ? yellow(`${git.dirtyFiles} uncommitted`) : green("clean"));
+    lines.push(field("git", facts.join(dim(" · "))));
+    if (git.remote) lines.push(field("remote", dim(truncateVisible(git.remote, width - LABEL - 4))));
   } else {
-    lines.push(`     ${dim("git".padEnd(10))} ${yellow("not a git repository")}`);
+    lines.push(field("git", yellow("not a git repository")));
   }
-  for (const entry of identity.drift) lines.push(`     ${yellow(glyph.warn)} ${entry.note}`);
+
+  const registryNote = identity.registered ? green("registered") : yellow("not registered");
+  lines.push(field("registry", `${registryNote}  ${dim(shortenPath(identity.registryPath, options.home))}`));
+
+  for (const agent of identity.agents) {
+    const state = agent.provisioningState === "provisioned"
+      ? green(agent.provisioningState)
+      : yellow(agent.provisioningState);
+    lines.push(field("agent", `${cyan(agent.name)} ${dim(agent.role)}  ${state}`));
+  }
+
+  for (const entry of identity.drift) {
+    lines.push("");
+    for (const [index, wrapped] of wrapVisible(entry.note, width - 6).entries()) {
+      lines.push(index === 0 ? `  ${yellow(glyph.warn)} ${wrapped}` : `    ${dim(wrapped)}`);
+    }
+  }
   lines.push("");
 
   // --- Subsystems -----------------------------------------------------------
-  const installed = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
-  lines.push(`  ${bold("Subsystems")} ${dim(`(${installed.length}/${description.subsystems.length} installed)`)}`);
-  const nameWidth = description.subsystems.reduce((width, subsystem) => Math.max(width, subsystem.name.length), 0);
+  const present = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
+  lines.push(section("Subsystems", `${present.length}/${description.subsystems.length} installed`));
+  const nameWidth = description.subsystems.reduce((max, subsystem) => Math.max(max, subsystem.name.length), 0);
   for (const subsystem of description.subsystems) {
     const style = SUBSYSTEM_STYLE[subsystem.status];
     const failing = subsystem.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
     const detail = subsystem.status === "absent"
       ? dim(subsystem.description)
       : failing.length
-        ? yellow(`${failing.length} rule(s) need attention: ${failing.map((rule) => rule.id).join(", ")}`)
+        ? yellow(failing.map((rule) => rule.id).join(", "))
         : dim(subsystem.evidence.join(", ") || subsystem.description);
-    lines.push(`     ${style.color(style.glyph)} ${style.color(subsystem.name.padEnd(nameWidth))}  ${detail}`);
+    const head = `  ${style.color(style.glyph)} ${style.color(padEndRaw(subsystem.name, nameWidth))}`;
+    lines.push(`${head}  ${truncateVisible(detail, Math.max(10, width - nameWidth - 8))}`);
   }
   lines.push("");
 
-  // --- Config files ---------------------------------------------------------
-  lines.push(`  ${bold("Config files")} ${dim(`(${description.configFiles.length})`)}`);
-  if (!description.configFiles.length) lines.push(`     ${dim("(none found)")}`);
-  const pathWidth = description.configFiles.reduce((width, file) => Math.max(width, file.path.length), 0);
+  // --- Config ---------------------------------------------------------------
+  lines.push(section("Config", `${description.configFiles.length} file${description.configFiles.length === 1 ? "" : "s"}`));
+  if (!description.configFiles.length) lines.push(`  ${dim("(none found)")}`);
+  const pathWidth = description.configFiles.reduce((max, file) => Math.max(max, file.path.length), 0);
   for (const file of description.configFiles) {
-    lines.push(`     ${cyan(file.path.padEnd(pathWidth))}  ${dim(file.purpose)}`);
+    const purpose = truncateVisible(file.purpose, Math.max(10, width - pathWidth - 6));
+    lines.push(`  ${cyan(padEndRaw(file.path, pathWidth))}  ${dim(purpose)}`);
   }
   lines.push("");
 
   // --- Parity ---------------------------------------------------------------
   const { counts } = description.parity;
-  const parityLine = [
-    green(`${counts.pass} pass`),
-    counts.fail ? red(`${counts.fail} fail`) : dim("0 fail"),
-    counts.warn ? yellow(`${counts.warn} warn`) : dim("0 warn"),
-    dim(`${counts.skip} skip`),
-  ].join(dim(" · "));
-  lines.push(`  ${bold("Parity")}  ${parityLine}`);
+  lines.push(`${section("Parity")}  ${[
+    counts.pass ? green(`${counts.pass} passed`) : dim("0 passed"),
+    counts.fail ? red(`${counts.fail} failed`) : dim("0 failed"),
+    counts.warn ? yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`) : dim("0 warnings"),
+    dim(`${counts.skip} skipped`),
+  ].join(dim(" · "))}`);
   lines.push("");
 
   // --- Next steps -----------------------------------------------------------
-  lines.push(`  ${bold("Next steps")} ${dim(`(${description.nextSteps.length})`)}`);
+  lines.push(section("Next steps", String(description.nextSteps.length)));
   if (!description.nextSteps.length) {
-    lines.push(`     ${green(glyph.pass)} ${dim("Nothing pending — parity is clean and the project is fully registered.")}`);
+    lines.push(`  ${green(glyph.pass)} ${dim("Nothing pending — parity is clean and the project is fully registered.")}`);
   }
-  for (const step of description.nextSteps) {
-    lines.push(`     ${cyan(glyph.bullet)} ${step.title}`);
-    if (step.details?.length) {
-      for (const detail of step.details) lines.push(`        ${dim(glyph.dot)} ${dim(detail)}`);
-    } else {
-      lines.push(`        ${dim(step.reason)}`);
+  for (const [index, step] of description.nextSteps.entries()) {
+    lines.push(`  ${cyan(String(index + 1).padStart(2))}  ${bold(step.title)}`);
+    const body = step.details?.length ? step.details : [step.reason];
+    for (const entry of body) {
+      for (const [wrapIndex, wrapped] of wrapVisible(entry, width - 8).entries()) {
+        lines.push(`      ${wrapIndex === 0 && step.details?.length ? dim(`${glyph.dot} `) : "  "}${dim(wrapped)}`);
+      }
     }
-    if (step.command) lines.push(`        ${dim(glyph.pointer)} ${cyan(step.command)}`);
+    if (step.command) lines.push(`      ${dim(glyph.pointer)} ${cyan(step.command)}`);
   }
   lines.push("");
 
-  return lines.join("\n");
+  return lines;
+}
+
+/** Render the report as the human-facing `pjangler describe` output. */
+export function formatProjectDescription(description: ProjectDescription, options: RenderOptions = {}): string {
+  return renderDescribe(description, { width: options.width ?? terminalWidth(), home: options.home }).join("\n");
 }

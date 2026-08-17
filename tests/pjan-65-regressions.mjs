@@ -224,7 +224,13 @@ try {
 
   // --- 10. Describing pjangler itself ---------------------------------------
   const self = describeJson(root);
-  assert.equal(subsystem(self, "project").status, "installed", "pjangler is a registered 33GOD project");
+  // Assert PRESENCE, not parity. "installed" additionally requires every
+  // project rule to pass, which is a different claim and one that legitimately
+  // fails in e.g. a git worktree, where the registry's repo_path points at the
+  // main checkout. Presence is what "pjangler is a 33GOD project" means.
+  const selfProject = subsystem(self, "project");
+  assert.notEqual(selfProject.status, "absent", "pjangler is a 33GOD project");
+  assert.ok(selfProject.evidence.includes(".project.json"), "presence must be proved by the manifest on disk");
   assert.ok(self.type.roles.includes("33god-project"));
   assert.ok(self.type.roles.includes("cli"));
   assert.ok(

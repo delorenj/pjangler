@@ -2,8 +2,8 @@
 
 // src/index.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
-import { existsSync as existsSync14, readFileSync as readFileSync12, statSync as statSync3 } from "node:fs";
-import { basename as basename5, join as join18, resolve as resolve8 } from "node:path";
+import { existsSync as existsSync14, readFileSync as readFileSync12, statSync as statSync4 } from "node:fs";
+import { basename as basename5, join as join19, resolve as resolve8 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -120,23 +120,53 @@ var STATUS_STYLES = {
 function statusStyle(status) {
   return STATUS_STYLES[status] ?? { glyph: glyph.dot, color: dim, label: status };
 }
-function projectStatusColor(status) {
-  switch (status) {
-    case "active":
-      return green;
-    case "planned":
-      return yellow;
-    case "archived":
-      return gray;
-    default:
-      return cyan;
-  }
-}
 function heading(title, marker = glyph.chevron) {
   return `${cyan(bold(marker))} ${bold(title)}`;
 }
 function joinDot(fragments) {
   return fragments.join(dim(` ${glyph.dot} `));
+}
+var ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+function stripAnsi(value) {
+  return value.replace(ANSI_PATTERN, "");
+}
+function visibleWidth(value) {
+  return stripAnsi(value).length;
+}
+function padVisible(value, width) {
+  return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
+}
+function truncateVisible(value, width) {
+  if (width <= 0) return "";
+  const plain = stripAnsi(value);
+  if (plain.length <= width) return value;
+  if (plain.length !== value.length) return width <= 1 ? "\u2026" : `${plain.slice(0, width - 1)}\u2026`;
+  return width <= 1 ? "\u2026" : `${value.slice(0, width - 1)}\u2026`;
+}
+function terminalWidth(stream = process.stdout, fallback = 100) {
+  const columns = stream.columns;
+  return typeof columns === "number" && columns > 0 ? columns : fallback;
+}
+function wrapVisible(text3, width) {
+  if (width <= 0) return [text3];
+  const lines = [];
+  let current = "";
+  for (const word of text3.split(/\s+/).filter(Boolean)) {
+    if (!current) {
+      current = word;
+    } else if (visibleWidth(current) + 1 + visibleWidth(word) <= width) {
+      current = `${current} ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+    while (visibleWidth(current) > width) {
+      lines.push(current.slice(0, width));
+      current = current.slice(width);
+    }
+  }
+  lines.push(current);
+  return lines;
 }
 
 // src/recipes/Recipe.ts
@@ -385,9 +415,9 @@ function optionalBoolean(value, label) {
 function normalizePackEntry(raw) {
   let source;
   if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    const at = trimmed.indexOf("@");
-    source = at >= 0 ? { name: trimmed.slice(0, at), version: trimmed.slice(at + 1) } : { name: trimmed };
+    const trimmed2 = raw.trim();
+    const at = trimmed2.indexOf("@");
+    source = at >= 0 ? { name: trimmed2.slice(0, at), version: trimmed2.slice(at + 1) } : { name: trimmed2 };
   } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     source = raw;
   } else {
@@ -2067,11 +2097,11 @@ ${render(required)}
 ${text3.replace(/^\s+/, "")}`;
   }
   const prefix = text3.slice(0, envMatch.index + envMatch[1].length);
-  const section = envMatch[2];
-  const suffix = text3.slice(envMatch.index + envMatch[1].length + section.length);
-  const pathLine = section.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
+  const section2 = envMatch[2];
+  const suffix = text3.slice(envMatch.index + envMatch[1].length + section2.length);
+  const pathLine = section2.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
   if (!pathLine) {
-    return `${prefix}${section.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
+    return `${prefix}${section2.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
   }
   const current = [...pathLine[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   const merged = [...current];
@@ -2080,7 +2110,7 @@ ${text3.replace(/^\s+/, "")}`;
   }
   const nextLine = render(merged);
   if (pathLine[0] === nextLine) return text3;
-  return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
+  return `${prefix}${section2.replace(pathLine[0], nextLine)}${suffix}`;
 }
 function removeTomlSection(text3, headerPattern, marker, options) {
   const lines = text3.split("\n");
@@ -2175,10 +2205,10 @@ function normalizeOpInjectPath(raw) {
 }
 var QUOTED_OR_BARE = String.raw`("[^"]*"|'[^']*'|\S+)`;
 function opInjectOutputTarget(value) {
-  const trimmed = value.trim();
-  const start = trimmed.search(/\bop\s+inject\b/);
+  const trimmed2 = value.trim();
+  const start = trimmed2.search(/\bop\s+inject\b/);
   if (start < 0) return null;
-  const tail = trimmed.slice(start);
+  const tail = trimmed2.slice(start);
   const mv = new RegExp(String.raw`\bmv\s+(?:-\S+\s+)*${QUOTED_OR_BARE}\s+${QUOTED_OR_BARE}`).exec(tail);
   if (mv?.[2]) return normalizeOpInjectPath(mv[2]);
   const redirect = new RegExp(String.raw`>\s*${QUOTED_OR_BARE}`).exec(tail);
@@ -2188,9 +2218,9 @@ function opInjectOutputTarget(value) {
   return null;
 }
 function isOpInjectHookEntry(value) {
-  const trimmed = value.trim();
-  if (trimmed === OP_INJECT_SCRIPT) return true;
-  return opInjectOutputTarget(trimmed) === ".env";
+  const trimmed2 = value.trim();
+  if (trimmed2 === OP_INJECT_SCRIPT) return true;
+  return opInjectOutputTarget(trimmed2) === ".env";
 }
 function truncatingOpInjectEntries(enterHooks) {
   return enterHooks.filter((value) => value.trim() !== OP_INJECT_SCRIPT && isOpInjectHookEntry(value));
@@ -2215,8 +2245,8 @@ function stripHookBlocks(text3) {
   const drop = new Array(lines.length).fill(false);
   const isHeader = (line) => /^\[/.test(line.trim());
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed);
+    const trimmed2 = lines[i].trim();
+    const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed2);
     if (tableMatch) {
       const kind = tableMatch[1];
       const bucket = kind === "enter" ? enter : leave;
@@ -2238,7 +2268,7 @@ function stripHookBlocks(text3) {
       i = j - 1;
       continue;
     }
-    if (trimmed === "[hooks]") {
+    if (trimmed2 === "[hooks]") {
       let j = i + 1;
       let lastDrop = i;
       while (j < lines.length && !isHeader(lines[j])) {
@@ -2304,9 +2334,9 @@ function renderHookTables(scripts, kind) {
 script = ${JSON.stringify(script)}`);
 }
 function isMiseCoreHookEntry(value) {
-  const trimmed = value.trim();
-  if (isOpInjectHookEntry(trimmed)) return false;
-  return trimmed === SYNC_SKILLS_SCRIPT || trimmed === PROVISION_PACKS_SCRIPT || trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed) || /provision-(?:packs|bmad-skills)\.py/.test(trimmed) || /link-(?:project-skills-to-clis|agentfiles)\.sh'?\s*$/.test(trimmed) || /unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed);
+  const trimmed2 = value.trim();
+  if (isOpInjectHookEntry(trimmed2)) return false;
+  return trimmed2 === SYNC_SKILLS_SCRIPT || trimmed2 === PROVISION_PACKS_SCRIPT || trimmed2 === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed2) || /provision-(?:packs|bmad-skills)\.py/.test(trimmed2) || /link-(?:project-skills-to-clis|agentfiles)\.sh'?\s*$/.test(trimmed2) || /unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed2);
 }
 function reconcileHookOwner(text3, owns, canonicalScripts, header = "") {
   const { text: stripped, records } = stripHookBlocks(text3);
@@ -2717,15 +2747,15 @@ function runtimeSubmodulePath(repoRoot, role) {
   if (!/^agents\/hermes\/[^/]+$/.test(rolePath)) return null;
   return `${rolePath}/runtime`;
 }
-function submoduleSectionHasPath(section, targetPath) {
-  return section.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+function submoduleSectionHasPath(section2, targetPath) {
+  return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
 function hasRuntimeSubmoduleMapping(repoRoot, role) {
   const gitmodulesPath = join3(repoRoot, ".gitmodules");
   const current = safeReadText(gitmodulesPath) ?? "";
   const sections = current.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
   const targetPath = runtimeSubmodulePath(repoRoot, role);
-  return Boolean(targetPath && sections.some((section) => submoduleSectionHasPath(section, targetPath)));
+  return Boolean(targetPath && sections.some((section2) => submoduleSectionHasPath(section2, targetPath)));
 }
 function removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun) {
   const gitmodulesPath = join3(repoRoot, ".gitmodules");
@@ -2733,7 +2763,7 @@ function removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun) {
   if (!hasRuntimeSubmoduleMapping(repoRoot, role)) return [];
   const targetPath = runtimeSubmodulePath(repoRoot, role);
   if (!targetPath) return [];
-  const next = current.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) => submoduleSectionHasPath(section, targetPath) ? "" : section).replace(/\n{3,}/g, "\n\n").trim();
+  const next = current.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section2) => submoduleSectionHasPath(section2, targetPath) ? "" : section2).replace(/\n{3,}/g, "\n\n").trim();
   changedFiles.push(gitmodulesPath);
   if (!dryRun) writeText(gitmodulesPath, next ? `${next}
 ` : "");
@@ -3402,8 +3432,8 @@ function attemptNestedAdapterSmoke(repoRoot, candidate) {
   }
   return { ok: true };
 }
-function momoLifecycleFinding(section, status, summary, details = []) {
-  return { section, status, summary, details };
+function momoLifecycleFinding(section2, status, summary, details = []) {
+  return { section: section2, status, summary, details };
 }
 function auditManifestRoleConsistency(repoRoot) {
   const details = [];
@@ -3733,35 +3763,35 @@ var UNSUPPORTED_BMAD_ROOTS = {
 function parseCsvRows(text3) {
   const rows = [];
   let row = [];
-  let field = "";
+  let field2 = "";
   let quoted = false;
   for (let index = 0; index < text3.length; index++) {
     const char = text3[index];
     if (quoted) {
       if (char === '"' && text3[index + 1] === '"') {
-        field += '"';
+        field2 += '"';
         index++;
       } else if (char === '"') {
         quoted = false;
       } else {
-        field += char;
+        field2 += char;
       }
     } else if (char === '"') {
       quoted = true;
     } else if (char === ",") {
-      row.push(field);
-      field = "";
+      row.push(field2);
+      field2 = "";
     } else if (char === "\n") {
-      row.push(field.replace(/\r$/, ""));
+      row.push(field2.replace(/\r$/, ""));
       rows.push(row);
       row = [];
-      field = "";
+      field2 = "";
     } else {
-      field += char;
+      field2 += char;
     }
   }
-  if (field || row.length) {
-    row.push(field.replace(/\r$/, ""));
+  if (field2 || row.length) {
+    row.push(field2.replace(/\r$/, ""));
     rows.push(row);
   }
   return rows;
@@ -6290,11 +6320,11 @@ var RunCopierTemplate = class extends Command {
 import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync4, readdirSync as readdirSync3 } from "fs";
 import { join as join6 } from "path";
 import { spawnSync as spawnSync3 } from "node:child_process";
-function sectionHasPath(section, targetPath) {
-  return section.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+function sectionHasPath(section2, targetPath) {
+  return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
 function removeSubmodulePath(content, targetPath) {
-  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) => sectionHasPath(section, targetPath) ? "" : section).replace(/\n{3,}/g, "\n\n").trim();
+  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section2) => sectionHasPath(section2, targetPath) ? "" : section2).replace(/\n{3,}/g, "\n\n").trim();
 }
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
@@ -6339,7 +6369,7 @@ var UntrackHermesRuntimes = class extends Command {
       if (existsSync4(gitmodulesPath)) {
         gitmodulesContent = readFileSync5(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
-        hasStaleMapping = sections.some((section) => sectionHasPath(section, runtimePath));
+        hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
       const fullGitignorePath = join6(targetDir, gitignorePath);
@@ -7848,20 +7878,29 @@ function formatProjectInitPlan(plan) {
   lines.push("");
   return lines.join("\n");
 }
-function formatProjectList(registry) {
-  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
+function formatProjectList(registry, activityByPath = /* @__PURE__ */ new Map()) {
+  const ageOf = (project) => activityByPath.get(project.repo_path);
+  const projects = Object.values(registry.projects).sort((a, b) => {
+    const left = ageOf(a)?.updatedUnix ?? -1;
+    const right = ageOf(b)?.updatedUnix ?? -1;
+    if (left !== right) return right - left;
+    return a.slug.localeCompare(b.slug);
+  });
   if (!projects.length) return `
   ${dim("No projects registered.")}
 `;
+  const relativeOf = (project) => ageOf(project)?.relative ?? "never";
   const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
   const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
-  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
-  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
+  const ageWidth = projects.reduce((width, project) => Math.max(width, relativeOf(project).length), 0);
+  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}  ${dim("newest work first")}`, ""];
   for (const project of projects) {
+    const activity = ageOf(project);
     const slug = bold(project.slug.padEnd(slugWidth));
     const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
-    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
-    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
+    const padded = relativeOf(project).padEnd(ageWidth);
+    const age = activity?.active ? green(padded) : activity?.updatedUnix ? yellow(padded) : dim(padded);
+    lines.push(`  ${slug}  ${identifier}  ${age}  ${dim(project.repo_path)}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -9146,9 +9185,268 @@ function getCommandsByGroup() {
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/describe/index.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
-import { existsSync as existsSync13, readFileSync as readFileSync10, readdirSync as readdirSync5, statSync as statSync2 } from "node:fs";
-import { join as join16, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync13, readFileSync as readFileSync10, readdirSync as readdirSync5, statSync as statSync3 } from "node:fs";
+import { join as join17, resolve as resolve7 } from "node:path";
+
+// src/describe/activity.ts
+import { spawn, spawnSync as spawnSync8 } from "node:child_process";
+import { statSync as statSync2 } from "node:fs";
+import { join as join16 } from "node:path";
+var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
+var MAX_DIRTY_STATS = 500;
+var GIT_TIMEOUT_MS = 5e3;
+var GIT_MAX_BUFFER = 16 * 1024 * 1024;
+function git(repo, args) {
+  const result = spawnSync8("git", ["-C", repo, ...args], {
+    encoding: "utf8",
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: GIT_MAX_BUFFER
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return void 0;
+  return result.stdout;
+}
+function gitAsync(repo, args) {
+  return new Promise((resolve9) => {
+    const child = spawn("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    let size = 0;
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve9(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(void 0);
+    }, GIT_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > GIT_MAX_BUFFER) {
+        child.kill("SIGKILL");
+        finish(void 0);
+        return;
+      }
+      out += chunk;
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      finish(void 0);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      finish(code === 0 ? out : void 0);
+    });
+  });
+}
+function trimmed(raw) {
+  if (raw === void 0) return void 0;
+  const value = raw.trim();
+  return value === "" ? void 0 : value;
+}
+function gitLine(repo, args) {
+  return trimmed(git(repo, args));
+}
+function isGitRepo(repo) {
+  return gitLine(repo, ["rev-parse", "--is-inside-work-tree"]) === "true";
+}
+var MINUTE = 60;
+var HOUR = 60 * MINUTE;
+var DAY = 24 * HOUR;
+var WEEK = 7 * DAY;
+var MONTH = 30 * DAY;
+var YEAR = 365 * DAY;
+function plural(count, unit) {
+  return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+}
+function formatRelativeAge(deltaSeconds) {
+  const delta = Math.max(0, Math.floor(deltaSeconds));
+  if (delta < MINUTE) return "just now";
+  if (delta < HOUR) return plural(Math.floor(delta / MINUTE), "minute");
+  if (delta < DAY) return plural(Math.floor(delta / HOUR), "hour");
+  if (delta < WEEK) return plural(Math.floor(delta / DAY), "day");
+  if (delta < MONTH) return plural(Math.floor(delta / WEEK), "week");
+  if (delta < YEAR) return plural(Math.floor(delta / MONTH), "month");
+  return plural(Math.floor(delta / YEAR), "year");
+}
+function formatCompactAge(deltaSeconds) {
+  const delta = Math.max(0, Math.floor(deltaSeconds));
+  if (delta < MINUTE) return "now";
+  if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m`;
+  if (delta < DAY) return `${Math.floor(delta / HOUR)}h`;
+  if (delta < WEEK) return `${Math.floor(delta / DAY)}d`;
+  if (delta < MONTH) return `${Math.floor(delta / WEEK)}w`;
+  if (delta < YEAR) return `${Math.floor(delta / MONTH)}mo`;
+  return `${Math.floor(delta / YEAR)}y`;
+}
+var REF_ARGS = [
+  "for-each-ref",
+  "--sort=-committerdate",
+  "--format=%(committerdate:unix)%09%(refname:short)",
+  "refs/heads",
+  "refs/remotes",
+  "refs/tags"
+];
+var WORKTREE_ARGS = ["worktree", "list", "--porcelain"];
+var STATUS_ARGS = ["status", "--porcelain", "-z", "--ignore-submodules=dirty"];
+function parseRefs(raw) {
+  if (raw === void 0) return { count: 0 };
+  const lines = raw.split("\n").filter((line) => line.trim() !== "");
+  if (!lines.length) return { count: 0 };
+  const [stamp, name] = lines[0].split("	");
+  const unix = Number(stamp);
+  if (!Number.isFinite(unix) || unix <= 0) return { count: lines.length };
+  return { source: { kind: "ref", label: name ?? "(unnamed ref)", unix }, count: lines.length };
+}
+function parseWorktrees(raw) {
+  if (raw === void 0) return [];
+  const entries = [];
+  let current = { detached: false };
+  const flush = () => {
+    if (current.path && current.sha) entries.push({ path: current.path, sha: current.sha, detached: current.detached });
+    current = { detached: false };
+  };
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      current.path = line.slice("worktree ".length);
+    } else if (line.startsWith("HEAD ")) {
+      current.sha = line.slice("HEAD ".length).trim();
+    } else if (line === "detached") {
+      current.detached = true;
+    }
+  }
+  flush();
+  return entries;
+}
+function parseWorktreeStamps(raw, entries) {
+  if (raw === void 0) return void 0;
+  let best;
+  for (const line of raw.split("\n")) {
+    const [stamp, sha] = line.trim().split(" ");
+    const unix = Number(stamp);
+    if (!Number.isFinite(unix) || unix <= 0 || !sha) continue;
+    if (best && unix <= best.unix) continue;
+    const owner = entries.find((entry) => entry.sha === sha);
+    const name = owner ? basenameOf(owner.path) : sha.slice(0, 7);
+    best = { kind: "worktree", label: owner?.detached ? `${name} (detached)` : name, unix };
+  }
+  return best;
+}
+function parseStatusPaths(raw) {
+  if (raw === void 0) return [];
+  const parts = raw.split("\0").filter((part) => part !== "");
+  const paths = [];
+  for (let index = 0; index < parts.length; index++) {
+    const entry = parts[index];
+    if (entry.length < 4 || entry[2] !== " ") continue;
+    paths.push(entry.slice(3));
+    if (entry[0] === "R" || entry[0] === "C") index += 1;
+  }
+  return paths;
+}
+function basenameOf(path) {
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+function uncommittedSource(repo, paths) {
+  if (!paths.length) return void 0;
+  let newest = 0;
+  for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
+    try {
+      const mtime = Math.floor(statSync2(join16(repo, path)).mtimeMs / 1e3);
+      if (mtime > newest) newest = mtime;
+    } catch {
+    }
+  }
+  if (newest <= 0) return void 0;
+  const label = paths.length === 1 ? "1 uncommitted file" : `${paths.length} uncommitted files`;
+  return { kind: "uncommitted", label, unix: newest };
+}
+var NO_ACTIVITY = {
+  updated: null,
+  updatedUnix: null,
+  relative: "never",
+  compact: "\u2014",
+  active: false,
+  source: null,
+  scanned: { refs: 0, worktrees: 0, dirtyFiles: 0 }
+};
+function emptyActivity() {
+  return { ...NO_ACTIVITY, scanned: { refs: 0, worktrees: 0, dirtyFiles: 0 } };
+}
+function assembleActivity(candidates, scanned, now) {
+  let winner = null;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (!winner || candidate.unix >= winner.unix) winner = candidate;
+  }
+  if (!winner) return { ...NO_ACTIVITY, scanned };
+  const nowUnix = Math.floor((now?.getTime() ?? Date.now()) / 1e3);
+  const delta = nowUnix - winner.unix;
+  return {
+    updated: new Date(winner.unix * 1e3).toISOString(),
+    updatedUnix: winner.unix,
+    relative: formatRelativeAge(delta),
+    compact: formatCompactAge(delta),
+    active: delta < ACTIVE_WINDOW_SECONDS,
+    source: winner,
+    scanned
+  };
+}
+function computeRepoActivity(repo, options = {}) {
+  if (!isGitRepo(repo)) return emptyActivity();
+  const refs = parseRefs(git(repo, REF_ARGS));
+  const worktrees = parseWorktrees(git(repo, WORKTREE_ARGS));
+  const shas = [...new Set(worktrees.map((entry) => entry.sha))];
+  const worktreeSource = shas.length ? parseWorktreeStamps(git(repo, ["show", "-s", "--format=%ct %H", ...shas]), worktrees) : void 0;
+  const paths = parseStatusPaths(git(repo, STATUS_ARGS));
+  return assembleActivity(
+    [refs.source, worktreeSource, uncommittedSource(repo, paths)],
+    { refs: refs.count, worktrees: worktrees.length, dirtyFiles: paths.length },
+    options.now
+  );
+}
+async function computeRepoActivityAsync(repo, options = {}) {
+  if (trimmed(await gitAsync(repo, ["rev-parse", "--is-inside-work-tree"])) !== "true") return emptyActivity();
+  const [refRaw, worktreeRaw, statusRaw] = await Promise.all([
+    gitAsync(repo, REF_ARGS),
+    gitAsync(repo, WORKTREE_ARGS),
+    gitAsync(repo, STATUS_ARGS)
+  ]);
+  const refs = parseRefs(refRaw);
+  const worktrees = parseWorktrees(worktreeRaw);
+  const shas = [...new Set(worktrees.map((entry) => entry.sha))];
+  const worktreeSource = shas.length ? parseWorktreeStamps(await gitAsync(repo, ["show", "-s", "--format=%ct %H", ...shas]), worktrees) : void 0;
+  const paths = parseStatusPaths(statusRaw);
+  return assembleActivity(
+    [refs.source, worktreeSource, uncommittedSource(repo, paths)],
+    { refs: refs.count, worktrees: worktrees.length, dirtyFiles: paths.length },
+    options.now
+  );
+}
+async function computeRepoActivityBatch(repos, options = {}) {
+  const results = /* @__PURE__ */ new Map();
+  const unique = [...new Set(repos)];
+  const limit = Math.max(1, options.concurrency ?? 8);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < unique.length) {
+      const repo = unique[cursor++];
+      try {
+        results.set(repo, await computeRepoActivityAsync(repo, options));
+      } catch {
+        results.set(repo, emptyActivity());
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, unique.length) }, worker));
+  return results;
+}
+
+// src/describe/index.ts
 var SUBSYSTEM_MARKERS = {
   "mise-op-inject": [".env.op"],
   mise: ["mise.toml", ".mise.toml", ".mise/config.toml"],
@@ -9206,22 +9504,14 @@ function readJson(path) {
     return void 0;
   }
 }
-function git(repo, args) {
-  const result = spawnSync8("git", ["-C", repo, ...args], { encoding: "utf8", timeout: 5e3 });
-  if (result.status !== 0 || typeof result.stdout !== "string") return void 0;
-  const value = result.stdout.trim();
-  return value === "" ? void 0 : value;
-}
-function describeGit(repo) {
-  if (git(repo, ["rev-parse", "--is-inside-work-tree"]) !== "true") return { isRepo: false };
-  const porcelain = spawnSync8("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8", timeout: 5e3 });
-  const dirtyFiles = porcelain.status === 0 ? porcelain.stdout.split("\n").filter((line) => line.trim() !== "").length : void 0;
+function describeGit(repo, activity) {
+  if (!isGitRepo(repo)) return { isRepo: false };
   return {
     isRepo: true,
-    branch: git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    head: git(repo, ["rev-parse", "--short", "HEAD"]),
-    remote: git(repo, ["remote", "get-url", "origin"]),
-    dirtyFiles
+    branch: gitLine(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    head: gitLine(repo, ["rev-parse", "--short", "HEAD"]),
+    remote: gitLine(repo, ["remote", "get-url", "origin"]),
+    dirtyFiles: activity.scanned.dirtyFiles
   };
 }
 function describeType(repo) {
@@ -9230,7 +9520,7 @@ function describeType(repo) {
   const evidence = [];
   const note2 = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync13(join16(repo, marker.file))) continue;
+    if (!existsSync13(join17(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note2(marker.language, marker.file);
@@ -9244,9 +9534,9 @@ function describeType(repo) {
     }
   } catch {
   }
-  const pkg = readJson(join16(repo, "package.json"));
+  const pkg = readJson(join17(repo, "package.json"));
   if (pkg) {
-    if (existsSync13(join16(repo, "tsconfig.json"))) {
+    if (existsSync13(join17(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -9280,14 +9570,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync13(join16(repo, marker))) continue;
+    if (!existsSync13(join17(repo, marker))) continue;
     roles.push(role);
     note2(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join16(repo, ".project.json");
+  const manifestPath = join17(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -9325,10 +9615,10 @@ function describeIdentity(repo, registryPath2) {
       ["identifier", provider?.identifier, record.ticket_provider.identifier],
       ["board_id", provider?.board_id, record.ticket_provider.board_id]
     ];
-    for (const [field, fromManifest, fromRegistry] of fields) {
+    for (const [field2, fromManifest, fromRegistry] of fields) {
       if ((fromManifest ?? "") === (fromRegistry ?? "")) continue;
       drift.push({
-        note: `ticket_provider.${field} differs: .project.json has "${fromManifest ?? ""}", registry has "${fromRegistry ?? ""}" \u2014 the manifest is the source of truth, so the registry record needs re-syncing`
+        note: `ticket_provider.${field2} differs: .project.json has "${fromManifest ?? ""}", registry has "${fromRegistry ?? ""}" \u2014 the manifest is the source of truth, so the registry record needs re-syncing`
       });
     }
   }
@@ -9351,7 +9641,6 @@ function describeIdentity(repo, registryPath2) {
     slug: record?.slug ?? manifest?.project_slug,
     name: record?.name ?? manifest?.project_name,
     description: record?.description ?? manifest?.project_description,
-    status: record?.status,
     ticketProvider: provider ? {
       type: provider.type,
       workspace: provider.workspace,
@@ -9373,7 +9662,7 @@ function describeSubsystems(repo, findings) {
   }
   return recipeRegistry.list().map((metadata) => {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
-    const evidence = markers.filter((marker) => existsSync13(join16(repo, marker)));
+    const evidence = markers.filter((marker) => existsSync13(join17(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding) => ({
       id: finding.id,
       title: finding.title,
@@ -9389,7 +9678,7 @@ function describeSubsystems(repo, findings) {
   });
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync13(join16(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync13(join17(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -9469,16 +9758,18 @@ function describeNextSteps(description, findings) {
 function describeProject(input = {}) {
   const repo = resolve7(input.repoArg ?? process.cwd());
   if (!existsSync13(repo)) throw new Error(`Path does not exist: ${repo}`);
-  if (!statSync2(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  if (!statSync3(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
   const findings = report.rules;
   const counts = { pass: 0, fail: 0, warn: 0, skip: 0 };
   for (const finding of findings) counts[finding.status] += 1;
+  const activity = computeRepoActivity(repo, { now: input.now });
   const partial = {
     repo,
     describedAt: report.auditedAt,
-    git: describeGit(repo),
+    git: describeGit(repo, activity),
+    activity,
     type: describeType(repo),
     identity: describeIdentity(repo, registryPath2),
     subsystems: describeSubsystems(repo, findings),
@@ -9487,101 +9778,252 @@ function describeProject(input = {}) {
   };
   return { ...partial, nextSteps: describeNextSteps(partial, findings) };
 }
+var MIN_WIDTH = 60;
+var MAX_WIDTH = 120;
+var LABEL = 11;
 var SUBSYSTEM_STYLE = {
   installed: { glyph: glyph.pass, color: green },
   drifted: { glyph: glyph.warn, color: yellow },
   absent: { glyph: glyph.skip, color: gray }
 };
-function formatProjectDescription(description) {
+function shortenPath(path, home) {
+  const base = home ?? process.env.HOME;
+  return base && path.startsWith(`${base}/`) ? `~${path.slice(base.length)}` : path;
+}
+function section(title, count) {
+  return `${bold(title)}${count ? `  ${dim(count)}` : ""}`;
+}
+function field(label, value) {
+  return `  ${dim(padEndRaw(label, LABEL))}${value}`;
+}
+function padEndRaw(value, width) {
+  return value.padEnd(width);
+}
+function renderDescribe(description, options = {}) {
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, options.width ?? 100));
+  const { identity, type, git: git2, activity } = description;
   const lines = [""];
-  const { identity, type, git: git2 } = description;
   const title = identity.name ?? description.repo.split("/").pop() ?? description.repo;
-  lines.push(`  ${heading(title)}${identity.slug ? ` ${dim(`(${identity.slug})`)}` : ""}`);
-  lines.push(`  ${dim(description.repo)}`);
-  if (identity.description) lines.push(`  ${identity.description}`);
+  const badge = identity.ticketProvider?.identifier ? `  ${cyan(identity.ticketProvider.identifier)}` : "";
+  const pulse = activity.updatedUnix ? `${activity.active ? green("\u25CF") : yellow("\u25CB")} ${activity.active ? green(activity.relative) : yellow(activity.relative)}` : dim(`${glyph.skip} never`);
+  const left = `  ${bold(title)}${badge}`;
+  const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(pulse) - 2);
+  lines.push(`${left}${" ".repeat(gap)}${pulse}`);
+  if (identity.description) lines.push(`  ${dim(truncateVisible(identity.description, width - 4))}`);
+  lines.push(`  ${dim(truncateVisible(shortenPath(description.repo, options.home), width - 4))}`);
   lines.push("");
-  const typeFacts = [];
-  if (type.primaryLanguage) typeFacts.push(cyan(type.primaryLanguage));
-  for (const role of type.roles) typeFacts.push(cyan(role));
-  lines.push(`  ${bold("Type")}`);
-  lines.push(`     ${typeFacts.length ? typeFacts.join(dim(" \xB7 ")) : dim("undetermined \u2014 no language or role markers found")}`);
-  if (type.languages.length > 1) lines.push(`     ${dim(`languages: ${type.languages.join(", ")}`)}`);
-  lines.push("");
-  lines.push(`  ${bold("Identity")}`);
-  lines.push(`     ${dim("manifest".padEnd(10))} ${identity.manifest ? green(".project.json") : dim("(none)")}`);
-  lines.push(`     ${dim("registry".padEnd(10))} ${identity.registered ? green("registered") : yellow("not registered")}  ${dim(identity.registryPath)}`);
-  if (identity.status) lines.push(`     ${dim("status".padEnd(10))} ${cyan(identity.status)}`);
+  const typeFacts = [type.primaryLanguage, ...type.roles].filter(Boolean);
+  lines.push(field("type", typeFacts.length ? typeFacts.map((fact) => cyan(fact)).join(dim(" \xB7 ")) : dim("undetermined \u2014 no language or role markers found")));
+  if (activity.source) {
+    lines.push(field("updated", `${activity.relative} ${dim(`${glyph.dot} ${activity.source.label}`)}`));
+  }
   if (identity.ticketProvider) {
     const provider = identity.ticketProvider;
     const board = [provider.type, provider.workspace, provider.identifier].filter(Boolean).join("/");
-    lines.push(`     ${dim("board".padEnd(10))} ${cyan(board)}${provider.state ? `  ${dim(provider.state)}` : ""}`);
-  }
-  for (const agent of identity.agents) {
-    const state = agent.provisioningState === "provisioned" ? green(agent.provisioningState) : yellow(agent.provisioningState);
-    lines.push(`     ${dim("agent".padEnd(10))} ${cyan(agent.name)} ${dim(agent.role)}  ${state}`);
+    lines.push(field("board", `${cyan(board)}${provider.state ? `  ${dim(provider.state)}` : ""}`));
   }
   if (git2.isRepo) {
-    const clean = git2.dirtyFiles === 0 ? green("clean") : yellow(`${git2.dirtyFiles} uncommitted`);
-    lines.push(`     ${dim("git".padEnd(10))} ${cyan(git2.branch ?? "?")}${git2.head ? dim(` @ ${git2.head}`) : ""}  ${clean}`);
-    if (git2.remote) lines.push(`     ${dim("remote".padEnd(10))} ${dim(git2.remote)}`);
+    const facts = [cyan(git2.branch ?? "?")];
+    if (git2.head) facts.push(dim(git2.head));
+    facts.push(git2.dirtyFiles ? yellow(`${git2.dirtyFiles} uncommitted`) : green("clean"));
+    lines.push(field("git", facts.join(dim(" \xB7 "))));
+    if (git2.remote) lines.push(field("remote", dim(truncateVisible(git2.remote, width - LABEL - 4))));
   } else {
-    lines.push(`     ${dim("git".padEnd(10))} ${yellow("not a git repository")}`);
+    lines.push(field("git", yellow("not a git repository")));
   }
-  for (const entry of identity.drift) lines.push(`     ${yellow(glyph.warn)} ${entry.note}`);
+  const registryNote = identity.registered ? green("registered") : yellow("not registered");
+  lines.push(field("registry", `${registryNote}  ${dim(shortenPath(identity.registryPath, options.home))}`));
+  for (const agent of identity.agents) {
+    const state = agent.provisioningState === "provisioned" ? green(agent.provisioningState) : yellow(agent.provisioningState);
+    lines.push(field("agent", `${cyan(agent.name)} ${dim(agent.role)}  ${state}`));
+  }
+  for (const entry of identity.drift) {
+    lines.push("");
+    for (const [index, wrapped] of wrapVisible(entry.note, width - 6).entries()) {
+      lines.push(index === 0 ? `  ${yellow(glyph.warn)} ${wrapped}` : `    ${dim(wrapped)}`);
+    }
+  }
   lines.push("");
-  const installed = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
-  lines.push(`  ${bold("Subsystems")} ${dim(`(${installed.length}/${description.subsystems.length} installed)`)}`);
-  const nameWidth = description.subsystems.reduce((width, subsystem) => Math.max(width, subsystem.name.length), 0);
+  const present = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
+  lines.push(section("Subsystems", `${present.length}/${description.subsystems.length} installed`));
+  const nameWidth = description.subsystems.reduce((max, subsystem) => Math.max(max, subsystem.name.length), 0);
   for (const subsystem of description.subsystems) {
     const style = SUBSYSTEM_STYLE[subsystem.status];
     const failing = subsystem.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
-    const detail = subsystem.status === "absent" ? dim(subsystem.description) : failing.length ? yellow(`${failing.length} rule(s) need attention: ${failing.map((rule) => rule.id).join(", ")}`) : dim(subsystem.evidence.join(", ") || subsystem.description);
-    lines.push(`     ${style.color(style.glyph)} ${style.color(subsystem.name.padEnd(nameWidth))}  ${detail}`);
+    const detail = subsystem.status === "absent" ? dim(subsystem.description) : failing.length ? yellow(failing.map((rule) => rule.id).join(", ")) : dim(subsystem.evidence.join(", ") || subsystem.description);
+    const head = `  ${style.color(style.glyph)} ${style.color(padEndRaw(subsystem.name, nameWidth))}`;
+    lines.push(`${head}  ${truncateVisible(detail, Math.max(10, width - nameWidth - 8))}`);
   }
   lines.push("");
-  lines.push(`  ${bold("Config files")} ${dim(`(${description.configFiles.length})`)}`);
-  if (!description.configFiles.length) lines.push(`     ${dim("(none found)")}`);
-  const pathWidth = description.configFiles.reduce((width, file) => Math.max(width, file.path.length), 0);
+  lines.push(section("Config", `${description.configFiles.length} file${description.configFiles.length === 1 ? "" : "s"}`));
+  if (!description.configFiles.length) lines.push(`  ${dim("(none found)")}`);
+  const pathWidth = description.configFiles.reduce((max, file) => Math.max(max, file.path.length), 0);
   for (const file of description.configFiles) {
-    lines.push(`     ${cyan(file.path.padEnd(pathWidth))}  ${dim(file.purpose)}`);
+    const purpose = truncateVisible(file.purpose, Math.max(10, width - pathWidth - 6));
+    lines.push(`  ${cyan(padEndRaw(file.path, pathWidth))}  ${dim(purpose)}`);
   }
   lines.push("");
   const { counts } = description.parity;
-  const parityLine = [
-    green(`${counts.pass} pass`),
-    counts.fail ? red(`${counts.fail} fail`) : dim("0 fail"),
-    counts.warn ? yellow(`${counts.warn} warn`) : dim("0 warn"),
-    dim(`${counts.skip} skip`)
-  ].join(dim(" \xB7 "));
-  lines.push(`  ${bold("Parity")}  ${parityLine}`);
+  lines.push(`${section("Parity")}  ${[
+    counts.pass ? green(`${counts.pass} passed`) : dim("0 passed"),
+    counts.fail ? red(`${counts.fail} failed`) : dim("0 failed"),
+    counts.warn ? yellow(`${counts.warn} warning${counts.warn === 1 ? "" : "s"}`) : dim("0 warnings"),
+    dim(`${counts.skip} skipped`)
+  ].join(dim(" \xB7 "))}`);
   lines.push("");
-  lines.push(`  ${bold("Next steps")} ${dim(`(${description.nextSteps.length})`)}`);
+  lines.push(section("Next steps", String(description.nextSteps.length)));
   if (!description.nextSteps.length) {
-    lines.push(`     ${green(glyph.pass)} ${dim("Nothing pending \u2014 parity is clean and the project is fully registered.")}`);
+    lines.push(`  ${green(glyph.pass)} ${dim("Nothing pending \u2014 parity is clean and the project is fully registered.")}`);
   }
-  for (const step of description.nextSteps) {
-    lines.push(`     ${cyan(glyph.bullet)} ${step.title}`);
-    if (step.details?.length) {
-      for (const detail of step.details) lines.push(`        ${dim(glyph.dot)} ${dim(detail)}`);
-    } else {
-      lines.push(`        ${dim(step.reason)}`);
+  for (const [index, step] of description.nextSteps.entries()) {
+    lines.push(`  ${cyan(String(index + 1).padStart(2))}  ${bold(step.title)}`);
+    const body = step.details?.length ? step.details : [step.reason];
+    for (const entry of body) {
+      for (const [wrapIndex, wrapped] of wrapVisible(entry, width - 8).entries()) {
+        lines.push(`      ${wrapIndex === 0 && step.details?.length ? dim(`${glyph.dot} `) : "  "}${dim(wrapped)}`);
+      }
     }
-    if (step.command) lines.push(`        ${dim(glyph.pointer)} ${cyan(step.command)}`);
+    if (step.command) lines.push(`      ${dim(glyph.pointer)} ${cyan(step.command)}`);
   }
   lines.push("");
+  return lines;
+}
+function formatProjectDescription(description, options = {}) {
+  return renderDescribe(description, { width: options.width ?? terminalWidth(), home: options.home }).join("\n");
+}
+
+// src/describe/checklist.ts
+import { emitKeypressEvents } from "node:readline";
+function createChecklist(items) {
+  return {
+    items,
+    selected: new Set(items.map((item) => item.id)),
+    cursor: 0,
+    outcome: "pending"
+  };
+}
+function selectedIds(state) {
+  return state.items.filter((item) => state.selected.has(item.id)).map((item) => item.id);
+}
+function reduceChecklist(state, key) {
+  if (state.outcome !== "pending") return state;
+  const last = Math.max(0, state.items.length - 1);
+  if (key.ctrl && key.name === "c") return { ...state, outcome: "cancel" };
+  switch (key.name) {
+    case "up":
+    case "k":
+      return { ...state, cursor: Math.max(0, state.cursor - 1) };
+    case "down":
+    case "j":
+      return { ...state, cursor: Math.min(last, state.cursor + 1) };
+    case "home":
+      return { ...state, cursor: 0 };
+    case "end":
+      return { ...state, cursor: last };
+    case "space": {
+      const item = state.items[state.cursor];
+      if (!item) return state;
+      const selected = new Set(state.selected);
+      if (selected.has(item.id)) selected.delete(item.id);
+      else selected.add(item.id);
+      return { ...state, selected };
+    }
+    // `a` covers `A` too: readline lowercases the name and flags shift.
+    case "a":
+    case "return":
+    case "enter":
+      return { ...state, outcome: "apply" };
+    case "q":
+    case "escape":
+      return { ...state, outcome: "cancel" };
+    default:
+      return state;
+  }
+}
+function renderChecklist(state, options = {}) {
+  const width = Math.max(40, Math.min(120, options.width ?? 100));
+  const lines = [""];
+  lines.push(`  ${bold(options.title ?? "Select findings to apply")}`);
+  lines.push("");
+  const idWidth = state.items.reduce((max, item) => Math.max(max, item.title.length), 0);
+  for (const [index, item] of state.items.entries()) {
+    const onCursor = index === state.cursor;
+    const ticked = state.selected.has(item.id);
+    const pointer = onCursor ? cyan(glyph.chevron) : " ";
+    const box = ticked ? green(glyph.pass) : dim(glyph.skip);
+    const title = padVisible(ticked ? bold(item.title) : dim(item.title), idWidth);
+    const detail = truncateVisible(item.detail, Math.max(10, width - idWidth - 10));
+    lines.push(`  ${pointer} ${box} ${title}  ${dim(detail)}`);
+  }
+  lines.push("");
+  const count = selectedIds(state).length;
+  const legend = [
+    `${cyan("\u2191\u2193")} move`,
+    `${cyan("space")} toggle`,
+    `${cyan("A")} apply`,
+    `${cyan("q")} quit`
+  ].join(dim(" \xB7 "));
+  const tally = count ? green(`${count} selected`) : yellow("none selected");
+  lines.push(`  ${legend}   ${tally}`);
   return lines.join("\n");
+}
+var HIDE_CURSOR = "\x1B[?25l";
+var SHOW_CURSOR = "\x1B[?25h";
+function runChecklist(options) {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  return new Promise((resolve9) => {
+    let state = createChecklist(options.items);
+    let previousLines = 0;
+    const draw = () => {
+      const frame = renderChecklist(state, { width: options.width, title: options.title });
+      if (previousLines > 0) output.write(`\x1B[${previousLines}A\x1B[0J`);
+      output.write(`${frame}
+`);
+      previousLines = frame.split("\n").length;
+    };
+    const onKey = (_chunk, key) => {
+      if (!key) return;
+      const next = reduceChecklist(state, key);
+      if (next === state) return;
+      state = next;
+      if (state.outcome === "pending") {
+        draw();
+        return;
+      }
+      cleanup();
+      resolve9({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+    };
+    const cleanup = () => {
+      input.removeListener("keypress", onKey);
+      if (input.isTTY) input.setRawMode?.(false);
+      input.pause?.();
+      output.write(SHOW_CURSOR);
+    };
+    emitKeypressEvents(input);
+    if (input.isTTY) input.setRawMode?.(true);
+    input.resume?.();
+    output.write(HIDE_CURSOR);
+    draw();
+    input.on("keypress", onKey);
+    input.once("end", () => {
+      if (state.outcome !== "pending") return;
+      cleanup();
+      resolve9({ outcome: "cancel", selected: [] });
+    });
+  });
 }
 
 // src/utils/version.ts
 import { readFileSync as readFileSync11 } from "node:fs";
-import { dirname as dirname8, join as join17 } from "node:path";
+import { dirname as dirname8, join as join18 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
     let dir = dirname8(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync11(join17(dir, "package.json"), "utf8");
+        const raw = readFileSync11(join18(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
         const parent = dirname8(dir);
@@ -9640,8 +10082,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join18(targetDir, ".project.json"));
-  const pkg = readJson2(join18(targetDir, "package.json"));
+  const manifest = readJson2(join19(targetDir, ".project.json"));
+  const pkg = readJson2(join19(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename5(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -9752,7 +10194,7 @@ async function resolveProjectInitTarget(name, options) {
   if (!targetDir && interactive) {
     const defaultName = name ?? basename5(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join18(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join19(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
@@ -9761,7 +10203,7 @@ async function resolveProjectInitTarget(name, options) {
     targetDir = resolve8(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
   const targetExists = existsSync14(targetDir);
-  if (targetExists && !statSync3(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  if (targetExists && !statSync4(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
   const syncMode = Boolean(targetGitRoot && resolve8(targetGitRoot) === resolve8(targetDir));
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename5(targetDir)) ?? "Project", description: "" };
@@ -9939,11 +10381,17 @@ async function runProjectInit(name, options) {
     process.exit(1);
   }
 }
-projectCmd.command("list").description("List projects in the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((options) => {
+projectCmd.command("list").description("List projects in the pjangler registry").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action(async (options) => {
   try {
     const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
-    if (options.json) console.log(JSON.stringify(registry, null, 2));
-    else console.log(formatProjectList(registry));
+    if (options.json) {
+      console.log(JSON.stringify(registry, null, 2));
+      return;
+    }
+    const activity = await computeRepoActivityBatch(
+      Object.values(registry.projects).map((project) => project.repo_path)
+    );
+    console.log(formatProjectList(registry, activity));
   } catch (err) {
     console.error(`${xmark} project list failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
@@ -10226,11 +10674,39 @@ configCmd.command("bootstrap").description("Create ~/.config/hermes-agent-templa
     process.exit(1);
   }
 });
-program.command("describe").argument("[repo]", "Path to the repo to describe (default: cwd)").description("Describe the current project (for AI context)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((repo, options) => {
+program.command("describe").argument("[repo]", "Path to the repo to describe (default: cwd)").description("Describe the current project (for AI context)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").option("-i, --interactive", "Tick off fixable findings and apply them").action(async (repo, options) => {
   try {
     const description = describeProject({ repoArg: repo, registryPath: options.registry });
-    if (options.json) console.log(JSON.stringify(description, null, 2));
-    else console.log(formatProjectDescription(description));
+    if (options.json) {
+      if (options.interactive) {
+        console.error(`${xmark} --interactive cannot be combined with --json`);
+        process.exit(1);
+      }
+      console.log(JSON.stringify(description, null, 2));
+      return;
+    }
+    console.log(formatProjectDescription(description));
+    if (!options.interactive) return;
+    const fixable = description.subsystems.flatMap((subsystem) => subsystem.rules).filter((rule) => (rule.status === "fail" || rule.status === "warn") && rule.fixable);
+    if (!fixable.length) {
+      console.log(`  ${green(glyph.pass)} ${dim("Nothing fixable to apply.")}`);
+      return;
+    }
+    if (!process.stdin.isTTY) {
+      console.error(`${xmark} --interactive needs a TTY; use \`pjangler migrate --all\` non-interactively`);
+      process.exit(1);
+    }
+    const result = await runChecklist({
+      items: fixable.map((rule) => ({ id: rule.id, title: rule.id, detail: rule.summary })),
+      title: "Select parity migrations to apply"
+    });
+    if (result.outcome === "cancel" || !result.selected.length) {
+      console.log(`  ${dim("Nothing applied.")}`);
+      return;
+    }
+    const report = runMigrationForRules(result.selected, description.repo, false);
+    printMigrationReport(report, false);
+    if (!report.ok) process.exit(1);
   } catch (err) {
     console.error(`${xmark} describe failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
