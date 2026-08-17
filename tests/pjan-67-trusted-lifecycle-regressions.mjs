@@ -55,6 +55,7 @@ const auditSource = join(interpreterInjectionRoot, "audit.c");
 const auditLibrary = join(interpreterInjectionRoot, "audit.so");
 const templateConfig = join(isolatedHome, ".config", "hermes-agent-template", "config.toml");
 const fleetHome = join(isolatedHome, ".hermes");
+const fleetEnvPath = join(fleetHome, "fleet.env");
 const fakeHermes = join(fakeBin, "hermes");
 const pjanglerWrapper = join(fakeBin, "pj");
 const fixtureRoot = join(temporary, "fixtures");
@@ -271,33 +272,17 @@ base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
 mkdirSync(fleetHome, { recursive: true });
-writeFileSync(join(fleetHome, "fleet.env"), [
+const supportedFleetConfig = [
   `export PLANE_API_KEY=${fleetAuthoritySentinel}`,
   `export PLANE_33GOD_API_KEY=${fleetAuthoritySentinel}`,
   `export PLANE_DYNAMIC_WORKSPACE_API_KEY=${fleetAuthoritySentinel}`,
   `export TRELLO_KEY=${fleetAuthoritySentinel}`,
   `export TRELLO_TOKEN=${fleetAuthoritySentinel}`,
   `export LINEAR_API_KEY=${fleetAuthoritySentinel}`,
-  `export LD_AUDIT=${auditLibrary}`,
-  `export LD_AUDIT_64=${auditLibrary}`,
-  "export LD_ASSUME_KERNEL=2.6.32",
-  "export LD_HWCAP_MASK=0",
-  "export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2",
-  "export BASHOPTS",
-  "export SHELLOPTS",
-  "export BASH_COMPAT=50",
-  `export BASH_LOADABLES_PATH=${interpreterInjectionRoot}`,
-  "export BASH_XTRACEFD=2",
-  "export PROMPT_COMMAND='printf fleet-prompt-control-loaded'",
-  "export PS4='fleet-trace-control-loaded'",
-  "python3() { printf 'fleet-bash-function-loaded\\n' >> \"$PJAN67_INTERPRETER_LOG\"; command python3 \"$@\"; }",
-  "export -f python3",
-  "readonly -f python3",
-  "readonly LD_AUDIT LD_AUDIT_64 LD_ASSUME_KERNEL LD_HWCAP_MASK GLIBC_TUNABLES",
-  "readonly BASHOPTS SHELLOPTS BASH_COMPAT BASH_LOADABLES_PATH BASH_XTRACEFD PROMPT_COMMAND PS4",
   "export LD_SDK_KEY=preserved-non-loader-functional-value",
   "",
-].join("\n"), "utf8");
+].join("\n");
+writeFileSync(fleetEnvPath, supportedFleetConfig, "utf8");
 
 const serverEnv = {
   ...process.env,
@@ -309,7 +294,7 @@ const serverEnv = {
   PATH: `${dirname(installed.stdout.trim())}:${fakeBin}:${process.env.PATH}`,
   HERMES_TEMPLATE_CONFIG: templateConfig,
   HERMES_FLEET_HOME: fleetHome,
-  HERMES_FLEET_ENV: join(fleetHome, "fleet.env"),
+  HERMES_FLEET_ENV: fleetEnvPath,
   HERMES_FLEET_REGISTRY_FILE: join(fleetHome, "agents-registry.yaml"),
   HERMES_BIN: fakeHermes,
   HERMES_AGENT_REPO: join(temporary, "hermes-agent"),
@@ -372,6 +357,40 @@ function assertNoUngrantAuthority(label) {
 function assertNoInterpreterInjection(label) {
   const loads = existsSync(interpreterLoadLog) ? readFileSync(interpreterLoadLog, "utf8") : "";
   assert.equal(loads, "", `${label}: MCP-controlled child loaded ambient interpreter code: ${loads}`);
+}
+
+function readOptional(path) {
+  return existsSync(path) ? readFileSync(path) : null;
+}
+
+function assertFilesUnchanged(snapshot, label) {
+  for (const [path, before] of snapshot) {
+    assert.deepEqual(readOptional(path), before, `${label}: unexpected mutation at ${path}`);
+  }
+}
+
+function decodeNulEnvironment(stdout) {
+  return new Map(
+    stdout
+      .toString("utf8")
+      .split("\0")
+      .filter((entry) => entry.includes("="))
+      .map((entry) => {
+        const separator = entry.indexOf("=");
+        return [entry.slice(0, separator), entry.slice(separator + 1)];
+      }),
+  );
+}
+
+function renderedImporterEnvironment(fleetPath) {
+  return {
+    HOME: isolatedHome,
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HERMES_FLEET_ENV: fleetPath,
+    HERMES_TEMPLATE_CONFIG: join(temporary, "missing-template-config.toml"),
+    SKIP_PLANE: "1",
+    LANG: "C.UTF-8",
+  };
 }
 
 function payload(result) {
@@ -703,6 +722,103 @@ try {
   assert.equal(bmadMigration.ok, true, JSON.stringify(bmadMigration));
   assert.match(readFileSync(bmadInvocationLog, "utf8"), /^install /m, "direct BMAD migration must invoke the installer");
   assertNoInterpreterInjection("direct BMAD install migration path");
+
+  // Exercise the importer from Copier's real rendered output, not a source
+  // text assertion or a stubbed template. A fleet file is data: shell
+  // functions (including a readonly function named `builtin`) are rejected
+  // without execution, and a complete raw frame is staged before any record
+  // may reach the provisioning shell.
+  const renderedRole = join(target, "agents", "hermes", "director");
+  const renderedLibrary = join(renderedRole, ".scripts", "_lib.sh");
+  const renderedParser = join(renderedRole, ".scripts", "lib", "parse-fleet-env.py");
+  assert.equal(existsSync(renderedLibrary), true, "trusted Copier must render the fleet library");
+  assert.equal(existsSync(renderedParser), true, "trusted Copier must render the isolated fleet parser");
+
+  const mutationSentinelPaths = [
+    join(target, ".project.json"),
+    join(renderedRole, "role.yaml"),
+    join(renderedRole, ".scripts", ".provision.log"),
+    registryPath,
+    join(fleetHome, "agents-registry.yaml"),
+    fleetEnvPath,
+    templateConfig,
+    effectLog,
+    providerLog,
+  ];
+  const mutationSnapshot = new Map(
+    mutationSentinelPaths.map((path) => [path, readOptional(path)]),
+  );
+  const renderedFleetBefore = readFileSync(fleetEnvPath);
+  const builtinHijackMarker = join(temporary, "fleet-builtin-hijack.log");
+  const maliciousFleet = [
+    "export PJAN67_ATOMIC_FIRST=must-not-escape",
+    "builtin() {",
+    `  command printf 'builtin-hijack-executed\\n' >> ${JSON.stringify(builtinHijackMarker)}`,
+    "  return 0",
+    "}",
+    "export -f builtin",
+    "readonly -f builtin",
+    "",
+  ].join("\n");
+  writeFileSync(fleetEnvPath, maliciousFleet, "utf8");
+  const builtinHijack = spawnSync(
+    "bash",
+    [
+      "-c",
+      'if source "$1"; then status=0; else status=$?; fi; set +e; env -0; exit "$status"',
+      "pjan67-rendered-builtin-hijack",
+      renderedLibrary,
+    ],
+    { env: renderedImporterEnvironment(fleetEnvPath) },
+  );
+  writeFileSync(fleetEnvPath, renderedFleetBefore);
+  assert.notEqual(builtinHijack.status, 0, "readonly builtin function fleet input must fail closed");
+  assert.match(builtinHijack.stderr.toString("utf8"), /fleet environment import failed/);
+  assert.equal(decodeNulEnvironment(builtinHijack.stdout).has("PJAN67_ATOMIC_FIRST"), false);
+  assert.equal(existsSync(builtinHijackMarker), false, "fleet input must never execute as shell code");
+  assertFilesUnchanged(mutationSnapshot, "rendered readonly-builtin rejection");
+
+  const missingFleet = join(temporary, "missing-rendered-fleet.env");
+  const rawFrameCases = new Map([
+    [
+      "malformed",
+      Buffer.from("PJANGLER_FLEET_ENV_V1\0PJAN67_ATOMIC_FIRST=leaked\0MALFORMED\0PJANGLER_FLEET_ENV_END\0\0"),
+    ],
+    [
+      "duplicate",
+      Buffer.from("PJANGLER_FLEET_ENV_V1\0PJAN67_ATOMIC_FIRST=one\0PJAN67_ATOMIC_FIRST=two\0PJANGLER_FLEET_ENV_END\0\0"),
+    ],
+    ["truncated", Buffer.from("PJANGLER_FLEET_ENV_V1\0PJAN67_ATOMIC_FIRST=leaked\0")],
+    [
+      "unterminated",
+      Buffer.from("PJANGLER_FLEET_ENV_V1\0PJAN67_ATOMIC_FIRST=leaked\0PJANGLER_FLEET_ENV_END\0"),
+    ],
+  ]);
+  for (const [caseName, payloadBytes] of rawFrameCases) {
+    const streamPath = join(temporary, `rendered-${caseName}.frames`);
+    writeFileSync(streamPath, payloadBytes);
+    const frameResult = spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; exec {fleet_fd}< <(/usr/bin/cat "$2"); fleet_pid=$!; '
+          + 'if import_fleet_environment_stream "$fleet_fd" "$fleet_pid"; then status=0; else status=$?; fi; '
+          + 'set +e; env -0; exit "$status"',
+        `pjan67-rendered-${caseName}`,
+        renderedLibrary,
+        streamPath,
+      ],
+      { env: renderedImporterEnvironment(missingFleet) },
+    );
+    assert.notEqual(frameResult.status, 0, `${caseName} frame must fail closed`);
+    assert.match(frameResult.stderr.toString("utf8"), /fleet environment frame rejected/);
+    assert.equal(
+      decodeNulEnvironment(frameResult.stdout).has("PJAN67_ATOMIC_FIRST"),
+      false,
+      `${caseName} frame partially mutated the provisioning shell`,
+    );
+    assertFilesUnchanged(mutationSnapshot, `rendered ${caseName} frame rejection`);
+  }
 
   console.log("PJAN-67 trusted Copier/MCP child-boundary regressions: PASS");
 } finally {
