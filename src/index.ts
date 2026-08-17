@@ -27,6 +27,8 @@ import {
   planProjectInit,
   projectRegistryPath,
 } from "./project/index";
+import { resolveBoardUrl } from "./project/boardUrl";
+import { openUrl } from "./project/openUrl";
 import { describeProject, formatProjectDescription } from "./describe/index";
 import { computeRepoActivityBatch } from "./describe/activity";
 import { runChecklist } from "./describe/checklist";
@@ -403,6 +405,33 @@ program
       console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
     }
     console.log("");
+  });
+
+// ============================================================================
+// BOARD (open this project's ticket board or one work item)
+// ============================================================================
+
+program
+  .command("board")
+  .argument("[ref]", "Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board")
+  .description("Open this project's ticket board — or one work item — in a browser")
+  .option("--print", "Print the resolved URL instead of opening it")
+  .action((ref: string | undefined, options: { print?: boolean }) => {
+    const url = resolveBoardUrl(process.cwd(), ref);
+    if (!url) {
+      console.error(`${xmark} No ticket board here: need a .project.json with ticket_provider.board_id`);
+      process.exit(1);
+    }
+    if (options.print) {
+      console.log(url);
+      return;
+    }
+    const outcome = openUrl(url);
+    // The URL is always shown, opened or not. A browser that silently failed
+    // to appear leaves you with nothing; a printed link leaves you with the
+    // thing you actually wanted.
+    console.log(`  ${cyan(glyph.pointer)} ${outcome.display}`);
+    if (outcome.reason) console.log(`  ${dim(outcome.reason)}`);
   });
 
 // ============================================================================

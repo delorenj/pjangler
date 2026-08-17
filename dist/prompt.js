@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // src/prompt.ts
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join as join2, resolve } from "node:path";
+import { readFileSync as readFileSync2, realpathSync } from "node:fs";
+import { basename, join as join3 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // src/describe/activity.ts
@@ -191,7 +191,104 @@ function computeRepoActivity(repo, options = {}) {
   );
 }
 
-// src/prompt.ts
+// src/project/boardUrl.ts
+import { existsSync, readFileSync, statSync as statSync2 } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join as join2, resolve } from "node:path";
+var DEFAULT_PLANE_BASE = "https://plane.delo.sh";
+var DEFAULT_PLANE_WORKSPACE = "33god";
+function resolveTemplateConfigPath(env = process.env, home = homedir()) {
+  const fromEnv = env.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join2(home, ".config");
+  return join2(base, "hermes-agent-template", "config.toml");
+}
+function readTomlScalar(text, section, key) {
+  let inSection = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      inSection = line === `[${section}]`;
+      continue;
+    }
+    if (!inSection) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    const value = line.slice(eq + 1).trim();
+    const quoted = /^"([^"]*)"|^'([^']*)'/.exec(value);
+    if (quoted) return quoted[1] ?? quoted[2];
+    const bare = (value.split("#")[0] ?? "").trim();
+    return bare || void 0;
+  }
+  return void 0;
+}
+function readTemplateConfig(env, home) {
+  try {
+    const path = resolveTemplateConfigPath(env, home);
+    return existsSync(path) ? readFileSync(path, "utf8") : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function planeBase(env = process.env, home = homedir()) {
+  const fromEnv = env.PLANE_BASE?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  const config = readTemplateConfig(env, home);
+  const fromConfig = config ? readTomlScalar(config, "plane", "base")?.trim() : void 0;
+  if (fromConfig) return fromConfig.replace(/\/+$/, "");
+  return DEFAULT_PLANE_BASE;
+}
+function planeWorkspace(provider, env, home) {
+  const fromManifest = provider.workspace?.trim();
+  if (fromManifest) return fromManifest;
+  const config = readTemplateConfig(env, home);
+  const fromConfig = config ? readTomlScalar(config, "plane", "workspace")?.trim() : void 0;
+  return fromConfig || DEFAULT_PLANE_WORKSPACE;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function extractTicketRef(branch, identifier) {
+  if (!branch || !identifier) return void 0;
+  const ident = identifier.trim();
+  if (!ident) return void 0;
+  const match = new RegExp(`\\b${escapeRegExp(ident)}-(\\d+)\\b`, "i").exec(branch);
+  return match ? `${ident.toUpperCase()}-${match[1]}` : void 0;
+}
+function normalizeTicketRef(input, identifier) {
+  const value = input?.trim();
+  if (!value) return void 0;
+  if (/^\d+$/.test(value)) {
+    const ident = identifier?.trim();
+    return ident ? `${ident.toUpperCase()}-${value}` : void 0;
+  }
+  const qualified = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(value);
+  if (!qualified) return void 0;
+  return `${qualified[1].toUpperCase()}-${qualified[2]}`;
+}
+function resolveTicketRef(provider, options) {
+  return normalizeTicketRef(options.ref, provider.identifier) ?? extractTicketRef(options.branch, provider.identifier);
+}
+function boardUrl(provider, options = {}) {
+  if (!provider) return void 0;
+  const env = options.env ?? process.env;
+  const home = options.home ?? homedir();
+  const type = (provider.type || "plane").trim().toLowerCase();
+  const boardId = provider.board_id?.trim();
+  if (!boardId) return void 0;
+  if (type === "trello") {
+    return `https://trello.com/b/${boardId}`;
+  }
+  if (type !== "plane") return void 0;
+  const workspace = planeWorkspace(provider, env, home);
+  if (!workspace) return void 0;
+  const base = planeBase(env, home);
+  const ref = resolveTicketRef(provider, options);
+  return ref ? `${base}/${workspace}/browse/${ref}` : `${base}/${workspace}/projects/${boardId}/issues`;
+}
 function findProjectRoot(from) {
   let dir = resolve(from);
   for (; ; ) {
@@ -201,11 +298,55 @@ function findProjectRoot(from) {
     dir = parent;
   }
 }
+function readTicketProvider(root) {
+  try {
+    const manifest = JSON.parse(readFileSync(join2(root, ".project.json"), "utf8"));
+    const provider = manifest.ticket_provider;
+    if (!provider || typeof provider !== "object") return void 0;
+    return provider;
+  } catch {
+    return void 0;
+  }
+}
+function currentBranch(from) {
+  try {
+    let dir = resolve(from);
+    for (; ; ) {
+      const dotgit = join2(dir, ".git");
+      if (existsSync(dotgit)) {
+        let gitDir = dotgit;
+        if (statSync2(dotgit).isFile()) {
+          const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotgit, "utf8"));
+          if (!pointer) return void 0;
+          const target = pointer[1].trim();
+          gitDir = isAbsolute(target) ? target : resolve(dir, target);
+        }
+        const head = readFileSync(join2(gitDir, "HEAD"), "utf8").trim();
+        const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+        return ref ? ref[1].trim() : void 0;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) return void 0;
+      dir = parent;
+    }
+  } catch {
+    return void 0;
+  }
+}
+function resolveBoardUrl(cwd, ref, env = process.env) {
+  const root = findProjectRoot(cwd);
+  if (!root) return void 0;
+  const provider = readTicketProvider(root);
+  if (!provider) return void 0;
+  return boardUrl(provider, { ref, branch: currentBranch(root), env });
+}
+
+// src/prompt.ts
 function readPromptFacts(root, now) {
   let slug = basename(root);
   let identifier;
   try {
-    const manifest = JSON.parse(readFileSync(join2(root, ".project.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync2(join3(root, ".project.json"), "utf8"));
     if (typeof manifest.project_slug === "string" && manifest.project_slug) slug = manifest.project_slug;
     const provider = manifest.ticket_provider;
     if (provider && typeof provider.identifier === "string" && provider.identifier) identifier = provider.identifier;
@@ -233,6 +374,14 @@ function promptLine(cwd, now) {
 }
 function main() {
   try {
+    const args = process.argv.slice(2);
+    if (args[0] === "--url") {
+      const url = resolveBoardUrl(process.cwd(), args[1]);
+      if (url) process.stdout.write(`${url}
+`);
+      else process.exitCode = 1;
+      return;
+    }
     const line = promptLine(process.cwd());
     if (line) process.stdout.write(line);
   } catch {

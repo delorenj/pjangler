@@ -12,13 +12,22 @@
 // module's format wrapper even when the command fails, so "no output" — not a
 // non-zero exit — is what makes the extra prompt line disappear cleanly.
 //
+// `--url [ref]` is the second contract: print the board (or work-item) URL for
+// this project and nothing else, exiting non-zero when there is nothing to
+// point at so a shell widget can tell "no project here" from "here it is".
+// It lives on THIS entry point rather than the main CLI for one reason — the
+// prompt and the shortcut must never disagree about which board you are on,
+// and the cheapest way to guarantee that is to make them the same program
+// reading the same facts.
+//
 // Never throws. A broken manifest degrades to the directory name rather than
 // spilling a stack trace into someone's prompt.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { computeRepoActivity } from "./describe/activity";
+import { findProjectRoot, resolveBoardUrl } from "./project/boardUrl";
 
 export interface PromptFacts {
   root: string;
@@ -34,16 +43,12 @@ export interface PromptFacts {
  * Walking up matters: most of the time you are in `src/` or `docs/`, not the
  * repo root. Node resolves symlinks in `process.cwd()`, so unlike the shell's
  * `$PWD` this needs no physical-path fallback.
+ *
+ * Re-exported rather than reimplemented: `--url` resolution needs the same
+ * walk, and two copies of "where is the project root" is exactly the kind of
+ * drift that makes the prompt and the shortcut disagree.
  */
-export function findProjectRoot(from: string): string | undefined {
-  let dir = resolve(from);
-  for (;;) {
-    if (existsSync(join(dir, ".project.json"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
+export { findProjectRoot };
 
 export function readPromptFacts(root: string, now?: Date): PromptFacts {
   let slug = basename(root);
@@ -85,6 +90,15 @@ export function promptLine(cwd: string, now?: Date): string | undefined {
 
 function main(): void {
   try {
+    const args = process.argv.slice(2);
+    if (args[0] === "--url") {
+      // Trailing newline here, unlike the prompt line: this output is consumed
+      // by `$(...)` and read by humans, not spliced into a prompt string.
+      const url = resolveBoardUrl(process.cwd(), args[1]);
+      if (url) process.stdout.write(`${url}\n`);
+      else process.exitCode = 1;
+      return;
+    }
     const line = promptLine(process.cwd());
     if (line) process.stdout.write(line);
   } catch {
