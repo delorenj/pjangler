@@ -1,4 +1,5 @@
 import type { CommandContext } from "../Command";
+import type { TrustedCopierIdentity } from "../../lifecycle/preflight";
 
 /**
  * Context for the hermes-agent recipe. Extends the base CommandContext with
@@ -47,6 +48,10 @@ export interface HermesAgentContext extends CommandContext {
   // eligibility gate. This private flag is set only while that deferred host
   // phase is actually being applied.
   applyingDeferredHostEffects?: boolean;
+  // MCP apply resolves and attests Copier before any mutation. The render
+  // command revalidates this identity and invokes its canonical absolute path;
+  // it must never resolve PATH a second time.
+  trustedCopier?: TrustedCopierIdentity;
 
   // --- derived after copier runs ---
   agentId?: string;           // <targetRepo>-<role>

@@ -8,6 +8,7 @@ import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveAgentId, deriveProfileName, type HermesAgentContext } from "./types";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
+import { verifyTrustedCopierIdentity } from "../../lifecycle/preflight";
 
 const TICKET_PROVIDER_CREDENTIAL_KEYS = new Set([
   "PLANE_API_KEY",
@@ -139,15 +140,27 @@ export class RunCopierTemplate extends Command {
     // even in dry-run mode (where copier never executes).
     ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
 
-    // Sanity: copier on PATH?
-    const which = spawnSync("which", ["copier"], { encoding: "utf8" });
-    if (which.status !== 0) {
+    const trustedCopierRequired = Boolean(ctx.deferredExternalEffects && !ctx.dryRun);
+    if (trustedCopierRequired && !ctx.trustedCopier) {
       return {
         success: false,
         outcome: "failed",
-        message:
-          "✗ copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`",
+        message: "MCP Hermes apply requires a preflight-attested Copier identity",
       };
+    }
+    // Interactive CLI callers retain their historical PATH behavior. MCP
+    // apply has an identity and therefore must not execute `which` or resolve
+    // PATH again after the handler's read-only preflight.
+    if (!ctx.trustedCopier) {
+      const which = spawnSync("which", ["copier"], { encoding: "utf8" });
+      if (which.status !== 0) {
+        return {
+          success: false,
+          outcome: "failed",
+          message:
+            "✗ copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`",
+        };
+      }
     }
 
     // Idempotency: if role.yaml already exists, copier will refuse to
@@ -174,7 +187,7 @@ export class RunCopierTemplate extends Command {
 
     // Always set these via env so the post-gen scripts in the copier template
     // skip the bits we'll handle in our own commands.
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
@@ -196,6 +209,14 @@ export class RunCopierTemplate extends Command {
     };
     if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env);
     if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env);
+    if (ctx.trustedCopier) {
+      // The attested UV interpreter must resolve packages from its own venv;
+      // ambient Python path injection would otherwise bypass package hashes.
+      delete env.PYTHONHOME;
+      delete env.PYTHONPATH;
+      env.PYTHONNOUSERSITE = "1";
+      env.PYTHONSAFEPATH = "1";
+    }
 
     // Prefer a local template checkout (if present) so fixes propagate
     // immediately without waiting for a GitHub push. Resolve against $HOME so
@@ -238,8 +259,22 @@ export class RunCopierTemplate extends Command {
         success: true,
         outcome: "planned",
         filePath: roleDir,
-        message: this.formatMessage(`Would run: copier ${args.join(" ")}`),
+        message: this.formatMessage(`Would run: ${ctx.trustedCopier?.executable ?? "copier"} ${args.join(" ")}`),
       };
+    }
+
+    // Revalidate at the last effect-free boundary. A launcher, interpreter,
+    // receipt, RECORD, metadata, or package replacement after MCP preflight is
+    // rejected before mkdir, config, provider, systemd, or any subprocess.
+    if (ctx.trustedCopier) {
+      const verified = verifyTrustedCopierIdentity(ctx.trustedCopier);
+      if (!verified.ok) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`,
+        };
+      }
     }
 
     // Ensure agents/hermes/ parent exists so copier doesn't have to create it
@@ -249,7 +284,8 @@ export class RunCopierTemplate extends Command {
 
     const spinner = ctx.quiet ? undefined : p.spinner();
     spinner?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
-    const result = spawnSync("copier", args, ctx.quiet
+    const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
+    const result = spawnSync(copierExecutable, args, ctx.quiet
       ? { encoding: "utf8", env, cwd: ctx.targetDir }
       : { stdio: "inherit", env, cwd: ctx.targetDir });
     spinner?.stop(result.status === 0 ? "✓ copier run complete" : "✗ copier failed");

@@ -7,6 +7,10 @@ import YAML from "yaml";
 import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import {
+  verifyTrustedCopierIdentity,
+  type TrustedCopierIdentity,
+} from "../lifecycle/preflight";
+import {
   isPgRegistryEnabled,
   PgRegistryStore,
   pgRegistryConfigFromEnv,
@@ -211,6 +215,12 @@ export interface ProjectInitExecutionResult {
   logs: string[];
   errors: string[];
   changedFiles: string[];
+}
+
+export interface ProjectInitExecutionOptions {
+  /** Required by MCP create paths; interactive CLI callers may omit it. */
+  trustedCopier?: TrustedCopierIdentity;
+  requireTrustedCopier?: boolean;
 }
 
 export interface ProjectDoctorResult {
@@ -1007,7 +1017,10 @@ function linkTicketProviderBoard(
   return [];
 }
 
-export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<ProjectInitExecutionResult> {
+export async function executeProjectInitPlan(
+  plan: ProjectInitPlan,
+  options: ProjectInitExecutionOptions = {},
+): Promise<ProjectInitExecutionResult> {
   const logs: string[] = [];
   const errors: string[] = [];
   const changedFiles: string[] = [];
@@ -1017,6 +1030,17 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
   let pendingRegistryAction: Extract<ProjectInitAction, { kind: "registry.upsert" }> | undefined;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
+      if (options.requireTrustedCopier && !options.trustedCopier) {
+        errors.push("MCP project apply requires a preflight-attested Copier identity");
+        break;
+      }
+      if (options.trustedCopier) {
+        const verified = verifyTrustedCopierIdentity(options.trustedCopier);
+        if (!verified.ok) {
+          errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+          break;
+        }
+      }
       logs.push(
         action.data.agent_hooks_layer === "false"
           ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected — no per-user CLI injection)"
@@ -1024,7 +1048,19 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
       );
       mkdirSync(dirname(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
-      const result = spawnSync(action.command[0]!, action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const copierExecutable = options.trustedCopier?.executable ?? action.command[0]!;
+      const copierEnv = options.trustedCopier ? { ...process.env } : undefined;
+      if (copierEnv) {
+        delete copierEnv.PYTHONHOME;
+        delete copierEnv.PYTHONPATH;
+        copierEnv.PYTHONNOUSERSITE = "1";
+        copierEnv.PYTHONSAFEPATH = "1";
+      }
+      const result = spawnSync(copierExecutable, action.command.slice(1), {
+        encoding: "utf8",
+        cwd: action.cwd,
+        ...(copierEnv ? { env: copierEnv } : {}),
+      });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());

@@ -8,7 +8,6 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +28,9 @@ if (installed.status !== 0 || !installed.stdout.trim()) {
   console.log("PJAN-67 trusted lifecycle integration: SKIP (Copier is not installed)");
   process.exit(0);
 }
+const installedPython = spawnSync("which", ["python3"], { encoding: "utf8" });
+assert.equal(installedPython.status, 0, installedPython.stderr);
+const realPython = realpathSync(installedPython.stdout.trim());
 
 const temporary = mkdtempSync(join(root, ".pjan-67-trusted-lifecycle-"));
 const enclosingProjectManifest = join(temporary, ".project.json");
@@ -37,8 +39,6 @@ writeFileSync(enclosingProjectManifest, enclosingProjectManifestBefore, "utf8");
 const enclosingGit = spawnSync("git", ["init", "--quiet"], { cwd: temporary, encoding: "utf8" });
 assert.equal(enclosingGit.status, 0, enclosingGit.stderr);
 const isolatedHome = join(temporary, "home");
-const uvCopier = join(isolatedHome, ".local", "share", "uv", "tools", "copier", "bin", "copier");
-const userCopier = join(isolatedHome, ".local", "bin", "copier");
 const fakeBin = join(temporary, "bin");
 const registryPath = join(temporary, "projects.yaml");
 const providerAdapters = join(temporary, "providers");
@@ -51,6 +51,7 @@ const pjanglerWrapper = join(fakeBin, "pj");
 const fixtureRoot = join(temporary, "fixtures");
 const selectedBmadPack = createBmadPackFixture(fixtureRoot);
 const selectedBmadInstaller = createBmadInstallerFixture(fixtureRoot);
+const fleetAuthoritySentinel = "fleet-rehydrated-sentinel";
 
 function executable(path, source) {
   mkdirSync(dirname(path), { recursive: true });
@@ -58,14 +59,11 @@ function executable(path, source) {
   chmodSync(path, 0o755);
 }
 
-mkdirSync(dirname(uvCopier), { recursive: true });
-copyFileSync(realpathSync(installed.stdout.trim()), uvCopier);
-chmodSync(uvCopier, 0o755);
-mkdirSync(dirname(userCopier), { recursive: true });
-symlinkSync(uvCopier, userCopier);
-
 executable(fakeHermes, `#!/bin/sh
 printf 'local-hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
 if [ "$1" = profile ] && [ "$2" = create ]; then
   mkdir -p "$HOME/.hermes/profiles/$3"
 fi
@@ -74,11 +72,24 @@ exit 0
 
 executable(pjanglerWrapper, `#!/bin/sh
 printf 'runtime-migrate:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:pjangler:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
 exec "${process.execPath}" "${join(root, "dist", "index.js")}" "$@"
+`);
+
+executable(join(fakeBin, "python3"), `#!/bin/sh
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:python3:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
+exec "${realPython}" "$@"
 `);
 
 executable(join(fakeBin, "systemctl"), `#!/bin/sh
 printf 'systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
 case "$*" in
   *is-system-running*) printf '%s\n' running; exit 0 ;;
   *is-active*consumer.service*) printf '%s\n' inactive; exit 4 ;;
@@ -92,6 +103,9 @@ exit 0
 executable(join(providerAdapters, "plane.sh"), `#!/bin/sh
 printf 'provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'provider:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
 printf '%s\n' '{"board_id":"trusted-positive-board"}'
 `);
 copyFileSync(join(providerAdapters, "plane.sh"), join(providerAdapters, "trello.sh"));
@@ -100,6 +114,9 @@ chmodSync(join(providerAdapters, "trello.sh"), 0o755);
 executable(join(fakeBin, "curl"), `#!/bin/sh
 printf 'curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'curl:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
+if env | grep -Fq '${fleetAuthoritySentinel}'; then
+  printf 'authority-visible:curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+fi
 case "$*" in
   *'-X GET'*) printf '%s\n' '{"results":[]}' ;;
   *'-X POST'*) printf '%s\n' '{"id":"trusted-positive-board"}' ;;
@@ -137,12 +154,25 @@ runtime_repo_owner = ""
 base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
+mkdirSync(fleetHome, { recursive: true });
+writeFileSync(join(fleetHome, "fleet.env"), [
+  `export PLANE_API_KEY=${fleetAuthoritySentinel}`,
+  `export PLANE_33GOD_API_KEY=${fleetAuthoritySentinel}`,
+  `export PLANE_DYNAMIC_WORKSPACE_API_KEY=${fleetAuthoritySentinel}`,
+  `export TRELLO_KEY=${fleetAuthoritySentinel}`,
+  `export TRELLO_TOKEN=${fleetAuthoritySentinel}`,
+  `export LINEAR_API_KEY=${fleetAuthoritySentinel}`,
+  "",
+].join("\n"), "utf8");
 
 const serverEnv = {
   ...process.env,
   HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"),
-  PATH: `${dirname(userCopier)}:${fakeBin}:${process.env.PATH}`,
+  // Provenance is anchored to the OS account, not ambient HOME. Execute the
+  // actual metadata-bound UV tool while keeping all runtime/host state inside
+  // the isolated HOME fixture.
+  PATH: `${dirname(installed.stdout.trim())}:${fakeBin}:${process.env.PATH}`,
   HERMES_TEMPLATE_CONFIG: templateConfig,
   HERMES_FLEET_HOME: fleetHome,
   HERMES_FLEET_ENV: join(fleetHome, "fleet.env"),
@@ -167,6 +197,12 @@ function assertEnclosingProjectUntouched(label) {
     enclosingProjectManifestBefore,
     `${label}: provisioning must not climb into an enclosing checkout manifest`,
   );
+}
+
+function assertNoUngrantAuthority(label) {
+  const effects = existsSync(effectLog) ? readFileSync(effectLog, "utf8") : "";
+  assert.doesNotMatch(effects, /authority-visible:/, `${label}: FLEET_ENV provider authority must not reach any child`);
+  assert.equal(existsSync(providerLog), false, `${label}: no-board grant must invoke no provider`);
 }
 
 function payload(result) {
@@ -222,6 +258,103 @@ try {
   assert.equal(synced.mode, "sync");
   assert.equal(readFileSync(join(target, ".copier-answers.yml"), "utf8"), copierAnswersBefore, "existing sync must not rerun Copier");
   assertEnclosingProjectUntouched("trusted project sync");
+
+  // Every MCP entry point that can reach Hermes must keep the no-board grant
+  // authoritative even after the real rendered _lib.sh sources fleet.env.
+  // Child wrappers observe the entire environment without relying on source
+  // text assertions, and the fleet sentinel is deliberately absent from the
+  // parent MCP process environment.
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  const dedicatedNoBoardResult = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: {
+      targetDir: target,
+      targetRepo: "trusted-project",
+      role: "authority-dedicated",
+      apply: true,
+      local: true,
+      live: false,
+      skipPlane: true,
+    },
+  });
+  const dedicatedNoBoard = payload(dedicatedNoBoardResult);
+  assert.equal(typeof dedicatedNoBoard.success, "boolean", JSON.stringify(dedicatedNoBoard));
+  assertNoUngrantAuthority("dedicated Hermes no-board path");
+  assertEnclosingProjectUntouched("dedicated Hermes no-board path");
+
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  const projectInitNoBoardTarget = join(temporary, "authority-project-init");
+  const projectInitNoBoardResult = await client.callTool({
+    name: "pjangler_project_init",
+    arguments: {
+      name: "Authority Project Init",
+      targetDir: projectInitNoBoardTarget,
+      slug: "authority-project-init",
+      provisionAgent: true,
+      agentRole: "authority-project-init",
+      apply: true,
+      live: false,
+      skipPlane: true,
+    },
+  });
+  const projectInitNoBoard = payload(projectInitNoBoardResult);
+  assert.equal(typeof projectInitNoBoard.ok, "boolean", JSON.stringify(projectInitNoBoard));
+  assertNoUngrantAuthority("project-init no-board path");
+  assertEnclosingProjectUntouched("project-init no-board path");
+
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  const bootstrapNoBoardTarget = join(temporary, "authority-bootstrap");
+  const bootstrapNoBoardResult = await client.callTool({
+    name: "pjangler_bootstrap_33god_project",
+    arguments: {
+      parentDir: temporary,
+      targetDir: bootstrapNoBoardTarget,
+      projectName: "Authority Bootstrap",
+      projectSlug: "authority-bootstrap",
+      provisionAgent: true,
+      agentRole: "authority-bootstrap",
+      dryRun: false,
+      local: true,
+      live: false,
+      skipPlane: true,
+    },
+  });
+  const bootstrapNoBoard = payload(bootstrapNoBoardResult);
+  assert.equal(typeof bootstrapNoBoard.ok, "boolean", JSON.stringify(bootstrapNoBoard));
+  assertNoUngrantAuthority("bootstrap no-board path");
+  assertEnclosingProjectUntouched("bootstrap no-board path");
+
+  // A readable empty fleet registry makes registry parity repairable, allowing
+  // the selected non-board external tail itself (rather than an earlier
+  // lifecycle blocker) to be exercised.
+  writeFileSync(join(fleetHome, "agents-registry.yaml"), "agents: {}\n", "utf8");
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  const dedicatedNoBoardExternalResult = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: {
+      targetDir: target,
+      targetRepo: "trusted-project",
+      role: "authority-external",
+      apply: true,
+      local: false,
+      live: true,
+      provisionRuntimeRepo: true,
+      enableSystemd: true,
+      skipPlane: true,
+    },
+  });
+  const dedicatedNoBoardExternal = payload(dedicatedNoBoardExternalResult);
+  assert.notEqual(dedicatedNoBoardExternalResult.isError, true, JSON.stringify(dedicatedNoBoardExternal));
+  assert.equal(dedicatedNoBoardExternal.success, true, JSON.stringify(dedicatedNoBoardExternal));
+  const noBoardExternalEffects = readFileSync(effectLog, "utf8");
+  assert.match(noBoardExternalEffects, /runtime-migrate:/, "non-board runtime grant must reach its selected child");
+  assert.match(noBoardExternalEffects, /systemctl:--user enable --now/, "non-board systemd grant must reach its selected child");
+  assertNoUngrantAuthority("dedicated Hermes selected non-board external path");
+  assertEnclosingProjectUntouched("dedicated Hermes selected non-board external path");
 
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });

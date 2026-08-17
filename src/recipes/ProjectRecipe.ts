@@ -6,6 +6,7 @@ import {
   executeProjectInitPlan,
   normalizeAgentRole,
   type ProjectAgentRecord,
+  type ProjectInitExecutionOptions,
   type ProjectInitExecutionResult,
   type ProjectInitPlan,
   type ProjectManifest,
@@ -30,6 +31,7 @@ import type {
 import type { HermesAgentContext } from "../commands/hermes/types";
 import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
+import type { TrustedCopierIdentity } from "../lifecycle/preflight";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -38,6 +40,8 @@ export interface ProjectRecipeInput {
   selectedOperations?: readonly string[];
   agentContext?: Partial<HermesAgentContext>;
   quiet?: boolean;
+  trustedCopier?: TrustedCopierIdentity;
+  requireTrustedCopier?: boolean;
 }
 
 export interface ProjectRecipeResult extends RecipeInitResult {
@@ -51,7 +55,7 @@ export interface ProjectRecipeResult extends RecipeInitResult {
 }
 
 export interface ProjectRecipeRuntime {
-  executePlan(plan: ProjectInitPlan): Promise<ProjectInitExecutionResult>;
+  executePlan(plan: ProjectInitPlan, options?: ProjectInitExecutionOptions): Promise<ProjectInitExecutionResult>;
   preflightBmad(ctx: LifecycleContext): BmadLifecyclePreflightResult;
   runGit(
     cwd: string,
@@ -230,7 +234,10 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       };
       const planBlocked = errors.length > 0;
       const executed = !planBlocked && filesystemPlan.actions.length
-        ? await this.runtime.executePlan(filesystemPlan)
+        ? await this.runtime.executePlan(filesystemPlan, {
+            trustedCopier: normalized.trustedCopier,
+            requireTrustedCopier: normalized.requireTrustedCopier,
+          })
         : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
       logs.push(...executed.logs);
       errors.push(...executed.errors);

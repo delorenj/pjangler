@@ -22,7 +22,7 @@ import {
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
-import { preflightMcpLifecycle } from "./lifecycle/preflight";
+import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -174,6 +174,7 @@ async function executeRegisteredProjectPlan(
   plan: ReturnType<typeof planProjectInit>,
   agentContext?: Partial<HermesAgentContext>,
   lifecycleOverrides: Partial<LifecycleContext> = {},
+  trustedCopier?: TrustedCopierIdentity,
 ) {
   const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput: ProjectRecipeInput = {
@@ -181,9 +182,15 @@ async function executeRegisteredProjectPlan(
     mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
+    trustedCopier,
+    requireTrustedCopier: Boolean(
+      plan.actions.some((action) => action.kind === "copier.copy.commonproject")
+      || plannedAgent?.kind === "hermes.provision-agent",
+    ),
     agentContext: plannedAgent?.kind === "hermes.provision-agent"
       ? {
           ...agentContext,
+          trustedCopier,
           deferredExternalEffects: {
             runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
             ticketBoard: !plannedAgent.context.skipPlane,
@@ -257,16 +264,21 @@ function preflightExistingHermesScaffold(targetDir: string): string | undefined 
  * so sot.project-json is the one current finding covered by that planned local
  * action. All other current drift would survive the operation and must block.
  */
+interface ProjectApplyPreflight {
+  failure?: ProjectRecipeResult;
+  trustedCopier?: TrustedCopierIdentity;
+}
+
 function preflightProjectApply(
   plan: ReturnType<typeof planProjectInit>,
   pjanglerRoot: string,
-): ProjectRecipeResult | undefined {
+): ProjectApplyPreflight {
   const createsScaffold = plan.actions.some((action) => action.kind === "copier.copy.commonproject");
   const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
 
   if (!createsScaffold && provisionsAgent) {
     const hermesBlocker = preflightExistingHermesScaffold(plan.project.repo_path);
-    if (hermesBlocker) return projectPreflightFailure(plan, [hermesBlocker]);
+    if (hermesBlocker) return { failure: projectPreflightFailure(plan, [hermesBlocker]) };
   }
 
   if (!createsScaffold) {
@@ -278,11 +290,13 @@ function preflightProjectApply(
       return true;
     });
     if (blocking.length) {
-      return projectPreflightFailure(
-        plan,
-        blocking.map((finding) => `${finding.id}: ${finding.summary}`),
-        audit,
-      );
+      return {
+        failure: projectPreflightFailure(
+          plan,
+          blocking.map((finding) => `${finding.id}: ${finding.summary}`),
+          audit,
+        ),
+      };
     }
   }
 
@@ -294,10 +308,18 @@ function preflightProjectApply(
       hermes: provisionsAgent,
     });
     if (!eligibility.ok) {
-      return projectPreflightFailure(plan, [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`]);
+      return {
+        failure: projectPreflightFailure(plan, [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`]),
+      };
     }
+    if (!eligibility.identity) {
+      return {
+        failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Copier attestation returned no executable identity"]),
+      };
+    }
+    return { trustedCopier: eligibility.identity };
   }
-  return undefined;
+  return {};
 }
 
 function auditSummary(report: ReturnType<typeof runAudit>) {
@@ -554,12 +576,12 @@ server.registerTool(
         return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
 
-      const preflightFailure = preflightProjectApply(plan, pjanglerRoot);
-      if (preflightFailure) {
+      const preflight = preflightProjectApply(plan, pjanglerRoot);
+      if (preflight.failure) {
         return {
           isError: true,
           ...asText(publicCompositeProjectResponse(
-            { ...preflightFailure, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
+            { ...preflight.failure, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
             plan,
           )),
         };
@@ -582,7 +604,7 @@ server.registerTool(
         force: overwrite,
         live: input.live ?? false,
         quiet: true,
-      });
+      }, preflight.trustedCopier);
       if (!result.ok) {
         return {
           isError: true,
@@ -668,12 +690,12 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
-      const preflightFailure = preflightProjectApply(plan, resolvePjanglerRoot());
-      if (preflightFailure) {
+      const preflight = preflightProjectApply(plan, resolvePjanglerRoot());
+      if (preflight.failure) {
         return {
           isError: true,
           ...asText(publicCompositeProjectResponse(
-            { ...preflightFailure, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
+            { ...preflight.failure, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
             plan,
           )),
         };
@@ -682,7 +704,7 @@ server.registerTool(
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true,
-      });
+      }, preflight.trustedCopier);
       return {
         isError: !result.ok,
         ...asText(publicCompositeProjectResponse(
@@ -860,6 +882,7 @@ server.registerTool(
       const local = input.local ?? true;
       const apply = input.apply === true;
       const live = input.live === true;
+      let trustedCopier: TrustedCopierIdentity | undefined;
 
       if (apply) {
         const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
@@ -897,6 +920,21 @@ server.registerTool(
             }),
           };
         }
+        if (!eligibility.identity) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: ["Lifecycle preflight failed: Copier attestation returned no executable identity"],
+            }),
+          };
+        }
+        trustedCopier = eligibility.identity;
       }
 
       const context: HermesAgentContext = {
@@ -925,6 +963,7 @@ server.registerTool(
         skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
+        trustedCopier,
         deferredExternalEffects: {
           runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,
