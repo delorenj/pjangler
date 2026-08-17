@@ -59,6 +59,12 @@ heartbeat (see Krebs lifecycle: `~/code/33GOD/krebs/spec/lifecycle.v1.yaml`).
 - A `profile.yaml` `config:` block is inert — Hermes reads `profile.yaml` only for
   `description` / `role`. Do not add config there and do not trust one you find.
 - Never duplicate fleet `mcp_servers` into a delta; the base owns them.
+- **`pj audit` enforces all of this** — `hermes.runtime-singleton` (per-profile:
+  generated `config.yaml` + present `config.delta.yaml` + pinned memory bank) and
+  `hermes.fleet-config` (fleet base: `tts.provider: vox`, Bloodbank hooks block,
+  `memory` absent from `disabled_toolsets`, non-empty `skills.external_dirs`).
+  When you change a fleet invariant, add it to a parity rule in the same pass, or
+  the next drift is silent again.
 - Identity-memory bank is pinned per profile in `<profile>/hindsight/config.json`.
   Do NOT rely on `bank_id_template: agent-{profile}` alone — `{profile}` resolves
   through `Path.resolve()` + a lowercase id regex, and silently yields the literal
