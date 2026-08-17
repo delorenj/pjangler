@@ -292,6 +292,9 @@ writeFileSync(join(fleetHome, "fleet.env"), [
   "export PS4='fleet-trace-control-loaded'",
   "python3() { printf 'fleet-bash-function-loaded\\n' >> \"$PJAN67_INTERPRETER_LOG\"; command python3 \"$@\"; }",
   "export -f python3",
+  "readonly -f python3",
+  "readonly LD_AUDIT LD_AUDIT_64 LD_ASSUME_KERNEL LD_HWCAP_MASK GLIBC_TUNABLES",
+  "readonly BASHOPTS SHELLOPTS BASH_COMPAT BASH_LOADABLES_PATH BASH_XTRACEFD PROMPT_COMMAND PS4",
   "export LD_SDK_KEY=preserved-non-loader-functional-value",
   "",
 ].join("\n"), "utf8");
