@@ -31,7 +31,11 @@ import type {
 import type { HermesAgentContext } from "../commands/hermes/types";
 import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
-import type { TrustedCopierIdentity } from "../lifecycle/preflight";
+import { hardenSubprocessEnvironment } from "../utils/child-environment";
+import {
+  verifyTrustedCopierIdentity,
+  type TrustedCopierIdentity,
+} from "../lifecycle/preflight";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -78,7 +82,7 @@ const PRODUCTION_RUNTIME: ProjectRecipeRuntime = {
     const result = spawnSync("git", [...args], {
       cwd,
       encoding: "utf8",
-      env: options?.env ? { ...process.env, ...options.env } : process.env,
+      env: hardenSubprocessEnvironment(process.env, options?.env),
     });
     return {
       status: result.status,
@@ -212,7 +216,30 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
     let audit: AuditReport | undefined;
 
     try {
-      if (mode === "create") {
+      // The handler's read-only attestation is an input to the whole project
+      // transaction, not merely to nested Copier. Revalidate it before the
+      // filesystem plan can write .project.json or the registry and before a
+      // dependency, provider, Git, systemd, or template child can execute.
+      // CommonProject and Hermes repeat the check immediately before spawn.
+      if (normalized.requireTrustedCopier || normalized.trustedCopier) {
+        const trusted = normalized.trustedCopier;
+        const verified = trusted
+          ? verifyTrustedCopierIdentity(trusted)
+          : { ok: false, error: "MCP project apply requires a preflight-attested Copier identity" };
+        phases.push({
+          id: "project.preflight:copier",
+          status: verified.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: verified.ok
+            ? "Copier identity revalidated at the project transaction boundary"
+            : `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`,
+        });
+        if (!verified.ok) {
+          errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+        }
+      }
+
+      if (errors.length === 0 && mode === "create") {
         const preflight = this.runtime.preflightBmad(transactionContext);
         phases.push({
           id: "project.preflight:bmad",

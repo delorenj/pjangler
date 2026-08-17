@@ -9,6 +9,7 @@ import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveAgentId, deriveProfileName, type HermesAgentContext } from "./types";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
 import { verifyTrustedCopierIdentity } from "../../lifecycle/preflight";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 const TICKET_PROVIDER_CREDENTIAL_KEYS = new Set([
   "PLANE_API_KEY",
@@ -152,7 +153,10 @@ export class RunCopierTemplate extends Command {
     // apply has an identity and therefore must not execute `which` or resolve
     // PATH again after the handler's read-only preflight.
     if (!ctx.trustedCopier) {
-      const which = spawnSync("which", ["copier"], { encoding: "utf8" });
+      const which = spawnSync("which", ["copier"], {
+        encoding: "utf8",
+        env: hardenSubprocessEnvironment(),
+      });
       if (which.status !== 0) {
         return {
           success: false,
@@ -187,8 +191,7 @@ export class RunCopierTemplate extends Command {
 
     // Always set these via env so the post-gen scripts in the copier template
     // skip the bits we'll handle in our own commands.
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    const env = hardenSubprocessEnvironment(process.env, {
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
       SKIP_SLACK: ctx.deferredExternalEffects ? "1" : "0",
@@ -206,17 +209,9 @@ export class RunCopierTemplate extends Command {
       SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0",
-    };
+    });
     if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env);
     if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env);
-    if (ctx.trustedCopier) {
-      // The attested UV interpreter must resolve packages from its own venv;
-      // ambient Python path injection would otherwise bypass package hashes.
-      delete env.PYTHONHOME;
-      delete env.PYTHONPATH;
-      env.PYTHONNOUSERSITE = "1";
-      env.PYTHONSAFEPATH = "1";
-    }
 
     // Prefer a local template checkout (if present) so fixes propagate
     // immediately without waiting for a GitHub push. Resolve against $HOME so

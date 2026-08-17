@@ -4,6 +4,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 /**
  * Cloudflare Email Routing rule provisioning.
@@ -45,6 +46,7 @@ export class WireEmail extends Command {
     if (!existsSync(script)) {
       return { success: false, message: `✗ ${script} not found` };
     }
+    const childEnv = hardenSubprocessEnvironment();
 
     // Token discovery
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -52,7 +54,7 @@ export class WireEmail extends Command {
       const tryOp = spawnSync(
         "op",
         ["read", "op://DeLoSecrets/Cloudflare-EmailRouting/token"],
-        { encoding: "utf8" }
+        { encoding: "utf8", env: childEnv }
       );
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
@@ -103,7 +105,7 @@ export class WireEmail extends Command {
             "--title=Cloudflare-EmailRouting",
             `token=${token}`,
           ],
-          { stdio: "inherit" }
+          { stdio: "inherit", env: childEnv }
         );
         if (create.status !== 0) {
           p.log.warn("Could not store in 1Password — token is still set for this run.");
@@ -119,7 +121,7 @@ export class WireEmail extends Command {
     spinner.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync("bash", [script], {
       stdio: "inherit",
-      env: { ...process.env, SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token },
+      env: hardenSubprocessEnvironment(process.env, { SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token }),
       cwd: roleDir,
     });
     spinner.stop(result.status === 0 ? "✓ Email rule created" : "✗ Email step failed");

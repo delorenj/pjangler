@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
 import { scrubInteractiveChannelCredentials, scrubTicketProviderCredentials } from "./RunCopierTemplate";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 /**
  * Execute explicitly granted Hermes external phases after local lifecycle
@@ -22,8 +23,7 @@ export class ApplyDeferredExternalEffects extends Command {
       return { success: false, outcome: "failed", message: "Hermes roleDir is unavailable for deferred external effects" };
     }
 
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    const env = hardenSubprocessEnvironment(process.env, {
       PJANGLER_PROJECT_ROOT: ctx.targetDir,
       SKIP_HOST_STATE: "0",
       SKIP_TELEGRAM: "1",
@@ -33,7 +33,7 @@ export class ApplyDeferredExternalEffects extends Command {
       SKIP_RUNTIME_REPO: selected.runtimeRepo ? "0" : "1",
       SKIP_PLANE: selected.ticketBoard ? "0" : "1",
       SKIP_SYSTEMD: selected.systemd ? "0" : "1",
-    };
+    });
     scrubInteractiveChannelCredentials(env);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env);
 

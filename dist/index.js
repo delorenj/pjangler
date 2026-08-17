@@ -6203,6 +6203,29 @@ function changedTreePaths(root, before, after) {
   return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join5(root, path)).sort();
 }
 
+// src/utils/child-environment.ts
+var SUBPROCESS_INJECTION_KEYS = [
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PYTHONUSERBASE",
+  "BASH_ENV",
+  "ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH"
+];
+function hardenSubprocessEnvironment(source = process.env, overrides = {}) {
+  const env2 = { ...source, ...overrides };
+  for (const key of SUBPROCESS_INJECTION_KEYS) delete env2[key];
+  env2.PYTHONNOUSERSITE = "1";
+  env2.PYTHONSAFEPATH = "1";
+  return env2;
+}
+
 // src/lifecycle/preflight.ts
 import { createHash as createHash4 } from "node:crypto";
 import {
@@ -6862,7 +6885,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     );
     const staged = join7(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
-    const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
+    const childEnv = hardenSubprocessEnvironment(env2, { ...values, TICKET_PROVIDER: provider });
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
     const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
       cwd: existsSync5(action.repoPath) ? action.repoPath : staging,
@@ -7224,17 +7247,11 @@ async function executeProjectInitPlan(plan, options = {}) {
       mkdirSync3(dirname4(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
-      const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
-      if (copierEnv) {
-        delete copierEnv.PYTHONHOME;
-        delete copierEnv.PYTHONPATH;
-        copierEnv.PYTHONNOUSERSITE = "1";
-        copierEnv.PYTHONSAFEPATH = "1";
-      }
+      const copierEnv = hardenSubprocessEnvironment();
       const result = spawnSync2(copierExecutable, action.command.slice(1), {
         encoding: "utf8",
         cwd: action.cwd,
-        ...copierEnv ? { env: copierEnv } : {}
+        env: copierEnv
       });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
@@ -7603,7 +7620,10 @@ var RunCopierTemplate = class extends Command {
       };
     }
     if (!ctx.trustedCopier) {
-      const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
+      const which = spawnSync3("which", ["copier"], {
+        encoding: "utf8",
+        env: hardenSubprocessEnvironment()
+      });
       if (which.status !== 0) {
         return {
           success: false,
@@ -7630,8 +7650,7 @@ var RunCopierTemplate = class extends Command {
         ctx.force = true;
       }
     }
-    const env2 = {
-      ...process.env,
+    const env2 = hardenSubprocessEnvironment(process.env, {
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
       SKIP_SLACK: ctx.deferredExternalEffects ? "1" : "0",
@@ -7649,15 +7668,9 @@ var RunCopierTemplate = class extends Command {
       SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0"
-    };
+    });
     if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env2);
     if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env2);
-    if (ctx.trustedCopier) {
-      delete env2.PYTHONHOME;
-      delete env2.PYTHONPATH;
-      env2.PYTHONNOUSERSITE = "1";
-      env2.PYTHONSAFEPATH = "1";
-    }
     const LOCAL_TEMPLATE = join8(homedir3(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
     const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync6(join8(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
@@ -7759,6 +7772,7 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
+    const childEnv = hardenSubprocessEnvironment();
     const rolesDir = join9(targetDir, "agents", "hermes");
     if (!existsSync7(rolesDir)) {
       return {
@@ -7783,7 +7797,8 @@ var UntrackHermesRuntimes = class extends Command {
       let isTracked = false;
       const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
-        encoding: "utf8"
+        encoding: "utf8",
+        env: childEnv
       });
       if (lsResult.status !== 0) {
         return {
@@ -7815,7 +7830,8 @@ var UntrackHermesRuntimes = class extends Command {
           if (!this.context.dryRun) {
             const rmResult = spawnSync4("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
               cwd: targetDir,
-              encoding: "utf8"
+              encoding: "utf8",
+              env: childEnv
             });
             if (rmResult.status !== 0) {
               return {
@@ -7825,7 +7841,8 @@ var UntrackHermesRuntimes = class extends Command {
             }
             const verifyResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
               cwd: targetDir,
-              encoding: "utf8"
+              encoding: "utf8",
+              env: childEnv
             });
             if (verifyResult.status !== 0 || verifyResult.stdout.trim()) {
               return {
@@ -7903,10 +7920,11 @@ var WireTelegram = class extends Command {
     const displayName = `${cap(targetRepo)} ${role.length <= 3 ? role.toUpperCase() : cap(role)}`;
     const vaultTitle = `Telegram-Hermes-${targetRepo.toLowerCase()}-${role.toLowerCase()}`;
     const vaultRef = `op://DeLoSecrets/${vaultTitle}/token`;
+    const childEnv = hardenSubprocessEnvironment();
     let token = process.env.TELEGRAM_BOT_TOKEN;
     let source = token ? "env" : null;
     if (!token) {
-      const tryOp = spawnSync5("op", ["read", vaultRef], { encoding: "utf8" });
+      const tryOp = spawnSync5("op", ["read", vaultRef], { encoding: "utf8", env: childEnv });
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
         source = "op";
@@ -7956,7 +7974,7 @@ var WireTelegram = class extends Command {
             `token=${token}`,
             `bot_handle=${botHandle}`
           ],
-          { stdio: "inherit" }
+          { stdio: "inherit", env: childEnv }
         );
         if (create.status !== 0) {
           p3.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
@@ -7985,12 +8003,11 @@ var WireTelegram = class extends Command {
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync5("bash", [script], {
       stdio: "inherit",
-      env: {
-        ...process.env,
+      env: hardenSubprocessEnvironment(process.env, {
         SKIP_TELEGRAM: "0",
         TELEGRAM_BOT_TOKEN: token,
         TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim()
-      },
+      }),
       cwd: roleDir
     });
     spinner4.stop(result.status === 0 ? "\u2713 Telegram wired" : "\u2717 Telegram step failed");
@@ -8034,12 +8051,13 @@ var WireEmail = class extends Command {
     if (!existsSync9(script)) {
       return { success: false, message: `\u2717 ${script} not found` };
     }
+    const childEnv = hardenSubprocessEnvironment();
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
     if (!token) {
       const tryOp = spawnSync6(
         "op",
         ["read", "op://DeLoSecrets/Cloudflare-EmailRouting/token"],
-        { encoding: "utf8" }
+        { encoding: "utf8", env: childEnv }
       );
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
@@ -8086,7 +8104,7 @@ var WireEmail = class extends Command {
             "--title=Cloudflare-EmailRouting",
             `token=${token}`
           ],
-          { stdio: "inherit" }
+          { stdio: "inherit", env: childEnv }
         );
         if (create.status !== 0) {
           p4.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
@@ -8099,7 +8117,7 @@ var WireEmail = class extends Command {
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync6("bash", [script], {
       stdio: "inherit",
-      env: { ...process.env, SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token },
+      env: hardenSubprocessEnvironment(process.env, { SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token }),
       cwd: roleDir
     });
     spinner4.stop(result.status === 0 ? "\u2713 Email rule created" : "\u2717 Email step failed");
@@ -8169,8 +8187,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     if (!ctx.roleDir) {
       return { success: false, outcome: "failed", message: "Hermes roleDir is unavailable for deferred external effects" };
     }
-    const env2 = {
-      ...process.env,
+    const env2 = hardenSubprocessEnvironment(process.env, {
       PJANGLER_PROJECT_ROOT: ctx.targetDir,
       SKIP_HOST_STATE: "0",
       SKIP_TELEGRAM: "1",
@@ -8180,7 +8197,7 @@ var ApplyDeferredExternalEffects = class extends Command {
       SKIP_RUNTIME_REPO: selected.runtimeRepo ? "0" : "1",
       SKIP_PLANE: selected.ticketBoard ? "0" : "1",
       SKIP_SYSTEMD: selected.systemd ? "0" : "1"
-    };
+    });
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
     const roleManifest = join12(ctx.roleDir, "role.yaml");
@@ -8251,8 +8268,7 @@ var ApplyDeferredHostEffects = class extends Command {
       ctx.applyingDeferredHostEffects = false;
     }
     if (!config.success) return config;
-    const env2 = {
-      ...process.env,
+    const env2 = hardenSubprocessEnvironment(process.env, {
       PJANGLER_PROJECT_ROOT: ctx.targetDir,
       SKIP_HOST_STATE: "0",
       SKIP_TELEGRAM: "1",
@@ -8262,7 +8278,7 @@ var ApplyDeferredHostEffects = class extends Command {
       SKIP_RUNTIME_REPO: "1",
       SKIP_PLANE: "1",
       SKIP_SYSTEMD: "1"
-    };
+    });
     scrubTicketProviderCredentials(env2);
     scrubInteractiveChannelCredentials(env2);
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
@@ -8610,7 +8626,7 @@ var PRODUCTION_RUNTIME = {
     const result = spawnSync9("git", [...args], {
       cwd,
       encoding: "utf8",
-      env: options?.env ? { ...process.env, ...options.env } : process.env
+      env: hardenSubprocessEnvironment(process.env, options?.env)
     });
     return {
       status: result.status,
@@ -8716,7 +8732,20 @@ var ProjectRecipe = class extends Recipe {
     let migrationReport;
     let audit;
     try {
-      if (mode === "create") {
+      if (normalized.requireTrustedCopier || normalized.trustedCopier) {
+        const trusted = normalized.trustedCopier;
+        const verified = trusted ? verifyTrustedCopierIdentity(trusted) : { ok: false, error: "MCP project apply requires a preflight-attested Copier identity" };
+        phases.push({
+          id: "project.preflight:copier",
+          status: verified.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: verified.ok ? "Copier identity revalidated at the project transaction boundary" : `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`
+        });
+        if (!verified.ok) {
+          errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+        }
+      }
+      if (errors.length === 0 && mode === "create") {
         const preflight = this.runtime.preflightBmad(transactionContext);
         phases.push({
           id: "project.preflight:bmad",

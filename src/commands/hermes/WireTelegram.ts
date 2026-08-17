@@ -4,6 +4,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import * as p from "@clack/prompts";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 /**
  * BotFather token wire-up for a per-(repo, role) Hermes bot.
@@ -43,12 +44,13 @@ export class WireTelegram extends Command {
     const displayName = `${cap(targetRepo)} ${role.length <= 3 ? role.toUpperCase() : cap(role)}`;
     const vaultTitle = `Telegram-Hermes-${targetRepo.toLowerCase()}-${role.toLowerCase()}`;
     const vaultRef = `op://DeLoSecrets/${vaultTitle}/token`;
+    const childEnv = hardenSubprocessEnvironment();
 
     let token = process.env.TELEGRAM_BOT_TOKEN;
     let source: "env" | "op" | "prompt" | null = token ? "env" : null;
 
     if (!token) {
-      const tryOp = spawnSync("op", ["read", vaultRef], { encoding: "utf8" });
+      const tryOp = spawnSync("op", ["read", vaultRef], { encoding: "utf8", env: childEnv });
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
         source = "op";
@@ -101,7 +103,7 @@ export class WireTelegram extends Command {
             `token=${token}`,
             `bot_handle=${botHandle}`,
           ],
-          { stdio: "inherit" }
+          { stdio: "inherit", env: childEnv }
         );
         if (create.status !== 0) {
           p.log.warn("Could not store in 1Password — token is still set for this run.");
@@ -135,12 +137,11 @@ export class WireTelegram extends Command {
     spinner.start("Verifying token + wiring profile");
     const result = spawnSync("bash", [script], {
       stdio: "inherit",
-      env: {
-        ...process.env,
+      env: hardenSubprocessEnvironment(process.env, {
         SKIP_TELEGRAM: "0",
         TELEGRAM_BOT_TOKEN: token,
         TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim(),
-      },
+      }),
       cwd: roleDir,
     });
     spinner.stop(result.status === 0 ? "✓ Telegram wired" : "✗ Telegram step failed");

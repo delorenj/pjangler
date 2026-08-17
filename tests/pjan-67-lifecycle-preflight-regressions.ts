@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { RunCopierTemplate } from "../src/commands/hermes/RunCopierTemplate";
 import type { HermesAgentContext } from "../src/commands/hermes/types";
+import { hardenSubprocessEnvironment } from "../src/utils/child-environment";
 import {
   preflightCommonProjectTemplate,
   preflightHermesTemplate,
@@ -23,6 +24,9 @@ import {
   type TrustedCopierIdentity,
 } from "../src/lifecycle/preflight";
 import { executeProjectInitPlan, planProjectInit } from "../src/project/index";
+import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
+import { RecipeRegistry } from "../src/recipes/registry";
+import type { LifecycleRecipe } from "../src/recipes/types";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-67-preflight-contract-"));
@@ -107,6 +111,33 @@ function attest(path: string, homeDir: string, temporaryDir = join(workspace, "s
     homeDir,
     temporaryDir,
   });
+}
+
+function noopRecipe(id: string, dependencies: readonly string[] = []): LifecycleRecipe {
+  return {
+    metadata: {
+      id,
+      name: id,
+      description: `${id} fixture`,
+      dependencies,
+      commands: [],
+      publicRuleIds: [],
+    },
+    checks: [],
+    async init(ctx) {
+      return {
+        recipeId: id,
+        ok: true,
+        dryRun: Boolean(ctx.dryRun),
+        changedFiles: [],
+        logs: [],
+        errors: [],
+        phases: [],
+      };
+    },
+    audit() { return []; },
+    migrate() { return []; },
+  };
 }
 
 try {
@@ -236,6 +267,134 @@ try {
   assert.equal(existsSync(projectTarget), false, "CommonProject check/use rejection must precede target writes");
   assert.equal(existsSync(projectEffect), false, "CommonProject must not execute a replaced attested launcher");
   assert.equal(existsSync(plan.registryPath), false, "CommonProject check/use rejection must precede registry writes");
+
+  // The project-owned boundary must repeat the handler's identity check before
+  // its filesystem plan. A nested Copier check is too late because that plan
+  // also owns .project.json and registry projection. These sentinels live
+  // outside the target, so a rollback cannot disguise an ordering regression.
+  const projectOwnedMutation = syntheticUvCopier("project-owned-check-use");
+  const projectOwnedRoot = join(workspace, "project-owned-check-use");
+  const projectOwnedTarget = join(projectOwnedRoot, "target");
+  const projectOwnedRegistry = join(projectOwnedRoot, "registry.yaml");
+  const projectOwnedConfig = join(projectOwnedRoot, "template-config.toml");
+  const projectOwnedEffect = join(projectOwnedRoot, "effect.log");
+  executable(projectOwnedMutation.launcher, `#!/bin/sh\nprintf ran > "${projectOwnedEffect}"\n`);
+  const projectOwnedPlan = planProjectInit({
+    name: "PJAN-67 Project Boundary",
+    targetDir: projectOwnedTarget,
+    projectSlug: "pjan-67-project-boundary",
+    projectIdentifier: "PBOU",
+    registryPath: projectOwnedRegistry,
+    pjanglerRoot: root,
+    provisionAgent: true,
+    agentRole: "director",
+    apply: true,
+    live: true,
+    provisionRuntimeRepo: true,
+    provisionTicketBoard: true,
+    enableSystemd: true,
+  });
+  let projectOwnedPlanCalls = 0;
+  let projectOwnedGitCalls = 0;
+  const projectOwnedRuntime: ProjectRecipeRuntime = {
+    async executePlan(executedPlan) {
+      projectOwnedPlanCalls += 1;
+      mkdirSync(projectOwnedTarget, { recursive: true });
+      writeFileSync(join(projectOwnedTarget, ".project.json"), "{}\n", "utf8");
+      writeFileSync(projectOwnedRegistry, "projects: {}\n", "utf8");
+      writeFileSync(projectOwnedConfig, "effect = true\n", "utf8");
+      writeFileSync(projectOwnedEffect, "plan/provider/systemd effect\n", "utf8");
+      return {
+        ok: false,
+        plan: executedPlan,
+        logs: [],
+        errors: ["injected effectful plan execution"],
+        changedFiles: [join(projectOwnedTarget, ".project.json")],
+      };
+    },
+    preflightBmad() { return { ok: true }; },
+    runGit() {
+      projectOwnedGitCalls += 1;
+      writeFileSync(projectOwnedEffect, "git effect\n", "utf8");
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  };
+  const projectOwnedRegistryBoundary = new RecipeRegistry([
+    noopRecipe("mise"),
+    noopRecipe("agent-hooks", ["mise"]),
+    noopRecipe("bmad", ["agent-hooks"]),
+    new ProjectRecipe(projectOwnedRuntime),
+  ]);
+  const projectOwnedResult = await projectOwnedRegistryBoundary.initRecipe(
+    "project",
+    {
+      targetDir: projectOwnedTarget,
+      repoRoot: projectOwnedTarget,
+      pjanglerRoot: root,
+      homeDir: projectOwnedMutation.home,
+      dryRun: false,
+      force: false,
+      live: true,
+      quiet: true,
+    },
+    {
+      plan: projectOwnedPlan,
+      mode: "create",
+      trustedCopier: projectOwnedMutation.identity,
+      requireTrustedCopier: true,
+      quiet: true,
+    },
+  );
+  assert.equal(projectOwnedResult.ok, false);
+  assert.match(projectOwnedResult.errors.join("\n"), /provenance revalidation failed|identity changed/);
+  assert.equal(projectOwnedPlanCalls, 0, "outer project identity rejection must precede the filesystem plan");
+  assert.equal(projectOwnedGitCalls, 0, "outer project identity rejection must precede Git/system children");
+  assert.equal(existsSync(projectOwnedTarget), false, "outer project identity rejection must create no target");
+  assert.equal(existsSync(projectOwnedRegistry), false, "outer project identity rejection must create no registry");
+  assert.equal(existsSync(projectOwnedConfig), false, "outer project identity rejection must create no host config");
+  assert.equal(existsSync(projectOwnedEffect), false, "outer project identity rejection must trigger no process/provider/host effect");
+
+  const ambientCredentials = {
+    PLANE_API_KEY: "plane-grant",
+    PLANE_33GOD_API_KEY: "plane-workspace-grant",
+    TRELLO_KEY: "trello-grant",
+    TRELLO_TOKEN: "trello-token",
+    LINEAR_API_KEY: "linear-grant",
+    SLACK_BOT_TOKEN: "slack-grant",
+  };
+  const hardened = hardenSubprocessEnvironment({
+    ...ambientCredentials,
+    PATH: "/trusted/copier/bin:/trusted/hermes/bin:/usr/bin",
+    PYTHONPATH: "/tmp/inject-python-path",
+    PYTHONHOME: "/tmp/inject-python-home",
+    PYTHONSTARTUP: "/tmp/inject-python-startup.py",
+    PYTHONUSERBASE: "/tmp/inject-python-userbase",
+    BASH_ENV: "/tmp/inject-bash-env",
+    ENV: "/tmp/inject-shell-env",
+    NODE_OPTIONS: "--require=/tmp/inject-node.cjs",
+    NODE_PATH: "/tmp/inject-node-path",
+    LD_PRELOAD: "/tmp/inject.so",
+    LD_LIBRARY_PATH: "/tmp/inject-lib",
+    DYLD_INSERT_LIBRARIES: "/tmp/inject.dylib",
+    DYLD_LIBRARY_PATH: "/tmp/inject-dyld-lib",
+  });
+  for (const key of [
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+  ]) {
+    assert.equal(hardened[key], undefined, `subprocess hardening must remove ${key}`);
+  }
+  assert.equal(hardened.PYTHONNOUSERSITE, "1");
+  assert.equal(hardened.PYTHONSAFEPATH, "1");
+  assert.equal(
+    hardened.PATH,
+    "/trusted/copier/bin:/trusted/hermes/bin:/usr/bin",
+    "subprocess hardening must preserve controlled executable resolution",
+  );
+  for (const [key, value] of Object.entries(ambientCredentials)) {
+    assert.equal(hardened[key], value, `subprocess hardening must preserve explicitly granted ${key}`);
+  }
 
   assert.equal(preflightCommonProjectTemplate(root).ok, true, "the vendored CommonProject template must satisfy lifecycle eligibility");
   assert.equal(preflightHermesTemplate(root).ok, true, "the vendored Hermes template must satisfy lifecycle eligibility");

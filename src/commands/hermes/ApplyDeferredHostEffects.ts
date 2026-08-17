@@ -5,6 +5,7 @@ import { Command, type InvokeResult } from "../Command";
 import { EnsureTemplateConfig } from "./EnsureTemplateConfig";
 import { scrubInteractiveChannelCredentials, scrubTicketProviderCredentials } from "./RunCopierTemplate";
 import type { HermesAgentContext } from "./types";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 /**
  * Apply host-global Hermes state only after the rendered repo projection has
@@ -30,8 +31,7 @@ export class ApplyDeferredHostEffects extends Command {
     }
     if (!config.success) return config;
 
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    const env = hardenSubprocessEnvironment(process.env, {
       PJANGLER_PROJECT_ROOT: ctx.targetDir,
       SKIP_HOST_STATE: "0",
       SKIP_TELEGRAM: "1",
@@ -41,7 +41,7 @@ export class ApplyDeferredHostEffects extends Command {
       SKIP_RUNTIME_REPO: "1",
       SKIP_PLANE: "1",
       SKIP_SYSTEMD: "1",
-    };
+    });
     // Config/profile/fleet setup never needs board credentials. Do not expose
     // ambient provider authority to these child processes even when a later,
     // separately gated provider phase was positively selected.

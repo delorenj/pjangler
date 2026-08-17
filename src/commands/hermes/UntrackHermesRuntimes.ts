@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "node:child_process";
 import { Command, type InvokeResult } from "../Command";
+import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 function sectionHasPath(section: string, targetPath: string): boolean {
   return section
@@ -20,6 +21,7 @@ function removeSubmodulePath(content: string, targetPath: string): string {
 export class UntrackHermesRuntimes extends Command {
   async invoke(): Promise<InvokeResult> {
     const targetDir = this.context.targetDir;
+    const childEnv = hardenSubprocessEnvironment();
     const rolesDir = join(targetDir, "agents", "hermes");
     if (!existsSync(rolesDir)) {
       return {
@@ -53,6 +55,7 @@ export class UntrackHermesRuntimes extends Command {
       const lsResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
         encoding: "utf8",
+        env: childEnv,
       });
       if (lsResult.status !== 0) {
         return {
@@ -90,6 +93,7 @@ export class UntrackHermesRuntimes extends Command {
             const rmResult = spawnSync("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8",
+              env: childEnv,
             });
             if (rmResult.status !== 0) {
               return {
@@ -100,6 +104,7 @@ export class UntrackHermesRuntimes extends Command {
             const verifyResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8",
+              env: childEnv,
             });
             if (verifyResult.status !== 0 || verifyResult.stdout.trim()) {
               return {

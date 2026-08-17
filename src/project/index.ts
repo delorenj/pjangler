@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
+import { hardenSubprocessEnvironment } from "../utils/child-environment";
 import {
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
@@ -600,7 +601,7 @@ export function provisionTicketProviderBoard(
     const staged = join(providersDir, `${provider}.sh`);
     copyFileSync(adapter, staged);
 
-    const childEnv: NodeJS.ProcessEnv = { ...env, ...values, TICKET_PROVIDER: provider };
+    const childEnv = hardenSubprocessEnvironment(env, { ...values, TICKET_PROVIDER: provider });
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
 
     const result = spawnSync("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
@@ -1049,17 +1050,11 @@ export async function executeProjectInitPlan(
       mkdirSync(dirname(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0]!;
-      const copierEnv = options.trustedCopier ? { ...process.env } : undefined;
-      if (copierEnv) {
-        delete copierEnv.PYTHONHOME;
-        delete copierEnv.PYTHONPATH;
-        copierEnv.PYTHONNOUSERSITE = "1";
-        copierEnv.PYTHONSAFEPATH = "1";
-      }
+      const copierEnv = hardenSubprocessEnvironment();
       const result = spawnSync(copierExecutable, action.command.slice(1), {
         encoding: "utf8",
         cwd: action.cwd,
-        ...(copierEnv ? { env: copierEnv } : {}),
+        env: copierEnv,
       });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);

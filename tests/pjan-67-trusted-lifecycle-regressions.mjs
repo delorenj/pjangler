@@ -44,6 +44,9 @@ const registryPath = join(temporary, "projects.yaml");
 const providerAdapters = join(temporary, "providers");
 const effectLog = join(temporary, "effects.log");
 const providerLog = join(temporary, "provider.log");
+const interpreterLoadLog = join(temporary, "interpreter-load.log");
+const interpreterInjectionRoot = join(temporary, "interpreter-injection");
+const bashEnvSentinel = join(interpreterInjectionRoot, "bash-env.sh");
 const templateConfig = join(isolatedHome, ".config", "hermes-agent-template", "config.toml");
 const fleetHome = join(isolatedHome, ".hermes");
 const fakeHermes = join(fakeBin, "hermes");
@@ -58,6 +61,18 @@ function executable(path, source) {
   writeFileSync(path, source, "utf8");
   chmodSync(path, 0o755);
 }
+
+mkdirSync(interpreterInjectionRoot, { recursive: true });
+writeFileSync(
+  join(interpreterInjectionRoot, "sitecustomize.py"),
+  `from pathlib import Path\nwith Path(${JSON.stringify(interpreterLoadLog)}).open("a", encoding="utf-8") as stream:\n    stream.write("sitecustomize-loaded\\n")\n`,
+  "utf8",
+);
+writeFileSync(
+  bashEnvSentinel,
+  `printf 'bash-env-loaded:%s\\n' "$0" >> "$PJAN67_INTERPRETER_LOG"\n`,
+  "utf8",
+);
 
 executable(fakeHermes, `#!/bin/sh
 printf 'local-hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
@@ -187,8 +202,16 @@ const serverEnv = {
   PLANE_API_KEY: "trusted-positive-test-key",
   TRELLO_KEY: "trusted-positive-test-key",
   TRELLO_TOKEN: "trusted-positive-test-token",
+  // These remain dormant in the Node MCP server and execute only if a
+  // controlled Copier/template/host/external child inherits them.
+  PYTHONPATH: interpreterInjectionRoot,
+  PYTHONSTARTUP: join(interpreterInjectionRoot, "sitecustomize.py"),
+  PYTHONUSERBASE: interpreterInjectionRoot,
+  BASH_ENV: bashEnvSentinel,
+  ENV: bashEnvSentinel,
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
+  PJAN67_INTERPRETER_LOG: interpreterLoadLog,
 };
 
 function assertEnclosingProjectUntouched(label) {
@@ -203,6 +226,11 @@ function assertNoUngrantAuthority(label) {
   const effects = existsSync(effectLog) ? readFileSync(effectLog, "utf8") : "";
   assert.doesNotMatch(effects, /authority-visible:/, `${label}: FLEET_ENV provider authority must not reach any child`);
   assert.equal(existsSync(providerLog), false, `${label}: no-board grant must invoke no provider`);
+}
+
+function assertNoInterpreterInjection(label) {
+  const loads = existsSync(interpreterLoadLog) ? readFileSync(interpreterLoadLog, "utf8") : "";
+  assert.equal(loads, "", `${label}: MCP-controlled child loaded ambient interpreter code: ${loads}`);
 }
 
 function payload(result) {
@@ -222,6 +250,7 @@ const client = new Client({ name: "pjan-67-trusted-positive", version: "1.0.0" }
 try {
   await client.connect(transport);
   const target = join(temporary, "trusted-project");
+  rmSync(interpreterLoadLog, { force: true });
   const createdResult = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
     arguments: {
@@ -238,10 +267,12 @@ try {
   assert.equal(created.ok, true, JSON.stringify(created.errors));
   assert.equal(created.audit?.ok, true, JSON.stringify(created.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status))));
   assert.equal(existsSync(join(target, ".project.json")), true);
+  assertNoInterpreterInjection("trusted project create");
   assertEnclosingProjectUntouched("trusted project create");
 
   const copierAnswersBefore = readFileSync(join(target, ".copier-answers.yml"), "utf8");
   rmSync(join(target, ".project.json"));
+  rmSync(interpreterLoadLog, { force: true });
   const syncedResult = await client.callTool({
     name: "pjangler_project_init",
     arguments: {
@@ -257,6 +288,7 @@ try {
   assert.equal(synced.ok, true, JSON.stringify(synced.errors));
   assert.equal(synced.mode, "sync");
   assert.equal(readFileSync(join(target, ".copier-answers.yml"), "utf8"), copierAnswersBefore, "existing sync must not rerun Copier");
+  assertNoInterpreterInjection("trusted project sync");
   assertEnclosingProjectUntouched("trusted project sync");
 
   // Every MCP entry point that can reach Hermes must keep the no-board grant
@@ -266,6 +298,7 @@ try {
   // parent MCP process environment.
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const dedicatedNoBoardResult = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
     arguments: {
@@ -281,10 +314,12 @@ try {
   const dedicatedNoBoard = payload(dedicatedNoBoardResult);
   assert.equal(typeof dedicatedNoBoard.success, "boolean", JSON.stringify(dedicatedNoBoard));
   assertNoUngrantAuthority("dedicated Hermes no-board path");
+  assertNoInterpreterInjection("dedicated Hermes no-board path");
   assertEnclosingProjectUntouched("dedicated Hermes no-board path");
 
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const projectInitNoBoardTarget = join(temporary, "authority-project-init");
   const projectInitNoBoardResult = await client.callTool({
     name: "pjangler_project_init",
@@ -302,10 +337,12 @@ try {
   const projectInitNoBoard = payload(projectInitNoBoardResult);
   assert.equal(typeof projectInitNoBoard.ok, "boolean", JSON.stringify(projectInitNoBoard));
   assertNoUngrantAuthority("project-init no-board path");
+  assertNoInterpreterInjection("project-init no-board path");
   assertEnclosingProjectUntouched("project-init no-board path");
 
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const bootstrapNoBoardTarget = join(temporary, "authority-bootstrap");
   const bootstrapNoBoardResult = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
@@ -325,6 +362,7 @@ try {
   const bootstrapNoBoard = payload(bootstrapNoBoardResult);
   assert.equal(typeof bootstrapNoBoard.ok, "boolean", JSON.stringify(bootstrapNoBoard));
   assertNoUngrantAuthority("bootstrap no-board path");
+  assertNoInterpreterInjection("bootstrap no-board path");
   assertEnclosingProjectUntouched("bootstrap no-board path");
 
   // A readable empty fleet registry makes registry parity repairable, allowing
@@ -333,6 +371,7 @@ try {
   writeFileSync(join(fleetHome, "agents-registry.yaml"), "agents: {}\n", "utf8");
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const dedicatedNoBoardExternalResult = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
     arguments: {
@@ -354,10 +393,12 @@ try {
   assert.match(noBoardExternalEffects, /runtime-migrate:/, "non-board runtime grant must reach its selected child");
   assert.match(noBoardExternalEffects, /systemctl:--user enable --now/, "non-board systemd grant must reach its selected child");
   assertNoUngrantAuthority("dedicated Hermes selected non-board external path");
+  assertNoInterpreterInjection("dedicated Hermes selected non-board external path");
   assertEnclosingProjectUntouched("dedicated Hermes selected non-board external path");
 
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const deployedResult = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
     arguments: {
@@ -388,10 +429,12 @@ try {
   const deployedRole = YAML.parse(readFileSync(join(target, "agents", "hermes", "director", "role.yaml"), "utf8"));
   assert.equal(deployedRole.deployment.local_only, false, "successful live deployment must clear temporary local-only metadata");
   assert.equal(deployedRole.deployment.systemd, "required", "successful systemd grant must persist required deployment metadata");
+  assertNoInterpreterInjection("trusted dedicated Hermes deploy");
   assertEnclosingProjectUntouched("trusted dedicated Hermes deploy");
 
   rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
   const projectTailTarget = join(temporary, "trusted-project-tail");
   const projectTailResult = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
@@ -435,6 +478,7 @@ try {
   const projectRole = YAML.parse(readFileSync(join(projectTailTarget, "agents", "hermes", "director", "role.yaml"), "utf8"));
   assert.equal(projectRole.deployment.local_only, false);
   assert.equal(projectRole.deployment.systemd, "required");
+  assertNoInterpreterInjection("trusted project-owned Hermes deploy");
   assertEnclosingProjectUntouched("trusted project-owned Hermes deploy");
 
   console.log("PJAN-67 trusted Copier create/sync/deferred-external regressions: PASS");
