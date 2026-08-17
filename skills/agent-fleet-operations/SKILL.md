@@ -1,0 +1,107 @@
+---
+name: agent-fleet-operations
+description: |
+  Operate and maintain the Hermes agent fleet: shared install, ~/.hermes/fleet.env, ~/.hermes/config.yaml, ~/.hermes/agents-registry.yaml, hermes-agent-template, role profiles and inherited config, runtime repo provisioning, systemd user units, fleet self-checks, template defaults, PM/template backfills, and the default TTS voice configuration. Use when updating Hermes core, changing fleet defaults, provisioning agents, debugging fleet-wide MCP failures, running a Hermes fleet self-check, propagating template changes to existing PM agents, or changing the default voice/TTS voice for Hermes agents. Triggers: Hermes fleet, hermes-agent-template, ~/.hermes/fleet.env, ~/.hermes/config.yaml, ~/.hermes/agents-registry.yaml, inherited profile, fleet self-check, systemd hermes-*, template backfill, runtime repo provisioning, set voice, change voice, switch voice, TTS voice, Voxxy voice, default speaking voice. Do NOT use for: project bootstrap decisions or repo-local agent requests (→ 33god-projects); Plane ticket operations (→ project-lifecycle); Bloodbank event contracts (→ bloodbank-integration); generic SSOT config fan-out mechanics (→ agent-config-fanout).
+---
+
+# Hermes Fleet Operations
+
+Route here for anything that touches the shared Hermes fleet, the agent template, or the runtime provisioning contract — not the project that happens to host an agent.
+
+## The Canonical PM Deploy Standard (2026-08, enforced)
+
+One PM per repo, and exactly TWO per-agent systemd user units:
+
+1. `hermes-<agent>-gateway.service` — chat-platform ingress (Telegram/Slack).
+2. `hermes-<agent>-heartbeat.timer` → `.service` — the fused sentinel/checkpoint
+   tick (`.scripts/heartbeat.sh`).
+
+Bloodbank command ingress is **fleet-shared**: `hermes-fleet-bloodbank-gateway.service`
+(profile `fleet-bloodbank-gateway`, adapter `bloodbank/services/hermes-gateway`)
+subscribes once to `bloodbank.cmd.v1.agent.invocation.start` and routes
+`data.target_agent_id` → Hermes profile via the registry's `profile_name`.
+There is **no per-agent consumer unit, no checkpoint timer, no filesystem
+inbox** — any of those is drift, not an alternative deployment style. Every
+registry entry advertises `bloodbank: {gateway_scope: fleet, target_agent_id: <id>}`.
+Canonical command envelopes need an `actor` object and
+`schemaref: bloodbank.v1.agent.invocation.start.v1` or the gateway terminally
+rejects them. Enforcement: pjangler `pj audit` / `pj migrate hermes.registry-parity`
+detects and converges violations. Canon: `hermes-agent-template/docs/architecture.md`
+§ "Bloodbank wiring". The retired scrum-master role's duties folded into the PM
+heartbeat (see Krebs lifecycle: `~/code/33GOD/krebs/spec/lifecycle.v1.yaml`).
+
+## Operating Principles
+
+- **Fleet truth lives in `~/.hermes/`.** `fleet.env`, `config.yaml`, and `agents-registry.yaml` are the shared sources; repo-local `agents/hermes/<role>/runtime/` contains only overrides and local state.
+- **Profiles inherit the fleet base by GENERATION, not by a Hermes feature.** Hermes has **no** native profile config inheritance: `load_config()` merges only `DEFAULT_CONFIG` + `$HERMES_HOME/config.yaml` (plus a `/etc/hermes` managed overlay that *wins* at the leaf, so it cannot serve as an overridable base). The `config.inherit_from: default` / `save_mode: delta` contract this skill used to assert is read by **zero lines** of Hermes code — `profile.yaml` is metadata ABOUT a profile (description, role), never config. Inheritance is real only because `hermes-profile-config.py` renders it. Change the fleet default once, then `render --all`.
+- **Template changes affect future agents; backfills affect existing ones.** Do not backfill for a simple shared default or core update.
+- **One board owns the shared fleet/template contract.** Fleet-wide fixes route to the Hermes Agent PM board, not the repo board.
+- **Project identity is owned by `33god-projects` / PJangler.** This skill provisions against that identity; it does not create or rename projects.
+
+## Triage Table
+
+| You want to… | Read first | Then |
+|---|---|---|
+| Add an MCP server / hook / skill so **every** agent client gets it (incl. project-scoped) | [references/extension-points.md](references/extension-points.md) | the matching plane; MCP has no SSOT yet |
+| Update Hermes core, shared config, or future-agent provisioning | [references/hermes-fleet-updates.md](references/hermes-fleet-updates.md) | the matching lane inside it |
+| Run a fleet self-check or debug MCP failures that differ across repo-backed daemons | [references/fleet-self-check.md](references/fleet-self-check.md) | hermes-fleet-updates for remediation lanes |
+| Capture a governance rule/workflow in the PM template and propagate to existing PM agents | [references/pm-template-maintenance.md](references/pm-template-maintenance.md) | hermes-fleet-updates for backfill vs shared-config classification |
+| Provision a new PM agent into a repo | → **33god-projects** `references/project-creation.md` | this skill only for runtime/template details |
+
+## Cross-Cutting Rules
+
+- `~/.hermes/profiles/<repo>-<role>` must point at `agents/hermes/<role>/runtime/`.
+- **Never hand-edit `~/.hermes/profiles/<p>/config.yaml` — it is GENERATED.** Edit
+  `config.delta.yaml` (override-only, usually 0–10 lines) then
+  `hermes-profile-config.py render`. `check` is the drift gate. If Hermes itself
+  wrote to a generated config (`/model`, onboarding), `absorb` folds it back
+  before the next render, so an in-agent change is never silently lost.
+- A `profile.yaml` `config:` block is inert — Hermes reads `profile.yaml` only for
+  `description` / `role`. Do not add config there and do not trust one you find.
+- Never duplicate fleet `mcp_servers` into a delta; the base owns them.
+- Identity-memory bank is pinned per profile in `<profile>/hindsight/config.json`.
+  Do NOT rely on `bank_id_template: agent-{profile}` alone — `{profile}` resolves
+  through `Path.resolve()` + a lowercase id regex, and silently yields the literal
+  `custom` for symlinked profile dirs or uppercase names, merging agents' private
+  memory. Re-run `memory-pin` after any profile rename.
+- systemd units set `HERMES_HOME` to the named profile path, not the raw runtime path.
+- For Bloodbank lifecycle events emitted by hooks, use v1 names (`bloodbank.v1.agent.*`).
+- Bloodbank hook install is owned by Bloodbank's fan-out (`~/code/33GOD/bloodbank/services/agent-hooks/sync.py --install`). Generated Hermes configs should call `~/.agents/hooks/bloodbank/publish.py --client hermes --hook <event>`, not a Hermes-local publisher.
+
+## Voice / TTS defaults
+
+Hermes uses the self-hosted Voxxy service at `https://vox.delo.sh` for TTS. The active profile's voice is controlled by `tts.vox.voice` (and the fallback `tts.voice`).
+
+> **`tts.provider` MUST be `vox`, never `voxxy`.** Voxxy is the *service* (with
+> swappable server-side engines: voxcpm, vibevoice, elevenlabs); the Hermes
+> plugin's registry key is `vox` (`provider.name == "vox"`, plugin key
+> `tts/vox`). `voxxy` matches no registered provider, so Hermes silently falls
+> back to a built-in — ElevenLabs when `ELEVENLABS_API_KEY` is set, otherwise
+> Edge — and you hear a stranger's voice with no error. **This has regressed
+> twice** (canon: `voxxy/docs/plans/hermes-voxxy-tts-plugin.md`). Diagnose by
+> asking the service which engine answered, which isolates Hermes from Voxxy:
+>
+> ```bash
+> curl -s -D- -o/dev/null -X POST https://vox.delo.sh/synthesize-url \
+>   -H 'Content-Type: application/json' \
+>   -d '{"text":"probe","voice":"carlin"}' | grep -i x-vox-engine
+> ```
+>
+> `x-vox-engine: voxcpm` means Voxxy is healthy and the fault is Hermes-side
+> (wrong provider key). Gateways cache config — `systemctl --user restart
+> hermes-<agent>-gateway` after changing it.
+
+To change the default voice instantly, run the bundled script with the voice slug:
+
+```bash
+scripts/set_voice.sh carlin
+```
+
+See [references/voice-management.md](references/voice-management.md) for the full workflow, manual fallback, and common pitfalls.
+
+## Out of Scope
+
+- **Project bootstrap / repo-local agent requests** → `33god-projects`.
+- **Plane ticket lifecycle** → `project-lifecycle`.
+- **Bloodbank event schemas or naming contract** → `bloodbank-integration`.
+- **Generic SSOT config fan-out engine mechanics** → `agent-config-fanout`.

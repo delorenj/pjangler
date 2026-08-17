@@ -6,10 +6,14 @@ import { UntrackHermesRuntimes } from "../commands/hermes/UntrackHermesRuntimes"
 import { WireTelegram } from "../commands/hermes/WireTelegram";
 import { WireEmail } from "../commands/hermes/WireEmail";
 import { PrintHermesSummary } from "../commands/hermes/PrintHermesSummary";
+import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
+import { ApplyDeferredHostEffects } from "../commands/hermes/ApplyDeferredHostEffects";
+import type { HermesAgentContext } from "../commands/hermes/types";
 import { createHermesChecks } from "../parity/rules";
 import type { LifecycleContext, RecipeInitResult, RecipeMetadata, RecipePhaseOutcome, RecipePhaseStatus } from "./types";
 import { resolve } from "node:path";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
+import { preflightRenderedHermes } from "../lifecycle/preflight";
 
 /**
  * Recipe that provisions a Hermes agent role into the current project repo.
@@ -86,6 +90,53 @@ export class HermesAgentRecipe extends Recipe {
         errors.push(result.message || `${CommandClass.name} ${status}`);
         break;
       }
+
+      // Copier's trusted, version-locked inputs were attested before launch.
+      // Validate its repo-local projection before any deferred config/profile/
+      // fleet effect runs, so a structural lifecycle failure cannot first be
+      // discovered after host state has changed.
+      if (!ctx.dryRun && CommandClass === RunCopierTemplate && (ctx as HermesAgentContext).deferredExternalEffects) {
+        const hermesContext = ctx as HermesAgentContext;
+        const eligibility = hermesContext.roleDir
+          && hermesContext.targetRepo
+          && hermesContext.role
+          && hermesContext.agentId
+          ? preflightRenderedHermes({
+              pjanglerRoot: ctx.pjanglerRoot,
+              targetDir: ctx.targetDir,
+              roleDir: hermesContext.roleDir,
+              targetRepo: hermesContext.targetRepo,
+              role: hermesContext.role,
+              agentId: hermesContext.agentId,
+            })
+          : { ok: false, error: "Hermes render did not establish role identity" };
+        phases.push({
+          id: "hermes.rendered-eligibility",
+          status: eligibility.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: eligibility.ok ? "Rendered Hermes lifecycle eligibility passed" : eligibility.error,
+        });
+        if (!eligibility.ok) {
+          errors.push(`hermes.rendered-eligibility: ${eligibility.error ?? "unknown eligibility failure"}`);
+          break;
+        }
+
+        const beforeHost = snapshotTree(ctx.targetDir);
+        const host = await new ApplyDeferredHostEffects(ctx).invoke();
+        const hostChanges = changedTreePaths(ctx.targetDir, beforeHost, snapshotTree(ctx.targetDir));
+        phases.push({
+          id: "hermes.host-effects",
+          status: host.success ? (hostChanges.length ? "changed" : "unchanged") : "failed",
+          changedFiles: host.success ? hostChanges : [],
+          message: host.message || undefined,
+        });
+        changedFiles.push(...hostChanges);
+        if (host.message) logs.push(host.message);
+        if (!host.success) {
+          errors.push(host.message || "Deferred Hermes host effects failed");
+          break;
+        }
+      }
     }
 
     const commandResult: RecipeInitResult = {
@@ -99,7 +150,49 @@ export class HermesAgentRecipe extends Recipe {
     };
     if (!commandResult.ok) return commandResult;
     const lifecycle = await this.initializeOwnedChecks(ctx);
-    return mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
+    const localResult = mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
+    if (!localResult.ok || ctx.dryRun) return localResult;
+
+    const hermesContext = ctx as HermesAgentContext;
+    if (hermesContext.deferredExternalEffects?.owner !== "hermes") return localResult;
+    const selected = hermesContext.deferredExternalEffects;
+    if (!selected.runtimeRepo && !selected.ticketBoard && !selected.systemd) return localResult;
+
+    const beforeExternal = snapshotTree(ctx.targetDir);
+    const external = await new ApplyDeferredExternalEffects(ctx).invoke();
+    const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
+    const externalResult: RecipeInitResult = {
+      recipeId: this.metadata.id,
+      ok: external.success,
+      dryRun: false,
+      changedFiles: externalChanges,
+      logs: external.message ? [external.message] : [],
+      errors: external.success ? [] : [external.message || "Deferred Hermes external effects failed"],
+      phases: [{
+        id: "hermes.external-effects",
+        status: external.success ? "changed" : "failed",
+        changedFiles: external.success ? externalChanges : [],
+        message: external.message || undefined,
+      }],
+    };
+    if (!externalResult.ok) return mergeInitResults(this.metadata.id, false, [localResult, externalResult]);
+
+    const findings = this.audit(ctx).filter((finding) => finding.status !== "pass" && finding.status !== "skip");
+    const verification: RecipeInitResult = {
+      recipeId: this.metadata.id,
+      ok: findings.length === 0,
+      dryRun: false,
+      changedFiles: [],
+      logs: [],
+      errors: findings.map((finding) => `${finding.id}: ${finding.summary}`),
+      phases: [{
+        id: "hermes.postcondition-audit",
+        status: findings.length ? "failed" : "unchanged",
+        changedFiles: [],
+        message: findings.length ? "Hermes postcondition audit failed" : "Hermes postcondition audit passed",
+      }],
+    };
+    return mergeInitResults(this.metadata.id, false, [localResult, externalResult, verification]);
   }
 
   protected printNextSteps(): void {

@@ -23,6 +23,7 @@ export interface HermesAgentContext extends CommandContext {
   // --- behavior toggles ---
   yes?: boolean;              // non-interactive; accept all defaults
   local?: boolean;            // local-only: skip runtime repo / Plane / Bloodbank / systemd
+  live?: boolean;             // explicit external-effect authority (still requires per-effect opt-ins)
   forceConfig?: boolean;      // regenerate ~/.config/hermes-agent-template/config.toml
   skipTelegram?: boolean;
   skipEmail?: boolean;
@@ -30,6 +31,22 @@ export interface HermesAgentContext extends CommandContext {
   skipSystemd?: boolean;
   skipBloodbank?: boolean;
   skipPlane?: boolean;
+
+  // MCP apply paths render and prove local lifecycle state first. The selected
+  // external scripts run only from the owning recipe/project transaction after
+  // that eligibility audit, then a read-only postcondition audit verifies the
+  // result. CLI callers that omit this block retain their existing sequencing.
+  deferredExternalEffects?: {
+    runtimeRepo: boolean;
+    ticketBoard: boolean;
+    systemd: boolean;
+    owner: "hermes" | "project";
+  };
+  // MCP provisioning defers host-global config/profile/fleet writes until the
+  // freshly rendered repo-local projection has passed its structural
+  // eligibility gate. This private flag is set only while that deferred host
+  // phase is actually being applied.
+  applyingDeferredHostEffects?: boolean;
 
   // --- derived after copier runs ---
   agentId?: string;           // <targetRepo>-<role>

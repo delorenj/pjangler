@@ -17,7 +17,14 @@ shell_snapshots/
 # Anchored to repo root on purpose: unanchored `commands/`/`skills/` stripped
 # src/commands/** out of the published npm tarball and would strip template
 # content (PJAN-2). Agent-tool dirs are listed explicitly instead.
-/skills/
+#
+# `/skills/` is deliberately NOT ignored: it holds skill SOURCE (9 skills, ~57
+# files) that the rest of the tree only symlinks to --
+# skillex/all-skills/agent-fleet-operations -> 33GOD/skills/... -> here. While it
+# was ignored, that content was tracked by no repo at all and existed only on one
+# disk. The npm tarball is governed by package.json `files` (an explicit
+# allowlist) plus .npmignore, so .gitignore never affected packaging.
+# The GENERATED projections below stay ignored; only the source is tracked.
 .codegraph/
 /commands/
 /.agents/
@@ -53,3 +60,9 @@ _bmad/config.user.yaml
 # state, never source dependencies or publishable project content (PJAN-41).
 /.tmp/
 /memories/
+
+# Momo orchestration locks. A running orchestrator rewrites these (pid,
+# heartbeat, ttl), so they can never be committed clean. `.momo/config.json`
+# — the per-repo lane map — is real config and stays tracked.
+.momo/*.lock
+.momo/*.flock

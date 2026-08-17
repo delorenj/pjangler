@@ -26,6 +26,13 @@ export class WireEmail extends Command {
       // flow never mentions email at all.
       return { success: true, message: "" };
     }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Email wiring is interactive and unavailable during quiet/non-interactive Hermes execution",
+      };
+    }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };
     }

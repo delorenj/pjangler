@@ -1,13 +1,74 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
-import { HERMES_AGENT_TEMPLATE, deriveProfileName, type HermesAgentContext } from "./types";
+import { HERMES_AGENT_TEMPLATE, deriveAgentId, deriveProfileName, type HermesAgentContext } from "./types";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
+
+const TICKET_PROVIDER_CREDENTIAL_KEYS = new Set([
+  "PLANE_API_KEY",
+  "TRELLO_KEY",
+  "TRELLO_TOKEN",
+  "LINEAR_API_KEY",
+]);
+
+const INTERACTIVE_CHANNEL_CREDENTIAL_KEYS = new Set([
+  "TELEGRAM_BOT_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "CF_EMAIL_ROUTING_TOKEN",
+]);
+
+export function scrubTicketProviderCredentials(env: NodeJS.ProcessEnv): void {
+  for (const key of Object.keys(env)) {
+    if (TICKET_PROVIDER_CREDENTIAL_KEYS.has(key) || /^PLANE_[A-Z0-9_]+_API_KEY$/.test(key)) {
+      delete env[key];
+    }
+  }
+}
+
+export function scrubInteractiveChannelCredentials(env: NodeJS.ProcessEnv): void {
+  for (const key of INTERACTIVE_CHANNEL_CREDENTIAL_KEYS) delete env[key];
+  // MCP has no positive Slack grant. Remove ambient opt-in switches as well as
+  // credentials so the non-interactive child cannot be armed indirectly.
+  delete env.ENABLE_SLACK;
+  delete env.WIRE_SLACK;
+}
+
+function registerRenderedAgent(ctx: HermesAgentContext, roleDir: string, role: string): void {
+  const manifestPath = join(ctx.targetDir, ".project.json");
+  if (!existsSync(manifestPath) || !ctx.targetRepo) return;
+
+  const current = readFileSync(manifestPath, "utf8");
+  const parsed = JSON.parse(current) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${manifestPath} must contain a JSON object`);
+  }
+  const manifest = parsed as Record<string, unknown>;
+  const rawAgents = manifest.agents;
+  if (rawAgents !== undefined && (!rawAgents || typeof rawAgents !== "object" || Array.isArray(rawAgents))) {
+    throw new Error(`${manifestPath} agents must contain a JSON object`);
+  }
+  const agents = (rawAgents ?? {}) as Record<string, unknown>;
+  const agentId = ctx.agentId ?? deriveAgentId(ctx.targetRepo, role);
+  Object.defineProperty(agents, agentId, {
+    value: {
+      role,
+      role_dir: relative(ctx.targetDir, roleDir),
+      provisioning_state: "provisioned",
+    },
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+  manifest.agents = agents;
+  const next = `${JSON.stringify(manifest, null, 2)}\n`;
+  if (next !== current) writeFileSync(manifestPath, next, "utf8");
+}
 
 /**
  * Resolve a vendored copier template that ships with pjangler as a git
@@ -117,13 +178,24 @@ export class RunCopierTemplate extends Command {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
+      SKIP_SLACK: ctx.deferredExternalEffects ? "1" : "0",
+      // Fresh project targets do not have their own .git directory until the
+      // project transaction's final phase. Pin scripts to the caller-resolved
+      // root so they can never climb into an enclosing checkout.
+      PJANGLER_PROJECT_ROOT: ctx.targetDir,
+      // Config, fleet env/profile, and registry are host-global state. MCP
+      // renders repo-local files first and executes those scripts only after a
+      // structural lifecycle gate has accepted the render.
+      SKIP_HOST_STATE: ctx.deferredExternalEffects ? "1" : "0",
       // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
       // per-profile file consumer, even when an older template still exposes it.
-      SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
-      SKIP_PLANE: ctx.skipPlane ? "1" : "0",
+      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : ctx.skipRuntimeRepo ? "1" : "0",
+      SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
-      SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0",
+      SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0",
     };
+    if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env);
+    if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env);
 
     // Prefer a local template checkout (if present) so fixes propagate
     // immediately without waiting for a GitHub push. Resolve against $HOME so
@@ -195,10 +267,11 @@ export class RunCopierTemplate extends Command {
       const current = readFileSync(roleManifest, "utf8");
       const document = YAML.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
-      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
-      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
+      document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], ctx.deferredExternalEffects ? "deferred" : ctx.skipSystemd ? "deferred" : "required");
       const next = String(document);
       if (next !== current) writeFileSync(roleManifest, next, "utf8");
+      registerRenderedAgent(ctx, roleDir, safeRole);
     } catch (error) {
       return {
         success: false,
