@@ -23,6 +23,9 @@ if (stable(lockRoot?.dependencies) !== stable(pkg.dependencies)) {
 if (stable(lockRoot?.devDependencies) !== stable(pkg.devDependencies)) {
   failures.push("root devDependencies differ");
 }
+if (stable(lockRoot?.bin) !== stable(pkg.bin)) {
+  failures.push("root bin map differs");
+}
 
 if (failures.length > 0) {
   console.error(`package-lock parity: FAIL (${failures.join("; ")})`);
