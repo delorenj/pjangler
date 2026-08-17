@@ -9,12 +9,12 @@
   "evidence_file": "_bmad-output/implementation-artifacts/issue-evidence/PJAN-66.md",
   "findings": [],
   "git": {
-    "base_sha": "cb8402f8de47a023fb4ebf4a32ccb958f5fdf5a3",
+    "base_sha": "2c419783398ab32e95bb59ec73039edb65d09e26",
     "branch": "fix/PJAN-66-mcp-input-contracts",
-    "head_sha": "570f11ddce106994bfad54ef8a04db400be9bbd1"
+    "head_sha": "aa5ade7fcf2f9fa0869722532dcb118a0e98c25a"
   },
   "heartbeat": {
-    "last_seen_at": "2026-08-17T15:52:57.031581+00:00",
+    "last_seen_at": "2026-08-17T16:35:57.924762+00:00",
     "started_at": "2026-08-17T14:16:07.916152+00:00",
     "ttl_seconds": 600
   },
@@ -29,14 +29,14 @@
   },
   "schema_version": "1.0",
   "status": "DONE",
-  "summary": "Closed the remaining PJAN-66 AC2 gaps: project and agent dictionaries now use null-prototype storage plus own-key reads so constructor/prototype are valid records and __proto__ cannot mutate or masquerade; registry loaders/stores validate safe keys; ProjectRecipe accepts a first constructor role; Hermes role.yaml quotes arbitrary safe roles so YAML boolean/null/numeric spellings remain strings. Published template f6cdf61 and pjangler 570f11d.",
+  "summary": "Corrected PJAN-71 prompt-bin metadata drift on the merged PJAN-66 branch: deterministically regenerated package-lock, enforced root bin-map parity, added an omitted-pjangler-prompt negative regression, preserved both ticket contracts, and pushed aa5ade7.",
   "test_log": "PASS npm run typecheck; PASS node tests/mcp-server-regressions.mjs; PASS node tests/mcp-catalog-regressions.mjs; PASS node tests/project-registry-regressions.mjs; PASS node tests/fleet-shared-bloodbank-regressions.mjs; PASS npm test.",
   "worker": {
     "agent_id": "mcp-input-implementer",
     "agent_type": "",
     "host": "big-chungus",
     "model": "",
-    "pid": 3161084,
+    "pid": 3891404,
     "provider": "",
     "session_id": ""
   }

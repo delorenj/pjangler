@@ -62,14 +62,21 @@
 - Accepted spec verdict: `spec compliant`; all five ACs passed, exact prior failures passed executable probes, and four targeted mutants were killed.
 - Quality reviewer: `/root/pjan66_quality_review` (fresh Codex code-reviewer, distinct from implementer and all spec reviewers).
 - Quality verdict: `approved`; every changed parent/template/test/dist hunk passed maintainability, correctness, safety, generated-parity, and publication-integrity review with no findings.
+- Main integration commit: `eee90ab86e84ec090773743a0fb1660f35a55def` merges accepted PJAN-66 with PJAN-71 main; combined source, generated bundles, focused suites, and full tests passed before push.
+- Integration reviewer: `/root/pjan66_integration_review` (fresh Codex code-reviewer, distinct from implementer and prior reviewers).
+- Integration verdict: held because PJAN-71's new `pjangler-prompt` bin was absent from `package-lock.json`, and the lock-parity check did not detect the metadata drift; all PJAN-66 ACs and combined behavioral suites passed.
+- Integration correction: `aa5ade7fcf2f9fa0869722532dcb118a0e98c25a` adds the root lockfile bin entry, validates root bin-map parity, and adds a negative regression that kills an omitted `pjangler-prompt` entry; pushed after combined focused/full verification.
+- Landing head: `aa5ade7fcf2f9fa0869722532dcb118a0e98c25a` on `origin/fix/PJAN-66-mcp-input-contracts`, containing merge parent `eee90ab86e84ec090773743a0fb1660f35a55def`.
+- Accepted integration reviewer: `/root/pjan66_integration_rereview` (fresh Codex code-reviewer, distinct from implementer and all prior reviewers).
+- Accepted integration verdict: `integration approved`; the corrected root bin maps, negative parity mutation, byte-identical generated bundles, PJAN-66 focused suites, PJAN-71 regressions, branch/upstream identity, and Hermes remote gitlink all passed with no findings.
 
 ## Ledger Update
-- Bloodbank decision/events emitted: `62b0a016-e411-4faa-8ce9-123c4284d916`, `741451f8-0d35-4b44-9d15-af0af57d3a2f`, `dace8e9c-7983-4ae0-8106-ff60f85950aa`, `a8785a2b-482c-49ae-977a-a3047350e31e`
+- Bloodbank decision/events emitted: `62b0a016-e411-4faa-8ce9-123c4284d916`, `741451f8-0d35-4b44-9d15-af0af57d3a2f`, `dace8e9c-7983-4ae0-8106-ff60f85950aa`, `a8785a2b-482c-49ae-977a-a3047350e31e`, `f55a55ac-fa69-4dee-b71f-372afb89766d`
 - Ledger updated: yes
 
 ## Known Gaps
-- No implementation, spec, quality, or publication gaps remain for PJAN-66.
+- No implementation, spec, quality, integration, lock-parity, or publication gaps remain for PJAN-66 at landing head `aa5ade7`.
 
 ## Close Recommendation
 - Close recommendation: ready
-- Rationale: all five ACs passed an independent spec review with executable probes and mutation strength, and a distinct quality reviewer approved both repository diffs with no findings.
+- Rationale: the integration correction passed a fresh bounded review with no findings, and the accepted branch contains both PJAN-66 and PJAN-71 behavior with deterministic generated output.
