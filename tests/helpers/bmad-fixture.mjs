@@ -60,11 +60,14 @@ export function createBmadInstallerFixture(parentDir) {
   const executable = join(parentDir, "bin", "bmad-method-fixture");
   mkdirSync(dirname(executable), { recursive: true });
   writeFileSync(executable, `#!${process.execPath}
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 const version = ${JSON.stringify(BMAD_INSTALLER_FIXTURE_VERSION)};
 const args = process.argv.slice(2);
+if (process.env.PJ_BMAD_FIXTURE_INVOCATION_LOG) {
+  appendFileSync(process.env.PJ_BMAD_FIXTURE_INVOCATION_LOG, args.join(" ") + "\\n", "utf8");
+}
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write(version + "\\n");
   process.exit(0);

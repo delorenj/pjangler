@@ -3,7 +3,7 @@
 // Kept apart from `boardUrl.ts` so the derivation stays pure and testable, and
 // so the shell-prompt bundle never imports a launcher it has no use for.
 
-import { spawn } from "node:child_process";
+import { spawn } from "../utils/child-process";
 
 export interface OpenOutcome {
   /** True when a launcher was spawned; false when we printed a link instead. */

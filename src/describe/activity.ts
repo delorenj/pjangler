@@ -33,7 +33,7 @@
 // The tricky part is the parsing, and keeping it pure means it is unit
 // testable without constructing a repo for every edge case.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "../utils/child-process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 

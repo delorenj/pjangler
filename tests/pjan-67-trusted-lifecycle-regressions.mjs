@@ -45,8 +45,12 @@ const providerAdapters = join(temporary, "providers");
 const effectLog = join(temporary, "effects.log");
 const providerLog = join(temporary, "provider.log");
 const interpreterLoadLog = join(temporary, "interpreter-load.log");
+const bmadInvocationLog = join(temporary, "bmad-invocations.log");
 const interpreterInjectionRoot = join(temporary, "interpreter-injection");
 const bashEnvSentinel = join(interpreterInjectionRoot, "bash-env.sh");
+const nodeOptionsPackage = join(interpreterInjectionRoot, "pjan67-node-options");
+const preloadSource = join(interpreterInjectionRoot, "preload.c");
+const preloadLibrary = join(interpreterInjectionRoot, "preload.so");
 const templateConfig = join(isolatedHome, ".config", "hermes-agent-template", "config.toml");
 const fleetHome = join(isolatedHome, ".hermes");
 const fakeHermes = join(fakeBin, "hermes");
@@ -63,6 +67,13 @@ function executable(path, source) {
 }
 
 mkdirSync(interpreterInjectionRoot, { recursive: true });
+mkdirSync(nodeOptionsPackage, { recursive: true });
+writeFileSync(join(nodeOptionsPackage, "package.json"), '{"type":"commonjs"}\n', "utf8");
+writeFileSync(
+  join(nodeOptionsPackage, "index.js"),
+  `require("node:fs").appendFileSync(process.env.PJAN67_INTERPRETER_LOG, "node-options-loaded\\n", "utf8");\n`,
+  "utf8",
+);
 writeFileSync(
   join(interpreterInjectionRoot, "sitecustomize.py"),
   `from pathlib import Path\nwith Path(${JSON.stringify(interpreterLoadLog)}).open("a", encoding="utf-8") as stream:\n    stream.write("sitecustomize-loaded\\n")\n`,
@@ -73,8 +84,44 @@ writeFileSync(
   `printf 'bash-env-loaded:%s\\n' "$0" >> "$PJAN67_INTERPRETER_LOG"\n`,
   "utf8",
 );
+writeFileSync(preloadSource, `
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+__attribute__((constructor)) static void pjan67_mark_load(void) {
+  const char *path = getenv("PJAN67_INTERPRETER_LOG");
+  if (path == NULL || path[0] == '\\0') return;
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+  if (fd < 0) return;
+  const char marker[] = "ld-preload-loaded\\n";
+  (void)write(fd, marker, sizeof(marker) - 1);
+  (void)close(fd);
+}
+`, "utf8");
+const compiledPreload = spawnSync("cc", ["-shared", "-fPIC", "-o", preloadLibrary, preloadSource], {
+  encoding: "utf8",
+});
+assert.equal(compiledPreload.status, 0, `${compiledPreload.stdout}${compiledPreload.stderr}`);
+
+const injectionKeysPattern = [
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PYTHONUSERBASE",
+  "BASH_ENV",
+  "ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+].join("|");
+const inspectChildEnvironment = `env | grep -E '^(${injectionKeysPattern})=' >> "$PJAN67_INTERPRETER_LOG" || true`;
 
 executable(fakeHermes, `#!/bin/sh
+${inspectChildEnvironment}
 printf 'local-hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
@@ -86,6 +133,7 @@ exit 0
 `);
 
 executable(pjanglerWrapper, `#!/bin/sh
+${inspectChildEnvironment}
 printf 'runtime-migrate:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:pjangler:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
@@ -94,6 +142,7 @@ exec "${process.execPath}" "${join(root, "dist", "index.js")}" "$@"
 `);
 
 executable(join(fakeBin, "python3"), `#!/bin/sh
+${inspectChildEnvironment}
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:python3:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
@@ -101,6 +150,7 @@ exec "${realPython}" "$@"
 `);
 
 executable(join(fakeBin, "systemctl"), `#!/bin/sh
+${inspectChildEnvironment}
 printf 'systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
@@ -115,7 +165,17 @@ esac
 exit 0
 `);
 
+const installedGit = spawnSync("which", ["git"], { encoding: "utf8" });
+assert.equal(installedGit.status, 0, installedGit.stderr);
+const realGit = realpathSync(installedGit.stdout.trim());
+executable(join(fakeBin, "git"), `#!/bin/sh
+${inspectChildEnvironment}
+printf 'git:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+exec "${realGit}" "$@"
+`);
+
 executable(join(providerAdapters, "plane.sh"), `#!/bin/sh
+${inspectChildEnvironment}
 printf 'provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'provider:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
@@ -127,6 +187,7 @@ copyFileSync(join(providerAdapters, "plane.sh"), join(providerAdapters, "trello.
 chmodSync(join(providerAdapters, "trello.sh"), 0o755);
 
 executable(join(fakeBin, "curl"), `#!/bin/sh
+${inspectChildEnvironment}
 printf 'curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'curl:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
@@ -198,6 +259,7 @@ const serverEnv = {
   PJ_PROJECT_REGISTRY: registryPath,
   PJ_BMAD_PACK_ROOT: selectedBmadPack,
   PJ_BMAD_INSTALLER: selectedBmadInstaller,
+  PJ_BMAD_FIXTURE_INVOCATION_LOG: bmadInvocationLog,
   PJ_TICKET_PROVIDER_ADAPTERS: providerAdapters,
   PLANE_API_KEY: "trusted-positive-test-key",
   TRELLO_KEY: "trusted-positive-test-key",
@@ -205,10 +267,17 @@ const serverEnv = {
   // These remain dormant in the Node MCP server and execute only if a
   // controlled Copier/template/host/external child inherits them.
   PYTHONPATH: interpreterInjectionRoot,
+  PYTHONHOME: interpreterInjectionRoot,
   PYTHONSTARTUP: join(interpreterInjectionRoot, "sitecustomize.py"),
   PYTHONUSERBASE: interpreterInjectionRoot,
   BASH_ENV: bashEnvSentinel,
   ENV: bashEnvSentinel,
+  NODE_OPTIONS: "--require=pjan67-node-options",
+  NODE_PATH: interpreterInjectionRoot,
+  LD_PRELOAD: preloadLibrary,
+  LD_LIBRARY_PATH: interpreterInjectionRoot,
+  DYLD_INSERT_LIBRARIES: preloadLibrary,
+  DYLD_LIBRARY_PATH: interpreterInjectionRoot,
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
   PJAN67_INTERPRETER_LOG: interpreterLoadLog,
@@ -251,6 +320,7 @@ try {
   await client.connect(transport);
   const target = join(temporary, "trusted-project");
   rmSync(interpreterLoadLog, { force: true });
+  rmSync(bmadInvocationLog, { force: true });
   const createdResult = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
     arguments: {
@@ -267,6 +337,9 @@ try {
   assert.equal(created.ok, true, JSON.stringify(created.errors));
   assert.equal(created.audit?.ok, true, JSON.stringify(created.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status))));
   assert.equal(existsSync(join(target, ".project.json")), true);
+  const bmadInvocations = readFileSync(bmadInvocationLog, "utf8");
+  assert.match(bmadInvocations, /^--version$/m, "project preflight must probe the pinned BMAD fixture");
+  assert.match(bmadInvocations, /^install /m, "project lifecycle must run the pinned BMAD installer");
   assertNoInterpreterInjection("trusted project create");
   assertEnclosingProjectUntouched("trusted project create");
 
@@ -481,7 +554,84 @@ try {
   assertNoInterpreterInjection("trusted project-owned Hermes deploy");
   assertEnclosingProjectUntouched("trusted project-owned Hermes deploy");
 
-  console.log("PJAN-67 trusted Copier create/sync/deferred-external regressions: PASS");
+  // The generic parity surfaces are MCP-reachable independently of project
+  // initialization. Exercise the direct audit/migrate/describe paths against
+  // a rendered Hermes project so Git and systemd children cannot regress
+  // behind the project/Hermes command wrappers already covered above.
+  rmSync(effectLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const auditResult = await client.callTool({
+    name: "pjangler_audit_project",
+    arguments: { targetDir: projectTailTarget, json: true },
+  });
+  const audit = payload(auditResult);
+  assert.notEqual(auditResult.isError, true, JSON.stringify(audit));
+  const auditEffects = readFileSync(effectLog, "utf8");
+  assert.match(auditEffects, /git:ls-files --stage/, "audit must exercise the Hermes Git-index child");
+  assert.match(auditEffects, /systemctl:--user is-system-running/, "audit must exercise the systemd postcondition query");
+  assertNoInterpreterInjection("direct MCP audit path");
+
+  rmSync(effectLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const migrateResult = await client.callTool({
+    name: "pjangler_migrate_project",
+    arguments: {
+      targetDir: projectTailTarget,
+      ruleId: "hermes.untracked-runtimes",
+      dryRun: false,
+    },
+  });
+  const migration = payload(migrateResult);
+  assert.notEqual(migrateResult.isError, true, JSON.stringify(migration));
+  assert.equal(migration.ok, true, JSON.stringify(migration));
+  assert.match(readFileSync(effectLog, "utf8"), /git:ls-files --stage/, "migration must exercise the Hermes Git-index child");
+  assertNoInterpreterInjection("direct MCP migration path");
+
+  rmSync(effectLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const describeResult = await client.callTool({
+    name: "pjangler_describe_project",
+    arguments: { targetDir: projectTailTarget, registryPath, json: true },
+  });
+  const description = payload(describeResult);
+  assert.notEqual(describeResult.isError, true, JSON.stringify(description));
+  const describeEffects = readFileSync(effectLog, "utf8");
+  assert.match(describeEffects, /git:/, "describe must exercise its activity/parity Git children");
+  assert.match(describeEffects, /systemctl:--user is-system-running/, "describe must exercise nested lifecycle systemd queries");
+  assertNoInterpreterInjection("direct MCP describe path");
+
+  // Generic recipe execution is a separate MCP dispatch path. Its current
+  // public catalog is filesystem-only; the source gate ensures any future
+  // child added beneath it must use the same boundary.
+  const genericTarget = join(temporary, "generic-mise-recipe");
+  mkdirSync(genericTarget, { recursive: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const genericResult = await client.callTool({
+    name: "pjangler_run_recipe",
+    arguments: { recipe: "mise", targetDir: genericTarget, apply: true },
+  });
+  const generic = payload(genericResult);
+  assert.notEqual(genericResult.isError, true, JSON.stringify(generic));
+  assert.equal(generic.success, true, JSON.stringify(generic.errors));
+  assert.equal(existsSync(join(genericTarget, "mise.toml")), true, "generic recipe apply must remain functional");
+  assertNoInterpreterInjection("generic MCP recipe path");
+
+  // The direct migration tool reaches the absolute Node BMAD installer
+  // without project-init's lifecycle wrapper. This is the install twin of the
+  // --version probe asserted during trusted project creation above.
+  rmSync(bmadInvocationLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const bmadMigrationResult = await client.callTool({
+    name: "pjangler_migrate_project",
+    arguments: { targetDir: genericTarget, ruleId: "bmad.scaffold", dryRun: false },
+  });
+  const bmadMigration = payload(bmadMigrationResult);
+  assert.notEqual(bmadMigrationResult.isError, true, JSON.stringify(bmadMigration));
+  assert.equal(bmadMigration.ok, true, JSON.stringify(bmadMigration));
+  assert.match(readFileSync(bmadInvocationLog, "utf8"), /^install /m, "direct BMAD migration must invoke the installer");
+  assertNoInterpreterInjection("direct BMAD install migration path");
+
+  console.log("PJAN-67 trusted Copier/MCP child-boundary regressions: PASS");
 } finally {
   await client.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });

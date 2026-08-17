@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync } from "../../utils/child-process";
 import { join } from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import * as p from "@clack/prompts";

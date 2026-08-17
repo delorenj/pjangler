@@ -1,7 +1,56 @@
 #!/usr/bin/env node
 
+// src/utils/child-process.ts
+import {
+  spawn as nodeSpawn,
+  spawnSync as nodeSpawnSync
+} from "node:child_process";
+
+// src/utils/child-environment.ts
+var SUBPROCESS_INJECTION_KEYS = [
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PYTHONUSERBASE",
+  "BASH_ENV",
+  "ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH"
+];
+function hardenSubprocessEnvironment(source = process.env, overrides = {}) {
+  const env2 = { ...source, ...overrides };
+  for (const key of SUBPROCESS_INJECTION_KEYS) delete env2[key];
+  env2.PYTHONNOUSERSITE = "1";
+  env2.PYTHONSAFEPATH = "1";
+  return env2;
+}
+
+// src/utils/child-process.ts
+function hardenedOptions(options) {
+  const supplied = options ?? {};
+  return {
+    ...supplied,
+    env: hardenSubprocessEnvironment(supplied.env ?? process.env)
+  };
+}
+var spawnSync = ((command, argsOrOptions, maybeOptions) => {
+  if (Array.isArray(argsOrOptions)) {
+    return nodeSpawnSync(command, argsOrOptions, hardenedOptions(maybeOptions));
+  }
+  return nodeSpawnSync(command, hardenedOptions(argsOrOptions));
+});
+var spawn = ((command, argsOrOptions, maybeOptions) => {
+  if (Array.isArray(argsOrOptions)) {
+    return nodeSpawn(command, argsOrOptions, hardenedOptions(maybeOptions));
+  }
+  return nodeSpawn(command, hardenedOptions(argsOrOptions));
+});
+
 // src/index.ts
-import { spawnSync as spawnSync11 } from "node:child_process";
 import { existsSync as existsSync18, readFileSync as readFileSync15, statSync as statSync6 } from "node:fs";
 import { basename as basename6, join as join23, resolve as resolve10 } from "node:path";
 import { Command as Command3 } from "commander";
@@ -310,7 +359,6 @@ import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync as mkdirS
 import { basename as basename2, dirname as dirname2, join as join3, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash as createHash2 } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
 // src/recipes/supported-clis.ts
@@ -6162,7 +6210,6 @@ var PromptForAgentConfig = class extends Command {
 };
 
 // src/commands/hermes/RunCopierTemplate.ts
-import { spawnSync as spawnSync3 } from "node:child_process";
 import { homedir as homedir3 } from "node:os";
 import { join as join8, dirname as dirname5, relative as relative6 } from "node:path";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
@@ -6171,7 +6218,6 @@ import * as p2 from "@clack/prompts";
 import YAML4 from "yaml";
 
 // src/project/index.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname4, isAbsolute as isAbsolute2, join as join7, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
@@ -6201,29 +6247,6 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
 }
 function changedTreePaths(root, before, after) {
   return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join5(root, path)).sort();
-}
-
-// src/utils/child-environment.ts
-var SUBPROCESS_INJECTION_KEYS = [
-  "PYTHONPATH",
-  "PYTHONHOME",
-  "PYTHONSTARTUP",
-  "PYTHONUSERBASE",
-  "BASH_ENV",
-  "ENV",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "LD_PRELOAD",
-  "LD_LIBRARY_PATH",
-  "DYLD_INSERT_LIBRARIES",
-  "DYLD_LIBRARY_PATH"
-];
-function hardenSubprocessEnvironment(source = process.env, overrides = {}) {
-  const env2 = { ...source, ...overrides };
-  for (const key of SUBPROCESS_INJECTION_KEYS) delete env2[key];
-  env2.PYTHONNOUSERSITE = "1";
-  env2.PYTHONSAFEPATH = "1";
-  return env2;
 }
 
 // src/lifecycle/preflight.ts
@@ -6887,7 +6910,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     copyFileSync2(adapter, staged);
     const childEnv = hardenSubprocessEnvironment(env2, { ...values, TICKET_PROVIDER: provider });
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
-    const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+    const result = spawnSync("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
       cwd: existsSync5(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
@@ -7248,7 +7271,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
       const copierEnv = hardenSubprocessEnvironment();
-      const result = spawnSync2(copierExecutable, action.command.slice(1), {
+      const result = spawnSync(copierExecutable, action.command.slice(1), {
         encoding: "utf8",
         cwd: action.cwd,
         env: copierEnv
@@ -7620,7 +7643,7 @@ var RunCopierTemplate = class extends Command {
       };
     }
     if (!ctx.trustedCopier) {
-      const which = spawnSync3("which", ["copier"], {
+      const which = spawnSync("which", ["copier"], {
         encoding: "utf8",
         env: hardenSubprocessEnvironment()
       });
@@ -7726,7 +7749,7 @@ var RunCopierTemplate = class extends Command {
     const spinner4 = ctx.quiet ? void 0 : p2.spinner();
     spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
-    const result = spawnSync3(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    const result = spawnSync(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
     spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
     if (result.status !== 0) {
       return {
@@ -7762,7 +7785,6 @@ var RunCopierTemplate = class extends Command {
 // src/commands/hermes/UntrackHermesRuntimes.ts
 import { existsSync as existsSync7, readFileSync as readFileSync8, writeFileSync as writeFileSync5, readdirSync as readdirSync5 } from "fs";
 import { join as join9 } from "path";
-import { spawnSync as spawnSync4 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
@@ -7795,7 +7817,7 @@ var UntrackHermesRuntimes = class extends Command {
       const gitignorePath = join9(roleDir, ".gitignore");
       const gitmodulesPath = join9(targetDir, ".gitmodules");
       let isTracked = false;
-      const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+      const lsResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
         encoding: "utf8",
         env: childEnv
@@ -7828,7 +7850,7 @@ var UntrackHermesRuntimes = class extends Command {
         if (isTracked) {
           details.push(`untrack agents/hermes/${role}/runtime`);
           if (!this.context.dryRun) {
-            const rmResult = spawnSync4("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
+            const rmResult = spawnSync("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8",
               env: childEnv
@@ -7839,7 +7861,7 @@ var UntrackHermesRuntimes = class extends Command {
                 message: `\u2717 Failed to untrack ${runtimePath}: ${rmResult.stderr.trim() || `exit ${rmResult.status}`}`
               };
             }
-            const verifyResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+            const verifyResult = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8",
               env: childEnv
@@ -7892,7 +7914,6 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 };
 
 // src/commands/hermes/WireTelegram.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
 import { join as join10 } from "node:path";
 import { existsSync as existsSync8, unlinkSync as unlinkSync2 } from "node:fs";
 import * as p3 from "@clack/prompts";
@@ -7924,7 +7945,7 @@ var WireTelegram = class extends Command {
     let token = process.env.TELEGRAM_BOT_TOKEN;
     let source = token ? "env" : null;
     if (!token) {
-      const tryOp = spawnSync5("op", ["read", vaultRef], { encoding: "utf8", env: childEnv });
+      const tryOp = spawnSync("op", ["read", vaultRef], { encoding: "utf8", env: childEnv });
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
         source = "op";
@@ -7963,7 +7984,7 @@ var WireTelegram = class extends Command {
         initialValue: true
       });
       if (!p3.isCancel(persist) && persist) {
-        const create = spawnSync5(
+        const create = spawnSync(
           "op",
           [
             "item",
@@ -8001,7 +8022,7 @@ var WireTelegram = class extends Command {
     if (existsSync8(marker)) unlinkSync2(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
-    const result = spawnSync5("bash", [script], {
+    const result = spawnSync("bash", [script], {
       stdio: "inherit",
       env: hardenSubprocessEnvironment(process.env, {
         SKIP_TELEGRAM: "0",
@@ -8023,7 +8044,6 @@ function cap(s) {
 }
 
 // src/commands/hermes/WireEmail.ts
-import { spawnSync as spawnSync6 } from "node:child_process";
 import { join as join11 } from "node:path";
 import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p4 from "@clack/prompts";
@@ -8054,7 +8074,7 @@ var WireEmail = class extends Command {
     const childEnv = hardenSubprocessEnvironment();
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
     if (!token) {
-      const tryOp = spawnSync6(
+      const tryOp = spawnSync(
         "op",
         ["read", "op://DeLoSecrets/Cloudflare-EmailRouting/token"],
         { encoding: "utf8", env: childEnv }
@@ -8094,7 +8114,7 @@ var WireEmail = class extends Command {
         initialValue: true
       });
       if (!p4.isCancel(persist) && persist) {
-        const create = spawnSync6(
+        const create = spawnSync(
           "op",
           [
             "item",
@@ -8115,7 +8135,7 @@ var WireEmail = class extends Command {
     if (existsSync9(marker)) unlinkSync3(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
-    const result = spawnSync6("bash", [script], {
+    const result = spawnSync("bash", [script], {
       stdio: "inherit",
       env: hardenSubprocessEnvironment(process.env, { SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token }),
       cwd: roleDir
@@ -8173,7 +8193,6 @@ var PrintHermesSummary = class extends Command {
 };
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
 import { existsSync as existsSync10, readFileSync as readFileSync9, writeFileSync as writeFileSync6 } from "node:fs";
 import { join as join12 } from "node:path";
 import YAML5 from "yaml";
@@ -8215,7 +8234,7 @@ var ApplyDeferredExternalEffects = class extends Command {
       if (!existsSync10(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
-      const result = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      const result = spawnSync(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
       if (String(result.stdout ?? "").trim()) logs.push(String(result.stdout).trim());
       if (String(result.stderr ?? "").trim()) logs.push(String(result.stderr).trim());
       if (result.error || result.status !== 0) {
@@ -8248,7 +8267,6 @@ ${logs.join("\n")}` : ""}`
 };
 
 // src/commands/hermes/ApplyDeferredHostEffects.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
 import { existsSync as existsSync11 } from "node:fs";
 import { join as join13 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
@@ -8288,7 +8306,7 @@ var ApplyDeferredHostEffects = class extends Command {
       if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
-      const result = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      const result = spawnSync(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
       if (String(result.stdout ?? "").trim()) logs.push(String(result.stdout).trim());
       if (String(result.stderr ?? "").trim()) logs.push(String(result.stderr).trim());
       if (result.error || result.status !== 0) {
@@ -8610,7 +8628,6 @@ var NodeRecipe = class extends Recipe {
 };
 
 // src/recipes/ProjectRecipe.ts
-import { spawnSync as spawnSync9 } from "node:child_process";
 import { existsSync as existsSync12, readFileSync as readFileSync10, rmSync as rmSync3 } from "node:fs";
 import { join as join14 } from "node:path";
 var BOOTSTRAP_GIT_IDENTITY = {
@@ -8623,7 +8640,7 @@ var PRODUCTION_RUNTIME = {
   executePlan: executeProjectInitPlan,
   preflightBmad: preflightBmadLifecycle,
   runGit(cwd, args, options) {
-    const result = spawnSync9("git", [...args], {
+    const result = spawnSync("git", [...args], {
       cwd,
       encoding: "utf8",
       env: hardenSubprocessEnvironment(process.env, options?.env)
@@ -10021,7 +10038,6 @@ function resolveBoardUrl(cwd, ref, env2 = process.env) {
 }
 
 // src/project/openUrl.ts
-import { spawn } from "node:child_process";
 function osc8(url, label = url) {
   return `\x1B]8;;${url}\x07${label}\x1B]8;;\x07`;
 }
@@ -10058,7 +10074,6 @@ import { existsSync as existsSync17, readFileSync as readFileSync13, readdirSync
 import { join as join21, resolve as resolve9 } from "node:path";
 
 // src/describe/activity.ts
-import { spawn as spawn2, spawnSync as spawnSync10 } from "node:child_process";
 import { statSync as statSync4 } from "node:fs";
 import { join as join20 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
@@ -10066,7 +10081,7 @@ var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
 var GIT_MAX_BUFFER = 16 * 1024 * 1024;
 function git(repo, args) {
-  const result = spawnSync10("git", ["-C", repo, ...args], {
+  const result = spawnSync("git", ["-C", repo, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER
@@ -10076,7 +10091,7 @@ function git(repo, args) {
 }
 function gitAsync(repo, args) {
   return new Promise((resolve11) => {
-    const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
     let settled = false;
@@ -10941,7 +10956,7 @@ function readJson2(path) {
   }
 }
 function findGitRoot(cwd) {
-  const result = spawnSync11("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result.status !== 0) return void 0;
   return resolve10(result.stdout.trim());
 }

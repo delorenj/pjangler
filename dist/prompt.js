@@ -5,8 +5,51 @@ import { readFileSync as readFileSync2, realpathSync } from "node:fs";
 import { basename, join as join3 } from "node:path";
 import { pathToFileURL } from "node:url";
 
+// src/utils/child-process.ts
+import {
+  spawn as nodeSpawn,
+  spawnSync as nodeSpawnSync
+} from "node:child_process";
+
+// src/utils/child-environment.ts
+var SUBPROCESS_INJECTION_KEYS = [
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PYTHONUSERBASE",
+  "BASH_ENV",
+  "ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH"
+];
+function hardenSubprocessEnvironment(source = process.env, overrides = {}) {
+  const env = { ...source, ...overrides };
+  for (const key of SUBPROCESS_INJECTION_KEYS) delete env[key];
+  env.PYTHONNOUSERSITE = "1";
+  env.PYTHONSAFEPATH = "1";
+  return env;
+}
+
+// src/utils/child-process.ts
+function hardenedOptions(options) {
+  const supplied = options ?? {};
+  return {
+    ...supplied,
+    env: hardenSubprocessEnvironment(supplied.env ?? process.env)
+  };
+}
+var spawnSync = ((command, argsOrOptions, maybeOptions) => {
+  if (Array.isArray(argsOrOptions)) {
+    return nodeSpawnSync(command, argsOrOptions, hardenedOptions(maybeOptions));
+  }
+  return nodeSpawnSync(command, hardenedOptions(argsOrOptions));
+});
+
 // src/describe/activity.ts
-import { spawn, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;

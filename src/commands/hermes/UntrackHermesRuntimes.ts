@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { spawnSync } from "node:child_process";
+import { spawnSync } from "../../utils/child-process";
 import { Command, type InvokeResult } from "../Command";
 import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 

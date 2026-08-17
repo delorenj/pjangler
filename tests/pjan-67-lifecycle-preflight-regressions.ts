@@ -27,6 +27,7 @@ import { executeProjectInitPlan, planProjectInit } from "../src/project/index";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
 import { RecipeRegistry } from "../src/recipes/registry";
 import type { LifecycleRecipe } from "../src/recipes/types";
+import { spawn as hardenedSpawn, spawnSync as hardenedSpawnSync } from "../src/utils/child-process";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-67-preflight-contract-"));
@@ -394,6 +395,67 @@ try {
   );
   for (const [key, value] of Object.entries(ambientCredentials)) {
     assert.equal(hardened[key], value, `subprocess hardening must preserve explicitly granted ${key}`);
+  }
+
+  const previousAmbientOnly = process.env.PJAN67_AMBIENT_PARENT_ONLY;
+  process.env.PJAN67_AMBIENT_PARENT_ONLY = "must-not-be-merged";
+  try {
+    const minimalChild = hardenedSpawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: "/controlled/child/path",
+          PJAN67_FUNCTIONAL_OVERRIDE: "preserved",
+          NODE_OPTIONS: "--require=/must/not/load.cjs",
+          LD_PRELOAD: "/must/not/load.so",
+        },
+      },
+    );
+    assert.equal(minimalChild.status, 0, minimalChild.stderr);
+    const minimalEnvironment = JSON.parse(minimalChild.stdout) as Record<string, string>;
+    assert.deepEqual(
+      Object.keys(minimalEnvironment).sort(),
+      ["PATH", "PJAN67_FUNCTIONAL_OVERRIDE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
+      "an explicit minimal env must not be merged over ambient process.env",
+    );
+    assert.equal(minimalEnvironment.PATH, "/controlled/child/path");
+    assert.equal(minimalEnvironment.PJAN67_FUNCTIONAL_OVERRIDE, "preserved");
+    assert.equal(minimalEnvironment.PJAN67_AMBIENT_PARENT_ONLY, undefined);
+
+    const asyncChild = hardenedSpawn(
+      process.execPath,
+      ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+      {
+        env: {
+          PJAN67_ASYNC_OVERRIDE: "preserved",
+          NODE_PATH: "/must/not/resolve",
+          DYLD_INSERT_LIBRARIES: "/must/not/load.dylib",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let asyncStdout = "";
+    let asyncStderr = "";
+    asyncChild.stdout.setEncoding("utf8");
+    asyncChild.stderr.setEncoding("utf8");
+    asyncChild.stdout.on("data", (chunk: string) => { asyncStdout += chunk; });
+    asyncChild.stderr.on("data", (chunk: string) => { asyncStderr += chunk; });
+    const asyncStatus = await new Promise<number | null>((resolveStatus, reject) => {
+      asyncChild.once("error", reject);
+      asyncChild.once("close", resolveStatus);
+    });
+    assert.equal(asyncStatus, 0, asyncStderr);
+    const asyncEnvironment = JSON.parse(asyncStdout) as Record<string, string>;
+    assert.deepEqual(
+      Object.keys(asyncEnvironment).sort(),
+      ["PJAN67_ASYNC_OVERRIDE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
+      "async spawn must preserve the same explicit-minimal-env semantics",
+    );
+  } finally {
+    if (previousAmbientOnly === undefined) delete process.env.PJAN67_AMBIENT_PARENT_ONLY;
+    else process.env.PJAN67_AMBIENT_PARENT_ONLY = previousAmbientOnly;
   }
 
   assert.equal(preflightCommonProjectTemplate(root).ok, true, "the vendored CommonProject template must satisfy lifecycle eligibility");
