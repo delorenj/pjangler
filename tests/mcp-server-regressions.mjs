@@ -52,8 +52,46 @@ function assertFleetSharedCompositeResponse(payload, label) {
   assert.equal(JSON.stringify(payload).includes('"skipBloodbank"'), false, `${label} must redact skipBloodbank from the complete response`);
 }
 
+function copyHermesRoleWithCopier(role, destination) {
+  return spawnSync(
+    "copier",
+    [
+      "copy",
+      "--skip-tasks",
+      "--defaults",
+      "--trust",
+      "--vcs-ref=HEAD",
+      resolve(root, "templates", "hermes-agent"),
+      destination,
+      "--data", "target_repo=probe",
+      "--data", `role=${role}`,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+}
+
 await client.connect(transport);
 try {
+  // PJAN-66: exercise the real vendored Copier contract, not just the MCP
+  // dry-run argv. Extensible safe roles must render, while values that could
+  // become ambiguous or escaping path segments must fail before rendering.
+  const customRoleTarget = join(mcpTmp, "copier-release-captain");
+  const customRoleCopy = copyHermesRoleWithCopier("release-captain", customRoleTarget);
+  assert.equal(
+    customRoleCopy.status,
+    0,
+    `Copier must render an arbitrary safe role:\n${customRoleCopy.stdout}\n${customRoleCopy.stderr}`,
+  );
+  assert.match(readFileSync(join(customRoleTarget, "role.yaml"), "utf8"), /^role: release-captain$/m);
+
+  for (const [index, unsafeRole] of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"].entries()) {
+    const unsafeTarget = join(mcpTmp, `copier-unsafe-role-${index}`);
+    const unsafeCopy = copyHermesRoleWithCopier(unsafeRole, unsafeTarget);
+    assert.notEqual(unsafeCopy.status, 0, `Copier must reject unsafe role ${JSON.stringify(unsafeRole)}`);
+    assert.equal(existsSync(join(unsafeTarget, "role.yaml")), false, "an invalid Copier role must not render a manifest");
+  }
+  assert.equal(existsSync(join(mcpTmp, "escaped", "role.yaml")), false, "Copier role traversal must not escape its target");
+
   const listed = await client.listTools();
   const toolNames = new Set(listed.tools.map((tool) => tool.name));
   for (const tool of [
