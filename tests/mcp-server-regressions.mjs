@@ -42,6 +42,16 @@ async function expectInvalidParams(name, args, message) {
   }
 }
 
+function assertFleetSharedCompositeResponse(payload, label) {
+  assert.equal(payload.bloodbankMode, "fleet-shared", `${label} must report the fleet-shared Bloodbank mode`);
+  const plan = payload.plan ?? payload;
+  const action = plan.actions.find((entry) => entry.kind === "hermes.provision-agent");
+  assert.ok(action, `${label} must include its Hermes provisioning action`);
+  assert.equal(action.enabled, true, `${label} must reflect provisionAgent=true`);
+  assert.equal("skipBloodbank" in action.context, false, `${label} must not expose the legacy per-agent Bloodbank toggle`);
+  assert.equal(JSON.stringify(payload).includes('"skipBloodbank"'), false, `${label} must redact skipBloodbank from the complete response`);
+}
+
 await client.connect(transport);
 try {
   const listed = await client.listTools();
@@ -128,6 +138,7 @@ try {
   assert.equal(dryRunPayload.project.agents.dev.role, "dev");
   assert.ok(dryRunPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
   assert.ok(dryRunPayload.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "dev"));
+  assertFleetSharedCompositeResponse(dryRunPayload, "bootstrap response");
 
   const boardUrlBootstrap = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
@@ -151,12 +162,16 @@ try {
       description: "Civil War letterification experiments",
       targetDir: join(mcpTmp, "SlowBurns"),
       sourceSkill,
+      provisionAgent: true,
+      agentRole: "release-captain",
     },
   });
   const projectPayload = JSON.parse(projectDryRun.content[0].text);
   assert.equal(projectPayload.project.slug, "slowburns");
+  assert.equal(projectPayload.project.agents["release-captain"].role, "release-captain");
   assert.ok(projectPayload.actions.some((action) => action.kind === "registry.upsert"));
   assert.ok(projectPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
+  assertFleetSharedCompositeResponse(projectPayload, "project-init response");
 
   const trelloProjectDryRun = await client.callTool({
     name: "pjangler_project_init",

@@ -79,6 +79,34 @@ function asText(payload: unknown) {
   return { content: [{ type: "text" as const, text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) }] };
 }
 
+function publicProjectPlan(plan: ReturnType<typeof planProjectInit>) {
+  return {
+    ...plan,
+    actions: plan.actions.map((action) => {
+      if (action.kind !== "hermes.provision-agent") return action;
+      return {
+        ...action,
+        context: {
+          skipRuntimeRepo: action.context.skipRuntimeRepo,
+          skipPlane: action.context.skipPlane,
+          skipSystemd: action.context.skipSystemd,
+        },
+      };
+    }),
+  };
+}
+
+function publicCompositeProjectResponse<T extends object>(payload: T, plan: ReturnType<typeof planProjectInit>) {
+  const projectedPlan = publicProjectPlan(plan);
+  const hasNestedPlan = "plan" in payload;
+  const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
+  return {
+    ...payload,
+    ...(hasNestedPlan ? { plan: projectedPlan } : {}),
+    ...(provisionsAgent ? { bloodbankMode: "fleet-shared" as const } : {}),
+  };
+}
+
 async function executeRegisteredProjectPlan(
   plan: ReturnType<typeof planProjectInit>,
   agentContext?: Partial<HermesAgentContext>,
@@ -333,7 +361,7 @@ server.registerTool(
       });
 
       if (dryRun) {
-        return asText({ ...plan, guidance: parityGuidance() });
+        return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
 
       const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
@@ -353,7 +381,12 @@ server.registerTool(
         live: input.live ?? false,
         quiet: true,
       });
-      if (!result.ok) return asText({ ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() });
+      if (!result.ok) {
+        return asText(publicCompositeProjectResponse(
+          { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
+          plan,
+        ));
+      }
 
       const agentResult = input.provisionAgent
         ? {
@@ -362,7 +395,10 @@ server.registerTool(
             errors: result.agentResult?.errors ?? (result.ok ? [] : result.errors),
           }
         : undefined;
-      return asText({ ...result, agentResult, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() });
+      return asText(publicCompositeProjectResponse(
+        { ...result, agentResult, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
+        plan,
+      ));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -417,13 +453,16 @@ server.registerTool(
         overwrite: input.force ?? false,
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
-      if (!input.apply) return asText(plan);
+      if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const result = await executeRegisteredProjectPlan(plan, undefined, {
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true,
       });
-      return asText({ ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}) });
+      return asText(publicCompositeProjectResponse(
+        { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
+        plan,
+      ));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }

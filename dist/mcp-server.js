@@ -9175,6 +9175,32 @@ function slugify(value) {
 function asText(payload) {
   return { content: [{ type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) }] };
 }
+function publicProjectPlan(plan) {
+  return {
+    ...plan,
+    actions: plan.actions.map((action) => {
+      if (action.kind !== "hermes.provision-agent") return action;
+      return {
+        ...action,
+        context: {
+          skipRuntimeRepo: action.context.skipRuntimeRepo,
+          skipPlane: action.context.skipPlane,
+          skipSystemd: action.context.skipSystemd
+        }
+      };
+    })
+  };
+}
+function publicCompositeProjectResponse(payload, plan) {
+  const projectedPlan = publicProjectPlan(plan);
+  const hasNestedPlan = "plan" in payload;
+  const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
+  return {
+    ...payload,
+    ...hasNestedPlan ? { plan: projectedPlan } : {},
+    ...provisionsAgent ? { bloodbankMode: "fleet-shared" } : {}
+  };
+}
 async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}) {
   const projectInput = {
     plan,
@@ -9411,7 +9437,7 @@ server.registerTool(
         overwrite
       });
       if (dryRun) {
-        return asText({ ...plan, guidance: parityGuidance() });
+        return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
       const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
         targetRepo: projectSlug,
@@ -9430,13 +9456,21 @@ server.registerTool(
         live: input.live ?? false,
         quiet: true
       });
-      if (!result.ok) return asText({ ...result, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() });
+      if (!result.ok) {
+        return asText(publicCompositeProjectResponse(
+          { ...result, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
+          plan
+        ));
+      }
       const agentResult = input.provisionAgent ? {
         success: Boolean(result.agentResult?.ok),
         logs: result.agentResult?.logs ?? [],
         errors: result.agentResult?.errors ?? (result.ok ? [] : result.errors)
       } : void 0;
-      return asText({ ...result, agentResult, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() });
+      return asText(publicCompositeProjectResponse(
+        { ...result, agentResult, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
+        plan
+      ));
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -9490,13 +9524,16 @@ server.registerTool(
         overwrite: input.force ?? false,
         scaffold: !(input.targetDir && existsSync14(join18(resolve8(input.targetDir), ".git")))
       });
-      if (!input.apply) return asText(plan);
+      if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const result = await executeRegisteredProjectPlan(plan, void 0, {
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true
       });
-      return asText({ ...result, ...plan.warnings ? { warnings: plan.warnings } : {} });
+      return asText(publicCompositeProjectResponse(
+        { ...result, ...plan.warnings ? { warnings: plan.warnings } : {} },
+        plan
+      ));
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }
