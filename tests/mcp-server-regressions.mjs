@@ -5,6 +5,7 @@ import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { spawnSync } from "node:child_process";
+import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = resolve(root, "dist", "mcp-server.js");
@@ -75,14 +76,18 @@ try {
   // PJAN-66: exercise the real vendored Copier contract, not just the MCP
   // dry-run argv. Extensible safe roles must render, while values that could
   // become ambiguous or escaping path segments must fail before rendering.
-  const customRoleTarget = join(mcpTmp, "copier-release-captain");
-  const customRoleCopy = copyHermesRoleWithCopier("release-captain", customRoleTarget);
-  assert.equal(
-    customRoleCopy.status,
-    0,
-    `Copier must render an arbitrary safe role:\n${customRoleCopy.stdout}\n${customRoleCopy.stderr}`,
-  );
-  assert.match(readFileSync(join(customRoleTarget, "role.yaml"), "utf8"), /^role: release-captain$/m);
+  for (const safeRole of ["release-captain", "true", "false", "null", "123"]) {
+    const customRoleTarget = join(mcpTmp, `copier-safe-role-${safeRole}`);
+    const customRoleCopy = copyHermesRoleWithCopier(safeRole, customRoleTarget);
+    assert.equal(
+      customRoleCopy.status,
+      0,
+      `Copier must render arbitrary safe role ${JSON.stringify(safeRole)}:\n${customRoleCopy.stdout}\n${customRoleCopy.stderr}`,
+    );
+    const roleManifest = YAML.parse(readFileSync(join(customRoleTarget, "role.yaml"), "utf8"));
+    assert.equal(roleManifest.role, safeRole, `Copier must preserve role ${JSON.stringify(safeRole)}`);
+    assert.equal(typeof roleManifest.role, "string", `Copier role ${JSON.stringify(safeRole)} must remain a YAML string`);
+  }
 
   for (const [index, unsafeRole] of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"].entries()) {
     const unsafeTarget = join(mcpTmp, `copier-unsafe-role-${index}`);

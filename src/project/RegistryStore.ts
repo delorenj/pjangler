@@ -1,14 +1,5 @@
 import { Pool } from "pg";
 import type { PoolClient } from "pg";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
-import YAML from "yaml";
 import type {
   ProjectRecord,
   ProjectRegistry,
@@ -19,7 +10,10 @@ import type {
 } from "./index";
 import {
   PROJECT_REGISTRY_SCHEMA_VERSION,
-  emptyProjectRegistry,
+  createSafeRecord,
+  getOwnRecordValue,
+  loadProjectRegistry,
+  saveProjectRegistry,
   validateProjectRegistry,
 } from "./index";
 
@@ -43,34 +37,18 @@ export class YamlRegistryStore implements RegistryStore {
   constructor(private readonly path: string) {}
 
   async load(): Promise<ProjectRegistry> {
-    if (!existsSync(this.path)) return emptyProjectRegistry();
-    const raw = YAML.parse(readFileSync(this.path, "utf8")) as unknown;
-    if (raw == null) return emptyProjectRegistry();
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      throw new Error(`Project registry must be a mapping: ${this.path}`);
-    const registry = raw as Partial<ProjectRegistry>;
-    const normalized: ProjectRegistry = {
-      schema_version: Number(
-        registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION
-      ),
-      projects:
-        registry.projects && typeof registry.projects === "object" && !Array.isArray(registry.projects)
-          ? (registry.projects as Record<string, ProjectRecord>)
-          : {},
-    };
-    validateProjectRegistry(normalized);
-    return normalized;
+    return loadProjectRegistry(this.path);
   }
 
   async save(registry: ProjectRegistry): Promise<void> {
-    validateProjectRegistry(registry);
-    mkdirSync(dirname(this.path), { recursive: true });
-    const temp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
-    renameSync(temp, this.path);
+    saveProjectRegistry(registry, this.path);
   }
 
   async upsert(slug: string, record: ProjectRecord): Promise<void> {
+    validateProjectRegistry({
+      schema_version: PROJECT_REGISTRY_SCHEMA_VERSION,
+      projects: createSafeRecord([[slug, record]]),
+    });
     const registry = await this.load();
     registry.projects[slug] = record;
     await this.save(registry);
@@ -78,7 +56,7 @@ export class YamlRegistryStore implements RegistryStore {
 
   async getBySlug(slug: string): Promise<ProjectRecord | undefined> {
     const registry = await this.load();
-    return registry.projects[slug];
+    return getOwnRecordValue(registry.projects, slug);
   }
 
   async getByRepoPath(repoPath: string): Promise<ProjectRecord | undefined> {
@@ -153,7 +131,7 @@ export class PgRegistryStore implements RegistryStore {
          WHERE p.slug IS NOT NULL`
       );
 
-      const projects: Record<string, ProjectRecord> = {};
+      const projects = createSafeRecord<ProjectRecord>();
       for (const row of rows) {
         const slug = row.slug!;
         const ticketProvider = await this.loadTicketProvider(client, row.id);
@@ -210,6 +188,10 @@ export class PgRegistryStore implements RegistryStore {
   }
 
   async upsert(slug: string, record: ProjectRecord): Promise<void> {
+    validateProjectRegistry({
+      schema_version: PROJECT_REGISTRY_SCHEMA_VERSION,
+      projects: createSafeRecord([[slug, record]]),
+    });
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -225,7 +207,7 @@ export class PgRegistryStore implements RegistryStore {
 
   async getBySlug(slug: string): Promise<ProjectRecord | undefined> {
     const registry = await this.load();
-    return registry.projects[slug];
+    return getOwnRecordValue(registry.projects, slug);
   }
 
   async getByRepoPath(repoPath: string): Promise<ProjectRecord | undefined> {
@@ -355,7 +337,7 @@ export class PgRegistryStore implements RegistryStore {
        WHERE project_id = $1`,
       [projectId]
     );
-    const agents: Record<string, ProjectAgentRecord> = {};
+    const agents = createSafeRecord<ProjectAgentRecord>();
     for (const row of rows) {
       agents[row.agent_key] = {
         role: row.role,

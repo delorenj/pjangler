@@ -241,8 +241,26 @@ export function projectRegistryPath(env: NodeJS.ProcessEnv = process.env): strin
   return expandHome(env[PROJECT_REGISTRY_ENV] || join(homedir(), ".config", "pjangler", "projects.yaml"));
 }
 
+/**
+ * Create a string-keyed dictionary with no inherited keys or magic
+ * `__proto__` setter. Registry slugs and agent identifiers are caller- or
+ * file-controlled, so plain `{}` objects are not safe lookup/storage maps.
+ */
+export function createSafeRecord<T>(
+  entries: Iterable<readonly [string, T]> = [],
+): Record<string, T> {
+  const record = Object.create(null) as Record<string, T>;
+  for (const [key, value] of entries) record[key] = value;
+  return record;
+}
+
+/** Read a dictionary entry only when the key is an own data property. */
+export function getOwnRecordValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
 export function emptyProjectRegistry(): ProjectRegistry {
-  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
+  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: createSafeRecord() };
 }
 
 export function loadProjectRegistry(path = projectRegistryPath()): ProjectRegistry {
@@ -251,9 +269,24 @@ export function loadProjectRegistry(path = projectRegistryPath()): ProjectRegist
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw as Partial<ProjectRegistry>;
+  const projects = createSafeRecord<ProjectRecord>();
+  if (isRecord(registry.projects)) {
+    for (const [slug, rawProject] of Object.entries(registry.projects)) {
+      if (!isRecord(rawProject)) {
+        projects[slug] = rawProject as ProjectRecord;
+        continue;
+      }
+      projects[slug] = {
+        ...rawProject,
+        agents: isRecord(rawProject.agents)
+          ? createSafeRecord(Object.entries(rawProject.agents) as Array<[string, ProjectAgentRecord]>)
+          : rawProject.agents,
+      } as ProjectRecord;
+    }
+  }
   const normalized: ProjectRegistry = {
     schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
-    projects: isRecord(registry.projects) ? (registry.projects as Record<string, ProjectRecord>) : {},
+    projects,
   };
   validateProjectRegistry(normalized);
   return normalized;
@@ -767,18 +800,16 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const now = (input.now ?? new Date()).toISOString();
   const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
-  const existing = registry.projects[slug];
+  const existing = getOwnRecordValue(registry.projects, slug);
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
-  const agents: Record<string, ProjectAgentRecord> = input.provisionAgent
-    ? {
-        ...(existing?.agents ?? {}),
-        [agentRole]: {
-          role: agentRole,
-          provisioning_state: "planned",
-        },
-      }
-    : existing?.agents ?? {};
+  const agents = createSafeRecord<ProjectAgentRecord>(Object.entries(existing?.agents ?? {}));
+  if (input.provisionAgent) {
+    agents[agentRole] = {
+      role: agentRole,
+      provisioning_state: "planned",
+    };
+  }
   const scaffold = input.scaffold ?? true;
 
   const candidateProject: ProjectRecord = {
@@ -1028,7 +1059,7 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
   }
 
   if (pendingRegistryAction && errors.length === 0) {
-    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+    if (!projectRecordEquivalent(getOwnRecordValue(registry.projects, pendingRegistryAction.slug), pendingRegistryAction.project)) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
       saveProjectRegistry(registry, pendingRegistryAction.registryPath);
       changedFiles.push(pendingRegistryAction.registryPath);
@@ -1121,7 +1152,7 @@ export function formatProjectList(registry: ProjectRegistry): string {
 }
 
 export function getProject(registry: ProjectRegistry, slug: string): ProjectRecord {
-  const project = registry.projects[slug];
+  const project = getOwnRecordValue(registry.projects, slug);
   if (!project) throw new Error(`Project not found in registry: ${slug}`);
   return project;
 }
@@ -1214,7 +1245,7 @@ export function resolvePjanglerRoot(): string {
 }
 
 function validateNoDuplicateProject(registry: ProjectRegistry, project: ProjectRecord, overwrite: boolean): void {
-  const existingSameSlug = registry.projects[project.slug];
+  const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
   if (existingSameSlug && !overwrite && resolve(existingSameSlug.repo_path) !== resolve(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
@@ -1230,14 +1261,22 @@ function validateNoDuplicateProject(registry: ProjectRegistry, project: ProjectR
 }
 
 function validateProjectRecord(project: ProjectRecord, key: string): void {
+  validateSafePathSegment(key, `Project registry key ${key}`);
   if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
   if (!project.name) throw new Error(`Project ${key} missing name`);
   if (!project.slug) throw new Error(`Project ${key} missing slug`);
+  validateSafePathSegment(project.slug, `Project ${key} slug`);
   if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
   if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+  for (const [agentKey, agent] of Object.entries(project.agents)) {
+    validateSafePathSegment(agentKey, `Project ${key} agent key ${agentKey}`);
+    if (!isRecord(agent)) throw new Error(`Project ${key} agent ${agentKey} must be a mapping`);
+    if (typeof agent.role !== "string" || !agent.role) throw new Error(`Project ${key} agent ${agentKey} missing role`);
+    validateSafePathSegment(agent.role, `Project ${key} agent ${agentKey} role`);
+  }
 }
 
 function expandHome(path: string): string {

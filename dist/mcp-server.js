@@ -5855,7 +5855,7 @@ import { join as join9, dirname as dirname6 } from "node:path";
 import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import * as p2 from "@clack/prompts";
-import YAML4 from "yaml";
+import YAML3 from "yaml";
 
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -5863,7 +5863,7 @@ import { copyFileSync as copyFileSync2, existsSync as existsSync6, mkdirSync as 
 import { homedir as homedir4, tmpdir } from "node:os";
 import { basename as basename4, delimiter, dirname as dirname5, isAbsolute, join as join8, relative as relative4, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import YAML3 from "yaml";
+import YAML2 from "yaml";
 
 // src/utils/tree-diff.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -5892,7 +5892,6 @@ function changedTreePaths(root, before, after) {
 
 // src/project/RegistryStore.ts
 import { Pool } from "pg";
-import YAML2 from "yaml";
 function pgRegistryConfigFromEnv(env2 = process.env) {
   return {
     host: env2.PGHOST || "localhost",
@@ -5925,7 +5924,7 @@ var PgRegistryStore = class {
          LEFT JOIN public.repos r ON r.project_id = p.id
          WHERE p.slug IS NOT NULL`
       );
-      const projects = {};
+      const projects = createSafeRecord();
       for (const row of rows) {
         const slug = row.slug;
         const ticketProvider = await this.loadTicketProvider(client, row.id);
@@ -5979,6 +5978,10 @@ var PgRegistryStore = class {
     }
   }
   async upsert(slug, record) {
+    validateProjectRegistry({
+      schema_version: PROJECT_REGISTRY_SCHEMA_VERSION,
+      projects: createSafeRecord([[slug, record]])
+    });
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -5993,7 +5996,7 @@ var PgRegistryStore = class {
   }
   async getBySlug(slug) {
     const registry = await this.load();
-    return registry.projects[slug];
+    return getOwnRecordValue(registry.projects, slug);
   }
   async getByRepoPath(repoPath) {
     const registry = await this.load();
@@ -6085,7 +6088,7 @@ var PgRegistryStore = class {
        WHERE project_id = $1`,
       [projectId]
     );
-    const agents = {};
+    const agents = createSafeRecord();
     for (const row of rows) {
       agents[row.agent_key] = {
         role: row.role,
@@ -6132,7 +6135,7 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
   const answersPath = join8(dirname5(manifestPath), ".copier-answers.yml");
   if (!existsSync6(answersPath)) return [];
   const current = readFileSync5(answersPath, "utf8");
-  const document = YAML3.parseDocument(current);
+  const document = YAML2.parseDocument(current);
   if (document.errors.length) return [];
   const name = String(document.get("project_name") ?? "");
   const description = String(document.get("project_description") ?? "");
@@ -6152,18 +6155,39 @@ var DEFAULT_SOURCE_SKILL_ROOTS = [
 function projectRegistryPath(env2 = process.env) {
   return expandHome(env2[PROJECT_REGISTRY_ENV] || join8(homedir4(), ".config", "pjangler", "projects.yaml"));
 }
+function createSafeRecord(entries = []) {
+  const record = /* @__PURE__ */ Object.create(null);
+  for (const [key, value] of entries) record[key] = value;
+  return record;
+}
+function getOwnRecordValue(record, key) {
+  return Object.hasOwn(record, key) ? record[key] : void 0;
+}
 function emptyProjectRegistry() {
-  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
+  return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: createSafeRecord() };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
   if (!existsSync6(path)) return emptyProjectRegistry();
-  const raw = YAML3.parse(readFileSync5(path, "utf8"));
+  const raw = YAML2.parse(readFileSync5(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
+  const projects = createSafeRecord();
+  if (isRecord(registry.projects)) {
+    for (const [slug, rawProject] of Object.entries(registry.projects)) {
+      if (!isRecord(rawProject)) {
+        projects[slug] = rawProject;
+        continue;
+      }
+      projects[slug] = {
+        ...rawProject,
+        agents: isRecord(rawProject.agents) ? createSafeRecord(Object.entries(rawProject.agents)) : rawProject.agents
+      };
+    }
+  }
   const normalized = {
     schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
-    projects: isRecord(registry.projects) ? registry.projects : {}
+    projects
   };
   validateProjectRegistry(normalized);
   return normalized;
@@ -6172,7 +6196,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
   mkdirSync4(dirname5(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync4(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync4(temp, YAML2.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -6537,16 +6561,16 @@ function planProjectInit(input) {
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
   const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
-  const existing = registry.projects[slug];
+  const existing = getOwnRecordValue(registry.projects, slug);
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
-  const agents = input.provisionAgent ? {
-    ...existing?.agents ?? {},
-    [agentRole]: {
+  const agents = createSafeRecord(Object.entries(existing?.agents ?? {}));
+  if (input.provisionAgent) {
+    agents[agentRole] = {
       role: agentRole,
       provisioning_state: "planned"
-    }
-  } : existing?.agents ?? {};
+    };
+  }
   const scaffold = input.scaffold ?? true;
   const candidateProject = {
     name: input.name,
@@ -6766,7 +6790,7 @@ async function executeProjectInitPlan(plan) {
     }
   }
   if (pendingRegistryAction && errors.length === 0) {
-    if (!projectRecordEquivalent(registry.projects[pendingRegistryAction.slug], pendingRegistryAction.project)) {
+    if (!projectRecordEquivalent(getOwnRecordValue(registry.projects, pendingRegistryAction.slug), pendingRegistryAction.project)) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
       saveProjectRegistry(registry, pendingRegistryAction.registryPath);
       changedFiles.push(pendingRegistryAction.registryPath);
@@ -6812,7 +6836,7 @@ function projectManifestFromRegistryProject(project) {
   };
 }
 function getProject(registry, slug) {
-  const project = registry.projects[slug];
+  const project = getOwnRecordValue(registry.projects, slug);
   if (!project) throw new Error(`Project not found in registry: ${slug}`);
   return project;
 }
@@ -6852,7 +6876,7 @@ function resolvePjanglerRoot2() {
   return resolve5(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
-  const existingSameSlug = registry.projects[project.slug];
+  const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
   if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
@@ -6867,14 +6891,22 @@ function validateNoDuplicateProject(registry, project, overwrite) {
   }
 }
 function validateProjectRecord(project, key) {
+  validateSafePathSegment(key, `Project registry key ${key}`);
   if (!isRecord(project)) throw new Error(`Project ${key} must be a mapping`);
   if (!project.name) throw new Error(`Project ${key} missing name`);
   if (!project.slug) throw new Error(`Project ${key} missing slug`);
+  validateSafePathSegment(project.slug, `Project ${key} slug`);
   if (project.slug !== key) throw new Error(`Project key ${key} does not match slug ${project.slug}`);
   if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+  for (const [agentKey, agent] of Object.entries(project.agents)) {
+    validateSafePathSegment(agentKey, `Project ${key} agent key ${agentKey}`);
+    if (!isRecord(agent)) throw new Error(`Project ${key} agent ${agentKey} must be a mapping`);
+    if (typeof agent.role !== "string" || !agent.role) throw new Error(`Project ${key} agent ${agentKey} missing role`);
+    validateSafePathSegment(agent.role, `Project ${key} agent ${agentKey} role`);
+  }
 }
 function expandHome(path) {
   if (path === "~") return homedir4();
@@ -7026,7 +7058,7 @@ var RunCopierTemplate = class extends Command {
     const roleManifest = join9(roleDir, "role.yaml");
     try {
       const current = readFileSync6(roleManifest, "utf8");
-      const document = YAML4.parseDocument(current);
+      const document = YAML3.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
@@ -7718,11 +7750,12 @@ function refreshPlanFromCanonicalManifest(plan) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
   }
-  const agents = {};
+  const agents = createSafeRecord();
   for (const [agentId, entry] of Object.entries(manifest.agents ?? {})) {
-    const role = typeof entry?.role === "string" ? entry.role.trim() : "";
-    if (!role) throw new Error(`${manifestPath} agents.${agentId}.role is missing`);
-    if (agents[role]) throw new Error(`${manifestPath} declares more than one ${role} agent`);
+    const rawRole = typeof entry?.role === "string" ? entry.role : "";
+    if (!rawRole.trim()) throw new Error(`${manifestPath} agents.${agentId}.role is missing`);
+    const role = normalizeAgentRole(rawRole);
+    if (Object.hasOwn(agents, role)) throw new Error(`${manifestPath} declares more than one ${role} agent`);
     agents[role] = {
       role,
       role_dir: entry.role_dir,

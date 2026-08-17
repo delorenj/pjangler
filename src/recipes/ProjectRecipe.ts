@@ -2,7 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+  createSafeRecord,
   executeProjectInitPlan,
+  normalizeAgentRole,
   type ProjectAgentRecord,
   type ProjectInitExecutionResult,
   type ProjectInitPlan,
@@ -113,11 +115,12 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
     throw new Error(`${manifestPath} must contain a JSON object`);
   }
 
-  const agents: Record<string, ProjectAgentRecord> = {};
+  const agents = createSafeRecord<ProjectAgentRecord>();
   for (const [agentId, entry] of Object.entries(manifest.agents ?? {})) {
-    const role = typeof entry?.role === "string" ? entry.role.trim() : "";
-    if (!role) throw new Error(`${manifestPath} agents.${agentId}.role is missing`);
-    if (agents[role]) throw new Error(`${manifestPath} declares more than one ${role} agent`);
+    const rawRole = typeof entry?.role === "string" ? entry.role : "";
+    if (!rawRole.trim()) throw new Error(`${manifestPath} agents.${agentId}.role is missing`);
+    const role = normalizeAgentRole(rawRole);
+    if (Object.hasOwn(agents, role)) throw new Error(`${manifestPath} declares more than one ${role} agent`);
     agents[role] = {
       role,
       role_dir: entry.role_dir,

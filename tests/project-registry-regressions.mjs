@@ -137,13 +137,18 @@ try {
     outfile: projectApiBundle,
     logLevel: "silent",
   });
-  const { planProjectInit: directPlanProjectInit } = createRequire(import.meta.url)(projectApiBundle);
+  const {
+    executeProjectInitPlan: directExecuteProjectInitPlan,
+    getProject: directGetProject,
+    loadProjectRegistry: directLoadProjectRegistry,
+    planProjectInit: directPlanProjectInit,
+  } = createRequire(import.meta.url)(projectApiBundle);
   const directSafetyRoot = join(tmp, "direct-plan-safety");
   const directRegistry = join(directSafetyRoot, "projects.yaml");
   const directTarget = join(directSafetyRoot, "safe-target");
   mkdirSync(join(directSafetyRoot, "working"), { recursive: true });
 
-  for (const projectSlug of ["", ".", "..", "../escaped", "/tmp/escaped", "nested/project", "nested\\project"]) {
+  for (const projectSlug of ["", ".", "..", "__proto__", "../escaped", "/tmp/escaped", "nested/project", "nested\\project"]) {
     assert.throws(
       () => directPlanProjectInit({
         name: "Unsafe Direct Slug",
@@ -157,7 +162,7 @@ try {
       `direct planProjectInit must reject ${JSON.stringify(projectSlug)}`,
     );
   }
-  for (const agentRole of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
+  for (const agentRole of ["", ".", "..", "__proto__", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
     assert.throws(
       () => directPlanProjectInit({
         name: "Unsafe Direct Role",
@@ -197,6 +202,67 @@ try {
   });
   assert.equal(arbitraryRolePlan.project.agents["release-captain"].role, "release-captain");
   assert.ok(arbitraryRolePlan.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "release-captain"));
+
+  // Safe dictionary keys that collide with Object.prototype must remain real
+  // project/agent records, while __proto__ stays rejected without mutating any
+  // prototype. Exercise planning, YAML persistence, loading, and lookup.
+  const prototypeRegistry = join(directSafetyRoot, "prototype-projects.yaml");
+  const objectPrototypeNames = Object.getOwnPropertyNames(Object.prototype).sort();
+  for (const specialKey of ["constructor", "prototype"]) {
+    const specialPlan = directPlanProjectInit({
+      name: `${specialKey} project`,
+      projectSlug: specialKey,
+      agentRole: specialKey,
+      provisionAgent: true,
+      targetDir: join(directSafetyRoot, specialKey),
+      registryPath: prototypeRegistry,
+      scaffold: false,
+      apply: true,
+      pjanglerRoot: root,
+    });
+    assert.equal(Object.getPrototypeOf(specialPlan.project.agents), null, "planned agent maps must have no inherited keys");
+    assert.ok(Object.hasOwn(specialPlan.project.agents, specialKey));
+    assert.equal(specialPlan.project.agents[specialKey].role, specialKey);
+    const applied = await directExecuteProjectInitPlan(specialPlan);
+    assert.equal(applied.ok, true, JSON.stringify(applied.errors));
+  }
+  const specialRegistry = directLoadProjectRegistry(prototypeRegistry);
+  assert.equal(Object.getPrototypeOf(specialRegistry.projects), null, "loaded project maps must have no prototype");
+  for (const specialKey of ["constructor", "prototype"]) {
+    const project = directGetProject(specialRegistry, specialKey);
+    assert.equal(project.slug, specialKey);
+    assert.equal(Object.getPrototypeOf(project.agents), null, "loaded agent maps must have no prototype");
+    assert.ok(Object.hasOwn(project.agents, specialKey));
+    assert.equal(project.agents[specialKey].role, specialKey);
+  }
+
+  const maliciousProjectMap = Object.create(null);
+  maliciousProjectMap.__proto__ = {
+    ...directGetProject(specialRegistry, "prototype"),
+    name: "Unsafe Proto Project",
+    slug: "__proto__",
+    repo_path: join(directSafetyRoot, "unsafe-proto-project"),
+  };
+  const maliciousProjectRegistry = join(directSafetyRoot, "malicious-project-key.yaml");
+  writeFileSync(maliciousProjectRegistry, YAML.stringify({ schema_version: 1, projects: maliciousProjectMap }, { lineWidth: 0 }), "utf8");
+  assert.throws(() => directLoadProjectRegistry(maliciousProjectRegistry), /project registry key.*safe single path segment/i);
+
+  const maliciousAgentMap = Object.create(null);
+  maliciousAgentMap.__proto__ = { role: "__proto__", provisioning_state: "planned" };
+  const maliciousAgentProject = {
+    ...directGetProject(specialRegistry, "prototype"),
+    name: "Unsafe Proto Agent",
+    slug: "proto-agent-control",
+    repo_path: join(directSafetyRoot, "proto-agent-control"),
+    agents: maliciousAgentMap,
+  };
+  const maliciousAgentProjects = Object.create(null);
+  maliciousAgentProjects[maliciousAgentProject.slug] = maliciousAgentProject;
+  const maliciousAgentRegistry = join(directSafetyRoot, "malicious-agent-key.yaml");
+  writeFileSync(maliciousAgentRegistry, YAML.stringify({ schema_version: 1, projects: maliciousAgentProjects }, { lineWidth: 0 }), "utf8");
+  assert.throws(() => directLoadProjectRegistry(maliciousAgentRegistry), /agent key __proto__.*safe single path segment/i);
+  assert.deepEqual(Object.getOwnPropertyNames(Object.prototype).sort(), objectPrototypeNames, "registry operations must not mutate Object.prototype");
+  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false);
 
   const fixtureRoot = join(tmp, "bmad-fixtures");
   portableLifecycleEnv = {
@@ -566,6 +632,24 @@ try {
   assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-director", "multi-agent-pm"], "both isolated fleet profiles must be registered");
   assert.equal(secondFleetRegistry.agents["multi-agent-pm"].bloodbank.enabled, false);
   assert.equal(secondFleetRegistry.agents["multi-agent-director"].bloodbank.enabled, false);
+
+  // The canonical-manifest refresh in ProjectRecipe builds its own role-keyed
+  // map. A first agent named `constructor` must be treated as an own record,
+  // not as the inherited Object constructor or a duplicate.
+  const constructorAgentRepo = join(tmp, "ConstructorAgent");
+  mkdirSync(constructorAgentRepo, { recursive: true });
+  git(["init"], constructorAgentRepo);
+  writeFileSync(join(constructorAgentRepo, "package.json"), JSON.stringify({ name: "constructor-agent", description: "Prototype-key agent test" }, null, 2), "utf8");
+  const constructorAgentRegistry = join(tmp, "constructor-agent-projects.yaml");
+  const constructorAgentResult = JSON.parse(run([
+    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "constructor", "--json",
+  ], { ...multiAgentEnv, PJ_PROJECT_REGISTRY: constructorAgentRegistry }, constructorAgentRepo));
+  assert.equal(constructorAgentResult.ok, true, JSON.stringify(constructorAgentResult.errors));
+  const constructorAgentRegistryData = YAML.parse(readFileSync(constructorAgentRegistry, "utf8"));
+  assert.equal(constructorAgentRegistryData.projects["constructor-agent"].agents.constructor.role, "constructor");
+  const constructorAgentManifest = JSON.parse(readFileSync(join(constructorAgentRepo, ".project.json"), "utf8"));
+  assert.equal(constructorAgentManifest.agents["constructor-agent-constructor"].role, "constructor");
+  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false, "constructor agent provisioning must not mutate Object.prototype");
 
   // PJAN-26: "active" is a default for NEW records, never a migration.
   // A project already recorded as "planned" keeps that status through a load
