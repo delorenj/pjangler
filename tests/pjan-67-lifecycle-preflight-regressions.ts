@@ -366,6 +366,8 @@ try {
   const hardened = hardenSubprocessEnvironment({
     ...ambientCredentials,
     PATH: "/trusted/copier/bin:/trusted/hermes/bin:/usr/bin",
+    PJAN67_FUNCTIONAL_OVERRIDE: "preserved",
+    LD_SDK_KEY: "non-loader-functional-value",
     PYTHONPATH: "/tmp/inject-python-path",
     PYTHONHOME: "/tmp/inject-python-home",
     PYTHONSTARTUP: "/tmp/inject-python-startup.py",
@@ -376,13 +378,30 @@ try {
     NODE_PATH: "/tmp/inject-node-path",
     LD_PRELOAD: "/tmp/inject.so",
     LD_LIBRARY_PATH: "/tmp/inject-lib",
+    LD_AUDIT: "/tmp/inject-audit.so",
+    LD_AUDIT_64: "/tmp/inject-audit-64.so",
+    LD_ASSUME_KERNEL: "2.6.32",
+    LD_HWCAP_MASK: "0",
+    GLIBC_TUNABLES: "glibc.cpu.hwcaps=-AVX2",
     DYLD_INSERT_LIBRARIES: "/tmp/inject.dylib",
     DYLD_LIBRARY_PATH: "/tmp/inject-dyld-lib",
+    "BASH_FUNC_pjan67_ambient_probe%%": "() { printf imported; }",
+    BASHOPTS: "extdebug:sourcepath",
+    SHELLOPTS: "braceexpand:hashall:interactive-comments:xtrace",
+    BASH_COMPAT: "50",
+    BASH_LOADABLES_PATH: "/tmp/inject-builtins",
+    BASH_XTRACEFD: "2",
+    PROMPT_COMMAND: "printf prompt-injected",
+    PS4: "$(printf trace-injected)",
   });
   for (const key of [
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
     "BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH",
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_AUDIT_64",
+    "LD_ASSUME_KERNEL", "LD_HWCAP_MASK", "GLIBC_TUNABLES",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    "BASH_FUNC_pjan67_ambient_probe%%", "BASHOPTS", "SHELLOPTS",
+    "BASH_COMPAT", "BASH_LOADABLES_PATH", "BASH_XTRACEFD", "PROMPT_COMMAND", "PS4",
   ]) {
     assert.equal(hardened[key], undefined, `subprocess hardening must remove ${key}`);
   }
@@ -393,9 +412,55 @@ try {
     "/trusted/copier/bin:/trusted/hermes/bin:/usr/bin",
     "subprocess hardening must preserve controlled executable resolution",
   );
+  assert.equal(hardened.PJAN67_FUNCTIONAL_OVERRIDE, "preserved");
+  assert.equal(hardened.LD_SDK_KEY, "non-loader-functional-value", "non-loader LD_* overrides must survive");
   for (const [key, value] of Object.entries(ambientCredentials)) {
     assert.equal(hardened[key], value, `subprocess hardening must preserve explicitly granted ${key}`);
   }
+
+  // Keep a test-owned inventory of the documented GNU loader surface. This is
+  // intentionally not imported from the implementation: omitting a loader
+  // stem or its multilib spelling from the boundary must make the gate fail.
+  const gnuLoaderControlStems = [
+    "LD_ASSUME_KERNEL", "LD_AUDIT", "LD_BIND_NOT", "LD_BIND_NOW",
+    "LD_DEBUG", "LD_DEBUG_OUTPUT", "LD_DYNAMIC_WEAK", "LD_HWCAP_MASK",
+    "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_POINTER_GUARD",
+    "LD_PREFER_MAP_32BIT_EXEC", "LD_PRELOAD", "LD_PROFILE",
+    "LD_PROFILE_OUTPUT", "LD_SHOW_AUXV", "LD_TRACE_LOADED_OBJECTS",
+    "LD_TRACE_PRELINKING", "LD_USE_LOAD_BIAS", "LD_VERBOSE", "LD_WARN",
+  ];
+  const bashStartupAndTraceControls = [
+    "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "BASH_COMPAT",
+    "BASH_LOADABLES_PATH", "BASH_XTRACEFD", "PROMPT_COMMAND",
+    "PS0", "PS1", "PS2", "PS3", "PS4",
+  ];
+  const loaderAndShellFamilyFixture = Object.fromEntries([
+    ...gnuLoaderControlStems.flatMap((key) => [key, `${key}_32`, `${key}_64`]),
+    ...bashStartupAndTraceControls,
+    "GLIBC_TUNABLES",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "BASH_FUNC_python3%%",
+    "BASH_FUNC_git%%",
+    "BASH_FUNC_future_encoding",
+  ].map((key) => [key, `blocked:${key}`]));
+  const hardenedFamilies = hardenSubprocessEnvironment(
+    {
+      ...loaderAndShellFamilyFixture,
+      LD_SDK_KEY: "preserved-source-value",
+      PJAN67_FAMILY_FUNCTIONAL_OVERRIDE: "preserved-source-override",
+    },
+    {
+      LD_AUDIT: "blocked:override-cannot-rearm-loader",
+      "BASH_FUNC_python3%%": "() { printf override-cannot-rearm-shell; }",
+      LD_SDK_KEY: "preserved-override-value",
+    },
+  );
+  for (const key of Object.keys(loaderAndShellFamilyFixture)) {
+    assert.equal(hardenedFamilies[key], undefined, `family hardening must remove ${key}`);
+  }
+  assert.equal(hardenedFamilies.LD_SDK_KEY, "preserved-override-value");
+  assert.equal(hardenedFamilies.PJAN67_FAMILY_FUNCTIONAL_OVERRIDE, "preserved-source-override");
 
   const previousAmbientOnly = process.env.PJAN67_AMBIENT_PARENT_ONLY;
   process.env.PJAN67_AMBIENT_PARENT_ONLY = "must-not-be-merged";
@@ -408,8 +473,14 @@ try {
         env: {
           PATH: "/controlled/child/path",
           PJAN67_FUNCTIONAL_OVERRIDE: "preserved",
+          LD_SDK_KEY: "preserved-non-loader-key",
           NODE_OPTIONS: "--require=/must/not/load.cjs",
           LD_PRELOAD: "/must/not/load.so",
+          LD_AUDIT_32: "/must/not/audit.so",
+          GLIBC_TUNABLES: "glibc.malloc.check=3",
+          "BASH_FUNC_pjan67_sync_probe%%": "() { printf imported; }",
+          SHELLOPTS: "braceexpand:hashall:interactive-comments:xtrace",
+          PS4: "TRACE-INJECTION:",
         },
       },
     );
@@ -417,12 +488,30 @@ try {
     const minimalEnvironment = JSON.parse(minimalChild.stdout) as Record<string, string>;
     assert.deepEqual(
       Object.keys(minimalEnvironment).sort(),
-      ["PATH", "PJAN67_FUNCTIONAL_OVERRIDE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
+      ["PATH", "PJAN67_FUNCTIONAL_OVERRIDE", "LD_SDK_KEY", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
       "an explicit minimal env must not be merged over ambient process.env",
     );
     assert.equal(minimalEnvironment.PATH, "/controlled/child/path");
     assert.equal(minimalEnvironment.PJAN67_FUNCTIONAL_OVERRIDE, "preserved");
+    assert.equal(minimalEnvironment.LD_SDK_KEY, "preserved-non-loader-key");
     assert.equal(minimalEnvironment.PJAN67_AMBIENT_PARENT_ONLY, undefined);
+
+    const bashFunctionChild = hardenedSpawnSync(
+      "bash",
+      ["-c", "if declare -F pjan67_sync_probe >/dev/null; then pjan67_sync_probe; else printf absent; fi"],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          "BASH_FUNC_pjan67_sync_probe%%": "() { printf imported; }",
+          SHELLOPTS: "braceexpand:hashall:interactive-comments:xtrace",
+          PS4: "TRACE-INJECTION:",
+        },
+      },
+    );
+    assert.equal(bashFunctionChild.status, 0, bashFunctionChild.stderr);
+    assert.equal(bashFunctionChild.stdout, "absent", "exported Bash functions must not enter a child shell");
+    assert.equal(bashFunctionChild.stderr, "", "trace/startup controls must not activate in a child shell");
 
     const asyncChild = hardenedSpawn(
       process.execPath,
@@ -430,8 +519,14 @@ try {
       {
         env: {
           PJAN67_ASYNC_OVERRIDE: "preserved",
+          LD_SDK_KEY: "async-non-loader-key",
           NODE_PATH: "/must/not/resolve",
           DYLD_INSERT_LIBRARIES: "/must/not/load.dylib",
+          LD_DEBUG_OUTPUT: "/must/not/write-loader-debug",
+          LD_AUDIT_64: "/must/not/audit.so",
+          "BASH_FUNC_pjan67_async_probe%%": "() { printf imported; }",
+          BASH_XTRACEFD: "2",
+          PS4: "TRACE-INJECTION:",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -450,7 +545,7 @@ try {
     const asyncEnvironment = JSON.parse(asyncStdout) as Record<string, string>;
     assert.deepEqual(
       Object.keys(asyncEnvironment).sort(),
-      ["PJAN67_ASYNC_OVERRIDE", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
+      ["PJAN67_ASYNC_OVERRIDE", "LD_SDK_KEY", "PYTHONNOUSERSITE", "PYTHONSAFEPATH"].sort(),
       "async spawn must preserve the same explicit-minimal-env semantics",
     );
   } finally {

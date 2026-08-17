@@ -51,6 +51,8 @@ const bashEnvSentinel = join(interpreterInjectionRoot, "bash-env.sh");
 const nodeOptionsPackage = join(interpreterInjectionRoot, "pjan67-node-options");
 const preloadSource = join(interpreterInjectionRoot, "preload.c");
 const preloadLibrary = join(interpreterInjectionRoot, "preload.so");
+const auditSource = join(interpreterInjectionRoot, "audit.c");
+const auditLibrary = join(interpreterInjectionRoot, "audit.so");
 const templateConfig = join(isolatedHome, ".config", "hermes-agent-template", "config.toml");
 const fleetHome = join(isolatedHome, ".hermes");
 const fakeHermes = join(fakeBin, "hermes");
@@ -103,6 +105,30 @@ const compiledPreload = spawnSync("cc", ["-shared", "-fPIC", "-o", preloadLibrar
   encoding: "utf8",
 });
 assert.equal(compiledPreload.status, 0, `${compiledPreload.stdout}${compiledPreload.stderr}`);
+writeFileSync(auditSource, `
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <link.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+unsigned int la_version(unsigned int version) {
+  const char *path = getenv("PJAN67_INTERPRETER_LOG");
+  if (path != NULL && path[0] != '\\0') {
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd >= 0) {
+      const char marker[] = "ld-audit-loaded\\n";
+      (void)write(fd, marker, sizeof(marker) - 1);
+      (void)close(fd);
+    }
+  }
+  return LAV_CURRENT;
+}
+`, "utf8");
+const compiledAudit = spawnSync("cc", ["-shared", "-fPIC", "-o", auditLibrary, auditSource], {
+  encoding: "utf8",
+});
+assert.equal(compiledAudit.status, 0, `${compiledAudit.stdout}${compiledAudit.stderr}`);
 
 const injectionKeysPattern = [
   "PYTHONPATH",
@@ -115,14 +141,28 @@ const injectionKeysPattern = [
   "NODE_PATH",
   "LD_PRELOAD",
   "LD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "LD_AUDIT_64",
+  "LD_ASSUME_KERNEL",
+  "LD_HWCAP_MASK",
+  "GLIBC_TUNABLES",
   "DYLD_INSERT_LIBRARIES",
   "DYLD_LIBRARY_PATH",
+  "BASH_FUNC_.*",
+  "BASHOPTS",
+  "SHELLOPTS",
+  "BASH_COMPAT",
+  "BASH_LOADABLES_PATH",
+  "BASH_XTRACEFD",
+  "PROMPT_COMMAND",
+  "PS4",
 ].join("|");
 const inspectChildEnvironment = `env | grep -E '^(${injectionKeysPattern})=' >> "$PJAN67_INTERPRETER_LOG" || true`;
 
 executable(fakeHermes, `#!/bin/sh
 ${inspectChildEnvironment}
 printf 'local-hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
+printf 'ld-sdk:%s\n' "\${LD_SDK_KEY:-missing}" >> "$PJAN67_EFFECT_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
@@ -238,6 +278,21 @@ writeFileSync(join(fleetHome, "fleet.env"), [
   `export TRELLO_KEY=${fleetAuthoritySentinel}`,
   `export TRELLO_TOKEN=${fleetAuthoritySentinel}`,
   `export LINEAR_API_KEY=${fleetAuthoritySentinel}`,
+  `export LD_AUDIT=${auditLibrary}`,
+  `export LD_AUDIT_64=${auditLibrary}`,
+  "export LD_ASSUME_KERNEL=2.6.32",
+  "export LD_HWCAP_MASK=0",
+  "export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX2",
+  "export BASHOPTS",
+  "export SHELLOPTS",
+  "export BASH_COMPAT=50",
+  `export BASH_LOADABLES_PATH=${interpreterInjectionRoot}`,
+  "export BASH_XTRACEFD=2",
+  "export PROMPT_COMMAND='printf fleet-prompt-control-loaded'",
+  "export PS4='fleet-trace-control-loaded'",
+  "python3() { printf 'fleet-bash-function-loaded\\n' >> \"$PJAN67_INTERPRETER_LOG\"; command python3 \"$@\"; }",
+  "export -f python3",
+  "export LD_SDK_KEY=preserved-non-loader-functional-value",
   "",
 ].join("\n"), "utf8");
 
@@ -276,8 +331,22 @@ const serverEnv = {
   NODE_PATH: interpreterInjectionRoot,
   LD_PRELOAD: preloadLibrary,
   LD_LIBRARY_PATH: interpreterInjectionRoot,
+  LD_AUDIT: auditLibrary,
+  LD_AUDIT_64: auditLibrary,
+  LD_ASSUME_KERNEL: "2.6.32",
+  LD_HWCAP_MASK: "0",
+  GLIBC_TUNABLES: "glibc.cpu.hwcaps=-AVX2",
   DYLD_INSERT_LIBRARIES: preloadLibrary,
   DYLD_LIBRARY_PATH: interpreterInjectionRoot,
+  "BASH_FUNC_python3%%": "() { printf 'bash-function-loaded\\n' >> \"$PJAN67_INTERPRETER_LOG\"; command python3 \"$@\"; }",
+  BASHOPTS: "extdebug:sourcepath",
+  SHELLOPTS: "braceexpand:hashall:interactive-comments:xtrace",
+  BASH_COMPAT: "50",
+  BASH_LOADABLES_PATH: interpreterInjectionRoot,
+  BASH_XTRACEFD: "2",
+  PROMPT_COMMAND: "printf prompt-control-loaded",
+  PS4: "$(printf 'bash-trace-loaded\\n' >> \"$PJAN67_INTERPRETER_LOG\")",
+  LD_SDK_KEY: "preserved-non-loader-functional-value",
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
   PJAN67_INTERPRETER_LOG: interpreterLoadLog,
@@ -494,6 +563,7 @@ try {
   assert.equal((readFileSync(providerLog, "utf8").match(/-X POST/g) ?? []).length, 1, "the granted board provider must create exactly once");
   assert.match(effectText, /runtime-migrate:/, "the granted runtime phase must execute");
   assert.match(effectText, /systemctl:--user enable --now/, "the granted systemd phase must execute");
+  assert.match(effectText, /ld-sdk:preserved-non-loader-functional-value/, "non-loader LD_* overrides must reach intended children");
   const deferredSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
   for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     assert.equal((deferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `${script} must be dispatched exactly once`);

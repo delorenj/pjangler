@@ -12,23 +12,63 @@ import {
 } from "node:child_process";
 
 // src/utils/child-environment.ts
-var SUBPROCESS_INJECTION_KEYS = [
+var SUBPROCESS_INJECTION_KEYS = /* @__PURE__ */ new Set([
   "PYTHONPATH",
   "PYTHONHOME",
   "PYTHONSTARTUP",
   "PYTHONUSERBASE",
   "BASH_ENV",
   "ENV",
+  "BASHOPTS",
+  "SHELLOPTS",
+  "BASH_COMPAT",
+  "BASH_LOADABLES_PATH",
+  "BASH_XTRACEFD",
+  "PROMPT_COMMAND",
+  "PS0",
+  "PS1",
+  "PS2",
+  "PS3",
+  "PS4",
   "NODE_OPTIONS",
   "NODE_PATH",
-  "LD_PRELOAD",
+  "GLIBC_TUNABLES"
+]);
+var GNU_DYNAMIC_LOADER_CONTROL_KEYS = /* @__PURE__ */ new Set([
+  "LD_ASSUME_KERNEL",
+  "LD_AUDIT",
+  "LD_BIND_NOT",
+  "LD_BIND_NOW",
+  "LD_DEBUG",
+  "LD_DEBUG_OUTPUT",
+  "LD_DYNAMIC_WEAK",
+  "LD_HWCAP_MASK",
   "LD_LIBRARY_PATH",
-  "DYLD_INSERT_LIBRARIES",
-  "DYLD_LIBRARY_PATH"
-];
+  "LD_ORIGIN_PATH",
+  "LD_POINTER_GUARD",
+  "LD_PREFER_MAP_32BIT_EXEC",
+  "LD_PRELOAD",
+  "LD_PROFILE",
+  "LD_PROFILE_OUTPUT",
+  "LD_SHOW_AUXV",
+  "LD_TRACE_LOADED_OBJECTS",
+  "LD_TRACE_PRELINKING",
+  "LD_USE_LOAD_BIAS",
+  "LD_VERBOSE",
+  "LD_WARN"
+]);
+function isSubprocessInjectionKey(key) {
+  if (SUBPROCESS_INJECTION_KEYS.has(key)) return true;
+  if (key.startsWith("BASH_FUNC_")) return true;
+  if (key.startsWith("DYLD_")) return true;
+  const abiNeutralKey = key.replace(/_(?:32|64)$/, "");
+  return GNU_DYNAMIC_LOADER_CONTROL_KEYS.has(abiNeutralKey);
+}
 function hardenSubprocessEnvironment(source = process.env, overrides = {}) {
   const env = { ...source, ...overrides };
-  for (const key of SUBPROCESS_INJECTION_KEYS) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (isSubprocessInjectionKey(key)) delete env[key];
+  }
   env.PYTHONNOUSERSITE = "1";
   env.PYTHONSAFEPATH = "1";
   return env;
