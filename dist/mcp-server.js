@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/mcp-server.ts
-import { existsSync as existsSync17, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync17, statSync as statSync5 } from "node:fs";
 import { basename as basename6, dirname as dirname10, join as join22, resolve as resolve9 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -5901,19 +5901,19 @@ var PromptForAgentConfig = class extends Command {
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { homedir as homedir5 } from "node:os";
-import { join as join9, dirname as dirname6, relative as relative5 } from "node:path";
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join10, dirname as dirname7, relative as relative6 } from "node:path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import * as p2 from "@clack/prompts";
-import YAML3 from "yaml";
+import YAML4 from "yaml";
 
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync4 } from "node:fs";
-import { homedir as homedir4, tmpdir } from "node:os";
-import { basename as basename4, delimiter, dirname as dirname5, isAbsolute, join as join8, relative as relative4, resolve as resolve5, sep as sep2, win32 } from "node:path";
+import { copyFileSync as copyFileSync2, existsSync as existsSync7, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename5, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute2, join as join9, relative as relative5, resolve as resolve6, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import YAML2 from "yaml";
+import YAML3 from "yaml";
 
 // src/utils/tree-diff.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -5938,6 +5938,448 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
 }
 function changedTreePaths(root, before, after) {
   return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join7(root, path)).sort();
+}
+
+// src/lifecycle/preflight.ts
+import { createHash as createHash4 } from "node:crypto";
+import {
+  accessSync,
+  constants as constants2,
+  existsSync as existsSync6,
+  lstatSync as lstatSync4,
+  readFileSync as readFileSync5,
+  readdirSync as readdirSync4,
+  realpathSync as realpathSync2,
+  statSync
+} from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { basename as basename4, delimiter, isAbsolute, join as join8, relative as relative4, resolve as resolve5 } from "node:path";
+import YAML2 from "yaml";
+function containedBy(parent, candidate) {
+  const rel = relative4(resolve5(parent), resolve5(candidate));
+  return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
+}
+function firstExecutableOnPath(env2) {
+  for (const rawEntry of (env2.PATH ?? "").split(delimiter)) {
+    const entry = rawEntry || process.cwd();
+    const candidate = resolve5(entry, process.platform === "win32" ? "copier.exe" : "copier");
+    try {
+      accessSync(candidate, constants2.X_OK);
+      const stat = lstatSync4(candidate);
+      if (stat.isFile() || stat.isSymbolicLink()) return candidate;
+    } catch {
+    }
+  }
+  return void 0;
+}
+function sha2562(path) {
+  return createHash4("sha256").update(readFileSync5(path)).digest("base64url");
+}
+function fingerprint(path) {
+  const absolute = resolve5(path);
+  const realPath = realpathSync2(absolute);
+  const stat = statSync(realPath);
+  if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
+  return {
+    path: absolute,
+    realPath,
+    sha256: sha2562(realPath),
+    size: stat.size,
+    device: stat.dev,
+    inode: stat.ino,
+    mode: stat.mode,
+    uid: stat.uid,
+    gid: stat.gid
+  };
+}
+function sameFingerprint(expected) {
+  try {
+    const actual = fingerprint(expected.path);
+    for (const key of ["realPath", "sha256", "size", "device", "inode", "mode", "uid", "gid"]) {
+      if (actual[key] !== expected[key]) {
+        return { ok: false, error: `trusted Copier identity changed at ${expected.path} (${key})` };
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `trusted Copier identity is unavailable at ${expected.path}: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function consoleScriptContract(path) {
+  let text2;
+  try {
+    text2 = readFileSync5(path, "utf8").slice(0, 32 * 1024);
+  } catch (error) {
+    return { ok: false, error: `cannot read Copier launcher: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const firstLine = text2.split(/\r?\n/, 1)[0] ?? "";
+  if (!firstLine.startsWith("#!")) return { ok: false, error: "Copier launcher has no executable shebang" };
+  const shebang = firstLine.slice(2).trim().split(/\s+/);
+  if (shebang.length !== 1 || !isAbsolute(shebang[0] ?? "")) {
+    return { ok: false, error: "Copier launcher must use one absolute Python interpreter" };
+  }
+  const interpreterPath = resolve5(shebang[0]);
+  const interpreter = basename4(interpreterPath);
+  if (!/^python(?:\d+(?:\.\d+)*)?$/.test(interpreter)) {
+    return { ok: false, error: "Copier launcher is not an absolute Python console script" };
+  }
+  if (!/from\s+copier\.__main__\s+import\s+CopierApp/.test(text2) || !/CopierApp\.run\s*\(/.test(text2)) {
+    return { ok: false, error: "Copier launcher does not match the Copier 9 console-script contract" };
+  }
+  return { ok: true, interpreter: interpreterPath };
+}
+function defaultUvToolRoots(home) {
+  return [
+    join8(home, ".local", "share", "uv", "tools", "copier"),
+    join8(home, "Library", "Application Support", "uv", "tools", "copier")
+  ].map((path) => resolve5(path));
+}
+function locateUvSitePackages(toolRoot) {
+  const lib = join8(toolRoot, "lib");
+  const candidates = [];
+  for (const entry of readdirSync4(lib, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^python\d+(?:\.\d+)*$/.test(entry.name)) continue;
+    const sitePackages = join8(lib, entry.name, "site-packages");
+    if (existsSync6(sitePackages)) candidates.push(sitePackages);
+  }
+  if (candidates.length !== 1) throw new Error(`expected one UV Copier site-packages directory, found ${candidates.length}`);
+  return realpathSync2(candidates[0]);
+}
+function parseRecordLine(line) {
+  if (!line || line.includes('"')) return void 0;
+  const parts = line.split(",");
+  if (parts.length !== 3 || !parts[1]?.startsWith("sha256=") || !/^\d+$/.test(parts[2] ?? "")) return void 0;
+  return {
+    relativePath: parts[0],
+    digest: parts[1].slice("sha256=".length),
+    size: Number(parts[2])
+  };
+}
+function attestUvCopier(candidate, realCandidate, home) {
+  const toolRoot = defaultUvToolRoots(home).find((root) => realCandidate === join8(root, "bin", "copier"));
+  if (!toolRoot) {
+    return { ok: false, error: `refusing untrusted PATH-shadowed Copier executable: ${candidate}` };
+  }
+  const supportedEntries = new Set([
+    join8(home, ".local", "bin", "copier"),
+    join8(toolRoot, "bin", "copier")
+  ].map((path) => resolve5(path)));
+  if (!supportedEntries.has(resolve5(candidate))) {
+    return { ok: false, error: `refusing non-canonical UV Copier entry point: ${candidate}` };
+  }
+  try {
+    const launcher = consoleScriptContract(realCandidate);
+    if (!launcher.ok || !launcher.interpreter) {
+      return { ...launcher, executable: realCandidate, realExecutable: realCandidate };
+    }
+    const expectedInterpreter = join8(toolRoot, "bin", basename4(launcher.interpreter));
+    if (resolve5(launcher.interpreter) !== resolve5(expectedInterpreter)) {
+      return { ok: false, error: "UV Copier launcher interpreter is outside the attested tool environment" };
+    }
+    const interpreterReal = realpathSync2(launcher.interpreter);
+    const uvPythonRoots = [
+      join8(home, ".local", "share", "uv", "python"),
+      join8(home, "Library", "Application Support", "uv", "python")
+    ];
+    if (!uvPythonRoots.some((root) => containedBy(root, interpreterReal))) {
+      return { ok: false, error: "UV Copier interpreter is not managed by the canonical UV Python installation" };
+    }
+    const receiptPath = join8(toolRoot, "uv-receipt.toml");
+    const receipt = readFileSync5(receiptPath, "utf8");
+    if (!/requirements\s*=\s*\[[\s\S]*?name\s*=\s*["']copier["']/.test(receipt) || !/entrypoints\s*=\s*\[[\s\S]*?name\s*=\s*["']copier["'][\s\S]*?from\s*=\s*["']copier["']/.test(receipt)) {
+      return { ok: false, error: "UV tool receipt does not bind the copier entry point to the Copier package" };
+    }
+    const sitePackages = locateUvSitePackages(toolRoot);
+    const distInfos = readdirSync4(sitePackages, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^copier-[^-]+\.dist-info$/i.test(entry.name)).map((entry) => join8(sitePackages, entry.name));
+    if (distInfos.length !== 1) {
+      return { ok: false, error: `expected one installed Copier distribution, found ${distInfos.length}` };
+    }
+    const distInfo = realpathSync2(distInfos[0]);
+    const metadataPath = join8(distInfo, "METADATA");
+    const entryPointsPath = join8(distInfo, "entry_points.txt");
+    const recordPath = join8(distInfo, "RECORD");
+    const metadata = readFileSync5(metadataPath, "utf8");
+    const name = metadata.match(/^Name:\s*(.+)$/mi)?.[1]?.trim();
+    const version = metadata.match(/^Version:\s*(.+)$/mi)?.[1]?.trim();
+    if (name?.toLowerCase() !== "copier" || !version || !/^9(?:\.|$)/.test(version)) {
+      return { ok: false, error: "installed distribution is not a Copier 9 package" };
+    }
+    const entryPoints = readFileSync5(entryPointsPath, "utf8");
+    if (!/^copier\s*=\s*copier\.__main__:CopierApp\.run\s*$/m.test(entryPoints)) {
+      return { ok: false, error: "installed Copier distribution has an unexpected console entry point" };
+    }
+    const recordEntries = readFileSync5(recordPath, "utf8").split(/\r?\n/).map(parseRecordLine).filter((entry) => Boolean(entry));
+    const selected = recordEntries.filter((entry) => {
+      const normalized = entry.relativePath.replaceAll("\\", "/");
+      return normalized.startsWith("copier/") || normalized === `${basename4(distInfo)}/METADATA` || normalized === `${basename4(distInfo)}/entry_points.txt` || normalized === "../../../bin/copier";
+    });
+    if (!selected.some((entry) => entry.relativePath === "../../../bin/copier") || !selected.some((entry) => entry.relativePath.replaceAll("\\", "/") === "copier/__main__.py")) {
+      return { ok: false, error: "Copier RECORD does not bind its launcher and package entry point" };
+    }
+    const attestedFiles = /* @__PURE__ */ new Map();
+    for (const entry of selected) {
+      const path = resolve5(sitePackages, entry.relativePath);
+      const allowed = path === realCandidate || containedBy(sitePackages, path);
+      if (!allowed) return { ok: false, error: `Copier RECORD path escapes the tool environment: ${entry.relativePath}` };
+      const actualDigest = sha2562(path);
+      const actualSize = statSync(path).size;
+      if (actualDigest !== entry.digest || actualSize !== entry.size) {
+        return { ok: false, error: `Copier RECORD integrity mismatch: ${entry.relativePath}` };
+      }
+      attestedFiles.set(resolve5(path), fingerprint(path));
+    }
+    for (const path of [realCandidate, join8(toolRoot, "pyvenv.cfg"), receiptPath, metadataPath, entryPointsPath, recordPath]) {
+      attestedFiles.set(resolve5(path), fingerprint(path));
+    }
+    const identity = {
+      executable: realCandidate,
+      resolvedFrom: resolve5(candidate),
+      layout: "uv-tool",
+      version,
+      toolRoot,
+      interpreter: fingerprint(launcher.interpreter),
+      files: [...attestedFiles.values()].sort((left, right) => left.path.localeCompare(right.path))
+    };
+    return {
+      ok: true,
+      executable: identity.executable,
+      realExecutable: identity.executable,
+      layout: identity.layout,
+      identity
+    };
+  } catch (error) {
+    return { ok: false, error: `cannot attest UV Copier installation: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+function verifyTrustedCopierIdentity(identity) {
+  if (!isAbsolute(identity.executable) || resolve5(identity.executable) !== resolve5(identity.files.find((file) => file.path === identity.executable)?.path ?? "")) {
+    return { ok: false, error: "trusted Copier identity has no canonical absolute launcher" };
+  }
+  const interpreter = sameFingerprint(identity.interpreter);
+  if (!interpreter.ok) return interpreter;
+  for (const file of identity.files) {
+    const verified = sameFingerprint(file);
+    if (!verified.ok) return verified;
+  }
+  return { ok: true };
+}
+function preflightTrustedCopier(options) {
+  const env2 = options.env ?? process.env;
+  const home = resolve5(options.homeDir ?? userInfo().homedir);
+  const temporary = resolve5(options.temporaryDir ?? tmpdir());
+  const target = resolve5(options.targetDir);
+  const candidate = firstExecutableOnPath(env2);
+  if (!candidate) return { ok: false, error: "copier not found on PATH" };
+  let realCandidate;
+  try {
+    realCandidate = realpathSync2(candidate);
+  } catch (error) {
+    return { ok: false, error: `cannot resolve Copier launcher: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  for (const [label, root] of [["target", target], ["temporary", temporary]]) {
+    if (containedBy(root, candidate) || containedBy(root, realCandidate)) {
+      return { ok: false, error: `refusing ${label}-local Copier executable: ${candidate}` };
+    }
+  }
+  return attestUvCopier(candidate, realCandidate, home);
+}
+function regularContainedFile(root, path, label) {
+  try {
+    const rootReal = realpathSync2(root);
+    const fileReal = realpathSync2(path);
+    if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
+    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+function parseCopierConfig(templateRoot, label) {
+  const configPath = join8(templateRoot, "copier.yml");
+  const file = regularContainedFile(templateRoot, configPath, `${label} copier.yml`);
+  if (!file.ok) return { result: file };
+  try {
+    const parsed = YAML2.parse(readFileSync5(configPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { result: { ok: false, error: `${label} copier.yml must contain a mapping` } };
+    }
+    const config = parsed;
+    if (config._subdirectory !== "template") {
+      return { result: { ok: false, error: `${label} copier.yml must render the template subdirectory` } };
+    }
+    if (!/^9(?:\.|$)/.test(String(config._min_copier_version ?? ""))) {
+      return { result: { ok: false, error: `${label} requires an unsupported Copier contract` } };
+    }
+    return { result: { ok: true }, config };
+  } catch (error) {
+    return { result: { ok: false, error: `${label} copier.yml is invalid: ${error instanceof Error ? error.message : String(error)}` } };
+  }
+}
+function requireFiles(templateRoot, files, label) {
+  for (const rel of files) {
+    const result = regularContainedFile(templateRoot, join8(templateRoot, rel), `${label} ${rel}`);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+function preflightCommonProjectTemplate(pjanglerRoot) {
+  const templateRoot = join8(resolve5(pjanglerRoot), "templates", "commonproject");
+  const parsed = parseCopierConfig(templateRoot, "CommonProject template");
+  if (!parsed.result.ok) return parsed.result;
+  const files = requireFiles(templateRoot, [
+    "template/.project.json.jinja",
+    "template/.copier-answers.yml.jinja",
+    "template/.env.op",
+    "template/AGENTS.md.jinja",
+    "template/mise.toml.jinja"
+  ], "CommonProject template");
+  if (!files.ok) return files;
+  const projectJson = readFileSync5(join8(templateRoot, "template", ".project.json.jinja"), "utf8");
+  for (const key of ["project_name", "project_slug", "repo_path", "ticket_provider", "agents"]) {
+    if (!projectJson.includes(`"${key}"`)) return { ok: false, error: `CommonProject projection is missing ${key}` };
+  }
+  return { ok: true };
+}
+function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
+  const templateRoot = join8(resolve5(pjanglerRoot), "templates", "hermes-agent");
+  const explicit = env2.PJANGLER_HERMES_TEMPLATE?.trim();
+  if (explicit) {
+    try {
+      if (realpathSync2(resolve5(explicit)) !== realpathSync2(templateRoot)) {
+        return { ok: false, error: "MCP Hermes apply requires the version-locked vendored template" };
+      }
+    } catch (error) {
+      return { ok: false, error: `Hermes template override is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  const parsed = parseCopierConfig(templateRoot, "Hermes template");
+  if (!parsed.result.ok) return parsed.result;
+  const required = requireFiles(templateRoot, [
+    "template/role.yaml.jinja",
+    "template/SOUL.md.jinja",
+    "template/hermes.jinja",
+    "template/.scripts/_lib.sh",
+    "template/.scripts/01-config.sh",
+    "template/.scripts/05-fleet-env.sh",
+    "template/.scripts/10-hermes-profile.sh",
+    "template/.scripts/20-runtime-repo.sh",
+    "template/.scripts/42-ticket-provider.sh",
+    "template/.scripts/70-systemd.sh",
+    "template/.scripts/80-registry.sh"
+  ], "Hermes template");
+  if (!required.ok) return required;
+  const role = readFileSync5(join8(templateRoot, "template", "role.yaml.jinja"), "utf8");
+  if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
+    return { ok: false, error: "Hermes role projection must declare bloodbank.enabled as a strict boolean" };
+  }
+  const library = readFileSync5(join8(templateRoot, "template", ".scripts", "_lib.sh"), "utf8");
+  if (!library.includes("PJANGLER_PROJECT_ROOT") || !library.includes('"$explicit"/agents/hermes/*')) {
+    return { ok: false, error: "Hermes project-root resolver must honor the explicitly contained MCP target" };
+  }
+  const skipPlane = readFileSync5(join8(templateRoot, "template", ".scripts", "42-ticket-provider.sh"), "utf8");
+  const guard = skipPlane.indexOf('if [[ "${SKIP_PLANE:-0}" == "1" ]]');
+  const firstSource = skipPlane.search(/^source\s/m);
+  if (guard < 0 || firstSource < 0 || guard > firstSource) {
+    return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
+  }
+  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "80-registry.sh"]) {
+    const text2 = readFileSync5(join8(templateRoot, "template", ".scripts", script), "utf8");
+    const hostGuard = text2.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
+    const source = text2.search(/^source\s/m);
+    if (hostGuard < 0 || source < 0 || hostGuard > source) {
+      return { ok: false, error: `Hermes ${script} host-state guard must precede all sourced config/fleet logic` };
+    }
+  }
+  const tasks = Array.isArray(parsed.config?._tasks) ? parsed.config._tasks.map(String) : [];
+  for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+    if (!tasks.some((task) => task.includes(script))) return { ok: false, error: `Hermes copier task list is missing ${script}` };
+  }
+  return { ok: true };
+}
+function preflightRenderedHermes(options) {
+  const target = resolve5(options.targetDir);
+  const roleDir = resolve5(options.roleDir);
+  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
+  try {
+    const stat = lstatSync4(roleDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return { ok: false, error: "rendered Hermes role must be a real directory" };
+    }
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const templateScripts = join8(resolve5(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
+  const renderedScripts = join8(roleDir, ".scripts");
+  const requiredFiles = [
+    "role.yaml",
+    "SOUL.md",
+    "hermes",
+    ".gitignore",
+    ".runtime-scaffold/README.md",
+    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
+  ];
+  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
+  if (!required.ok) return required;
+  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+    try {
+      if (readFileSync5(join8(renderedScripts, script), "utf8") !== readFileSync5(join8(templateScripts, script), "utf8")) {
+        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  let role;
+  try {
+    const parsed = YAML2.parse(readFileSync5(join8(roleDir, "role.yaml"), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
+    }
+    role = parsed;
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
+    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
+  }
+  const bloodbank = role.bloodbank;
+  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
+    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
+  }
+  const deployment = role.deployment;
+  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
+    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
+  }
+  const manifestPath = join8(target, ".project.json");
+  if (existsSync6(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync5(manifestPath, "utf8"));
+      const agents = manifest.agents;
+      const declared = agents?.[options.agentId];
+      if (!declared || declared.role !== options.role || declared.role_dir !== relative4(target, roleDir) || declared.provisioning_state !== "provisioned") {
+        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  return { ok: true };
+}
+function preflightMcpLifecycle(options) {
+  const copier = preflightTrustedCopier({ targetDir: options.targetDir, env: options.env });
+  if (!copier.ok) return copier;
+  if (options.commonProject) {
+    const common = preflightCommonProjectTemplate(options.pjanglerRoot);
+    if (!common.ok) return { ...common, executable: copier.executable, realExecutable: copier.realExecutable };
+  }
+  if (options.hermes) {
+    const hermes = preflightHermesTemplate(options.pjanglerRoot, options.env);
+    if (!hermes.ok) return { ...hermes, executable: copier.executable, realExecutable: copier.realExecutable };
+  }
+  return copier;
 }
 
 // src/project/RegistryStore.ts
@@ -6182,10 +6624,10 @@ var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_NEW_PROJECT_STATUS = "active";
 var BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join8(dirname5(manifestPath), ".copier-answers.yml");
-  if (!existsSync6(answersPath)) return [];
-  const current = readFileSync5(answersPath, "utf8");
-  const document = YAML2.parseDocument(current);
+  const answersPath = join9(dirname6(manifestPath), ".copier-answers.yml");
+  if (!existsSync7(answersPath)) return [];
+  const current = readFileSync6(answersPath, "utf8");
+  const document = YAML3.parseDocument(current);
   if (document.errors.length) return [];
   const name = String(document.get("project_name") ?? "");
   const description = String(document.get("project_description") ?? "");
@@ -6199,11 +6641,11 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join8(homedir4(), ".agents", "skills"),
-  join8(homedir4(), ".codex", "skills")
+  join9(homedir4(), ".agents", "skills"),
+  join9(homedir4(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join8(homedir4(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join9(homedir4(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -6217,8 +6659,8 @@ function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: createSafeRecord() };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync6(path)) return emptyProjectRegistry();
-  const raw = YAML2.parse(readFileSync5(path, "utf8"));
+  if (!existsSync7(path)) return emptyProjectRegistry();
+  const raw = YAML3.parse(readFileSync6(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -6244,9 +6686,9 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname5(path), { recursive: true });
+  mkdirSync4(dirname6(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync4(temp, YAML2.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync4(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -6261,7 +6703,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve5(project.repo_path);
+    const repoKey = resolve6(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -6310,15 +6752,15 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join8(env2.HOME || homedir4(), ".config");
-  return join8(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join9(env2.HOME || homedir4(), ".config");
+  return join9(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
   const found = {};
-  if (!existsSync6(path)) return found;
+  if (!existsSync7(path)) return found;
   let text2;
   try {
-    text2 = readFileSync5(path, "utf8");
+    text2 = readFileSync6(path, "utf8");
   } catch {
     return found;
   }
@@ -6354,7 +6796,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join8(input.repoPath, ".env"), label: join8(input.repoPath, ".env") });
+  if (input.repoPath) candidates.push({ path: join9(input.repoPath, ".env"), label: join9(input.repoPath, ".env") });
   const secrets = ticketProviderSecretsPath(env2);
   candidates.push({ path: secrets, label: secrets });
   for (const candidate of candidates) {
@@ -6372,25 +6814,25 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join8(override, file));
+  if (override) candidates.push(join9(override, file));
   const relativeRoots = [
-    join8("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join8("agents", "hermes", "pm", ".scripts", "providers")
+    join9("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join9("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname5(fileURLToPath3(import.meta.url));
+    let dir = dirname6(fileURLToPath3(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join8(dir, relativeRoot, file));
-      const parent = dirname5(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join9(dir, relativeRoot, file));
+      const parent = dirname6(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join8(homedir4(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join9(homedir4(), "code", "pjangler", relativeRoot, file));
   }
-  return candidates.find((candidate) => existsSync6(candidate));
+  return candidates.find((candidate) => existsSync7(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
@@ -6405,7 +6847,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join8(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join9(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -6419,12 +6861,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join8(tmpdir(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join9(tmpdir2(), "pjangler-tp-"));
   try {
-    const providersDir = join8(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join9(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
     writeFileSync4(
-      join8(staging, ".project.json"),
+      join9(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -6443,12 +6885,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join8(providersDir, `${provider}.sh`);
+    const staged = join9(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
     const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
-      cwd: existsSync6(action.repoPath) ? action.repoPath : staging,
+      cwd: existsSync7(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
     });
@@ -6518,7 +6960,7 @@ function slugifyProjectName(value) {
 var SAFE_PATH_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 function validateSafePathSegment(value, label) {
   const normalized = value.trim();
-  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
+  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute2(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
   if (unsafe) {
     throw new Error(
       `${label} must be a non-empty safe single path segment using letters, numbers, dots, underscores, or hyphens (no dot segments, absolute paths, separators, or traversal)`
@@ -6527,24 +6969,24 @@ function validateSafePathSegment(value, label) {
   return normalized;
 }
 function prospectiveRealPath(path) {
-  let cursor = resolve5(path);
+  let cursor = resolve6(path);
   const suffix = [];
-  while (!existsSync6(cursor)) {
-    const parent = dirname5(cursor);
-    if (parent === cursor) return resolve5(path);
-    suffix.unshift(basename4(cursor));
+  while (!existsSync7(cursor)) {
+    const parent = dirname6(cursor);
+    if (parent === cursor) return resolve6(path);
+    suffix.unshift(basename5(cursor));
     cursor = parent;
   }
-  return resolve5(realpathSync2(cursor), ...suffix);
+  return resolve6(realpathSync3(cursor), ...suffix);
 }
 function resolveContainedPath(parentDir, candidate, label) {
   const physicalParent = prospectiveRealPath(parentDir);
   const physicalCandidate = prospectiveRealPath(candidate);
-  const fromParent = relative4(physicalParent, physicalCandidate);
-  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute(fromParent)) {
-    throw new Error(`${label} must remain contained beneath parent directory ${resolve5(parentDir)}`);
+  const fromParent = relative5(physicalParent, physicalCandidate);
+  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute2(fromParent)) {
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve6(parentDir)}`);
   }
-  return resolve5(candidate);
+  return resolve6(candidate);
 }
 function deriveProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -6559,7 +7001,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync6(join8(homedir4(), ".agents", "hooks"));
+  return !existsSync7(join9(homedir4(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -6573,14 +7015,14 @@ function projectRecordEquivalent(a, b) {
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
-  return resolve5(dirname5(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
+  return resolve6(dirname6(resolve6(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
-  const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter).map((root) => root.trim()).filter(Boolean);
+  const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter2).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve5(expandHome(root));
+    const normalized = resolve6(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -6590,13 +7032,13 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve5(expanded);
-  if (existsSync6(direct)) return direct;
-  const name = basename4(sourceSkill);
+  const direct = resolve6(expanded);
+  if (existsSync7(direct)) return direct;
+  const name = basename5(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join8(root, name);
-    if (existsSync6(candidate)) return candidate;
+    const candidate = join9(root, name);
+    if (existsSync7(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
   const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
@@ -6606,10 +7048,10 @@ function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
   const slug = input.projectSlug === void 0 ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug") : validateSafePathSegment(input.projectSlug, "Project slug");
   const agentRole = normalizeAgentRole(input.agentRole);
-  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath2 = resolve6(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve6(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
@@ -6661,7 +7103,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot2());
+  const pjanglerRoot = resolve6(input.pjanglerRoot ?? resolvePjanglerRoot2());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -6695,7 +7137,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -6757,12 +7199,12 @@ function linkTicketProviderBoard(plan, action, boardId) {
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join8(action.repoPath, ".project.json");
+  const manifestPath = join9(action.repoPath, ".project.json");
   let next;
-  if (existsSync6(manifestPath)) {
+  if (existsSync7(manifestPath)) {
     let existing = {};
     try {
-      const parsed = JSON.parse(readFileSync5(manifestPath, "utf8"));
+      const parsed = JSON.parse(readFileSync6(manifestPath, "utf8"));
       if (isRecord(parsed)) existing = parsed;
     } catch {
       existing = {};
@@ -6770,18 +7212,18 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname5(manifestPath), { recursive: true });
+    mkdirSync4(dirname6(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text2 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync6(manifestPath) || readFileSync5(manifestPath, "utf8") !== text2) {
+  if (!existsSync7(manifestPath) || readFileSync6(manifestPath, "utf8") !== text2) {
     writeFileSync4(manifestPath, text2, "utf8");
     return [manifestPath];
   }
   return [];
 }
-async function executeProjectInitPlan(plan) {
+async function executeProjectInitPlan(plan, options = {}) {
   const logs = [];
   const errors = [];
   const changedFiles = [];
@@ -6790,12 +7232,35 @@ async function executeProjectInitPlan(plan) {
   let pendingRegistryAction;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
+      if (options.requireTrustedCopier && !options.trustedCopier) {
+        errors.push("MCP project apply requires a preflight-attested Copier identity");
+        break;
+      }
+      if (options.trustedCopier) {
+        const verified = verifyTrustedCopierIdentity(options.trustedCopier);
+        if (!verified.ok) {
+          errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+          break;
+        }
+      }
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname5(action.targetDir), { recursive: true });
+      mkdirSync4(dirname6(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
-      const result = spawnSync2(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
+      const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
+      if (copierEnv) {
+        delete copierEnv.PYTHONHOME;
+        delete copierEnv.PYTHONPATH;
+        copierEnv.PYTHONNOUSERSITE = "1";
+        copierEnv.PYTHONSAFEPATH = "1";
+      }
+      const result = spawnSync2(copierExecutable, action.command.slice(1), {
+        encoding: "utf8",
+        cwd: action.cwd,
+        ...copierEnv ? { env: copierEnv } : {}
+      });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -6812,10 +7277,10 @@ async function executeProjectInitPlan(plan) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname5(action.path), { recursive: true });
+      mkdirSync4(dirname6(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-      const current = existsSync6(action.path) ? readFileSync5(action.path, "utf8") : void 0;
+      const current = existsSync7(action.path) ? readFileSync6(action.path, "utf8") : void 0;
       if (current !== next) {
         writeFileSync4(action.path, next, "utf8");
         changedFiles.push(action.path);
@@ -6899,7 +7364,7 @@ function getProject(registry, slug) {
   return project;
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join8(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -6926,21 +7391,21 @@ function buildCommonProjectCopierAction(input) {
   };
 }
 function resolvePjanglerRoot2() {
-  let dir = dirname5(new URL(import.meta.url).pathname);
-  while (dir !== dirname5(dir)) {
-    if (existsSync6(join8(dir, "package.json")) && existsSync6(join8(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname5(dir);
+  let dir = dirname6(new URL(import.meta.url).pathname);
+  while (dir !== dirname6(dir)) {
+    if (existsSync7(join9(dir, "package.json")) && existsSync7(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname6(dir);
   }
-  return resolve5(process.cwd());
+  return resolve6(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
-  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve6(existingSameSlug.repo_path) !== resolve6(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
+    if (resolve6(existing.repo_path) === resolve6(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
@@ -6968,7 +7433,7 @@ function validateProjectRecord(project, key) {
 }
 function expandHome(path) {
   if (path === "~") return homedir4();
-  if (path.startsWith("~/")) return join8(homedir4(), path.slice(2));
+  if (path.startsWith("~/")) return join9(homedir4(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -7001,9 +7466,9 @@ function scrubInteractiveChannelCredentials(env2) {
   delete env2.WIRE_SLACK;
 }
 function registerRenderedAgent(ctx, roleDir, role) {
-  const manifestPath = join9(ctx.targetDir, ".project.json");
-  if (!existsSync7(manifestPath) || !ctx.targetRepo) return;
-  const current = readFileSync6(manifestPath, "utf8");
+  const manifestPath = join10(ctx.targetDir, ".project.json");
+  if (!existsSync8(manifestPath) || !ctx.targetRepo) return;
+  const current = readFileSync7(manifestPath, "utf8");
   const parsed = JSON.parse(current);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
@@ -7018,7 +7483,7 @@ function registerRenderedAgent(ctx, roleDir, role) {
   Object.defineProperty(agents, agentId, {
     value: {
       role,
-      role_dir: relative5(ctx.targetDir, roleDir),
+      role_dir: relative6(ctx.targetDir, roleDir),
       provisioning_state: "provisioned"
     },
     configurable: true,
@@ -7033,14 +7498,14 @@ function registerRenderedAgent(ctx, roleDir, role) {
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname6(fileURLToPath4(import.meta.url));
+    dir = dirname7(fileURLToPath4(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join9(dir, "templates", name);
-    if (existsSync7(join9(candidate, "copier.yml"))) return candidate;
-    const parent = dirname6(dir);
+    const candidate = join10(dir, "templates", name);
+    if (existsSync8(join10(candidate, "copier.yml"))) return candidate;
+    const parent = dirname7(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -7072,20 +7537,30 @@ var RunCopierTemplate = class extends Command {
     ctx.role = safeRole;
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join9(ctx.targetDir, "agents", "hermes", safeRole),
+      join10(ctx.targetDir, "agents", "hermes", safeRole),
       "Hermes role directory"
     );
     ctx.roleDir = roleDir;
     ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
-    const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
-    if (which.status !== 0) {
+    const trustedCopierRequired = Boolean(ctx.deferredExternalEffects && !ctx.dryRun);
+    if (trustedCopierRequired && !ctx.trustedCopier) {
       return {
         success: false,
         outcome: "failed",
-        message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
+        message: "MCP Hermes apply requires a preflight-attested Copier identity"
       };
     }
-    if (existsSync7(join9(roleDir, "role.yaml")) && !ctx.force) {
+    if (!ctx.trustedCopier) {
+      const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
+      if (which.status !== 0) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
+        };
+      }
+    }
+    if (existsSync8(join10(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
         ctx.force = true;
       } else {
@@ -7125,9 +7600,15 @@ var RunCopierTemplate = class extends Command {
     };
     if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env2);
     if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env2);
-    const LOCAL_TEMPLATE = join9(homedir5(), "code", "hermes-agent-template");
+    if (ctx.trustedCopier) {
+      delete env2.PYTHONHOME;
+      delete env2.PYTHONPATH;
+      env2.PYTHONNOUSERSITE = "1";
+      env2.PYTHONSAFEPATH = "1";
+    }
+    const LOCAL_TEMPLATE = join10(homedir5(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join9(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync8(join10(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -7163,13 +7644,24 @@ var RunCopierTemplate = class extends Command {
         success: true,
         outcome: "planned",
         filePath: roleDir,
-        message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
+        message: this.formatMessage(`Would run: ${ctx.trustedCopier?.executable ?? "copier"} ${args.join(" ")}`)
       };
     }
-    mkdirSync5(join9(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    if (ctx.trustedCopier) {
+      const verified = verifyTrustedCopierIdentity(ctx.trustedCopier);
+      if (!verified.ok) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`
+        };
+      }
+    }
+    mkdirSync5(join10(ctx.targetDir, "agents", "hermes"), { recursive: true });
     const spinner4 = ctx.quiet ? void 0 : p2.spinner();
     spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
-    const result = spawnSync3("copier", args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
+    const result = spawnSync3(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
     spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
     if (result.status !== 0) {
       return {
@@ -7178,10 +7670,10 @@ var RunCopierTemplate = class extends Command {
         message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
       };
     }
-    const roleManifest = join9(roleDir, "role.yaml");
+    const roleManifest = join10(roleDir, "role.yaml");
     try {
-      const current = readFileSync6(roleManifest, "utf8");
-      const document = YAML3.parseDocument(current);
+      const current = readFileSync7(roleManifest, "utf8");
+      const document = YAML4.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], ctx.deferredExternalEffects ? "deferred" : ctx.skipSystemd ? "deferred" : "required");
@@ -7203,8 +7695,8 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync8, readFileSync as readFileSync7, writeFileSync as writeFileSync6, readdirSync as readdirSync4 } from "fs";
-import { join as join10 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6, readdirSync as readdirSync5 } from "fs";
+import { join as join11 } from "path";
 import { spawnSync as spawnSync4 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -7215,14 +7707,14 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join10(targetDir, "agents", "hermes");
-    if (!existsSync8(rolesDir)) {
+    const rolesDir = join11(targetDir, "agents", "hermes");
+    if (!existsSync9(rolesDir)) {
       return {
         success: true,
         message: "No Hermes agents found (no agents/hermes directory)."
       };
     }
-    const roles = readdirSync4(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const roles = readdirSync5(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     if (roles.length === 0) {
       return {
         success: true,
@@ -7232,10 +7724,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join10("agents", "hermes", role);
-      const runtimePath = join10(roleDir, "runtime");
-      const gitignorePath = join10(roleDir, ".gitignore");
-      const gitmodulesPath = join10(targetDir, ".gitmodules");
+      const roleDir = join11("agents", "hermes", role);
+      const runtimePath = join11(roleDir, "runtime");
+      const gitignorePath = join11(roleDir, ".gitignore");
+      const gitmodulesPath = join11(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -7252,15 +7744,15 @@ var UntrackHermesRuntimes = class extends Command {
       }
       let hasStaleMapping = false;
       let gitmodulesContent = "";
-      if (existsSync8(gitmodulesPath)) {
-        gitmodulesContent = readFileSync7(gitmodulesPath, "utf8");
+      if (existsSync9(gitmodulesPath)) {
+        gitmodulesContent = readFileSync8(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
         hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join10(targetDir, gitignorePath);
-      if (existsSync8(fullGitignorePath)) {
-        const content = readFileSync7(fullGitignorePath, "utf8");
+      const fullGitignorePath = join11(targetDir, gitignorePath);
+      if (existsSync9(fullGitignorePath)) {
+        const content = readFileSync8(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
         isIgnored = lines.includes("runtime/") || lines.includes("runtime");
       }
@@ -7303,8 +7795,8 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
           if (!this.context.dryRun) {
             let content = "";
-            if (existsSync8(fullGitignorePath)) {
-              content = readFileSync7(fullGitignorePath, "utf8");
+            if (existsSync9(fullGitignorePath)) {
+              content = readFileSync8(fullGitignorePath, "utf8");
             }
             if (content && !content.endsWith("\n")) {
               content += "\n";
@@ -7332,8 +7824,8 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { join as join11 } from "node:path";
-import { existsSync as existsSync9, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join12 } from "node:path";
+import { existsSync as existsSync10, unlinkSync as unlinkSync2 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -7428,15 +7920,15 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join11(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync9(script)) {
+    const script = join12(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync10(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
       };
     }
-    const marker = join11(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync9(marker)) unlinkSync2(marker);
+    const marker = join12(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync10(marker)) unlinkSync2(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync5("bash", [script], {
@@ -7463,8 +7955,8 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { join as join12 } from "node:path";
-import { existsSync as existsSync10, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join13 } from "node:path";
+import { existsSync as existsSync11, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p4 from "@clack/prompts";
 var WireEmail = class extends Command {
   async invoke() {
@@ -7486,8 +7978,8 @@ var WireEmail = class extends Command {
     if (!targetRepo || !role || !roleDir) {
       return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
     }
-    const script = join12(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync10(script)) {
+    const script = join13(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync11(script)) {
       return { success: false, message: `\u2717 ${script} not found` };
     }
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -7549,8 +8041,8 @@ var WireEmail = class extends Command {
         }
       }
     }
-    const marker = join12(roleDir, ".scripts", ".done-50-email");
-    if (existsSync10(marker)) unlinkSync3(marker);
+    const marker = join13(roleDir, ".scripts", ".done-50-email");
+    if (existsSync11(marker)) unlinkSync3(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync6("bash", [script], {
@@ -7612,9 +8104,9 @@ var PrintHermesSummary = class extends Command {
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync11, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join13 } from "node:path";
-import YAML4 from "yaml";
+import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join14 } from "node:path";
+import YAML5 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -7639,7 +8131,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     };
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
-    const roleManifest = join13(ctx.roleDir, "role.yaml");
+    const roleManifest = join14(ctx.roleDir, "role.yaml");
     const scripts = [
       ...selected.runtimeRepo ? ["20-runtime-repo.sh"] : [],
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
@@ -7650,8 +8142,8 @@ var ApplyDeferredExternalEffects = class extends Command {
     ];
     const logs = [];
     for (const script of scripts) {
-      const path = join13(ctx.roleDir, ".scripts", script);
-      if (!existsSync11(path)) {
+      const path = join14(ctx.roleDir, ".scripts", script);
+      if (!existsSync12(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
       const result = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -7663,8 +8155,8 @@ var ApplyDeferredExternalEffects = class extends Command {
       }
     }
     try {
-      const current = readFileSync8(roleManifest, "utf8");
-      const document = YAML4.parseDocument(current);
+      const current = readFileSync9(roleManifest, "utf8");
+      const document = YAML5.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], selected.systemd ? "required" : "deferred");
@@ -7688,8 +8180,8 @@ ${logs.join("\n")}` : ""}`
 
 // src/commands/hermes/ApplyDeferredHostEffects.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
-import { existsSync as existsSync12 } from "node:fs";
-import { join as join14 } from "node:path";
+import { existsSync as existsSync13 } from "node:fs";
+import { join as join15 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -7724,8 +8216,8 @@ var ApplyDeferredHostEffects = class extends Command {
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
     const logs = [];
     for (const script of scripts) {
-      const path = join14(ctx.roleDir, ".scripts", script);
-      if (!existsSync12(path)) {
+      const path = join15(ctx.roleDir, ".scripts", script);
+      if (!existsSync13(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
       const result = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -7747,317 +8239,6 @@ ${logs.join("\n")}` : ""}`
 
 // src/recipes/HermesAgentRecipe.ts
 import { resolve as resolve7 } from "node:path";
-
-// src/lifecycle/preflight.ts
-import { accessSync, constants as constants2, existsSync as existsSync13, lstatSync as lstatSync4, readFileSync as readFileSync9, realpathSync as realpathSync3 } from "node:fs";
-import { homedir as homedir6, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename5, delimiter as delimiter2, dirname as dirname7, isAbsolute as isAbsolute2, join as join15, relative as relative6, resolve as resolve6 } from "node:path";
-import YAML5 from "yaml";
-var DEFAULT_SYSTEM_ROOTS = [
-  "/usr/bin",
-  "/usr/local/bin",
-  "/opt/local/bin",
-  "/opt/homebrew/bin",
-  "/opt/homebrew/Cellar",
-  "/opt/pipx/venvs/copier",
-  "/opt/uv/tools/copier"
-];
-function containedBy(parent, candidate) {
-  const rel = relative6(resolve6(parent), resolve6(candidate));
-  return rel === "" || !rel.startsWith("..") && !isAbsolute2(rel);
-}
-function firstExecutableOnPath(env2) {
-  for (const rawEntry of (env2.PATH ?? "").split(delimiter2)) {
-    const entry = rawEntry || process.cwd();
-    const candidate = resolve6(entry, process.platform === "win32" ? "copier.exe" : "copier");
-    try {
-      accessSync(candidate, constants2.X_OK);
-      const stat = lstatSync4(candidate);
-      if (stat.isFile() || stat.isSymbolicLink()) return candidate;
-    } catch {
-    }
-  }
-  return void 0;
-}
-function userLayout(path, home) {
-  const normalized = resolve6(path);
-  const exactRoots = [
-    join15(home, ".local", "bin")
-  ];
-  if (exactRoots.some((root) => dirname7(normalized) === resolve6(root))) return "pip-user";
-  const nestedLayouts = [
-    [join15(home, ".local", "share", "uv", "tools", "copier"), "uv-tool"],
-    [join15(home, ".local", "pipx", "venvs", "copier"), "pipx"],
-    [join15(home, ".local", "share", "pipx", "venvs", "copier"), "pipx"],
-    [join15(home, "Library", "Application Support", "uv", "tools", "copier"), "uv-tool"],
-    [join15(home, "Library", "Application Support", "pipx", "venvs", "copier"), "pipx"]
-  ];
-  for (const [root, layout] of nestedLayouts) {
-    if (containedBy(root, normalized)) return layout;
-  }
-  const pyenvRoot = join15(home, ".pyenv", "versions");
-  if (containedBy(pyenvRoot, normalized) && dirname7(normalized).endsWith("/bin")) return "pyenv-version";
-  return void 0;
-}
-function systemLayout(path, roots) {
-  const normalized = resolve6(path);
-  for (const root of roots) {
-    const resolvedRoot = resolve6(root);
-    if (dirname7(normalized) === resolvedRoot || containedBy(resolvedRoot, normalized)) return "system";
-  }
-  return void 0;
-}
-function consoleScriptContract(path) {
-  let text2;
-  try {
-    text2 = readFileSync9(path, "utf8").slice(0, 32 * 1024);
-  } catch (error) {
-    return { ok: false, error: `cannot read Copier launcher: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const firstLine = text2.split(/\r?\n/, 1)[0] ?? "";
-  if (!firstLine.startsWith("#!")) return { ok: false, error: "Copier launcher has no executable shebang" };
-  const shebang = firstLine.slice(2).trim().split(/\s+/);
-  const interpreter = basename5(shebang[0] ?? "");
-  const pythonInterpreter = /^python(?:\d+(?:\.\d+)*)?$/.test(interpreter) || interpreter === "env" && /^python(?:\d+(?:\.\d+)*)?$/.test(shebang.at(-1) ?? "");
-  if (!pythonInterpreter) return { ok: false, error: "Copier launcher is not a Python console script" };
-  if (!/from\s+copier\.__main__\s+import\s+CopierApp/.test(text2) || !/CopierApp\.run\s*\(/.test(text2)) {
-    return { ok: false, error: "Copier launcher does not match the Copier 9 console-script contract" };
-  }
-  return { ok: true };
-}
-function preflightTrustedCopier(options) {
-  const env2 = options.env ?? process.env;
-  const home = resolve6(options.homeDir ?? homedir6());
-  const temporary = resolve6(options.temporaryDir ?? tmpdir2());
-  const target = resolve6(options.targetDir);
-  const systemRoots = options.systemRoots ?? DEFAULT_SYSTEM_ROOTS;
-  const candidate = firstExecutableOnPath(env2);
-  if (!candidate) return { ok: false, error: "copier not found on PATH" };
-  let realCandidate;
-  try {
-    realCandidate = realpathSync3(candidate);
-  } catch (error) {
-    return { ok: false, error: `cannot resolve Copier launcher: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  for (const [label, root] of [["target", target], ["temporary", temporary]]) {
-    if (containedBy(root, candidate) || containedBy(root, realCandidate)) {
-      return { ok: false, error: `refusing ${label}-local Copier executable: ${candidate}` };
-    }
-  }
-  const candidateLayout = userLayout(candidate, home) ?? systemLayout(candidate, systemRoots);
-  const realLayout = userLayout(realCandidate, home) ?? systemLayout(realCandidate, systemRoots);
-  if (!candidateLayout || !realLayout) {
-    return {
-      ok: false,
-      error: `refusing untrusted PATH-shadowed Copier executable: ${candidate}`
-    };
-  }
-  const launcher = consoleScriptContract(realCandidate);
-  if (!launcher.ok) return { ...launcher, executable: candidate, realExecutable: realCandidate };
-  return {
-    ok: true,
-    executable: candidate,
-    realExecutable: realCandidate,
-    layout: realLayout === "system" ? candidateLayout : realLayout
-  };
-}
-function regularContainedFile(root, path, label) {
-  try {
-    const rootReal = realpathSync3(root);
-    const fileReal = realpathSync3(path);
-    if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
-    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-}
-function parseCopierConfig(templateRoot, label) {
-  const configPath = join15(templateRoot, "copier.yml");
-  const file = regularContainedFile(templateRoot, configPath, `${label} copier.yml`);
-  if (!file.ok) return { result: file };
-  try {
-    const parsed = YAML5.parse(readFileSync9(configPath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { result: { ok: false, error: `${label} copier.yml must contain a mapping` } };
-    }
-    const config = parsed;
-    if (config._subdirectory !== "template") {
-      return { result: { ok: false, error: `${label} copier.yml must render the template subdirectory` } };
-    }
-    if (!/^9(?:\.|$)/.test(String(config._min_copier_version ?? ""))) {
-      return { result: { ok: false, error: `${label} requires an unsupported Copier contract` } };
-    }
-    return { result: { ok: true }, config };
-  } catch (error) {
-    return { result: { ok: false, error: `${label} copier.yml is invalid: ${error instanceof Error ? error.message : String(error)}` } };
-  }
-}
-function requireFiles(templateRoot, files, label) {
-  for (const rel of files) {
-    const result = regularContainedFile(templateRoot, join15(templateRoot, rel), `${label} ${rel}`);
-    if (!result.ok) return result;
-  }
-  return { ok: true };
-}
-function preflightCommonProjectTemplate(pjanglerRoot) {
-  const templateRoot = join15(resolve6(pjanglerRoot), "templates", "commonproject");
-  const parsed = parseCopierConfig(templateRoot, "CommonProject template");
-  if (!parsed.result.ok) return parsed.result;
-  const files = requireFiles(templateRoot, [
-    "template/.project.json.jinja",
-    "template/.copier-answers.yml.jinja",
-    "template/.env.op",
-    "template/AGENTS.md.jinja",
-    "template/mise.toml.jinja"
-  ], "CommonProject template");
-  if (!files.ok) return files;
-  const projectJson = readFileSync9(join15(templateRoot, "template", ".project.json.jinja"), "utf8");
-  for (const key of ["project_name", "project_slug", "repo_path", "ticket_provider", "agents"]) {
-    if (!projectJson.includes(`"${key}"`)) return { ok: false, error: `CommonProject projection is missing ${key}` };
-  }
-  return { ok: true };
-}
-function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
-  const templateRoot = join15(resolve6(pjanglerRoot), "templates", "hermes-agent");
-  const explicit = env2.PJANGLER_HERMES_TEMPLATE?.trim();
-  if (explicit) {
-    try {
-      if (realpathSync3(resolve6(explicit)) !== realpathSync3(templateRoot)) {
-        return { ok: false, error: "MCP Hermes apply requires the version-locked vendored template" };
-      }
-    } catch (error) {
-      return { ok: false, error: `Hermes template override is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  const parsed = parseCopierConfig(templateRoot, "Hermes template");
-  if (!parsed.result.ok) return parsed.result;
-  const required = requireFiles(templateRoot, [
-    "template/role.yaml.jinja",
-    "template/SOUL.md.jinja",
-    "template/hermes.jinja",
-    "template/.scripts/_lib.sh",
-    "template/.scripts/01-config.sh",
-    "template/.scripts/05-fleet-env.sh",
-    "template/.scripts/10-hermes-profile.sh",
-    "template/.scripts/20-runtime-repo.sh",
-    "template/.scripts/42-ticket-provider.sh",
-    "template/.scripts/70-systemd.sh",
-    "template/.scripts/80-registry.sh"
-  ], "Hermes template");
-  if (!required.ok) return required;
-  const role = readFileSync9(join15(templateRoot, "template", "role.yaml.jinja"), "utf8");
-  if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
-    return { ok: false, error: "Hermes role projection must declare bloodbank.enabled as a strict boolean" };
-  }
-  const library = readFileSync9(join15(templateRoot, "template", ".scripts", "_lib.sh"), "utf8");
-  if (!library.includes("PJANGLER_PROJECT_ROOT") || !library.includes('"$explicit"/agents/hermes/*')) {
-    return { ok: false, error: "Hermes project-root resolver must honor the explicitly contained MCP target" };
-  }
-  const skipPlane = readFileSync9(join15(templateRoot, "template", ".scripts", "42-ticket-provider.sh"), "utf8");
-  const guard = skipPlane.indexOf('if [[ "${SKIP_PLANE:-0}" == "1" ]]');
-  const firstSource = skipPlane.search(/^source\s/m);
-  if (guard < 0 || firstSource < 0 || guard > firstSource) {
-    return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
-  }
-  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "80-registry.sh"]) {
-    const text2 = readFileSync9(join15(templateRoot, "template", ".scripts", script), "utf8");
-    const hostGuard = text2.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
-    const source = text2.search(/^source\s/m);
-    if (hostGuard < 0 || source < 0 || hostGuard > source) {
-      return { ok: false, error: `Hermes ${script} host-state guard must precede all sourced config/fleet logic` };
-    }
-  }
-  const tasks = Array.isArray(parsed.config?._tasks) ? parsed.config._tasks.map(String) : [];
-  for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    if (!tasks.some((task) => task.includes(script))) return { ok: false, error: `Hermes copier task list is missing ${script}` };
-  }
-  return { ok: true };
-}
-function preflightRenderedHermes(options) {
-  const target = resolve6(options.targetDir);
-  const roleDir = resolve6(options.roleDir);
-  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
-  try {
-    const stat = lstatSync4(roleDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      return { ok: false, error: "rendered Hermes role must be a real directory" };
-    }
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const templateScripts = join15(resolve6(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const renderedScripts = join15(roleDir, ".scripts");
-  const requiredFiles = [
-    "role.yaml",
-    "SOUL.md",
-    "hermes",
-    ".gitignore",
-    ".runtime-scaffold/README.md",
-    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
-  ];
-  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
-  if (!required.ok) return required;
-  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    try {
-      if (readFileSync9(join15(renderedScripts, script), "utf8") !== readFileSync9(join15(templateScripts, script), "utf8")) {
-        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  let role;
-  try {
-    const parsed = YAML5.parse(readFileSync9(join15(roleDir, "role.yaml"), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
-    }
-    role = parsed;
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
-    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
-  }
-  const bloodbank = role.bloodbank;
-  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
-    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
-  }
-  const deployment = role.deployment;
-  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
-    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
-  }
-  const manifestPath = join15(target, ".project.json");
-  if (existsSync13(manifestPath)) {
-    try {
-      const manifest = JSON.parse(readFileSync9(manifestPath, "utf8"));
-      const agents = manifest.agents;
-      const declared = agents?.[options.agentId];
-      if (!declared || declared.role !== options.role || declared.role_dir !== relative6(target, roleDir) || declared.provisioning_state !== "provisioned") {
-        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  return { ok: true };
-}
-function preflightMcpLifecycle(options) {
-  const copier = preflightTrustedCopier({ targetDir: options.targetDir, env: options.env });
-  if (!copier.ok) return copier;
-  if (options.commonProject) {
-    const common = preflightCommonProjectTemplate(options.pjanglerRoot);
-    if (!common.ok) return { ...common, executable: copier.executable, realExecutable: copier.realExecutable };
-  }
-  if (options.hermes) {
-    const hermes = preflightHermesTemplate(options.pjanglerRoot, options.env);
-    if (!hermes.ok) return { ...hermes, executable: copier.executable, realExecutable: copier.realExecutable };
-  }
-  return copier;
-}
-
-// src/recipes/HermesAgentRecipe.ts
 var HermesAgentRecipe = class extends Recipe {
   checks = createHermesChecks();
   metadata = {
@@ -8500,7 +8681,10 @@ var ProjectRecipe = class extends Recipe {
         actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent" && action.kind !== "ticket-provider.create-or-link")
       };
       const planBlocked = errors.length > 0;
-      const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
+      const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan, {
+        trustedCopier: normalized.trustedCopier,
+        requireTrustedCopier: normalized.requireTrustedCopier
+      }) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
       logs.push(...executed.logs);
       errors.push(...executed.errors);
       changedFiles.push(...executed.changedFiles);
@@ -8941,7 +9125,7 @@ var recipeRegistry = new RecipeRegistry([
 ]);
 
 // src/commands/AgentHooksCommands.ts
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 import { join as join17, dirname as dirname8 } from "node:path";
 import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
@@ -8961,7 +9145,7 @@ function resolveTemplateRoot() {
     }
   } catch {
   }
-  candidates.push(join17(homedir7(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join17(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
     if (existsSync15(join17(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
@@ -9452,12 +9636,12 @@ var PJANGLER_VERSION = (() => {
 })();
 
 // src/describe/index.ts
-import { existsSync as existsSync16, readFileSync as readFileSync13, readdirSync as readdirSync5, statSync as statSync3 } from "node:fs";
+import { existsSync as existsSync16, readFileSync as readFileSync13, readdirSync as readdirSync6, statSync as statSync4 } from "node:fs";
 import { join as join21, resolve as resolve8 } from "node:path";
 
 // src/describe/activity.ts
 import { spawn, spawnSync as spawnSync10 } from "node:child_process";
-import { statSync as statSync2 } from "node:fs";
+import { statSync as statSync3 } from "node:fs";
 import { join as join20 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
@@ -9587,7 +9771,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync2(join20(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync3(join20(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -9722,7 +9906,7 @@ function describeType(repo) {
     }
   }
   try {
-    const dotnet = readdirSync5(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
+    const dotnet = readdirSync6(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
     if (dotnet && !languages.includes("dotnet")) {
       languages.push("dotnet");
       note2("dotnet", dotnet);
@@ -9953,7 +10137,7 @@ function describeNextSteps(description, findings) {
 function describeProject(input = {}) {
   const repo = resolve8(input.repoArg ?? process.cwd());
   if (!existsSync16(repo)) throw new Error(`Path does not exist: ${repo}`);
-  if (!statSync3(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
   const findings = report.rules;
@@ -10144,7 +10328,7 @@ function resolveTargetDir(targetDir) {
   if (!existsSync17(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
-  if (!statSync4(dir).isDirectory()) {
+  if (!statSync5(dir).isDirectory()) {
     throw new Error(`Target path is not a directory: ${dir}`);
   }
   return dir;
@@ -10191,15 +10375,20 @@ function publicCompositeProjectResponse(payload, plan) {
     ...provisionsAgent ? { bloodbankMode: "fleet-shared" } : {}
   };
 }
-async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}) {
+async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}, trustedCopier) {
   const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput = {
     plan,
     mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
+    trustedCopier,
+    requireTrustedCopier: Boolean(
+      plan.actions.some((action) => action.kind === "copier.copy.commonproject") || plannedAgent?.kind === "hermes.provision-agent"
+    ),
     agentContext: plannedAgent?.kind === "hermes.provision-agent" ? {
       ...agentContext,
+      trustedCopier,
       deferredExternalEffects: {
         runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
         ticketBoard: !plannedAgent.context.skipPlane,
@@ -10258,7 +10447,7 @@ function preflightProjectApply(plan, pjanglerRoot) {
   const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
   if (!createsScaffold && provisionsAgent) {
     const hermesBlocker = preflightExistingHermesScaffold(plan.project.repo_path);
-    if (hermesBlocker) return projectPreflightFailure(plan, [hermesBlocker]);
+    if (hermesBlocker) return { failure: projectPreflightFailure(plan, [hermesBlocker]) };
   }
   if (!createsScaffold) {
     const audit = runAudit(plan.project.repo_path);
@@ -10269,11 +10458,13 @@ function preflightProjectApply(plan, pjanglerRoot) {
       return true;
     });
     if (blocking.length) {
-      return projectPreflightFailure(
-        plan,
-        blocking.map((finding) => `${finding.id}: ${finding.summary}`),
-        audit
-      );
+      return {
+        failure: projectPreflightFailure(
+          plan,
+          blocking.map((finding) => `${finding.id}: ${finding.summary}`),
+          audit
+        )
+      };
     }
   }
   if (createsScaffold || provisionsAgent) {
@@ -10284,10 +10475,18 @@ function preflightProjectApply(plan, pjanglerRoot) {
       hermes: provisionsAgent
     });
     if (!eligibility.ok) {
-      return projectPreflightFailure(plan, [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`]);
+      return {
+        failure: projectPreflightFailure(plan, [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`])
+      };
     }
+    if (!eligibility.identity) {
+      return {
+        failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Copier attestation returned no executable identity"])
+      };
+    }
+    return { trustedCopier: eligibility.identity };
   }
-  return void 0;
+  return {};
 }
 function auditSummary(report) {
   const counts = report.rules.reduce((acc, rule) => {
@@ -10482,7 +10681,7 @@ server.registerTool(
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
       const explicitTargetDir = input.targetDir ? resolve9(input.targetDir) : void 0;
       const parentDir = resolve9(input.parentDir ?? (explicitTargetDir ? dirname10(explicitTargetDir) : process.cwd()));
-      if (!existsSync17(parentDir) || !statSync4(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
+      if (!existsSync17(parentDir) || !statSync5(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
         explicitTargetDir ?? join22(parentDir, projectSlug),
@@ -10527,12 +10726,12 @@ server.registerTool(
       if (dryRun) {
         return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
-      const preflightFailure = preflightProjectApply(plan, pjanglerRoot);
-      if (preflightFailure) {
+      const preflight = preflightProjectApply(plan, pjanglerRoot);
+      if (preflight.failure) {
         return {
           isError: true,
           ...asText(publicCompositeProjectResponse(
-            { ...preflightFailure, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
+            { ...preflight.failure, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
             plan
           ))
         };
@@ -10554,7 +10753,7 @@ server.registerTool(
         force: overwrite,
         live: input.live ?? false,
         quiet: true
-      });
+      }, preflight.trustedCopier);
       if (!result.ok) {
         return {
           isError: true,
@@ -10636,12 +10835,12 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync17(join22(resolve9(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
-      const preflightFailure = preflightProjectApply(plan, resolvePjanglerRoot3());
-      if (preflightFailure) {
+      const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());
+      if (preflight.failure) {
         return {
           isError: true,
           ...asText(publicCompositeProjectResponse(
-            { ...preflightFailure, ...plan.warnings ? { warnings: plan.warnings } : {} },
+            { ...preflight.failure, ...plan.warnings ? { warnings: plan.warnings } : {} },
             plan
           ))
         };
@@ -10650,7 +10849,7 @@ server.registerTool(
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true
-      });
+      }, preflight.trustedCopier);
       return {
         isError: !result.ok,
         ...asText(publicCompositeProjectResponse(
@@ -10818,6 +11017,7 @@ server.registerTool(
       const local = input.local ?? true;
       const apply = input.apply === true;
       const live = input.live === true;
+      let trustedCopier;
       if (apply) {
         const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
         if (hermesBlocker) {
@@ -10854,6 +11054,21 @@ server.registerTool(
             })
           };
         }
+        if (!eligibility.identity) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: ["Lifecycle preflight failed: Copier attestation returned no executable identity"]
+            })
+          };
+        }
+        trustedCopier = eligibility.identity;
       }
       const context = {
         targetDir: resolvedTarget,
@@ -10881,6 +11096,7 @@ server.registerTool(
         skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
+        trustedCopier,
         deferredExternalEffects: {
           runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,

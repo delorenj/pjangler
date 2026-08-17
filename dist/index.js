@@ -2,8 +2,8 @@
 
 // src/index.ts
 import { spawnSync as spawnSync11 } from "node:child_process";
-import { existsSync as existsSync17, readFileSync as readFileSync14, statSync as statSync4 } from "node:fs";
-import { basename as basename6, join as join22, resolve as resolve9 } from "node:path";
+import { existsSync as existsSync18, readFileSync as readFileSync15, statSync as statSync6 } from "node:fs";
+import { basename as basename6, join as join23, resolve as resolve10 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -5431,17 +5431,17 @@ function createHermesChecks() {
         const details = [];
         for (const role of roles) {
           const plan = singletonPlan(ctx, role);
-          const launcher = join3(role.roleDir, "hermes");
-          const text3 = safeReadText(launcher);
+          const launcher2 = join3(role.roleDir, "hermes");
+          const text3 = safeReadText(launcher2);
           if (text3 === null) {
-            details.push(`launcher missing: ${relative2(ctx.repoRoot, launcher)}`);
+            details.push(`launcher missing: ${relative2(ctx.repoRoot, launcher2)}`);
           } else {
             const assigned = /^HERMES_HOME=(.*)$/m.exec(text3)?.[1]?.trim();
             if (assigned !== void 0 && !isProfileHomeExpr(assigned)) {
-              details.push(`launcher sets HERMES_HOME=${assigned} instead of the named profile dir (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher)}`);
+              details.push(`launcher sets HERMES_HOME=${assigned} instead of the named profile dir (disables shared auth + profile identity): ${relative2(ctx.repoRoot, launcher2)}`);
             }
             if (/HERMES_OAUTH_FILE/.test(text3)) {
-              details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative2(ctx.repoRoot, launcher)}`);
+              details.push(`launcher exports HERMES_OAUTH_FILE, which Hermes does not implement (dead config): ${relative2(ctx.repoRoot, launcher2)}`);
             }
           }
           for (const unit of profileUnits(role)) {
@@ -5473,20 +5473,20 @@ function createHermesChecks() {
         let unitsTouched = false;
         for (const role of roles) {
           const plan = singletonPlan(ctx, role);
-          const launcher = join3(role.roleDir, "hermes");
-          const text3 = safeReadText(launcher);
+          const launcher2 = join3(role.roleDir, "hermes");
+          const text3 = safeReadText(launcher2);
           if (text3 !== null) {
             const before = /^HERMES_HOME=(.*)$/m.exec(text3)?.[1]?.trim();
             const rewritten = rewriteLauncher(text3, role.profileName || role.agentId);
             if (rewritten !== text3) {
-              const rel = relative2(ctx.repoRoot, launcher);
+              const rel = relative2(ctx.repoRoot, launcher2);
               if (before !== void 0 && !isProfileHomeExpr(before)) {
                 details.push(`rewrite launcher HERMES_HOME ${before} -> ${plan.profileDir}: ${rel}`);
               }
               if (/HERMES_OAUTH_FILE/.test(text3)) {
                 details.push(`strip dead HERMES_OAUTH_FILE export: ${rel}`);
               }
-              writeIfDifferent(launcher, rewritten, ctx.dryRun, changedFiles, 493);
+              writeIfDifferent(launcher2, rewritten, ctx.dryRun, changedFiles, 493);
             }
           }
           for (const unit of profileUnits(role)) {
@@ -6164,19 +6164,19 @@ var PromptForAgentConfig = class extends Command {
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { homedir as homedir3 } from "node:os";
-import { join as join7, dirname as dirname4, relative as relative5 } from "node:path";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join8, dirname as dirname5, relative as relative6 } from "node:path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import * as p2 from "@clack/prompts";
-import YAML3 from "yaml";
+import YAML4 from "yaml";
 
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
-import { basename as basename4, delimiter, dirname as dirname3, isAbsolute, join as join6, relative as relative4, resolve as resolve4, sep as sep2, win32 } from "node:path";
+import { basename as basename5, delimiter as delimiter2, dirname as dirname4, isAbsolute as isAbsolute2, join as join7, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import YAML2 from "yaml";
+import YAML3 from "yaml";
 
 // src/utils/tree-diff.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -6201,6 +6201,160 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
 }
 function changedTreePaths(root, before, after) {
   return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join5(root, path)).sort();
+}
+
+// src/lifecycle/preflight.ts
+import { createHash as createHash4 } from "node:crypto";
+import {
+  accessSync,
+  constants as constants2,
+  existsSync as existsSync4,
+  lstatSync as lstatSync4,
+  readFileSync as readFileSync5,
+  readdirSync as readdirSync4,
+  realpathSync as realpathSync2,
+  statSync
+} from "node:fs";
+import { basename as basename4, delimiter, isAbsolute, join as join6, relative as relative4, resolve as resolve4 } from "node:path";
+import YAML2 from "yaml";
+function containedBy(parent, candidate) {
+  const rel = relative4(resolve4(parent), resolve4(candidate));
+  return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
+}
+function sha2562(path) {
+  return createHash4("sha256").update(readFileSync5(path)).digest("base64url");
+}
+function fingerprint(path) {
+  const absolute = resolve4(path);
+  const realPath = realpathSync2(absolute);
+  const stat = statSync(realPath);
+  if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
+  return {
+    path: absolute,
+    realPath,
+    sha256: sha2562(realPath),
+    size: stat.size,
+    device: stat.dev,
+    inode: stat.ino,
+    mode: stat.mode,
+    uid: stat.uid,
+    gid: stat.gid
+  };
+}
+function sameFingerprint(expected) {
+  try {
+    const actual = fingerprint(expected.path);
+    for (const key of ["realPath", "sha256", "size", "device", "inode", "mode", "uid", "gid"]) {
+      if (actual[key] !== expected[key]) {
+        return { ok: false, error: `trusted Copier identity changed at ${expected.path} (${key})` };
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `trusted Copier identity is unavailable at ${expected.path}: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function verifyTrustedCopierIdentity(identity) {
+  if (!isAbsolute(identity.executable) || resolve4(identity.executable) !== resolve4(identity.files.find((file) => file.path === identity.executable)?.path ?? "")) {
+    return { ok: false, error: "trusted Copier identity has no canonical absolute launcher" };
+  }
+  const interpreter = sameFingerprint(identity.interpreter);
+  if (!interpreter.ok) return interpreter;
+  for (const file of identity.files) {
+    const verified = sameFingerprint(file);
+    if (!verified.ok) return verified;
+  }
+  return { ok: true };
+}
+function regularContainedFile(root, path, label) {
+  try {
+    const rootReal = realpathSync2(root);
+    const fileReal = realpathSync2(path);
+    if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
+    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+function requireFiles(templateRoot, files, label) {
+  for (const rel of files) {
+    const result = regularContainedFile(templateRoot, join6(templateRoot, rel), `${label} ${rel}`);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+function preflightRenderedHermes(options) {
+  const target = resolve4(options.targetDir);
+  const roleDir = resolve4(options.roleDir);
+  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
+  try {
+    const stat = lstatSync4(roleDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return { ok: false, error: "rendered Hermes role must be a real directory" };
+    }
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const templateScripts = join6(resolve4(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
+  const renderedScripts = join6(roleDir, ".scripts");
+  const requiredFiles = [
+    "role.yaml",
+    "SOUL.md",
+    "hermes",
+    ".gitignore",
+    ".runtime-scaffold/README.md",
+    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
+  ];
+  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
+  if (!required.ok) return required;
+  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+    try {
+      if (readFileSync5(join6(renderedScripts, script), "utf8") !== readFileSync5(join6(templateScripts, script), "utf8")) {
+        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  let role;
+  try {
+    const parsed = YAML2.parse(readFileSync5(join6(roleDir, "role.yaml"), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
+    }
+    role = parsed;
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
+    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
+  }
+  const bloodbank = role.bloodbank;
+  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
+    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
+  }
+  const deployment = role.deployment;
+  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
+    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
+  }
+  const manifestPath = join6(target, ".project.json");
+  if (existsSync4(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync5(manifestPath, "utf8"));
+      const agents = manifest.agents;
+      const declared = agents?.[options.agentId];
+      if (!declared || declared.role !== options.role || declared.role_dir !== relative4(target, roleDir) || declared.provisioning_state !== "provisioned") {
+        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  return { ok: true };
 }
 
 // src/project/RegistryStore.ts
@@ -6445,10 +6599,10 @@ var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_NEW_PROJECT_STATUS = "active";
 var BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join6(dirname3(manifestPath), ".copier-answers.yml");
-  if (!existsSync4(answersPath)) return [];
-  const current = readFileSync5(answersPath, "utf8");
-  const document = YAML2.parseDocument(current);
+  const answersPath = join7(dirname4(manifestPath), ".copier-answers.yml");
+  if (!existsSync5(answersPath)) return [];
+  const current = readFileSync6(answersPath, "utf8");
+  const document = YAML3.parseDocument(current);
   if (document.errors.length) return [];
   const name = String(document.get("project_name") ?? "");
   const description = String(document.get("project_description") ?? "");
@@ -6462,11 +6616,11 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join6(homedir2(), ".agents", "skills"),
-  join6(homedir2(), ".codex", "skills")
+  join7(homedir2(), ".agents", "skills"),
+  join7(homedir2(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join6(homedir2(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join7(homedir2(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -6480,8 +6634,8 @@ function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: createSafeRecord() };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync4(path)) return emptyProjectRegistry();
-  const raw = YAML2.parse(readFileSync5(path, "utf8"));
+  if (!existsSync5(path)) return emptyProjectRegistry();
+  const raw = YAML3.parse(readFileSync6(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -6507,9 +6661,9 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync3(dirname4(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync3(temp, YAML2.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync3(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -6524,7 +6678,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve4(project.repo_path);
+    const repoKey = resolve5(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -6573,15 +6727,15 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join6(env2.HOME || homedir2(), ".config");
-  return join6(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join7(env2.HOME || homedir2(), ".config");
+  return join7(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
   const found = {};
-  if (!existsSync4(path)) return found;
+  if (!existsSync5(path)) return found;
   let text3;
   try {
-    text3 = readFileSync5(path, "utf8");
+    text3 = readFileSync6(path, "utf8");
   } catch {
     return found;
   }
@@ -6617,7 +6771,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join6(input.repoPath, ".env"), label: join6(input.repoPath, ".env") });
+  if (input.repoPath) candidates.push({ path: join7(input.repoPath, ".env"), label: join7(input.repoPath, ".env") });
   const secrets = ticketProviderSecretsPath(env2);
   candidates.push({ path: secrets, label: secrets });
   for (const candidate of candidates) {
@@ -6635,25 +6789,25 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join6(override, file));
+  if (override) candidates.push(join7(override, file));
   const relativeRoots = [
-    join6("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join6("agents", "hermes", "pm", ".scripts", "providers")
+    join7("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join7("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname3(fileURLToPath2(import.meta.url));
+    let dir = dirname4(fileURLToPath2(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join6(dir, relativeRoot, file));
-      const parent = dirname3(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join7(dir, relativeRoot, file));
+      const parent = dirname4(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join6(homedir2(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join7(homedir2(), "code", "pjangler", relativeRoot, file));
   }
-  return candidates.find((candidate) => existsSync4(candidate));
+  return candidates.find((candidate) => existsSync5(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
@@ -6668,7 +6822,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join6(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join7(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -6682,12 +6836,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text3) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text3);
-  const staging = mkdtempSync2(join6(tmpdir(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join7(tmpdir(), "pjangler-tp-"));
   try {
-    const providersDir = join6(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join7(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync3(providersDir, { recursive: true });
     writeFileSync3(
-      join6(staging, ".project.json"),
+      join7(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -6706,12 +6860,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join6(providersDir, `${provider}.sh`);
+    const staged = join7(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
     const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
-      cwd: existsSync4(action.repoPath) ? action.repoPath : staging,
+      cwd: existsSync5(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
     });
@@ -6754,12 +6908,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
         error: `ticket-provider: ${provider} create_board returned no board_id`
       };
     }
-    const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
+    const boardUrl2 = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
     return {
       ok: true,
       skipped: false,
       boardId,
-      boardUrl,
+      boardUrl: boardUrl2,
       logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
     };
   } finally {
@@ -6781,7 +6935,7 @@ function slugifyProjectName(value) {
 var SAFE_PATH_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 function validateSafePathSegment(value, label) {
   const normalized = value.trim();
-  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
+  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute2(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
   if (unsafe) {
     throw new Error(
       `${label} must be a non-empty safe single path segment using letters, numbers, dots, underscores, or hyphens (no dot segments, absolute paths, separators, or traversal)`
@@ -6790,24 +6944,24 @@ function validateSafePathSegment(value, label) {
   return normalized;
 }
 function prospectiveRealPath(path) {
-  let cursor = resolve4(path);
+  let cursor = resolve5(path);
   const suffix = [];
-  while (!existsSync4(cursor)) {
-    const parent = dirname3(cursor);
-    if (parent === cursor) return resolve4(path);
-    suffix.unshift(basename4(cursor));
+  while (!existsSync5(cursor)) {
+    const parent = dirname4(cursor);
+    if (parent === cursor) return resolve5(path);
+    suffix.unshift(basename5(cursor));
     cursor = parent;
   }
-  return resolve4(realpathSync2(cursor), ...suffix);
+  return resolve5(realpathSync3(cursor), ...suffix);
 }
 function resolveContainedPath(parentDir, candidate, label) {
   const physicalParent = prospectiveRealPath(parentDir);
   const physicalCandidate = prospectiveRealPath(candidate);
-  const fromParent = relative4(physicalParent, physicalCandidate);
-  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute(fromParent)) {
-    throw new Error(`${label} must remain contained beneath parent directory ${resolve4(parentDir)}`);
+  const fromParent = relative5(physicalParent, physicalCandidate);
+  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute2(fromParent)) {
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve5(parentDir)}`);
   }
-  return resolve4(candidate);
+  return resolve5(candidate);
 }
 function deriveProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -6822,7 +6976,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync4(join6(homedir2(), ".agents", "hooks"));
+  return !existsSync5(join7(homedir2(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -6836,14 +6990,14 @@ function projectRecordEquivalent(a, b) {
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
-  return resolve4(dirname3(resolve4(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
+  return resolve5(dirname4(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
-  const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter).map((root) => root.trim()).filter(Boolean);
+  const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter2).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve4(expandHome(root));
+    const normalized = resolve5(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -6853,13 +7007,13 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve4(expanded);
-  if (existsSync4(direct)) return direct;
-  const name = basename4(sourceSkill);
+  const direct = resolve5(expanded);
+  if (existsSync5(direct)) return direct;
+  const name = basename5(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join6(root, name);
-    if (existsSync4(candidate)) return candidate;
+    const candidate = join7(root, name);
+    if (existsSync5(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
   const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
@@ -6869,10 +7023,10 @@ function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
   const slug = input.projectSlug === void 0 ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug") : validateSafePathSegment(input.projectSlug, "Project slug");
   const agentRole = normalizeAgentRole(input.agentRole);
-  const registryPath2 = resolve4(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const targetDir = resolve4(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
@@ -6924,7 +7078,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve4(input.pjanglerRoot ?? resolvePjanglerRoot());
+  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -6958,7 +7112,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join6(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join7(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -7020,12 +7174,12 @@ function linkTicketProviderBoard(plan, action, boardId) {
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join6(action.repoPath, ".project.json");
+  const manifestPath = join7(action.repoPath, ".project.json");
   let next;
-  if (existsSync4(manifestPath)) {
+  if (existsSync5(manifestPath)) {
     let existing = {};
     try {
-      const parsed = JSON.parse(readFileSync5(manifestPath, "utf8"));
+      const parsed = JSON.parse(readFileSync6(manifestPath, "utf8"));
       if (isRecord(parsed)) existing = parsed;
     } catch {
       existing = {};
@@ -7033,18 +7187,18 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync3(dirname3(manifestPath), { recursive: true });
+    mkdirSync3(dirname4(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text3 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync4(manifestPath) || readFileSync5(manifestPath, "utf8") !== text3) {
+  if (!existsSync5(manifestPath) || readFileSync6(manifestPath, "utf8") !== text3) {
     writeFileSync3(manifestPath, text3, "utf8");
     return [manifestPath];
   }
   return [];
 }
-async function executeProjectInitPlan(plan) {
+async function executeProjectInitPlan(plan, options = {}) {
   const logs = [];
   const errors = [];
   const changedFiles = [];
@@ -7053,12 +7207,35 @@ async function executeProjectInitPlan(plan) {
   let pendingRegistryAction;
   for (const action of plan.actions) {
     if (action.kind === "copier.copy.commonproject") {
+      if (options.requireTrustedCopier && !options.trustedCopier) {
+        errors.push("MCP project apply requires a preflight-attested Copier identity");
+        break;
+      }
+      if (options.trustedCopier) {
+        const verified = verifyTrustedCopierIdentity(options.trustedCopier);
+        if (!verified.ok) {
+          errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+          break;
+        }
+      }
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync3(dirname3(action.targetDir), { recursive: true });
+      mkdirSync3(dirname4(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
-      const result = spawnSync2(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
+      const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
+      if (copierEnv) {
+        delete copierEnv.PYTHONHOME;
+        delete copierEnv.PYTHONPATH;
+        copierEnv.PYTHONNOUSERSITE = "1";
+        copierEnv.PYTHONSAFEPATH = "1";
+      }
+      const result = spawnSync2(copierExecutable, action.command.slice(1), {
+        encoding: "utf8",
+        cwd: action.cwd,
+        ...copierEnv ? { env: copierEnv } : {}
+      });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -7075,10 +7252,10 @@ async function executeProjectInitPlan(plan) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync3(dirname3(action.path), { recursive: true });
+      mkdirSync3(dirname4(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-      const current = existsSync4(action.path) ? readFileSync5(action.path, "utf8") : void 0;
+      const current = existsSync5(action.path) ? readFileSync6(action.path, "utf8") : void 0;
       if (current !== next) {
         writeFileSync3(action.path, next, "utf8");
         changedFiles.push(action.path);
@@ -7217,16 +7394,16 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   const registry = loadProjectRegistry(registryPath2);
   const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
   for (const [projectSlug, project] of projects) {
-    if (!existsSync4(project.repo_path)) {
+    if (!existsSync5(project.repo_path)) {
       issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
-    } else if (!statSync(project.repo_path).isDirectory()) {
+    } else if (!statSync2(project.repo_path).isDirectory()) {
       issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
     } else {
-      const manifestPath = join6(project.repo_path, ".project.json");
-      if (!existsSync4(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+      const manifestPath = join7(project.repo_path, ".project.json");
+      if (!existsSync5(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
     }
     for (const artifact of project.source_artifacts) {
-      if (artifact.path && !existsSync4(artifact.path)) {
+      if (artifact.path && !existsSync5(artifact.path)) {
         issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
       }
     }
@@ -7239,7 +7416,7 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   };
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join6(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join7(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -7266,21 +7443,21 @@ function buildCommonProjectCopierAction(input) {
   };
 }
 function resolvePjanglerRoot() {
-  let dir = dirname3(new URL(import.meta.url).pathname);
-  while (dir !== dirname3(dir)) {
-    if (existsSync4(join6(dir, "package.json")) && existsSync4(join6(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname3(dir);
+  let dir = dirname4(new URL(import.meta.url).pathname);
+  while (dir !== dirname4(dir)) {
+    if (existsSync5(join7(dir, "package.json")) && existsSync5(join7(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname4(dir);
   }
-  return resolve4(process.cwd());
+  return resolve5(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
-  if (existingSameSlug && !overwrite && resolve4(existingSameSlug.repo_path) !== resolve4(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve4(existing.repo_path) === resolve4(project.repo_path)) {
+    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
@@ -7308,7 +7485,7 @@ function validateProjectRecord(project, key) {
 }
 function expandHome(path) {
   if (path === "~") return homedir2();
-  if (path.startsWith("~/")) return join6(homedir2(), path.slice(2));
+  if (path.startsWith("~/")) return join7(homedir2(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -7341,9 +7518,9 @@ function scrubInteractiveChannelCredentials(env2) {
   delete env2.WIRE_SLACK;
 }
 function registerRenderedAgent(ctx, roleDir, role) {
-  const manifestPath = join7(ctx.targetDir, ".project.json");
-  if (!existsSync5(manifestPath) || !ctx.targetRepo) return;
-  const current = readFileSync6(manifestPath, "utf8");
+  const manifestPath = join8(ctx.targetDir, ".project.json");
+  if (!existsSync6(manifestPath) || !ctx.targetRepo) return;
+  const current = readFileSync7(manifestPath, "utf8");
   const parsed = JSON.parse(current);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
@@ -7358,7 +7535,7 @@ function registerRenderedAgent(ctx, roleDir, role) {
   Object.defineProperty(agents, agentId, {
     value: {
       role,
-      role_dir: relative5(ctx.targetDir, roleDir),
+      role_dir: relative6(ctx.targetDir, roleDir),
       provisioning_state: "provisioned"
     },
     configurable: true,
@@ -7373,14 +7550,14 @@ function registerRenderedAgent(ctx, roleDir, role) {
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname4(fileURLToPath3(import.meta.url));
+    dir = dirname5(fileURLToPath3(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join7(dir, "templates", name);
-    if (existsSync5(join7(candidate, "copier.yml"))) return candidate;
-    const parent = dirname4(dir);
+    const candidate = join8(dir, "templates", name);
+    if (existsSync6(join8(candidate, "copier.yml"))) return candidate;
+    const parent = dirname5(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -7412,20 +7589,30 @@ var RunCopierTemplate = class extends Command {
     ctx.role = safeRole;
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join7(ctx.targetDir, "agents", "hermes", safeRole),
+      join8(ctx.targetDir, "agents", "hermes", safeRole),
       "Hermes role directory"
     );
     ctx.roleDir = roleDir;
     ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
-    const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
-    if (which.status !== 0) {
+    const trustedCopierRequired = Boolean(ctx.deferredExternalEffects && !ctx.dryRun);
+    if (trustedCopierRequired && !ctx.trustedCopier) {
       return {
         success: false,
         outcome: "failed",
-        message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
+        message: "MCP Hermes apply requires a preflight-attested Copier identity"
       };
     }
-    if (existsSync5(join7(roleDir, "role.yaml")) && !ctx.force) {
+    if (!ctx.trustedCopier) {
+      const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
+      if (which.status !== 0) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
+        };
+      }
+    }
+    if (existsSync6(join8(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
         ctx.force = true;
       } else {
@@ -7465,9 +7652,15 @@ var RunCopierTemplate = class extends Command {
     };
     if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env2);
     if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env2);
-    const LOCAL_TEMPLATE = join7(homedir3(), "code", "hermes-agent-template");
+    if (ctx.trustedCopier) {
+      delete env2.PYTHONHOME;
+      delete env2.PYTHONPATH;
+      env2.PYTHONNOUSERSITE = "1";
+      env2.PYTHONSAFEPATH = "1";
+    }
+    const LOCAL_TEMPLATE = join8(homedir3(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync5(join7(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync6(join8(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -7503,13 +7696,24 @@ var RunCopierTemplate = class extends Command {
         success: true,
         outcome: "planned",
         filePath: roleDir,
-        message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
+        message: this.formatMessage(`Would run: ${ctx.trustedCopier?.executable ?? "copier"} ${args.join(" ")}`)
       };
     }
-    mkdirSync4(join7(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    if (ctx.trustedCopier) {
+      const verified = verifyTrustedCopierIdentity(ctx.trustedCopier);
+      if (!verified.ok) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`
+        };
+      }
+    }
+    mkdirSync4(join8(ctx.targetDir, "agents", "hermes"), { recursive: true });
     const spinner4 = ctx.quiet ? void 0 : p2.spinner();
     spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
-    const result = spawnSync3("copier", args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
+    const result = spawnSync3(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
     spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
     if (result.status !== 0) {
       return {
@@ -7518,10 +7722,10 @@ var RunCopierTemplate = class extends Command {
         message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
       };
     }
-    const roleManifest = join7(roleDir, "role.yaml");
+    const roleManifest = join8(roleDir, "role.yaml");
     try {
-      const current = readFileSync6(roleManifest, "utf8");
-      const document = YAML3.parseDocument(current);
+      const current = readFileSync7(roleManifest, "utf8");
+      const document = YAML4.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], ctx.deferredExternalEffects ? "deferred" : ctx.skipSystemd ? "deferred" : "required");
@@ -7543,8 +7747,8 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync6, readFileSync as readFileSync7, writeFileSync as writeFileSync5, readdirSync as readdirSync4 } from "fs";
-import { join as join8 } from "path";
+import { existsSync as existsSync7, readFileSync as readFileSync8, writeFileSync as writeFileSync5, readdirSync as readdirSync5 } from "fs";
+import { join as join9 } from "path";
 import { spawnSync as spawnSync4 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -7555,14 +7759,14 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join8(targetDir, "agents", "hermes");
-    if (!existsSync6(rolesDir)) {
+    const rolesDir = join9(targetDir, "agents", "hermes");
+    if (!existsSync7(rolesDir)) {
       return {
         success: true,
         message: "No Hermes agents found (no agents/hermes directory)."
       };
     }
-    const roles = readdirSync4(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const roles = readdirSync5(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     if (roles.length === 0) {
       return {
         success: true,
@@ -7572,10 +7776,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join8("agents", "hermes", role);
-      const runtimePath = join8(roleDir, "runtime");
-      const gitignorePath = join8(roleDir, ".gitignore");
-      const gitmodulesPath = join8(targetDir, ".gitmodules");
+      const roleDir = join9("agents", "hermes", role);
+      const runtimePath = join9(roleDir, "runtime");
+      const gitignorePath = join9(roleDir, ".gitignore");
+      const gitmodulesPath = join9(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -7592,15 +7796,15 @@ var UntrackHermesRuntimes = class extends Command {
       }
       let hasStaleMapping = false;
       let gitmodulesContent = "";
-      if (existsSync6(gitmodulesPath)) {
-        gitmodulesContent = readFileSync7(gitmodulesPath, "utf8");
+      if (existsSync7(gitmodulesPath)) {
+        gitmodulesContent = readFileSync8(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
         hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join8(targetDir, gitignorePath);
-      if (existsSync6(fullGitignorePath)) {
-        const content = readFileSync7(fullGitignorePath, "utf8");
+      const fullGitignorePath = join9(targetDir, gitignorePath);
+      if (existsSync7(fullGitignorePath)) {
+        const content = readFileSync8(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
         isIgnored = lines.includes("runtime/") || lines.includes("runtime");
       }
@@ -7643,8 +7847,8 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
           if (!this.context.dryRun) {
             let content = "";
-            if (existsSync6(fullGitignorePath)) {
-              content = readFileSync7(fullGitignorePath, "utf8");
+            if (existsSync7(fullGitignorePath)) {
+              content = readFileSync8(fullGitignorePath, "utf8");
             }
             if (content && !content.endsWith("\n")) {
               content += "\n";
@@ -7672,8 +7876,8 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { join as join9 } from "node:path";
-import { existsSync as existsSync7, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join10 } from "node:path";
+import { existsSync as existsSync8, unlinkSync as unlinkSync2 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -7768,15 +7972,15 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join9(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync7(script)) {
+    const script = join10(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync8(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
       };
     }
-    const marker = join9(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync7(marker)) unlinkSync2(marker);
+    const marker = join10(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync8(marker)) unlinkSync2(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync5("bash", [script], {
@@ -7803,8 +8007,8 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { join as join10 } from "node:path";
-import { existsSync as existsSync8, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join11 } from "node:path";
+import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p4 from "@clack/prompts";
 var WireEmail = class extends Command {
   async invoke() {
@@ -7826,8 +8030,8 @@ var WireEmail = class extends Command {
     if (!targetRepo || !role || !roleDir) {
       return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
     }
-    const script = join10(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync8(script)) {
+    const script = join11(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync9(script)) {
       return { success: false, message: `\u2717 ${script} not found` };
     }
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -7889,8 +8093,8 @@ var WireEmail = class extends Command {
         }
       }
     }
-    const marker = join10(roleDir, ".scripts", ".done-50-email");
-    if (existsSync8(marker)) unlinkSync3(marker);
+    const marker = join11(roleDir, ".scripts", ".done-50-email");
+    if (existsSync9(marker)) unlinkSync3(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync6("bash", [script], {
@@ -7952,9 +8156,9 @@ var PrintHermesSummary = class extends Command {
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
-import { join as join11 } from "node:path";
-import YAML4 from "yaml";
+import { existsSync as existsSync10, readFileSync as readFileSync9, writeFileSync as writeFileSync6 } from "node:fs";
+import { join as join12 } from "node:path";
+import YAML5 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -7979,7 +8183,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     };
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
-    const roleManifest = join11(ctx.roleDir, "role.yaml");
+    const roleManifest = join12(ctx.roleDir, "role.yaml");
     const scripts = [
       ...selected.runtimeRepo ? ["20-runtime-repo.sh"] : [],
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
@@ -7990,8 +8194,8 @@ var ApplyDeferredExternalEffects = class extends Command {
     ];
     const logs = [];
     for (const script of scripts) {
-      const path = join11(ctx.roleDir, ".scripts", script);
-      if (!existsSync9(path)) {
+      const path = join12(ctx.roleDir, ".scripts", script);
+      if (!existsSync10(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
       const result = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -8003,8 +8207,8 @@ var ApplyDeferredExternalEffects = class extends Command {
       }
     }
     try {
-      const current = readFileSync8(roleManifest, "utf8");
-      const document = YAML4.parseDocument(current);
+      const current = readFileSync9(roleManifest, "utf8");
+      const document = YAML5.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], selected.systemd ? "required" : "deferred");
@@ -8028,8 +8232,8 @@ ${logs.join("\n")}` : ""}`
 
 // src/commands/hermes/ApplyDeferredHostEffects.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
-import { existsSync as existsSync10 } from "node:fs";
-import { join as join12 } from "node:path";
+import { existsSync as existsSync11 } from "node:fs";
+import { join as join13 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -8064,8 +8268,8 @@ var ApplyDeferredHostEffects = class extends Command {
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
     const logs = [];
     for (const script of scripts) {
-      const path = join12(ctx.roleDir, ".scripts", script);
-      if (!existsSync10(path)) {
+      const path = join13(ctx.roleDir, ".scripts", script);
+      if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
       const result = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -8087,104 +8291,6 @@ ${logs.join("\n")}` : ""}`
 
 // src/recipes/HermesAgentRecipe.ts
 import { resolve as resolve6 } from "node:path";
-
-// src/lifecycle/preflight.ts
-import { accessSync, constants as constants2, existsSync as existsSync11, lstatSync as lstatSync4, readFileSync as readFileSync9, realpathSync as realpathSync3 } from "node:fs";
-import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join13, relative as relative6, resolve as resolve5 } from "node:path";
-import YAML5 from "yaml";
-function containedBy(parent, candidate) {
-  const rel = relative6(resolve5(parent), resolve5(candidate));
-  return rel === "" || !rel.startsWith("..") && !isAbsolute2(rel);
-}
-function regularContainedFile(root, path, label) {
-  try {
-    const rootReal = realpathSync3(root);
-    const fileReal = realpathSync3(path);
-    if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
-    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-}
-function requireFiles(templateRoot, files, label) {
-  for (const rel of files) {
-    const result = regularContainedFile(templateRoot, join13(templateRoot, rel), `${label} ${rel}`);
-    if (!result.ok) return result;
-  }
-  return { ok: true };
-}
-function preflightRenderedHermes(options) {
-  const target = resolve5(options.targetDir);
-  const roleDir = resolve5(options.roleDir);
-  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
-  try {
-    const stat = lstatSync4(roleDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      return { ok: false, error: "rendered Hermes role must be a real directory" };
-    }
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const templateScripts = join13(resolve5(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const renderedScripts = join13(roleDir, ".scripts");
-  const requiredFiles = [
-    "role.yaml",
-    "SOUL.md",
-    "hermes",
-    ".gitignore",
-    ".runtime-scaffold/README.md",
-    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
-  ];
-  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
-  if (!required.ok) return required;
-  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    try {
-      if (readFileSync9(join13(renderedScripts, script), "utf8") !== readFileSync9(join13(templateScripts, script), "utf8")) {
-        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  let role;
-  try {
-    const parsed = YAML5.parse(readFileSync9(join13(roleDir, "role.yaml"), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
-    }
-    role = parsed;
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
-    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
-  }
-  const bloodbank = role.bloodbank;
-  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
-    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
-  }
-  const deployment = role.deployment;
-  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
-    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
-  }
-  const manifestPath = join13(target, ".project.json");
-  if (existsSync11(manifestPath)) {
-    try {
-      const manifest = JSON.parse(readFileSync9(manifestPath, "utf8"));
-      const agents = manifest.agents;
-      const declared = agents?.[options.agentId];
-      if (!declared || declared.role !== options.role || declared.role_dir !== relative6(target, roleDir) || declared.provisioning_state !== "provisioned") {
-        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  return { ok: true };
-}
-
-// src/recipes/HermesAgentRecipe.ts
 var HermesAgentRecipe = class extends Recipe {
   checks = createHermesChecks();
   metadata = {
@@ -8627,7 +8733,10 @@ var ProjectRecipe = class extends Recipe {
         actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent" && action.kind !== "ticket-provider.create-or-link")
       };
       const planBlocked = errors.length > 0;
-      const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
+      const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan, {
+        trustedCopier: normalized.trustedCopier,
+        requireTrustedCopier: normalized.requireTrustedCopier
+      }) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
       logs.push(...executed.logs);
       errors.push(...executed.errors);
       changedFiles.push(...executed.changedFiles);
@@ -9732,14 +9841,197 @@ function getCommandsByGroup() {
 // src/index.ts
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
+// src/project/boardUrl.ts
+import { existsSync as existsSync16, readFileSync as readFileSync12, statSync as statSync3 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { dirname as dirname9, isAbsolute as isAbsolute3, join as join19, resolve as resolve8 } from "node:path";
+var DEFAULT_PLANE_BASE = "https://plane.delo.sh";
+var DEFAULT_PLANE_WORKSPACE = "33god";
+function resolveTemplateConfigPath2(env2 = process.env, home = homedir7()) {
+  const fromEnv = env2.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const xdg = env2.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join19(home, ".config");
+  return join19(base, "hermes-agent-template", "config.toml");
+}
+function readTomlScalar(text3, section2, key) {
+  let inSection = false;
+  for (const raw of text3.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      inSection = line === `[${section2}]`;
+      continue;
+    }
+    if (!inSection) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    const value = line.slice(eq + 1).trim();
+    const quoted = /^"([^"]*)"|^'([^']*)'/.exec(value);
+    if (quoted) return quoted[1] ?? quoted[2];
+    const bare = (value.split("#")[0] ?? "").trim();
+    return bare || void 0;
+  }
+  return void 0;
+}
+function readTemplateConfig(env2, home) {
+  try {
+    const path = resolveTemplateConfigPath2(env2, home);
+    return existsSync16(path) ? readFileSync12(path, "utf8") : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function planeBase(env2 = process.env, home = homedir7()) {
+  const fromEnv = env2.PLANE_BASE?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  const config = readTemplateConfig(env2, home);
+  const fromConfig = config ? readTomlScalar(config, "plane", "base")?.trim() : void 0;
+  if (fromConfig) return fromConfig.replace(/\/+$/, "");
+  return DEFAULT_PLANE_BASE;
+}
+function planeWorkspace(provider, env2, home) {
+  const fromManifest = provider.workspace?.trim();
+  if (fromManifest) return fromManifest;
+  const config = readTemplateConfig(env2, home);
+  const fromConfig = config ? readTomlScalar(config, "plane", "workspace")?.trim() : void 0;
+  return fromConfig || DEFAULT_PLANE_WORKSPACE;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function extractTicketRef(branch, identifier) {
+  if (!branch || !identifier) return void 0;
+  const ident = identifier.trim();
+  if (!ident) return void 0;
+  const match = new RegExp(`\\b${escapeRegExp(ident)}-(\\d+)\\b`, "i").exec(branch);
+  return match ? `${ident.toUpperCase()}-${match[1]}` : void 0;
+}
+function normalizeTicketRef(input, identifier) {
+  const value = input?.trim();
+  if (!value) return void 0;
+  if (/^\d+$/.test(value)) {
+    const ident = identifier?.trim();
+    return ident ? `${ident.toUpperCase()}-${value}` : void 0;
+  }
+  const qualified = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(value);
+  if (!qualified) return void 0;
+  return `${qualified[1].toUpperCase()}-${qualified[2]}`;
+}
+function resolveTicketRef(provider, options) {
+  return normalizeTicketRef(options.ref, provider.identifier) ?? extractTicketRef(options.branch, provider.identifier);
+}
+function boardUrl(provider, options = {}) {
+  if (!provider) return void 0;
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir7();
+  const type = (provider.type || "plane").trim().toLowerCase();
+  const boardId = provider.board_id?.trim();
+  if (!boardId) return void 0;
+  if (type === "trello") {
+    return `https://trello.com/b/${boardId}`;
+  }
+  if (type !== "plane") return void 0;
+  const workspace = planeWorkspace(provider, env2, home);
+  if (!workspace) return void 0;
+  const base = planeBase(env2, home);
+  const ref = resolveTicketRef(provider, options);
+  return ref ? `${base}/${workspace}/browse/${ref}` : `${base}/${workspace}/projects/${boardId}/issues`;
+}
+function findProjectRoot(from) {
+  let dir = resolve8(from);
+  for (; ; ) {
+    if (existsSync16(join19(dir, ".project.json"))) return dir;
+    const parent = dirname9(dir);
+    if (parent === dir) return void 0;
+    dir = parent;
+  }
+}
+function readTicketProvider(root) {
+  try {
+    const manifest = JSON.parse(readFileSync12(join19(root, ".project.json"), "utf8"));
+    const provider = manifest.ticket_provider;
+    if (!provider || typeof provider !== "object") return void 0;
+    return provider;
+  } catch {
+    return void 0;
+  }
+}
+function currentBranch(from) {
+  try {
+    let dir = resolve8(from);
+    for (; ; ) {
+      const dotgit = join19(dir, ".git");
+      if (existsSync16(dotgit)) {
+        let gitDir = dotgit;
+        if (statSync3(dotgit).isFile()) {
+          const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync12(dotgit, "utf8"));
+          if (!pointer) return void 0;
+          const target = pointer[1].trim();
+          gitDir = isAbsolute3(target) ? target : resolve8(dir, target);
+        }
+        const head = readFileSync12(join19(gitDir, "HEAD"), "utf8").trim();
+        const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+        return ref ? ref[1].trim() : void 0;
+      }
+      const parent = dirname9(dir);
+      if (parent === dir) return void 0;
+      dir = parent;
+    }
+  } catch {
+    return void 0;
+  }
+}
+function resolveBoardUrl(cwd, ref, env2 = process.env) {
+  const root = findProjectRoot(cwd);
+  if (!root) return void 0;
+  const provider = readTicketProvider(root);
+  if (!provider) return void 0;
+  return boardUrl(provider, { ref, branch: currentBranch(root), env: env2 });
+}
+
+// src/project/openUrl.ts
+import { spawn } from "node:child_process";
+function osc8(url, label = url) {
+  return `\x1B]8;;${url}\x07${label}\x1B]8;;\x07`;
+}
+function isHeadless(env2 = process.env, platform2 = process.platform) {
+  if (env2.SSH_CONNECTION || env2.SSH_TTY) return true;
+  if (platform2 === "darwin") return false;
+  return !(env2.WAYLAND_DISPLAY || env2.DISPLAY);
+}
+function launcher(platform2 = process.platform) {
+  return platform2 === "darwin" ? "open" : "xdg-open";
+}
+function openUrl(url, env2 = process.env, platform2 = process.platform) {
+  if (isHeadless(env2, platform2)) {
+    return {
+      opened: false,
+      display: osc8(url),
+      reason: "no display; printed a link instead"
+    };
+  }
+  try {
+    spawn(launcher(platform2), [url], { detached: true, stdio: "ignore" }).unref();
+    return { opened: true, display: osc8(url) };
+  } catch (err) {
+    return {
+      opened: false,
+      display: osc8(url),
+      reason: `could not launch ${launcher(platform2)}: ${err.message}`
+    };
+  }
+}
+
 // src/describe/index.ts
-import { existsSync as existsSync16, readFileSync as readFileSync12, readdirSync as readdirSync5, statSync as statSync3 } from "node:fs";
-import { join as join20, resolve as resolve8 } from "node:path";
+import { existsSync as existsSync17, readFileSync as readFileSync13, readdirSync as readdirSync6, statSync as statSync5 } from "node:fs";
+import { join as join21, resolve as resolve9 } from "node:path";
 
 // src/describe/activity.ts
-import { spawn, spawnSync as spawnSync10 } from "node:child_process";
-import { statSync as statSync2 } from "node:fs";
-import { join as join19 } from "node:path";
+import { spawn as spawn2, spawnSync as spawnSync10 } from "node:child_process";
+import { statSync as statSync4 } from "node:fs";
+import { join as join20 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
@@ -9754,15 +10046,15 @@ function git(repo, args) {
   return result.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve10) => {
-    const child = spawn("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+  return new Promise((resolve11) => {
+    const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve10(value);
+      resolve11(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -9904,7 +10196,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync2(join19(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync4(join20(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -10046,7 +10338,7 @@ var CONFIG_FILES = [
 ];
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync12(path, "utf8"));
+    const parsed = JSON.parse(readFileSync13(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -10068,23 +10360,23 @@ function describeType(repo) {
   const evidence = [];
   const note2 = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync16(join20(repo, marker.file))) continue;
+    if (!existsSync17(join21(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note2(marker.language, marker.file);
     }
   }
   try {
-    const dotnet = readdirSync5(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
+    const dotnet = readdirSync6(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
     if (dotnet && !languages.includes("dotnet")) {
       languages.push("dotnet");
       note2("dotnet", dotnet);
     }
   } catch {
   }
-  const pkg = readJson(join20(repo, "package.json"));
+  const pkg = readJson(join21(repo, "package.json"));
   if (pkg) {
-    if (existsSync16(join20(repo, "tsconfig.json"))) {
+    if (existsSync17(join21(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -10118,14 +10410,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync16(join20(repo, marker))) continue;
+    if (!existsSync17(join21(repo, marker))) continue;
     roles.push(role);
     note2(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join20(repo, ".project.json");
+  const manifestPath = join21(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -10133,8 +10425,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve8(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve8(project.repo_path) === resolved);
+    const resolved = resolve9(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve9(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -10145,7 +10437,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve8(record.repo_path) !== resolve8(repo)) {
+  if (record && resolve9(record.repo_path) !== resolve9(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -10210,7 +10502,7 @@ function describeSubsystems(repo, findings) {
   }
   return recipeRegistry.list().map((metadata) => {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
-    const evidence = markers.filter((marker) => existsSync16(join20(repo, marker)));
+    const evidence = markers.filter((marker) => existsSync17(join21(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding) => ({
       id: finding.id,
       title: finding.title,
@@ -10226,7 +10518,7 @@ function describeSubsystems(repo, findings) {
   });
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync16(join20(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync17(join21(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -10304,9 +10596,9 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve8(input.repoArg ?? process.cwd());
-  if (!existsSync16(repo)) throw new Error(`Path does not exist: ${repo}`);
-  if (!statSync3(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  const repo = resolve9(input.repoArg ?? process.cwd());
+  if (!existsSync17(repo)) throw new Error(`Path does not exist: ${repo}`);
+  if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
   const findings = report.rules;
@@ -10520,7 +10812,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve10) => {
+  return new Promise((resolve11) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -10540,7 +10832,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve10({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve11({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -10557,24 +10849,24 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve10({ outcome: "cancel", selected: [] });
+      resolve11({ outcome: "cancel", selected: [] });
     });
   });
 }
 
 // src/utils/version.ts
-import { readFileSync as readFileSync13 } from "node:fs";
-import { dirname as dirname9, join as join21 } from "node:path";
+import { readFileSync as readFileSync14 } from "node:fs";
+import { dirname as dirname10, join as join22 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname9(fileURLToPath6(import.meta.url));
+    let dir = dirname10(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync13(join21(dir, "package.json"), "utf8");
+        const raw = readFileSync14(join22(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname9(dir);
+        const parent = dirname10(dir);
         if (parent === dir) break;
         dir = parent;
       }
@@ -10611,9 +10903,9 @@ async function promptForRuleIds(rules) {
   return selected;
 }
 function readJson2(path) {
-  if (!existsSync17(path)) return void 0;
+  if (!existsSync18(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync14(path, "utf8"));
+    const parsed = JSON.parse(readFileSync15(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -10622,7 +10914,7 @@ function readJson2(path) {
 function findGitRoot(cwd) {
   const result = spawnSync11("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result.status !== 0) return void 0;
-  return resolve9(result.stdout.trim());
+  return resolve10(result.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -10630,8 +10922,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join22(targetDir, ".project.json"));
-  const pkg = readJson2(join22(targetDir, "package.json"));
+  const manifest = readJson2(join23(targetDir, ".project.json"));
+  const pkg = readJson2(join23(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename6(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -10687,7 +10979,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync17(action.path) || readFileSync14(action.path, "utf8") !== next;
+    return !existsSync18(action.path) || readFileSync15(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -10735,25 +11027,25 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve9(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve10(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename6(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join22(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join23(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve9(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve10(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync17(targetDir);
-  if (targetExists && !statSync4(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  const targetExists = existsSync18(targetDir);
+  if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve9(targetGitRoot) === resolve9(targetDir));
+  const syncMode = Boolean(targetGitRoot && resolve10(targetGitRoot) === resolve10(targetDir));
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename6(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
@@ -10821,6 +11113,20 @@ program.command("list").description("List available subsystems").action(() => {
     console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
   }
   console.log("");
+});
+program.command("board").argument("[ref]", "Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board").description("Open this project's ticket board \u2014 or one work item \u2014 in a browser").option("--print", "Print the resolved URL instead of opening it").action((ref, options) => {
+  const url = resolveBoardUrl(process.cwd(), ref);
+  if (!url) {
+    console.error(`${xmark} No ticket board here: need a .project.json with ticket_provider.board_id`);
+    process.exit(1);
+  }
+  if (options.print) {
+    console.log(url);
+    return;
+  }
+  const outcome = openUrl(url);
+  console.log(`  ${cyan(glyph.pointer)} ${outcome.display}`);
+  if (outcome.reason) console.log(`  ${dim(outcome.reason)}`);
 });
 var projectCmd = program.command("project").description("Manage the pjangler project registry");
 projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane").option("--board-id <id>", "Board id (Plane project UUID or Trello board id)").option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id").option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action((name, options) => {
