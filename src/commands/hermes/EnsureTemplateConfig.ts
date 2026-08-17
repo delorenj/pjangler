@@ -100,6 +100,13 @@ compose_dir = "~/code/33GOD/bloodbank"
 export class EnsureTemplateConfig extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
+    if (ctx.deferredExternalEffects && !ctx.applyingDeferredHostEffects) {
+      return {
+        success: true,
+        outcome: "unchanged",
+        message: "Hermes host config deferred until rendered lifecycle eligibility passes",
+      };
+    }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
     const exists = existsSync(path);

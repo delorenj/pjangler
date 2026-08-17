@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // src/index.ts
-import { spawnSync as spawnSync9 } from "node:child_process";
-import { existsSync as existsSync14, readFileSync as readFileSync12, statSync as statSync4 } from "node:fs";
-import { basename as basename5, join as join19, resolve as resolve8 } from "node:path";
+import { spawnSync as spawnSync11 } from "node:child_process";
+import { existsSync as existsSync17, readFileSync as readFileSync14, statSync as statSync4 } from "node:fs";
+import { basename as basename6, join as join22, resolve as resolve9 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -18,8 +18,8 @@ function deriveProfileName(repo, role) {
 
 // src/commands/hermes/EnsureTemplateConfig.ts
 import { homedir as homedir5, platform } from "node:os";
-import { existsSync as existsSync11, mkdirSync as mkdirSync5, writeFileSync as writeFileSync6 } from "node:fs";
-import { join as join13, dirname as dirname6 } from "node:path";
+import { existsSync as existsSync14, mkdirSync as mkdirSync5, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join16, dirname as dirname7 } from "node:path";
 
 // src/commands/Command.ts
 import { existsSync, writeFileSync, mkdirSync } from "fs";
@@ -58,9 +58,9 @@ var Command = class {
 };
 
 // src/parity/index.ts
-import { existsSync as existsSync10 } from "node:fs";
+import { existsSync as existsSync13 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname5, join as join12, resolve as resolve6 } from "node:path";
+import { dirname as dirname6, join as join15, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/recipes/Recipe.ts
@@ -614,10 +614,10 @@ function parseTomlTables(content) {
     const raw = assignment[2];
     const multiline = raw.match(/^("""|''')/);
     if (multiline) {
-      const delimiter2 = multiline[1];
-      if (raw.slice(3).includes(delimiter2)) continue;
+      const delimiter3 = multiline[1];
+      if (raw.slice(3).includes(delimiter3)) continue;
       for (index += 1; index < lines.length; index += 1) {
-        if (lines[index].includes(delimiter2)) break;
+        if (lines[index].includes(delimiter3)) break;
       }
       continue;
     }
@@ -6164,7 +6164,7 @@ var PromptForAgentConfig = class extends Command {
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { homedir as homedir3 } from "node:os";
-import { join as join7, dirname as dirname4 } from "node:path";
+import { join as join7, dirname as dirname4, relative as relative5 } from "node:path";
 import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import * as p2 from "@clack/prompts";
@@ -7316,6 +7316,60 @@ function isRecord(value) {
 }
 
 // src/commands/hermes/RunCopierTemplate.ts
+var TICKET_PROVIDER_CREDENTIAL_KEYS = /* @__PURE__ */ new Set([
+  "PLANE_API_KEY",
+  "TRELLO_KEY",
+  "TRELLO_TOKEN",
+  "LINEAR_API_KEY"
+]);
+var INTERACTIVE_CHANNEL_CREDENTIAL_KEYS = /* @__PURE__ */ new Set([
+  "TELEGRAM_BOT_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "CF_EMAIL_ROUTING_TOKEN"
+]);
+function scrubTicketProviderCredentials(env2) {
+  for (const key of Object.keys(env2)) {
+    if (TICKET_PROVIDER_CREDENTIAL_KEYS.has(key) || /^PLANE_[A-Z0-9_]+_API_KEY$/.test(key)) {
+      delete env2[key];
+    }
+  }
+}
+function scrubInteractiveChannelCredentials(env2) {
+  for (const key of INTERACTIVE_CHANNEL_CREDENTIAL_KEYS) delete env2[key];
+  delete env2.ENABLE_SLACK;
+  delete env2.WIRE_SLACK;
+}
+function registerRenderedAgent(ctx, roleDir, role) {
+  const manifestPath = join7(ctx.targetDir, ".project.json");
+  if (!existsSync5(manifestPath) || !ctx.targetRepo) return;
+  const current = readFileSync6(manifestPath, "utf8");
+  const parsed = JSON.parse(current);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${manifestPath} must contain a JSON object`);
+  }
+  const manifest = parsed;
+  const rawAgents = manifest.agents;
+  if (rawAgents !== void 0 && (!rawAgents || typeof rawAgents !== "object" || Array.isArray(rawAgents))) {
+    throw new Error(`${manifestPath} agents must contain a JSON object`);
+  }
+  const agents = rawAgents ?? {};
+  const agentId = ctx.agentId ?? deriveAgentId(ctx.targetRepo, role);
+  Object.defineProperty(agents, agentId, {
+    value: {
+      role,
+      role_dir: relative5(ctx.targetDir, roleDir),
+      provisioning_state: "provisioned"
+    },
+    configurable: true,
+    enumerable: true,
+    writable: true
+  });
+  manifest.agents = agents;
+  const next = `${JSON.stringify(manifest, null, 2)}
+`;
+  if (next !== current) writeFileSync4(manifestPath, next, "utf8");
+}
 function resolveVendoredTemplate(name) {
   let dir;
   try {
@@ -7393,13 +7447,24 @@ var RunCopierTemplate = class extends Command {
       ...process.env,
       SKIP_TELEGRAM: "1",
       SKIP_EMAIL: "1",
+      SKIP_SLACK: ctx.deferredExternalEffects ? "1" : "0",
+      // Fresh project targets do not have their own .git directory until the
+      // project transaction's final phase. Pin scripts to the caller-resolved
+      // root so they can never climb into an enclosing checkout.
+      PJANGLER_PROJECT_ROOT: ctx.targetDir,
+      // Config, fleet env/profile, and registry are host-global state. MCP
+      // renders repo-local files first and executes those scripts only after a
+      // structural lifecycle gate has accepted the render.
+      SKIP_HOST_STATE: ctx.deferredExternalEffects ? "1" : "0",
       // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
       // per-profile file consumer, even when an older template still exposes it.
-      SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
-      SKIP_PLANE: ctx.skipPlane ? "1" : "0",
+      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : ctx.skipRuntimeRepo ? "1" : "0",
+      SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
-      SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
+      SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0"
     };
+    if (ctx.deferredExternalEffects) scrubInteractiveChannelCredentials(env2);
+    if (ctx.deferredExternalEffects || ctx.skipPlane) scrubTicketProviderCredentials(env2);
     const LOCAL_TEMPLATE = join7(homedir3(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
     const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync5(join7(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
@@ -7458,10 +7523,11 @@ var RunCopierTemplate = class extends Command {
       const current = readFileSync6(roleManifest, "utf8");
       const document = YAML3.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
-      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
-      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
+      document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], ctx.deferredExternalEffects ? "deferred" : ctx.skipSystemd ? "deferred" : "required");
       const next = String(document);
       if (next !== current) writeFileSync4(roleManifest, next, "utf8");
+      registerRenderedAgent(ctx, roleDir, safeRole);
     } catch (error) {
       return {
         success: false,
@@ -7884,8 +7950,241 @@ var PrintHermesSummary = class extends Command {
   }
 };
 
+// src/commands/hermes/ApplyDeferredExternalEffects.ts
+import { spawnSync as spawnSync7 } from "node:child_process";
+import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
+import { join as join11 } from "node:path";
+import YAML4 from "yaml";
+var ApplyDeferredExternalEffects = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    const selected = ctx.deferredExternalEffects;
+    if (!selected || !selected.runtimeRepo && !selected.ticketBoard && !selected.systemd) {
+      return { success: true, outcome: "unchanged", message: "Hermes external effects not selected" };
+    }
+    if (!ctx.roleDir) {
+      return { success: false, outcome: "failed", message: "Hermes roleDir is unavailable for deferred external effects" };
+    }
+    const env2 = {
+      ...process.env,
+      PJANGLER_PROJECT_ROOT: ctx.targetDir,
+      SKIP_HOST_STATE: "0",
+      SKIP_TELEGRAM: "1",
+      SKIP_EMAIL: "1",
+      SKIP_SLACK: "1",
+      SKIP_BLOODBANK: "1",
+      SKIP_RUNTIME_REPO: selected.runtimeRepo ? "0" : "1",
+      SKIP_PLANE: selected.ticketBoard ? "0" : "1",
+      SKIP_SYSTEMD: selected.systemd ? "0" : "1"
+    };
+    scrubInteractiveChannelCredentials(env2);
+    if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
+    const roleManifest = join11(ctx.roleDir, "role.yaml");
+    const scripts = [
+      ...selected.runtimeRepo ? ["20-runtime-repo.sh"] : [],
+      ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
+      ...selected.systemd ? ["70-systemd.sh"] : [],
+      // Refresh fleet metadata after a board binding or runtime/systemd state
+      // changes. 80-registry.sh is idempotent and performs no provider call.
+      "80-registry.sh"
+    ];
+    const logs = [];
+    for (const script of scripts) {
+      const path = join11(ctx.roleDir, ".scripts", script);
+      if (!existsSync9(path)) {
+        return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
+      }
+      const result = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      if (String(result.stdout ?? "").trim()) logs.push(String(result.stdout).trim());
+      if (String(result.stderr ?? "").trim()) logs.push(String(result.stderr).trim());
+      if (result.error || result.status !== 0) {
+        const detail = result.error?.message ?? logs.at(-1) ?? `status ${result.status ?? "unknown"}`;
+        return { success: false, outcome: "failed", message: `${script} failed: ${detail}` };
+      }
+    }
+    try {
+      const current = readFileSync8(roleManifest, "utf8");
+      const document = YAML4.parseDocument(current);
+      if (document.errors.length) throw document.errors[0];
+      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], selected.systemd ? "required" : "deferred");
+      const next = String(document);
+      if (next !== current) writeFileSync6(roleManifest, next, "utf8");
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to record applied Hermes deployment metadata: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    return {
+      success: true,
+      outcome: "changed",
+      message: `Applied deferred Hermes external effects: ${scripts.join(", ")}${logs.length ? `
+${logs.join("\n")}` : ""}`
+    };
+  }
+};
+
+// src/commands/hermes/ApplyDeferredHostEffects.ts
+import { spawnSync as spawnSync8 } from "node:child_process";
+import { existsSync as existsSync10 } from "node:fs";
+import { join as join12 } from "node:path";
+var ApplyDeferredHostEffects = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    if (!ctx.deferredExternalEffects) {
+      return { success: true, outcome: "unchanged", message: "Hermes host effects use template sequencing" };
+    }
+    if (!ctx.roleDir) {
+      return { success: false, outcome: "failed", message: "Hermes roleDir is unavailable for deferred host effects" };
+    }
+    let config;
+    ctx.applyingDeferredHostEffects = true;
+    try {
+      config = await new EnsureTemplateConfig(ctx).invoke();
+    } finally {
+      ctx.applyingDeferredHostEffects = false;
+    }
+    if (!config.success) return config;
+    const env2 = {
+      ...process.env,
+      PJANGLER_PROJECT_ROOT: ctx.targetDir,
+      SKIP_HOST_STATE: "0",
+      SKIP_TELEGRAM: "1",
+      SKIP_EMAIL: "1",
+      SKIP_SLACK: "1",
+      SKIP_BLOODBANK: "1",
+      SKIP_RUNTIME_REPO: "1",
+      SKIP_PLANE: "1",
+      SKIP_SYSTEMD: "1"
+    };
+    scrubTicketProviderCredentials(env2);
+    scrubInteractiveChannelCredentials(env2);
+    const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
+    const logs = [];
+    for (const script of scripts) {
+      const path = join12(ctx.roleDir, ".scripts", script);
+      if (!existsSync10(path)) {
+        return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
+      }
+      const result = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      if (String(result.stdout ?? "").trim()) logs.push(String(result.stdout).trim());
+      if (String(result.stderr ?? "").trim()) logs.push(String(result.stderr).trim());
+      if (result.error || result.status !== 0) {
+        const detail = result.error?.message ?? logs.at(-1) ?? `status ${result.status ?? "unknown"}`;
+        return { success: false, outcome: "failed", message: `${script} failed: ${detail}` };
+      }
+    }
+    return {
+      success: true,
+      outcome: "changed",
+      message: `Applied deferred Hermes host effects: ${scripts.join(", ")}${logs.length ? `
+${logs.join("\n")}` : ""}`
+    };
+  }
+};
+
 // src/recipes/HermesAgentRecipe.ts
-import { resolve as resolve5 } from "node:path";
+import { resolve as resolve6 } from "node:path";
+
+// src/lifecycle/preflight.ts
+import { accessSync, constants as constants2, existsSync as existsSync11, lstatSync as lstatSync4, readFileSync as readFileSync9, realpathSync as realpathSync3 } from "node:fs";
+import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join13, relative as relative6, resolve as resolve5 } from "node:path";
+import YAML5 from "yaml";
+function containedBy(parent, candidate) {
+  const rel = relative6(resolve5(parent), resolve5(candidate));
+  return rel === "" || !rel.startsWith("..") && !isAbsolute2(rel);
+}
+function regularContainedFile(root, path, label) {
+  try {
+    const rootReal = realpathSync3(root);
+    const fileReal = realpathSync3(path);
+    if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
+    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+function requireFiles(templateRoot, files, label) {
+  for (const rel of files) {
+    const result = regularContainedFile(templateRoot, join13(templateRoot, rel), `${label} ${rel}`);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+function preflightRenderedHermes(options) {
+  const target = resolve5(options.targetDir);
+  const roleDir = resolve5(options.roleDir);
+  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
+  try {
+    const stat = lstatSync4(roleDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return { ok: false, error: "rendered Hermes role must be a real directory" };
+    }
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const templateScripts = join13(resolve5(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
+  const renderedScripts = join13(roleDir, ".scripts");
+  const requiredFiles = [
+    "role.yaml",
+    "SOUL.md",
+    "hermes",
+    ".gitignore",
+    ".runtime-scaffold/README.md",
+    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
+  ];
+  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
+  if (!required.ok) return required;
+  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+    try {
+      if (readFileSync9(join13(renderedScripts, script), "utf8") !== readFileSync9(join13(templateScripts, script), "utf8")) {
+        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  let role;
+  try {
+    const parsed = YAML5.parse(readFileSync9(join13(roleDir, "role.yaml"), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
+    }
+    role = parsed;
+  } catch (error) {
+    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
+    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
+  }
+  const bloodbank = role.bloodbank;
+  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
+    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
+  }
+  const deployment = role.deployment;
+  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
+    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
+  }
+  const manifestPath = join13(target, ".project.json");
+  if (existsSync11(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync9(manifestPath, "utf8"));
+      const agents = manifest.agents;
+      const declared = agents?.[options.agentId];
+      if (!declared || declared.role !== options.role || declared.role_dir !== relative6(target, roleDir) || declared.provisioning_state !== "provisioned") {
+        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
+      }
+    } catch (error) {
+      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  return { ok: true };
+}
+
+// src/recipes/HermesAgentRecipe.ts
 var HermesAgentRecipe = class extends Recipe {
   checks = createHermesChecks();
   metadata = {
@@ -7928,7 +8227,7 @@ var HermesAgentRecipe = class extends Recipe {
       const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
       let status = result.outcome ?? (result.success ? ctx.dryRun && result.filePath ? "planned" : result.filePath ? "changed" : "unchanged" : "failed");
       if (result.success && !ctx.dryRun && observedChanges.length) status = "changed";
-      const declaredChanges = status === "changed" && result.filePath ? [resolve5(ctx.targetDir, result.filePath)] : [];
+      const declaredChanges = status === "changed" && result.filePath ? [resolve6(ctx.targetDir, result.filePath)] : [];
       const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
       phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result.message || void 0 });
       changedFiles.push(...actualChanges);
@@ -7936,6 +8235,42 @@ var HermesAgentRecipe = class extends Recipe {
       if (status === "failed" || status === "cancelled") {
         errors.push(result.message || `${CommandClass.name} ${status}`);
         break;
+      }
+      if (!ctx.dryRun && CommandClass === RunCopierTemplate && ctx.deferredExternalEffects) {
+        const hermesContext2 = ctx;
+        const eligibility = hermesContext2.roleDir && hermesContext2.targetRepo && hermesContext2.role && hermesContext2.agentId ? preflightRenderedHermes({
+          pjanglerRoot: ctx.pjanglerRoot,
+          targetDir: ctx.targetDir,
+          roleDir: hermesContext2.roleDir,
+          targetRepo: hermesContext2.targetRepo,
+          role: hermesContext2.role,
+          agentId: hermesContext2.agentId
+        }) : { ok: false, error: "Hermes render did not establish role identity" };
+        phases.push({
+          id: "hermes.rendered-eligibility",
+          status: eligibility.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: eligibility.ok ? "Rendered Hermes lifecycle eligibility passed" : eligibility.error
+        });
+        if (!eligibility.ok) {
+          errors.push(`hermes.rendered-eligibility: ${eligibility.error ?? "unknown eligibility failure"}`);
+          break;
+        }
+        const beforeHost = snapshotTree(ctx.targetDir);
+        const host = await new ApplyDeferredHostEffects(ctx).invoke();
+        const hostChanges = changedTreePaths(ctx.targetDir, beforeHost, snapshotTree(ctx.targetDir));
+        phases.push({
+          id: "hermes.host-effects",
+          status: host.success ? hostChanges.length ? "changed" : "unchanged" : "failed",
+          changedFiles: host.success ? hostChanges : [],
+          message: host.message || void 0
+        });
+        changedFiles.push(...hostChanges);
+        if (host.message) logs.push(host.message);
+        if (!host.success) {
+          errors.push(host.message || "Deferred Hermes host effects failed");
+          break;
+        }
       }
     }
     const commandResult = {
@@ -7949,7 +8284,46 @@ var HermesAgentRecipe = class extends Recipe {
     };
     if (!commandResult.ok) return commandResult;
     const lifecycle = await this.initializeOwnedChecks(ctx);
-    return mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
+    const localResult = mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
+    if (!localResult.ok || ctx.dryRun) return localResult;
+    const hermesContext = ctx;
+    if (hermesContext.deferredExternalEffects?.owner !== "hermes") return localResult;
+    const selected = hermesContext.deferredExternalEffects;
+    if (!selected.runtimeRepo && !selected.ticketBoard && !selected.systemd) return localResult;
+    const beforeExternal = snapshotTree(ctx.targetDir);
+    const external = await new ApplyDeferredExternalEffects(ctx).invoke();
+    const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
+    const externalResult = {
+      recipeId: this.metadata.id,
+      ok: external.success,
+      dryRun: false,
+      changedFiles: externalChanges,
+      logs: external.message ? [external.message] : [],
+      errors: external.success ? [] : [external.message || "Deferred Hermes external effects failed"],
+      phases: [{
+        id: "hermes.external-effects",
+        status: external.success ? "changed" : "failed",
+        changedFiles: external.success ? externalChanges : [],
+        message: external.message || void 0
+      }]
+    };
+    if (!externalResult.ok) return mergeInitResults(this.metadata.id, false, [localResult, externalResult]);
+    const findings = this.audit(ctx).filter((finding) => finding.status !== "pass" && finding.status !== "skip");
+    const verification = {
+      recipeId: this.metadata.id,
+      ok: findings.length === 0,
+      dryRun: false,
+      changedFiles: [],
+      logs: [],
+      errors: findings.map((finding) => `${finding.id}: ${finding.summary}`),
+      phases: [{
+        id: "hermes.postcondition-audit",
+        status: findings.length ? "failed" : "unchanged",
+        changedFiles: [],
+        message: findings.length ? "Hermes postcondition audit failed" : "Hermes postcondition audit passed"
+      }]
+    };
+    return mergeInitResults(this.metadata.id, false, [localResult, externalResult, verification]);
   }
   printNextSteps() {
   }
@@ -8114,9 +8488,9 @@ var NodeRecipe = class extends Recipe {
 };
 
 // src/recipes/ProjectRecipe.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync9, readFileSync as readFileSync8, rmSync as rmSync3 } from "node:fs";
-import { join as join11 } from "node:path";
+import { spawnSync as spawnSync9 } from "node:child_process";
+import { existsSync as existsSync12, readFileSync as readFileSync10, rmSync as rmSync3 } from "node:fs";
+import { join as join14 } from "node:path";
 var BOOTSTRAP_GIT_IDENTITY = {
   GIT_AUTHOR_NAME: "Pjangler Lifecycle",
   GIT_AUTHOR_EMAIL: "pjangler@localhost.invalid",
@@ -8127,7 +8501,7 @@ var PRODUCTION_RUNTIME = {
   executePlan: executeProjectInitPlan,
   preflightBmad: preflightBmadLifecycle,
   runGit(cwd, args, options) {
-    const result = spawnSync7("git", [...args], {
+    const result = spawnSync9("git", [...args], {
       cwd,
       encoding: "utf8",
       env: options?.env ? { ...process.env, ...options.env } : process.env
@@ -8153,12 +8527,12 @@ function publicMigration(report) {
   };
 }
 function hasGitRepository(runtime, targetDir) {
-  if (!existsSync9(join11(targetDir, ".git"))) return false;
+  if (!existsSync12(join14(targetDir, ".git"))) return false;
   return runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]).status === 0;
 }
 function refreshPlanFromCanonicalManifest(plan) {
-  const manifestPath = join11(plan.project.repo_path, ".project.json");
-  const manifest = JSON.parse(readFileSync8(manifestPath, "utf8"));
+  const manifestPath = join14(plan.project.repo_path, ".project.json");
+  const manifest = JSON.parse(readFileSync10(manifestPath, "utf8"));
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
   }
@@ -8224,7 +8598,7 @@ var ProjectRecipe = class extends Recipe {
     const logs = [];
     const errors = [];
     const changedFiles = [];
-    const targetExistedAtStart = existsSync9(targetDir);
+    const targetExistedAtStart = existsSync12(targetDir);
     const transactionContext = {
       ...ctx,
       targetDir,
@@ -8232,6 +8606,7 @@ var ProjectRecipe = class extends Recipe {
       bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin
     };
     let agentResult;
+    let provisionedAgentContext;
     let migrationReport;
     let audit;
     try {
@@ -8246,9 +8621,10 @@ var ProjectRecipe = class extends Recipe {
         if (!preflight.ok) errors.push(`BMAD preflight failed: ${preflight.error ?? "unknown error"}`);
       }
       const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
+      const externalPlanActions = plan.actions.filter((action) => action.kind === "ticket-provider.create-or-link");
       const filesystemPlan = {
         ...plan,
-        actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent")
+        actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent" && action.kind !== "ticket-provider.create-or-link")
       };
       const planBlocked = errors.length > 0;
       const executed = !planBlocked && filesystemPlan.actions.length ? await this.runtime.executePlan(filesystemPlan) : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
@@ -8291,9 +8667,10 @@ var ProjectRecipe = class extends Recipe {
           quiet: normalized.quiet ?? ctx.quiet ?? false,
           dryRun: false
         };
+        provisionedAgentContext = { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir };
         agentResult = await this.registry.initRecipe(
           "hermes-agent",
-          { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir },
+          provisionedAgentContext,
           agentContext
         );
         logs.push(...agentResult.logs);
@@ -8335,21 +8712,22 @@ var ProjectRecipe = class extends Recipe {
         })));
         errors.push(...migrationReport.results.filter((result) => result.status === "blocked").map((result) => `${result.id}: ${result.summary}`));
       }
-      audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
-      if (audit && !audit.ok) {
-        errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
+      const eligibilityAudit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
+      audit = eligibilityAudit;
+      if (eligibilityAudit && !eligibilityAudit.ok) {
+        errors.push(...eligibilityAudit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
       }
       phases.push({
-        id: "project.audit",
-        status: audit?.ok ? "unchanged" : "failed",
+        id: "project.audit:eligibility",
+        status: eligibilityAudit?.ok ? "unchanged" : "failed",
         changedFiles: [],
-        message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped"
+        message: eligibilityAudit?.ok ? "Lifecycle eligibility audit passed before external effects" : "Lifecycle eligibility audit failed or was skipped; external effects remain disabled"
       });
       if (errors.length === 0 && mode === "create") {
         if (hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
         } else {
-          const gitPath = join11(targetDir, ".git");
+          const gitPath = join14(targetDir, ".git");
           for (const { args, label, options } of [
             { args: ["init", "--initial-branch=main"], label: "git init" },
             { args: ["add", "-A"], label: "git add" },
@@ -8365,7 +8743,7 @@ var ProjectRecipe = class extends Recipe {
               phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
               break;
             }
-            if (label === "git init" && existsSync9(gitPath)) changedFiles.push(gitPath);
+            if (label === "git init" && existsSync12(gitPath)) changedFiles.push(gitPath);
             logs.push(`${label}: ok`);
           }
           if (errors.length === 0) {
@@ -8373,7 +8751,7 @@ var ProjectRecipe = class extends Recipe {
             const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
             if (!headReady) {
               errors.push("git postcondition failed: repository or initial commit is missing");
-              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync9(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync12(gitPath) ? [gitPath] : [], message: errors.at(-1) });
             } else {
               if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
               phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
@@ -8381,7 +8759,8 @@ var ProjectRecipe = class extends Recipe {
           }
         }
       }
-      if (errors.length === 0 && registryActions.length) {
+      const boardEffectArmed = externalPlanActions.some((action) => action.kind === "ticket-provider.create-or-link" && action.enabled);
+      if (errors.length === 0 && registryActions.length && !boardEffectArmed) {
         const registryPlan = { ...plan, actions: registryActions };
         const persisted = await this.runtime.executePlan(registryPlan);
         logs.push(...persisted.logs);
@@ -8394,6 +8773,54 @@ var ProjectRecipe = class extends Recipe {
           message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; ")
         });
       }
+      if (errors.length === 0 && externalPlanActions.length) {
+        const externalPlan = {
+          ...plan,
+          actions: boardEffectArmed ? [...externalPlanActions, ...registryActions] : externalPlanActions
+        };
+        const external = await this.runtime.executePlan(externalPlan);
+        logs.push(...external.logs);
+        errors.push(...external.errors);
+        changedFiles.push(...external.changedFiles);
+        phases.push({
+          id: "project.external:ticket-provider",
+          status: external.ok ? external.changedFiles.length ? "changed" : "unchanged" : "failed",
+          changedFiles: external.ok ? external.changedFiles : [],
+          message: external.ok ? "Deferred ticket-provider/binding persistence phase completed" : external.errors.join("; ")
+        });
+      }
+      const deferred = provisionedAgentContext?.deferredExternalEffects;
+      if (errors.length === 0 && deferred?.owner === "project" && (deferred.runtimeRepo || deferred.ticketBoard || deferred.systemd)) {
+        const beforeExternal = snapshotTree(targetDir);
+        const external = await new ApplyDeferredExternalEffects(provisionedAgentContext).invoke();
+        const externalChanges = changedTreePaths(targetDir, beforeExternal, snapshotTree(targetDir));
+        logs.push(...external.message ? [external.message] : []);
+        if (!external.success) errors.push(external.message || "Deferred Hermes external effects failed");
+        changedFiles.push(...externalChanges);
+        phases.push({
+          id: "project.external:hermes",
+          status: external.success ? "changed" : "failed",
+          changedFiles: external.success ? externalChanges : [],
+          message: external.message || void 0
+        });
+      }
+      if (errors.length === 0 && (externalPlanActions.length || deferred)) {
+        try {
+          refreshPlanFromCanonicalManifest(plan);
+        } catch (error) {
+          errors.push(`project manifest refresh after external effects failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : audit;
+      if (errors.length === 0 && audit && !audit.ok) {
+        errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
+      }
+      phases.push({
+        id: "project.audit",
+        status: errors.length === 0 && audit?.ok ? "unchanged" : "failed",
+        changedFiles: [],
+        message: errors.length === 0 && audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped"
+      });
     } catch (error) {
       errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
       phases.push({
@@ -8403,7 +8830,7 @@ var ProjectRecipe = class extends Recipe {
         message: errors.at(-1)
       });
     }
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync9(targetDir)) {
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync12(targetDir)) {
       try {
         rmSync3(targetDir, { recursive: true, force: true });
         changedFiles.length = 0;
@@ -8642,15 +9069,15 @@ var recipeRegistry = new RecipeRegistry([
 
 // src/parity/index.ts
 function resolvePjanglerRoot2() {
-  let dir = dirname5(fileURLToPath4(import.meta.url));
-  while (dir !== dirname5(dir)) {
-    if (existsSync10(join12(dir, "package.json")) && existsSync10(join12(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname5(dir);
+  let dir = dirname6(fileURLToPath4(import.meta.url));
+  while (dir !== dirname6(dir)) {
+    if (existsSync13(join15(dir, "package.json")) && existsSync13(join15(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname6(dir);
   }
-  return resolve6(process.cwd());
+  return resolve7(process.cwd());
 }
 function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
-  const repoRoot = resolve6(repoArg ?? process.cwd());
+  const repoRoot = resolve7(repoArg ?? process.cwd());
   return {
     ...overrides,
     targetDir: repoRoot,
@@ -8696,28 +9123,28 @@ function resolveTemplateConfigPath() {
   const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  const base = xdg && xdg.length ? xdg : join13(homedir5(), ".config");
-  return join13(base, "hermes-agent-template", "config.toml");
+  const base = xdg && xdg.length ? xdg : join16(homedir5(), ".config");
+  return join16(base, "hermes-agent-template", "config.toml");
 }
 function detectHermesBin(home) {
   const candidates = [
-    join13(home, "code", "hermes-agent", "venv", "bin", "hermes"),
-    join13(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
-    join13(home, ".local", "bin", "hermes")
+    join16(home, "code", "hermes-agent", "venv", "bin", "hermes"),
+    join16(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
+    join16(home, ".local", "bin", "hermes")
   ];
   for (const c of candidates) {
-    if (existsSync11(c)) return c;
+    if (existsSync14(c)) return c;
   }
   return candidates[0];
 }
 function renderHostConfig() {
   const home = homedir5();
   const hermesBin = detectHermesBin(home);
-  const hermesRepo = join13(home, "code", "hermes-agent");
-  const scaffoldDir = join13(home, "code", "hermes-agent-template", "runtime-scaffold");
-  const skillsDir = join13(home, ".agents", "skills");
-  const pmExternalSkillGlobalDir = join13(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join13(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
+  const hermesRepo = join16(home, "code", "hermes-agent");
+  const scaffoldDir = join16(home, "code", "hermes-agent-template", "runtime-scaffold");
+  const skillsDir = join16(home, ".agents", "skills");
+  const pmExternalSkillGlobalDir = join16(home, "code", "skillex", "skill-sets", "global", ".system");
+  const pmExternalSkillBmadDir = join16(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
   return `# hermes-agent-template \u2014 host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
 #
@@ -8764,9 +9191,16 @@ compose_dir = "~/code/33GOD/bloodbank"
 var EnsureTemplateConfig = class extends Command {
   async invoke() {
     const ctx = this.context;
+    if (ctx.deferredExternalEffects && !ctx.applyingDeferredHostEffects) {
+      return {
+        success: true,
+        outcome: "unchanged",
+        message: "Hermes host config deferred until rendered lifecycle eligibility passes"
+      };
+    }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
-    const exists = existsSync11(path);
+    const exists = existsSync14(path);
     if (exists && !force) {
       if (!ctx.quiet) console.log(`\u2713 Config present: ${path}`);
       return { success: true, outcome: "unchanged", message: "" };
@@ -8776,8 +9210,8 @@ var EnsureTemplateConfig = class extends Command {
       return { success: true, outcome: "planned", filePath: path, message: "" };
     }
     try {
-      mkdirSync5(dirname6(path), { recursive: true });
-      writeFileSync6(path, renderHostConfig());
+      mkdirSync5(dirname7(path), { recursive: true });
+      writeFileSync7(path, renderHostConfig());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, outcome: "failed", message: `Failed to write ${path}: ${msg}` };
@@ -8792,8 +9226,8 @@ var EnsureTemplateConfig = class extends Command {
 
 // src/commands/AgentHooksCommands.ts
 import { homedir as homedir6 } from "node:os";
-import { join as join14, dirname as dirname7 } from "node:path";
-import { existsSync as existsSync12, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join17, dirname as dirname8 } from "node:path";
+import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 var AGENT_HOOKS_SKIP_MESSAGE = "\u21B7 agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 function resolveTemplateRoot() {
@@ -8802,18 +9236,18 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname7(fileURLToPath5(import.meta.url));
+    let dir = dirname8(fileURLToPath5(import.meta.url));
     for (let i = 0; i < 8; i++) {
-      candidates.push(join14(dir, "templates", "commonproject", "template"));
-      const parent = dirname7(dir);
+      candidates.push(join17(dir, "templates", "commonproject", "template"));
+      const parent = dirname8(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
-  candidates.push(join14(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join17(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
-    if (existsSync12(join14(c, ".agents", "hooks", "hooks.master.json"))) return c;
+    if (existsSync15(join17(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
   throw new Error(
     "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
@@ -8839,15 +9273,15 @@ var CopyAgentHooksTree = class extends Command {
     const created = [];
     const skipped = [];
     for (const { rel, dir } of items) {
-      const src = join14(templateRoot, rel);
-      const dest = join14(this.context.targetDir, rel);
-      if (!existsSync12(src)) continue;
-      if (existsSync12(dest) && !this.context.force) {
+      const src = join17(templateRoot, rel);
+      const dest = join17(this.context.targetDir, rel);
+      if (!existsSync15(src)) continue;
+      if (existsSync15(dest) && !this.context.force) {
         skipped.push(rel);
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync6(dirname7(dest), { recursive: true });
+        mkdirSync6(dirname8(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -8868,14 +9302,14 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     if (!resolveAgentHooksLayer2()) {
       return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
     }
-    const misePath = join14(this.context.targetDir, "mise.toml");
-    if (!existsSync12(misePath)) {
+    const misePath = join17(this.context.targetDir, "mise.toml");
+    if (!existsSync15(misePath)) {
       return {
         success: false,
         message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pjangler init mise` first, then re-run."
       };
     }
-    let content = readFileSync9(misePath, "utf8");
+    let content = readFileSync11(misePath, "utf8");
     if (content.includes(_WireMiseAgentHooks.MARKER)) {
       return { success: true, message: this.formatMessage("\u2713 mise.toml already wired for agent-hooks") };
     }
@@ -8944,7 +9378,7 @@ ${leaveBlock}`);
       ""
     ].join("\n");
     content = content.replace(/\n*$/, "\n") + appended;
-    if (!this.context.dryRun) writeFileSync7(misePath, content);
+    if (!this.context.dryRun) writeFileSync8(misePath, content);
     if (wiredHooks) {
       return { success: true, message: this.formatMessage("\u2705 Wired mise.toml ([hooks] enter/leave + tasks)") };
     }
@@ -9075,7 +9509,7 @@ if __name__ == "__main__":
 
 // src/commands/AddMiseCodegraphScript.ts
 import { chmodSync as chmodSync2 } from "fs";
-import { join as join15 } from "path";
+import { join as join18 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
     const filePath = ".mise/scripts/codegraph.sh";
@@ -9129,7 +9563,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync2(join15(this.context.targetDir, filePath), 493);
+      chmodSync2(join18(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -9299,19 +9733,19 @@ function getCommandsByGroup() {
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
 // src/describe/index.ts
-import { existsSync as existsSync13, readFileSync as readFileSync10, readdirSync as readdirSync5, statSync as statSync3 } from "node:fs";
-import { join as join17, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync16, readFileSync as readFileSync12, readdirSync as readdirSync5, statSync as statSync3 } from "node:fs";
+import { join as join20, resolve as resolve8 } from "node:path";
 
 // src/describe/activity.ts
-import { spawn, spawnSync as spawnSync8 } from "node:child_process";
+import { spawn, spawnSync as spawnSync10 } from "node:child_process";
 import { statSync as statSync2 } from "node:fs";
-import { join as join16 } from "node:path";
+import { join as join19 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
 var GIT_MAX_BUFFER = 16 * 1024 * 1024;
 function git(repo, args) {
-  const result = spawnSync8("git", ["-C", repo, ...args], {
+  const result = spawnSync10("git", ["-C", repo, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER
@@ -9320,7 +9754,7 @@ function git(repo, args) {
   return result.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve9) => {
+  return new Promise((resolve10) => {
     const child = spawn("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
@@ -9328,7 +9762,7 @@ function gitAsync(repo, args) {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve9(value);
+      resolve10(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -9470,7 +9904,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync2(join16(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync2(join19(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -9612,7 +10046,7 @@ var CONFIG_FILES = [
 ];
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync10(path, "utf8"));
+    const parsed = JSON.parse(readFileSync12(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -9634,7 +10068,7 @@ function describeType(repo) {
   const evidence = [];
   const note2 = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync13(join17(repo, marker.file))) continue;
+    if (!existsSync16(join20(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note2(marker.language, marker.file);
@@ -9648,9 +10082,9 @@ function describeType(repo) {
     }
   } catch {
   }
-  const pkg = readJson(join17(repo, "package.json"));
+  const pkg = readJson(join20(repo, "package.json"));
   if (pkg) {
-    if (existsSync13(join17(repo, "tsconfig.json"))) {
+    if (existsSync16(join20(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -9684,14 +10118,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync13(join17(repo, marker))) continue;
+    if (!existsSync16(join20(repo, marker))) continue;
     roles.push(role);
     note2(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join17(repo, ".project.json");
+  const manifestPath = join20(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -9699,8 +10133,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve7(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve7(project.repo_path) === resolved);
+    const resolved = resolve8(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve8(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -9711,7 +10145,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve7(record.repo_path) !== resolve7(repo)) {
+  if (record && resolve8(record.repo_path) !== resolve8(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -9776,7 +10210,7 @@ function describeSubsystems(repo, findings) {
   }
   return recipeRegistry.list().map((metadata) => {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
-    const evidence = markers.filter((marker) => existsSync13(join17(repo, marker)));
+    const evidence = markers.filter((marker) => existsSync16(join20(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding) => ({
       id: finding.id,
       title: finding.title,
@@ -9792,7 +10226,7 @@ function describeSubsystems(repo, findings) {
   });
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync13(join17(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync16(join20(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -9870,8 +10304,8 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve7(input.repoArg ?? process.cwd());
-  if (!existsSync13(repo)) throw new Error(`Path does not exist: ${repo}`);
+  const repo = resolve8(input.repoArg ?? process.cwd());
+  if (!existsSync16(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync3(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
@@ -10086,7 +10520,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve9) => {
+  return new Promise((resolve10) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -10106,7 +10540,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve9({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve10({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -10123,24 +10557,24 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve9({ outcome: "cancel", selected: [] });
+      resolve10({ outcome: "cancel", selected: [] });
     });
   });
 }
 
 // src/utils/version.ts
-import { readFileSync as readFileSync11 } from "node:fs";
-import { dirname as dirname8, join as join18 } from "node:path";
+import { readFileSync as readFileSync13 } from "node:fs";
+import { dirname as dirname9, join as join21 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
-    let dir = dirname8(fileURLToPath6(import.meta.url));
+    let dir = dirname9(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync11(join18(dir, "package.json"), "utf8");
+        const raw = readFileSync13(join21(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
-        const parent = dirname8(dir);
+        const parent = dirname9(dir);
         if (parent === dir) break;
         dir = parent;
       }
@@ -10177,18 +10611,18 @@ async function promptForRuleIds(rules) {
   return selected;
 }
 function readJson2(path) {
-  if (!existsSync14(path)) return void 0;
+  if (!existsSync17(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync12(path, "utf8"));
+    const parsed = JSON.parse(readFileSync14(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
   }
 }
 function findGitRoot(cwd) {
-  const result = spawnSync9("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  const result = spawnSync11("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result.status !== 0) return void 0;
-  return resolve8(result.stdout.trim());
+  return resolve9(result.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -10196,9 +10630,9 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join19(targetDir, ".project.json"));
-  const pkg = readJson2(join19(targetDir, "package.json"));
-  const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename5(targetDir)) || "Project";
+  const manifest = readJson2(join22(targetDir, ".project.json"));
+  const pkg = readJson2(join22(targetDir, "package.json"));
+  const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename6(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
     name,
@@ -10253,7 +10687,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync14(action.path) || readFileSync12(action.path, "utf8") !== next;
+    return !existsSync17(action.path) || readFileSync14(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -10301,26 +10735,26 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve8(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve9(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
-    const defaultName = name ?? basename5(cwd);
+    const defaultName = name ?? basename6(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join19(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join22(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve8(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve9(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync14(targetDir);
+  const targetExists = existsSync17(targetDir);
   if (targetExists && !statSync4(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve8(targetGitRoot) === resolve8(targetDir));
-  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename5(targetDir)) ?? "Project", description: "" };
+  const syncMode = Boolean(targetGitRoot && resolve9(targetGitRoot) === resolve9(targetDir));
+  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename6(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
   }

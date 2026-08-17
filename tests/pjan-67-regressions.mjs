@@ -15,6 +15,8 @@ const effectLog = join(temporary, "effects.log");
 const providerLog = join(temporary, "provider.log");
 const templateConfig = join(temporary, "config", "hermes-agent-template", "config.toml");
 const registryPath = join(temporary, "projects.yaml");
+const fleetHome = join(temporary, "fleet-home");
+const fleetRegistryPath = join(fleetHome, "agents-registry.yaml");
 
 mkdirSync(fakeBin, { recursive: true });
 mkdirSync(adapters, { recursive: true });
@@ -29,7 +31,22 @@ printf '%s\n' 'PJAN67_CHILD_STDOUT_NOISE'
 printf '%s\n' 'PJAN67_CHILD_STDERR_NOISE' >&2
 if [ -n "\${PJAN67_EFFECT_LOG:-}" ]; then
   printf 'copier:%s:%s:%s\n' "\${SKIP_RUNTIME_REPO:-unset}" "\${SKIP_PLANE:-unset}" "\${SKIP_SYSTEMD:-unset}" >> "\$PJAN67_EFFECT_LOG"
+  if env | grep -Eq '^(PLANE_API_KEY|PLANE_[A-Za-z0-9_]+_API_KEY|TRELLO_KEY|TRELLO_TOKEN|LINEAR_API_KEY)='; then
+    printf '%s\n' 'provider-credential-present' >> "\$PJAN67_EFFECT_LOG"
+  fi
 fi
+case "\$*" in
+  *pjan67-lifecycle-bootstrap*)
+    mkdir -p "\$PJAN67_BOOTSTRAP_TARGET/agents/hermes/pm"
+    printf '%s\n' 'repo: lifecycle-bootstrap' 'role: pm' 'agent_id: lifecycle-bootstrap-pm' 'bloodbank:' '  enabled: not-a-boolean' > "\$PJAN67_BOOTSTRAP_TARGET/agents/hermes/pm/role.yaml"
+    exit 0
+    ;;
+  *pjan67-lifecycle-hermes*)
+    mkdir -p "\$PJAN67_HERMES_TARGET/agents/hermes/pm"
+    printf '%s\n' 'repo: lifecycle-hermes' 'role: pm' 'agent_id: lifecycle-hermes-pm' 'bloodbank:' '  enabled: not-a-boolean' > "\$PJAN67_HERMES_TARGET/agents/hermes/pm/role.yaml"
+    exit 0
+    ;;
+esac
 exit 73
 `);
 
@@ -43,15 +60,36 @@ printf 'provider:%s\n' "\$*" >> "\$PJAN67_PROVIDER_LOG"
 printf '%s\n' '{"board_id":"must-not-be-created"}'
 `);
 
+executable(join(adapters, "trello.sh"), `#!/bin/sh
+printf 'provider:%s\n' "\$*" >> "\$PJAN67_PROVIDER_LOG"
+printf '%s\n' '{"board_id":"must-not-be-created"}'
+`);
+
+const lifecycleBootstrapTarget = join(temporary, "pjan67-lifecycle-bootstrap");
+const lifecycleHermesTarget = join(temporary, "pjan67-lifecycle-hermes");
+
 const serverEnv = {
   ...process.env,
   PATH: `${fakeBin}:${process.env.PATH}`,
   HERMES_TEMPLATE_CONFIG: templateConfig,
+  HERMES_FLEET_HOME: fleetHome,
+  HERMES_FLEET_REGISTRY_FILE: fleetRegistryPath,
   PJ_PROJECT_REGISTRY: registryPath,
   PJ_TICKET_PROVIDER_ADAPTERS: adapters,
   PLANE_API_KEY: "pjan67-test-key",
+  PLANE_TEST_SPACE_API_KEY: "pjan67-workspace-test-key",
+  TRELLO_KEY: "pjan67-trello-test-key",
+  TRELLO_TOKEN: "pjan67-trello-test-token",
+  LINEAR_API_KEY: "pjan67-linear-test-key",
+  TELEGRAM_BOT_TOKEN: "123456:pjan67-ambient-telegram-token",
+  SLACK_BOT_TOKEN: "xoxb-pjan67-ambient-bot-token",
+  SLACK_APP_TOKEN: "xapp-pjan67-ambient-app-token",
+  ENABLE_SLACK: "1",
+  CF_EMAIL_ROUTING_TOKEN: "pjan67-ambient-email-token",
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
+  PJAN67_BOOTSTRAP_TARGET: lifecycleBootstrapTarget,
+  PJAN67_HERMES_TARGET: lifecycleHermesTarget,
 };
 
 function payload(result) {
@@ -257,31 +295,136 @@ try {
   assert.equal(previewBoardAction.enabled, false, "skipPlane must dominate live=true in the plan");
   assert.match(previewBoardAction.reason, /skipPlane|disabled|skipped/i);
 
+  // A real lifecycle blocker already present in the target must be discovered
+  // by the filesystem-only preflight, before Copier or any config/profile/
+  // fleet/provider/systemd phase receives control.
+  const malformedExistingTarget = join(temporary, "malformed-existing-hermes");
+  const malformedRole = join(malformedExistingTarget, "agents", "hermes", "pm");
+  mkdirSync(malformedRole, { recursive: true });
+  writeFileSync(join(malformedRole, "role.yaml"), [
+    "repo: malformed-existing-hermes",
+    "role: pm",
+    "agent_id: malformed-existing-hermes-pm",
+    "bloodbank:",
+    "  enabled: not-a-boolean",
+    "",
+  ].join("\n"));
+  const configBeforeMalformed = existsSync(templateConfig) ? readFileSync(templateConfig) : undefined;
+  const malformedResult = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: { targetDir: malformedExistingTarget, role: "director", apply: true },
+  });
+  assert.equal(malformedResult.isError, true, "existing non-repairable Hermes lifecycle drift must fail preflight");
+  assert.equal(existsSync(join(malformedExistingTarget, "agents", "hermes", "director")), false, "preflight failure must not render a new role");
+  assert.equal(existsSync(effectLog), false, "preflight failure must not invoke Copier/Hermes/systemd");
+  assert.equal(existsSync(providerLog), false, "preflight failure must not invoke a provider");
+  assert.equal(existsSync(fleetRegistryPath), false, "preflight failure must not write the fleet registry");
+  assert.deepEqual(existsSync(templateConfig) ? readFileSync(templateConfig) : undefined, configBeforeMalformed, "preflight failure must not create or change host config");
+
   const existingProject = join(temporary, "existing-project");
   mkdirSync(join(existingProject, ".git"), { recursive: true });
   const failedLifecycle = await client.callTool({
     name: "pjangler_project_init",
     arguments: {
-      name: "Skip Plane Apply",
+      name: "Preflight Before Plane Apply",
       targetDir: existingProject,
       apply: true,
       live: true,
-      skipPlane: true,
+      provisionTicketBoard: true,
+      skipPlane: false,
+      ticketProvider: "plane",
     },
   });
   const failedLifecyclePayload = payload(failedLifecycle);
   assert.equal(failedLifecyclePayload.ok, false, "the intentionally incomplete existing repo must fail its structured lifecycle audit");
   assert.equal(failedLifecycle.isError, true, "structured lifecycle failure must be an MCP error result");
-  assert.equal(existsSync(providerLog), false, "skipPlane=true must prevent provider invocation even when live=true and credentials exist");
+  assert.equal(existsSync(join(existingProject, ".project.json")), false, "lifecycle eligibility must fail before manifest writes");
+  assert.equal(existsSync(registryPath), false, "lifecycle eligibility must fail before registry writes");
+  assert.equal(existsSync(providerLog), false, "lifecycle eligibility must fail before an armed provider invocation");
+
+  const failedBootstrapLifecycle = await client.callTool({
+    name: "pjangler_bootstrap_33god_project",
+    arguments: {
+      parentDir: temporary,
+      targetDir: lifecycleBootstrapTarget,
+      projectName: "PJAN67 Lifecycle Bootstrap",
+      projectSlug: "pjan67-lifecycle-bootstrap",
+      dryRun: false,
+      provisionAgent: true,
+      agentRole: "pm",
+      local: false,
+      live: true,
+      provisionTicketBoard: true,
+      skipPlane: false,
+      ticketProvider: "trello",
+    },
+  });
+  assert.equal(failedBootstrapLifecycle.isError, true, "an ineligible Copier must be a stable bootstrap MCP error");
+  assert.equal(existsSync(lifecycleBootstrapTarget), false, "bootstrap eligibility must fail before creating its target");
+  assert.equal(existsSync(templateConfig), false, "bootstrap eligibility must fail before host config writes");
+  assert.equal(existsSync(registryPath), false, "bootstrap eligibility must fail before registry writes");
+  assert.equal(existsSync(effectLog), false, "bootstrap eligibility must fail before Copier/systemd subprocesses");
+  assert.equal(existsSync(providerLog), false, "bootstrap eligibility must fail before Trello invocation");
+
+  mkdirSync(lifecycleHermesTarget);
+  const failedHermesLifecycle = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: {
+      targetDir: lifecycleHermesTarget,
+      role: "pm",
+      apply: true,
+    },
+  });
+  assert.equal(failedHermesLifecycle.isError, true, "an ineligible Copier must be a stable dedicated Hermes MCP error");
+  assert.equal(existsSync(join(lifecycleHermesTarget, "agents")), false, "Hermes eligibility must fail before agent files");
+  assert.equal(existsSync(templateConfig), false, "Hermes eligibility must fail before host config writes");
+  assert.equal(existsSync(effectLog), false, "Hermes eligibility must fail before Copier/systemd subprocesses");
+  assert.equal(existsSync(providerLog), false, "Hermes eligibility must fail before provider invocation");
 } finally {
   await client.close();
 }
 
 // Raw stdio proof: the fake Copier deliberately writes to both child streams.
-// The MCP server must capture those bytes and emit only newline-framed JSON-RPC
+// Use the attested, actually installed Copier with the real vendored template;
+// an isolated fake Hermes child emits both streams from a template task. The
+// MCP server must capture those bytes and emit only newline-framed JSON-RPC
 // messages on its own stdout.
+const rawFleet = join(temporary, "raw-fleet");
+const rawHermes = join(temporary, "raw-hermes");
+mkdirSync(rawFleet, { recursive: true });
+executable(rawHermes, `#!/bin/sh
+printf '%s\n' 'PJAN67_CHILD_STDOUT_NOISE'
+printf '%s\n' 'PJAN67_CHILD_STDERR_NOISE' >&2
+printf 'hermes-child:%s:%s:%s\n' "\${SKIP_RUNTIME_REPO:-unset}" "\${SKIP_PLANE:-unset}" "\${SKIP_SYSTEMD:-unset}" >> "\$PJAN67_EFFECT_LOG"
+if env | grep -Eq '^(PLANE_API_KEY|PLANE_[A-Za-z0-9_]+_API_KEY|TRELLO_KEY|TRELLO_TOKEN|LINEAR_API_KEY)=.+'; then
+  printf '%s\n' 'provider-credential-present' >> "\$PJAN67_EFFECT_LOG"
+fi
+if env | grep -Eq '^(TELEGRAM_BOT_TOKEN|SLACK_BOT_TOKEN|SLACK_APP_TOKEN|ENABLE_SLACK|WIRE_SLACK|CF_EMAIL_ROUTING_TOKEN)=.+'; then
+  printf '%s\n' 'interactive-channel-authority-present' >> "\$PJAN67_EFFECT_LOG"
+fi
+exit 73
+`);
 mkdirSync(dirname(templateConfig), { recursive: true });
-writeFileSync(templateConfig, "[github]\nruntime_repo_owner = \"\"\n", "utf8");
+writeFileSync(templateConfig, `[fleet]
+hermes_bin = "${rawHermes}"
+hermes_repo = "${join(temporary, "raw-hermes-repo")}"
+pjangler_bin = "${join(root, "dist", "index.js")}"
+hermes_git_url = "https://example.invalid/hermes.git"
+hermes_git_ref = "main"
+hermes_git_sha = "0000000000000000000000000000000000000000"
+fleet_env = "${join(rawFleet, "fleet.env")}"
+registry_file = "${join(rawFleet, "agents-registry.yaml")}"
+oauth_file = "${join(rawFleet, "auth.json")}"
+codex_home = "${join(rawFleet, "codex")}"
+canonical_skills_dir = "${join(rawFleet, "skills")}"
+
+[github]
+runtime_repo_owner = ""
+
+[plane]
+base = "https://plane.example.invalid"
+workspace = "test"
+`, "utf8");
 const rawTarget = join(temporary, "raw-stdio");
 mkdirSync(rawTarget);
 const rawInput = [
@@ -308,7 +451,16 @@ const rawInput = [
 ].map((message) => JSON.stringify(message)).join("\n") + "\n";
 const raw = spawnSync("node", [serverPath], {
   cwd: root,
-  env: serverEnv,
+  env: {
+    ...serverEnv,
+    PATH: process.env.PATH,
+    HERMES_BIN: rawHermes,
+    HERMES_FLEET_ENV: join(rawFleet, "fleet.env"),
+    HERMES_FLEET_REGISTRY_FILE: join(rawFleet, "agents-registry.yaml"),
+    HERMES_AGENT_REPO: join(temporary, "raw-hermes-repo"),
+    HERMES_OAUTH_FILE: join(rawFleet, "auth.json"),
+    CODEX_HOME: join(rawFleet, "codex"),
+  },
   input: rawInput,
   encoding: "utf8",
   timeout: 15_000,
@@ -324,8 +476,10 @@ const frames = raw.stdout.split(/\r?\n/).filter(Boolean).map((line, index) => {
 });
 const rawCall = frames.find((frame) => frame.id === 2);
 assert.ok(rawCall, `missing raw tools/call response: ${raw.stdout}`);
-assert.equal(rawCall.result?.isError, true, "the fake Copier failure must remain a structured MCP error");
-assert.match(readFileSync(effectLog, "utf8"), /copier:1:1:1/, "local apply must keep every unselected external effect disabled");
+assert.equal(rawCall.result?.isError, true, "the captured trusted-Copier child failure must remain a structured MCP error");
+assert.match(readFileSync(effectLog, "utf8"), /hermes-child:1:1:1/, "local apply must keep every unselected external effect disabled");
+assert.doesNotMatch(readFileSync(effectLog, "utf8"), /provider-credential-present/, "Copier must not inherit provider credentials without a positive board grant");
+assert.doesNotMatch(readFileSync(effectLog, "utf8"), /interactive-channel-authority-present/, "MCP Hermes children must not inherit unavailable interactive-channel authority");
 assert.equal(existsSync(providerLog), false, "raw local Hermes apply must not invoke the board provider");
 
 rmSync(temporary, { recursive: true, force: true });

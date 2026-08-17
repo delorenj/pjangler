@@ -22,6 +22,7 @@ import {
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
+import { preflightMcpLifecycle } from "./lifecycle/preflight";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -48,6 +49,8 @@ const PROJECT_SLUG_SCHEMA = safePathSegmentSchema("Project slug")
   .describe("A safe single path segment used as the project registry slug.");
 const AGENT_ROLE_SCHEMA = safePathSegmentSchema("Agent role")
   .describe("An arbitrary safe single path segment used beneath agents/hermes; not a fixed role enum.");
+const TARGET_REPO_SCHEMA = safePathSegmentSchema("Hermes target repository")
+  .describe("A safe repository/profile identity segment; defaults to the target directory basename.");
 const EXPLICIT_TARGET_DIR_SCHEMA = z.string().refine((value) => value.trim().length > 0, {
   message: "targetDir must be a non-empty explicit path",
 });
@@ -172,12 +175,23 @@ async function executeRegisteredProjectPlan(
   agentContext?: Partial<HermesAgentContext>,
   lifecycleOverrides: Partial<LifecycleContext> = {},
 ) {
+  const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput: ProjectRecipeInput = {
     plan,
     mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
-    agentContext,
+    agentContext: plannedAgent?.kind === "hermes.provision-agent"
+      ? {
+          ...agentContext,
+          deferredExternalEffects: {
+            runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
+            ticketBoard: !plannedAgent.context.skipPlane,
+            systemd: !plannedAgent.context.skipSystemd,
+            owner: "project",
+          },
+        }
+      : agentContext,
     quiet: true,
   };
   return await recipeRegistry.initRecipe(
@@ -191,6 +205,99 @@ async function executeRegisteredProjectPlan(
     }),
     projectInput,
   ) as ProjectRecipeResult;
+}
+
+function projectPreflightFailure(
+  plan: ReturnType<typeof planProjectInit>,
+  errors: readonly string[],
+  audit?: ReturnType<typeof runAudit>,
+): ProjectRecipeResult {
+  return {
+    recipeId: "project",
+    ok: false,
+    dryRun: false,
+    changedFiles: [],
+    logs: [],
+    errors: [...errors],
+    phases: [{
+      id: "project.preflight:lifecycle",
+      status: "failed",
+      changedFiles: [],
+      message: errors.join("; "),
+    }],
+    plan,
+    mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
+    audit,
+    selectedOperations: plan.actions.map((action) => action.kind),
+    selectedParityRules: [],
+  };
+}
+
+/**
+ * Reject non-repairable, already-present Hermes identity/scaffold failures
+ * before trusted Copier or any host script runs. The pm-scaffold audit is
+ * filesystem-only, so this check cannot itself invoke git, systemd, a provider,
+ * or another subprocess.
+ */
+function preflightExistingHermesScaffold(targetDir: string): string | undefined {
+  if (!existsSync(join(targetDir, "agents", "hermes"))) return undefined;
+  const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
+  if (!owner) return "Hermes lifecycle owner is unavailable";
+  const finding = owner.check.audit(lifecycleContext(targetDir, true));
+  if ((finding.status === "fail" || finding.status === "warn") && !finding.fixable) {
+    const detail = finding.details.length ? ` (${finding.details.join("; ")})` : "";
+    return `${finding.id}: ${finding.summary}${detail}`;
+  }
+  return undefined;
+}
+
+/**
+ * Establish every lifecycle failure knowable without mutation before the
+ * project transaction. Existing syncs may project a new canonical manifest,
+ * so sot.project-json is the one current finding covered by that planned local
+ * action. All other current drift would survive the operation and must block.
+ */
+function preflightProjectApply(
+  plan: ReturnType<typeof planProjectInit>,
+  pjanglerRoot: string,
+): ProjectRecipeResult | undefined {
+  const createsScaffold = plan.actions.some((action) => action.kind === "copier.copy.commonproject");
+  const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
+
+  if (!createsScaffold && provisionsAgent) {
+    const hermesBlocker = preflightExistingHermesScaffold(plan.project.repo_path);
+    if (hermesBlocker) return projectPreflightFailure(plan, [hermesBlocker]);
+  }
+
+  if (!createsScaffold) {
+    const audit = runAudit(plan.project.repo_path);
+    const blocking = audit.rules.filter((finding) => {
+      if (finding.status === "pass" || finding.status === "skip") return false;
+      if (finding.id === "sot.project-json") return false;
+      if (provisionsAgent && finding.id.startsWith("hermes.")) return false;
+      return true;
+    });
+    if (blocking.length) {
+      return projectPreflightFailure(
+        plan,
+        blocking.map((finding) => `${finding.id}: ${finding.summary}`),
+        audit,
+      );
+    }
+  }
+
+  if (createsScaffold || provisionsAgent) {
+    const eligibility = preflightMcpLifecycle({
+      pjanglerRoot,
+      targetDir: plan.project.repo_path,
+      commonProject: createsScaffold,
+      hermes: provisionsAgent,
+    });
+    if (!eligibility.ok) {
+      return projectPreflightFailure(plan, [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`]);
+    }
+  }
+  return undefined;
 }
 
 function auditSummary(report: ReturnType<typeof runAudit>) {
@@ -447,6 +554,17 @@ server.registerTool(
         return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
 
+      const preflightFailure = preflightProjectApply(plan, pjanglerRoot);
+      if (preflightFailure) {
+        return {
+          isError: true,
+          ...asText(publicCompositeProjectResponse(
+            { ...preflightFailure, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
+            plan,
+          )),
+        };
+      }
+
       const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent");
       const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
         targetRepo: projectSlug,
@@ -550,6 +668,16 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
+      const preflightFailure = preflightProjectApply(plan, resolvePjanglerRoot());
+      if (preflightFailure) {
+        return {
+          isError: true,
+          ...asText(publicCompositeProjectResponse(
+            { ...preflightFailure, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
+            plan,
+          )),
+        };
+      }
       const result = await executeRegisteredProjectPlan(plan, undefined, {
         force: input.force ?? false,
         live: input.live ?? false,
@@ -703,7 +831,7 @@ server.registerTool(
       "Preview or apply a non-interactive Hermes agent deployment. Local writes require apply=true. External effects additionally require live=true, local=false, and an explicit positive opt-in for each effect. Bloodbank routing is always fleet-shared.",
     inputSchema: z.strictObject({
       targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
-      targetRepo: z.string().optional(),
+      targetRepo: TARGET_REPO_SCHEMA.optional(),
       role: AGENT_ROLE_SCHEMA,
       agentPurpose: z.string().optional(),
       soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
@@ -733,6 +861,44 @@ server.registerTool(
       const apply = input.apply === true;
       const live = input.live === true;
 
+      if (apply) {
+        const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
+        if (hermesBlocker) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: [`Lifecycle preflight failed: ${hermesBlocker}`],
+            }),
+          };
+        }
+        const eligibility = preflightMcpLifecycle({
+          pjanglerRoot: resolvePjanglerRoot(),
+          targetDir: resolvedTarget,
+          commonProject: false,
+          hermes: true,
+        });
+        if (!eligibility.ok) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`],
+            }),
+          };
+        }
+      }
+
       const context: HermesAgentContext = {
         targetDir: resolvedTarget,
         yes: true,
@@ -759,6 +925,12 @@ server.registerTool(
         skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
+        deferredExternalEffects: {
+          runtimeRepo: externalEffects.runtimeRepo,
+          ticketBoard: externalEffects.ticketBoard,
+          systemd: externalEffects.systemd,
+          owner: "hermes",
+        },
       };
 
       const result = await runRecipeWithCapture("hermes-agent", context);

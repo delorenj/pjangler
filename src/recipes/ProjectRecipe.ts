@@ -28,6 +28,8 @@ import type {
   RecipePhaseOutcome,
 } from "./types";
 import type { HermesAgentContext } from "../commands/hermes/types";
+import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
+import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -153,8 +155,9 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
  *
  * It executes the selected plan, initializes declared lifecycle dependencies
  * only for a fresh scaffold, applies only explicitly selected sync migrations,
- * proves the final registry-wide audit, initializes Git once, and persists the
- * registry action last. No implicit migrate-all repair phase exists.
+ * proves eligibility, initializes Git and local registry state, then runs the
+ * provider/systemd tail followed only by read-only postcondition verification.
+ * No implicit migrate-all repair phase exists.
  */
 export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> {
   readonly orchestratesDependencies = true;
@@ -200,6 +203,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin,
     };
     let agentResult: RecipeInitResult | undefined;
+    let provisionedAgentContext: (LifecycleContext & HermesAgentContext) | undefined;
     let migrationReport: MigrationReport | undefined;
     let audit: AuditReport | undefined;
 
@@ -216,9 +220,13 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       }
 
       const registryActions = plan.actions.filter((action) => action.kind === "registry.upsert");
+      const externalPlanActions = plan.actions.filter((action) => action.kind === "ticket-provider.create-or-link");
       const filesystemPlan: ProjectInitPlan = {
         ...plan,
-        actions: plan.actions.filter((action) => action.kind !== "registry.upsert" && action.kind !== "hermes.provision-agent"),
+        actions: plan.actions.filter((action) =>
+          action.kind !== "registry.upsert"
+          && action.kind !== "hermes.provision-agent"
+          && action.kind !== "ticket-provider.create-or-link"),
       };
       const planBlocked = errors.length > 0;
       const executed = !planBlocked && filesystemPlan.actions.length
@@ -265,9 +273,10 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           quiet: normalized.quiet ?? ctx.quiet ?? false,
           dryRun: false,
         };
+        provisionedAgentContext = { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir };
         agentResult = await this.registry.initRecipe(
           "hermes-agent",
-          { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir },
+          provisionedAgentContext,
           agentContext,
         );
         logs.push(...agentResult.logs);
@@ -318,21 +327,28 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           .map((result) => `${result.id}: ${result.summary}`));
       }
 
-      audit = errors.length === 0
+      const eligibilityAudit = errors.length === 0
         ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
         : undefined;
-      if (audit && !audit.ok) {
-        errors.push(...audit.rules
+      audit = eligibilityAudit;
+      if (eligibilityAudit && !eligibilityAudit.ok) {
+        errors.push(...eligibilityAudit.rules
           .filter((finding) => finding.status === "fail" || finding.status === "warn")
           .map((finding) => `${finding.id}: ${finding.summary}`));
       }
       phases.push({
-        id: "project.audit",
-        status: audit?.ok ? "unchanged" : "failed",
+        id: "project.audit:eligibility",
+        status: eligibilityAudit?.ok ? "unchanged" : "failed",
         changedFiles: [],
-        message: audit?.ok ? "Lifecycle postcondition audit passed" : "Lifecycle postcondition audit failed or was skipped",
+        message: eligibilityAudit?.ok
+          ? "Lifecycle eligibility audit passed before external effects"
+          : "Lifecycle eligibility audit failed or was skipped; external effects remain disabled",
       });
 
+      // Complete every ordinary local operation that can fail before entering
+      // the explicitly granted external tail. External scripts may persist
+      // their own returned identifiers, but no new lifecycle mutation follows
+      // them; only the postcondition audit below remains.
       if (errors.length === 0 && mode === "create") {
         if (hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
@@ -370,7 +386,8 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         }
       }
 
-      if (errors.length === 0 && registryActions.length) {
+      const boardEffectArmed = externalPlanActions.some((action) => action.kind === "ticket-provider.create-or-link" && action.enabled);
+      if (errors.length === 0 && registryActions.length && !boardEffectArmed) {
         const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
         const persisted = await this.runtime.executePlan(registryPlan);
         logs.push(...persisted.logs);
@@ -383,6 +400,69 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; "),
         });
       }
+
+      if (errors.length === 0 && externalPlanActions.length) {
+        // When a board effect is armed, persist the returned binding inside the
+        // same tail immediately after the provider action. This keeps the
+        // central registry truthful without reopening ordinary local lifecycle
+        // work after the external boundary.
+        const externalPlan: ProjectInitPlan = {
+          ...plan,
+          actions: boardEffectArmed ? [...externalPlanActions, ...registryActions] : externalPlanActions,
+        };
+        const external = await this.runtime.executePlan(externalPlan);
+        logs.push(...external.logs);
+        errors.push(...external.errors);
+        changedFiles.push(...external.changedFiles);
+        phases.push({
+          id: "project.external:ticket-provider",
+          status: external.ok ? (external.changedFiles.length ? "changed" : "unchanged") : "failed",
+          changedFiles: external.ok ? external.changedFiles : [],
+          message: external.ok ? "Deferred ticket-provider/binding persistence phase completed" : external.errors.join("; "),
+        });
+      }
+
+      const deferred = provisionedAgentContext?.deferredExternalEffects;
+      if (errors.length === 0 && deferred?.owner === "project" && (deferred.runtimeRepo || deferred.ticketBoard || deferred.systemd)) {
+        const beforeExternal = snapshotTree(targetDir);
+        const external = await new ApplyDeferredExternalEffects(provisionedAgentContext!).invoke();
+        const externalChanges = changedTreePaths(targetDir, beforeExternal, snapshotTree(targetDir));
+        logs.push(...(external.message ? [external.message] : []));
+        if (!external.success) errors.push(external.message || "Deferred Hermes external effects failed");
+        changedFiles.push(...externalChanges);
+        phases.push({
+          id: "project.external:hermes",
+          status: external.success ? "changed" : "failed",
+          changedFiles: external.success ? externalChanges : [],
+          message: external.message || undefined,
+        });
+      }
+
+      if (errors.length === 0 && (externalPlanActions.length || deferred)) {
+        try {
+          refreshPlanFromCanonicalManifest(plan);
+        } catch (error) {
+          errors.push(`project manifest refresh after external effects failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
+      audit = errors.length === 0
+        ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
+        : audit;
+      if (errors.length === 0 && audit && !audit.ok) {
+        errors.push(...audit.rules
+          .filter((finding) => finding.status === "fail" || finding.status === "warn")
+          .map((finding) => `${finding.id}: ${finding.summary}`));
+      }
+      phases.push({
+        id: "project.audit",
+        status: errors.length === 0 && audit?.ok ? "unchanged" : "failed",
+        changedFiles: [],
+        message: errors.length === 0 && audit?.ok
+          ? "Lifecycle postcondition audit passed"
+          : "Lifecycle postcondition audit failed or was skipped",
+      });
+
     } catch (error) {
       errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
       phases.push({
