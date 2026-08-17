@@ -3159,7 +3159,26 @@ function compareBmadVersions(a: string, b: string): number {
 // the unresolved HERMES_HOME path (so the profile dir must not itself be a
 // symlink) and only offers ~/.hermes/auth.json as a shared fallback when
 // HERMES_HOME differs from the fleet root.
-const SHARED_PROFILE_ENTRIES = ["config.yaml", ".env", "skills"] as const;
+// Fleet-shared, symlinked up to ~/.hermes/<entry>.
+//
+// config.yaml is deliberately NOT here. It used to be, and the symlink was
+// actively harmful: Hermes' atomic_yaml_write does os.replace, which REPLACES a
+// symlink with a regular file, so the first in-agent config write (/model,
+// onboarding, a config migration) silently detached the profile and froze it on
+// a stale copy of the base forever. Symlinking also gave a profile no way to
+// override anything, which is why several profiles were hand-forked into
+// 700-line copies instead.
+//
+// config.yaml is now GENERATED: deep_merge(~/.hermes/config.yaml, <profile>/
+// config.delta.yaml), rendered by hermes-agent-template/scripts/
+// hermes-profile-config.py. The delta is the hand-edited SSOT and is usually
+// empty (identical to base). See PROFILE_RENDER_MARKER below.
+const SHARED_PROFILE_ENTRIES = [".env", "skills"] as const;
+
+// Header stamped into every generated profile config.yaml. Its presence is how
+// we tell "rendered from base+delta" apart from "hand-forked copy that has
+// silently drifted", which look identical on disk otherwise.
+const PROFILE_RENDER_MARKER = "GENERATED FILE -- DO NOT EDIT";
 // Person-owned. SOUL.md is load-bearing: Hermes reads it from HERMES_HOME and
 // seeds the stock "You are Hermes Agent, created by Nous Research" default into
 // any fresh profile dir, which would silently shadow each agent's real identity.
@@ -3225,6 +3244,85 @@ function singletonPlan(ctx: Context, role: RoleMeta): SingletonPlan {
     runtimePath: join(runtimeDir, entry),
   }));
   return { fleetRoot, profileDir, runtimeDir, links, sharedSeeds };
+}
+
+function profileNameOf(role: RoleMeta): string {
+  return role.profileName || role.agentId;
+}
+
+// The base+delta renderer ships in hermes-agent-template, which is a sibling
+// component rather than a pjangler dependency — so locate it rather than
+// vendoring a second implementation of Hermes' merge semantics.
+function profileRendererPath(ctx: Context): string | null {
+  const candidates = [
+    join(ctx.repoRoot, "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join(ctx.repoRoot, "..", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join(homedir(), "code", "33GOD", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return resolve(c);
+  }
+  return null;
+}
+
+// Per-profile config + memory invariants that replaced the old
+// "config.yaml is a symlink to the fleet base" contract.
+//
+// Returns human-readable findings; empty means in parity.
+function profileConfigFindings(profileDir: string, profileName: string): string[] {
+  const out: string[] = [];
+  const cfg = join(profileDir, "config.yaml");
+  const delta = join(profileDir, "config.delta.yaml");
+
+  // 1. config.yaml must be a real, generated file — never a symlink (see
+  //    SHARED_PROFILE_ENTRIES) and never a hand-forked copy.
+  if (!existsSync(cfg)) {
+    out.push(`profile config missing (run hermes-profile-config.py render): ${cfg}`);
+  } else if (lstatSync(cfg).isSymbolicLink()) {
+    out.push(`config.yaml is a symlink — it detaches on the first Hermes write; render it instead: ${cfg}`);
+  } else {
+    let head = "";
+    try {
+      head = readFileSync(cfg, "utf8").slice(0, 800);
+    } catch {
+      /* unreadable is reported below via the marker check */
+    }
+    if (!head.includes(PROFILE_RENDER_MARKER)) {
+      out.push(`config.yaml is not a rendered artifact (missing generated header) — likely a hand-forked copy that will drift: ${cfg}`);
+    }
+  }
+
+  // 2. The delta is the hand-edited source of truth. Absent means "no overrides",
+  //    which is valid — but the FILE must exist so the profile is demonstrably
+  //    under inheritance rather than merely un-migrated.
+  if (!existsSync(delta)) {
+    out.push(`config.delta.yaml missing — profile is not under base+delta inheritance: ${delta}`);
+  } else if (lstatSync(delta).isSymbolicLink()) {
+    out.push(`config.delta.yaml must be a real file, not a symlink: ${delta}`);
+  }
+
+  // 3. Identity-memory bank must be pinned explicitly. Relying on
+  //    bank_id_template: agent-{profile} is unsafe: {profile} resolves through
+  //    get_active_profile_name(), which calls Path.resolve() on HERMES_HOME and
+  //    requires a lowercase id directly under profiles/. A symlinked profile dir
+  //    or an uppercase name silently yields the literal "custom", merging several
+  //    agents' PRIVATE memory into one shared bank.
+  const memCfg = join(profileDir, "hindsight", "config.json");
+  const wantBank = `agent-${profileName}`;
+  if (!existsSync(memCfg)) {
+    out.push(`identity-memory bank not pinned (expected bank_id "${wantBank}"): ${memCfg}`);
+  } else {
+    try {
+      const parsed = JSON.parse(readFileSync(memCfg, "utf8")) as Record<string, unknown>;
+      const got = typeof parsed.bank_id === "string" ? parsed.bank_id : "";
+      if (got !== wantBank) {
+        out.push(`identity-memory bank_id is ${got ? `"${got}"` : "unset"}, expected "${wantBank}": ${memCfg}`);
+      }
+    } catch {
+      out.push(`identity-memory pin is unparseable JSON: ${memCfg}`);
+    }
+  }
+  return out;
 }
 
 function isDanglingLink(path: string): boolean {
@@ -5628,6 +5726,7 @@ return [
           const state = linkState(link.path, link.target);
           if (state !== "ok") details.push(`${state}: ${link.path} -> ${link.target}`);
         }
+        details.push(...profileConfigFindings(plan.profileDir, profileNameOf(role)));
       }
       return {
         id: "hermes.runtime-singleton",
@@ -5694,6 +5793,27 @@ return [
           ensureParent(link.path);
           symlinkSync(link.target, link.path);
         }
+        // Render config.yaml from base+delta and pin the identity-memory bank.
+        // This deliberately does NOT symlink config.yaml (see
+        // SHARED_PROFILE_ENTRIES): the renderer owns that file now.
+        const profileName = profileNameOf(role);
+        if (profileConfigFindings(plan.profileDir, profileName).length) {
+          const renderer = profileRendererPath(ctx);
+          if (!renderer) {
+            details.push(`blocked: profile renderer not found (expected hermes-agent-template/scripts/hermes-profile-config.py); cannot render ${plan.profileDir}/config.yaml`);
+          } else {
+            details.push(`render config.yaml + pin memory bank for ${profileName}`);
+            changedFiles.push(join(plan.profileDir, "config.yaml"), join(plan.profileDir, "config.delta.yaml"));
+            if (!ctx.dryRun) {
+              for (const args of [["init", "--profile", profileName], ["memory-pin", "--profile", profileName]]) {
+                const res = spawnSync("python3", [renderer, ...args], { encoding: "utf8" });
+                if (res.status !== 0) {
+                  details.push(`blocked: ${basename(renderer)} ${args[0]} failed for ${profileName}: ${(res.stderr || res.stdout || "").trim().split("\n").slice(-2).join(" ")}`);
+                }
+              }
+            }
+          }
+        }
       }
       return {
         id: finding.id,
@@ -5702,6 +5822,91 @@ return [
         summary: changedFiles.length ? (ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired") : "No changes required",
         changedFiles,
         details,
+      };
+    },
+  },
+  {
+    // Fleet-base invariants. Every profile inherits ~/.hermes/config.yaml by
+    // generation, so a defect here is a defect in EVERY agent at once — and each
+    // of these has already shipped silently: no error, no log, just an agent
+    // quietly missing a capability.
+    id: "hermes.fleet-config",
+    title: "Fleet base config carries the capabilities every agent inherits",
+    audit: (ctx) => {
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "hermes.fleet-config", title: "Fleet base config carries the capabilities every agent inherits", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const base = join(fleetHome(ctx), "config.yaml");
+      const details: string[] = [];
+      let cfg: any = null;
+      if (!existsSync(base)) {
+        details.push(`fleet base config missing: ${base}`);
+      } else {
+        try {
+          cfg = YAML.parse(readFileSync(base, "utf8")) ?? {};
+        } catch (err) {
+          details.push(`fleet base config is unparseable YAML: ${base} (${(err as Error).message})`);
+        }
+      }
+
+      if (cfg) {
+        // TTS provider must be the REGISTRY KEY, not the product name. "voxxy"
+        // is the service (swappable engines: voxcpm/vibevoice/elevenlabs); the
+        // Hermes plugin registers as "vox". An unknown provider does not error —
+        // Hermes falls back to a built-in (ElevenLabs when the key is set, else
+        // Edge) and you simply hear the wrong voice. Regressed twice.
+        const ttsProvider = cfg?.tts?.provider;
+        if (ttsProvider && ttsProvider !== "vox") {
+          details.push(`tts.provider is "${ttsProvider}" — must be "vox" (registry key). "voxxy" is the service name and matches no registered provider, so TTS silently falls back to a built-in.`);
+        }
+
+        // Bloodbank lifecycle hooks. These lived on 3 of 36 profiles once, so 33
+        // agents emitted no events at all while appearing healthy.
+        const hooks = cfg?.hooks;
+        const REQUIRED_HOOKS = ["on_session_start", "on_session_end", "pre_tool_call", "post_tool_call"];
+        if (!hooks || typeof hooks !== "object") {
+          details.push(`no hooks: block in the fleet base — every agent publishes zero Bloodbank lifecycle events: ${base}`);
+        } else {
+          const missing = REQUIRED_HOOKS.filter((h) => !hooks[h]);
+          if (missing.length) details.push(`fleet base hooks missing event(s): ${missing.join(", ")}`);
+          const serialized = JSON.stringify(hooks);
+          if (!serialized.includes("hooks/bloodbank/publish.py")) {
+            details.push(`fleet base hooks do not call the canonical publisher (~/.agents/hooks/bloodbank/publish.py --client hermes)`);
+          }
+        }
+
+        // Memory: the provider can be configured and still be muzzled. Tool
+        // injection is gated by agent.disabled_toolsets while auto recall/retain
+        // keeps running underneath, so "memory works" and "the agent can use
+        // memory" are different questions.
+        const provider = cfg?.memory?.provider;
+        if (!provider) {
+          details.push(`memory.provider is unset in the fleet base — agents get no external memory`);
+        }
+        const disabled: unknown = cfg?.agent?.disabled_toolsets;
+        if (Array.isArray(disabled) && disabled.includes("memory")) {
+          details.push(`agent.disabled_toolsets contains "memory" — memory tools are suppressed fleet-wide even though memory.provider is set (auto recall/retain still runs, which masks it)`);
+        }
+
+        // Skills reach agents only through external_dirs; a profile that
+        // inherits an empty list silently has no skills at all.
+        const dirs: unknown = cfg?.skills?.external_dirs;
+        if (!Array.isArray(dirs) || dirs.length === 0) {
+          details.push(`skills.external_dirs is empty in the fleet base — no agent can see any shared skill`);
+        }
+      }
+
+      return {
+        id: "hermes.fleet-config",
+        title: "Fleet base config carries the capabilities every agent inherits",
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0 ? "Fleet base config invariants satisfied" : `${details.length} fleet-base config issue(s) detected`,
+        details,
+        // Deliberately not auto-fixable: these are fleet-wide values whose
+        // correct setting is an operator decision, and a wrong guess would
+        // change behavior for every agent simultaneously.
+        fixable: false,
       };
     },
   },
