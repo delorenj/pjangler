@@ -1,0 +1,43 @@
+{
+  "checks": {
+    "lint_passed": true,
+    "mutation_check_passed": true,
+    "tests_passed": true,
+    "type_check_passed": null
+  },
+  "diff_file": "_bmad-output/implementation-artifacts/diffs/PJAN-67.diff",
+  "evidence_file": "_bmad-output/implementation-artifacts/issue-evidence/PJAN-67.md",
+  "findings": [],
+  "git": {
+    "base_sha": "90529d2ea750640b0038b4033563a2dca964a0bf",
+    "branch": "fix/PJAN-67-mcp-fail-closed",
+    "head_sha": "dd6f8815693d99b2d7067b2cc07877b56d9ee8d7"
+  },
+  "heartbeat": {
+    "last_seen_at": "2026-08-17T18:43:27.948961+00:00",
+    "started_at": "2026-08-17T18:43:27.890474+00:00",
+    "ttl_seconds": 600
+  },
+  "issue": "PJAN-67",
+  "meta": {},
+  "repo_slug": "pjangler",
+  "retries": {
+    "attempt": 1,
+    "backoff_seconds": 30,
+    "max_attempts": 3,
+    "policy": "fixed_backoff"
+  },
+  "schema_version": "1.0",
+  "status": "DONE",
+  "summary": "PJAN-67 implementation is complete at pushed parent HEAD dd6f8815693d99b2d7067b2cc07877b56d9ee8d7. PJAN-67 commits are 9cba7dc and dd6f881; vendored Hermes fix 5df96f30 is published on template feature and main and referenced by the parent through concurrent ancestry 9365625. Generic MCP recipes are explicit-target/apply gated; Hermes is dedicated, non-interactive, quiet/captured, provenance-attested, lifecycle-eligible before host/external tails, and all external effects require live plus positive per-effect consent. skipPlane suppresses providers and unavailable ambient board/channel authority is scrubbed. Concurrent 9365625 is not PJAN-67 implementation. Fresh SPEC re-review remains required; no close recommendation was made.",
+  "test_log": "PASS: template pytest -q (83 passed); npm run typecheck; npm run build with staged dist parity; node tests/pjan-67-lifecycle-preflight-regressions.mjs; node tests/pjan-67-regressions.mjs; node tests/pjan-67-trusted-lifecycle-regressions.mjs; MCP catalog/server, project-registry, fleet-shared Bloodbank, PJAN-57 lifecycle/generated-project, PJAN-71, and Momo lifecycle focused regressions; npm test full chain; check:lock; check:tracked-secrets; check:submodules -- --remote --recursive --archive --npm. Exact AC6 fixtures prove zero target/config/registry/provider/systemd/Copier effects; trusted create/sync and project/Hermes positive tails prove exactly-once effects after eligibility; raw stdio contains JSON-RPC frames only and child credentials/output are contained.",
+  "worker": {
+    "agent_id": "pjan67-implementation-owner",
+    "agent_type": "",
+    "host": "big-chungus",
+    "model": "",
+    "pid": 2085729,
+    "provider": "",
+    "session_id": ""
+  }
+}

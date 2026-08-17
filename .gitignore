@@ -60,3 +60,9 @@ _bmad/config.user.yaml
 # state, never source dependencies or publishable project content (PJAN-41).
 /.tmp/
 /memories/
+
+# Momo orchestration locks. A running orchestrator rewrites these (pid,
+# heartbeat, ttl), so they can never be committed clean. `.momo/config.json`
+# — the per-repo lane map — is real config and stays tracked.
+.momo/*.lock
+.momo/*.flock
