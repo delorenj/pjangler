@@ -23,6 +23,7 @@ export interface HermesAgentContext extends CommandContext {
   // --- behavior toggles ---
   yes?: boolean;              // non-interactive; accept all defaults
   local?: boolean;            // local-only: skip runtime repo / Plane / Bloodbank / systemd
+  live?: boolean;             // explicit external-effect authority (still requires per-effect opt-ins)
   forceConfig?: boolean;      // regenerate ~/.config/hermes-agent-template/config.toml
   skipTelegram?: boolean;
   skipEmail?: boolean;

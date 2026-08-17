@@ -113,6 +113,12 @@ export interface ProjectInitInput {
   agentRole?: string;
   apply?: boolean;
   live?: boolean;
+  /** Explicit external-effect grants. MCP callers pass these as false unless positively opted in. */
+  provisionRuntimeRepo?: boolean;
+  provisionTicketBoard?: boolean;
+  enableSystemd?: boolean;
+  /** Subtractive ticket-provider gate; always dominates live/positive consent. */
+  skipPlane?: boolean;
   registryPath?: string;
   projectSlug?: string;
   projectIdentifier?: string;
@@ -859,6 +865,16 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
+  // Preserve the existing CLI contract when these fields are absent. Structured
+  // callers (notably MCP) pass explicit booleans so `live` alone grants nothing.
+  const provisionRuntimeRepo = input.provisionRuntimeRepo ?? live;
+  const provisionTicketBoard = input.provisionTicketBoard ?? live;
+  const enableSystemd = input.enableSystemd ?? live;
+  const skipPlane = input.skipPlane ?? false;
+  const boardEnabled = live && provisionTicketBoard && !skipPlane;
+  const runtimeRepoEnabled = live && provisionRuntimeRepo;
+  const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
+  const anyExternalAgentEffect = runtimeRepoEnabled || boardEnabled || systemdEnabled;
   const actions: ProjectInitAction[] = [
     { kind: "registry.upsert", registryPath, slug, project },
   ];
@@ -884,7 +900,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     { kind: "project.write-manifest", path: join(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
-      enabled: live,
+      enabled: boardEnabled,
       live,
       provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
@@ -894,26 +910,30 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       description: project.description || `Ticket board for ${project.slug}`,
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
-      reason: project.ticket_provider.board_id
-        ? "board already linked; no provider call"
-        : live
-          ? `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
-          : "network/cloud actions require --live",
+      reason: skipPlane
+        ? "ticket-provider action disabled by skipPlane=true"
+        : project.ticket_provider.board_id
+          ? "board already linked; no provider call"
+          : !live
+            ? "network/cloud actions require --live"
+            : !provisionTicketBoard
+              ? "ticket-provider action requires explicit provisionTicketBoard=true"
+              : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`,
     },
     {
       kind: "hermes.provision-agent",
       enabled: input.provisionAgent ?? false,
-      local: !live,
+      local: !anyExternalAgentEffect,
       targetDir,
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipRuntimeRepo: !live,
-        skipPlane: !live,
+        skipRuntimeRepo: !runtimeRepoEnabled,
+        skipPlane: !boardEnabled,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
         skipBloodbank: true,
-        skipSystemd: !live || process.platform === "darwin",
+        skipSystemd: !systemdEnabled,
       },
     }
   );
@@ -1035,7 +1055,7 @@ export async function executeProjectInitPlan(plan: ProjectInitPlan): Promise<Pro
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
       if (!action.enabled) {
-        logs.push("ticket-provider.create-or-link skipped (requires --live)");
+        logs.push(`ticket-provider.create-or-link skipped (${action.reason ?? "disabled by plan"})`);
       } else if (action.boardId) {
         logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} → ${action.boardId}); nothing to create`);
       } else {

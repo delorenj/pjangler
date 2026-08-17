@@ -23,6 +23,13 @@ export class WireTelegram extends Command {
     if (ctx.skipTelegram) {
       return { success: true, message: "→ Telegram wire-up skipped" };
     }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Telegram wiring is interactive and unavailable during quiet/non-interactive Hermes execution",
+      };
+    }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would run BotFather token capture") };
     }

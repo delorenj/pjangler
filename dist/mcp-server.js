@@ -5849,6 +5849,13 @@ var PromptForAgentConfig = class extends Command {
     ctx.skipEmail ??= true;
     ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
     ctx.profileName = deriveProfileName(ctx.targetRepo, ctx.role);
+    if (ctx.quiet && !ctx.yes) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Quiet Hermes execution must also set yes=true; interactive prompts are unavailable to structured callers"
+      };
+    }
     if (ctx.yes) {
       ctx.skipTelegram ??= true;
       return {
@@ -6651,6 +6658,14 @@ function planProjectInit(input) {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
+  const provisionRuntimeRepo = input.provisionRuntimeRepo ?? live;
+  const provisionTicketBoard = input.provisionTicketBoard ?? live;
+  const enableSystemd = input.enableSystemd ?? live;
+  const skipPlane = input.skipPlane ?? false;
+  const boardEnabled = live && provisionTicketBoard && !skipPlane;
+  const runtimeRepoEnabled = live && provisionRuntimeRepo;
+  const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
+  const anyExternalAgentEffect = runtimeRepoEnabled || boardEnabled || systemdEnabled;
   const actions = [
     { kind: "registry.upsert", registryPath: registryPath2, slug, project }
   ];
@@ -6676,7 +6691,7 @@ function planProjectInit(input) {
     { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
-      enabled: live,
+      enabled: boardEnabled,
       live,
       provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
@@ -6686,22 +6701,22 @@ function planProjectInit(input) {
       description: project.description || `Ticket board for ${project.slug}`,
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
-      reason: project.ticket_provider.board_id ? "board already linked; no provider call" : live ? `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter` : "network/cloud actions require --live"
+      reason: skipPlane ? "ticket-provider action disabled by skipPlane=true" : project.ticket_provider.board_id ? "board already linked; no provider call" : !live ? "network/cloud actions require --live" : !provisionTicketBoard ? "ticket-provider action requires explicit provisionTicketBoard=true" : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
     },
     {
       kind: "hermes.provision-agent",
       enabled: input.provisionAgent ?? false,
-      local: !live,
+      local: !anyExternalAgentEffect,
       targetDir,
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipRuntimeRepo: !live,
-        skipPlane: !live,
+        skipRuntimeRepo: !runtimeRepoEnabled,
+        skipPlane: !boardEnabled,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
         skipBloodbank: true,
-        skipSystemd: !live || process.platform === "darwin"
+        skipSystemd: !systemdEnabled
       }
     }
   );
@@ -6803,7 +6818,7 @@ async function executeProjectInitPlan(plan) {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
       if (!action.enabled) {
-        logs.push("ticket-provider.create-or-link skipped (requires --live)");
+        logs.push(`ticket-provider.create-or-link skipped (${action.reason ?? "disabled by plan"})`);
       } else if (action.boardId) {
         logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} \u2192 ${action.boardId}); nothing to create`);
       } else {
@@ -7253,6 +7268,13 @@ var WireTelegram = class extends Command {
     if (ctx.skipTelegram) {
       return { success: true, message: "\u2192 Telegram wire-up skipped" };
     }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Telegram wiring is interactive and unavailable during quiet/non-interactive Hermes execution"
+      };
+    }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would run BotFather token capture") };
     }
@@ -7376,6 +7398,13 @@ var WireEmail = class extends Command {
     const ctx = this.context;
     if (ctx.skipEmail) {
       return { success: true, message: "" };
+    }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Email wiring is interactive and unavailable during quiet/non-interactive Hermes execution"
+      };
     }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };
@@ -7907,10 +7936,12 @@ var ProjectRecipe = class extends Recipe {
           skipPlane: agentAction.context.skipPlane,
           skipBloodbank: agentAction.context.skipBloodbank,
           skipSystemd: agentAction.context.skipSystemd,
-          quiet: normalized.quiet,
           ...normalized.agentContext ?? {},
           targetDir,
           yes: true,
+          // Structured callers own stdout and prompt input. Do not allow a
+          // nested context object to weaken the transaction's quiet contract.
+          quiet: normalized.quiet ?? ctx.quiet ?? false,
           dryRun: false
         };
         agentResult = await this.registry.initRecipe(
@@ -9427,6 +9458,39 @@ function safePathSegmentSchema(label) {
 }
 var PROJECT_SLUG_SCHEMA = safePathSegmentSchema("Project slug").describe("A safe single path segment used as the project registry slug.");
 var AGENT_ROLE_SCHEMA = safePathSegmentSchema("Agent role").describe("An arbitrary safe single path segment used beneath agents/hermes; not a fixed role enum.");
+var EXPLICIT_TARGET_DIR_SCHEMA = z.string().refine((value) => value.trim().length > 0, {
+  message: "targetDir must be a non-empty explicit path"
+});
+var INTERACTIVE_RECIPE_IDS = /* @__PURE__ */ new Set(["hermes-agent"]);
+var GENERIC_RECIPE_NAMES = getRecipeNames().filter((name) => !INTERACTIVE_RECIPE_IDS.has(name));
+if (GENERIC_RECIPE_NAMES.length === 0) throw new Error("No non-interactive recipes are registered for generic MCP execution");
+function validateExternalEffectConsent(input, options) {
+  const selected = {
+    runtimeRepo: input.provisionRuntimeRepo === true,
+    ticketBoard: input.provisionTicketBoard === true,
+    systemd: input.enableSystemd === true
+  };
+  const anySelected = selected.runtimeRepo || selected.ticketBoard || selected.systemd;
+  if (anySelected && input.live !== true) {
+    throw new Error("External Hermes effects require live=true in addition to explicit positive opt-ins");
+  }
+  if (anySelected && options.requireNonLocal && input.local !== false) {
+    throw new Error("External Hermes effects require local=false in addition to live=true and explicit positive opt-ins");
+  }
+  if (selected.runtimeRepo && input.skipRuntimeRepo === true) {
+    throw new Error("provisionRuntimeRepo=true contradicts skipRuntimeRepo=true");
+  }
+  if (selected.ticketBoard && input.skipPlane === true) {
+    throw new Error("provisionTicketBoard=true contradicts skipPlane=true");
+  }
+  if (selected.systemd && input.skipSystemd === true) {
+    throw new Error("enableSystemd=true contradicts skipSystemd=true");
+  }
+  if (selected.systemd && process.platform === "darwin") {
+    throw new Error("enableSystemd=true is unavailable on macOS");
+  }
+  return selected;
+}
 function resolveTargetDir(targetDir) {
   const dir = resolve8(targetDir ?? process.cwd());
   if (!existsSync14(dir)) {
@@ -9536,7 +9600,7 @@ async function runRecipeWithCapture(recipeName, context) {
     };
   }
   try {
-    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context);
+    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, { ...context, quiet: true });
     const result = await recipeRegistry.initRecipe(recipeName, ctx, {});
     return { success: result.ok, logs: result.logs, errors: result.errors };
   } catch (err) {
@@ -9552,11 +9616,18 @@ server.registerTool(
   },
   async () => {
     const payload = {
-      recipes: Object.values(RECIPE_REGISTRY).map((r) => ({
+      recipes: Object.values(RECIPE_REGISTRY).filter((r) => !INTERACTIVE_RECIPE_IDS.has(r.name)).map((r) => ({
         name: r.name,
         description: r.description,
         commands: r.commands
       })),
+      dedicatedRecipes: [
+        {
+          name: "hermes-agent",
+          description: "Non-interactive Hermes provisioning with explicit local and external-effect consent gates.",
+          tool: "pjangler_deploy_hermes_agent"
+        }
+      ],
       commands: Object.values(COMMAND_REGISTRY).map((c) => ({
         name: c.name,
         description: c.description,
@@ -9624,15 +9695,18 @@ server.registerTool(
       if (runAll && ruleId) throw new Error("Pass either ruleId or all=true, not both");
       const resolvedTarget = resolveTargetDir(targetDir);
       const report = runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
-      return asText({
-        ok: report.ok,
-        repo: report.repo,
-        dryRun: report.dryRun,
-        selectedRules: report.selectedRules,
-        changedFiles: report.changedFiles,
-        results: report.results,
-        summary: migrationSummary(report)
-      });
+      return {
+        isError: !report.ok,
+        ...asText({
+          ok: report.ok,
+          repo: report.repo,
+          dryRun: report.dryRun,
+          selectedRules: report.selectedRules,
+          changedFiles: report.changedFiles,
+          results: report.results,
+          summary: migrationSummary(report)
+        })
+      };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -9642,7 +9716,7 @@ server.registerTool(
   "pjangler_bootstrap_33god_project",
   {
     title: "Bootstrap a new @33god project",
-    description: "Create a new CommonProject-based 33god repo with optional local Hermes agent provisioning. Dry-run is safe and does not require copier.",
+    description: "Create a new CommonProject-based 33god repo with optional non-interactive Hermes provisioning. Preview is the default; each external effect requires live=true plus an explicit positive opt-in.",
     inputSchema: z.strictObject({
       parentDir: z.string().optional(),
       targetDir: z.string().optional(),
@@ -9662,6 +9736,9 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
+      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; also requires live=true and local=false."),
+      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
+      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
       force: z.boolean().optional(),
       overwrite: z.boolean().optional(),
       dryRun: z.boolean().optional(),
@@ -9672,6 +9749,10 @@ server.registerTool(
   },
   async (input) => {
     try {
+      const externalEffects = validateExternalEffectConsent(
+        { ...input, skipPlane: input.skipPlane ?? true },
+        { requireNonLocal: true }
+      );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
       const explicitTargetDir = input.targetDir ? resolve8(input.targetDir) : void 0;
@@ -9688,7 +9769,7 @@ server.registerTool(
       const skipPlane = input.skipPlane ?? true;
       const ticketProvider = input.ticketProvider ?? "plane";
       const boardId = input.boardId ?? input.planeProjectId ?? "";
-      if (!skipPlane && ticketProvider === "plane" && !boardId) {
+      if (externalEffects.ticketBoard && ticketProvider === "plane" && !boardId) {
         throw new Error("boardId or planeProjectId is required when skipPlane=false for Plane; keep skipPlane=true for safe local bootstrap");
       }
       if (!dryRun && existsSync14(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
@@ -9703,6 +9784,10 @@ server.registerTool(
         agentRole: input.agentRole ?? "pm",
         apply: !dryRun,
         live: input.live ?? false,
+        provisionRuntimeRepo: externalEffects.runtimeRepo,
+        provisionTicketBoard: externalEffects.ticketBoard,
+        enableSystemd: externalEffects.systemd,
+        skipPlane,
         registryPath: input.registryPath,
         projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
         ticketProvider,
@@ -9717,28 +9802,32 @@ server.registerTool(
       if (dryRun) {
         return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
+      const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent");
       const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
         targetRepo: projectSlug,
         role: input.agentRole ?? "pm",
         agentPurpose: input.agentPurpose ?? `Project manager for ${input.projectName}`,
-        local,
+        local: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.local : local,
         force: overwrite,
         skipTelegram: true,
         skipEmail: true,
-        skipRuntimeRepo: local,
-        skipPlane: skipPlane || local,
+        skipRuntimeRepo: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipRuntimeRepo : true,
+        skipPlane: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipPlane : true,
         skipBloodbank: true,
-        skipSystemd: local || process.platform === "darwin"
+        skipSystemd: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipSystemd : true
       } : void 0, {
         force: overwrite,
         live: input.live ?? false,
         quiet: true
       });
       if (!result.ok) {
-        return asText(publicCompositeProjectResponse(
-          { ...result, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
-          plan
-        ));
+        return {
+          isError: true,
+          ...asText(publicCompositeProjectResponse(
+            { ...result, ...plan.warnings ? { warnings: plan.warnings } : {}, guidance: parityGuidance() },
+            plan
+          ))
+        };
       }
       const agentResult = input.provisionAgent ? {
         success: Boolean(result.agentResult?.ok),
@@ -9758,7 +9847,7 @@ server.registerTool(
   "pjangler_project_init",
   {
     title: "Initialize a pjangler project",
-    description: "Plan or apply a registry-backed CommonProject project init. Dry-run is the default; writes require apply=true and live actions require live=true.",
+    description: "Plan or apply a registry-backed CommonProject project init. Preview is the default; writes require apply=true and each external effect requires live=true plus an explicit positive opt-in.",
     inputSchema: z.strictObject({
       name: z.string(),
       description: z.string().optional(),
@@ -9769,6 +9858,10 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
+      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to Hermes runtime-repository provisioning; also requires live=true."),
+      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
+      enableSystemd: z.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
+      skipPlane: z.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
       slug: PROJECT_SLUG_SCHEMA.optional(),
       identifier: z.string().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
@@ -9781,6 +9874,7 @@ server.registerTool(
   },
   async (input) => {
     try {
+      const externalEffects = validateExternalEffectConsent(input, { requireNonLocal: false });
       const plan = planProjectInit({
         name: input.name,
         description: input.description,
@@ -9791,6 +9885,10 @@ server.registerTool(
         agentRole: input.agentRole,
         apply: input.apply ?? false,
         live: input.live ?? false,
+        provisionRuntimeRepo: externalEffects.runtimeRepo,
+        provisionTicketBoard: externalEffects.ticketBoard,
+        enableSystemd: externalEffects.systemd,
+        skipPlane: input.skipPlane ?? false,
         projectSlug: input.slug,
         projectIdentifier: input.identifier,
         ticketProvider: input.ticketProvider,
@@ -9808,10 +9906,13 @@ server.registerTool(
         live: input.live ?? false,
         quiet: true
       });
-      return asText(publicCompositeProjectResponse(
-        { ...result, ...plan.warnings ? { warnings: plan.warnings } : {} },
-        plan
-      ));
+      return {
+        isError: !result.ok,
+        ...asText(publicCompositeProjectResponse(
+          { ...result, ...plan.warnings ? { warnings: plan.warnings } : {} },
+          plan
+        ))
+      };
     } catch (err) {
       return { isError: true, content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -9897,21 +9998,23 @@ server.registerTool(
   "pjangler_run_recipe",
   {
     title: "Run recipe",
-    description: "Executes any pjangler recipe against a target directory.",
+    description: "Preview or apply a non-interactive pjangler recipe against an explicit target directory. Preview is the default; writes require apply=true.",
     inputSchema: z.strictObject({
-      recipe: z.enum(getRecipeNames()),
-      targetDir: z.string().optional(),
+      recipe: z.enum(GENERIC_RECIPE_NAMES),
+      targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
       force: z.boolean().optional(),
-      dryRun: z.boolean().optional()
+      apply: z.boolean().optional()
     })
   },
-  async ({ recipe, targetDir, force, dryRun }) => {
+  async ({ recipe, targetDir, force, apply }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
+      const shouldApply = apply === true;
       const context = {
         targetDir: resolvedTarget,
         force: force ?? false,
-        dryRun: dryRun ?? false
+        dryRun: !shouldApply,
+        quiet: true
       };
       const result = await runRecipeWithCapture(recipe, context);
       return {
@@ -9920,6 +10023,8 @@ server.registerTool(
           success: result.success,
           recipe,
           targetDir: resolvedTarget,
+          apply: shouldApply,
+          dryRun: !shouldApply,
           logs: result.logs,
           errors: result.errors
         })
@@ -9936,9 +10041,9 @@ server.registerTool(
   "pjangler_deploy_hermes_agent",
   {
     title: "Deploy Hermes agent",
-    description: "Provision a Hermes agent role for @33god-projects. Bloodbank routing is always fleet-shared; local=true safely defaults runtime repo, ticket-board creation, and systemd off.",
+    description: "Preview or apply a non-interactive Hermes agent deployment. Local writes require apply=true. External effects additionally require live=true, local=false, and an explicit positive opt-in for each effect. Bloodbank routing is always fleet-shared.",
     inputSchema: z.strictObject({
-      targetDir: z.string(),
+      targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
       targetRepo: z.string().optional(),
       role: AGENT_ROLE_SCHEMA,
       agentPurpose: z.string().optional(),
@@ -9949,10 +10054,12 @@ server.registerTool(
       modelApiMode: z.enum(["", "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"]).optional(),
       modelKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
       local: z.boolean().optional(),
+      apply: z.boolean().optional(),
+      live: z.boolean().optional(),
+      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; requires live=true and local=false."),
+      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
+      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
       force: z.boolean().optional(),
-      dryRun: z.boolean().optional(),
-      skipTelegram: z.boolean().optional(),
-      skipEmail: z.boolean().optional(),
       skipRuntimeRepo: z.boolean().optional(),
       skipPlane: z.boolean().optional(),
       skipSystemd: z.boolean().optional(),
@@ -9961,12 +10068,17 @@ server.registerTool(
   },
   async (input) => {
     try {
+      const externalEffects = validateExternalEffectConsent(input, { requireNonLocal: true });
       const resolvedTarget = resolveTargetDir(input.targetDir);
       const local = input.local ?? true;
+      const apply = input.apply === true;
+      const live = input.live === true;
       const context = {
         targetDir: resolvedTarget,
         yes: true,
+        quiet: true,
         local,
+        live,
         targetRepo: input.targetRepo ?? basename5(resolvedTarget),
         role: normalizeAgentRole(input.role),
         agentPurpose: input.agentPurpose,
@@ -9978,13 +10090,15 @@ server.registerTool(
         modelKeyEnv: input.modelKeyEnv,
         ticketProvider: input.ticketProvider,
         force: input.force ?? false,
-        dryRun: input.dryRun ?? false,
-        skipTelegram: input.skipTelegram ?? true,
-        skipEmail: input.skipEmail ?? true,
-        skipRuntimeRepo: input.skipRuntimeRepo ?? local,
-        skipPlane: input.skipPlane ?? local,
+        dryRun: !apply,
+        // MCP has no prompt-capable Telegram/email inputs. These steps remain
+        // unreachable and therefore cannot consume JSON-RPC stdin.
+        skipTelegram: true,
+        skipEmail: true,
+        skipRuntimeRepo: !externalEffects.runtimeRepo,
+        skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
-        skipSystemd: input.skipSystemd ?? (local || process.platform === "darwin")
+        skipSystemd: !externalEffects.systemd || process.platform === "darwin"
       };
       const result = await runRecipeWithCapture("hermes-agent", context);
       return {
@@ -9993,6 +10107,8 @@ server.registerTool(
           success: result.success,
           recipe: "hermes-agent",
           targetDir: resolvedTarget,
+          apply,
+          live,
           bloodbankMode: "fleet-shared",
           guidance: parityGuidance(),
           context: {
@@ -10000,9 +10116,8 @@ server.registerTool(
             role: context.role,
             local: context.local,
             dryRun: context.dryRun,
+            quiet: context.quiet,
             force: context.force,
-            skipTelegram: context.skipTelegram,
-            skipEmail: context.skipEmail,
             skipRuntimeRepo: context.skipRuntimeRepo,
             skipPlane: context.skipPlane,
             skipSystemd: context.skipSystemd

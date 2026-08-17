@@ -257,10 +257,12 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           skipPlane: agentAction.context.skipPlane,
           skipBloodbank: agentAction.context.skipBloodbank,
           skipSystemd: agentAction.context.skipSystemd,
-          quiet: normalized.quiet,
           ...(normalized.agentContext ?? {}),
           targetDir,
           yes: true,
+          // Structured callers own stdout and prompt input. Do not allow a
+          // nested context object to weaken the transaction's quiet contract.
+          quiet: normalized.quiet ?? ctx.quiet ?? false,
           dryRun: false,
         };
         agentResult = await this.registry.initRecipe(

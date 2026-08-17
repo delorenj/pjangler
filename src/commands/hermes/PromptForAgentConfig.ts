@@ -63,6 +63,14 @@ export class PromptForAgentConfig extends Command {
     ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);
     ctx.profileName = deriveProfileName(ctx.targetRepo!, ctx.role!);
 
+    if (ctx.quiet && !ctx.yes) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Quiet Hermes execution must also set yes=true; interactive prompts are unavailable to structured callers",
+      };
+    }
+
     // --- Non-interactive: also skip the one human-input step (Telegram) ---
     if (ctx.yes) {
       ctx.skipTelegram ??= true;

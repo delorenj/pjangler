@@ -146,8 +146,8 @@ try {
     ["pjangler_project_show", { slug: "missing" }],
     ["pjangler_describe_project", { targetDir: root }],
     ["pjangler_describe_recipe", { recipe: "node" }],
-    ["pjangler_run_recipe", { recipe: "node", targetDir: strictRecipeTarget, dryRun: false }],
-    ["pjangler_deploy_hermes_agent", { targetDir: strictDeployTarget, role: "pm", local: true, dryRun: false }],
+    ["pjangler_run_recipe", { recipe: "node", targetDir: strictRecipeTarget, apply: true }],
+    ["pjangler_deploy_hermes_agent", { targetDir: strictDeployTarget, role: "pm", local: true, apply: true }],
   ];
   for (const [name, args] of strictCalls) {
     await expectInvalidParams(name, { ...args, pjan66Unknown: true }, `${name} must reject an unknown argument`);
@@ -255,7 +255,7 @@ try {
   for (const role of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
     await expectInvalidParams(
       "pjangler_deploy_hermes_agent",
-      { targetDir: strictDeployTarget, role, local: true, dryRun: false },
+      { targetDir: strictDeployTarget, role, local: true, apply: true },
       `unsafe Hermes role ${JSON.stringify(role)} must fail`,
     );
   }
@@ -281,7 +281,7 @@ try {
 
   const arbitraryRole = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
-    arguments: { targetDir: strictDeployTarget, role: "release-captain", local: true, dryRun: true },
+    arguments: { targetDir: strictDeployTarget, role: "release-captain", local: true },
   });
   const arbitraryRolePayload = JSON.parse(arbitraryRole.content[0].text);
   assert.equal(arbitraryRolePayload.success, true, JSON.stringify(arbitraryRolePayload));
@@ -293,7 +293,7 @@ try {
   symlinkSync(escapedHermesRoot, join(strictDeployTarget, "agents"), "dir");
   const symlinkEscape = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
-    arguments: { targetDir: strictDeployTarget, role: "security-reviewer", local: true, dryRun: true },
+    arguments: { targetDir: strictDeployTarget, role: "security-reviewer", local: true },
   });
   assert.equal(symlinkEscape.isError, true, "Hermes role directories must not escape through an existing symlink");
   assert.match(symlinkEscape.content[0].text, /contained beneath parent/i);
@@ -301,7 +301,7 @@ try {
 
   await expectInvalidParams(
     "pjangler_deploy_hermes_agent",
-    { targetDir: strictDeployTarget, role: "pm", local: true, dryRun: true, skipBloodbank: false },
+    { targetDir: strictDeployTarget, role: "pm", local: true, skipBloodbank: false },
     "the retired per-agent Bloodbank toggle must be rejected",
   );
 
@@ -316,13 +316,13 @@ try {
   writeFileSync(join(forceRecipeTarget, "package.json"), forceSentinel);
   const noForceRecipe = await client.callTool({
     name: "pjangler_run_recipe",
-    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: false },
+    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: false, apply: true },
   });
   assert.equal(noForceRecipe.isError, true, "MCP recipe without force must refuse existing output");
   assert.equal(readFileSync(join(forceRecipeTarget, "package.json"), "utf8"), forceSentinel);
   const forceRecipe = await client.callTool({
     name: "pjangler_run_recipe",
-    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: true },
+    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: true, apply: true },
   });
   assert.notEqual(forceRecipe.isError, true, JSON.stringify(forceRecipe));
   assert.equal(JSON.parse(readFileSync(join(forceRecipeTarget, "package.json"), "utf8")).name, "my-project");
@@ -333,7 +333,7 @@ try {
   mkdirSync(hermesForceTarget);
   const hermesForced = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
-    arguments: { targetDir: hermesForceTarget, role: "pm", local: true, dryRun: true, force: true },
+    arguments: { targetDir: hermesForceTarget, role: "pm", local: true, force: true },
   });
   const hermesForcedPayload = JSON.parse(hermesForced.content[0].text);
   assert.equal(hermesForcedPayload.success, true, JSON.stringify(hermesForcedPayload));
@@ -342,7 +342,7 @@ try {
   assert.match(hermesForcedPayload.logs.join("\n"), /copier .*--overwrite/, "MCP Hermes force must reach RunCopierTemplate");
   const hermesUnforced = await client.callTool({
     name: "pjangler_deploy_hermes_agent",
-    arguments: { targetDir: hermesForceTarget, role: "dev", local: true, dryRun: true, force: false },
+    arguments: { targetDir: hermesForceTarget, role: "dev", local: true, force: false },
   });
   const hermesUnforcedPayload = JSON.parse(hermesUnforced.content[0].text);
   assert.equal(hermesUnforcedPayload.success, true, JSON.stringify(hermesUnforcedPayload));
@@ -353,7 +353,6 @@ try {
       targetDir: hermesForceTarget,
       role: "director",
       local: true,
-      dryRun: true,
       modelProvider: "custom",
       modelName: "hermes",
       modelBaseUrl: "https://gateway.example.test/v1",

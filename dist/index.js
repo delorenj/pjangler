@@ -6119,6 +6119,13 @@ var PromptForAgentConfig = class extends Command {
     ctx.skipEmail ??= true;
     ctx.agentId = deriveAgentId(ctx.targetRepo, ctx.role);
     ctx.profileName = deriveProfileName(ctx.targetRepo, ctx.role);
+    if (ctx.quiet && !ctx.yes) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Quiet Hermes execution must also set yes=true; interactive prompts are unavailable to structured callers"
+      };
+    }
     if (ctx.yes) {
       ctx.skipTelegram ??= true;
       return {
@@ -6921,6 +6928,14 @@ function planProjectInit(input) {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
+  const provisionRuntimeRepo = input.provisionRuntimeRepo ?? live;
+  const provisionTicketBoard = input.provisionTicketBoard ?? live;
+  const enableSystemd = input.enableSystemd ?? live;
+  const skipPlane = input.skipPlane ?? false;
+  const boardEnabled = live && provisionTicketBoard && !skipPlane;
+  const runtimeRepoEnabled = live && provisionRuntimeRepo;
+  const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
+  const anyExternalAgentEffect = runtimeRepoEnabled || boardEnabled || systemdEnabled;
   const actions = [
     { kind: "registry.upsert", registryPath: registryPath2, slug, project }
   ];
@@ -6946,7 +6961,7 @@ function planProjectInit(input) {
     { kind: "project.write-manifest", path: join6(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
-      enabled: live,
+      enabled: boardEnabled,
       live,
       provider: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "33god",
@@ -6956,22 +6971,22 @@ function planProjectInit(input) {
       description: project.description || `Ticket board for ${project.slug}`,
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
-      reason: project.ticket_provider.board_id ? "board already linked; no provider call" : live ? `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter` : "network/cloud actions require --live"
+      reason: skipPlane ? "ticket-provider action disabled by skipPlane=true" : project.ticket_provider.board_id ? "board already linked; no provider call" : !live ? "network/cloud actions require --live" : !provisionTicketBoard ? "ticket-provider action requires explicit provisionTicketBoard=true" : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
     },
     {
       kind: "hermes.provision-agent",
       enabled: input.provisionAgent ?? false,
-      local: !live,
+      local: !anyExternalAgentEffect,
       targetDir,
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipRuntimeRepo: !live,
-        skipPlane: !live,
+        skipRuntimeRepo: !runtimeRepoEnabled,
+        skipPlane: !boardEnabled,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
         skipBloodbank: true,
-        skipSystemd: !live || process.platform === "darwin"
+        skipSystemd: !systemdEnabled
       }
     }
   );
@@ -7073,7 +7088,7 @@ async function executeProjectInitPlan(plan) {
       pendingRegistryAction = action;
     } else if (action.kind === "ticket-provider.create-or-link") {
       if (!action.enabled) {
-        logs.push("ticket-provider.create-or-link skipped (requires --live)");
+        logs.push(`ticket-provider.create-or-link skipped (${action.reason ?? "disabled by plan"})`);
       } else if (action.boardId) {
         logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} \u2192 ${action.boardId}); nothing to create`);
       } else {
@@ -7600,6 +7615,13 @@ var WireTelegram = class extends Command {
     if (ctx.skipTelegram) {
       return { success: true, message: "\u2192 Telegram wire-up skipped" };
     }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Telegram wiring is interactive and unavailable during quiet/non-interactive Hermes execution"
+      };
+    }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would run BotFather token capture") };
     }
@@ -7723,6 +7745,13 @@ var WireEmail = class extends Command {
     const ctx = this.context;
     if (ctx.skipEmail) {
       return { success: true, message: "" };
+    }
+    if (ctx.quiet) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "Email wiring is interactive and unavailable during quiet/non-interactive Hermes execution"
+      };
     }
     if (ctx.dryRun) {
       return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };
@@ -8254,10 +8283,12 @@ var ProjectRecipe = class extends Recipe {
           skipPlane: agentAction.context.skipPlane,
           skipBloodbank: agentAction.context.skipBloodbank,
           skipSystemd: agentAction.context.skipSystemd,
-          quiet: normalized.quiet,
           ...normalized.agentContext ?? {},
           targetDir,
           yes: true,
+          // Structured callers own stdout and prompt input. Do not allow a
+          // nested context object to weaken the transaction's quiet contract.
+          quiet: normalized.quiet ?? ctx.quiet ?? false,
           dryRun: false
         };
         agentResult = await this.registry.initRecipe(
