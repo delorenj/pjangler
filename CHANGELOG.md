@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `feat(PJAN-65)`: implement `pjangler describe`, replacing the "coming soon" placeholder with a real report of detected project type, installed subsystems, config files present, and next steps. Subsystem presence is derived from marker files and kept separate from recipe parity, so a subsystem that was never installed reads `absent` instead of `broken`. Fixable parity drift collapses into the single `migrate --all` step that covers exactly that set; manual-only findings stay itemized. `.project.json` wins over the central registry for the board binding, and any disagreement is reported as drift. Adds `--json`, an optional repo argument, and the `pjangler_describe_project` MCP tool.
 - `feat(PJAN-57)`: add recipe-owned lifecycle modules and a single validated `RecipeRegistry` with duplicate, dependency, cycle, ordering, init, audit, and migration dispatch coverage.
 - `test(PJAN-57)`: add dogfood env/TOML tests and a packed-CLI generated-project lifecycle test covering real Copier rendering, all six supported CLI roots, Git initialization, clean immediate audit, and idempotent re-init/migration.
 

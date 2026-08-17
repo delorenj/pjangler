@@ -27,6 +27,7 @@ import {
   planProjectInit,
   projectRegistryPath,
 } from "./project/index";
+import { describeProject, formatProjectDescription } from "./describe/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
@@ -997,18 +998,19 @@ configCmd
 
 program
   .command("describe")
+  .argument("[repo]", "Path to the repo to describe (default: cwd)")
   .description("Describe the current project (for AI context)")
-  .action(() => {
-    console.log("");
-    console.log(`  ${heading("Project description")} ${dim("(placeholder)")}`);
-    console.log("");
-    console.log(`  ${dim("Will analyze the project and report:")}`);
-    for (const item of ["Detected project type", "Installed subsystems", "Configuration files present", "Suggested next steps"]) {
-      console.log(`     ${cyan(glyph.bullet)} ${item}`);
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((repo: string | undefined, options) => {
+    try {
+      const description = describeProject({ repoArg: repo, registryPath: options.registry });
+      if (options.json) console.log(JSON.stringify(description, null, 2));
+      else console.log(formatProjectDescription(description));
+    } catch (err) {
+      console.error(`${xmark} describe failed:`, err instanceof Error ? err.message : err);
+      process.exit(1);
     }
-    console.log("");
-    console.log(`  ${dim("Coming soon.")}`);
-    console.log("");
   });
 
 program.parse();

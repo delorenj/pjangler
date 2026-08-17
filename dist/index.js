@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // src/index.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
-import { existsSync as existsSync13, readFileSync as readFileSync11, statSync as statSync2 } from "node:fs";
-import { basename as basename5, join as join17, resolve as resolve7 } from "node:path";
+import { spawnSync as spawnSync9 } from "node:child_process";
+import { existsSync as existsSync14, readFileSync as readFileSync12, statSync as statSync3 } from "node:fs";
+import { basename as basename5, join as join18, resolve as resolve8 } from "node:path";
 import { Command as Command3 } from "commander";
 
 // src/commands/hermes/types.ts
@@ -9145,16 +9145,443 @@ function getCommandsByGroup() {
 // src/index.ts
 import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } from "@clack/prompts";
 
+// src/describe/index.ts
+import { spawnSync as spawnSync8 } from "node:child_process";
+import { existsSync as existsSync13, readFileSync as readFileSync10, readdirSync as readdirSync5, statSync as statSync2 } from "node:fs";
+import { join as join16, resolve as resolve7 } from "node:path";
+var SUBSYSTEM_MARKERS = {
+  "mise-op-inject": [".env.op"],
+  mise: ["mise.toml", ".mise.toml", ".mise/config.toml"],
+  "agent-hooks": [".agents/skills.json", ".agents/hooks"],
+  bmad: ["_bmad"],
+  docker: ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
+  node: ["package.json"],
+  "hermes-agent": ["agents/hermes"],
+  project: [".project.json"]
+};
+var LANGUAGE_MARKERS = [
+  { file: "package.json", language: "javascript" },
+  { file: "pyproject.toml", language: "python" },
+  { file: "setup.py", language: "python" },
+  { file: "requirements.txt", language: "python" },
+  { file: "Cargo.toml", language: "rust" },
+  { file: "go.mod", language: "go" },
+  { file: "pom.xml", language: "jvm" },
+  { file: "build.gradle", language: "jvm" },
+  { file: "build.gradle.kts", language: "jvm" },
+  { file: "Gemfile", language: "ruby" },
+  { file: "composer.json", language: "php" }
+];
+var CONFIG_FILES = [
+  { path: ".project.json", purpose: "33GOD project manifest (board binding, agents)", subsystem: "project" },
+  { path: ".copier-answers.yml", purpose: "CommonProject render provenance", subsystem: "project" },
+  { path: "copier.yml", purpose: "Copier template definition", subsystem: "-" },
+  { path: "mise.toml", purpose: "Task runner, env, and enter/leave hooks", subsystem: "mise" },
+  { path: ".mise/tasks", purpose: "File-based mise tasks", subsystem: "mise" },
+  { path: ".mise/scripts", purpose: "Repo tooling on PATH", subsystem: "mise" },
+  { path: ".env.op", purpose: "1Password secret references (materialized to .env)", subsystem: "mise-op-inject" },
+  { path: ".env.example", purpose: "Documented environment contract", subsystem: "mise-op-inject" },
+  { path: ".agents/skills.json", purpose: "Skillex skill/pack manifest", subsystem: "agent-hooks" },
+  { path: ".agents/hooks", purpose: "Project-scoped agent hooks SSOT", subsystem: "agent-hooks" },
+  { path: ".claude/settings.json", purpose: "Generated Claude Code hook config", subsystem: "agent-hooks" },
+  { path: "_bmad", purpose: "BMAD methodology install", subsystem: "bmad" },
+  { path: "_bmad-output", purpose: "BMAD work products", subsystem: "bmad" },
+  { path: "AGENTS.md", purpose: "Agent instruction SSOT", subsystem: "-" },
+  { path: "agents/hermes", purpose: "Hermes agent roles for this repo", subsystem: "hermes-agent" },
+  { path: "Dockerfile", purpose: "Container image definition", subsystem: "docker" },
+  { path: "docker-compose.yml", purpose: "Local service composition", subsystem: "docker" },
+  { path: "package.json", purpose: "Node package manifest", subsystem: "node" },
+  { path: "tsconfig.json", purpose: "TypeScript compiler config", subsystem: "node" },
+  { path: "pyproject.toml", purpose: "Python package manifest", subsystem: "-" },
+  { path: "Cargo.toml", purpose: "Rust package manifest", subsystem: "-" },
+  { path: "go.mod", purpose: "Go module definition", subsystem: "-" },
+  { path: ".gitignore", purpose: "Ignore rules", subsystem: "-" },
+  { path: ".github/workflows", purpose: "GitHub Actions CI", subsystem: "-" }
+];
+function readJson(path) {
+  try {
+    const parsed = JSON.parse(readFileSync10(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function git(repo, args) {
+  const result = spawnSync8("git", ["-C", repo, ...args], { encoding: "utf8", timeout: 5e3 });
+  if (result.status !== 0 || typeof result.stdout !== "string") return void 0;
+  const value = result.stdout.trim();
+  return value === "" ? void 0 : value;
+}
+function describeGit(repo) {
+  if (git(repo, ["rev-parse", "--is-inside-work-tree"]) !== "true") return { isRepo: false };
+  const porcelain = spawnSync8("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8", timeout: 5e3 });
+  const dirtyFiles = porcelain.status === 0 ? porcelain.stdout.split("\n").filter((line) => line.trim() !== "").length : void 0;
+  return {
+    isRepo: true,
+    branch: git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    head: git(repo, ["rev-parse", "--short", "HEAD"]),
+    remote: git(repo, ["remote", "get-url", "origin"]),
+    dirtyFiles
+  };
+}
+function describeType(repo) {
+  const languages = [];
+  const roles = [];
+  const evidence = [];
+  const note2 = (signal, file) => evidence.push(`${signal} (${file})`);
+  for (const marker of LANGUAGE_MARKERS) {
+    if (!existsSync13(join16(repo, marker.file))) continue;
+    if (!languages.includes(marker.language)) {
+      languages.push(marker.language);
+      note2(marker.language, marker.file);
+    }
+  }
+  try {
+    const dotnet = readdirSync5(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
+    if (dotnet && !languages.includes("dotnet")) {
+      languages.push("dotnet");
+      note2("dotnet", dotnet);
+    }
+  } catch {
+  }
+  const pkg = readJson(join16(repo, "package.json"));
+  if (pkg) {
+    if (existsSync13(join16(repo, "tsconfig.json"))) {
+      const index = languages.indexOf("javascript");
+      if (index >= 0) languages.splice(index, 1);
+      if (!languages.includes("typescript")) {
+        languages.unshift("typescript");
+        note2("typescript", "tsconfig.json");
+      }
+    }
+    if (pkg.bin) {
+      roles.push("cli");
+      note2("cli", "package.json#bin");
+    }
+    if (pkg.workspaces) {
+      roles.push("monorepo");
+      note2("monorepo", "package.json#workspaces");
+    }
+    const dependencies = {
+      ...pkg.dependencies,
+      ...pkg.devDependencies
+    };
+    if (Object.keys(dependencies).some((name) => name.startsWith("@modelcontextprotocol/"))) {
+      roles.push("mcp-server");
+      note2("mcp-server", "package.json#@modelcontextprotocol");
+    }
+  }
+  const roleMarkers = [
+    ["copier-template", "copier.yml"],
+    ["container-image", "Dockerfile"],
+    ["compose-stack", "docker-compose.yml"],
+    ["33god-project", ".project.json"],
+    ["bmad-project", "_bmad"],
+    ["hermes-fleet-host", "agents/hermes"]
+  ];
+  for (const [role, marker] of roleMarkers) {
+    if (!existsSync13(join16(repo, marker))) continue;
+    roles.push(role);
+    note2(role, marker);
+  }
+  return { primaryLanguage: languages[0], languages, roles, evidence };
+}
+function describeIdentity(repo, registryPath2) {
+  const manifestPath = join16(repo, ".project.json");
+  const manifest = readJson(manifestPath);
+  const drift = [];
+  let record;
+  let registryReadable = true;
+  try {
+    const registry = loadProjectRegistry(registryPath2);
+    const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
+    const resolved = resolve7(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve7(project.repo_path) === resolved);
+  } catch (err) {
+    registryReadable = false;
+    drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
+  }
+  if (manifest && !record && registryReadable) {
+    drift.push({ note: ".project.json exists but this repo is not in the pjangler registry" });
+  }
+  if (record && !manifest) {
+    drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
+  }
+  if (record && resolve7(record.repo_path) !== resolve7(repo)) {
+    drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
+  }
+  const manifestProvider = manifest?.ticket_provider;
+  const provider = manifestProvider ? {
+    type: String(manifestProvider.type ?? ""),
+    workspace: manifestProvider.workspace,
+    identifier: manifestProvider.identifier,
+    board_id: manifestProvider.board_id,
+    state: manifestProvider.state
+  } : record?.ticket_provider;
+  if (manifestProvider && record) {
+    const fields = [
+      ["type", provider?.type, record.ticket_provider.type],
+      ["workspace", provider?.workspace, record.ticket_provider.workspace],
+      ["identifier", provider?.identifier, record.ticket_provider.identifier],
+      ["board_id", provider?.board_id, record.ticket_provider.board_id]
+    ];
+    for (const [field, fromManifest, fromRegistry] of fields) {
+      if ((fromManifest ?? "") === (fromRegistry ?? "")) continue;
+      drift.push({
+        note: `ticket_provider.${field} differs: .project.json has "${fromManifest ?? ""}", registry has "${fromRegistry ?? ""}" \u2014 the manifest is the source of truth, so the registry record needs re-syncing`
+      });
+    }
+  }
+  const manifestAgents = manifest?.agents ?? {};
+  const agents = record ? Object.entries(record.agents).map(([name, agent]) => ({
+    name,
+    role: agent.role,
+    provisioningState: agent.provisioning_state,
+    roleDir: agent.role_dir
+  })) : Object.entries(manifestAgents).map(([name, agent]) => ({
+    name,
+    role: String(agent?.role ?? "unknown"),
+    provisioningState: String(agent?.provisioning_state ?? "unknown"),
+    roleDir: agent?.role_dir
+  }));
+  return {
+    manifest: Boolean(manifest),
+    registered: Boolean(record),
+    registryPath: registryPath2,
+    slug: record?.slug ?? manifest?.project_slug,
+    name: record?.name ?? manifest?.project_name,
+    description: record?.description ?? manifest?.project_description,
+    status: record?.status,
+    ticketProvider: provider ? {
+      type: provider.type,
+      workspace: provider.workspace,
+      identifier: provider.identifier,
+      boardId: provider.board_id,
+      state: provider.state
+    } : void 0,
+    agents,
+    drift
+  };
+}
+function describeSubsystems(repo, findings) {
+  const byRecipe = /* @__PURE__ */ new Map();
+  for (const finding of findings) {
+    if (!finding.recipeId) continue;
+    const bucket = byRecipe.get(finding.recipeId) ?? [];
+    bucket.push(finding);
+    byRecipe.set(finding.recipeId, bucket);
+  }
+  return recipeRegistry.list().map((metadata) => {
+    const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
+    const evidence = markers.filter((marker) => existsSync13(join16(repo, marker)));
+    const rules = (byRecipe.get(metadata.id) ?? []).map((finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: finding.status,
+      summary: finding.summary,
+      fixable: finding.fixable
+    }));
+    const graded = rules.filter((rule) => rule.status !== "skip");
+    const parity = graded.length === 0 ? "unchecked" : graded.every((rule) => rule.status === "pass") ? "ok" : "drift";
+    const present = evidence.length > 0;
+    const status = !present ? "absent" : parity === "drift" ? "drifted" : "installed";
+    return { id: metadata.id, name: metadata.name, description: metadata.description, status, parity, evidence, rules };
+  });
+}
+function describeConfigFiles(repo) {
+  return CONFIG_FILES.filter((spec) => existsSync13(join16(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+}
+function describeNextSteps(description, findings) {
+  const steps = [];
+  if (!description.git.isRepo) {
+    steps.push({
+      title: "Initialize a git repository",
+      reason: "pjangler lifecycle operations and parity rules assume a git work tree",
+      source: "lifecycle",
+      command: "git init"
+    });
+  }
+  if (!description.identity.manifest) {
+    steps.push({
+      title: "Register this repo as a 33GOD project",
+      reason: "no .project.json \u2014 the board binding and agent roster have nowhere to live",
+      source: "lifecycle",
+      command: "pjangler init --apply"
+    });
+  } else if (!description.identity.registered) {
+    steps.push({
+      title: "Add this project to the pjangler registry",
+      reason: ".project.json exists but the central registry has no entry for this repo",
+      source: "registry",
+      command: `pjangler project init ${description.identity.name ?? ""} --target-dir . --apply`.replace(/\s+/g, " ")
+    });
+  }
+  for (const entry of description.identity.drift) {
+    if (entry.note.startsWith(".project.json exists but")) continue;
+    steps.push({
+      title: "Reconcile project registry drift",
+      reason: entry.note,
+      source: "registry",
+      ...entry.command ? { command: entry.command } : {}
+    });
+  }
+  const failing = findings.filter((finding) => finding.status === "fail" || finding.status === "warn");
+  const fixable = failing.filter((finding) => finding.fixable);
+  if (fixable.length === 1) {
+    const only = fixable[0];
+    steps.push({
+      title: `Fix ${only.id}`,
+      reason: only.summary,
+      source: "parity",
+      command: `pjangler migrate ${only.id}`,
+      rules: [only.id]
+    });
+  } else if (fixable.length > 1) {
+    steps.push({
+      title: `Apply ${fixable.length} parity migrations`,
+      reason: `${fixable.length} fixable parity rules are failing; migrate --all selects exactly this set`,
+      source: "parity",
+      command: "pjangler migrate --all",
+      rules: fixable.map((finding) => finding.id),
+      details: fixable.map((finding) => `${finding.id}: ${finding.summary}`)
+    });
+  }
+  for (const finding of failing) {
+    if (finding.fixable) continue;
+    steps.push({
+      title: `Resolve ${finding.id} manually`,
+      reason: `${finding.summary} \u2014 no migration recipe, this one needs hands`,
+      source: "parity",
+      rules: [finding.id]
+    });
+  }
+  for (const agent of description.identity.agents) {
+    if (agent.provisioningState === "provisioned") continue;
+    steps.push({
+      title: `Provision the ${agent.role} agent`,
+      reason: `${agent.name} is ${agent.provisioningState}, not provisioned`,
+      source: "agents",
+      command: `pjangler hermes-agent --role ${agent.role}`
+    });
+  }
+  return steps;
+}
+function describeProject(input = {}) {
+  const repo = resolve7(input.repoArg ?? process.cwd());
+  if (!existsSync13(repo)) throw new Error(`Path does not exist: ${repo}`);
+  if (!statSync2(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  const registryPath2 = input.registryPath ?? projectRegistryPath();
+  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
+  const findings = report.rules;
+  const counts = { pass: 0, fail: 0, warn: 0, skip: 0 };
+  for (const finding of findings) counts[finding.status] += 1;
+  const partial = {
+    repo,
+    describedAt: report.auditedAt,
+    git: describeGit(repo),
+    type: describeType(repo),
+    identity: describeIdentity(repo, registryPath2),
+    subsystems: describeSubsystems(repo, findings),
+    configFiles: describeConfigFiles(repo),
+    parity: { ok: report.ok, counts }
+  };
+  return { ...partial, nextSteps: describeNextSteps(partial, findings) };
+}
+var SUBSYSTEM_STYLE = {
+  installed: { glyph: glyph.pass, color: green },
+  drifted: { glyph: glyph.warn, color: yellow },
+  absent: { glyph: glyph.skip, color: gray }
+};
+function formatProjectDescription(description) {
+  const lines = [""];
+  const { identity, type, git: git2 } = description;
+  const title = identity.name ?? description.repo.split("/").pop() ?? description.repo;
+  lines.push(`  ${heading(title)}${identity.slug ? ` ${dim(`(${identity.slug})`)}` : ""}`);
+  lines.push(`  ${dim(description.repo)}`);
+  if (identity.description) lines.push(`  ${identity.description}`);
+  lines.push("");
+  const typeFacts = [];
+  if (type.primaryLanguage) typeFacts.push(cyan(type.primaryLanguage));
+  for (const role of type.roles) typeFacts.push(cyan(role));
+  lines.push(`  ${bold("Type")}`);
+  lines.push(`     ${typeFacts.length ? typeFacts.join(dim(" \xB7 ")) : dim("undetermined \u2014 no language or role markers found")}`);
+  if (type.languages.length > 1) lines.push(`     ${dim(`languages: ${type.languages.join(", ")}`)}`);
+  lines.push("");
+  lines.push(`  ${bold("Identity")}`);
+  lines.push(`     ${dim("manifest".padEnd(10))} ${identity.manifest ? green(".project.json") : dim("(none)")}`);
+  lines.push(`     ${dim("registry".padEnd(10))} ${identity.registered ? green("registered") : yellow("not registered")}  ${dim(identity.registryPath)}`);
+  if (identity.status) lines.push(`     ${dim("status".padEnd(10))} ${cyan(identity.status)}`);
+  if (identity.ticketProvider) {
+    const provider = identity.ticketProvider;
+    const board = [provider.type, provider.workspace, provider.identifier].filter(Boolean).join("/");
+    lines.push(`     ${dim("board".padEnd(10))} ${cyan(board)}${provider.state ? `  ${dim(provider.state)}` : ""}`);
+  }
+  for (const agent of identity.agents) {
+    const state = agent.provisioningState === "provisioned" ? green(agent.provisioningState) : yellow(agent.provisioningState);
+    lines.push(`     ${dim("agent".padEnd(10))} ${cyan(agent.name)} ${dim(agent.role)}  ${state}`);
+  }
+  if (git2.isRepo) {
+    const clean = git2.dirtyFiles === 0 ? green("clean") : yellow(`${git2.dirtyFiles} uncommitted`);
+    lines.push(`     ${dim("git".padEnd(10))} ${cyan(git2.branch ?? "?")}${git2.head ? dim(` @ ${git2.head}`) : ""}  ${clean}`);
+    if (git2.remote) lines.push(`     ${dim("remote".padEnd(10))} ${dim(git2.remote)}`);
+  } else {
+    lines.push(`     ${dim("git".padEnd(10))} ${yellow("not a git repository")}`);
+  }
+  for (const entry of identity.drift) lines.push(`     ${yellow(glyph.warn)} ${entry.note}`);
+  lines.push("");
+  const installed = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
+  lines.push(`  ${bold("Subsystems")} ${dim(`(${installed.length}/${description.subsystems.length} installed)`)}`);
+  const nameWidth = description.subsystems.reduce((width, subsystem) => Math.max(width, subsystem.name.length), 0);
+  for (const subsystem of description.subsystems) {
+    const style = SUBSYSTEM_STYLE[subsystem.status];
+    const failing = subsystem.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
+    const detail = subsystem.status === "absent" ? dim(subsystem.description) : failing.length ? yellow(`${failing.length} rule(s) need attention: ${failing.map((rule) => rule.id).join(", ")}`) : dim(subsystem.evidence.join(", ") || subsystem.description);
+    lines.push(`     ${style.color(style.glyph)} ${style.color(subsystem.name.padEnd(nameWidth))}  ${detail}`);
+  }
+  lines.push("");
+  lines.push(`  ${bold("Config files")} ${dim(`(${description.configFiles.length})`)}`);
+  if (!description.configFiles.length) lines.push(`     ${dim("(none found)")}`);
+  const pathWidth = description.configFiles.reduce((width, file) => Math.max(width, file.path.length), 0);
+  for (const file of description.configFiles) {
+    lines.push(`     ${cyan(file.path.padEnd(pathWidth))}  ${dim(file.purpose)}`);
+  }
+  lines.push("");
+  const { counts } = description.parity;
+  const parityLine = [
+    green(`${counts.pass} pass`),
+    counts.fail ? red(`${counts.fail} fail`) : dim("0 fail"),
+    counts.warn ? yellow(`${counts.warn} warn`) : dim("0 warn"),
+    dim(`${counts.skip} skip`)
+  ].join(dim(" \xB7 "));
+  lines.push(`  ${bold("Parity")}  ${parityLine}`);
+  lines.push("");
+  lines.push(`  ${bold("Next steps")} ${dim(`(${description.nextSteps.length})`)}`);
+  if (!description.nextSteps.length) {
+    lines.push(`     ${green(glyph.pass)} ${dim("Nothing pending \u2014 parity is clean and the project is fully registered.")}`);
+  }
+  for (const step of description.nextSteps) {
+    lines.push(`     ${cyan(glyph.bullet)} ${step.title}`);
+    if (step.details?.length) {
+      for (const detail of step.details) lines.push(`        ${dim(glyph.dot)} ${dim(detail)}`);
+    } else {
+      lines.push(`        ${dim(step.reason)}`);
+    }
+    if (step.command) lines.push(`        ${dim(glyph.pointer)} ${cyan(step.command)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 // src/utils/version.ts
-import { readFileSync as readFileSync10 } from "node:fs";
-import { dirname as dirname8, join as join16 } from "node:path";
+import { readFileSync as readFileSync11 } from "node:fs";
+import { dirname as dirname8, join as join17 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 var PJANGLER_VERSION = (() => {
   try {
     let dir = dirname8(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 4; i++) {
       try {
-        const raw = readFileSync10(join16(dir, "package.json"), "utf8");
+        const raw = readFileSync11(join17(dir, "package.json"), "utf8");
         return JSON.parse(raw).version ?? "0.0.0";
       } catch {
         const parent = dirname8(dir);
@@ -9193,19 +9620,19 @@ async function promptForRuleIds(rules) {
   }
   return selected;
 }
-function readJson(path) {
-  if (!existsSync13(path)) return void 0;
+function readJson2(path) {
+  if (!existsSync14(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync11(path, "utf8"));
+    const parsed = JSON.parse(readFileSync12(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
   }
 }
 function findGitRoot(cwd) {
-  const result = spawnSync8("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  const result = spawnSync9("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result.status !== 0) return void 0;
-  return resolve7(result.stdout.trim());
+  return resolve8(result.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -9213,8 +9640,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson(join17(targetDir, ".project.json"));
-  const pkg = readJson(join17(targetDir, "package.json"));
+  const manifest = readJson2(join18(targetDir, ".project.json"));
+  const pkg = readJson2(join18(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename5(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -9270,7 +9697,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync13(action.path) || readFileSync11(action.path, "utf8") !== next;
+    return !existsSync14(action.path) || readFileSync12(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -9318,25 +9745,25 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve7(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve8(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename5(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join17(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join18(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve7(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve8(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync13(targetDir);
-  if (targetExists && !statSync2(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  const targetExists = existsSync14(targetDir);
+  if (targetExists && !statSync3(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve7(targetGitRoot) === resolve7(targetDir));
+  const syncMode = Boolean(targetGitRoot && resolve8(targetGitRoot) === resolve8(targetDir));
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename5(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
@@ -9799,16 +10226,14 @@ configCmd.command("bootstrap").description("Create ~/.config/hermes-agent-templa
     process.exit(1);
   }
 });
-program.command("describe").description("Describe the current project (for AI context)").action(() => {
-  console.log("");
-  console.log(`  ${heading("Project description")} ${dim("(placeholder)")}`);
-  console.log("");
-  console.log(`  ${dim("Will analyze the project and report:")}`);
-  for (const item of ["Detected project type", "Installed subsystems", "Configuration files present", "Suggested next steps"]) {
-    console.log(`     ${cyan(glyph.bullet)} ${item}`);
+program.command("describe").argument("[repo]", "Path to the repo to describe (default: cwd)").description("Describe the current project (for AI context)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((repo, options) => {
+  try {
+    const description = describeProject({ repoArg: repo, registryPath: options.registry });
+    if (options.json) console.log(JSON.stringify(description, null, 2));
+    else console.log(formatProjectDescription(description));
+  } catch (err) {
+    console.error(`${xmark} describe failed:`, err instanceof Error ? err.message : err);
+    process.exit(1);
   }
-  console.log("");
-  console.log(`  ${dim("Coming soon.")}`);
-  console.log("");
 });
 program.parse();

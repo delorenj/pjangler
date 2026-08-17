@@ -10,6 +10,7 @@ import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext, TicketProvider } from "./commands/hermes/types";
 import { PJANGLER_VERSION } from "./utils/version";
 import { lifecycleContext, recipeRegistry, formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
+import { describeProject, formatProjectDescription } from "./describe/index";
 import {
   getProject,
   loadProjectRegistry,
@@ -152,7 +153,8 @@ server.registerTool(
       })),
       parityRules: getParityRuleIds(),
       recommendedWorkflows: {
-        existingProject: ["pjangler_audit_project", "pjangler_migrate_project"],
+        unfamiliarRepo: ["pjangler_describe_project", "pjangler_audit_project"],
+        existingProject: ["pjangler_describe_project", "pjangler_audit_project", "pjangler_migrate_project"],
         new33godProject: ["pjangler_project_init", "pjangler_bootstrap_33god_project", "pjangler_audit_project"],
         hermesAgentProvisioning: ["pjangler_deploy_hermes_agent", "pjangler_audit_project"],
       },
@@ -425,6 +427,31 @@ server.registerTool(
   async ({ slug, registryPath }) => {
     try {
       return asText(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
+    } catch (err) {
+      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+);
+
+server.registerTool(
+  "pjangler_describe_project",
+  {
+    title: "Describe a project",
+    description:
+      "Reads a repo and returns its detected type, installed pjangler subsystems, config files present, parity counts, and suggested next steps. The orientation call for an agent landing in an unfamiliar repo.",
+    inputSchema: {
+      targetDir: z.string().optional(),
+      registryPath: z.string().optional(),
+      json: z.boolean().optional(),
+    },
+  },
+  async ({ targetDir, registryPath, json }) => {
+    try {
+      const description = describeProject({
+        repoArg: resolveTargetDir(targetDir),
+        registryPath: registryPath ?? projectRegistryPath(),
+      });
+      return asText(json === false ? formatProjectDescription(description) : description);
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
