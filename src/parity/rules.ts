@@ -3716,9 +3716,18 @@ function hasAnyLifecycleScript(repoRoot: string): boolean {
       const base = join(repoRoot, prefix);
       if (!existsSync(base)) continue;
       for (const entry of readdirSync(base, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          const candidate = join(base, entry.name, suffix);
-          if (existsSync(candidate)) return true;
+        if (!entry.isDirectory()) continue;
+        const candidate = join(base, entry.name, suffix);
+        if (existsSync(candidate)) return true;
+        // Prefix-match the leaf, matching both the advertised pattern
+        // ("<role>/.scripts/lifecycle*") and the non-wildcard branch below.
+        // Requiring an extensionless `lifecycle` made the obvious filename
+        // (lifecycle.sh) fail against a message saying it should work.
+        const parent = dirname(candidate);
+        const stem = basename(candidate);
+        if (!existsSync(parent)) continue;
+        for (const sibling of readdirSync(parent, { withFileTypes: true })) {
+          if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
     } else {
@@ -3763,9 +3772,18 @@ function hasAnySentinelScript(repoRoot: string): boolean {
       const base = join(repoRoot, prefix);
       if (!existsSync(base)) continue;
       for (const entry of readdirSync(base, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          const candidate = join(base, entry.name, suffix);
-          if (existsSync(candidate)) return true;
+        if (!entry.isDirectory()) continue;
+        const candidate = join(base, entry.name, suffix);
+        if (existsSync(candidate)) return true;
+        // Prefix-match the leaf, matching both the advertised pattern
+        // ("<role>/.scripts/lifecycle*") and the non-wildcard branch below.
+        // Requiring an extensionless `lifecycle` made the obvious filename
+        // (lifecycle.sh) fail against a message saying it should work.
+        const parent = dirname(candidate);
+        const stem = basename(candidate);
+        if (!existsSync(parent)) continue;
+        for (const sibling of readdirSync(parent, { withFileTypes: true })) {
+          if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
     } else {
