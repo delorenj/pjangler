@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
-import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
+import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import {
   isPgRegistryEnabled,
@@ -1133,19 +1133,47 @@ export function formatProjectInitPlan(plan: ProjectInitPlan): string {
   return lines.join("\n");
 }
 
-export function formatProjectList(registry: ProjectRegistry): string {
-  const projects = Object.values(registry.projects).sort((a, b) => a.slug.localeCompare(b.slug));
+/**
+ * List projects, newest work first.
+ *
+ * The old `status` column is gone. It rendered the registry's lifecycle string,
+ * which read "planned" for 22 of 27 registered projects — including ones with
+ * commits the same day — so it sorted nothing and told the reader nothing. Its
+ * slot now holds real recency.
+ *
+ * Activity is passed in rather than computed here so this stays a pure
+ * formatter, and so the caller can scan the registry concurrently. Projects
+ * with no activity entry (a repo_path that no longer exists, of which the live
+ * registry has two) sort last and render "never".
+ */
+export function formatProjectList(
+  registry: ProjectRegistry,
+  activityByPath: ReadonlyMap<string, { relative: string; updatedUnix: number | null; active: boolean }> = new Map(),
+): string {
+  const ageOf = (project: ProjectRecord) => activityByPath.get(project.repo_path);
+  const projects = Object.values(registry.projects).sort((a, b) => {
+    const left = ageOf(a)?.updatedUnix ?? -1;
+    const right = ageOf(b)?.updatedUnix ?? -1;
+    if (left !== right) return right - left;
+    return a.slug.localeCompare(b.slug);
+  });
   if (!projects.length) return `\n  ${dim("No projects registered.")}\n`;
+
+  const relativeOf = (project: ProjectRecord) => ageOf(project)?.relative ?? "never";
   const slugWidth = projects.reduce((width, project) => Math.max(width, project.slug.length), 0);
   const idWidth = projects.reduce((width, project) => Math.max(width, String(project.ticket_provider.identifier ?? "").length), 0);
-  const statusWidth = projects.reduce((width, project) => Math.max(width, project.status.length), 0);
+  const ageWidth = projects.reduce((width, project) => Math.max(width, relativeOf(project).length), 0);
 
-  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}`, ""];
+  const lines = ["", `  ${bold("Projects")} ${dim(`(${projects.length})`)}  ${dim("newest work first")}`, ""];
   for (const project of projects) {
+    const activity = ageOf(project);
     const slug = bold(project.slug.padEnd(slugWidth));
     const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
-    const status = projectStatusColor(project.status)(project.status.padEnd(statusWidth));
-    lines.push(`  ${slug}  ${identifier}  ${status}  ${dim(project.repo_path)}`);
+    // Pad BEFORE coloring: ANSI escapes are invisible but still count toward
+    // String.padEnd's length, so padding a colored string misaligns the column.
+    const padded = relativeOf(project).padEnd(ageWidth);
+    const age = activity?.active ? green(padded) : activity?.updatedUnix ? yellow(padded) : dim(padded);
+    lines.push(`  ${slug}  ${identifier}  ${age}  ${dim(project.repo_path)}`);
   }
   lines.push("");
   return lines.join("\n");

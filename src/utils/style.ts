@@ -103,3 +103,84 @@ export function heading(title: string, marker: string = glyph.chevron): string {
 export function joinDot(fragments: string[]): string {
   return fragments.join(dim(` ${glyph.dot} `));
 }
+
+// ---------------------------------------------------------------------------
+// Width-aware layout
+//
+// The default idiom in this codebase is pad-then-color — pad the RAW string,
+// then colorize the padded result — and it must stay that way, because
+// String.padEnd counts the invisible escape bytes toward the target width.
+// `cyan("mise").padEnd(12)` is a silent no-op: the colored string is already 14
+// characters long, so nothing is added and the column collapses.
+//
+// The helpers below are for the case pad-then-color cannot cover: a cell built
+// from SEVERAL colored fragments, where there is no single raw string left to
+// pad. There the pad has to be measured against visible width and placed
+// outside the color runs.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+
+/** Drop SGR escapes, leaving what the terminal actually shows. */
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_PATTERN, "");
+}
+
+/** Rendered column count of a possibly-colored string. */
+export function visibleWidth(value: string): number {
+  return stripAnsi(value).length;
+}
+
+/** Right-pad to `width` measured in VISIBLE columns; pad stays unstyled. */
+export function padVisible(value: string, width: number): string {
+  return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
+}
+
+/** Truncate to `width` visible columns, marking the cut with an ellipsis. */
+export function truncateVisible(value: string, width: number): string {
+  if (width <= 0) return "";
+  const plain = stripAnsi(value);
+  if (plain.length <= width) return value;
+  // Truncating mid-escape would leak color into the rest of the line, so only
+  // plain strings are cut; a colored value is reduced to its visible text.
+  if (plain.length !== value.length) return width <= 1 ? "…" : `${plain.slice(0, width - 1)}…`;
+  return width <= 1 ? "…" : `${value.slice(0, width - 1)}…`;
+}
+
+/**
+ * Usable terminal width.
+ *
+ * The `> 0` guard is load-bearing rather than defensive: `columns` is
+ * undefined on a pipe AND can be reported as 0 by a real pty, so a plain
+ * `?? fallback` still yields a zero-width layout.
+ */
+export function terminalWidth(stream: { columns?: number } = process.stdout, fallback = 100): number {
+  const columns = stream.columns;
+  return typeof columns === "number" && columns > 0 ? columns : fallback;
+}
+
+/** Greedy word wrap over visible width. Returns at least one (possibly empty) line. */
+export function wrapVisible(text: string, width: number): string[] {
+  if (width <= 0) return [text];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (!current) {
+      current = word;
+    } else if (visibleWidth(current) + 1 + visibleWidth(word) <= width) {
+      current = `${current} ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+    // A single word longer than the column gets hard-split rather than
+    // pushing the whole layout sideways.
+    while (visibleWidth(current) > width) {
+      lines.push(current.slice(0, width));
+      current = current.slice(width);
+    }
+  }
+  lines.push(current);
+  return lines;
+}
