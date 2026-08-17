@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -29,6 +29,19 @@ const transport = new StdioClientTransport({
 });
 const client = new Client({ name: "pjangler-mcp-regression", version: "1.0.0" });
 
+async function expectInvalidParams(name, args, message) {
+  try {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true, `${message}: expected an MCP error result`);
+    const text = result.content.map((entry) => entry.type === "text" ? entry.text : "").join("\n");
+    assert.match(text, /MCP error -32602:/, `${message}: expected MCP InvalidParams (-32602)`);
+    assert.match(text, /invalid arguments|unrecognized key/i, message);
+  } catch (error) {
+    assert.equal(error?.code, -32602, `${message}: expected MCP InvalidParams (-32602), got ${error?.code}\n${error}`);
+    assert.match(String(error?.message ?? error), /invalid arguments|unrecognized key/i, message);
+  }
+}
+
 await client.connect(transport);
 try {
   const listed = await client.listTools();
@@ -46,8 +59,59 @@ try {
   ]) {
     assert.ok(toolNames.has(tool), `${tool} should be exposed by the MCP server`);
   }
+  for (const tool of listed.tools) {
+    assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} must reject unknown top-level arguments`);
+  }
+
+  const bootstrapTool = listed.tools.find((tool) => tool.name === "pjangler_bootstrap_33god_project");
+  const projectInitTool = listed.tools.find((tool) => tool.name === "pjangler_project_init");
   const deployTool = listed.tools.find((tool) => tool.name === "pjangler_deploy_hermes_agent");
-  assert.ok(deployTool.inputSchema.properties.role.enum.includes("director"), "direct MCP deployment must accept the director role");
+  assert.equal(deployTool.inputSchema.properties.role.enum, undefined, "MCP deployment roles must remain extensible rather than a fixed enum");
+  assert.equal("skipBloodbank" in deployTool.inputSchema.properties, false, "MCP must not advertise per-agent Bloodbank enablement");
+  for (const tool of [bootstrapTool, projectInitTool]) {
+    assert.equal(tool.inputSchema.properties.boardUrl.deprecated, true, `${tool.name} boardUrl must be visibly deprecated`);
+    assert.match(tool.inputSchema.properties.boardUrl.description, /deprecated/i);
+  }
+
+  // PJAN-66: every tool rejects unknown top-level arguments at the protocol
+  // boundary, before its handler can read state or perform an effect.
+  const strictRecipeTarget = join(mcpTmp, "strict-recipe-target");
+  const strictDeployTarget = join(mcpTmp, "strict-deploy-target");
+  const strictProjectTarget = join(mcpTmp, "strict-project-target");
+  const strictBootstrapTarget = join(mcpTmp, "strict-bootstrap-target");
+  mkdirSync(strictRecipeTarget);
+  mkdirSync(strictDeployTarget);
+  writeFileSync(join(strictRecipeTarget, "package.json"), '{"name":"strict-sentinel"}\n');
+  const strictCalls = [
+    ["pjangler_list_capabilities", {}],
+    ["pjangler_list_parity_rules", {}],
+    ["pjangler_audit_project", { targetDir: root }],
+    ["pjangler_migrate_project", { targetDir: root, ruleId: "sot.agent-symlinks", dryRun: true }],
+    ["pjangler_bootstrap_33god_project", { parentDir: mcpTmp, projectName: "Strict Bootstrap", projectSlug: "strict-bootstrap-target", dryRun: false }],
+    ["pjangler_project_init", { name: "Strict Project", targetDir: strictProjectTarget, apply: true }],
+    ["pjangler_project_list", {}],
+    ["pjangler_project_show", { slug: "missing" }],
+    ["pjangler_describe_project", { targetDir: root }],
+    ["pjangler_describe_recipe", { recipe: "node" }],
+    ["pjangler_run_recipe", { recipe: "node", targetDir: strictRecipeTarget, dryRun: false }],
+    ["pjangler_deploy_hermes_agent", { targetDir: strictDeployTarget, role: "pm", local: true, dryRun: false }],
+  ];
+  for (const [name, args] of strictCalls) {
+    await expectInvalidParams(name, { ...args, pjan66Unknown: true }, `${name} must reject an unknown argument`);
+  }
+  assert.equal(readFileSync(join(strictRecipeTarget, "package.json"), "utf8"), '{"name":"strict-sentinel"}\n');
+  assert.equal(existsSync(join(strictDeployTarget, "agents")), false, "strict validation must run before Hermes creates a role parent");
+  assert.equal(existsSync(strictProjectTarget), false, "strict validation must run before project init creates its target");
+  assert.equal(existsSync(strictBootstrapTarget), false, "strict validation must run before bootstrap creates its target");
+  assert.equal(existsSync(join(mcpTmp, "projects.yaml")), false, "strict validation must run before registry mutation");
+
+  const typoTarget = join(mcpTmp, "dryrun-typo-target");
+  await expectInvalidParams(
+    "pjangler_bootstrap_33god_project",
+    { parentDir: mcpTmp, projectName: "Dryrun Typo", projectSlug: "dryrun-typo-target", dryrun: true },
+    "dryrun must not be silently accepted as dryRun",
+  );
+  assert.equal(existsSync(typoTarget), false, "the rejected dryrun typo must create nothing");
 
   const rulesResult = await client.callTool({ name: "pjangler_list_parity_rules", arguments: {} });
   const rulesPayload = JSON.parse(rulesResult.content[0].text);
@@ -64,6 +128,21 @@ try {
   assert.equal(dryRunPayload.project.agents.dev.role, "dev");
   assert.ok(dryRunPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
   assert.ok(dryRunPayload.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "dev"));
+
+  const boardUrlBootstrap = await client.callTool({
+    name: "pjangler_bootstrap_33god_project",
+    arguments: {
+      parentDir: mcpTmp,
+      projectName: "Deprecated Board URL Bootstrap",
+      projectSlug: "deprecated-board-url-bootstrap",
+      boardUrl: "https://legacy.example.invalid/board",
+      dryRun: true,
+    },
+  });
+  const boardUrlBootstrapPayload = JSON.parse(boardUrlBootstrap.content[0].text);
+  assert.ok(boardUrlBootstrapPayload.warnings.some((warning) => /boardUrl.*deprecated/i.test(warning)));
+  assert.equal("board_url" in boardUrlBootstrapPayload.project.ticket_provider, false);
+  assert.equal("board_url" in boardUrlBootstrapPayload.manifest.ticket_provider, false);
 
   const projectDryRun = await client.callTool({
     name: "pjangler_project_init",
@@ -92,6 +171,81 @@ try {
   assert.equal(trelloProjectPayload.project.ticket_provider.type, "trello");
   assert.equal("board_url" in trelloProjectPayload.project.ticket_provider, false);
   assert.equal(trelloProjectPayload.project.ticket_provider.state, "linked");
+
+  const boardUrlProject = await client.callTool({
+    name: "pjangler_project_init",
+    arguments: {
+      name: "Deprecated Board URL Project",
+      targetDir: join(mcpTmp, "DeprecatedBoardUrlProject"),
+      boardUrl: "https://legacy.example.invalid/project",
+    },
+  });
+  const boardUrlProjectPayload = JSON.parse(boardUrlProject.content[0].text);
+  assert.ok(boardUrlProjectPayload.warnings.some((warning) => /boardUrl.*deprecated/i.test(warning)));
+  assert.equal("board_url" in boardUrlProjectPayload.project.ticket_provider, false);
+  assert.equal("board_url" in boardUrlProjectPayload.manifest.ticket_provider, false);
+
+  // Explicit slugs and arbitrary Hermes roles are safe single path segments.
+  // Malicious inputs fail validation before handlers run and cannot escape.
+  for (const projectSlug of ["", ".", "..", "../escaped", "/tmp/escaped", "nested/project", "nested\\project"]) {
+    await expectInvalidParams(
+      "pjangler_bootstrap_33god_project",
+      { parentDir: mcpTmp, projectName: "Unsafe Slug", projectSlug, dryRun: false },
+      `unsafe bootstrap projectSlug ${JSON.stringify(projectSlug)} must fail`,
+    );
+  }
+  for (const role of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
+    await expectInvalidParams(
+      "pjangler_deploy_hermes_agent",
+      { targetDir: strictDeployTarget, role, local: true, dryRun: false },
+      `unsafe Hermes role ${JSON.stringify(role)} must fail`,
+    );
+  }
+  assert.equal(existsSync(join(mcpTmp, "escaped")), false, "malicious segments must not create escaped files");
+  assert.equal(existsSync(join(strictDeployTarget, "agents")), false, "malicious roles must not create Hermes paths");
+
+  const containedParent = join(mcpTmp, "contained-parent");
+  const escapedTarget = join(mcpTmp, "escaped-explicit-target");
+  mkdirSync(containedParent);
+  const escapedBootstrap = await client.callTool({
+    name: "pjangler_bootstrap_33god_project",
+    arguments: {
+      parentDir: containedParent,
+      targetDir: escapedTarget,
+      projectName: "Escaped Explicit Target",
+      projectSlug: "escaped-explicit-target",
+      dryRun: false,
+    },
+  });
+  assert.equal(escapedBootstrap.isError, true, "an explicit bootstrap target outside parentDir must fail");
+  assert.match(escapedBootstrap.content[0].text, /contained|beneath|parent/i);
+  assert.equal(existsSync(escapedTarget), false);
+
+  const arbitraryRole = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: { targetDir: strictDeployTarget, role: "release-captain", local: true, dryRun: true },
+  });
+  const arbitraryRolePayload = JSON.parse(arbitraryRole.content[0].text);
+  assert.equal(arbitraryRolePayload.success, true, JSON.stringify(arbitraryRolePayload));
+  assert.equal(arbitraryRolePayload.context.role, "release-captain");
+  assert.equal(arbitraryRolePayload.bloodbankMode, "fleet-shared");
+
+  const escapedHermesRoot = join(mcpTmp, "escaped-hermes-root");
+  mkdirSync(escapedHermesRoot);
+  symlinkSync(escapedHermesRoot, join(strictDeployTarget, "agents"), "dir");
+  const symlinkEscape = await client.callTool({
+    name: "pjangler_deploy_hermes_agent",
+    arguments: { targetDir: strictDeployTarget, role: "security-reviewer", local: true, dryRun: true },
+  });
+  assert.equal(symlinkEscape.isError, true, "Hermes role directories must not escape through an existing symlink");
+  assert.match(symlinkEscape.content[0].text, /contained beneath parent/i);
+  assert.equal(existsSync(join(escapedHermesRoot, "hermes", "security-reviewer")), false);
+
+  await expectInvalidParams(
+    "pjangler_deploy_hermes_agent",
+    { targetDir: strictDeployTarget, role: "pm", local: true, dryRun: true, skipBloodbank: false },
+    "the retired per-agent Bloodbank toggle must be rejected",
+  );
 
   const projectList = await client.callTool({ name: "pjangler_project_list", arguments: {} });
   const projectListPayload = JSON.parse(projectList.content[0].text);
@@ -125,6 +279,8 @@ try {
   });
   const hermesForcedPayload = JSON.parse(hermesForced.content[0].text);
   assert.equal(hermesForcedPayload.success, true, JSON.stringify(hermesForcedPayload));
+  assert.equal(hermesForcedPayload.bloodbankMode, "fleet-shared");
+  assert.equal("skipBloodbank" in hermesForcedPayload.context, false);
   assert.match(hermesForcedPayload.logs.join("\n"), /copier .*--overwrite/, "MCP Hermes force must reach RunCopierTemplate");
   const hermesUnforced = await client.callTool({
     name: "pjangler_deploy_hermes_agent",

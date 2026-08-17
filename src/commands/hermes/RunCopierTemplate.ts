@@ -7,6 +7,7 @@ import * as p from "@clack/prompts";
 import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveProfileName, type HermesAgentContext } from "./types";
+import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
 
 /**
  * Resolve a vendored copier template that ships with pjangler as a git
@@ -65,11 +66,17 @@ export class RunCopierTemplate extends Command {
       };
     }
 
-    const roleDir = join(ctx.targetDir, "agents", "hermes", role);
+    const safeRole = normalizeAgentRole(role);
+    ctx.role = safeRole;
+    const roleDir = resolveContainedPath(
+      ctx.targetDir,
+      join(ctx.targetDir, "agents", "hermes", safeRole),
+      "Hermes role directory",
+    );
     ctx.roleDir = roleDir;
     // Derive runtime repo name upfront so PrintHermesSummary can show it
     // even in dry-run mode (where copier never executes).
-    ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${role}`;
+    ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
 
     // Sanity: copier on PATH?
     const which = spawnSync("which", ["copier"], { encoding: "utf8" });
@@ -90,7 +97,7 @@ export class RunCopierTemplate extends Command {
         ctx.force = true;
       } else {
         const proceed = await p.confirm({
-          message: `${role}/role.yaml already exists — re-render with --overwrite?`,
+          message: `${safeRole}/role.yaml already exists — re-render with --overwrite?`,
           initialValue: false,
         });
         if (p.isCancel(proceed) || !proceed) {
@@ -139,7 +146,7 @@ export class RunCopierTemplate extends Command {
       templateSrc,
       roleDir,
       "--data", `target_repo=${targetRepo}`,
-      "--data", `role=${role}`,
+      "--data", `role=${safeRole}`,
       "--data", `agent_purpose=${agentPurpose ?? ""}`,
       "--data", `model_provider=${modelProvider ?? ""}`,
       "--data", `model_name=${modelName ?? ""}`,
@@ -169,7 +176,7 @@ export class RunCopierTemplate extends Command {
     mkdirSync(join(ctx.targetDir, "agents", "hermes"), { recursive: true });
 
     const spinner = ctx.quiet ? undefined : p.spinner();
-    spinner?.start(`Running copier copy  (target: agents/hermes/${role})`);
+    spinner?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const result = spawnSync("copier", args, ctx.quiet
       ? { encoding: "utf8", env, cwd: ctx.targetDir }
       : { stdio: "inherit", env, cwd: ctx.targetDir });

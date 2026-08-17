@@ -6125,833 +6125,50 @@ var PromptForAgentConfig = class extends Command {
 };
 
 // src/commands/hermes/RunCopierTemplate.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-import { homedir as homedir2 } from "node:os";
-import { join as join5, dirname as dirname3 } from "node:path";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-import * as p2 from "@clack/prompts";
-import YAML2 from "yaml";
-function resolveVendoredTemplate(name) {
-  let dir;
-  try {
-    dir = dirname3(fileURLToPath2(import.meta.url));
-  } catch {
-    return void 0;
-  }
-  for (let i = 0; i < 8; i++) {
-    const candidate = join5(dir, "templates", name);
-    if (existsSync3(join5(candidate, "copier.yml"))) return candidate;
-    const parent = dirname3(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return void 0;
-}
-var RunCopierTemplate = class extends Command {
-  async invoke() {
-    const ctx = this.context;
-    const {
-      targetRepo,
-      role,
-      agentPurpose,
-      soulTone,
-      modelProvider,
-      modelName,
-      modelBaseUrl,
-      modelApiMode,
-      modelKeyEnv
-    } = ctx;
-    const ticketProvider = ctx.ticketProvider ?? "plane";
-    const profileName = ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : void 0);
-    if (!targetRepo || !role) {
-      return {
-        success: false,
-        message: "PromptForAgentConfig must run before RunCopierTemplate (targetRepo/role unset)"
-      };
-    }
-    const roleDir = join5(ctx.targetDir, "agents", "hermes", role);
-    ctx.roleDir = roleDir;
-    ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${role}`;
-    const which = spawnSync2("which", ["copier"], { encoding: "utf8" });
-    if (which.status !== 0) {
-      return {
-        success: false,
-        outcome: "failed",
-        message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
-      };
-    }
-    if (existsSync3(join5(roleDir, "role.yaml")) && !ctx.force) {
-      if (ctx.yes) {
-        ctx.force = true;
-      } else {
-        const proceed = await p2.confirm({
-          message: `${role}/role.yaml already exists \u2014 re-render with --overwrite?`,
-          initialValue: false
-        });
-        if (p2.isCancel(proceed) || !proceed) {
-          return {
-            success: false,
-            outcome: "cancelled",
-            message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`
-          };
-        }
-        ctx.force = true;
-      }
-    }
-    const env2 = {
-      ...process.env,
-      SKIP_TELEGRAM: "1",
-      SKIP_EMAIL: "1",
-      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
-      // per-profile file consumer, even when an older template still exposes it.
-      SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
-      SKIP_PLANE: ctx.skipPlane ? "1" : "0",
-      SKIP_BLOODBANK: "1",
-      SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
-    };
-    const LOCAL_TEMPLATE = join5(homedir2(), "code", "hermes-agent-template");
-    const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync3(join5(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
-    const args = [
-      "copy",
-      templateSrc,
-      roleDir,
-      "--data",
-      `target_repo=${targetRepo}`,
-      "--data",
-      `role=${role}`,
-      "--data",
-      `agent_purpose=${agentPurpose ?? ""}`,
-      "--data",
-      `model_provider=${modelProvider ?? ""}`,
-      "--data",
-      `model_name=${modelName ?? ""}`,
-      "--data",
-      `model_base_url=${modelBaseUrl ?? ""}`,
-      "--data",
-      `model_api_mode=${modelApiMode ?? ""}`,
-      "--data",
-      `model_key_env=${modelKeyEnv ?? ""}`,
-      "--data",
-      `profile_name=${profileName ?? ""}`,
-      "--data",
-      `soul_tone=${soulTone ?? "direct"}`,
-      "--data",
-      `ticket_provider=${ticketProvider}`,
-      "--trust",
-      "--vcs-ref=HEAD"
-    ];
-    if (ctx.force) args.push("--overwrite");
-    if (ctx.dryRun) {
-      return {
-        success: true,
-        outcome: "planned",
-        filePath: roleDir,
-        message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
-      };
-    }
-    mkdirSync3(join5(ctx.targetDir, "agents", "hermes"), { recursive: true });
-    const spinner4 = ctx.quiet ? void 0 : p2.spinner();
-    spinner4?.start(`Running copier copy  (target: agents/hermes/${role})`);
-    const result = spawnSync2("copier", args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
-    spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
-    if (result.status !== 0) {
-      return {
-        success: false,
-        outcome: "failed",
-        message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
-      };
-    }
-    const roleManifest = join5(roleDir, "role.yaml");
-    try {
-      const current = readFileSync4(roleManifest, "utf8");
-      const document = YAML2.parseDocument(current);
-      if (document.errors.length) throw document.errors[0];
-      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
-      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
-      const next = String(document);
-      if (next !== current) writeFileSync3(roleManifest, next, "utf8");
-    } catch (error) {
-      return {
-        success: false,
-        outcome: "failed",
-        message: `Failed to record Hermes deployment mode in ${roleManifest}: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-    return {
-      success: true,
-      message: `\u2713 Provisioned ${roleDir}  (runtime: gh:${ctx.runtimeRepo})`
-    };
-  }
-};
-
-// src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync4, readdirSync as readdirSync3 } from "fs";
-import { join as join6 } from "path";
 import { spawnSync as spawnSync3 } from "node:child_process";
-function sectionHasPath(section, targetPath) {
-  return section.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
-}
-function removeSubmodulePath(content, targetPath) {
-  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) => sectionHasPath(section, targetPath) ? "" : section).replace(/\n{3,}/g, "\n\n").trim();
-}
-var UntrackHermesRuntimes = class extends Command {
-  async invoke() {
-    const targetDir = this.context.targetDir;
-    const rolesDir = join6(targetDir, "agents", "hermes");
-    if (!existsSync4(rolesDir)) {
-      return {
-        success: true,
-        message: "No Hermes agents found (no agents/hermes directory)."
-      };
-    }
-    const roles = readdirSync3(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    if (roles.length === 0) {
-      return {
-        success: true,
-        message: "No Hermes agents found."
-      };
-    }
-    let modifiedAny = false;
-    const details = [];
-    for (const role of roles) {
-      const roleDir = join6("agents", "hermes", role);
-      const runtimePath = join6(roleDir, "runtime");
-      const gitignorePath = join6(roleDir, ".gitignore");
-      const gitmodulesPath = join6(targetDir, ".gitmodules");
-      let isTracked = false;
-      const lsResult = spawnSync3("git", ["ls-files", "--stage", "--", runtimePath], {
-        cwd: targetDir,
-        encoding: "utf8"
-      });
-      if (lsResult.status !== 0) {
-        return {
-          success: false,
-          message: `\u2717 Failed to inspect runtime index at ${runtimePath}: ${lsResult.stderr.trim() || `exit ${lsResult.status}`}`
-        };
-      }
-      if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
-        isTracked = true;
-      }
-      let hasStaleMapping = false;
-      let gitmodulesContent = "";
-      if (existsSync4(gitmodulesPath)) {
-        gitmodulesContent = readFileSync5(gitmodulesPath, "utf8");
-        const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
-        hasStaleMapping = sections.some((section) => sectionHasPath(section, runtimePath));
-      }
-      let isIgnored = false;
-      const fullGitignorePath = join6(targetDir, gitignorePath);
-      if (existsSync4(fullGitignorePath)) {
-        const content = readFileSync5(fullGitignorePath, "utf8");
-        const lines = content.split(/\r?\n/).map((line) => line.trim());
-        isIgnored = lines.includes("runtime/") || lines.includes("runtime");
-      }
-      if (isTracked || hasStaleMapping || !isIgnored) {
-        modifiedAny = true;
-        if (isTracked) {
-          details.push(`untrack agents/hermes/${role}/runtime`);
-          if (!this.context.dryRun) {
-            const rmResult = spawnSync3("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
-              cwd: targetDir,
-              encoding: "utf8"
-            });
-            if (rmResult.status !== 0) {
-              return {
-                success: false,
-                message: `\u2717 Failed to untrack ${runtimePath}: ${rmResult.stderr.trim() || `exit ${rmResult.status}`}`
-              };
-            }
-            const verifyResult = spawnSync3("git", ["ls-files", "--stage", "--", runtimePath], {
-              cwd: targetDir,
-              encoding: "utf8"
-            });
-            if (verifyResult.status !== 0 || verifyResult.stdout.trim()) {
-              return {
-                success: false,
-                message: verifyResult.status !== 0 ? `\u2717 Failed to verify untracked runtime ${runtimePath}: ${verifyResult.stderr.trim() || `exit ${verifyResult.status}`}` : `\u2717 Runtime remains tracked after index-only removal: ${runtimePath}`
-              };
-            }
-          }
-        }
-        if (hasStaleMapping) {
-          details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
-          if (!this.context.dryRun) {
-            const next = removeSubmodulePath(gitmodulesContent, runtimePath);
-            writeFileSync4(gitmodulesPath, next ? `${next}
-` : "", "utf8");
-          }
-        }
-        if (!isIgnored) {
-          details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
-          if (!this.context.dryRun) {
-            let content = "";
-            if (existsSync4(fullGitignorePath)) {
-              content = readFileSync5(fullGitignorePath, "utf8");
-            }
-            if (content && !content.endsWith("\n")) {
-              content += "\n";
-            }
-            content += "runtime/\n";
-            writeFileSync4(fullGitignorePath, content, "utf8");
-          }
-        }
-      }
-    }
-    if (!modifiedAny) {
-      return {
-        success: true,
-        message: "\u2705 All Hermes agent runtimes are already untracked and gitignored."
-      };
-    }
-    const actionText = this.context.dryRun ? "Would make" : "Made";
-    return {
-      success: true,
-      message: `${actionText} Hermes agent runtimes untracked and gitignored:
-${details.map((d) => `  - ${d}`).join("\n")}`
-    };
-  }
-};
+import { homedir as homedir3 } from "node:os";
+import { join as join7, dirname as dirname4 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+import * as p2 from "@clack/prompts";
+import YAML4 from "yaml";
 
-// src/commands/hermes/WireTelegram.ts
-import { spawnSync as spawnSync4 } from "node:child_process";
-import { join as join7 } from "node:path";
-import { existsSync as existsSync5, unlinkSync as unlinkSync2 } from "node:fs";
-import * as p3 from "@clack/prompts";
-var WireTelegram = class extends Command {
-  async invoke() {
-    const ctx = this.context;
-    if (ctx.skipTelegram) {
-      return { success: true, message: "\u2192 Telegram wire-up skipped" };
-    }
-    if (ctx.dryRun) {
-      return { success: true, message: this.formatMessage("Would run BotFather token capture") };
-    }
-    const { targetRepo, role, roleDir } = ctx;
-    if (!targetRepo || !role || !roleDir) {
-      return { success: false, message: "Cannot wire telegram: missing target_repo/role/roleDir" };
-    }
-    const botHandle = `${targetRepo.toLowerCase().replace(/-/g, "_")}_${role.toLowerCase()}_bot`;
-    const displayName = `${cap(targetRepo)} ${role.length <= 3 ? role.toUpperCase() : cap(role)}`;
-    const vaultTitle = `Telegram-Hermes-${targetRepo.toLowerCase()}-${role.toLowerCase()}`;
-    const vaultRef = `op://DeLoSecrets/${vaultTitle}/token`;
-    let token = process.env.TELEGRAM_BOT_TOKEN;
-    let source = token ? "env" : null;
-    if (!token) {
-      const tryOp = spawnSync4("op", ["read", vaultRef], { encoding: "utf8" });
-      if (tryOp.status === 0) {
-        token = tryOp.stdout.trim();
-        source = "op";
-        p3.log.info(`\u2713 Telegram token loaded from ${vaultRef}`);
-      }
-    }
-    if (!token) {
-      p3.log.step("BotFather steps");
-      p3.log.info(
-        [
-          "  1. Open Telegram, message @BotFather",
-          "  2. /newbot",
-          `  3. Display name:   ${displayName}`,
-          `  4. Username:       ${botHandle}   (must end in _bot)`,
-          "  5. Copy the HTTP API token from the reply.",
-          "  6. /setjoingroups Disable",
-          "  7. /setprivacy    Disable"
-        ].join("\n")
-      );
-      const tokenAnswer = await p3.password({
-        message: `Paste the bot token for @${botHandle}`,
-        mask: "\u2022",
-        validate: (v) => {
-          const s = String(v ?? "").trim();
-          if (!s) return "required";
-          if (!/^[0-9]+:.+/.test(s)) return "expected '<digits>:<secret>' shape";
-        }
-      });
-      if (p3.isCancel(tokenAnswer)) {
-        return { success: true, message: "\u2192 Telegram skipped (no token).  Re-run later." };
-      }
-      token = String(tokenAnswer).trim();
-      source = "prompt";
-      const persist = await p3.confirm({
-        message: `Save to ${vaultRef} for next time?`,
-        initialValue: true
-      });
-      if (!p3.isCancel(persist) && persist) {
-        const create = spawnSync4(
-          "op",
-          [
-            "item",
-            "create",
-            "--category=API Credential",
-            "--vault=DeLoSecrets",
-            `--title=${vaultTitle}`,
-            `token=${token}`,
-            `bot_handle=${botHandle}`
-          ],
-          { stdio: "inherit" }
-        );
-        if (create.status !== 0) {
-          p3.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
-        }
-      }
-    }
-    const allowedAnswer = await p3.text({
-      message: "Your Telegram user id (allow-list for this bot)",
-      placeholder: process.env.TELEGRAM_ALLOWED_USERS ?? "",
-      initialValue: process.env.TELEGRAM_ALLOWED_USERS ?? "",
-      validate: (v) => /^[0-9](?:[0-9,]*[0-9])?$/.test(String(v).trim()) ? void 0 : "comma-separated numeric ids"
-    });
-    if (p3.isCancel(allowedAnswer)) {
-      return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
-    }
-    const script = join7(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync5(script)) {
-      return {
-        success: false,
-        message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
-      };
-    }
-    const marker = join7(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync5(marker)) unlinkSync2(marker);
-    const spinner4 = p3.spinner();
-    spinner4.start("Verifying token + wiring profile");
-    const result = spawnSync4("bash", [script], {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        SKIP_TELEGRAM: "0",
-        TELEGRAM_BOT_TOKEN: token,
-        TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim()
-      },
-      cwd: roleDir
-    });
-    spinner4.stop(result.status === 0 ? "\u2713 Telegram wired" : "\u2717 Telegram step failed");
-    if (result.status !== 0) {
-      return { success: false, message: "Telegram wire-up failed.  See output above." };
-    }
-    const sourceLabel = source === "env" ? " (token: env)" : source === "op" ? " (token: op)" : "";
-    return { success: true, message: `\u2713 Telegram: @${botHandle} ready${sourceLabel}` };
-  }
-};
-function cap(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-// src/commands/hermes/WireEmail.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
-import { join as join8 } from "node:path";
-import { existsSync as existsSync6, unlinkSync as unlinkSync3 } from "node:fs";
-import * as p4 from "@clack/prompts";
-var WireEmail = class extends Command {
-  async invoke() {
-    const ctx = this.context;
-    if (ctx.skipEmail) {
-      return { success: true, message: "" };
-    }
-    if (ctx.dryRun) {
-      return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };
-    }
-    const { targetRepo, role, roleDir } = ctx;
-    if (!targetRepo || !role || !roleDir) {
-      return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
-    }
-    const script = join8(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync6(script)) {
-      return { success: false, message: `\u2717 ${script} not found` };
-    }
-    let token = process.env.CF_EMAIL_ROUTING_TOKEN;
-    if (!token) {
-      const tryOp = spawnSync5(
-        "op",
-        ["read", "op://DeLoSecrets/Cloudflare-EmailRouting/token"],
-        { encoding: "utf8" }
-      );
-      if (tryOp.status === 0) {
-        token = tryOp.stdout.trim();
-      }
-    }
-    if (!token) {
-      p4.log.warn("CF Email Routing token not found.  Required scopes:");
-      p4.log.info(
-        [
-          "  Zone (delo.sh)  \u2192  Email Routing Rules     : Edit",
-          "  Zone (delo.sh)  \u2192  Email Routing Settings  : Read",
-          "  Account         \u2192  Email Routing Addresses : Read",
-          "Create at: https://dash.cloudflare.com/profile/api-tokens"
-        ].join("\n")
-      );
-      const provideNow = await p4.confirm({
-        message: "Paste a token now?  (skipping leaves email unwired until you re-run.)",
-        initialValue: false
-      });
-      if (p4.isCancel(provideNow) || !provideNow) {
-        return { success: true, message: "\u2192 Email skipped (no token).  Re-run later." };
-      }
-      const tokenAnswer = await p4.password({
-        message: "CF token (will be passed via env, not stored)",
-        mask: "\u2022",
-        validate: (v) => String(v ?? "").trim() ? void 0 : "required"
-      });
-      if (p4.isCancel(tokenAnswer)) {
-        return { success: true, message: "\u2192 Email skipped (cancelled)" };
-      }
-      token = String(tokenAnswer).trim();
-      const persist = await p4.confirm({
-        message: "Save to op://DeLoSecrets/Cloudflare-EmailRouting/token for next time?",
-        initialValue: true
-      });
-      if (!p4.isCancel(persist) && persist) {
-        const create = spawnSync5(
-          "op",
-          [
-            "item",
-            "create",
-            "--category=API Credential",
-            "--vault=DeLoSecrets",
-            "--title=Cloudflare-EmailRouting",
-            `token=${token}`
-          ],
-          { stdio: "inherit" }
-        );
-        if (create.status !== 0) {
-          p4.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
-        }
-      }
-    }
-    const marker = join8(roleDir, ".scripts", ".done-50-email");
-    if (existsSync6(marker)) unlinkSync3(marker);
-    const spinner4 = p4.spinner();
-    spinner4.start("Creating Cloudflare Email Routing rule");
-    const result = spawnSync5("bash", [script], {
-      stdio: "inherit",
-      env: { ...process.env, SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token },
-      cwd: roleDir
-    });
-    spinner4.stop(result.status === 0 ? "\u2713 Email rule created" : "\u2717 Email step failed");
-    if (result.status !== 0) {
-      return { success: false, message: "Email rule creation failed.  See output above." };
-    }
-    return {
-      success: true,
-      message: `\u2713 Email: ${targetRepo}-${role}@delo.sh  \u2192  jaradd@gmail.com`
-    };
-  }
-};
-
-// src/commands/hermes/PrintHermesSummary.ts
-import * as p5 from "@clack/prompts";
-var PrintHermesSummary = class extends Command {
-  async invoke() {
-    const ctx = this.context;
-    const { targetRepo, role, agentId, runtimeRepo, skipTelegram, skipEmail } = ctx;
-    const botHandle = `${targetRepo?.toLowerCase().replace(/-/g, "_")}_${role?.toLowerCase()}_bot`;
-    const email = `${targetRepo}-${role}@delo.sh`;
-    const gw = `hermes-${agentId}-gateway.service`;
-    const hb = `hermes-${agentId}-heartbeat.timer`;
-    const lines = [];
-    lines.push(`agent_id     ${agentId}`);
-    lines.push(`role dir     ${ctx.roleDir}`);
-    lines.push(`runtime      gh:${runtimeRepo}`);
-    lines.push(`telegram     @${botHandle}${skipTelegram ? "   (NOT yet wired)" : ""}`);
-    if (!skipEmail) lines.push(`email        ${email}`);
-    lines.push("");
-    lines.push("Start daemons:");
-    lines.push(`  systemctl --user start ${hb}`);
-    if (!skipTelegram) {
-      lines.push(`  systemctl --user start ${gw}`);
-    } else {
-      lines.push(`  # gateway needs Telegram wired first (re-run with --skip-telegram=0)`);
-    }
-    lines.push("  # Bloodbank commands arrive through the fleet-shared Hermes gateway");
-    lines.push("");
-    lines.push("Talk locally:");
-    lines.push(`  ${ctx.roleDir}/hermes chat "status"`);
-    if (skipTelegram) {
-      lines.push("");
-      lines.push("Wire Telegram later:");
-      lines.push("  pjangler hermes-agent          # re-run and answer yes when asked");
-    }
-    if (!ctx.quiet) {
-      p5.note(lines.join("\n"), `Provisioned ${agentId}`);
-      p5.outro("Done.");
-    }
-    return { success: true, outcome: "unchanged", message: "" };
-  }
-};
-
-// src/recipes/HermesAgentRecipe.ts
-import { resolve as resolve4 } from "node:path";
+// src/project/index.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+import { copyFileSync as copyFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir2, tmpdir } from "node:os";
+import { basename as basename4, delimiter, dirname as dirname3, isAbsolute, join as join6, relative as relative4, resolve as resolve4, sep as sep2, win32 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import YAML3 from "yaml";
 
 // src/utils/tree-diff.ts
 import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync7, lstatSync as lstatSync3, readFileSync as readFileSync6, readdirSync as readdirSync4, readlinkSync as readlinkSync2 } from "node:fs";
-import { join as join9, relative as relative3 } from "node:path";
+import { existsSync as existsSync3, lstatSync as lstatSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
+import { join as join5, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
-  if (!existsSync7(current)) return snapshot;
+  if (!existsSync3(current)) return snapshot;
   const rel = relative3(root, current) || ".";
   if (rel === ".git" || rel.startsWith(`.git${process.platform === "win32" ? "\\" : "/"}`)) return snapshot;
   const stat = lstatSync3(current);
   if (stat.isSymbolicLink()) {
     snapshot.set(rel, `link:${readlinkSync2(current)}`);
   } else if (stat.isFile()) {
-    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync6(current)).digest("hex")}:${stat.mode & 511}`);
+    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync4(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
-    for (const name of readdirSync4(current)) snapshotTree(root, join9(current, name), snapshot);
+    for (const name of readdirSync3(current)) snapshotTree(root, join5(current, name), snapshot);
   } else {
     snapshot.set(rel, `other:${stat.mode}`);
   }
   return snapshot;
 }
 function changedTreePaths(root, before, after) {
-  return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join9(root, path)).sort();
+  return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join5(root, path)).sort();
 }
-
-// src/recipes/HermesAgentRecipe.ts
-var HermesAgentRecipe = class extends Recipe {
-  checks = createHermesChecks();
-  metadata = {
-    id: "hermes-agent",
-    name: "hermes-agent",
-    description: "Add and reconcile a Hermes agent role",
-    dependencies: [],
-    commands: [
-      "EnsureTemplateConfig",
-      "PromptForAgentConfig",
-      "RunCopierTemplate",
-      "UntrackHermesRuntimes",
-      "WireTelegram",
-      "WireEmail",
-      "PrintHermesSummary"
-    ],
-    publicRuleIds: this.checks.map((check) => check.id)
-  };
-  /** Hermes sequencing is fatal/cancel short-circuiting under registry init. */
-  async init(ctx, _input) {
-    const phases = [];
-    const logs = [];
-    const errors = [];
-    const changedFiles = [];
-    const ingredients = [
-      EnsureTemplateConfig,
-      PromptForAgentConfig,
-      RunCopierTemplate,
-      UntrackHermesRuntimes,
-      WireTelegram,
-      WireEmail,
-      PrintHermesSummary
-    ];
-    for (const [ingredientIndex, CommandClass] of ingredients.entries()) {
-      if (typeof CommandClass !== "function") {
-        throw new TypeError(`Hermes ingredient ${ingredientIndex} is not constructable`);
-      }
-      const before = ctx.dryRun ? void 0 : snapshotTree(ctx.targetDir);
-      const result = await new CommandClass(ctx).invoke();
-      const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
-      let status = result.outcome ?? (result.success ? ctx.dryRun && result.filePath ? "planned" : result.filePath ? "changed" : "unchanged" : "failed");
-      if (result.success && !ctx.dryRun && observedChanges.length) status = "changed";
-      const declaredChanges = status === "changed" && result.filePath ? [resolve4(ctx.targetDir, result.filePath)] : [];
-      const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
-      phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result.message || void 0 });
-      changedFiles.push(...actualChanges);
-      if (result.message) logs.push(result.message);
-      if (status === "failed" || status === "cancelled") {
-        errors.push(result.message || `${CommandClass.name} ${status}`);
-        break;
-      }
-    }
-    const commandResult = {
-      recipeId: this.metadata.id,
-      ok: errors.length === 0,
-      dryRun: Boolean(ctx.dryRun),
-      changedFiles: [...new Set(changedFiles)].sort(),
-      logs,
-      errors,
-      phases
-    };
-    if (!commandResult.ok) return commandResult;
-    const lifecycle = await this.initializeOwnedChecks(ctx);
-    return mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
-  }
-  printNextSteps() {
-  }
-};
-
-// src/recipes/MiseOpInjectRecipe.ts
-var MiseOpInjectRecipe = class extends Recipe {
-  checks = createMiseOpInjectChecks();
-  metadata = {
-    id: "mise-op-inject",
-    name: "mise-op-inject",
-    description: "Canonical .env.op to .env materialization lifecycle",
-    dependencies: [],
-    commands: ["WireMiseOpInject"],
-    publicRuleIds: this.checks.map((check) => check.id)
-  };
-  constructor(context) {
-    super(context);
-  }
-  init(ctx, _input) {
-    return this.initializeOwnedChecks(ctx);
-  }
-  printNextSteps() {
-    console.log("\u{1F389} Wired up .env.op 1Password resolution via mise!");
-    console.log("   Next steps:");
-    console.log("   1. Create .env.op with your op:// secret references");
-    console.log("   2. Re-enter the project to run the managed materialization hook");
-  }
-};
-
-// src/recipes/MiseRecipe.ts
-var MiseRecipe = class extends Recipe {
-  checks = createMiseChecks();
-  metadata = {
-    id: "mise",
-    name: "mise",
-    description: "Mise task runner and environment setup",
-    dependencies: ["mise-op-inject"],
-    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript", "AddMiseCodegraphWireScript"],
-    publicRuleIds: this.checks.map((check) => check.id)
-  };
-  constructor(context) {
-    super(context);
-  }
-  init(ctx, _input) {
-    return this.initializeOwnedChecks(ctx);
-  }
-  printNextSteps() {
-    console.log("\u{1F389} Mise subsystem initialized successfully!");
-    console.log("   Next steps:");
-    console.log("   1. mise install");
-    console.log("   2. mise run dev");
-  }
-};
-
-// src/commands/NodeCommands.ts
-var AddPackageJson = class extends Command {
-  async invoke() {
-    const filePath = "package.json";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: "\u26A0\uFE0F  package.json already exists",
-        filePath
-      };
-    }
-    const content = `{
-  "name": "my-project",
-  "version": "1.0.0",
-  "description": "A new project",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
-    "test": "echo \\"Error: no test specified\\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
-}
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: "\u2705 Created package.json",
-      filePath
-    };
-  }
-};
-var AddReadme = class extends Command {
-  async invoke() {
-    const filePath = "README.md";
-    if (this.fileExists(filePath) && !this.context.force) {
-      return {
-        success: false,
-        message: "\u26A0\uFE0F  README.md already exists",
-        filePath
-      };
-    }
-    const content = `# My Project
-
-A new project initialized with pjangler.
-
-## Getting Started
-
-1. Install dependencies: \`mise install\`
-2. Start development: \`mise run dev\`
-
-## Project Structure
-
-- \`mise.toml\` - Environment configuration
-- \`.mise/tasks/\` - Task definitions
-- \`src/\` - Source code
-`;
-    this.writeFile(filePath, content);
-    return {
-      success: true,
-      message: "\u2705 Created README.md",
-      filePath
-    };
-  }
-};
-var AddSrcDirectory = class extends Command {
-  async invoke() {
-    this.createDirectory("src");
-    const indexJsPath = "src/index.js";
-    const content = `console.log("Hello, World!");
-`;
-    this.writeFile(indexJsPath, content);
-    return {
-      success: true,
-      message: "\u2705 Created src/ directory with index.js",
-      filePath: "src/index.js"
-    };
-  }
-};
-
-// src/recipes/NodeRecipe.ts
-var NodeRecipe = class extends Recipe {
-  checks = [];
-  metadata = {
-    id: "node",
-    name: "node",
-    description: "Node.js project template",
-    dependencies: [],
-    commands: ["NodeCommands"],
-    publicRuleIds: []
-  };
-  constructor(context) {
-    super(context);
-    this.addIngredient(AddPackageJson).addIngredient(AddReadme).addIngredient(AddSrcDirectory);
-  }
-  init(ctx, _input) {
-    return this.invokeIngredients(ctx);
-  }
-  printNextSteps() {
-    console.log("\u{1F389} Node.js project initialized successfully!");
-    console.log("   Next steps:");
-    console.log("   1. mise install");
-    console.log("   2. mise run dev");
-  }
-};
-
-// src/recipes/ProjectRecipe.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync9, readFileSync as readFileSync8, rmSync as rmSync3 } from "node:fs";
-import { join as join11 } from "node:path";
-
-// src/project/index.ts
-import { spawnSync as spawnSync6 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync8, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync7, renameSync as renameSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync5 } from "node:fs";
-import { homedir as homedir3, tmpdir } from "node:os";
-import { basename as basename4, delimiter, dirname as dirname4, join as join10, resolve as resolve5 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-import YAML4 from "yaml";
 
 // src/project/RegistryStore.ts
 import { Pool } from "pg";
-import YAML3 from "yaml";
+import YAML2 from "yaml";
 function pgRegistryConfigFromEnv(env2 = process.env) {
   return {
     host: env2.PGHOST || "localhost",
@@ -7186,11 +6403,12 @@ var PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
 var TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
 var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_NEW_PROJECT_STATUS = "active";
+var BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join10(dirname4(manifestPath), ".copier-answers.yml");
-  if (!existsSync8(answersPath)) return [];
-  const current = readFileSync7(answersPath, "utf8");
-  const document = YAML4.parseDocument(current);
+  const answersPath = join6(dirname3(manifestPath), ".copier-answers.yml");
+  if (!existsSync4(answersPath)) return [];
+  const current = readFileSync5(answersPath, "utf8");
+  const document = YAML3.parseDocument(current);
   if (document.errors.length) return [];
   const name = String(document.get("project_name") ?? "");
   const description = String(document.get("project_description") ?? "");
@@ -7199,23 +6417,23 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
   document.set("project_description", manifest.project_description);
   const next = String(document);
   if (next === current) return [];
-  writeFileSync5(answersPath, next, "utf8");
+  writeFileSync3(answersPath, next, "utf8");
   return [answersPath];
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join10(homedir3(), ".agents", "skills"),
-  join10(homedir3(), ".codex", "skills")
+  join6(homedir2(), ".agents", "skills"),
+  join6(homedir2(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join10(homedir3(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join6(homedir2(), ".config", "pjangler", "projects.yaml"));
 }
 function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: {} };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync8(path)) return emptyProjectRegistry();
-  const raw = YAML4.parse(readFileSync7(path, "utf8"));
+  if (!existsSync4(path)) return emptyProjectRegistry();
+  const raw = YAML3.parse(readFileSync5(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -7228,9 +6446,9 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname4(path), { recursive: true });
+  mkdirSync3(dirname3(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync5(temp, YAML4.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync3(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -7245,7 +6463,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve5(project.repo_path);
+    const repoKey = resolve4(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -7294,15 +6512,15 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join10(env2.HOME || homedir3(), ".config");
-  return join10(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join6(env2.HOME || homedir2(), ".config");
+  return join6(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
   const found = {};
-  if (!existsSync8(path)) return found;
+  if (!existsSync4(path)) return found;
   let text3;
   try {
-    text3 = readFileSync7(path, "utf8");
+    text3 = readFileSync5(path, "utf8");
   } catch {
     return found;
   }
@@ -7338,7 +6556,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join10(input.repoPath, ".env"), label: join10(input.repoPath, ".env") });
+  if (input.repoPath) candidates.push({ path: join6(input.repoPath, ".env"), label: join6(input.repoPath, ".env") });
   const secrets = ticketProviderSecretsPath(env2);
   candidates.push({ path: secrets, label: secrets });
   for (const candidate of candidates) {
@@ -7356,25 +6574,25 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join10(override, file));
+  if (override) candidates.push(join6(override, file));
   const relativeRoots = [
-    join10("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join10("agents", "hermes", "pm", ".scripts", "providers")
+    join6("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join6("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname4(fileURLToPath3(import.meta.url));
+    let dir = dirname3(fileURLToPath2(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join10(dir, relativeRoot, file));
-      const parent = dirname4(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join6(dir, relativeRoot, file));
+      const parent = dirname3(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join10(homedir3(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join6(homedir2(), "code", "pjangler", relativeRoot, file));
   }
-  return candidates.find((candidate) => existsSync8(candidate));
+  return candidates.find((candidate) => existsSync4(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
@@ -7389,7 +6607,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join10(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join6(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -7403,12 +6621,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text3) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text3);
-  const staging = mkdtempSync2(join10(tmpdir(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join6(tmpdir(), "pjangler-tp-"));
   try {
-    const providersDir = join10(staging, "agents", "hermes", "pm", ".scripts", "providers");
-    mkdirSync4(providersDir, { recursive: true });
-    writeFileSync5(
-      join10(staging, ".project.json"),
+    const providersDir = join6(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    mkdirSync3(providersDir, { recursive: true });
+    writeFileSync3(
+      join6(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -7427,12 +6645,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join10(providersDir, `${provider}.sh`);
+    const staged = join6(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
-    const result = spawnSync6("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
-      cwd: existsSync8(action.repoPath) ? action.repoPath : staging,
+    const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+      cwd: existsSync4(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
     });
@@ -7499,20 +6717,51 @@ function defaultProjectAutomation() {
 function slugifyProjectName(value) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
+var SAFE_PATH_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+function validateSafePathSegment(value, label) {
+  const normalized = value.trim();
+  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
+  if (unsafe) {
+    throw new Error(
+      `${label} must be a non-empty safe single path segment using letters, numbers, dots, underscores, or hyphens (no dot segments, absolute paths, separators, or traversal)`
+    );
+  }
+  return normalized;
+}
+function prospectiveRealPath(path) {
+  let cursor = resolve4(path);
+  const suffix = [];
+  while (!existsSync4(cursor)) {
+    const parent = dirname3(cursor);
+    if (parent === cursor) return resolve4(path);
+    suffix.unshift(basename4(cursor));
+    cursor = parent;
+  }
+  return resolve4(realpathSync2(cursor), ...suffix);
+}
+function resolveContainedPath(parentDir, candidate, label) {
+  const physicalParent = prospectiveRealPath(parentDir);
+  const physicalCandidate = prospectiveRealPath(candidate);
+  const fromParent = relative4(physicalParent, physicalCandidate);
+  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute(fromParent)) {
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve4(parentDir)}`);
+  }
+  return resolve4(candidate);
+}
 function deriveProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const identifier = compact.slice(0, 4) || "PROJ";
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
 }
 function normalizeAgentRole(value) {
-  return value?.trim() || "pm";
+  return value === void 0 ? "pm" : validateSafePathSegment(value, "Agent role");
 }
 function resolveAgentHooksLayer2(input, env2 = process.env) {
   if (typeof input === "boolean") return input;
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync8(join10(homedir3(), ".agents", "hooks"));
+  return !existsSync4(join6(homedir2(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -7524,15 +6773,16 @@ function projectRecordEquivalent(a, b) {
   return jsonStable(aComparable) === jsonStable(bComparable);
 }
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
-  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
-  return resolve5(dirname4(resolve5(cwd)), compactName);
+  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
+  const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
+  return resolve4(dirname3(resolve4(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
   const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve5(expandHome(root));
+    const normalized = resolve4(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -7542,13 +6792,13 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve5(expanded);
-  if (existsSync8(direct)) return direct;
+  const direct = resolve4(expanded);
+  if (existsSync4(direct)) return direct;
   const name = basename4(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join10(root, name);
-    if (existsSync8(candidate)) return candidate;
+    const candidate = join6(root, name);
+    if (existsSync4(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
   const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
@@ -7556,16 +6806,16 @@ function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
 }
 function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
-  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const slug = input.projectSlug === void 0 ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug") : validateSafePathSegment(input.projectSlug, "Project slug");
+  const agentRole = normalizeAgentRole(input.agentRole);
+  const registryPath2 = resolve4(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const slug = input.projectSlug ?? slugifyProjectName(input.name);
-  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve4(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = registry.projects[slug];
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
-  const agentRole = normalizeAgentRole(input.agentRole);
   const agents = input.provisionAgent ? {
     ...existing?.agents ?? {},
     [agentRole]: {
@@ -7613,7 +6863,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot());
+  const pjanglerRoot = resolve4(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -7639,7 +6889,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join10(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join6(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: live,
@@ -7664,12 +6914,24 @@ function planProjectInit(input) {
       context: {
         skipRuntimeRepo: !live,
         skipPlane: !live,
-        skipBloodbank: !live,
+        // Per-agent Bloodbank consumers are retired. Agent ingress always
+        // stays on the fleet-shared gateway, regardless of live/local mode.
+        skipBloodbank: true,
         skipSystemd: !live || process.platform === "darwin"
       }
     }
   );
-  return { ok: true, apply, dryRun: !apply, live, registryPath: registryPath2, project, manifest, actions };
+  return {
+    ok: true,
+    apply,
+    dryRun: !apply,
+    live,
+    registryPath: registryPath2,
+    project,
+    manifest,
+    actions,
+    ...input.boardUrl !== void 0 ? { warnings: [BOARD_URL_DEPRECATION_WARNING] } : {}
+  };
 }
 function linkTicketProviderBoard(plan, action, boardId) {
   const block = buildTicketProviderBlock({
@@ -7689,12 +6951,12 @@ function linkTicketProviderBoard(plan, action, boardId) {
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join10(action.repoPath, ".project.json");
+  const manifestPath = join6(action.repoPath, ".project.json");
   let next;
-  if (existsSync8(manifestPath)) {
+  if (existsSync4(manifestPath)) {
     let existing = {};
     try {
-      const parsed = JSON.parse(readFileSync7(manifestPath, "utf8"));
+      const parsed = JSON.parse(readFileSync5(manifestPath, "utf8"));
       if (isRecord(parsed)) existing = parsed;
     } catch {
       existing = {};
@@ -7702,13 +6964,13 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname4(manifestPath), { recursive: true });
+    mkdirSync3(dirname3(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text3 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync8(manifestPath) || readFileSync7(manifestPath, "utf8") !== text3) {
-    writeFileSync5(manifestPath, text3, "utf8");
+  if (!existsSync4(manifestPath) || readFileSync5(manifestPath, "utf8") !== text3) {
+    writeFileSync3(manifestPath, text3, "utf8");
     return [manifestPath];
   }
   return [];
@@ -7725,9 +6987,9 @@ async function executeProjectInitPlan(plan) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname4(action.targetDir), { recursive: true });
+      mkdirSync3(dirname3(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
-      const result = spawnSync6(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
+      const result = spawnSync2(action.command[0], action.command.slice(1), { encoding: "utf8", cwd: action.cwd });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -7744,12 +7006,12 @@ async function executeProjectInitPlan(plan) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname4(action.path), { recursive: true });
+      mkdirSync3(dirname3(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-      const current = existsSync8(action.path) ? readFileSync7(action.path, "utf8") : void 0;
+      const current = existsSync4(action.path) ? readFileSync5(action.path, "utf8") : void 0;
       if (current !== next) {
-        writeFileSync5(action.path, next, "utf8");
+        writeFileSync3(action.path, next, "utf8");
         changedFiles.push(action.path);
       }
       changedFiles.push(...synchronizeCopierIdentity(action.path, action.manifest));
@@ -7831,6 +7093,7 @@ function formatProjectInitPlan(plan) {
   lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
   lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
   lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  for (const warning of plan.warnings ?? []) lines.push(`  ${yellow(glyph.warn)} ${warning}`);
   lines.push("");
   lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
   if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
@@ -7876,16 +7139,16 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   const registry = loadProjectRegistry(registryPath2);
   const projects = slug ? [[slug, getProject(registry, slug)]] : Object.entries(registry.projects);
   for (const [projectSlug, project] of projects) {
-    if (!existsSync8(project.repo_path)) {
+    if (!existsSync4(project.repo_path)) {
       issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
     } else if (!statSync(project.repo_path).isDirectory()) {
       issues.push({ level: "error", slug: projectSlug, message: `repo_path is not a directory: ${project.repo_path}` });
     } else {
-      const manifestPath = join10(project.repo_path, ".project.json");
-      if (!existsSync8(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
+      const manifestPath = join6(project.repo_path, ".project.json");
+      if (!existsSync4(manifestPath)) issues.push({ level: "warn", slug: projectSlug, message: ".project.json is missing" });
     }
     for (const artifact of project.source_artifacts) {
-      if (artifact.path && !existsSync8(artifact.path)) {
+      if (artifact.path && !existsSync4(artifact.path)) {
         issues.push({ level: "warn", slug: projectSlug, message: `source artifact missing: ${artifact.path}` });
       }
     }
@@ -7898,7 +7161,7 @@ function doctorProjectRegistry(registryPath2 = projectRegistryPath(), slug) {
   };
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join10(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join6(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -7925,21 +7188,21 @@ function buildCommonProjectCopierAction(input) {
   };
 }
 function resolvePjanglerRoot() {
-  let dir = dirname4(new URL(import.meta.url).pathname);
-  while (dir !== dirname4(dir)) {
-    if (existsSync8(join10(dir, "package.json")) && existsSync8(join10(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname4(dir);
+  let dir = dirname3(new URL(import.meta.url).pathname);
+  while (dir !== dirname3(dir)) {
+    if (existsSync4(join6(dir, "package.json")) && existsSync4(join6(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname3(dir);
   }
-  return resolve5(process.cwd());
+  return resolve4(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = registry.projects[project.slug];
-  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve4(existingSameSlug.repo_path) !== resolve4(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
+    if (resolve4(existing.repo_path) === resolve4(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
@@ -7958,15 +7221,802 @@ function validateProjectRecord(project, key) {
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
 }
 function expandHome(path) {
-  if (path === "~") return homedir3();
-  if (path.startsWith("~/")) return join10(homedir3(), path.slice(2));
+  if (path === "~") return homedir2();
+  if (path.startsWith("~/")) return join6(homedir2(), path.slice(2));
   return path;
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/commands/hermes/RunCopierTemplate.ts
+function resolveVendoredTemplate(name) {
+  let dir;
+  try {
+    dir = dirname4(fileURLToPath3(import.meta.url));
+  } catch {
+    return void 0;
+  }
+  for (let i = 0; i < 8; i++) {
+    const candidate = join7(dir, "templates", name);
+    if (existsSync5(join7(candidate, "copier.yml"))) return candidate;
+    const parent = dirname4(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return void 0;
+}
+var RunCopierTemplate = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    const {
+      targetRepo,
+      role,
+      agentPurpose,
+      soulTone,
+      modelProvider,
+      modelName,
+      modelBaseUrl,
+      modelApiMode,
+      modelKeyEnv
+    } = ctx;
+    const ticketProvider = ctx.ticketProvider ?? "plane";
+    const profileName = ctx.profileName ?? (targetRepo && role ? deriveProfileName(targetRepo, role) : void 0);
+    if (!targetRepo || !role) {
+      return {
+        success: false,
+        message: "PromptForAgentConfig must run before RunCopierTemplate (targetRepo/role unset)"
+      };
+    }
+    const safeRole = normalizeAgentRole(role);
+    ctx.role = safeRole;
+    const roleDir = resolveContainedPath(
+      ctx.targetDir,
+      join7(ctx.targetDir, "agents", "hermes", safeRole),
+      "Hermes role directory"
+    );
+    ctx.roleDir = roleDir;
+    ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
+    const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
+    if (which.status !== 0) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "\u2717 copier not found on PATH.  Install with: `uv tool install copier` or `pip install copier`"
+      };
+    }
+    if (existsSync5(join7(roleDir, "role.yaml")) && !ctx.force) {
+      if (ctx.yes) {
+        ctx.force = true;
+      } else {
+        const proceed = await p2.confirm({
+          message: `${safeRole}/role.yaml already exists \u2014 re-render with --overwrite?`,
+          initialValue: false
+        });
+        if (p2.isCancel(proceed) || !proceed) {
+          return {
+            success: false,
+            outcome: "cancelled",
+            message: `Skipped: ${roleDir} already provisioned (use --force to re-render)`
+          };
+        }
+        ctx.force = true;
+      }
+    }
+    const env2 = {
+      ...process.env,
+      SKIP_TELEGRAM: "1",
+      SKIP_EMAIL: "1",
+      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
+      // per-profile file consumer, even when an older template still exposes it.
+      SKIP_RUNTIME_REPO: ctx.skipRuntimeRepo ? "1" : "0",
+      SKIP_PLANE: ctx.skipPlane ? "1" : "0",
+      SKIP_BLOODBANK: "1",
+      SKIP_SYSTEMD: ctx.skipSystemd ? "1" : "0"
+    };
+    const LOCAL_TEMPLATE = join7(homedir3(), "code", "hermes-agent-template");
+    const vendored = resolveVendoredTemplate("hermes-agent");
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync5(join7(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const args = [
+      "copy",
+      templateSrc,
+      roleDir,
+      "--data",
+      `target_repo=${targetRepo}`,
+      "--data",
+      `role=${safeRole}`,
+      "--data",
+      `agent_purpose=${agentPurpose ?? ""}`,
+      "--data",
+      `model_provider=${modelProvider ?? ""}`,
+      "--data",
+      `model_name=${modelName ?? ""}`,
+      "--data",
+      `model_base_url=${modelBaseUrl ?? ""}`,
+      "--data",
+      `model_api_mode=${modelApiMode ?? ""}`,
+      "--data",
+      `model_key_env=${modelKeyEnv ?? ""}`,
+      "--data",
+      `profile_name=${profileName ?? ""}`,
+      "--data",
+      `soul_tone=${soulTone ?? "direct"}`,
+      "--data",
+      `ticket_provider=${ticketProvider}`,
+      "--trust",
+      "--vcs-ref=HEAD"
+    ];
+    if (ctx.force) args.push("--overwrite");
+    if (ctx.dryRun) {
+      return {
+        success: true,
+        outcome: "planned",
+        filePath: roleDir,
+        message: this.formatMessage(`Would run: copier ${args.join(" ")}`)
+      };
+    }
+    mkdirSync4(join7(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    const spinner4 = ctx.quiet ? void 0 : p2.spinner();
+    spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
+    const result = spawnSync3("copier", args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
+    if (result.status !== 0) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
+      };
+    }
+    const roleManifest = join7(roleDir, "role.yaml");
+    try {
+      const current = readFileSync6(roleManifest, "utf8");
+      const document = YAML4.parseDocument(current);
+      if (document.errors.length) throw document.errors[0];
+      document.setIn(["deployment", "local_only"], Boolean(ctx.local));
+      document.setIn(["deployment", "systemd"], ctx.skipSystemd ? "deferred" : "required");
+      const next = String(document);
+      if (next !== current) writeFileSync4(roleManifest, next, "utf8");
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to record Hermes deployment mode in ${roleManifest}: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    return {
+      success: true,
+      message: `\u2713 Provisioned ${roleDir}  (runtime: gh:${ctx.runtimeRepo})`
+    };
+  }
+};
+
+// src/commands/hermes/UntrackHermesRuntimes.ts
+import { existsSync as existsSync6, readFileSync as readFileSync7, writeFileSync as writeFileSync5, readdirSync as readdirSync4 } from "fs";
+import { join as join8 } from "path";
+import { spawnSync as spawnSync4 } from "node:child_process";
+function sectionHasPath(section, targetPath) {
+  return section.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+}
+function removeSubmodulePath(content, targetPath) {
+  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section) => sectionHasPath(section, targetPath) ? "" : section).replace(/\n{3,}/g, "\n\n").trim();
+}
+var UntrackHermesRuntimes = class extends Command {
+  async invoke() {
+    const targetDir = this.context.targetDir;
+    const rolesDir = join8(targetDir, "agents", "hermes");
+    if (!existsSync6(rolesDir)) {
+      return {
+        success: true,
+        message: "No Hermes agents found (no agents/hermes directory)."
+      };
+    }
+    const roles = readdirSync4(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    if (roles.length === 0) {
+      return {
+        success: true,
+        message: "No Hermes agents found."
+      };
+    }
+    let modifiedAny = false;
+    const details = [];
+    for (const role of roles) {
+      const roleDir = join8("agents", "hermes", role);
+      const runtimePath = join8(roleDir, "runtime");
+      const gitignorePath = join8(roleDir, ".gitignore");
+      const gitmodulesPath = join8(targetDir, ".gitmodules");
+      let isTracked = false;
+      const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+        cwd: targetDir,
+        encoding: "utf8"
+      });
+      if (lsResult.status !== 0) {
+        return {
+          success: false,
+          message: `\u2717 Failed to inspect runtime index at ${runtimePath}: ${lsResult.stderr.trim() || `exit ${lsResult.status}`}`
+        };
+      }
+      if (lsResult.status === 0 && lsResult.stdout.trim().length > 0) {
+        isTracked = true;
+      }
+      let hasStaleMapping = false;
+      let gitmodulesContent = "";
+      if (existsSync6(gitmodulesPath)) {
+        gitmodulesContent = readFileSync7(gitmodulesPath, "utf8");
+        const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
+        hasStaleMapping = sections.some((section) => sectionHasPath(section, runtimePath));
+      }
+      let isIgnored = false;
+      const fullGitignorePath = join8(targetDir, gitignorePath);
+      if (existsSync6(fullGitignorePath)) {
+        const content = readFileSync7(fullGitignorePath, "utf8");
+        const lines = content.split(/\r?\n/).map((line) => line.trim());
+        isIgnored = lines.includes("runtime/") || lines.includes("runtime");
+      }
+      if (isTracked || hasStaleMapping || !isIgnored) {
+        modifiedAny = true;
+        if (isTracked) {
+          details.push(`untrack agents/hermes/${role}/runtime`);
+          if (!this.context.dryRun) {
+            const rmResult = spawnSync4("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
+              cwd: targetDir,
+              encoding: "utf8"
+            });
+            if (rmResult.status !== 0) {
+              return {
+                success: false,
+                message: `\u2717 Failed to untrack ${runtimePath}: ${rmResult.stderr.trim() || `exit ${rmResult.status}`}`
+              };
+            }
+            const verifyResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+              cwd: targetDir,
+              encoding: "utf8"
+            });
+            if (verifyResult.status !== 0 || verifyResult.stdout.trim()) {
+              return {
+                success: false,
+                message: verifyResult.status !== 0 ? `\u2717 Failed to verify untracked runtime ${runtimePath}: ${verifyResult.stderr.trim() || `exit ${verifyResult.status}`}` : `\u2717 Runtime remains tracked after index-only removal: ${runtimePath}`
+              };
+            }
+          }
+        }
+        if (hasStaleMapping) {
+          details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
+          if (!this.context.dryRun) {
+            const next = removeSubmodulePath(gitmodulesContent, runtimePath);
+            writeFileSync5(gitmodulesPath, next ? `${next}
+` : "", "utf8");
+          }
+        }
+        if (!isIgnored) {
+          details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
+          if (!this.context.dryRun) {
+            let content = "";
+            if (existsSync6(fullGitignorePath)) {
+              content = readFileSync7(fullGitignorePath, "utf8");
+            }
+            if (content && !content.endsWith("\n")) {
+              content += "\n";
+            }
+            content += "runtime/\n";
+            writeFileSync5(fullGitignorePath, content, "utf8");
+          }
+        }
+      }
+    }
+    if (!modifiedAny) {
+      return {
+        success: true,
+        message: "\u2705 All Hermes agent runtimes are already untracked and gitignored."
+      };
+    }
+    const actionText = this.context.dryRun ? "Would make" : "Made";
+    return {
+      success: true,
+      message: `${actionText} Hermes agent runtimes untracked and gitignored:
+${details.map((d) => `  - ${d}`).join("\n")}`
+    };
+  }
+};
+
+// src/commands/hermes/WireTelegram.ts
+import { spawnSync as spawnSync5 } from "node:child_process";
+import { join as join9 } from "node:path";
+import { existsSync as existsSync7, unlinkSync as unlinkSync2 } from "node:fs";
+import * as p3 from "@clack/prompts";
+var WireTelegram = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    if (ctx.skipTelegram) {
+      return { success: true, message: "\u2192 Telegram wire-up skipped" };
+    }
+    if (ctx.dryRun) {
+      return { success: true, message: this.formatMessage("Would run BotFather token capture") };
+    }
+    const { targetRepo, role, roleDir } = ctx;
+    if (!targetRepo || !role || !roleDir) {
+      return { success: false, message: "Cannot wire telegram: missing target_repo/role/roleDir" };
+    }
+    const botHandle = `${targetRepo.toLowerCase().replace(/-/g, "_")}_${role.toLowerCase()}_bot`;
+    const displayName = `${cap(targetRepo)} ${role.length <= 3 ? role.toUpperCase() : cap(role)}`;
+    const vaultTitle = `Telegram-Hermes-${targetRepo.toLowerCase()}-${role.toLowerCase()}`;
+    const vaultRef = `op://DeLoSecrets/${vaultTitle}/token`;
+    let token = process.env.TELEGRAM_BOT_TOKEN;
+    let source = token ? "env" : null;
+    if (!token) {
+      const tryOp = spawnSync5("op", ["read", vaultRef], { encoding: "utf8" });
+      if (tryOp.status === 0) {
+        token = tryOp.stdout.trim();
+        source = "op";
+        p3.log.info(`\u2713 Telegram token loaded from ${vaultRef}`);
+      }
+    }
+    if (!token) {
+      p3.log.step("BotFather steps");
+      p3.log.info(
+        [
+          "  1. Open Telegram, message @BotFather",
+          "  2. /newbot",
+          `  3. Display name:   ${displayName}`,
+          `  4. Username:       ${botHandle}   (must end in _bot)`,
+          "  5. Copy the HTTP API token from the reply.",
+          "  6. /setjoingroups Disable",
+          "  7. /setprivacy    Disable"
+        ].join("\n")
+      );
+      const tokenAnswer = await p3.password({
+        message: `Paste the bot token for @${botHandle}`,
+        mask: "\u2022",
+        validate: (v) => {
+          const s = String(v ?? "").trim();
+          if (!s) return "required";
+          if (!/^[0-9]+:.+/.test(s)) return "expected '<digits>:<secret>' shape";
+        }
+      });
+      if (p3.isCancel(tokenAnswer)) {
+        return { success: true, message: "\u2192 Telegram skipped (no token).  Re-run later." };
+      }
+      token = String(tokenAnswer).trim();
+      source = "prompt";
+      const persist = await p3.confirm({
+        message: `Save to ${vaultRef} for next time?`,
+        initialValue: true
+      });
+      if (!p3.isCancel(persist) && persist) {
+        const create = spawnSync5(
+          "op",
+          [
+            "item",
+            "create",
+            "--category=API Credential",
+            "--vault=DeLoSecrets",
+            `--title=${vaultTitle}`,
+            `token=${token}`,
+            `bot_handle=${botHandle}`
+          ],
+          { stdio: "inherit" }
+        );
+        if (create.status !== 0) {
+          p3.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
+        }
+      }
+    }
+    const allowedAnswer = await p3.text({
+      message: "Your Telegram user id (allow-list for this bot)",
+      placeholder: process.env.TELEGRAM_ALLOWED_USERS ?? "",
+      initialValue: process.env.TELEGRAM_ALLOWED_USERS ?? "",
+      validate: (v) => /^[0-9](?:[0-9,]*[0-9])?$/.test(String(v).trim()) ? void 0 : "comma-separated numeric ids"
+    });
+    if (p3.isCancel(allowedAnswer)) {
+      return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
+    }
+    const script = join9(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync7(script)) {
+      return {
+        success: false,
+        message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
+      };
+    }
+    const marker = join9(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync7(marker)) unlinkSync2(marker);
+    const spinner4 = p3.spinner();
+    spinner4.start("Verifying token + wiring profile");
+    const result = spawnSync5("bash", [script], {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        SKIP_TELEGRAM: "0",
+        TELEGRAM_BOT_TOKEN: token,
+        TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim()
+      },
+      cwd: roleDir
+    });
+    spinner4.stop(result.status === 0 ? "\u2713 Telegram wired" : "\u2717 Telegram step failed");
+    if (result.status !== 0) {
+      return { success: false, message: "Telegram wire-up failed.  See output above." };
+    }
+    const sourceLabel = source === "env" ? " (token: env)" : source === "op" ? " (token: op)" : "";
+    return { success: true, message: `\u2713 Telegram: @${botHandle} ready${sourceLabel}` };
+  }
+};
+function cap(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// src/commands/hermes/WireEmail.ts
+import { spawnSync as spawnSync6 } from "node:child_process";
+import { join as join10 } from "node:path";
+import { existsSync as existsSync8, unlinkSync as unlinkSync3 } from "node:fs";
+import * as p4 from "@clack/prompts";
+var WireEmail = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    if (ctx.skipEmail) {
+      return { success: true, message: "" };
+    }
+    if (ctx.dryRun) {
+      return { success: true, message: this.formatMessage("Would create CF Email Routing rule") };
+    }
+    const { targetRepo, role, roleDir } = ctx;
+    if (!targetRepo || !role || !roleDir) {
+      return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
+    }
+    const script = join10(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync8(script)) {
+      return { success: false, message: `\u2717 ${script} not found` };
+    }
+    let token = process.env.CF_EMAIL_ROUTING_TOKEN;
+    if (!token) {
+      const tryOp = spawnSync6(
+        "op",
+        ["read", "op://DeLoSecrets/Cloudflare-EmailRouting/token"],
+        { encoding: "utf8" }
+      );
+      if (tryOp.status === 0) {
+        token = tryOp.stdout.trim();
+      }
+    }
+    if (!token) {
+      p4.log.warn("CF Email Routing token not found.  Required scopes:");
+      p4.log.info(
+        [
+          "  Zone (delo.sh)  \u2192  Email Routing Rules     : Edit",
+          "  Zone (delo.sh)  \u2192  Email Routing Settings  : Read",
+          "  Account         \u2192  Email Routing Addresses : Read",
+          "Create at: https://dash.cloudflare.com/profile/api-tokens"
+        ].join("\n")
+      );
+      const provideNow = await p4.confirm({
+        message: "Paste a token now?  (skipping leaves email unwired until you re-run.)",
+        initialValue: false
+      });
+      if (p4.isCancel(provideNow) || !provideNow) {
+        return { success: true, message: "\u2192 Email skipped (no token).  Re-run later." };
+      }
+      const tokenAnswer = await p4.password({
+        message: "CF token (will be passed via env, not stored)",
+        mask: "\u2022",
+        validate: (v) => String(v ?? "").trim() ? void 0 : "required"
+      });
+      if (p4.isCancel(tokenAnswer)) {
+        return { success: true, message: "\u2192 Email skipped (cancelled)" };
+      }
+      token = String(tokenAnswer).trim();
+      const persist = await p4.confirm({
+        message: "Save to op://DeLoSecrets/Cloudflare-EmailRouting/token for next time?",
+        initialValue: true
+      });
+      if (!p4.isCancel(persist) && persist) {
+        const create = spawnSync6(
+          "op",
+          [
+            "item",
+            "create",
+            "--category=API Credential",
+            "--vault=DeLoSecrets",
+            "--title=Cloudflare-EmailRouting",
+            `token=${token}`
+          ],
+          { stdio: "inherit" }
+        );
+        if (create.status !== 0) {
+          p4.log.warn("Could not store in 1Password \u2014 token is still set for this run.");
+        }
+      }
+    }
+    const marker = join10(roleDir, ".scripts", ".done-50-email");
+    if (existsSync8(marker)) unlinkSync3(marker);
+    const spinner4 = p4.spinner();
+    spinner4.start("Creating Cloudflare Email Routing rule");
+    const result = spawnSync6("bash", [script], {
+      stdio: "inherit",
+      env: { ...process.env, SKIP_EMAIL: "0", CF_EMAIL_ROUTING_TOKEN: token },
+      cwd: roleDir
+    });
+    spinner4.stop(result.status === 0 ? "\u2713 Email rule created" : "\u2717 Email step failed");
+    if (result.status !== 0) {
+      return { success: false, message: "Email rule creation failed.  See output above." };
+    }
+    return {
+      success: true,
+      message: `\u2713 Email: ${targetRepo}-${role}@delo.sh  \u2192  jaradd@gmail.com`
+    };
+  }
+};
+
+// src/commands/hermes/PrintHermesSummary.ts
+import * as p5 from "@clack/prompts";
+var PrintHermesSummary = class extends Command {
+  async invoke() {
+    const ctx = this.context;
+    const { targetRepo, role, agentId, runtimeRepo, skipTelegram, skipEmail } = ctx;
+    const botHandle = `${targetRepo?.toLowerCase().replace(/-/g, "_")}_${role?.toLowerCase()}_bot`;
+    const email = `${targetRepo}-${role}@delo.sh`;
+    const gw = `hermes-${agentId}-gateway.service`;
+    const hb = `hermes-${agentId}-heartbeat.timer`;
+    const lines = [];
+    lines.push(`agent_id     ${agentId}`);
+    lines.push(`role dir     ${ctx.roleDir}`);
+    lines.push(`runtime      gh:${runtimeRepo}`);
+    lines.push(`telegram     @${botHandle}${skipTelegram ? "   (NOT yet wired)" : ""}`);
+    if (!skipEmail) lines.push(`email        ${email}`);
+    lines.push("");
+    lines.push("Start daemons:");
+    lines.push(`  systemctl --user start ${hb}`);
+    if (!skipTelegram) {
+      lines.push(`  systemctl --user start ${gw}`);
+    } else {
+      lines.push(`  # gateway needs Telegram wired first (re-run with --skip-telegram=0)`);
+    }
+    lines.push("  # Bloodbank commands arrive through the fleet-shared Hermes gateway");
+    lines.push("");
+    lines.push("Talk locally:");
+    lines.push(`  ${ctx.roleDir}/hermes chat "status"`);
+    if (skipTelegram) {
+      lines.push("");
+      lines.push("Wire Telegram later:");
+      lines.push("  pjangler hermes-agent          # re-run and answer yes when asked");
+    }
+    if (!ctx.quiet) {
+      p5.note(lines.join("\n"), `Provisioned ${agentId}`);
+      p5.outro("Done.");
+    }
+    return { success: true, outcome: "unchanged", message: "" };
+  }
+};
+
+// src/recipes/HermesAgentRecipe.ts
+import { resolve as resolve5 } from "node:path";
+var HermesAgentRecipe = class extends Recipe {
+  checks = createHermesChecks();
+  metadata = {
+    id: "hermes-agent",
+    name: "hermes-agent",
+    description: "Add and reconcile a Hermes agent role",
+    dependencies: [],
+    commands: [
+      "EnsureTemplateConfig",
+      "PromptForAgentConfig",
+      "RunCopierTemplate",
+      "UntrackHermesRuntimes",
+      "WireTelegram",
+      "WireEmail",
+      "PrintHermesSummary"
+    ],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  /** Hermes sequencing is fatal/cancel short-circuiting under registry init. */
+  async init(ctx, _input) {
+    const phases = [];
+    const logs = [];
+    const errors = [];
+    const changedFiles = [];
+    const ingredients = [
+      EnsureTemplateConfig,
+      PromptForAgentConfig,
+      RunCopierTemplate,
+      UntrackHermesRuntimes,
+      WireTelegram,
+      WireEmail,
+      PrintHermesSummary
+    ];
+    for (const [ingredientIndex, CommandClass] of ingredients.entries()) {
+      if (typeof CommandClass !== "function") {
+        throw new TypeError(`Hermes ingredient ${ingredientIndex} is not constructable`);
+      }
+      const before = ctx.dryRun ? void 0 : snapshotTree(ctx.targetDir);
+      const result = await new CommandClass(ctx).invoke();
+      const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
+      let status = result.outcome ?? (result.success ? ctx.dryRun && result.filePath ? "planned" : result.filePath ? "changed" : "unchanged" : "failed");
+      if (result.success && !ctx.dryRun && observedChanges.length) status = "changed";
+      const declaredChanges = status === "changed" && result.filePath ? [resolve5(ctx.targetDir, result.filePath)] : [];
+      const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
+      phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result.message || void 0 });
+      changedFiles.push(...actualChanges);
+      if (result.message) logs.push(result.message);
+      if (status === "failed" || status === "cancelled") {
+        errors.push(result.message || `${CommandClass.name} ${status}`);
+        break;
+      }
+    }
+    const commandResult = {
+      recipeId: this.metadata.id,
+      ok: errors.length === 0,
+      dryRun: Boolean(ctx.dryRun),
+      changedFiles: [...new Set(changedFiles)].sort(),
+      logs,
+      errors,
+      phases
+    };
+    if (!commandResult.ok) return commandResult;
+    const lifecycle = await this.initializeOwnedChecks(ctx);
+    return mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
+  }
+  printNextSteps() {
+  }
+};
+
+// src/recipes/MiseOpInjectRecipe.ts
+var MiseOpInjectRecipe = class extends Recipe {
+  checks = createMiseOpInjectChecks();
+  metadata = {
+    id: "mise-op-inject",
+    name: "mise-op-inject",
+    description: "Canonical .env.op to .env materialization lifecycle",
+    dependencies: [],
+    commands: ["WireMiseOpInject"],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  constructor(context) {
+    super(context);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Wired up .env.op 1Password resolution via mise!");
+    console.log("   Next steps:");
+    console.log("   1. Create .env.op with your op:// secret references");
+    console.log("   2. Re-enter the project to run the managed materialization hook");
+  }
+};
+
+// src/recipes/MiseRecipe.ts
+var MiseRecipe = class extends Recipe {
+  checks = createMiseChecks();
+  metadata = {
+    id: "mise",
+    name: "mise",
+    description: "Mise task runner and environment setup",
+    dependencies: ["mise-op-inject"],
+    commands: ["AddMiseToml", "AddDotenv", "AddMiseTasksStructure", "AddMiseBaseToml", "AddMiseBaseScript", "AddMiseCodegraphScript", "AddMiseCodegraphWireScript"],
+    publicRuleIds: this.checks.map((check) => check.id)
+  };
+  constructor(context) {
+    super(context);
+  }
+  init(ctx, _input) {
+    return this.initializeOwnedChecks(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Mise subsystem initialized successfully!");
+    console.log("   Next steps:");
+    console.log("   1. mise install");
+    console.log("   2. mise run dev");
+  }
+};
+
+// src/commands/NodeCommands.ts
+var AddPackageJson = class extends Command {
+  async invoke() {
+    const filePath = "package.json";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: "\u26A0\uFE0F  package.json already exists",
+        filePath
+      };
+    }
+    const content = `{
+  "name": "my-project",
+  "version": "1.0.0",
+  "description": "A new project",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "echo \\"Error: no test specified\\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: "\u2705 Created package.json",
+      filePath
+    };
+  }
+};
+var AddReadme = class extends Command {
+  async invoke() {
+    const filePath = "README.md";
+    if (this.fileExists(filePath) && !this.context.force) {
+      return {
+        success: false,
+        message: "\u26A0\uFE0F  README.md already exists",
+        filePath
+      };
+    }
+    const content = `# My Project
+
+A new project initialized with pjangler.
+
+## Getting Started
+
+1. Install dependencies: \`mise install\`
+2. Start development: \`mise run dev\`
+
+## Project Structure
+
+- \`mise.toml\` - Environment configuration
+- \`.mise/tasks/\` - Task definitions
+- \`src/\` - Source code
+`;
+    this.writeFile(filePath, content);
+    return {
+      success: true,
+      message: "\u2705 Created README.md",
+      filePath
+    };
+  }
+};
+var AddSrcDirectory = class extends Command {
+  async invoke() {
+    this.createDirectory("src");
+    const indexJsPath = "src/index.js";
+    const content = `console.log("Hello, World!");
+`;
+    this.writeFile(indexJsPath, content);
+    return {
+      success: true,
+      message: "\u2705 Created src/ directory with index.js",
+      filePath: "src/index.js"
+    };
+  }
+};
+
+// src/recipes/NodeRecipe.ts
+var NodeRecipe = class extends Recipe {
+  checks = [];
+  metadata = {
+    id: "node",
+    name: "node",
+    description: "Node.js project template",
+    dependencies: [],
+    commands: ["NodeCommands"],
+    publicRuleIds: []
+  };
+  constructor(context) {
+    super(context);
+    this.addIngredient(AddPackageJson).addIngredient(AddReadme).addIngredient(AddSrcDirectory);
+  }
+  init(ctx, _input) {
+    return this.invokeIngredients(ctx);
+  }
+  printNextSteps() {
+    console.log("\u{1F389} Node.js project initialized successfully!");
+    console.log("   Next steps:");
+    console.log("   1. mise install");
+    console.log("   2. mise run dev");
+  }
+};
+
 // src/recipes/ProjectRecipe.ts
+import { spawnSync as spawnSync7 } from "node:child_process";
+import { existsSync as existsSync9, readFileSync as readFileSync8, rmSync as rmSync3 } from "node:fs";
+import { join as join11 } from "node:path";
 var BOOTSTRAP_GIT_IDENTITY = {
   GIT_AUTHOR_NAME: "Pjangler Lifecycle",
   GIT_AUTHOR_EMAIL: "pjangler@localhost.invalid",
@@ -8737,15 +8787,15 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
     if (enterRe.test(content)) {
       content = content.replace(enterRe, (_m, head, close) => {
-        const sep2 = /[,[]\s*$/.test(head) ? "" : ",";
-        return `${head}${sep2}
+        const sep3 = /[,[]\s*$/.test(head) ? "" : ",";
+        return `${head}${sep3}
 ${enterAdds}${close}`;
       });
       const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
-          const sep2 = /[,[]\s*$/.test(head) ? "" : ",";
-          return `${head}${sep2}
+          const sep3 = /[,[]\s*$/.test(head) ? "" : ",";
+          return `${head}${sep3}
   "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {

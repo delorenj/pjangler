@@ -8,6 +8,7 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 const copier = read("src/commands/hermes/RunCopierTemplate.ts");
 const summary = read("src/commands/hermes/PrintHermesSummary.ts");
 const parity = read("src/parity/rules.ts");
+const mcp = read("src/mcp-server.ts");
 
 assert.match(copier, /SKIP_BLOODBANK:\s*"1"/);
 assert.doesNotMatch(summary, /consumer\.service/);
@@ -26,5 +27,7 @@ assert.match(parity, /enabled:/);
 assert.match(parity, /must advertise bloodbank \{ gateway_scope: fleet/);
 assert.match(parity, /normalize fleet bloodbank routing for/);
 assert.match(parity, /retired per-agent consumer unit still on disk/);
+assert.match(mcp, /bloodbankMode:\s*["']fleet-shared["']/, "MCP deployment results must identify the fleet-shared Bloodbank mode");
+assert.doesNotMatch(mcp, /skipBloodbank:\s*input\.skipBloodbank/, "MCP must not route a caller-controlled per-agent Bloodbank toggle downstream");
 
 console.log("fleet-shared Bloodbank provisioning regressions: ok");

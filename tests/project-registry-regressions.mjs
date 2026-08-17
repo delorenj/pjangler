@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
 
@@ -123,6 +125,79 @@ function git(args, cwd) {
 
 const tmp = mkdtempSync(join(tmpdir(), "pjangler-project-registry-"));
 try {
+  // PJAN-66: exercise planProjectInit as a direct API, independently of the
+  // CLI/MCP parsers. Invalid explicit path segments must fail before a caller
+  // can receive an executable plan, with no registry or filesystem mutation.
+  const projectApiBundle = join(tmp, "project-api.cjs");
+  buildSync({
+    entryPoints: [join(root, "src", "project", "index.ts")],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    outfile: projectApiBundle,
+    logLevel: "silent",
+  });
+  const { planProjectInit: directPlanProjectInit } = createRequire(import.meta.url)(projectApiBundle);
+  const directSafetyRoot = join(tmp, "direct-plan-safety");
+  const directRegistry = join(directSafetyRoot, "projects.yaml");
+  const directTarget = join(directSafetyRoot, "safe-target");
+  mkdirSync(join(directSafetyRoot, "working"), { recursive: true });
+
+  for (const projectSlug of ["", ".", "..", "../escaped", "/tmp/escaped", "nested/project", "nested\\project"]) {
+    assert.throws(
+      () => directPlanProjectInit({
+        name: "Unsafe Direct Slug",
+        projectSlug,
+        targetDir: directTarget,
+        registryPath: directRegistry,
+        scaffold: false,
+        pjanglerRoot: root,
+      }),
+      /project slug.*safe.*segment/i,
+      `direct planProjectInit must reject ${JSON.stringify(projectSlug)}`,
+    );
+  }
+  for (const agentRole of ["", ".", "..", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
+    assert.throws(
+      () => directPlanProjectInit({
+        name: "Unsafe Direct Role",
+        agentRole,
+        provisionAgent: true,
+        targetDir: directTarget,
+        registryPath: directRegistry,
+        scaffold: false,
+        pjanglerRoot: root,
+      }),
+      /agent role.*safe.*segment/i,
+      `direct planProjectInit must reject ${JSON.stringify(agentRole)}`,
+    );
+  }
+  assert.equal(existsSync(directRegistry), false, "invalid direct plans must not mutate the registry");
+  assert.equal(existsSync(directTarget), false, "invalid direct plans must not create their target");
+  assert.equal(existsSync(join(directSafetyRoot, "escaped")), false, "invalid direct plans must not create escaped files");
+
+  const generatedSafePlan = directPlanProjectInit({
+    name: "..",
+    cwd: join(directSafetyRoot, "working"),
+    registryPath: directRegistry,
+    scaffold: false,
+    pjanglerRoot: root,
+  });
+  assert.equal(generatedSafePlan.project.repo_path, join(directSafetyRoot, "project"), "generated targets must use the safe generated slug");
+  assert.equal(existsSync(directRegistry), false, "a direct dry plan must remain side-effect free");
+
+  const arbitraryRolePlan = directPlanProjectInit({
+    name: "Arbitrary Role",
+    agentRole: "release-captain",
+    provisionAgent: true,
+    targetDir: directTarget,
+    registryPath: directRegistry,
+    scaffold: false,
+    pjanglerRoot: root,
+  });
+  assert.equal(arbitraryRolePlan.project.agents["release-captain"].role, "release-captain");
+  assert.ok(arbitraryRolePlan.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "release-captain"));
+
   const fixtureRoot = join(tmp, "bmad-fixtures");
   portableLifecycleEnv = {
     HOME: join(tmp, "isolated-home"),
@@ -559,6 +634,7 @@ try {
     "--json",
   ], {}));
   assert.equal("board_url" in trelloUrlPlan.project.ticket_provider, false);
+  assert.ok(trelloUrlPlan.warnings.some((warning) => /boardUrl.*deprecated/i.test(warning)), "legacy boardUrl callers must receive a deprecation warning");
 
   // Regression: unsupported providers must fail instead of falling through to Plane URL derivation
   const linearProvider = runExpectFailure([

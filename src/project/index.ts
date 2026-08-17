@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { bold, cyan, dim, yellow, glyph, projectStatusColor } from "../utils/style";
@@ -28,6 +28,7 @@ export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
  * Applies to new records only — existing records keep their recorded status.
  */
 export const DEFAULT_NEW_PROJECT_STATUS = "active";
+export const BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 
 export interface SourceArtifact {
   kind: "skill" | "template" | "package" | string;
@@ -195,6 +196,7 @@ export interface ProjectInitPlan {
   project: ProjectRecord;
   manifest: ProjectManifest;
   actions: ProjectInitAction[];
+  warnings?: string[];
 }
 
 export interface ProjectInitExecutionResult {
@@ -627,6 +629,56 @@ export function slugifyProjectName(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
 
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+/**
+ * Validate caller-controlled names that become one filesystem path segment.
+ * Keep this capability open-ended (roles are not an enum), while excluding
+ * every spelling that can change the directory reached by a later join().
+ */
+export function validateSafePathSegment(value: string, label: string): string {
+  const normalized = value.trim();
+  const unsafe =
+    !normalized ||
+    normalized !== value ||
+    normalized === "." ||
+    normalized === ".." ||
+    isAbsolute(normalized) ||
+    win32.isAbsolute(normalized) ||
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    !SAFE_PATH_SEGMENT.test(normalized);
+  if (unsafe) {
+    throw new Error(
+      `${label} must be a non-empty safe single path segment using letters, numbers, dots, underscores, or hyphens (no dot segments, absolute paths, separators, or traversal)`,
+    );
+  }
+  return normalized;
+}
+
+function prospectiveRealPath(path: string): string {
+  let cursor = resolve(path);
+  const suffix: string[] = [];
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) return resolve(path);
+    suffix.unshift(basename(cursor));
+    cursor = parent;
+  }
+  return resolve(realpathSync(cursor), ...suffix);
+}
+
+/** Resolve a prospective child and reject lexical or symlink-assisted escape. */
+export function resolveContainedPath(parentDir: string, candidate: string, label: string): string {
+  const physicalParent = prospectiveRealPath(parentDir);
+  const physicalCandidate = prospectiveRealPath(candidate);
+  const fromParent = relative(physicalParent, physicalCandidate);
+  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep}`) || isAbsolute(fromParent)) {
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve(parentDir)}`);
+  }
+  return resolve(candidate);
+}
+
 export function deriveProjectIdentifier(value: string): string {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const identifier = compact.slice(0, 4) || "PROJ";
@@ -634,7 +686,7 @@ export function deriveProjectIdentifier(value: string): string {
 }
 
 export function normalizeAgentRole(value?: string): string {
-  return value?.trim() || "pm";
+  return value === undefined ? "pm" : validateSafePathSegment(value, "Agent role");
 }
 
 /**
@@ -665,8 +717,9 @@ function projectRecordEquivalent(a: ProjectRecord | undefined, b: ProjectRecord)
 }
 
 export function defaultProjectTargetDir(name: string, cwd = process.cwd()): string {
-  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "") || slugifyProjectName(name);
-  return resolve(dirname(resolve(cwd)), compactName);
+  const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
+  const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
+  return resolve(dirname(resolve(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 
 export function sourceSkillRoots(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -705,16 +758,18 @@ export function resolveSourceSkillPath(sourceSkill?: string, env: NodeJS.Process
 
 export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (!input.name.trim()) throw new Error("Project name is required");
+  const slug = input.projectSlug === undefined
+    ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug")
+    : validateSafePathSegment(input.projectSlug, "Project slug");
+  const agentRole = normalizeAgentRole(input.agentRole);
   const registryPath = resolve(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath);
   const now = (input.now ?? new Date()).toISOString();
-  const slug = input.projectSlug ?? slugifyProjectName(input.name);
   const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = registry.projects[slug];
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
-  const agentRole = normalizeAgentRole(input.agentRole);
   const agents: Record<string, ProjectAgentRecord> = input.provisionAgent
     ? {
         ...(existing?.agents ?? {}),
@@ -824,13 +879,25 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       context: {
         skipRuntimeRepo: !live,
         skipPlane: !live,
-        skipBloodbank: !live,
+        // Per-agent Bloodbank consumers are retired. Agent ingress always
+        // stays on the fleet-shared gateway, regardless of live/local mode.
+        skipBloodbank: true,
         skipSystemd: !live || process.platform === "darwin",
       },
     }
   );
 
-  return { ok: true, apply, dryRun: !apply, live, registryPath, project, manifest, actions };
+  return {
+    ok: true,
+    apply,
+    dryRun: !apply,
+    live,
+    registryPath,
+    project,
+    manifest,
+    actions,
+    ...(input.boardUrl !== undefined ? { warnings: [BOARD_URL_DEPRECATION_WARNING] } : {}),
+  };
 }
 
 /**
@@ -1016,6 +1083,7 @@ export function formatProjectInitPlan(plan: ProjectInitPlan): string {
   lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
   lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
   lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  for (const warning of plan.warnings ?? []) lines.push(`  ${yellow(glyph.warn)} ${warning}`);
   lines.push("");
   lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
   if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);

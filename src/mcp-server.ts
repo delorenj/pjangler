@@ -14,8 +14,11 @@ import { describeProject, formatProjectDescription } from "./describe/index";
 import {
   getProject,
   loadProjectRegistry,
+  normalizeAgentRole,
   planProjectInit,
   projectRegistryPath,
+  resolveContainedPath,
+  validateSafePathSegment,
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
@@ -26,6 +29,25 @@ const server = new McpServer({
 });
 
 const TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
+const BOARD_URL_COMPAT_SCHEMA = z.string()
+  .optional()
+  .describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.")
+  .meta({ deprecated: true });
+
+function safePathSegmentSchema(label: string) {
+  return z.string().superRefine((value, context) => {
+    try {
+      validateSafePathSegment(value, label);
+    } catch (error) {
+      context.addIssue({ code: "custom", message: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
+
+const PROJECT_SLUG_SCHEMA = safePathSegmentSchema("Project slug")
+  .describe("A safe single path segment used as the project registry slug.");
+const AGENT_ROLE_SCHEMA = safePathSegmentSchema("Agent role")
+  .describe("An arbitrary safe single path segment used beneath agents/hermes; not a fixed role enum.");
 
 function resolveTargetDir(targetDir?: string): string {
   const dir = resolve(targetDir ?? process.cwd());
@@ -137,7 +159,7 @@ server.registerTool(
   {
     title: "List pjangler capabilities",
     description: "Returns available recipes, commands, parity rules, workflows, and @33god-projects tool guidance.",
-    inputSchema: {},
+    inputSchema: z.strictObject({}),
   },
   async () => {
     const payload = {
@@ -170,7 +192,7 @@ server.registerTool(
   {
     title: "List pjangler parity rules",
     description: "Returns parity rule ids plus brief @33god-projects guidance.",
-    inputSchema: {},
+    inputSchema: z.strictObject({}),
   },
   async () => asText({ parityRules: getParityRuleIds(), guidance: parityGuidance() })
 );
@@ -180,10 +202,10 @@ server.registerTool(
   {
     title: "Audit project parity",
     description: "Runs pjangler parity audit for a project and returns structured findings with summary counts and next actions.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       targetDir: z.string().optional(),
       json: z.boolean().optional(),
-    },
+    }),
   },
   async ({ targetDir, json }) => {
     try {
@@ -202,13 +224,13 @@ server.registerTool(
   {
     title: "Migrate project parity",
     description: "Runs one pjangler parity migration rule, or all rules, against a project.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       targetDir: z.string().optional(),
       ruleId: z.string().optional(),
       all: z.boolean().optional(),
       dryRun: z.boolean().optional(),
       acceptRegistryMatches: z.boolean().optional(),
-    },
+    }),
   },
   async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
     try {
@@ -237,15 +259,15 @@ server.registerTool(
   {
     title: "Bootstrap a new @33god project",
     description: "Create a new CommonProject-based 33god repo with optional local Hermes agent provisioning. Dry-run is safe and does not require copier.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       parentDir: z.string().optional(),
       targetDir: z.string().optional(),
       projectName: z.string(),
       projectDescription: z.string().optional(),
-      projectSlug: z.string().optional(),
+      projectSlug: PROJECT_SLUG_SCHEMA.optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
       boardId: z.string().optional(),
-      boardUrl: z.string().optional(),
+      boardUrl: BOARD_URL_COMPAT_SCHEMA,
       workspace: z.string().optional(),
       planeWorkspace: z.string().optional(),
       planeProjectId: z.string().optional(),
@@ -253,7 +275,7 @@ server.registerTool(
       primaryLanguage: z.string().optional(),
       skipPlane: z.boolean().optional(),
       provisionAgent: z.boolean().optional(),
-      agentRole: z.string().optional(),
+      agentRole: AGENT_ROLE_SCHEMA.optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
       force: z.boolean().optional(),
@@ -262,15 +284,20 @@ server.registerTool(
       registryPath: z.string().optional(),
       sourceSkill: z.string().optional(),
       live: z.boolean().optional(),
-    },
+    }),
   },
   async (input) => {
     try {
       const pjanglerRoot = resolvePjanglerRoot();
-      const projectSlug = input.projectSlug ?? slugify(input.projectName);
-      const parentDir = resolve(input.parentDir ?? process.cwd());
+      const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
+      const explicitTargetDir = input.targetDir ? resolve(input.targetDir) : undefined;
+      const parentDir = resolve(input.parentDir ?? (explicitTargetDir ? dirname(explicitTargetDir) : process.cwd()));
       if (!existsSync(parentDir) || !statSync(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
-      const targetDir = resolve(input.targetDir ?? join(parentDir, projectSlug));
+      const targetDir = resolveContainedPath(
+        parentDir,
+        explicitTargetDir ?? join(parentDir, projectSlug),
+        "Bootstrap target",
+      );
       const overwrite = input.overwrite ?? input.force ?? false;
       const dryRun = input.dryRun ?? true;
       const local = input.local ?? true;
@@ -319,14 +346,14 @@ server.registerTool(
         skipEmail: true,
         skipRuntimeRepo: local,
         skipPlane: skipPlane || local,
-        skipBloodbank: local,
+        skipBloodbank: true,
         skipSystemd: local || process.platform === "darwin",
       } : undefined, {
         force: overwrite,
         live: input.live ?? false,
         quiet: true,
       });
-      if (!result.ok) return asText({ ...result, guidance: parityGuidance() });
+      if (!result.ok) return asText({ ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() });
 
       const agentResult = input.provisionAgent
         ? {
@@ -335,7 +362,7 @@ server.registerTool(
             errors: result.agentResult?.errors ?? (result.ok ? [] : result.errors),
           }
         : undefined;
-      return asText({ ...result, agentResult, guidance: parityGuidance() });
+      return asText({ ...result, agentResult, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() });
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -347,25 +374,25 @@ server.registerTool(
   {
     title: "Initialize a pjangler project",
     description: "Plan or apply a registry-backed CommonProject project init. Dry-run is the default; writes require apply=true and live actions require live=true.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       name: z.string(),
       description: z.string().optional(),
       targetDir: z.string().optional(),
       sourceSkill: z.string().optional(),
       primaryLanguage: z.string().optional(),
       provisionAgent: z.boolean().optional(),
-      agentRole: z.string().optional(),
+      agentRole: AGENT_ROLE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      slug: z.string().optional(),
+      slug: PROJECT_SLUG_SCHEMA.optional(),
       identifier: z.string().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
       boardId: z.string().optional(),
-      boardUrl: z.string().optional(),
+      boardUrl: BOARD_URL_COMPAT_SCHEMA,
       workspace: z.string().optional(),
       registryPath: z.string().optional(),
       force: z.boolean().optional(),
-    },
+    }),
   },
   async (input) => {
     try {
@@ -391,11 +418,12 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(plan);
-      return asText(await executeRegisteredProjectPlan(plan, undefined, {
+      const result = await executeRegisteredProjectPlan(plan, undefined, {
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true,
-      }));
+      });
+      return asText({ ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}) });
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -407,9 +435,9 @@ server.registerTool(
   {
     title: "List pjangler registry projects",
     description: "Return projects from the pjangler central registry.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       registryPath: z.string().optional(),
-    },
+    }),
   },
   async ({ registryPath }) => asText(loadProjectRegistry(registryPath ?? projectRegistryPath()))
 );
@@ -419,10 +447,10 @@ server.registerTool(
   {
     title: "Show a pjangler registry project",
     description: "Return one project by slug from the pjangler central registry.",
-    inputSchema: {
-      slug: z.string(),
+    inputSchema: z.strictObject({
+      slug: PROJECT_SLUG_SCHEMA,
       registryPath: z.string().optional(),
-    },
+    }),
   },
   async ({ slug, registryPath }) => {
     try {
@@ -439,11 +467,11 @@ server.registerTool(
     title: "Describe a project",
     description:
       "Reads a repo and returns its detected type, installed pjangler subsystems, config files present, parity counts, and suggested next steps. The orientation call for an agent landing in an unfamiliar repo.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       targetDir: z.string().optional(),
       registryPath: z.string().optional(),
       json: z.boolean().optional(),
-    },
+    }),
   },
   async ({ targetDir, registryPath, json }) => {
     try {
@@ -463,9 +491,9 @@ server.registerTool(
   {
     title: "Describe recipe",
     description: "Returns metadata for a specific pjangler recipe.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       recipe: z.string(),
-    },
+    }),
   },
   async ({ recipe }) => {
     const info = getRecipeInfo(recipe);
@@ -489,12 +517,12 @@ server.registerTool(
   {
     title: "Run recipe",
     description: "Executes any pjangler recipe against a target directory.",
-    inputSchema: {
+    inputSchema: z.strictObject({
       recipe: z.enum(getRecipeNames() as [string, ...string[]]),
       targetDir: z.string().optional(),
       force: z.boolean().optional(),
       dryRun: z.boolean().optional(),
-    },
+    }),
   },
   async ({ recipe, targetDir, force, dryRun }) => {
     try {
@@ -530,11 +558,11 @@ server.registerTool(
   {
     title: "Deploy Hermes agent",
     description:
-      "Provision a Hermes agent role for @33god-projects. For safe MCP use local=true defaults skip runtime repo, ticket-board creation, Bloodbank, and systemd; opt out with local=false plus explicit skip flags.",
-    inputSchema: {
+      "Provision a Hermes agent role for @33god-projects. Bloodbank routing is always fleet-shared; local=true safely defaults runtime repo, ticket-board creation, and systemd off.",
+    inputSchema: z.strictObject({
       targetDir: z.string(),
       targetRepo: z.string().optional(),
-      role: z.enum(["pm", "director", "dev", "review", "ops", "qa"]),
+      role: AGENT_ROLE_SCHEMA,
       agentPurpose: z.string().optional(),
       soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
       modelProvider: z.string().optional(),
@@ -549,10 +577,9 @@ server.registerTool(
       skipEmail: z.boolean().optional(),
       skipRuntimeRepo: z.boolean().optional(),
       skipPlane: z.boolean().optional(),
-      skipBloodbank: z.boolean().optional(),
       skipSystemd: z.boolean().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
-    },
+    }),
   },
   async (input) => {
     try {
@@ -564,7 +591,7 @@ server.registerTool(
         yes: true,
         local,
         targetRepo: input.targetRepo ?? basename(resolvedTarget),
-        role: input.role,
+        role: normalizeAgentRole(input.role),
         agentPurpose: input.agentPurpose,
         soulTone: input.soulTone,
         modelProvider: input.modelProvider,
@@ -579,7 +606,7 @@ server.registerTool(
         skipEmail: input.skipEmail ?? true,
         skipRuntimeRepo: input.skipRuntimeRepo ?? local,
         skipPlane: input.skipPlane ?? local,
-        skipBloodbank: input.skipBloodbank ?? local,
+        skipBloodbank: true,
         skipSystemd: input.skipSystemd ?? (local || process.platform === "darwin"),
       };
 
@@ -590,6 +617,7 @@ server.registerTool(
           success: result.success,
           recipe: "hermes-agent",
           targetDir: resolvedTarget,
+          bloodbankMode: "fleet-shared",
           guidance: parityGuidance(),
           context: {
             targetRepo: context.targetRepo,
@@ -601,7 +629,6 @@ server.registerTool(
             skipEmail: context.skipEmail,
             skipRuntimeRepo: context.skipRuntimeRepo,
             skipPlane: context.skipPlane,
-            skipBloodbank: context.skipBloodbank,
             skipSystemd: context.skipSystemd,
           },
           logs: result.logs,
