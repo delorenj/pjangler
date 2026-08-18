@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,6 +17,49 @@ const templateConfig = join(temporary, "config", "hermes-agent-template", "confi
 const registryPath = join(temporary, "projects.yaml");
 const fleetHome = join(temporary, "fleet-home");
 const fleetRegistryPath = join(fleetHome, "agents-registry.yaml");
+
+const executableFleetSource = /(?:^|[;{]\s*)[ \t]*(?:builtin\s+)?(?:source|\.)\s+[^\n#]*(?:\$\{?(?:HERMES_)?FLEET_ENV\}?(?![A-Za-z0-9_])|fleet\\?\.env)/im;
+function executableSources(directory) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...executableSources(path));
+    else if (/^(?:[^.]+|.*\.(?:sh|py|jinja))$/.test(entry.name)) found.push(path);
+  }
+  return found;
+}
+
+const consumerRoots = [
+  join(root, "agents", "hermes", "pm"),
+  join(root, "templates", "hermes-agent", "template"),
+  join(root, "templates", "hermes-agent", "scripts"),
+];
+const sourceViolations = consumerRoots
+  .flatMap(executableSources)
+  .filter((path) => executableFleetSource.test(readFileSync(path, "utf8")))
+  .map((path) => path.slice(root.length + 1));
+assert.deepEqual(sourceViolations, [], "tracked/rendered fleet.env consumers must never execute shell configuration");
+
+for (const consumer of [
+  "agents/hermes/pm/hermes",
+  "agents/hermes/pm/.scripts/_lib.sh",
+  "agents/hermes/pm/.scripts/heartbeat.sh",
+  "templates/hermes-agent/template/hermes.jinja",
+  "templates/hermes-agent/template/.scripts/_lib.sh",
+  "templates/hermes-agent/scripts/fleet-sync.sh",
+  "templates/hermes-agent/scripts/migrate-unify.sh",
+  "templates/hermes-agent/scripts/backfill-fleet-sot.sh",
+]) {
+  assert.match(readFileSync(join(root, consumer), "utf8"), /load_fleet_environment/, `${consumer} must use the shared data-only loader`);
+}
+for (const asset of ["fleet-env.sh", "parse-fleet-env.py"]) {
+  assert.deepEqual(
+    readFileSync(join(root, "agents/hermes/pm/.scripts/lib", asset)),
+    readFileSync(join(root, "templates/hermes-agent/template/.scripts/lib", asset)),
+    `tracked PM ${asset} must equal the canonical template asset`,
+  );
+}
 
 mkdirSync(fakeBin, { recursive: true });
 mkdirSync(adapters, { recursive: true });

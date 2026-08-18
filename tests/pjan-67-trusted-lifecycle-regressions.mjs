@@ -463,6 +463,55 @@ try {
   assertFilesUnchanged(missingParserHostSnapshot, "missing vendored parser MCP rejection");
   assertEnclosingProjectUntouched("missing vendored parser MCP rejection");
 
+  const vendoredFleetLoader = join(
+    root,
+    "templates",
+    "hermes-agent",
+    "template",
+    ".scripts",
+    "lib",
+    "fleet-env.sh",
+  );
+  const heldFleetLoader = join(temporary, "held-fleet-env.sh");
+  const missingLoaderTarget = join(temporary, "missing-loader-mcp-target");
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const missingLoaderHostSnapshot = new Map([
+    [templateConfig, readOptional(templateConfig)],
+    [registryPath, readOptional(registryPath)],
+    [join(fleetHome, "agents-registry.yaml"), readOptional(join(fleetHome, "agents-registry.yaml"))],
+    [fleetEnvPath, readOptional(fleetEnvPath)],
+  ]);
+  renameSync(vendoredFleetLoader, heldFleetLoader);
+  let missingLoaderResult;
+  try {
+    missingLoaderResult = await client.callTool({
+      name: "pjangler_project_init",
+      arguments: {
+        name: "Missing Loader MCP Target",
+        targetDir: missingLoaderTarget,
+        slug: "missing-loader-mcp-target",
+        provisionAgent: true,
+        agentRole: "pm",
+        apply: true,
+        live: false,
+        skipPlane: true,
+      },
+    });
+  } finally {
+    renameSync(heldFleetLoader, vendoredFleetLoader);
+  }
+  const missingLoaderPayload = payload(missingLoaderResult);
+  assert.equal(missingLoaderResult.isError, true, JSON.stringify(missingLoaderPayload));
+  assert.match(JSON.stringify(missingLoaderPayload), /fleet-env\.sh/);
+  assert.equal(existsSync(missingLoaderTarget), false, "missing loader rejection must precede target creation");
+  assert.equal(existsSync(effectLog), false, "missing loader rejection must precede Hermes/systemd/provider children");
+  assert.equal(existsSync(providerLog), false, "missing loader rejection must precede provider effects");
+  assert.equal(existsSync(interpreterLoadLog), false, "missing loader rejection must precede controlled child startup");
+  assertFilesUnchanged(missingLoaderHostSnapshot, "missing vendored loader MCP rejection");
+  assertEnclosingProjectUntouched("missing vendored loader MCP rejection");
+
   const target = join(temporary, "trusted-project");
   rmSync(interpreterLoadLog, { force: true });
   rmSync(bmadInvocationLog, { force: true });

@@ -20,14 +20,19 @@ STATE_FILE="$RUNTIME/continuous-ticket-sentinel-state.json"
 LOCK_FILE="$RUNTIME/continuous-ticket-sentinel.lock"
 ROLE_YAML="$ROLE_DIR/role.yaml"
 FLEET_ENV="${HERMES_FLEET_ENV:-$HOME/.hermes/fleet.env}"
+FLEET_ENV_LIBRARY="$ROLE_DIR/.scripts/lib/fleet-env.sh"
+FLEET_ENV_PARSER="$ROLE_DIR/.scripts/lib/parse-fleet-env.py"
 LOG_FILE="$RUNTIME/logs/heartbeat.log"
 CHECKPOINT_BIN="$ROLE_DIR/.scripts/checkpoint.sh"
 CHECKPOINT_STAMP="$RUNTIME/.last-checkpoint"
 
-if [[ -f "$FLEET_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$FLEET_ENV"
+if [[ ! -f "$FLEET_ENV_LIBRARY" || -L "$FLEET_ENV_LIBRARY" ]]; then
+  echo "heartbeat: trusted fleet environment loader unavailable" >&2
+  exit 1
 fi
+# shellcheck source=lib/fleet-env.sh
+builtin source "$FLEET_ENV_LIBRARY"
+load_fleet_environment "$FLEET_ENV" "$FLEET_ENV_PARSER"
 
 # Hermes binary: explicit env > ~/.config/hermes-agent/hermes-bin > PATH.
 HERMES_BIN="${HERMES_BIN:-${HERMES_FLEET_BIN:-}}"

@@ -571,6 +571,19 @@ try {
   assert.equal(missingVendoredParser.ok, false, "the fleet parser is part of vendored Hermes eligibility");
   assert.match(missingVendoredParser.error ?? "", /parse-fleet-env\.py/);
 
+  const missingLoaderRoot = join(workspace, "missing-loader-template");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(missingLoaderRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  rmSync(
+    join(missingLoaderRoot, "templates", "hermes-agent", "template", ".scripts", "lib", "fleet-env.sh"),
+  );
+  const missingVendoredLoader = preflightHermesTemplate(missingLoaderRoot);
+  assert.equal(missingVendoredLoader.ok, false, "the shared fleet loader is part of vendored Hermes eligibility");
+  assert.match(missingVendoredLoader.error ?? "", /fleet-env\.sh/);
+
   const renderedTarget = join(workspace, "rendered-parser-attestation");
   const renderedRole = join(renderedTarget, "agents", "hermes", "pm");
   cpSync(
@@ -621,6 +634,18 @@ try {
   const tamperedRenderedParser = preflightRenderedHermes(renderedOptions);
   assert.equal(tamperedRenderedParser.ok, false, "a rendered fleet parser must equal the attested vendored parser");
   assert.match(tamperedRenderedParser.error ?? "", /differs.*parse-fleet-env\.py/);
+  writeFileSync(renderedParser, parserSource, "utf8");
+
+  const renderedLoader = join(renderedRole, ".scripts", "lib", "fleet-env.sh");
+  const loaderSource = readFileSync(renderedLoader, "utf8");
+  rmSync(renderedLoader);
+  const missingRenderedLoader = preflightRenderedHermes(renderedOptions);
+  assert.equal(missingRenderedLoader.ok, false, "a rendered role without its shared fleet loader must fail eligibility");
+  assert.match(missingRenderedLoader.error ?? "", /fleet-env\.sh/);
+  writeFileSync(renderedLoader, `${loaderSource}\n# tampered after render\n`, "utf8");
+  const tamperedRenderedLoader = preflightRenderedHermes(renderedOptions);
+  assert.equal(tamperedRenderedLoader.ok, false, "a rendered shared fleet loader must equal the attested vendored loader");
+  assert.match(tamperedRenderedLoader.error ?? "", /differs.*fleet-env\.sh/);
 
   const untrustedTemplate = preflightHermesTemplate(root, { PJANGLER_HERMES_TEMPLATE: join(workspace, "untrusted-template") });
   assert.equal(untrustedTemplate.ok, false, "MCP must reject an unversioned Hermes template override");

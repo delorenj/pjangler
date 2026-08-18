@@ -8,6 +8,15 @@ set -euo pipefail
 ROLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROLE_YAML="$ROLE_DIR/role.yaml"
 PROV_LOG="$ROLE_DIR/.scripts/.provision.log"
+FLEET_ENV_LIBRARY="$ROLE_DIR/.scripts/lib/fleet-env.sh"
+FLEET_ENV_PARSER="$ROLE_DIR/.scripts/lib/parse-fleet-env.py"
+if [[ ! -f "$FLEET_ENV_LIBRARY" || -L "$FLEET_ENV_LIBRARY" ]]; then
+  builtin printf 'fleet environment loader rejected: trusted library is unavailable\n' >&2
+  return 1
+fi
+# shellcheck source=lib/fleet-env.sh
+builtin source "$FLEET_ENV_LIBRARY"
+scrub_subprocess_interpreter_injection
 
 mkdir -p "$ROLE_DIR/.scripts"
 
@@ -196,10 +205,7 @@ mark_done() {
 # Fleet source-of-truth (shared across all wrappers/provisioners).
 # Every default below resolves as: env var > fleet.env > config.toml > fallback.
 FLEET_ENV="${HERMES_FLEET_ENV:-$(config_get fleet.fleet_env "$HOME/.hermes/fleet.env")}"
-if [[ -f "$FLEET_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$FLEET_ENV"
-fi
+load_fleet_environment "$FLEET_ENV" "$FLEET_ENV_PARSER"
 
 # Tools we expect on the host
 HERMES_BIN="${HERMES_BIN:-${HERMES_FLEET_BIN:-$(config_get fleet.hermes_bin '/home/delorenj/code/hermes-agent/.venv/bin/hermes')}}"
