@@ -74,6 +74,32 @@ export interface RenderedHermesEligibilityOptions {
   agentId: string;
 }
 
+/**
+ * Immutable Hermes lifecycle assets captured from the pinned submodule tree.
+ *
+ * The SHA-256 values are used by source checkouts and npm installations alike;
+ * the Git blob ids make the generating tree independently auditable without
+ * requiring `.git` metadata at runtime. Release tests prove each pair directly
+ * against `git show <commit>:<path>` before publication.
+ */
+export const HERMES_TEMPLATE_ATTESTATION = Object.freeze({
+  commit: "e5b19666177b54ecedebeb99ca324ba7dc452d85",
+  files: Object.freeze({
+    "template/.scripts/lib/fleet-env.sh": Object.freeze({
+      gitBlob: "1c182f5947b423eeeb6ea0bc6ecaaaed2b46ae30",
+      sha256: "p56UUM0LaEFD4_4mqrihUeL1QGg_MYxEYyaRgWAVzMc",
+    }),
+    "template/.scripts/lib/parse-fleet-env.py": Object.freeze({
+      gitBlob: "84d99d38f5c697e316bd3c01452d1c813927b36f",
+      sha256: "fmn2WrVcMWj4mbFArcP7u5rr6fFgfdpbmTXFRzXXzG4",
+    }),
+    "template/.scripts/heartbeat.sh": Object.freeze({
+      gitBlob: "775d6c2b59c626f46e5fbcee81c4331e95415563",
+      sha256: "u5QMqE4GRNmBUBH9QhvvHIStNePPeG1orvZy9J7A8Ww",
+    }),
+  }),
+});
+
 function containedBy(parent: string, candidate: string): boolean {
   const rel = relative(resolve(parent), resolve(candidate));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -399,6 +425,28 @@ function requireFiles(templateRoot: string, files: readonly string[], label: str
   return { ok: true };
 }
 
+function attestPinnedHermesTemplate(templateRoot: string): LifecycleEligibilityResult {
+  for (const [relativePath, expected] of Object.entries(HERMES_TEMPLATE_ATTESTATION.files)) {
+    const path = join(templateRoot, relativePath);
+    const regular = regularContainedFile(templateRoot, path, `pinned Hermes asset ${relativePath}`);
+    if (!regular.ok) return regular;
+    try {
+      if (sha256(path) !== expected.sha256) {
+        return {
+          ok: false,
+          error: `pinned Hermes template integrity mismatch: ${relativePath}`,
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: `cannot attest pinned Hermes asset ${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleEligibilityResult {
   const templateRoot = join(resolve(pjanglerRoot), "templates", "commonproject");
   const parsed = parseCopierConfig(templateRoot, "CommonProject template");
@@ -439,6 +487,7 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
     "template/.scripts/_lib.sh",
     "template/.scripts/lib/fleet-env.sh",
     "template/.scripts/lib/parse-fleet-env.py",
+    "template/.scripts/heartbeat.sh",
     "template/.scripts/01-config.sh",
     "template/.scripts/05-fleet-env.sh",
     "template/.scripts/10-hermes-profile.sh",
@@ -448,6 +497,8 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
     "template/.scripts/80-registry.sh",
   ], "Hermes template");
   if (!required.ok) return required;
+  const pinned = attestPinnedHermesTemplate(templateRoot);
+  if (!pinned.ok) return pinned;
 
   const role = readFileSync(join(templateRoot, "template", "role.yaml.jinja"), "utf8");
   if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
@@ -500,6 +551,8 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
   }
 
   const templateScripts = join(resolve(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
+  const pinned = attestPinnedHermesTemplate(join(resolve(options.pjanglerRoot), "templates", "hermes-agent"));
+  if (!pinned.ok) return pinned;
   const renderedScripts = join(roleDir, ".scripts");
   const requiredFiles = [
     "role.yaml",
@@ -509,13 +562,14 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
     ".runtime-scaffold/README.md",
     ".scripts/lib/fleet-env.sh",
     ".scripts/lib/parse-fleet-env.py",
+    ".scripts/heartbeat.sh",
     ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]
       .map((script) => `.scripts/${script}`),
   ];
   const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
   if (!required.ok) return required;
 
-  for (const script of ["_lib.sh", "lib/fleet-env.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+  for (const script of ["_lib.sh", "heartbeat.sh", "lib/fleet-env.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
       if (readFileSync(join(renderedScripts, script), "utf8") !== readFileSync(join(templateScripts, script), "utf8")) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };

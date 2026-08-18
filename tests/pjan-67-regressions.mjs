@@ -18,7 +18,18 @@ const registryPath = join(temporary, "projects.yaml");
 const fleetHome = join(temporary, "fleet-home");
 const fleetRegistryPath = join(fleetHome, "agents-registry.yaml");
 
-const executableFleetSource = /(?:^|[;{]\s*)[ \t]*(?:builtin\s+)?(?:source|\.)\s+[^\n#]*(?:\$\{?(?:HERMES_)?FLEET_ENV\}?(?![A-Za-z0-9_])|fleet\\?\.env)/im;
+const fleetReference = /(?:HERMES_)?FLEET_ENV|fleet\.env|load_fleet_environment|import_fleet_environment/i;
+const executableFleetSource = /(?:^|[;{]\s*)[ \t]*(?:(?:builtin|command)\s+)*(?:source|\.)\s+[^\n#]*(?:\$\{?(?:HERMES_)?FLEET_ENV\}?(?![A-Za-z0-9_])|fleet\\?\.env)/im;
+const dynamicFleetExecution = [
+  /\beval\b/m,
+  /\b(?:bash|dash|sh|zsh)\b[^\n]*(?:^|[ \t])(?:-c|--command)(?:[ \t]|$)/m,
+  /(?:^|[;\n]\s*)[A-Za-z_][A-Za-z0-9_]*\s*=\s*["']?(?:source|\.)["']?\s*(?:[;\n]|$)/m,
+];
+
+function executableFleetViolation(text) {
+  if (executableFleetSource.test(text)) return true;
+  return fleetReference.test(text) && dynamicFleetExecution.some((pattern) => pattern.test(text));
+}
 function executableSources(directory) {
   const found = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -35,11 +46,83 @@ const consumerRoots = [
   join(root, "templates", "hermes-agent", "template"),
   join(root, "templates", "hermes-agent", "scripts"),
 ];
-const sourceViolations = consumerRoots
-  .flatMap(executableSources)
-  .filter((path) => executableFleetSource.test(readFileSync(path, "utf8")))
+const fleetReferenceAllowlist = [
+  "agents/hermes/pm/.scripts/01-config.sh",
+  "agents/hermes/pm/.scripts/05-fleet-env.sh",
+  "agents/hermes/pm/.scripts/70-systemd.sh",
+  "agents/hermes/pm/.scripts/80-registry.sh",
+  "agents/hermes/pm/.scripts/99-summary.sh",
+  "agents/hermes/pm/.scripts/_lib.sh",
+  "agents/hermes/pm/.scripts/heartbeat.sh",
+  "agents/hermes/pm/.scripts/lib/fleet-env.sh",
+  "agents/hermes/pm/.scripts/lib/parse-fleet-env.py",
+  "agents/hermes/pm/.scripts/providers/plane.sh",
+  "agents/hermes/pm/hermes",
+  "templates/hermes-agent/scripts/backfill-fleet-sot.py",
+  "templates/hermes-agent/scripts/backfill-fleet-sot.sh",
+  "templates/hermes-agent/scripts/fleet-sync.sh",
+  "templates/hermes-agent/scripts/migrate-unify.sh",
+  "templates/hermes-agent/template/.scripts/01-config.sh",
+  "templates/hermes-agent/template/.scripts/05-fleet-env.sh",
+  "templates/hermes-agent/template/.scripts/30-telegram.sh",
+  "templates/hermes-agent/template/.scripts/31-slack.sh",
+  "templates/hermes-agent/template/.scripts/80-registry.sh",
+  "templates/hermes-agent/template/.scripts/99-summary.sh",
+  "templates/hermes-agent/template/.scripts/_lib.sh",
+  "templates/hermes-agent/template/.scripts/heartbeat.sh",
+  "templates/hermes-agent/template/.scripts/lib/fleet-env.sh",
+  "templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py",
+  "templates/hermes-agent/template/.scripts/providers/plane.sh",
+  "templates/hermes-agent/template/hermes.jinja",
+].sort();
+const fleetConsumerFiles = consumerRoots.flatMap(executableSources);
+const actualFleetReferences = fleetConsumerFiles
+  .filter((path) => fleetReference.test(readFileSync(path, "utf8")))
+  .map((path) => path.slice(root.length + 1))
+  .sort();
+assert.deepEqual(
+  actualFleetReferences,
+  fleetReferenceAllowlist,
+  "every executable fleet.env reference must be reviewed and explicitly allowlisted",
+);
+const sourceViolations = fleetConsumerFiles
+  .filter((path) => executableFleetViolation(readFileSync(path, "utf8")))
   .map((path) => path.slice(root.length + 1));
 assert.deepEqual(sourceViolations, [], "tracked/rendered fleet.env consumers must never execute shell configuration");
+
+for (const mutant of [
+  'command source "$FLEET_ENV"',
+  'eval "$(cat "$FLEET_ENV")"',
+  'fleet_loader=source\n"$fleet_loader" "$FLEET_ENV"',
+  'bash -c \'. "$HOME/.hermes/fleet.env"\'',
+]) {
+  assert.equal(executableFleetViolation(mutant), true, `dynamic fleet execution must be rejected: ${mutant}`);
+}
+
+function markdownFiles(path) {
+  if (!existsSync(path)) return [];
+  const entries = readdirSync(path, { withFileTypes: true });
+  return entries.flatMap((entry) => {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) return markdownFiles(child);
+    return entry.isFile() && entry.name.endsWith(".md") ? [child] : [];
+  });
+}
+const operatorFleetSource = /^\s*(?:\$\s*)?(?:(?:builtin|command)\s+)*(?:source|\.)\s+[^\n#]*(?:\$\{?(?:HERMES_)?FLEET_ENV\}?|fleet\.env)/im;
+const operatorDocs = [
+  ...markdownFiles(join(root, "skills")),
+  ...markdownFiles(join(root, "templates", "hermes-agent", "docs")),
+  join(root, "templates", "hermes-agent", "README.md"),
+].filter(existsSync);
+const operatorSourceGuidance = operatorDocs
+  .filter((path) => operatorFleetSource.test(readFileSync(path, "utf8")))
+  .map((path) => path.slice(root.length + 1));
+assert.deepEqual(
+  operatorSourceGuidance,
+  [],
+  "operator-facing documentation must use the canonical data loader rather than source fleet.env",
+);
+assert.equal(operatorFleetSource.test("source ~/.hermes/fleet.env"), true);
 
 for (const consumer of [
   "agents/hermes/pm/hermes",
@@ -47,6 +130,7 @@ for (const consumer of [
   "agents/hermes/pm/.scripts/heartbeat.sh",
   "templates/hermes-agent/template/hermes.jinja",
   "templates/hermes-agent/template/.scripts/_lib.sh",
+  "templates/hermes-agent/template/.scripts/heartbeat.sh",
   "templates/hermes-agent/scripts/fleet-sync.sh",
   "templates/hermes-agent/scripts/migrate-unify.sh",
   "templates/hermes-agent/scripts/backfill-fleet-sot.sh",

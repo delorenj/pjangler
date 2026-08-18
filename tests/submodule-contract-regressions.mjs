@@ -143,6 +143,15 @@ function materializePackage(root, payloads = []) {
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "copier.yml"), "_subdirectory: template\n");
   }
+  for (const [path, content] of [
+    ["templates/hermes-agent/template/.scripts/lib/fleet-env.sh", "#!/usr/bin/env bash\n# canonical loader fixture\n"],
+    ["templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py", "#!/usr/bin/env python3\n# canonical parser fixture\n"],
+    ["templates/hermes-agent/template/.scripts/heartbeat.sh", "#!/usr/bin/env bash\n# canonical heartbeat fixture\n"],
+  ]) {
+    const target = join(root, path);
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, content);
+  }
   for (const [path, content] of payloads) {
     const target = join(root, path);
     mkdirSync(resolve(target, ".."), { recursive: true });
@@ -204,6 +213,24 @@ try {
     assert.match(result.stderr, /CodeGraph daemon runtime state/);
     assert.match(result.stderr, /Omo run-continuation state/);
     assert.match(result.stderr, /process or socket runtime state/);
+  }
+
+  {
+    const { root } = fixture();
+    materializePackage(root);
+    const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    packageJson.files = [
+      "templates",
+      "!templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py",
+    ];
+    writeFileSync(join(root, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
+
+    const result = check(root, "--npm");
+    assert.equal(result.status, 1, "npm omission of an attested helper must fail prepublish");
+    assert.match(
+      result.stderr,
+      /npm package is missing populated templates\/hermes-agent\/template\/\.scripts\/lib\/parse-fleet-env\.py/,
+    );
   }
 
   // A submodule whose worktree carries uncommitted edits or untracked files is

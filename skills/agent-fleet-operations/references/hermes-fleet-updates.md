@@ -172,7 +172,9 @@ runtime backfill when health shows an old config missed the generated fan-out.
 After any lane, verify the actual behavior:
 
 ```bash
-source ~/.hermes/fleet.env
+FLEET_DATA_TOOLS="$HOME/code/33GOD/pjangler/agents/hermes/pm/.scripts/lib"
+source "$FLEET_DATA_TOOLS/fleet-env.sh"
+load_fleet_environment "$HOME/.hermes/fleet.env" "$FLEET_DATA_TOOLS/parse-fleet-env.py"
 test -x "$HERMES_FLEET_BIN"
 HERMES_HOME="$HOME/.hermes" hermes config get model.default
 hermes -p <repo>-pm config get model.default

@@ -408,6 +408,65 @@ const transport = new StdioClientTransport({
 });
 const client = new Client({ name: "pjan-67-trusted-positive", version: "1.0.0" });
 
+async function expectVendoredAssetRejection({ asset, targetName, missing, pattern, label }) {
+  const target = join(temporary, targetName);
+  const held = join(temporary, `held-${targetName}`);
+  const original = readFileSync(asset);
+  const templateRoot = join(root, "templates", "hermes-agent");
+  const headBefore = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: templateRoot,
+    encoding: "utf8",
+  });
+  assert.equal(headBefore.status, 0, headBefore.stderr);
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const hostSnapshot = new Map([
+    [templateConfig, readOptional(templateConfig)],
+    [registryPath, readOptional(registryPath)],
+    [join(fleetHome, "agents-registry.yaml"), readOptional(join(fleetHome, "agents-registry.yaml"))],
+    [fleetEnvPath, readOptional(fleetEnvPath)],
+  ]);
+
+  if (missing) renameSync(asset, held);
+  else writeFileSync(asset, Buffer.concat([original, Buffer.from("\n# PJAN-67 regular-file tamper\n")]));
+  let result;
+  try {
+    result = await client.callTool({
+      name: "pjangler_project_init",
+      arguments: {
+        name: label,
+        targetDir: target,
+        slug: targetName,
+        provisionAgent: true,
+        agentRole: "pm",
+        apply: true,
+        live: false,
+        skipPlane: true,
+      },
+    });
+  } finally {
+    if (missing) renameSync(held, asset);
+    else writeFileSync(asset, original);
+  }
+
+  const response = payload(result);
+  assert.equal(result.isError, true, JSON.stringify(response));
+  assert.match(JSON.stringify(response), pattern);
+  const headAfter = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: templateRoot,
+    encoding: "utf8",
+  });
+  assert.equal(headAfter.status, 0, headAfter.stderr);
+  assert.equal(headAfter.stdout.trim(), headBefore.stdout.trim(), `${label}: Git HEAD must stay unchanged`);
+  assert.equal(existsSync(target), false, `${label}: attestation rejection must precede target creation`);
+  assert.equal(existsSync(effectLog), false, `${label}: attestation rejection must precede child effects`);
+  assert.equal(existsSync(providerLog), false, `${label}: attestation rejection must precede provider effects`);
+  assert.equal(existsSync(interpreterLoadLog), false, `${label}: attestation rejection must precede child startup`);
+  assertFilesUnchanged(hostSnapshot, label);
+  assertEnclosingProjectUntouched(label);
+}
+
 try {
   await client.connect(transport);
 
@@ -511,6 +570,21 @@ try {
   assert.equal(existsSync(interpreterLoadLog), false, "missing loader rejection must precede controlled child startup");
   assertFilesUnchanged(missingLoaderHostSnapshot, "missing vendored loader MCP rejection");
   assertEnclosingProjectUntouched("missing vendored loader MCP rejection");
+
+  await expectVendoredAssetRejection({
+    asset: join(root, "templates", "hermes-agent", "template", ".scripts", "heartbeat.sh"),
+    targetName: "missing-heartbeat-mcp-target",
+    missing: true,
+    pattern: /heartbeat\.sh/,
+    label: "missing vendored heartbeat MCP rejection",
+  });
+  await expectVendoredAssetRejection({
+    asset: vendoredFleetParser,
+    targetName: "tampered-parser-mcp-target",
+    missing: false,
+    pattern: /pinned|attest|integrity/i,
+    label: "tampered canonical parser MCP rejection",
+  });
 
   const target = join(temporary, "trusted-project");
   rmSync(interpreterLoadLog, { force: true });

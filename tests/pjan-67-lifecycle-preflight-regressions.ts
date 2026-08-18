@@ -18,6 +18,7 @@ import { RunCopierTemplate } from "../src/commands/hermes/RunCopierTemplate";
 import type { HermesAgentContext } from "../src/commands/hermes/types";
 import { hardenSubprocessEnvironment } from "../src/utils/child-environment";
 import {
+  HERMES_TEMPLATE_ATTESTATION,
   preflightCommonProjectTemplate,
   preflightHermesTemplate,
   preflightRenderedHermes,
@@ -556,6 +557,36 @@ try {
   }
 
   assert.equal(preflightCommonProjectTemplate(root).ok, true, "the vendored CommonProject template must satisfy lifecycle eligibility");
+  const templateRoot = join(root, "templates", "hermes-agent");
+  const templateHead = hardenedSpawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: templateRoot,
+    encoding: "utf8",
+  });
+  assert.equal(templateHead.status, 0, templateHead.stderr || templateHead.stdout);
+  assert.equal(
+    templateHead.stdout.trim(),
+    HERMES_TEMPLATE_ATTESTATION.commit,
+    "the checked-out Hermes submodule must equal the immutable attestation commit",
+  );
+  for (const [relativePath, expected] of Object.entries(HERMES_TEMPLATE_ATTESTATION.files)) {
+    const blob = hardenedSpawnSync("git", ["rev-parse", `${HERMES_TEMPLATE_ATTESTATION.commit}:${relativePath}`], {
+      cwd: templateRoot,
+      encoding: "utf8",
+    });
+    assert.equal(blob.status, 0, blob.stderr || blob.stdout);
+    assert.equal(blob.stdout.trim(), expected.gitBlob, `${relativePath} blob id must come from the pinned tree`);
+    const bytes = hardenedSpawnSync("git", ["show", `${HERMES_TEMPLATE_ATTESTATION.commit}:${relativePath}`], {
+      cwd: templateRoot,
+      encoding: null,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.equal(bytes.status, 0, bytes.stderr?.toString() || bytes.stdout?.toString());
+    assert.equal(
+      createHash("sha256").update(bytes.stdout).digest("base64url"),
+      expected.sha256,
+      `${relativePath} package digest must be generated from its pinned Git blob`,
+    );
+  }
   assert.equal(preflightHermesTemplate(root).ok, true, "the vendored Hermes template must satisfy lifecycle eligibility");
 
   const missingParserRoot = join(workspace, "missing-parser-template");
@@ -583,6 +614,54 @@ try {
   const missingVendoredLoader = preflightHermesTemplate(missingLoaderRoot);
   assert.equal(missingVendoredLoader.ok, false, "the shared fleet loader is part of vendored Hermes eligibility");
   assert.match(missingVendoredLoader.error ?? "", /fleet-env\.sh/);
+
+  const missingHeartbeatRoot = join(workspace, "missing-heartbeat-template");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(missingHeartbeatRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  rmSync(
+    join(missingHeartbeatRoot, "templates", "hermes-agent", "template", ".scripts", "heartbeat.sh"),
+  );
+  const missingVendoredHeartbeat = preflightHermesTemplate(missingHeartbeatRoot);
+  assert.equal(missingVendoredHeartbeat.ok, false, "the fleet-aware heartbeat is part of vendored Hermes eligibility");
+  assert.match(missingVendoredHeartbeat.error ?? "", /heartbeat\.sh/);
+
+  const tamperedCanonicalRoot = join(workspace, "tampered-canonical-template");
+  const tamperedCanonicalTemplate = join(tamperedCanonicalRoot, "templates", "hermes-agent");
+  cpSync(join(root, "templates", "hermes-agent"), tamperedCanonicalTemplate, { recursive: true });
+  rmSync(join(tamperedCanonicalTemplate, ".git"), { recursive: true, force: true });
+  for (const args of [
+    ["init", "--quiet"],
+    ["add", "."],
+    ["-c", "user.name=PJAN-67", "-c", "user.email=pjan-67@example.invalid", "commit", "--quiet", "-m", "fixture"],
+  ]) {
+    const git = hardenedSpawnSync("git", args, { cwd: tamperedCanonicalRoot, encoding: "utf8" });
+    assert.equal(git.status, 0, git.stderr || git.stdout);
+  }
+  const committedHead = hardenedSpawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: tamperedCanonicalRoot,
+    encoding: "utf8",
+  }).stdout.trim();
+  for (const relativeAsset of [
+    "template/.scripts/lib/fleet-env.sh",
+    "template/.scripts/lib/parse-fleet-env.py",
+    "template/.scripts/heartbeat.sh",
+  ]) {
+    const asset = join(tamperedCanonicalTemplate, relativeAsset);
+    const pristine = readFileSync(asset, "utf8");
+    writeFileSync(asset, `${pristine}\n# regular-file tamper with unchanged HEAD\n`, "utf8");
+    const unchangedHead = hardenedSpawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: tamperedCanonicalRoot,
+      encoding: "utf8",
+    }).stdout.trim();
+    assert.equal(unchangedHead, committedHead, "fixture HEAD must remain unchanged after a worktree byte tamper");
+    const tampered = preflightHermesTemplate(tamperedCanonicalRoot);
+    assert.equal(tampered.ok, false, `${relativeAsset} must be bound to the pinned template object, not current worktree bytes`);
+    assert.match(tampered.error ?? "", /pinned|attest|integrity/i);
+    writeFileSync(asset, pristine, "utf8");
+  }
 
   const renderedTarget = join(workspace, "rendered-parser-attestation");
   const renderedRole = join(renderedTarget, "agents", "hermes", "pm");
@@ -646,6 +725,18 @@ try {
   const tamperedRenderedLoader = preflightRenderedHermes(renderedOptions);
   assert.equal(tamperedRenderedLoader.ok, false, "a rendered shared fleet loader must equal the attested vendored loader");
   assert.match(tamperedRenderedLoader.error ?? "", /differs.*fleet-env\.sh/);
+  writeFileSync(renderedLoader, loaderSource, "utf8");
+
+  const renderedHeartbeat = join(renderedRole, ".scripts", "heartbeat.sh");
+  const heartbeatSource = readFileSync(renderedHeartbeat, "utf8");
+  rmSync(renderedHeartbeat);
+  const missingRenderedHeartbeat = preflightRenderedHermes(renderedOptions);
+  assert.equal(missingRenderedHeartbeat.ok, false, "a rendered role without its fleet-aware heartbeat must fail eligibility");
+  assert.match(missingRenderedHeartbeat.error ?? "", /heartbeat\.sh/);
+  writeFileSync(renderedHeartbeat, `${heartbeatSource}\n# tampered after render\n`, "utf8");
+  const tamperedRenderedHeartbeat = preflightRenderedHermes(renderedOptions);
+  assert.equal(tamperedRenderedHeartbeat.ok, false, "a rendered heartbeat must equal the attested vendored heartbeat");
+  assert.match(tamperedRenderedHeartbeat.error ?? "", /differs.*heartbeat\.sh/);
 
   const untrustedTemplate = preflightHermesTemplate(root, { PJANGLER_HERMES_TEMPLATE: join(workspace, "untrusted-template") });
   assert.equal(untrustedTemplate.ok, false, "MCP must reject an unversioned Hermes template override");

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { readFileSync, lstatSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SUPPORTED = new Map([
@@ -23,6 +24,20 @@ const FORBIDDEN_TRACKED = [
   {
     pattern: /(?:^|\/)(?:run|runtime|tmp|temp|cache|\.cache)\/[^/]+\.(?:pid|sock|socket)$/,
     label: "process or socket runtime state",
+  },
+];
+const REQUIRED_HERMES_PACKAGE_ASSETS = [
+  {
+    packagePath: "templates/hermes-agent/template/.scripts/lib/fleet-env.sh",
+    submodulePath: "template/.scripts/lib/fleet-env.sh",
+  },
+  {
+    packagePath: "templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py",
+    submodulePath: "template/.scripts/lib/parse-fleet-env.py",
+  },
+  {
+    packagePath: "templates/hermes-agent/template/.scripts/heartbeat.sh",
+    submodulePath: "template/.scripts/heartbeat.sh",
   },
 ];
 
@@ -207,28 +222,91 @@ function assertNoForbiddenPayload(paths, surface) {
   }
 }
 
-function validateArchive(root) {
+function validateArchive(root, contract) {
   const archive = run(root, "git", ["archive", "--format=tar", "HEAD"], { encoding: null });
   if (archive.status !== 0) return fail(archive.stderr?.toString().trim() || "git archive failed");
   const listing = run(root, "tar", ["-tf", "-"], { input: archive.stdout });
   if (listing.status !== 0) return fail(listing.stderr.trim() || "tar listing failed");
   assertNoForbiddenPayload(listing.stdout.split(/\r?\n/).filter(Boolean), "git archive");
+
+  // A parent git archive records a submodule commit, not its expanded files.
+  // Prove the required runtime assets exist byte-for-byte in that pinned Git
+  // object rather than trusting a possibly modified submodule worktree.
+  const submodulePath = "templates/hermes-agent";
+  const pin = contract.gitlinks.get(submodulePath)?.sha;
+  const submoduleRoot = resolveInsideRoot(root, submodulePath);
+  if (!pin || !submoduleRoot) {
+    fail("Hermes template pin must be initialized for archive verification");
+    return;
+  }
+  for (const asset of REQUIRED_HERMES_PACKAGE_ASSETS) {
+    const archived = run(
+      submoduleRoot,
+      "git",
+      ["show", `${pin}:${asset.submodulePath}`],
+      { encoding: null },
+    );
+    if (archived.status !== 0) {
+      fail(`Hermes pinned archive is missing ${asset.submodulePath}`);
+      continue;
+    }
+    const local = readFileSync(resolve(root, asset.packagePath));
+    if (!Buffer.from(archived.stdout).equals(local)) {
+      fail(`Hermes pinned archive differs from ${asset.packagePath}`);
+    }
+  }
 }
 
 function validateNpm(root) {
-  const result = run(root, "npm", ["pack", "--dry-run", "--json", "--ignore-scripts"]);
-  if (result.status !== 0) return fail(result.stderr.trim() || "npm pack dry-run failed");
-  let payload;
+  const destination = mkdtempSync(join(tmpdir(), "pjangler-npm-contract-"));
   try {
-    payload = JSON.parse(result.stdout);
-  } catch {
-    return fail("npm pack dry-run returned invalid JSON");
-  }
-  const packRecord = Array.isArray(payload) ? payload[0] : Object.values(payload ?? {})[0];
-  const files = packRecord?.files?.map((entry) => entry.path) ?? [];
-  assertNoForbiddenPayload(files, "npm package");
-  for (const required of ["templates/commonproject/copier.yml", "templates/hermes-agent/copier.yml"]) {
-    if (!files.includes(required)) fail(`npm package is missing populated ${required}`);
+    // A dry-run listing cannot prove payload bytes. Build the same scripts-off
+    // tarball npm would publish in an isolated directory, then compare each
+    // security-critical runtime asset with its canonical checked-out bytes.
+    const result = run(root, "npm", [
+      "pack",
+      "--json",
+      "--ignore-scripts",
+      "--pack-destination",
+      destination,
+    ]);
+    if (result.status !== 0) return fail(result.stderr.trim() || "npm pack failed");
+    let payload;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {
+      return fail("npm pack returned invalid JSON");
+    }
+    const packRecord = Array.isArray(payload) ? payload[0] : Object.values(payload ?? {})[0];
+    const files = packRecord?.files?.map((entry) => entry.path) ?? [];
+    assertNoForbiddenPayload(files, "npm package");
+    const requiredFiles = [
+      "templates/commonproject/copier.yml",
+      "templates/hermes-agent/copier.yml",
+      ...REQUIRED_HERMES_PACKAGE_ASSETS.map((asset) => asset.packagePath),
+    ];
+    for (const required of requiredFiles) {
+      if (!files.includes(required)) fail(`npm package is missing populated ${required}`);
+    }
+
+    const tarball = packRecord?.filename ? join(destination, packRecord.filename) : undefined;
+    if (!tarball) {
+      fail("npm pack did not report its tarball filename");
+      return;
+    }
+    for (const asset of REQUIRED_HERMES_PACKAGE_ASSETS) {
+      if (!files.includes(asset.packagePath)) continue;
+      const packed = run(root, "tar", ["-xOf", tarball, `package/${asset.packagePath}`], { encoding: null });
+      if (packed.status !== 0) {
+        fail(`npm package cannot read ${asset.packagePath}`);
+        continue;
+      }
+      if (!Buffer.from(packed.stdout).equals(readFileSync(resolve(root, asset.packagePath)))) {
+        fail(`npm package bytes differ from canonical ${asset.packagePath}`);
+      }
+    }
+  } finally {
+    rmSync(destination, { recursive: true, force: true });
   }
 }
 
@@ -240,7 +318,7 @@ try {
   const contract = validateMetadata(root, entries);
   if (args.includes("--remote")) validateRemote(root, contract);
   if (args.includes("--recursive")) validateRecursive(root);
-  if (args.includes("--archive")) validateArchive(root);
+  if (args.includes("--archive")) validateArchive(root, contract);
   if (args.includes("--npm")) validateNpm(root);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
