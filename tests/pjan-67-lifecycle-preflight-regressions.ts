@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,6 +20,7 @@ import { hardenSubprocessEnvironment } from "../src/utils/child-environment";
 import {
   preflightCommonProjectTemplate,
   preflightHermesTemplate,
+  preflightRenderedHermes,
   preflightTrustedCopier,
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
@@ -555,6 +557,71 @@ try {
 
   assert.equal(preflightCommonProjectTemplate(root).ok, true, "the vendored CommonProject template must satisfy lifecycle eligibility");
   assert.equal(preflightHermesTemplate(root).ok, true, "the vendored Hermes template must satisfy lifecycle eligibility");
+
+  const missingParserRoot = join(workspace, "missing-parser-template");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(missingParserRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  rmSync(
+    join(missingParserRoot, "templates", "hermes-agent", "template", ".scripts", "lib", "parse-fleet-env.py"),
+  );
+  const missingVendoredParser = preflightHermesTemplate(missingParserRoot);
+  assert.equal(missingVendoredParser.ok, false, "the fleet parser is part of vendored Hermes eligibility");
+  assert.match(missingVendoredParser.error ?? "", /parse-fleet-env\.py/);
+
+  const renderedTarget = join(workspace, "rendered-parser-attestation");
+  const renderedRole = join(renderedTarget, "agents", "hermes", "pm");
+  cpSync(
+    join(root, "templates", "hermes-agent", "template", ".scripts"),
+    join(renderedRole, ".scripts"),
+    { recursive: true },
+  );
+  mkdirSync(join(renderedRole, ".runtime-scaffold"), { recursive: true });
+  writeFileSync(join(renderedRole, "SOUL.md"), "fixture\n", "utf8");
+  writeFileSync(join(renderedRole, "hermes"), "#!/bin/sh\n", "utf8");
+  writeFileSync(join(renderedRole, ".gitignore"), "runtime/\n", "utf8");
+  writeFileSync(join(renderedRole, ".runtime-scaffold", "README.md"), "fixture\n", "utf8");
+  writeFileSync(
+    join(renderedRole, "role.yaml"),
+    "repo: parser-attestation\nrole: pm\nagent_id: parser-attestation-pm\n"
+      + "bloodbank:\n  enabled: true\ndeployment:\n  local_only: true\n  systemd: deferred\n",
+    "utf8",
+  );
+  writeFileSync(
+    join(renderedTarget, ".project.json"),
+    JSON.stringify({
+      agents: {
+        "parser-attestation-pm": {
+          role: "pm",
+          role_dir: "agents/hermes/pm",
+          provisioning_state: "provisioned",
+        },
+      },
+    }),
+    "utf8",
+  );
+  const renderedOptions = {
+    pjanglerRoot: root,
+    targetDir: renderedTarget,
+    roleDir: renderedRole,
+    targetRepo: "parser-attestation",
+    role: "pm",
+    agentId: "parser-attestation-pm",
+  };
+  assert.equal(preflightRenderedHermes(renderedOptions).ok, true, "the complete rendered fixture must attest");
+  const renderedParser = join(renderedRole, ".scripts", "lib", "parse-fleet-env.py");
+  const parserSource = readFileSync(renderedParser, "utf8");
+  rmSync(renderedParser);
+  const missingRenderedParser = preflightRenderedHermes(renderedOptions);
+  assert.equal(missingRenderedParser.ok, false, "a rendered role without its fleet parser must fail eligibility");
+  assert.match(missingRenderedParser.error ?? "", /parse-fleet-env\.py/);
+  writeFileSync(renderedParser, `${parserSource}\n# tampered after render\n`, "utf8");
+  const tamperedRenderedParser = preflightRenderedHermes(renderedOptions);
+  assert.equal(tamperedRenderedParser.ok, false, "a rendered fleet parser must equal the attested vendored parser");
+  assert.match(tamperedRenderedParser.error ?? "", /differs.*parse-fleet-env\.py/);
+
   const untrustedTemplate = preflightHermesTemplate(root, { PJANGLER_HERMES_TEMPLATE: join(workspace, "untrusted-template") });
   assert.equal(untrustedTemplate.ok, false, "MCP must reject an unversioned Hermes template override");
   assert.match(untrustedTemplate.error ?? "", /version-locked|unavailable/);

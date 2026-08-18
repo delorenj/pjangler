@@ -437,6 +437,7 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
     "template/SOUL.md.jinja",
     "template/hermes.jinja",
     "template/.scripts/_lib.sh",
+    "template/.scripts/lib/parse-fleet-env.py",
     "template/.scripts/01-config.sh",
     "template/.scripts/05-fleet-env.sh",
     "template/.scripts/10-hermes-profile.sh",
@@ -505,13 +506,14 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
     "hermes",
     ".gitignore",
     ".runtime-scaffold/README.md",
+    ".scripts/lib/parse-fleet-env.py",
     ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]
       .map((script) => `.scripts/${script}`),
   ];
   const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
   if (!required.ok) return required;
 
-  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+  for (const script of ["_lib.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
       if (readFileSync(join(renderedScripts, script), "utf8") !== readFileSync(join(templateScripts, script), "utf8")) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };

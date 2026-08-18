@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -409,6 +410,59 @@ const client = new Client({ name: "pjan-67-trusted-positive", version: "1.0.0" }
 
 try {
   await client.connect(transport);
+
+  // The rendered fleet parser is executable lifecycle policy, not an optional
+  // template asset. Its vendored attestation must fail before Copier can write
+  // the target or any provider/host child can observe the request.
+  const vendoredFleetParser = join(
+    root,
+    "templates",
+    "hermes-agent",
+    "template",
+    ".scripts",
+    "lib",
+    "parse-fleet-env.py",
+  );
+  const heldFleetParser = join(temporary, "held-parse-fleet-env.py");
+  const missingParserTarget = join(temporary, "missing-parser-mcp-target");
+  rmSync(effectLog, { force: true });
+  rmSync(providerLog, { force: true });
+  rmSync(interpreterLoadLog, { force: true });
+  const missingParserHostSnapshot = new Map([
+    [templateConfig, readOptional(templateConfig)],
+    [registryPath, readOptional(registryPath)],
+    [join(fleetHome, "agents-registry.yaml"), readOptional(join(fleetHome, "agents-registry.yaml"))],
+    [fleetEnvPath, readOptional(fleetEnvPath)],
+  ]);
+  renameSync(vendoredFleetParser, heldFleetParser);
+  let missingParserResult;
+  try {
+    missingParserResult = await client.callTool({
+      name: "pjangler_project_init",
+      arguments: {
+        name: "Missing Parser MCP Target",
+        targetDir: missingParserTarget,
+        slug: "missing-parser-mcp-target",
+        provisionAgent: true,
+        agentRole: "pm",
+        apply: true,
+        live: false,
+        skipPlane: true,
+      },
+    });
+  } finally {
+    renameSync(heldFleetParser, vendoredFleetParser);
+  }
+  const missingParserPayload = payload(missingParserResult);
+  assert.equal(missingParserResult.isError, true, JSON.stringify(missingParserPayload));
+  assert.match(JSON.stringify(missingParserPayload), /parse-fleet-env\.py/);
+  assert.equal(existsSync(missingParserTarget), false, "missing parser rejection must precede target creation");
+  assert.equal(existsSync(effectLog), false, "missing parser rejection must precede Hermes/systemd/provider children");
+  assert.equal(existsSync(providerLog), false, "missing parser rejection must precede provider effects");
+  assert.equal(existsSync(interpreterLoadLog), false, "missing parser rejection must precede controlled child startup");
+  assertFilesUnchanged(missingParserHostSnapshot, "missing vendored parser MCP rejection");
+  assertEnclosingProjectUntouched("missing vendored parser MCP rejection");
+
   const target = join(temporary, "trusted-project");
   rmSync(interpreterLoadLog, { force: true });
   rmSync(bmadInvocationLog, { force: true });

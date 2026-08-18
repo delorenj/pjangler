@@ -6393,11 +6393,12 @@ function preflightRenderedHermes(options) {
     "hermes",
     ".gitignore",
     ".runtime-scaffold/README.md",
+    ".scripts/lib/parse-fleet-env.py",
     ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"].map((script) => `.scripts/${script}`)
   ];
   const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
   if (!required.ok) return required;
-  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+  for (const script of ["_lib.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
       if (readFileSync5(join6(renderedScripts, script), "utf8") !== readFileSync5(join6(templateScripts, script), "utf8")) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
