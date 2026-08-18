@@ -15,12 +15,15 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { deflateSync, inflateSync } from "node:zlib";
 import YAML from "yaml";
 import hermesTemplateManifest from "../../hermes-template-assets.json" with { type: "json" };
+import { spawnSync } from "../utils/child-process";
 
 export interface LifecycleEligibilityResult {
   ok: boolean;
@@ -50,7 +53,11 @@ export interface TrustedHermesTemplateIdentity {
 }
 
 export interface MaterializedHermesTemplate {
+  /** Private construction worktree, retained only for cleanup and diagnostics. */
   path: string;
+  /** Data-only Git bundle passed to Copier; it has no executable repo config. */
+  source: string;
+  ref: string;
   cleanup(): void;
 }
 
@@ -599,6 +606,199 @@ export function verifyTrustedHermesTemplateIdentity(identity: TrustedHermesTempl
   return { ok: true };
 }
 
+type SnapshotTreeNode = {
+  directories: Map<string, SnapshotTreeNode>;
+  files: Map<string, TrustedHermesTemplateFile>;
+};
+
+function writeSnapshotGitObject(
+  gitDirectory: string,
+  kind: "blob" | "tree" | "commit",
+  body: Buffer,
+): string {
+  const object = Buffer.concat([Buffer.from(`${kind} ${body.byteLength}\0`), body]);
+  const objectId = createHash("sha1").update(object).digest("hex");
+  const objectPath = join(gitDirectory, "objects", objectId.slice(0, 2), objectId.slice(2));
+  mkdirSync(dirname(objectPath), { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(objectPath, deflateSync(object), { flag: "wx", mode: 0o400 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    let existing: Buffer;
+    try {
+      existing = inflateSync(readFileSync(objectPath));
+    } catch {
+      throw new Error("trusted Hermes snapshot Git object was replaced during construction");
+    }
+    if (!existing.equals(object)) {
+      throw new Error("trusted Hermes snapshot Git object changed during construction");
+    }
+  }
+  return objectId;
+}
+
+function buildSnapshotGitTree(
+  gitDirectory: string,
+  node: SnapshotTreeNode,
+): string {
+  const records: Array<{ sortKey: string; bytes: Buffer }> = [];
+  for (const [name, file] of node.files) {
+    const blob = writeSnapshotGitObject(
+      gitDirectory,
+      "blob",
+      Buffer.from(file.contentBase64, "base64"),
+    );
+    records.push({
+      sortKey: name,
+      bytes: Buffer.concat([
+        Buffer.from(`${file.mode} ${name}\0`),
+        Buffer.from(blob, "hex"),
+      ]),
+    });
+  }
+  for (const [name, directory] of node.directories) {
+    const tree = buildSnapshotGitTree(gitDirectory, directory);
+    records.push({
+      // Git compares a tree name as if it had a trailing slash.
+      sortKey: `${name}/`,
+      bytes: Buffer.concat([
+        Buffer.from(`40000 ${name}\0`),
+        Buffer.from(tree, "hex"),
+      ]),
+    });
+  }
+  records.sort((left, right) => Buffer.compare(Buffer.from(left.sortKey), Buffer.from(right.sortKey)));
+  return writeSnapshotGitObject(
+    gitDirectory,
+    "tree",
+    Buffer.concat(records.map((record) => record.bytes)),
+  );
+}
+
+function initializeContentAddressedTemplateRepo(
+  directory: string,
+  files: readonly TrustedHermesTemplateFile[],
+): string {
+  const root: SnapshotTreeNode = { directories: new Map(), files: new Map() };
+  for (const file of files) {
+    const components = file.path.split("/");
+    const filename = components.pop();
+    if (!filename || components.some((component) => !component || component === "." || component === "..")) {
+      throw new Error(`trusted Hermes template path is unsafe: ${file.path}`);
+    }
+    let node = root;
+    for (const component of components) {
+      if (node.files.has(component)) {
+        throw new Error(`trusted Hermes template path conflicts with a file: ${file.path}`);
+      }
+      let child = node.directories.get(component);
+      if (!child) {
+        child = { directories: new Map(), files: new Map() };
+        node.directories.set(component, child);
+      }
+      node = child;
+    }
+    if (node.files.has(filename) || node.directories.has(filename)) {
+      throw new Error(`trusted Hermes template path is duplicated: ${file.path}`);
+    }
+    node.files.set(filename, file);
+  }
+
+  const gitDirectory = join(directory, ".git");
+  mkdirSync(join(gitDirectory, "objects"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(gitDirectory, "refs", "heads"), { recursive: true, mode: 0o700 });
+  const tree = buildSnapshotGitTree(gitDirectory, root);
+  const commitBody = Buffer.from([
+    `tree ${tree}`,
+    "author pjangler immutable snapshot <noreply@pjangler.invalid> 1 +0000",
+    "committer pjangler immutable snapshot <noreply@pjangler.invalid> 1 +0000",
+    "",
+    "PJAN-67 content-addressed Hermes template snapshot",
+    "",
+  ].join("\n"));
+  const commit = writeSnapshotGitObject(gitDirectory, "commit", commitBody);
+  writeFileSync(join(gitDirectory, "config"), [
+    "[core]",
+    "\trepositoryformatversion = 0",
+    "\tfilemode = true",
+    "\tbare = false",
+    "\tlogallrefupdates = false",
+    "",
+  ].join("\n"), { flag: "wx", mode: 0o400 });
+  writeFileSync(join(gitDirectory, "HEAD"), "ref: refs/heads/snapshot\n", { flag: "wx", mode: 0o400 });
+  writeFileSync(join(gitDirectory, "refs", "heads", "snapshot"), `${commit}\n`, { flag: "wx", mode: 0o400 });
+  return commit;
+}
+
+function createContentAddressedTemplateBundle(
+  directory: string,
+): { descriptor: number; source: string } {
+  const bundle = join(directory, "pjangler-hermes-template.bundle");
+  const result = spawnSync(
+    "git",
+    [
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "commit.gpgSign=false",
+      "-C", directory,
+      "bundle", "create", bundle, "refs/heads/snapshot",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_NO_REPLACE_OBJECTS: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        LC_ALL: "C",
+      },
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(`cannot seal trusted Hermes template bundle: ${String(result.stderr ?? "").trim() || `git exited ${result.status ?? "unknown"}`}`);
+  }
+  chmodSync(bundle, 0o400);
+  const noFollow = (constants as typeof constants & { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+  const descriptor = openSync(bundle, constants.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || bytes.byteLength === 0) throw new Error("trusted Hermes template bundle is invalid");
+    for (const field of ["dev", "ino", "mode", "uid", "gid", "size", "mtimeNs", "ctimeNs"] as const) {
+      if (before[field] !== after[field]) throw new Error(`trusted Hermes template bundle changed while read (${field})`);
+    }
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+  if (process.platform === "linux" && existsSync(`/proc/${process.pid}/fd`)) {
+    // The only execution handle is a still-open regular-file descriptor owned
+    // by this already-running MCP process. Removing its pathname prevents a
+    // same-UID actor from swapping the source to a repo with executable config;
+    // Copier/Git open the exact inode through /proc while this descriptor lives.
+    try {
+      unlinkSync(bundle);
+    } catch (error) {
+      closeSync(descriptor);
+      throw error;
+    }
+    return {
+      descriptor,
+      source: `git+/proc/${process.pid}/fd/${descriptor}`,
+    };
+  }
+  // Portable fallback: this is still a data-only bundle pinned to an exact
+  // content-addressed commit. A same-user replacement can only preserve those
+  // bytes or make Git fail; it cannot introduce executable repository config.
+  return {
+    descriptor,
+    source: `git+${bundle}`,
+  };
+}
+
 export function materializeTrustedHermesTemplate(identity: TrustedHermesTemplateIdentity): MaterializedHermesTemplate {
   const verified = verifyTrustedHermesTemplateIdentity(identity);
   if (!verified.ok) throw new Error(verified.error ?? "trusted Hermes template identity is invalid");
@@ -616,9 +816,24 @@ export function materializeTrustedHermesTemplate(identity: TrustedHermesTemplate
     }
     const recaptured = captureAttestedHermesTemplate(directory);
     if (!recaptured.ok) throw new Error(recaptured.error ?? "materialized Hermes template failed attestation");
+    // Copier receives an exact commit id, never HEAD or the owner-writable
+    // worktree. A same-UID edit after this boundary can only make Git reject a
+    // corrupt object; it cannot substitute different bytes for the pinned
+    // content-addressed tree.
+    const ref = initializeContentAddressedTemplateRepo(directory, identity.files);
+    const bundle = createContentAddressedTemplateBundle(directory);
+    let closed = false;
     return {
       path: directory,
-      cleanup() { rmSync(directory, { recursive: true, force: true }); },
+      source: bundle.source,
+      ref,
+      cleanup() {
+        if (!closed) {
+          closeSync(bundle.descriptor);
+          closed = true;
+        }
+        rmSync(directory, { recursive: true, force: true });
+      },
     };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });

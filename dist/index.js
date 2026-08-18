@@ -6307,16 +6307,18 @@ import {
   realpathSync as realpathSync2,
   rmSync as rmSync2,
   statSync,
+  unlinkSync as unlinkSync2,
   writeFileSync as writeFileSync3
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename as basename4, delimiter, dirname as dirname3, isAbsolute, join as join6, relative as relative4, resolve as resolve4 } from "node:path";
+import { deflateSync, inflateSync } from "node:zlib";
 import YAML2 from "yaml";
 
 // hermes-template-assets.json
 var hermes_template_assets_default = {
   version: 1,
-  commit: "09ef30e493eba650713ee7a3c5a2f0ed08423906",
+  commit: "73c78c60de8abe615158fe68ca87bc946acfe89f",
   files: {
     "copier.yml": {
       gitBlob: "51cbf26dfe083dd5a39482d7e4ac649bd66900c2",
@@ -6777,6 +6779,177 @@ function verifyTrustedHermesTemplateIdentity(identity) {
   }
   return { ok: true };
 }
+function writeSnapshotGitObject(gitDirectory, kind, body) {
+  const object = Buffer.concat([Buffer.from(`${kind} ${body.byteLength}\0`), body]);
+  const objectId = createHash4("sha1").update(object).digest("hex");
+  const objectPath = join6(gitDirectory, "objects", objectId.slice(0, 2), objectId.slice(2));
+  mkdirSync3(dirname3(objectPath), { recursive: true, mode: 448 });
+  try {
+    writeFileSync3(objectPath, deflateSync(object), { flag: "wx", mode: 256 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    let existing;
+    try {
+      existing = inflateSync(readFileSync5(objectPath));
+    } catch {
+      throw new Error("trusted Hermes snapshot Git object was replaced during construction");
+    }
+    if (!existing.equals(object)) {
+      throw new Error("trusted Hermes snapshot Git object changed during construction");
+    }
+  }
+  return objectId;
+}
+function buildSnapshotGitTree(gitDirectory, node) {
+  const records = [];
+  for (const [name, file] of node.files) {
+    const blob = writeSnapshotGitObject(
+      gitDirectory,
+      "blob",
+      Buffer.from(file.contentBase64, "base64")
+    );
+    records.push({
+      sortKey: name,
+      bytes: Buffer.concat([
+        Buffer.from(`${file.mode} ${name}\0`),
+        Buffer.from(blob, "hex")
+      ])
+    });
+  }
+  for (const [name, directory] of node.directories) {
+    const tree = buildSnapshotGitTree(gitDirectory, directory);
+    records.push({
+      // Git compares a tree name as if it had a trailing slash.
+      sortKey: `${name}/`,
+      bytes: Buffer.concat([
+        Buffer.from(`40000 ${name}\0`),
+        Buffer.from(tree, "hex")
+      ])
+    });
+  }
+  records.sort((left, right) => Buffer.compare(Buffer.from(left.sortKey), Buffer.from(right.sortKey)));
+  return writeSnapshotGitObject(
+    gitDirectory,
+    "tree",
+    Buffer.concat(records.map((record) => record.bytes))
+  );
+}
+function initializeContentAddressedTemplateRepo(directory, files) {
+  const root = { directories: /* @__PURE__ */ new Map(), files: /* @__PURE__ */ new Map() };
+  for (const file of files) {
+    const components = file.path.split("/");
+    const filename = components.pop();
+    if (!filename || components.some((component) => !component || component === "." || component === "..")) {
+      throw new Error(`trusted Hermes template path is unsafe: ${file.path}`);
+    }
+    let node = root;
+    for (const component of components) {
+      if (node.files.has(component)) {
+        throw new Error(`trusted Hermes template path conflicts with a file: ${file.path}`);
+      }
+      let child = node.directories.get(component);
+      if (!child) {
+        child = { directories: /* @__PURE__ */ new Map(), files: /* @__PURE__ */ new Map() };
+        node.directories.set(component, child);
+      }
+      node = child;
+    }
+    if (node.files.has(filename) || node.directories.has(filename)) {
+      throw new Error(`trusted Hermes template path is duplicated: ${file.path}`);
+    }
+    node.files.set(filename, file);
+  }
+  const gitDirectory = join6(directory, ".git");
+  mkdirSync3(join6(gitDirectory, "objects"), { recursive: true, mode: 448 });
+  mkdirSync3(join6(gitDirectory, "refs", "heads"), { recursive: true, mode: 448 });
+  const tree = buildSnapshotGitTree(gitDirectory, root);
+  const commitBody = Buffer.from([
+    `tree ${tree}`,
+    "author pjangler immutable snapshot <noreply@pjangler.invalid> 1 +0000",
+    "committer pjangler immutable snapshot <noreply@pjangler.invalid> 1 +0000",
+    "",
+    "PJAN-67 content-addressed Hermes template snapshot",
+    ""
+  ].join("\n"));
+  const commit = writeSnapshotGitObject(gitDirectory, "commit", commitBody);
+  writeFileSync3(join6(gitDirectory, "config"), [
+    "[core]",
+    "	repositoryformatversion = 0",
+    "	filemode = true",
+    "	bare = false",
+    "	logallrefupdates = false",
+    ""
+  ].join("\n"), { flag: "wx", mode: 256 });
+  writeFileSync3(join6(gitDirectory, "HEAD"), "ref: refs/heads/snapshot\n", { flag: "wx", mode: 256 });
+  writeFileSync3(join6(gitDirectory, "refs", "heads", "snapshot"), `${commit}
+`, { flag: "wx", mode: 256 });
+  return commit;
+}
+function createContentAddressedTemplateBundle(directory) {
+  const bundle = join6(directory, "pjangler-hermes-template.bundle");
+  const result = spawnSync(
+    "git",
+    [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "commit.gpgSign=false",
+      "-C",
+      directory,
+      "bundle",
+      "create",
+      bundle,
+      "refs/heads/snapshot"
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_NO_REPLACE_OBJECTS: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        LC_ALL: "C"
+      }
+    }
+  );
+  if (result.status !== 0) {
+    throw new Error(`cannot seal trusted Hermes template bundle: ${String(result.stderr ?? "").trim() || `git exited ${result.status ?? "unknown"}`}`);
+  }
+  chmodSync2(bundle, 256);
+  const noFollow = constants2.O_NOFOLLOW ?? 0;
+  const descriptor = openSync2(bundle, constants2.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync2(descriptor, { bigint: true });
+    const bytes = readFileSync5(descriptor);
+    const after = fstatSync2(descriptor, { bigint: true });
+    if (!before.isFile() || bytes.byteLength === 0) throw new Error("trusted Hermes template bundle is invalid");
+    for (const field2 of ["dev", "ino", "mode", "uid", "gid", "size", "mtimeNs", "ctimeNs"]) {
+      if (before[field2] !== after[field2]) throw new Error(`trusted Hermes template bundle changed while read (${field2})`);
+    }
+  } catch (error) {
+    closeSync2(descriptor);
+    throw error;
+  }
+  if (process.platform === "linux" && existsSync4(`/proc/${process.pid}/fd`)) {
+    try {
+      unlinkSync2(bundle);
+    } catch (error) {
+      closeSync2(descriptor);
+      throw error;
+    }
+    return {
+      descriptor,
+      source: `git+/proc/${process.pid}/fd/${descriptor}`
+    };
+  }
+  return {
+    descriptor,
+    source: `git+${bundle}`
+  };
+}
 function materializeTrustedHermesTemplate(identity) {
   const verified = verifyTrustedHermesTemplateIdentity(identity);
   if (!verified.ok) throw new Error(verified.error ?? "trusted Hermes template identity is invalid");
@@ -6794,9 +6967,18 @@ function materializeTrustedHermesTemplate(identity) {
     }
     const recaptured = captureAttestedHermesTemplate(directory);
     if (!recaptured.ok) throw new Error(recaptured.error ?? "materialized Hermes template failed attestation");
+    const ref = initializeContentAddressedTemplateRepo(directory, identity.files);
+    const bundle = createContentAddressedTemplateBundle(directory);
+    let closed = false;
     return {
       path: directory,
+      source: bundle.source,
+      ref,
       cleanup() {
+        if (!closed) {
+          closeSync2(bundle.descriptor);
+          closed = true;
+        }
         rmSync2(directory, { recursive: true, force: true });
       }
     };
@@ -8259,9 +8441,9 @@ var RunCopierTemplate = class extends Command {
     try {
       if (ctx.trustedHermesTemplate) {
         immutableTemplate = materializeTrustedHermesTemplate(ctx.trustedHermesTemplate);
-        args[1] = immutableTemplate.path;
+        args[1] = immutableTemplate.source;
         const vcsRef = args.indexOf("--vcs-ref=HEAD");
-        if (vcsRef >= 0) args.splice(vcsRef, 1);
+        if (vcsRef >= 0) args[vcsRef] = `--vcs-ref=${immutableTemplate.ref}`;
       }
       mkdirSync5(join8(ctx.targetDir, "agents", "hermes"), { recursive: true });
       spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
@@ -8442,7 +8624,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { join as join10 } from "node:path";
-import { existsSync as existsSync8, unlinkSync as unlinkSync2 } from "node:fs";
+import { existsSync as existsSync8, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -8546,7 +8728,7 @@ var WireTelegram = class extends Command {
       };
     }
     const marker = join10(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync8(marker)) unlinkSync2(marker);
+    if (existsSync8(marker)) unlinkSync3(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync("bash", [script], {
@@ -8572,7 +8754,7 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { join as join11 } from "node:path";
-import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
+import { existsSync as existsSync9, unlinkSync as unlinkSync4 } from "node:fs";
 import * as p4 from "@clack/prompts";
 var WireEmail = class extends Command {
   async invoke() {
@@ -8659,7 +8841,7 @@ var WireEmail = class extends Command {
       }
     }
     const marker = join11(roleDir, ".scripts", ".done-50-email");
-    if (existsSync9(marker)) unlinkSync3(marker);
+    if (existsSync9(marker)) unlinkSync4(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync("bash", [script], {

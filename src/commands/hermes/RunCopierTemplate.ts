@@ -299,9 +299,9 @@ export class RunCopierTemplate extends Command {
     try {
       if (ctx.trustedHermesTemplate) {
         immutableTemplate = materializeTrustedHermesTemplate(ctx.trustedHermesTemplate);
-        args[1] = immutableTemplate.path;
+        args[1] = immutableTemplate.source;
         const vcsRef = args.indexOf("--vcs-ref=HEAD");
-        if (vcsRef >= 0) args.splice(vcsRef, 1);
+        if (vcsRef >= 0) args[vcsRef] = `--vcs-ref=${immutableTemplate.ref}`;
       }
 
       // The private snapshot is complete and reattested before the first

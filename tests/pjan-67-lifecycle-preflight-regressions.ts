@@ -629,6 +629,16 @@ try {
   writeFileSync(join(mutableSnapshotRoot, "template", "post-preflight-extra.sh"), "exit 99\n", "utf8");
   const immutableCopy = materializeTrustedHermesTemplate(capturedTemplate.identity);
   try {
+    assert.match(immutableCopy.ref, /^[0-9a-f]{40}$/, "the private snapshot must expose an exact Git commit");
+    if (process.platform === "linux") {
+      assert.match(
+        immutableCopy.source,
+        new RegExp(`^git\\+/proc/${process.pid}/fd/[0-9]+$`),
+        "Linux execution must use the already-open, unlinked bundle inode",
+      );
+    } else {
+      assert.match(immutableCopy.source, /^git\+.*\.bundle$/, "portable execution must use a data-only bundle");
+    }
     assert.deepEqual(
       readFileSync(join(immutableCopy.path, capturedTask.path)),
       Buffer.from(capturedTask.contentBase64, "base64"),
@@ -639,8 +649,103 @@ try {
       false,
       "post-preflight extras must not enter the immutable execution snapshot",
     );
+
+    // A private temp directory is not immutable merely because it was chmod'd:
+    // its owner can rewrite it after final attestation. Copier must consume the
+    // exact content-addressed commit instead of HEAD or working-tree bytes.
+    const sameUidEffect = join(workspace, "same-uid-private-snapshot-effect");
+    writeFileSync(
+      join(immutableCopy.path, capturedTask.path),
+      `#!/bin/sh\nprintf same-uid-ran > "${sameUidEffect}"\n`,
+      "utf8",
+    );
+    const committedTask = hardenedSpawnSync(
+      "git",
+      ["-C", immutableCopy.path, "show", `${immutableCopy.ref}:${capturedTask.path}`],
+      { encoding: null },
+    );
+    assert.equal(committedTask.status, 0, committedTask.stderr?.toString() || committedTask.stdout?.toString());
+    assert.deepEqual(
+      committedTask.stdout,
+      Buffer.from(capturedTask.contentBase64, "base64"),
+      "post-attestation same-user worktree edits must not change executed snapshot bytes",
+    );
+
+    if (liveUvCopier) {
+      const sameUidTarget = join(workspace, "same-uid-private-snapshot-target");
+      const copierResult = hardenedSpawnSync(
+        liveUvCopier.executable,
+        [
+          "copy",
+          immutableCopy.source,
+          sameUidTarget,
+          "--data", "target_repo=same-uid-private-snapshot",
+          "--data", "role=pm",
+          "--data", "agent_purpose=immutable snapshot regression",
+          "--data", "model_provider=",
+          "--data", "model_name=",
+          "--data", "model_base_url=",
+          "--data", "model_api_mode=",
+          "--data", "model_key_env=",
+          "--data", "profile_name=same-uid-private-snapshot-pm",
+          "--data", "soul_tone=direct",
+          "--data", "ticket_provider=plane",
+          "--defaults",
+          "--trust",
+          `--vcs-ref=${immutableCopy.ref}`,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            SKIP_TELEGRAM: "1",
+            SKIP_EMAIL: "1",
+            SKIP_SLACK: "1",
+            SKIP_HOST_STATE: "1",
+            SKIP_RUNTIME_REPO: "1",
+            SKIP_PLANE: "1",
+            SKIP_BLOODBANK: "1",
+            SKIP_SYSTEMD: "1",
+            PJANGLER_PROJECT_ROOT: sameUidTarget,
+          },
+        },
+      );
+      assert.equal(copierResult.status, 0, copierResult.stderr || copierResult.stdout);
+      assert.equal(existsSync(sameUidEffect), false, "same-user snapshot mutation must never execute");
+      assert.deepEqual(
+        readFileSync(join(sameUidTarget, ".scripts", "05-fleet-env.sh")),
+        Buffer.from(capturedTask.contentBase64, "base64"),
+        "real UV Copier must render the exact private snapshot commit",
+      );
+    }
   } finally {
     immutableCopy.cleanup();
+  }
+
+  if (process.platform === "linux") {
+    const corruptedOpenCopy = materializeTrustedHermesTemplate(capturedTemplate.identity);
+    const corruptedTarget = join(workspace, "same-uid-corrupted-open-snapshot-target");
+    try {
+      const openedBundle = corruptedOpenCopy.source.slice("git+".length);
+      // Same-owner mode bits are not an immutability boundary. Prove the
+      // stronger invariant: even a successful write through /proc can only
+      // make the exact-ref data source fail closed, never select new bytes.
+      chmodSync(openedBundle, 0o600);
+      writeFileSync(openedBundle, "benign non-bundle replacement\n", "utf8");
+      const rejected = hardenedSpawnSync(
+        "git",
+        ["clone", openedBundle, corruptedTarget],
+        { encoding: "utf8" },
+      );
+      assert.notEqual(rejected.status, 0, "a modified opened bundle must fail Git validation");
+      assert.equal(
+        existsSync(join(corruptedTarget, "template", ".scripts", "05-fleet-env.sh")),
+        false,
+        "a modified opened snapshot must produce no executable template bytes",
+      );
+    } finally {
+      corruptedOpenCopy.cleanup();
+    }
   }
   const mutatedIdentity = {
     ...capturedTemplate.identity,
