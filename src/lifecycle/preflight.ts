@@ -1,17 +1,26 @@
 import { createHash } from "node:crypto";
 import {
   accessSync,
+  chmodSync,
+  closeSync,
   constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
+import hermesTemplateManifest from "../../hermes-template-assets.json" with { type: "json" };
 
 export interface LifecycleEligibilityResult {
   ok: boolean;
@@ -23,6 +32,30 @@ export interface TrustedCopierResult extends LifecycleEligibilityResult {
   realExecutable?: string;
   layout?: string;
   identity?: TrustedCopierIdentity;
+  hermesTemplate?: TrustedHermesTemplateIdentity;
+}
+
+export interface TrustedHermesTemplateFile {
+  path: string;
+  gitBlob: string;
+  sha256: string;
+  mode: "100644" | "100755";
+  contentBase64: string;
+}
+
+export interface TrustedHermesTemplateIdentity {
+  commit: string;
+  root: string;
+  files: readonly TrustedHermesTemplateFile[];
+}
+
+export interface MaterializedHermesTemplate {
+  path: string;
+  cleanup(): void;
+}
+
+export interface TrustedHermesTemplateResult extends LifecycleEligibilityResult {
+  identity?: TrustedHermesTemplateIdentity;
 }
 
 export interface TrustedCopierFileIdentity {
@@ -72,6 +105,7 @@ export interface RenderedHermesEligibilityOptions {
   targetRepo: string;
   role: string;
   agentId: string;
+  trustedHermesTemplate?: TrustedHermesTemplateIdentity;
 }
 
 /**
@@ -82,27 +116,43 @@ export interface RenderedHermesEligibilityOptions {
  * requiring `.git` metadata at runtime. Release tests prove each pair directly
  * against `git show <commit>:<path>` before publication.
  */
+type HermesManifestEntry = { gitBlob: string; sha256: string; mode: "100644" | "100755" };
+type HermesManifest = { version: number; commit: string; files: Record<string, HermesManifestEntry> };
+const HERMES_MANIFEST = hermesTemplateManifest as HermesManifest;
 export const HERMES_TEMPLATE_ATTESTATION = Object.freeze({
-  commit: "e5b19666177b54ecedebeb99ca324ba7dc452d85",
-  files: Object.freeze({
-    "template/.scripts/lib/fleet-env.sh": Object.freeze({
-      gitBlob: "1c182f5947b423eeeb6ea0bc6ecaaaed2b46ae30",
-      sha256: "p56UUM0LaEFD4_4mqrihUeL1QGg_MYxEYyaRgWAVzMc",
-    }),
-    "template/.scripts/lib/parse-fleet-env.py": Object.freeze({
-      gitBlob: "84d99d38f5c697e316bd3c01452d1c813927b36f",
-      sha256: "fmn2WrVcMWj4mbFArcP7u5rr6fFgfdpbmTXFRzXXzG4",
-    }),
-    "template/.scripts/heartbeat.sh": Object.freeze({
-      gitBlob: "775d6c2b59c626f46e5fbcee81c4331e95415563",
-      sha256: "u5QMqE4GRNmBUBH9QhvvHIStNePPeG1orvZy9J7A8Ww",
-    }),
-  }),
+  commit: HERMES_MANIFEST.commit,
+  files: Object.freeze(HERMES_MANIFEST.files),
 });
 
 function containedBy(parent: string, candidate: string): boolean {
   const rel = relative(resolve(parent), resolve(candidate));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function realDirectoryContained(root: string, candidate: string, label: string): LifecycleEligibilityResult {
+  const absoluteRoot = resolve(root);
+  const absoluteCandidate = resolve(candidate);
+  if (!containedBy(absoluteRoot, absoluteCandidate)) {
+    return { ok: false, error: `${label} escapes its canonical root` };
+  }
+  try {
+    const rootStat = lstatSync(absoluteRoot);
+    const candidateStat = lstatSync(absoluteCandidate);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return { ok: false, error: `${label} canonical root must be a real directory` };
+    }
+    if (!candidateStat.isDirectory() || candidateStat.isSymbolicLink()) {
+      return { ok: false, error: `${label} must be a real directory` };
+    }
+    const rootReal = realpathSync(absoluteRoot);
+    const candidateReal = realpathSync(absoluteCandidate);
+    if (!containedBy(rootReal, candidateReal)) {
+      return { ok: false, error: `${label} escapes its canonical root through a symlinked ancestor` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 function firstExecutableOnPath(env: NodeJS.ProcessEnv): string | undefined {
@@ -425,30 +475,166 @@ function requireFiles(templateRoot: string, files: readonly string[], label: str
   return { ok: true };
 }
 
-function attestPinnedHermesTemplate(templateRoot: string): LifecycleEligibilityResult {
-  for (const [relativePath, expected] of Object.entries(HERMES_TEMPLATE_ATTESTATION.files)) {
-    const path = join(templateRoot, relativePath);
-    const regular = regularContainedFile(templateRoot, path, `pinned Hermes asset ${relativePath}`);
-    if (!regular.ok) return regular;
-    try {
-      if (sha256(path) !== expected.sha256) {
-        return {
-          ok: false,
-          error: `pinned Hermes template integrity mismatch: ${relativePath}`,
-        };
+function gitMode(mode: number): "100644" | "100755" {
+  return mode & 0o111 ? "100755" : "100644";
+}
+
+function templateInventory(templateRoot: string): string[] {
+  const files = ["copier.yml"];
+  const walk = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const relativePath = `${prefix}/${entry.name}`;
+      const path = join(directory, entry.name);
+      const metadata = lstatSync(path);
+      if (metadata.isSymbolicLink()) throw new Error(`symlink is forbidden: ${relativePath}`);
+      if (metadata.isDirectory()) {
+        walk(path, relativePath);
+      } else if (metadata.isFile()) {
+        files.push(relativePath);
+      } else {
+        throw new Error(`non-regular entry is forbidden: ${relativePath}`);
       }
-    } catch (error) {
+    }
+  };
+  walk(join(templateRoot, "template"), "template");
+  return files.sort();
+}
+
+function readStableTemplateFile(
+  templateRoot: string,
+  relativePath: string,
+  expected: HermesManifestEntry,
+): Buffer {
+  const path = join(templateRoot, relativePath);
+  const regular = regularContainedFile(templateRoot, path, `pinned Hermes asset ${relativePath}`);
+  if (!regular.ok) throw new Error(regular.error);
+  const noFollow = (constants as typeof constants & { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+  const descriptor = openSync(path, constants.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile()) throw new Error("not a regular file");
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    for (const field of ["dev", "ino", "mode", "uid", "gid", "size", "mtimeNs", "ctimeNs"] as const) {
+      if (before[field] !== after[field]) throw new Error(`changed while read (${field})`);
+    }
+    if (gitMode(Number(after.mode)) !== expected.mode) throw new Error("Git executable mode mismatch");
+    const digest = createHash("sha256").update(bytes).digest("base64url");
+    if (digest !== expected.sha256) throw new Error("content digest mismatch");
+    return bytes;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+export function captureAttestedHermesTemplate(templateRoot: string): TrustedHermesTemplateResult {
+  const root = resolve(templateRoot);
+  try {
+    const rootStat = lstatSync(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return { ok: false, error: "pinned Hermes template root must be a real directory" };
+    }
+    const expectedPaths = Object.keys(HERMES_TEMPLATE_ATTESTATION.files).sort();
+    const actualPaths = templateInventory(root);
+    if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+      const missing = expectedPaths.filter((path) => !actualPaths.includes(path));
+      const extra = actualPaths.filter((path) => !expectedPaths.includes(path));
       return {
         ok: false,
-        error: `cannot attest pinned Hermes asset ${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+        error: `pinned Hermes template inventory mismatch${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; extra ${extra.join(", ")}` : ""}`,
       };
+    }
+    const files = expectedPaths.map((relativePath): TrustedHermesTemplateFile => {
+      const expected = HERMES_TEMPLATE_ATTESTATION.files[relativePath];
+      if (!expected) throw new Error(`manifest entry disappeared: ${relativePath}`);
+      const bytes = readStableTemplateFile(root, relativePath, expected);
+      return Object.freeze({
+        path: relativePath,
+        gitBlob: expected.gitBlob,
+        sha256: expected.sha256,
+        mode: expected.mode,
+        contentBase64: bytes.toString("base64"),
+      });
+    });
+    return {
+      ok: true,
+      identity: Object.freeze({
+        commit: HERMES_TEMPLATE_ATTESTATION.commit,
+        root,
+        files: Object.freeze(files),
+      }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `cannot attest pinned Hermes template: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+export function verifyTrustedHermesTemplateIdentity(identity: TrustedHermesTemplateIdentity): LifecycleEligibilityResult {
+  if (identity.commit !== HERMES_TEMPLATE_ATTESTATION.commit) {
+    return { ok: false, error: "trusted Hermes template commit changed" };
+  }
+  const expectedPaths = Object.keys(HERMES_TEMPLATE_ATTESTATION.files).sort();
+  const actualPaths = identity.files.map((entry) => entry.path).sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths) || new Set(actualPaths).size !== actualPaths.length) {
+    return { ok: false, error: "trusted Hermes template inventory changed" };
+  }
+  for (const entry of identity.files) {
+    const expected = HERMES_TEMPLATE_ATTESTATION.files[entry.path];
+    if (!expected || entry.gitBlob !== expected.gitBlob || entry.sha256 !== expected.sha256 || entry.mode !== expected.mode) {
+      return { ok: false, error: `trusted Hermes template metadata changed: ${entry.path}` };
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(entry.contentBase64, "base64");
+    } catch {
+      return { ok: false, error: `trusted Hermes template bytes are invalid: ${entry.path}` };
+    }
+    if (createHash("sha256").update(bytes).digest("base64url") !== expected.sha256) {
+      return { ok: false, error: `trusted Hermes template bytes changed: ${entry.path}` };
     }
   }
   return { ok: true };
 }
 
+export function materializeTrustedHermesTemplate(identity: TrustedHermesTemplateIdentity): MaterializedHermesTemplate {
+  const verified = verifyTrustedHermesTemplateIdentity(identity);
+  if (!verified.ok) throw new Error(verified.error ?? "trusted Hermes template identity is invalid");
+  const directory = mkdtempSync(join(tmpdir(), "pjangler-hermes-template-"));
+  try {
+    chmodSync(directory, 0o700);
+    for (const entry of identity.files) {
+      const path = resolve(directory, entry.path);
+      if (!containedBy(directory, path)) throw new Error("trusted Hermes template path escaped its snapshot");
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, Buffer.from(entry.contentBase64, "base64"), {
+        flag: "wx",
+        mode: entry.mode === "100755" ? 0o755 : 0o644,
+      });
+    }
+    const recaptured = captureAttestedHermesTemplate(directory);
+    if (!recaptured.ok) throw new Error(recaptured.error ?? "materialized Hermes template failed attestation");
+    return {
+      path: directory,
+      cleanup() { rmSync(directory, { recursive: true, force: true }); },
+    };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function attestPinnedHermesTemplate(templateRoot: string): LifecycleEligibilityResult {
+  const captured = captureAttestedHermesTemplate(templateRoot);
+  return captured.ok ? { ok: true } : captured;
+}
+
 export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleEligibilityResult {
   const templateRoot = join(resolve(pjanglerRoot), "templates", "commonproject");
+  const contained = realDirectoryContained(resolve(pjanglerRoot), templateRoot, "CommonProject template");
+  if (!contained.ok) return contained;
   const parsed = parseCopierConfig(templateRoot, "CommonProject template");
   if (!parsed.result.ok) return parsed.result;
   const files = requireFiles(templateRoot, [
@@ -466,8 +652,10 @@ export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleE
   return { ok: true };
 }
 
-export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.ProcessEnv = process.env): LifecycleEligibilityResult {
+export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.ProcessEnv = process.env): TrustedHermesTemplateResult {
   const templateRoot = join(resolve(pjanglerRoot), "templates", "hermes-agent");
+  const contained = realDirectoryContained(resolve(pjanglerRoot), templateRoot, "Hermes template");
+  if (!contained.ok) return contained;
   const explicit = env.PJANGLER_HERMES_TEMPLATE?.trim();
   if (explicit) {
     try {
@@ -497,7 +685,7 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
     "template/.scripts/80-registry.sh",
   ], "Hermes template");
   if (!required.ok) return required;
-  const pinned = attestPinnedHermesTemplate(templateRoot);
+  const pinned = captureAttestedHermesTemplate(templateRoot);
   if (!pinned.ok) return pinned;
 
   const role = readFileSync(join(templateRoot, "template", "role.yaml.jinja"), "utf8");
@@ -526,7 +714,7 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
   for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     if (!tasks.some((task) => task.includes(script))) return { ok: false, error: `Hermes copier task list is missing ${script}` };
   }
-  return { ok: true };
+  return { ok: true, identity: pinned.identity };
 }
 
 /**
@@ -541,6 +729,8 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
   const target = resolve(options.targetDir);
   const roleDir = resolve(options.roleDir);
   if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
+  const physicalContainment = realDirectoryContained(target, roleDir, "rendered Hermes role");
+  if (!physicalContainment.ok) return physicalContainment;
   try {
     const stat = lstatSync(roleDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -551,8 +741,19 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
   }
 
   const templateScripts = join(resolve(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const pinned = attestPinnedHermesTemplate(join(resolve(options.pjanglerRoot), "templates", "hermes-agent"));
-  if (!pinned.ok) return pinned;
+  let capturedScripts: ReadonlyMap<string, Buffer> | undefined;
+  if (options.trustedHermesTemplate) {
+    const verified = verifyTrustedHermesTemplateIdentity(options.trustedHermesTemplate);
+    if (!verified.ok) return verified;
+    capturedScripts = new Map(
+      options.trustedHermesTemplate.files
+        .filter((entry) => entry.path.startsWith("template/.scripts/"))
+        .map((entry) => [entry.path.slice("template/.scripts/".length), Buffer.from(entry.contentBase64, "base64")]),
+    );
+  } else {
+    const pinned = attestPinnedHermesTemplate(join(resolve(options.pjanglerRoot), "templates", "hermes-agent"));
+    if (!pinned.ok) return pinned;
+  }
   const renderedScripts = join(roleDir, ".scripts");
   const requiredFiles = [
     "role.yaml",
@@ -571,7 +772,8 @@ export function preflightRenderedHermes(options: RenderedHermesEligibilityOption
 
   for (const script of ["_lib.sh", "heartbeat.sh", "lib/fleet-env.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
-      if (readFileSync(join(renderedScripts, script), "utf8") !== readFileSync(join(templateScripts, script), "utf8")) {
+      const expected = capturedScripts?.get(script) ?? readFileSync(join(templateScripts, script));
+      if (!readFileSync(join(renderedScripts, script)).equals(expected)) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
       }
     } catch (error) {
@@ -635,7 +837,18 @@ export function preflightMcpLifecycle(options: {
   }
   if (options.hermes) {
     const hermes = preflightHermesTemplate(options.pjanglerRoot, options.env);
-    if (!hermes.ok) return { ...hermes, executable: copier.executable, realExecutable: copier.realExecutable };
+    if (!hermes.ok) {
+      return {
+        ok: false,
+        error: hermes.error,
+        executable: copier.executable,
+        realExecutable: copier.realExecutable,
+      };
+    }
+    if (!hermes.identity) {
+      return { ok: false, error: "Hermes template attestation returned no immutable identity" };
+    }
+    return { ...copier, hermesTemplate: hermes.identity };
   }
   return copier;
 }

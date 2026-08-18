@@ -33,8 +33,10 @@ import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredEx
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { hardenSubprocessEnvironment } from "../utils/child-environment";
 import {
+  verifyTrustedHermesTemplateIdentity,
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
+  type TrustedHermesTemplateIdentity,
 } from "../lifecycle/preflight";
 
 export interface ProjectRecipeInput {
@@ -45,6 +47,7 @@ export interface ProjectRecipeInput {
   agentContext?: Partial<HermesAgentContext>;
   quiet?: boolean;
   trustedCopier?: TrustedCopierIdentity;
+  trustedHermesTemplate?: TrustedHermesTemplateIdentity;
   requireTrustedCopier?: boolean;
 }
 
@@ -239,6 +242,30 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         }
       }
 
+      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
+      if (
+        agentAction?.kind === "hermes.provision-agent"
+        && (
+          normalized.requireTrustedCopier
+          || normalized.trustedHermesTemplate
+          || normalized.agentContext?.trustedHermesTemplate
+        )
+      ) {
+        const template = normalized.trustedHermesTemplate ?? normalized.agentContext?.trustedHermesTemplate;
+        const verified = template
+          ? verifyTrustedHermesTemplateIdentity(template)
+          : { ok: false, error: "MCP project apply requires an immutable Hermes template identity" };
+        phases.push({
+          id: "project.preflight:hermes-template",
+          status: verified.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: verified.ok
+            ? "Hermes template snapshot revalidated at the project transaction boundary"
+            : `Hermes template revalidation failed: ${verified.error ?? "unknown identity failure"}`,
+        });
+        if (!verified.ok) errors.push(`Hermes template revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+      }
+
       if (errors.length === 0 && mode === "create") {
         const preflight = this.runtime.preflightBmad(transactionContext);
         phases.push({
@@ -284,7 +311,6 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         phases.push(...dependencyResult.phases);
       }
 
-      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
       if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
         const agentContext: HermesAgentContext = {
           targetRepo: agentAction.targetRepo,

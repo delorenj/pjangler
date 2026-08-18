@@ -1,0 +1,246 @@
+{
+  "version": 1,
+  "commit": "09ef30e493eba650713ee7a3c5a2f0ed08423906",
+  "files": {
+    "copier.yml": {
+      "gitBlob": "51cbf26dfe083dd5a39482d7e4ac649bd66900c2",
+      "sha256": "Y5XQARJww3hpWCjC5NQ84hgVO4CmGbYBcR-VHzaOHFI",
+      "mode": "100644"
+    },
+    "template/.gitignore.jinja": {
+      "gitBlob": "d063b1b2f322bfbe673973a1df1592ae320b6ab6",
+      "sha256": "VSrU2aDXKZEbeUSOYet4pieCc-lgNYNVq_nuqVxggY0",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/.gitattributes": {
+      "gitBlob": "6d16e370870f921c1637f77ddb24338ea1ecdf59",
+      "sha256": "8d3prfXg2dHdHj3ofTcQblQXNqgIT9YUZdvUshBNMrk",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/.gitignore.jinja": {
+      "gitBlob": "fc5047476937881e5eb08c27e459de4c04335984",
+      "sha256": "cbiFcCNOd9grh44Z0vXI_SSDjMUtTQlVEcYk5Z_QqBE",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/README.md": {
+      "gitBlob": "0c702b5a092efbb05d3e8dc85a0692b9e15cf7f0",
+      "sha256": "5AONUH6adtJSQeQV4qzqcDRR3Z66QfxkuM_qdQpuBgs",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/decisions/.gitkeep": {
+      "gitBlob": "75ab2b086d4937a8dd6b8916abd535d815ba8964",
+      "sha256": "lrkU_csavKZiVABvpIcJs-lLGdD13KxlcaBtV7x41GE",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/logs/.gitkeep": {
+      "gitBlob": "e0ba344f9cbf3819900e05ac4ddb8aededca1c0e",
+      "sha256": "M3XkUu5SYdE4Pohr7LOsqsaVkmWov_9-JB9BS5R6Yy8",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/memories/MEMORY.md": {
+      "gitBlob": "b7878f144b94ff7848ea518034da94a934d3676c",
+      "sha256": "FKs3niMsjMkkjYP5YWgUlvyuLHZrCRXeWqrklH-kbfI",
+      "mode": "100644"
+    },
+    "template/.runtime-scaffold/memories/USER.md": {
+      "gitBlob": "13a5f5efddbeb5931f045b56898e233a0190dad6",
+      "sha256": "5OLsqQzf9GeA427oVSvoM6Iz63OEnRvFKaY256ixVxM",
+      "mode": "100644"
+    },
+    "template/.scripts/00-banner.sh": {
+      "gitBlob": "c92739562f27f8f05b54758bbf8fe3f16d3e8553",
+      "sha256": "EAndDFoWlo0eg3rkFoq6PpibeVM1HGuW6R_nKiHPsi4",
+      "mode": "100755"
+    },
+    "template/.scripts/01-config.sh": {
+      "gitBlob": "38bf737d5201fe56d87775f941d97f55c970413b",
+      "sha256": "5eJ5rnkc00mjlgJq7T2tRlGkVRpRXw-BxWr324sKQiM",
+      "mode": "100755"
+    },
+    "template/.scripts/05-fleet-env.sh": {
+      "gitBlob": "dd7ddde7eb1fd13a2094e1b7b769e17df3357cf2",
+      "sha256": "2jPNeqZPhNkZKGlOeMgq7xGRm8mSlIFlIODu25bz8wU",
+      "mode": "100755"
+    },
+    "template/.scripts/10-hermes-profile.sh": {
+      "gitBlob": "7b8869f2e92dfd610b549deb60fbda5316c9ea76",
+      "sha256": "VSpt9VvQK1mk7PdAUOROKrCfI8ZYld4TvLnCthrXpyQ",
+      "mode": "100755"
+    },
+    "template/.scripts/20-runtime-repo.sh": {
+      "gitBlob": "8774fd579085ad56a1933e0fd4e8c5f4862af031",
+      "sha256": "V074tuQQ15WZbox-TT-7M-NPSh7zd8IinqiLK24jYqs",
+      "mode": "100755"
+    },
+    "template/.scripts/30-telegram.sh": {
+      "gitBlob": "9ba5a6c4060313d90a063726d5f2dd93e94b2ba2",
+      "sha256": "pKrD4n3vZUvviUJiacTEz3ikxlLTACsLNsq035LQkxM",
+      "mode": "100755"
+    },
+    "template/.scripts/31-slack.sh": {
+      "gitBlob": "00174ca748bbee2a1c985483327bcb2b0659bfdb",
+      "sha256": "1SyDT8Ca7Ooy7WfvwFr2Y0PtejN8lkb3qmYAiJlUkF0",
+      "mode": "100755"
+    },
+    "template/.scripts/40-plane.sh": {
+      "gitBlob": "91c91a76cb97c31d4620dbb1b68fc4c4b2a6b12e",
+      "sha256": "h8zJy13xKTjBl9O39J5avRUkw5o8hP0RNRQyrui_7V0",
+      "mode": "100755"
+    },
+    "template/.scripts/42-ticket-provider.sh": {
+      "gitBlob": "278db83e661861409c61692216c93df259f0020b",
+      "sha256": "nInuA_oI-OVtw6x0LEUHN82owEZv5HEud9EXmySpTUk",
+      "mode": "100755"
+    },
+    "template/.scripts/60-bloodbank.sh": {
+      "gitBlob": "e4988e9b72bcb0d1bb7dd5a13ff65c9bbfdc08c2",
+      "sha256": "JJxWQM3gZmUPh2e1j9r3t2XrBtMLq1-aHeEeTWu2Sb8",
+      "mode": "100755"
+    },
+    "template/.scripts/70-systemd.sh": {
+      "gitBlob": "5e16408499ee455c84fc394d9a75dd89899b86d4",
+      "sha256": "u0NTPlpeaDEjqMbZYZ9dMCaElsGkJqgac0UfH4HzMjM",
+      "mode": "100755"
+    },
+    "template/.scripts/80-registry.sh": {
+      "gitBlob": "6f53c9be3acce644526447985306dc0ff9a92819",
+      "sha256": "0_qn3NrUGx_ZZANNaKbiMyY5QYolxpBRL9cCWZcwiq4",
+      "mode": "100755"
+    },
+    "template/.scripts/99-summary.sh": {
+      "gitBlob": "660803467e057f7bfca3c6cc098954add0350d6a",
+      "sha256": "zHXaxf8RRehaqEMXQoONAc-1j_iWHRfeZXhqwGLLFxM",
+      "mode": "100755"
+    },
+    "template/.scripts/_lib.sh": {
+      "gitBlob": "7bb8637ffd654ebf687eedc7faad99d070a9a3a7",
+      "sha256": "C9II2t6hOq8-9ncLx48JP7udcX7Ibd2KNg9tVCwnDqw",
+      "mode": "100755"
+    },
+    "template/.scripts/checkpoint.sh": {
+      "gitBlob": "39bb505cae89cc332cfa24c8de2b126e7f0d0096",
+      "sha256": "x7svdaxBTPNYw5JIaiXI-j3LzyewH5QVS00c6C0OKZs",
+      "mode": "100755"
+    },
+    "template/.scripts/config.example.toml": {
+      "gitBlob": "b155b4953977cc15b8cb2a36b3344f98c91c4b47",
+      "sha256": "SNur7v8xOEUkAC4EhcvUyEMSlcuqip4LzRgCSQeeSdM",
+      "mode": "100644"
+    },
+    "template/.scripts/credential-launch.sh": {
+      "gitBlob": "30f0469627ae48d0a70e345b5805bdb0052cfb1d",
+      "sha256": "GBQhqZeiQCGHJjk0-hCHCRkntM0f5KPgRkzuZnga_F8",
+      "mode": "100644"
+    },
+    "template/.scripts/heartbeat.sh": {
+      "gitBlob": "775d6c2b59c626f46e5fbcee81c4331e95415563",
+      "sha256": "u5QMqE4GRNmBUBH9QhvvHIStNePPeG1orvZy9J7A8Ww",
+      "mode": "100755"
+    },
+    "template/.scripts/lib/fleet-env.sh": {
+      "gitBlob": "1c182f5947b423eeeb6ea0bc6ecaaaed2b46ae30",
+      "sha256": "p56UUM0LaEFD4_4mqrihUeL1QGg_MYxEYyaRgWAVzMc",
+      "mode": "100644"
+    },
+    "template/.scripts/lib/parse-fleet-env.py": {
+      "gitBlob": "62d70006b8d911d2cf8f2174dfc578c52fa6e108",
+      "sha256": "sb1Xp-MZIXedEThMZoupcyjGksvuixpH1UVRrak8nxs",
+      "mode": "100644"
+    },
+    "template/.scripts/lib/ticket-provider.sh": {
+      "gitBlob": "078b4e597607c25d3e585c5decff9da37a2ac404",
+      "sha256": "4kkrfr9Sr7IGWyDUWI_3K4acdwNXUk2drlJw3aAn5yo",
+      "mode": "100644"
+    },
+    "template/.scripts/lifecycle.sh": {
+      "gitBlob": "269dc7bd0c63d8b4697f6d47e6ce50c342011efe",
+      "sha256": "7Gi_6Weacou_egVq2UfdfV1RYWbxzIiUZJHpRCkn1vc",
+      "mode": "100755"
+    },
+    "template/.scripts/momo-wip-lock.py": {
+      "gitBlob": "da7df19d4d92dc03692cf754bc069fc055623ed6",
+      "sha256": "EUpFMJoi7FDbSdIriShvHJBoATf1mRL8yOf3qKJvML0",
+      "mode": "100755"
+    },
+    "template/.scripts/providers/linear.sh": {
+      "gitBlob": "9c56cc24a512e1a4cf20385277eba47317ab2a6e",
+      "sha256": "spE_kEufCkMK87xCauLRZmlm_pmysTol5Sc7cQGRd-4",
+      "mode": "100755"
+    },
+    "template/.scripts/providers/plane.sh": {
+      "gitBlob": "fe55a8b67ed82c2c49e23d267be30fbcf3f783b7",
+      "sha256": "ApXysgxCw3zq_y0gkYNEc0WyJX5hEUEJAcIIqSBZOSU",
+      "mode": "100755"
+    },
+    "template/.scripts/providers/trello.sh": {
+      "gitBlob": "ef9ffa25eed307f62f7faea1ed6bfd64b35c7329",
+      "sha256": "DDRyYjZ_TjSiEoCJN1M0U8XEHR-uY7Hs2WW5NOlMZEM",
+      "mode": "100755"
+    },
+    "template/.scripts/reporter-watchdog.py": {
+      "gitBlob": "d8ec1ebf18ed3887e8343e87119853d70eb82669",
+      "sha256": "T2XkOqzG-zcWgWQpb6vYKTlPShaNNdgkgKXiv2zix-A",
+      "mode": "100644"
+    },
+    "template/.scripts/secret-scan.py": {
+      "gitBlob": "5f1c5d3ddbb6516dd5c64bb29558cb984e467856",
+      "sha256": "zKJ0C__2GGRBbDLqJTa6DY97qFKkDgZKl9VRt79H4uI",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel.prompt.md.jinja": {
+      "gitBlob": "b7bcf4eb83f74a24d2df1932b4934d0cdef6cc26",
+      "sha256": "w74aedcSpUwIMMaFS1P9oNPa_FA2KEsKgnn7iaqRwIw",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/bin/emit-event.py": {
+      "gitBlob": "d21804ae329ad14126c55a7f484800ebb9959ed6",
+      "sha256": "ZQtX4E1NcP_A-s83IlNARBbnof311PMx9PMpokZvVmY",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/bin/issue-autonomous-review.sh": {
+      "gitBlob": "bc11b708d9a0494129a3241cb22a44ecc2f51094",
+      "sha256": "pUSsPKe64Ge3K8O-QPx_8wKmPn-OfCB1B-LfuuBOZpg",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/bin/issue-close-gate.sh": {
+      "gitBlob": "e8766d4dd5687b0b686085569b3dc9c15eda5c73",
+      "sha256": "k_Y1Xjw9-7z3ls8CgJs2pG4tfJCTITxYZH-Epl-cC6I",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/docs/autonomous-delegated-review.md": {
+      "gitBlob": "9d0a2acaa487151b8a9abf8dffc394dca9d3bc0a",
+      "sha256": "3fVU2ioggeUvthqak3RtR5SaymdmNSdCllBOULcgb-A",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/docs/bloodbank-events.md": {
+      "gitBlob": "9e65f956088d9175e861b9bcf1a2d8664e325fd4",
+      "sha256": "AJ5g0t5WWV7BKfUHzusN0bFP4mqChNnTlM0tkMT-WMY",
+      "mode": "100644"
+    },
+    "template/.scripts/sentinel/docs/continuous-ticket-orchestration.md": {
+      "gitBlob": "b0e805b4a91e29f001cfef6b3dd8f96f80bb734c",
+      "sha256": "N-YZhCUX1oJPB1kc7r5R2JUfogpq3hkYj9DjVH1jQ1U",
+      "mode": "100644"
+    },
+    "template/SOUL.md.jinja": {
+      "gitBlob": "641676b15e7da0901f7a36257e5e2347d30bb325",
+      "sha256": "h73-hOfscT5fEMIkEXMTeiolF-Lt-fUoe8UvMyAC2XA",
+      "mode": "100644"
+    },
+    "template/hermes.jinja": {
+      "gitBlob": "514794c3db262133191dc76a7a8c9f288abbb773",
+      "sha256": "o4sd7IIvuCcmLl7OelBj41n8AaioPQUDRa3tvSmzWS8",
+      "mode": "100755"
+    },
+    "template/momo.jinja": {
+      "gitBlob": "8653258a0bf78fa08e43485b6d96f1d7ad400fc0",
+      "sha256": "DvkkgJMmCB-lwyFgBXJH86z1SWItMVOrnIpbu5UwAUE",
+      "mode": "100755"
+    },
+    "template/role.yaml.jinja": {
+      "gitBlob": "15767159b375edeac5aa96e97ddb41a51a9fb00c",
+      "sha256": "ZGt3EuDq_dtb3AX034A4qG4S4Bm0bWGDwti1yu-GOZk",
+      "mode": "100644"
+    }
+  }
+}

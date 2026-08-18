@@ -22,7 +22,11 @@ import {
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
-import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
+import {
+  preflightMcpLifecycle,
+  type TrustedCopierIdentity,
+  type TrustedHermesTemplateIdentity,
+} from "./lifecycle/preflight";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -175,6 +179,7 @@ async function executeRegisteredProjectPlan(
   agentContext?: Partial<HermesAgentContext>,
   lifecycleOverrides: Partial<LifecycleContext> = {},
   trustedCopier?: TrustedCopierIdentity,
+  trustedHermesTemplate?: TrustedHermesTemplateIdentity,
 ) {
   const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput: ProjectRecipeInput = {
@@ -183,6 +188,7 @@ async function executeRegisteredProjectPlan(
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
     trustedCopier,
+    trustedHermesTemplate,
     requireTrustedCopier: Boolean(
       plan.actions.some((action) => action.kind === "copier.copy.commonproject")
       || plannedAgent?.kind === "hermes.provision-agent",
@@ -191,6 +197,7 @@ async function executeRegisteredProjectPlan(
       ? {
           ...agentContext,
           trustedCopier,
+          trustedHermesTemplate,
           deferredExternalEffects: {
             runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
             ticketBoard: !plannedAgent.context.skipPlane,
@@ -267,6 +274,7 @@ function preflightExistingHermesScaffold(targetDir: string): string | undefined 
 interface ProjectApplyPreflight {
   failure?: ProjectRecipeResult;
   trustedCopier?: TrustedCopierIdentity;
+  trustedHermesTemplate?: TrustedHermesTemplateIdentity;
 }
 
 function preflightProjectApply(
@@ -317,7 +325,15 @@ function preflightProjectApply(
         failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Copier attestation returned no executable identity"]),
       };
     }
-    return { trustedCopier: eligibility.identity };
+    if (provisionsAgent && !eligibility.hermesTemplate) {
+      return {
+        failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Hermes template attestation returned no immutable identity"]),
+      };
+    }
+    return {
+      trustedCopier: eligibility.identity,
+      ...(provisionsAgent ? { trustedHermesTemplate: eligibility.hermesTemplate } : {}),
+    };
   }
   return {};
 }
@@ -604,7 +620,7 @@ server.registerTool(
         force: overwrite,
         live: input.live ?? false,
         quiet: true,
-      }, preflight.trustedCopier);
+      }, preflight.trustedCopier, preflight.trustedHermesTemplate);
       if (!result.ok) {
         return {
           isError: true,
@@ -704,7 +720,7 @@ server.registerTool(
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true,
-      }, preflight.trustedCopier);
+      }, preflight.trustedCopier, preflight.trustedHermesTemplate);
       return {
         isError: !result.ok,
         ...asText(publicCompositeProjectResponse(
@@ -883,6 +899,7 @@ server.registerTool(
       const apply = input.apply === true;
       const live = input.live === true;
       let trustedCopier: TrustedCopierIdentity | undefined;
+      let trustedHermesTemplate: TrustedHermesTemplateIdentity | undefined;
 
       if (apply) {
         const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
@@ -935,6 +952,21 @@ server.registerTool(
           };
         }
         trustedCopier = eligibility.identity;
+        if (!eligibility.hermesTemplate) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: ["Lifecycle preflight failed: Hermes template attestation returned no immutable identity"],
+            }),
+          };
+        }
+        trustedHermesTemplate = eligibility.hermesTemplate;
       }
 
       const context: HermesAgentContext = {
@@ -964,6 +996,7 @@ server.registerTool(
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
         trustedCopier,
+        trustedHermesTemplate,
         deferredExternalEffects: {
           runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,

@@ -108,6 +108,7 @@ export class HermesAgentRecipe extends Recipe {
               targetRepo: hermesContext.targetRepo,
               role: hermesContext.role,
               agentId: hermesContext.agentId,
+              trustedHermesTemplate: hermesContext.trustedHermesTemplate,
             })
           : { ok: false, error: "Hermes render did not establish role identity" };
         phases.push({

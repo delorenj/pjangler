@@ -1,5 +1,5 @@
 import type { CommandContext } from "../Command";
-import type { TrustedCopierIdentity } from "../../lifecycle/preflight";
+import type { TrustedCopierIdentity, TrustedHermesTemplateIdentity } from "../../lifecycle/preflight";
 
 /**
  * Context for the hermes-agent recipe. Extends the base CommandContext with
@@ -52,6 +52,10 @@ export interface HermesAgentContext extends CommandContext {
   // command revalidates this identity and invokes its canonical absolute path;
   // it must never resolve PATH a second time.
   trustedCopier?: TrustedCopierIdentity;
+  // Immutable in-memory bytes captured from the complete pinned Copier tree.
+  // Project-owned flows establish this before their outer filesystem plan;
+  // RunCopierTemplate materializes and invokes only these bytes.
+  trustedHermesTemplate?: TrustedHermesTemplateIdentity;
 
   // --- derived after copier runs ---
   agentId?: string;           // <targetRepo>-<role>

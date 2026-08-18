@@ -5986,13 +5986,13 @@ var PromptForAgentConfig = class extends Command {
 // src/commands/hermes/RunCopierTemplate.ts
 import { homedir as homedir5 } from "node:os";
 import { join as join10, dirname as dirname7, relative as relative6 } from "node:path";
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "node:fs";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import * as p2 from "@clack/prompts";
 import YAML4 from "yaml";
 
 // src/project/index.ts
-import { copyFileSync as copyFileSync2, existsSync as existsSync7, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync7, mkdirSync as mkdirSync5, mkdtempSync as mkdtempSync3, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync3, statSync as statSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute2, join as join9, relative as relative5, resolve as resolve6, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -6027,37 +6027,308 @@ function changedTreePaths(root, before, after) {
 import { createHash as createHash4 } from "node:crypto";
 import {
   accessSync,
+  chmodSync as chmodSync2,
+  closeSync as closeSync2,
   constants as constants2,
   existsSync as existsSync6,
+  fstatSync as fstatSync2,
   lstatSync as lstatSync4,
+  mkdirSync as mkdirSync4,
+  mkdtempSync as mkdtempSync2,
+  openSync as openSync2,
   readFileSync as readFileSync5,
   readdirSync as readdirSync4,
   realpathSync as realpathSync2,
-  statSync
+  rmSync as rmSync2,
+  statSync,
+  writeFileSync as writeFileSync4
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename as basename4, delimiter, isAbsolute, join as join8, relative as relative4, resolve as resolve5 } from "node:path";
+import { basename as basename4, delimiter, dirname as dirname5, isAbsolute, join as join8, relative as relative4, resolve as resolve5 } from "node:path";
 import YAML2 from "yaml";
-var HERMES_TEMPLATE_ATTESTATION = Object.freeze({
-  commit: "e5b19666177b54ecedebeb99ca324ba7dc452d85",
-  files: Object.freeze({
-    "template/.scripts/lib/fleet-env.sh": Object.freeze({
-      gitBlob: "1c182f5947b423eeeb6ea0bc6ecaaaed2b46ae30",
-      sha256: "p56UUM0LaEFD4_4mqrihUeL1QGg_MYxEYyaRgWAVzMc"
-    }),
-    "template/.scripts/lib/parse-fleet-env.py": Object.freeze({
-      gitBlob: "84d99d38f5c697e316bd3c01452d1c813927b36f",
-      sha256: "fmn2WrVcMWj4mbFArcP7u5rr6fFgfdpbmTXFRzXXzG4"
-    }),
-    "template/.scripts/heartbeat.sh": Object.freeze({
+
+// hermes-template-assets.json
+var hermes_template_assets_default = {
+  version: 1,
+  commit: "09ef30e493eba650713ee7a3c5a2f0ed08423906",
+  files: {
+    "copier.yml": {
+      gitBlob: "51cbf26dfe083dd5a39482d7e4ac649bd66900c2",
+      sha256: "Y5XQARJww3hpWCjC5NQ84hgVO4CmGbYBcR-VHzaOHFI",
+      mode: "100644"
+    },
+    "template/.gitignore.jinja": {
+      gitBlob: "d063b1b2f322bfbe673973a1df1592ae320b6ab6",
+      sha256: "VSrU2aDXKZEbeUSOYet4pieCc-lgNYNVq_nuqVxggY0",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/.gitattributes": {
+      gitBlob: "6d16e370870f921c1637f77ddb24338ea1ecdf59",
+      sha256: "8d3prfXg2dHdHj3ofTcQblQXNqgIT9YUZdvUshBNMrk",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/.gitignore.jinja": {
+      gitBlob: "fc5047476937881e5eb08c27e459de4c04335984",
+      sha256: "cbiFcCNOd9grh44Z0vXI_SSDjMUtTQlVEcYk5Z_QqBE",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/README.md": {
+      gitBlob: "0c702b5a092efbb05d3e8dc85a0692b9e15cf7f0",
+      sha256: "5AONUH6adtJSQeQV4qzqcDRR3Z66QfxkuM_qdQpuBgs",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/decisions/.gitkeep": {
+      gitBlob: "75ab2b086d4937a8dd6b8916abd535d815ba8964",
+      sha256: "lrkU_csavKZiVABvpIcJs-lLGdD13KxlcaBtV7x41GE",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/logs/.gitkeep": {
+      gitBlob: "e0ba344f9cbf3819900e05ac4ddb8aededca1c0e",
+      sha256: "M3XkUu5SYdE4Pohr7LOsqsaVkmWov_9-JB9BS5R6Yy8",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/memories/MEMORY.md": {
+      gitBlob: "b7878f144b94ff7848ea518034da94a934d3676c",
+      sha256: "FKs3niMsjMkkjYP5YWgUlvyuLHZrCRXeWqrklH-kbfI",
+      mode: "100644"
+    },
+    "template/.runtime-scaffold/memories/USER.md": {
+      gitBlob: "13a5f5efddbeb5931f045b56898e233a0190dad6",
+      sha256: "5OLsqQzf9GeA427oVSvoM6Iz63OEnRvFKaY256ixVxM",
+      mode: "100644"
+    },
+    "template/.scripts/00-banner.sh": {
+      gitBlob: "c92739562f27f8f05b54758bbf8fe3f16d3e8553",
+      sha256: "EAndDFoWlo0eg3rkFoq6PpibeVM1HGuW6R_nKiHPsi4",
+      mode: "100755"
+    },
+    "template/.scripts/01-config.sh": {
+      gitBlob: "38bf737d5201fe56d87775f941d97f55c970413b",
+      sha256: "5eJ5rnkc00mjlgJq7T2tRlGkVRpRXw-BxWr324sKQiM",
+      mode: "100755"
+    },
+    "template/.scripts/05-fleet-env.sh": {
+      gitBlob: "dd7ddde7eb1fd13a2094e1b7b769e17df3357cf2",
+      sha256: "2jPNeqZPhNkZKGlOeMgq7xGRm8mSlIFlIODu25bz8wU",
+      mode: "100755"
+    },
+    "template/.scripts/10-hermes-profile.sh": {
+      gitBlob: "7b8869f2e92dfd610b549deb60fbda5316c9ea76",
+      sha256: "VSpt9VvQK1mk7PdAUOROKrCfI8ZYld4TvLnCthrXpyQ",
+      mode: "100755"
+    },
+    "template/.scripts/20-runtime-repo.sh": {
+      gitBlob: "8774fd579085ad56a1933e0fd4e8c5f4862af031",
+      sha256: "V074tuQQ15WZbox-TT-7M-NPSh7zd8IinqiLK24jYqs",
+      mode: "100755"
+    },
+    "template/.scripts/30-telegram.sh": {
+      gitBlob: "9ba5a6c4060313d90a063726d5f2dd93e94b2ba2",
+      sha256: "pKrD4n3vZUvviUJiacTEz3ikxlLTACsLNsq035LQkxM",
+      mode: "100755"
+    },
+    "template/.scripts/31-slack.sh": {
+      gitBlob: "00174ca748bbee2a1c985483327bcb2b0659bfdb",
+      sha256: "1SyDT8Ca7Ooy7WfvwFr2Y0PtejN8lkb3qmYAiJlUkF0",
+      mode: "100755"
+    },
+    "template/.scripts/40-plane.sh": {
+      gitBlob: "91c91a76cb97c31d4620dbb1b68fc4c4b2a6b12e",
+      sha256: "h8zJy13xKTjBl9O39J5avRUkw5o8hP0RNRQyrui_7V0",
+      mode: "100755"
+    },
+    "template/.scripts/42-ticket-provider.sh": {
+      gitBlob: "278db83e661861409c61692216c93df259f0020b",
+      sha256: "nInuA_oI-OVtw6x0LEUHN82owEZv5HEud9EXmySpTUk",
+      mode: "100755"
+    },
+    "template/.scripts/60-bloodbank.sh": {
+      gitBlob: "e4988e9b72bcb0d1bb7dd5a13ff65c9bbfdc08c2",
+      sha256: "JJxWQM3gZmUPh2e1j9r3t2XrBtMLq1-aHeEeTWu2Sb8",
+      mode: "100755"
+    },
+    "template/.scripts/70-systemd.sh": {
+      gitBlob: "5e16408499ee455c84fc394d9a75dd89899b86d4",
+      sha256: "u0NTPlpeaDEjqMbZYZ9dMCaElsGkJqgac0UfH4HzMjM",
+      mode: "100755"
+    },
+    "template/.scripts/80-registry.sh": {
+      gitBlob: "6f53c9be3acce644526447985306dc0ff9a92819",
+      sha256: "0_qn3NrUGx_ZZANNaKbiMyY5QYolxpBRL9cCWZcwiq4",
+      mode: "100755"
+    },
+    "template/.scripts/99-summary.sh": {
+      gitBlob: "660803467e057f7bfca3c6cc098954add0350d6a",
+      sha256: "zHXaxf8RRehaqEMXQoONAc-1j_iWHRfeZXhqwGLLFxM",
+      mode: "100755"
+    },
+    "template/.scripts/_lib.sh": {
+      gitBlob: "7bb8637ffd654ebf687eedc7faad99d070a9a3a7",
+      sha256: "C9II2t6hOq8-9ncLx48JP7udcX7Ibd2KNg9tVCwnDqw",
+      mode: "100755"
+    },
+    "template/.scripts/checkpoint.sh": {
+      gitBlob: "39bb505cae89cc332cfa24c8de2b126e7f0d0096",
+      sha256: "x7svdaxBTPNYw5JIaiXI-j3LzyewH5QVS00c6C0OKZs",
+      mode: "100755"
+    },
+    "template/.scripts/config.example.toml": {
+      gitBlob: "b155b4953977cc15b8cb2a36b3344f98c91c4b47",
+      sha256: "SNur7v8xOEUkAC4EhcvUyEMSlcuqip4LzRgCSQeeSdM",
+      mode: "100644"
+    },
+    "template/.scripts/credential-launch.sh": {
+      gitBlob: "30f0469627ae48d0a70e345b5805bdb0052cfb1d",
+      sha256: "GBQhqZeiQCGHJjk0-hCHCRkntM0f5KPgRkzuZnga_F8",
+      mode: "100644"
+    },
+    "template/.scripts/heartbeat.sh": {
       gitBlob: "775d6c2b59c626f46e5fbcee81c4331e95415563",
-      sha256: "u5QMqE4GRNmBUBH9QhvvHIStNePPeG1orvZy9J7A8Ww"
-    })
-  })
+      sha256: "u5QMqE4GRNmBUBH9QhvvHIStNePPeG1orvZy9J7A8Ww",
+      mode: "100755"
+    },
+    "template/.scripts/lib/fleet-env.sh": {
+      gitBlob: "1c182f5947b423eeeb6ea0bc6ecaaaed2b46ae30",
+      sha256: "p56UUM0LaEFD4_4mqrihUeL1QGg_MYxEYyaRgWAVzMc",
+      mode: "100644"
+    },
+    "template/.scripts/lib/parse-fleet-env.py": {
+      gitBlob: "62d70006b8d911d2cf8f2174dfc578c52fa6e108",
+      sha256: "sb1Xp-MZIXedEThMZoupcyjGksvuixpH1UVRrak8nxs",
+      mode: "100644"
+    },
+    "template/.scripts/lib/ticket-provider.sh": {
+      gitBlob: "078b4e597607c25d3e585c5decff9da37a2ac404",
+      sha256: "4kkrfr9Sr7IGWyDUWI_3K4acdwNXUk2drlJw3aAn5yo",
+      mode: "100644"
+    },
+    "template/.scripts/lifecycle.sh": {
+      gitBlob: "269dc7bd0c63d8b4697f6d47e6ce50c342011efe",
+      sha256: "7Gi_6Weacou_egVq2UfdfV1RYWbxzIiUZJHpRCkn1vc",
+      mode: "100755"
+    },
+    "template/.scripts/momo-wip-lock.py": {
+      gitBlob: "da7df19d4d92dc03692cf754bc069fc055623ed6",
+      sha256: "EUpFMJoi7FDbSdIriShvHJBoATf1mRL8yOf3qKJvML0",
+      mode: "100755"
+    },
+    "template/.scripts/providers/linear.sh": {
+      gitBlob: "9c56cc24a512e1a4cf20385277eba47317ab2a6e",
+      sha256: "spE_kEufCkMK87xCauLRZmlm_pmysTol5Sc7cQGRd-4",
+      mode: "100755"
+    },
+    "template/.scripts/providers/plane.sh": {
+      gitBlob: "fe55a8b67ed82c2c49e23d267be30fbcf3f783b7",
+      sha256: "ApXysgxCw3zq_y0gkYNEc0WyJX5hEUEJAcIIqSBZOSU",
+      mode: "100755"
+    },
+    "template/.scripts/providers/trello.sh": {
+      gitBlob: "ef9ffa25eed307f62f7faea1ed6bfd64b35c7329",
+      sha256: "DDRyYjZ_TjSiEoCJN1M0U8XEHR-uY7Hs2WW5NOlMZEM",
+      mode: "100755"
+    },
+    "template/.scripts/reporter-watchdog.py": {
+      gitBlob: "d8ec1ebf18ed3887e8343e87119853d70eb82669",
+      sha256: "T2XkOqzG-zcWgWQpb6vYKTlPShaNNdgkgKXiv2zix-A",
+      mode: "100644"
+    },
+    "template/.scripts/secret-scan.py": {
+      gitBlob: "5f1c5d3ddbb6516dd5c64bb29558cb984e467856",
+      sha256: "zKJ0C__2GGRBbDLqJTa6DY97qFKkDgZKl9VRt79H4uI",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel.prompt.md.jinja": {
+      gitBlob: "b7bcf4eb83f74a24d2df1932b4934d0cdef6cc26",
+      sha256: "w74aedcSpUwIMMaFS1P9oNPa_FA2KEsKgnn7iaqRwIw",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/bin/emit-event.py": {
+      gitBlob: "d21804ae329ad14126c55a7f484800ebb9959ed6",
+      sha256: "ZQtX4E1NcP_A-s83IlNARBbnof311PMx9PMpokZvVmY",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/bin/issue-autonomous-review.sh": {
+      gitBlob: "bc11b708d9a0494129a3241cb22a44ecc2f51094",
+      sha256: "pUSsPKe64Ge3K8O-QPx_8wKmPn-OfCB1B-LfuuBOZpg",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/bin/issue-close-gate.sh": {
+      gitBlob: "e8766d4dd5687b0b686085569b3dc9c15eda5c73",
+      sha256: "k_Y1Xjw9-7z3ls8CgJs2pG4tfJCTITxYZH-Epl-cC6I",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/docs/autonomous-delegated-review.md": {
+      gitBlob: "9d0a2acaa487151b8a9abf8dffc394dca9d3bc0a",
+      sha256: "3fVU2ioggeUvthqak3RtR5SaymdmNSdCllBOULcgb-A",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/docs/bloodbank-events.md": {
+      gitBlob: "9e65f956088d9175e861b9bcf1a2d8664e325fd4",
+      sha256: "AJ5g0t5WWV7BKfUHzusN0bFP4mqChNnTlM0tkMT-WMY",
+      mode: "100644"
+    },
+    "template/.scripts/sentinel/docs/continuous-ticket-orchestration.md": {
+      gitBlob: "b0e805b4a91e29f001cfef6b3dd8f96f80bb734c",
+      sha256: "N-YZhCUX1oJPB1kc7r5R2JUfogpq3hkYj9DjVH1jQ1U",
+      mode: "100644"
+    },
+    "template/SOUL.md.jinja": {
+      gitBlob: "641676b15e7da0901f7a36257e5e2347d30bb325",
+      sha256: "h73-hOfscT5fEMIkEXMTeiolF-Lt-fUoe8UvMyAC2XA",
+      mode: "100644"
+    },
+    "template/hermes.jinja": {
+      gitBlob: "514794c3db262133191dc76a7a8c9f288abbb773",
+      sha256: "o4sd7IIvuCcmLl7OelBj41n8AaioPQUDRa3tvSmzWS8",
+      mode: "100755"
+    },
+    "template/momo.jinja": {
+      gitBlob: "8653258a0bf78fa08e43485b6d96f1d7ad400fc0",
+      sha256: "DvkkgJMmCB-lwyFgBXJH86z1SWItMVOrnIpbu5UwAUE",
+      mode: "100755"
+    },
+    "template/role.yaml.jinja": {
+      gitBlob: "15767159b375edeac5aa96e97ddb41a51a9fb00c",
+      sha256: "ZGt3EuDq_dtb3AX034A4qG4S4Bm0bWGDwti1yu-GOZk",
+      mode: "100644"
+    }
+  }
+};
+
+// src/lifecycle/preflight.ts
+var HERMES_MANIFEST = hermes_template_assets_default;
+var HERMES_TEMPLATE_ATTESTATION = Object.freeze({
+  commit: HERMES_MANIFEST.commit,
+  files: Object.freeze(HERMES_MANIFEST.files)
 });
 function containedBy(parent, candidate) {
   const rel = relative4(resolve5(parent), resolve5(candidate));
   return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
+}
+function realDirectoryContained(root, candidate, label) {
+  const absoluteRoot = resolve5(root);
+  const absoluteCandidate = resolve5(candidate);
+  if (!containedBy(absoluteRoot, absoluteCandidate)) {
+    return { ok: false, error: `${label} escapes its canonical root` };
+  }
+  try {
+    const rootStat = lstatSync4(absoluteRoot);
+    const candidateStat = lstatSync4(absoluteCandidate);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return { ok: false, error: `${label} canonical root must be a real directory` };
+    }
+    if (!candidateStat.isDirectory() || candidateStat.isSymbolicLink()) {
+      return { ok: false, error: `${label} must be a real directory` };
+    }
+    const rootReal = realpathSync2(absoluteRoot);
+    const candidateReal = realpathSync2(absoluteCandidate);
+    if (!containedBy(rootReal, candidateReal)) {
+      return { ok: false, error: `${label} escapes its canonical root through a symlinked ancestor` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 function firstExecutableOnPath(env2) {
   for (const rawEntry of (env2.PATH ?? "").split(delimiter)) {
@@ -6325,29 +6596,157 @@ function requireFiles(templateRoot, files, label) {
   }
   return { ok: true };
 }
-function attestPinnedHermesTemplate(templateRoot) {
-  for (const [relativePath, expected] of Object.entries(HERMES_TEMPLATE_ATTESTATION.files)) {
-    const path = join8(templateRoot, relativePath);
-    const regular = regularContainedFile(templateRoot, path, `pinned Hermes asset ${relativePath}`);
-    if (!regular.ok) return regular;
-    try {
-      if (sha2562(path) !== expected.sha256) {
-        return {
-          ok: false,
-          error: `pinned Hermes template integrity mismatch: ${relativePath}`
-        };
+function gitMode(mode) {
+  return mode & 73 ? "100755" : "100644";
+}
+function templateInventory(templateRoot) {
+  const files = ["copier.yml"];
+  const walk = (directory, prefix) => {
+    for (const entry of readdirSync4(directory, { withFileTypes: true })) {
+      const relativePath = `${prefix}/${entry.name}`;
+      const path = join8(directory, entry.name);
+      const metadata = lstatSync4(path);
+      if (metadata.isSymbolicLink()) throw new Error(`symlink is forbidden: ${relativePath}`);
+      if (metadata.isDirectory()) {
+        walk(path, relativePath);
+      } else if (metadata.isFile()) {
+        files.push(relativePath);
+      } else {
+        throw new Error(`non-regular entry is forbidden: ${relativePath}`);
       }
-    } catch (error) {
+    }
+  };
+  walk(join8(templateRoot, "template"), "template");
+  return files.sort();
+}
+function readStableTemplateFile(templateRoot, relativePath, expected) {
+  const path = join8(templateRoot, relativePath);
+  const regular = regularContainedFile(templateRoot, path, `pinned Hermes asset ${relativePath}`);
+  if (!regular.ok) throw new Error(regular.error);
+  const noFollow = constants2.O_NOFOLLOW ?? 0;
+  const descriptor = openSync2(path, constants2.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync2(descriptor, { bigint: true });
+    if (!before.isFile()) throw new Error("not a regular file");
+    const bytes = readFileSync5(descriptor);
+    const after = fstatSync2(descriptor, { bigint: true });
+    for (const field2 of ["dev", "ino", "mode", "uid", "gid", "size", "mtimeNs", "ctimeNs"]) {
+      if (before[field2] !== after[field2]) throw new Error(`changed while read (${field2})`);
+    }
+    if (gitMode(Number(after.mode)) !== expected.mode) throw new Error("Git executable mode mismatch");
+    const digest = createHash4("sha256").update(bytes).digest("base64url");
+    if (digest !== expected.sha256) throw new Error("content digest mismatch");
+    return bytes;
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function captureAttestedHermesTemplate(templateRoot) {
+  const root = resolve5(templateRoot);
+  try {
+    const rootStat = lstatSync4(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return { ok: false, error: "pinned Hermes template root must be a real directory" };
+    }
+    const expectedPaths = Object.keys(HERMES_TEMPLATE_ATTESTATION.files).sort();
+    const actualPaths = templateInventory(root);
+    if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+      const missing = expectedPaths.filter((path) => !actualPaths.includes(path));
+      const extra = actualPaths.filter((path) => !expectedPaths.includes(path));
       return {
         ok: false,
-        error: `cannot attest pinned Hermes asset ${relativePath}: ${error instanceof Error ? error.message : String(error)}`
+        error: `pinned Hermes template inventory mismatch${missing.length ? `; missing ${missing.join(", ")}` : ""}${extra.length ? `; extra ${extra.join(", ")}` : ""}`
       };
+    }
+    const files = expectedPaths.map((relativePath) => {
+      const expected = HERMES_TEMPLATE_ATTESTATION.files[relativePath];
+      if (!expected) throw new Error(`manifest entry disappeared: ${relativePath}`);
+      const bytes = readStableTemplateFile(root, relativePath, expected);
+      return Object.freeze({
+        path: relativePath,
+        gitBlob: expected.gitBlob,
+        sha256: expected.sha256,
+        mode: expected.mode,
+        contentBase64: bytes.toString("base64")
+      });
+    });
+    return {
+      ok: true,
+      identity: Object.freeze({
+        commit: HERMES_TEMPLATE_ATTESTATION.commit,
+        root,
+        files: Object.freeze(files)
+      })
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `cannot attest pinned Hermes template: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function verifyTrustedHermesTemplateIdentity(identity) {
+  if (identity.commit !== HERMES_TEMPLATE_ATTESTATION.commit) {
+    return { ok: false, error: "trusted Hermes template commit changed" };
+  }
+  const expectedPaths = Object.keys(HERMES_TEMPLATE_ATTESTATION.files).sort();
+  const actualPaths = identity.files.map((entry) => entry.path).sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths) || new Set(actualPaths).size !== actualPaths.length) {
+    return { ok: false, error: "trusted Hermes template inventory changed" };
+  }
+  for (const entry of identity.files) {
+    const expected = HERMES_TEMPLATE_ATTESTATION.files[entry.path];
+    if (!expected || entry.gitBlob !== expected.gitBlob || entry.sha256 !== expected.sha256 || entry.mode !== expected.mode) {
+      return { ok: false, error: `trusted Hermes template metadata changed: ${entry.path}` };
+    }
+    let bytes;
+    try {
+      bytes = Buffer.from(entry.contentBase64, "base64");
+    } catch {
+      return { ok: false, error: `trusted Hermes template bytes are invalid: ${entry.path}` };
+    }
+    if (createHash4("sha256").update(bytes).digest("base64url") !== expected.sha256) {
+      return { ok: false, error: `trusted Hermes template bytes changed: ${entry.path}` };
     }
   }
   return { ok: true };
 }
+function materializeTrustedHermesTemplate(identity) {
+  const verified = verifyTrustedHermesTemplateIdentity(identity);
+  if (!verified.ok) throw new Error(verified.error ?? "trusted Hermes template identity is invalid");
+  const directory = mkdtempSync2(join8(tmpdir(), "pjangler-hermes-template-"));
+  try {
+    chmodSync2(directory, 448);
+    for (const entry of identity.files) {
+      const path = resolve5(directory, entry.path);
+      if (!containedBy(directory, path)) throw new Error("trusted Hermes template path escaped its snapshot");
+      mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
+      writeFileSync4(path, Buffer.from(entry.contentBase64, "base64"), {
+        flag: "wx",
+        mode: entry.mode === "100755" ? 493 : 420
+      });
+    }
+    const recaptured = captureAttestedHermesTemplate(directory);
+    if (!recaptured.ok) throw new Error(recaptured.error ?? "materialized Hermes template failed attestation");
+    return {
+      path: directory,
+      cleanup() {
+        rmSync2(directory, { recursive: true, force: true });
+      }
+    };
+  } catch (error) {
+    rmSync2(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+function attestPinnedHermesTemplate(templateRoot) {
+  const captured = captureAttestedHermesTemplate(templateRoot);
+  return captured.ok ? { ok: true } : captured;
+}
 function preflightCommonProjectTemplate(pjanglerRoot) {
   const templateRoot = join8(resolve5(pjanglerRoot), "templates", "commonproject");
+  const contained = realDirectoryContained(resolve5(pjanglerRoot), templateRoot, "CommonProject template");
+  if (!contained.ok) return contained;
   const parsed = parseCopierConfig(templateRoot, "CommonProject template");
   if (!parsed.result.ok) return parsed.result;
   const files = requireFiles(templateRoot, [
@@ -6366,6 +6765,8 @@ function preflightCommonProjectTemplate(pjanglerRoot) {
 }
 function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
   const templateRoot = join8(resolve5(pjanglerRoot), "templates", "hermes-agent");
+  const contained = realDirectoryContained(resolve5(pjanglerRoot), templateRoot, "Hermes template");
+  if (!contained.ok) return contained;
   const explicit = env2.PJANGLER_HERMES_TEMPLATE?.trim();
   if (explicit) {
     try {
@@ -6395,7 +6796,7 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
     "template/.scripts/80-registry.sh"
   ], "Hermes template");
   if (!required.ok) return required;
-  const pinned = attestPinnedHermesTemplate(templateRoot);
+  const pinned = captureAttestedHermesTemplate(templateRoot);
   if (!pinned.ok) return pinned;
   const role = readFileSync5(join8(templateRoot, "template", "role.yaml.jinja"), "utf8");
   if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
@@ -6423,12 +6824,14 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
   for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     if (!tasks.some((task) => task.includes(script))) return { ok: false, error: `Hermes copier task list is missing ${script}` };
   }
-  return { ok: true };
+  return { ok: true, identity: pinned.identity };
 }
 function preflightRenderedHermes(options) {
   const target = resolve5(options.targetDir);
   const roleDir = resolve5(options.roleDir);
   if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
+  const physicalContainment = realDirectoryContained(target, roleDir, "rendered Hermes role");
+  if (!physicalContainment.ok) return physicalContainment;
   try {
     const stat = lstatSync4(roleDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -6438,8 +6841,17 @@ function preflightRenderedHermes(options) {
     return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
   }
   const templateScripts = join8(resolve5(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const pinned = attestPinnedHermesTemplate(join8(resolve5(options.pjanglerRoot), "templates", "hermes-agent"));
-  if (!pinned.ok) return pinned;
+  let capturedScripts;
+  if (options.trustedHermesTemplate) {
+    const verified = verifyTrustedHermesTemplateIdentity(options.trustedHermesTemplate);
+    if (!verified.ok) return verified;
+    capturedScripts = new Map(
+      options.trustedHermesTemplate.files.filter((entry) => entry.path.startsWith("template/.scripts/")).map((entry) => [entry.path.slice("template/.scripts/".length), Buffer.from(entry.contentBase64, "base64")])
+    );
+  } else {
+    const pinned = attestPinnedHermesTemplate(join8(resolve5(options.pjanglerRoot), "templates", "hermes-agent"));
+    if (!pinned.ok) return pinned;
+  }
   const renderedScripts = join8(roleDir, ".scripts");
   const requiredFiles = [
     "role.yaml",
@@ -6456,7 +6868,8 @@ function preflightRenderedHermes(options) {
   if (!required.ok) return required;
   for (const script of ["_lib.sh", "heartbeat.sh", "lib/fleet-env.sh", "lib/parse-fleet-env.py", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
-      if (readFileSync5(join8(renderedScripts, script), "utf8") !== readFileSync5(join8(templateScripts, script), "utf8")) {
+      const expected = capturedScripts?.get(script) ?? readFileSync5(join8(templateScripts, script));
+      if (!readFileSync5(join8(renderedScripts, script)).equals(expected)) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
       }
     } catch (error) {
@@ -6508,7 +6921,18 @@ function preflightMcpLifecycle(options) {
   }
   if (options.hermes) {
     const hermes = preflightHermesTemplate(options.pjanglerRoot, options.env);
-    if (!hermes.ok) return { ...hermes, executable: copier.executable, realExecutable: copier.realExecutable };
+    if (!hermes.ok) {
+      return {
+        ok: false,
+        error: hermes.error,
+        executable: copier.executable,
+        realExecutable: copier.realExecutable
+      };
+    }
+    if (!hermes.identity) {
+      return { ok: false, error: "Hermes template attestation returned no immutable identity" };
+    }
+    return { ...copier, hermesTemplate: hermes.identity };
   }
   return copier;
 }
@@ -6767,7 +7191,7 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
   document.set("project_description", manifest.project_description);
   const next = String(document);
   if (next === current) return [];
-  writeFileSync4(answersPath, next, "utf8");
+  writeFileSync5(answersPath, next, "utf8");
   return [answersPath];
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
@@ -6817,9 +7241,9 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname6(path), { recursive: true });
+  mkdirSync5(dirname6(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync4(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
+  writeFileSync5(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
 }
 function validateProjectRegistry(registry) {
@@ -6992,11 +7416,11 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join9(tmpdir2(), "pjangler-tp-"));
+  const staging = mkdtempSync3(join9(tmpdir2(), "pjangler-tp-"));
   try {
     const providersDir = join9(staging, "agents", "hermes", "pm", ".scripts", "providers");
-    mkdirSync4(providersDir, { recursive: true });
-    writeFileSync4(
+    mkdirSync5(providersDir, { recursive: true });
+    writeFileSync5(
       join9(staging, ".project.json"),
       `${JSON.stringify(
         {
@@ -7073,7 +7497,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
     };
   } finally {
-    rmSync2(staging, { recursive: true, force: true });
+    rmSync3(staging, { recursive: true, force: true });
   }
 }
 function defaultProjectAutomation() {
@@ -7343,13 +7767,13 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname6(manifestPath), { recursive: true });
+    mkdirSync5(dirname6(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text2 = `${JSON.stringify(next, null, 2)}
 `;
   if (!existsSync7(manifestPath) || readFileSync6(manifestPath, "utf8") !== text2) {
-    writeFileSync4(manifestPath, text2, "utf8");
+    writeFileSync5(manifestPath, text2, "utf8");
     return [manifestPath];
   }
   return [];
@@ -7377,7 +7801,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname6(action.targetDir), { recursive: true });
+      mkdirSync5(dirname6(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
       const copierEnv = hardenSubprocessEnvironment();
@@ -7402,12 +7826,12 @@ async function executeProjectInitPlan(plan, options = {}) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname6(action.path), { recursive: true });
+      mkdirSync5(dirname6(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
       const current = existsSync7(action.path) ? readFileSync6(action.path, "utf8") : void 0;
       if (current !== next) {
-        writeFileSync4(action.path, next, "utf8");
+        writeFileSync5(action.path, next, "utf8");
         changedFiles.push(action.path);
       }
       changedFiles.push(...synchronizeCopierIdentity(action.path, action.manifest));
@@ -7618,7 +8042,7 @@ function registerRenderedAgent(ctx, roleDir, role) {
   manifest.agents = agents;
   const next = `${JSON.stringify(manifest, null, 2)}
 `;
-  if (next !== current) writeFileSync5(manifestPath, next, "utf8");
+  if (next !== current) writeFileSync6(manifestPath, next, "utf8");
 }
 function resolveVendoredTemplate(name) {
   let dir;
@@ -7673,6 +8097,13 @@ var RunCopierTemplate = class extends Command {
         success: false,
         outcome: "failed",
         message: "MCP Hermes apply requires a preflight-attested Copier identity"
+      };
+    }
+    if (trustedCopierRequired && !ctx.trustedHermesTemplate) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "MCP Hermes apply requires a preflight-attested immutable template identity"
       };
     }
     if (!ctx.trustedCopier) {
@@ -7777,13 +8208,40 @@ var RunCopierTemplate = class extends Command {
           message: `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`
         };
       }
+      const templateVerified = ctx.trustedHermesTemplate ? verifyTrustedHermesTemplateIdentity(ctx.trustedHermesTemplate) : { ok: false, error: "immutable template identity is missing" };
+      if (!templateVerified.ok) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Hermes template revalidation failed: ${templateVerified.error ?? "unknown identity failure"}`
+        };
+      }
     }
-    mkdirSync5(join10(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    let immutableTemplate;
+    let result;
     const spinner4 = ctx.quiet ? void 0 : p2.spinner();
-    spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
-    const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
-    const result = spawnSync(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
-    spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
+    try {
+      if (ctx.trustedHermesTemplate) {
+        immutableTemplate = materializeTrustedHermesTemplate(ctx.trustedHermesTemplate);
+        args[1] = immutableTemplate.path;
+        const vcsRef = args.indexOf("--vcs-ref=HEAD");
+        if (vcsRef >= 0) args.splice(vcsRef, 1);
+      }
+      mkdirSync6(join10(ctx.targetDir, "agents", "hermes"), { recursive: true });
+      spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
+      const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
+      result = spawnSync(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+      spinner4?.stop(result.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
+    } catch (error) {
+      spinner4?.stop("\u2717 copier failed");
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Hermes template snapshot failed: ${error instanceof Error ? error.message : String(error)}`
+      };
+    } finally {
+      immutableTemplate?.cleanup();
+    }
     if (result.status !== 0) {
       return {
         success: false,
@@ -7799,7 +8257,7 @@ var RunCopierTemplate = class extends Command {
       document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], ctx.deferredExternalEffects ? "deferred" : ctx.skipSystemd ? "deferred" : "required");
       const next = String(document);
-      if (next !== current) writeFileSync5(roleManifest, next, "utf8");
+      if (next !== current) writeFileSync6(roleManifest, next, "utf8");
       registerRenderedAgent(ctx, roleDir, safeRole);
     } catch (error) {
       return {
@@ -7816,7 +8274,7 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6, readdirSync as readdirSync5 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync7, readdirSync as readdirSync5 } from "fs";
 import { join as join11 } from "path";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -7911,7 +8369,7 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`remove stale .gitmodules mapping for ${runtimePath}`);
           if (!this.context.dryRun) {
             const next = removeSubmodulePath(gitmodulesContent, runtimePath);
-            writeFileSync6(gitmodulesPath, next ? `${next}
+            writeFileSync7(gitmodulesPath, next ? `${next}
 ` : "", "utf8");
           }
         }
@@ -7926,7 +8384,7 @@ var UntrackHermesRuntimes = class extends Command {
               content += "\n";
             }
             content += "runtime/\n";
-            writeFileSync6(fullGitignorePath, content, "utf8");
+            writeFileSync7(fullGitignorePath, content, "utf8");
           }
         }
       }
@@ -8226,7 +8684,7 @@ var PrintHermesSummary = class extends Command {
 };
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
-import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
+import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync8 } from "node:fs";
 import { join as join14 } from "node:path";
 import YAML5 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
@@ -8282,7 +8740,7 @@ var ApplyDeferredExternalEffects = class extends Command {
       document.setIn(["deployment", "local_only"], Boolean(ctx.local));
       document.setIn(["deployment", "systemd"], selected.systemd ? "required" : "deferred");
       const next = String(document);
-      if (next !== current) writeFileSync7(roleManifest, next, "utf8");
+      if (next !== current) writeFileSync8(roleManifest, next, "utf8");
     } catch (error) {
       return {
         success: false,
@@ -8417,7 +8875,8 @@ var HermesAgentRecipe = class extends Recipe {
           roleDir: hermesContext2.roleDir,
           targetRepo: hermesContext2.targetRepo,
           role: hermesContext2.role,
-          agentId: hermesContext2.agentId
+          agentId: hermesContext2.agentId,
+          trustedHermesTemplate: hermesContext2.trustedHermesTemplate
         }) : { ok: false, error: "Hermes render did not establish role identity" };
         phases.push({
           id: "hermes.rendered-eligibility",
@@ -8661,7 +9120,7 @@ var NodeRecipe = class extends Recipe {
 };
 
 // src/recipes/ProjectRecipe.ts
-import { existsSync as existsSync14, readFileSync as readFileSync10, rmSync as rmSync3 } from "node:fs";
+import { existsSync as existsSync14, readFileSync as readFileSync10, rmSync as rmSync4 } from "node:fs";
 import { join as join16 } from "node:path";
 var BOOTSTRAP_GIT_IDENTITY = {
   GIT_AUTHOR_NAME: "Pjangler Lifecycle",
@@ -8795,6 +9254,18 @@ var ProjectRecipe = class extends Recipe {
           errors.push(`Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`);
         }
       }
+      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
+      if (agentAction?.kind === "hermes.provision-agent" && (normalized.requireTrustedCopier || normalized.trustedHermesTemplate || normalized.agentContext?.trustedHermesTemplate)) {
+        const template = normalized.trustedHermesTemplate ?? normalized.agentContext?.trustedHermesTemplate;
+        const verified = template ? verifyTrustedHermesTemplateIdentity(template) : { ok: false, error: "MCP project apply requires an immutable Hermes template identity" };
+        phases.push({
+          id: "project.preflight:hermes-template",
+          status: verified.ok ? "unchanged" : "failed",
+          changedFiles: [],
+          message: verified.ok ? "Hermes template snapshot revalidated at the project transaction boundary" : `Hermes template revalidation failed: ${verified.error ?? "unknown identity failure"}`
+        });
+        if (!verified.ok) errors.push(`Hermes template revalidation failed: ${verified.error ?? "unknown identity failure"}`);
+      }
       if (errors.length === 0 && mode === "create") {
         const preflight = this.runtime.preflightBmad(transactionContext);
         phases.push({
@@ -8832,7 +9303,6 @@ var ProjectRecipe = class extends Recipe {
         changedFiles.push(...dependencyResult.changedFiles);
         phases.push(...dependencyResult.phases);
       }
-      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
       if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
         const agentContext = {
           targetRepo: agentAction.targetRepo,
@@ -9020,7 +9490,7 @@ var ProjectRecipe = class extends Recipe {
     }
     if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync14(targetDir)) {
       try {
-        rmSync3(targetDir, { recursive: true, force: true });
+        rmSync4(targetDir, { recursive: true, force: true });
         changedFiles.length = 0;
         logs.push(`Rolled back newly-created target: ${targetDir}`);
         phases.push({
@@ -9258,7 +9728,7 @@ var recipeRegistry = new RecipeRegistry([
 // src/commands/AgentHooksCommands.ts
 import { homedir as homedir6 } from "node:os";
 import { join as join17, dirname as dirname8 } from "node:path";
-import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
+import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync7, readFileSync as readFileSync11, writeFileSync as writeFileSync9 } from "node:fs";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 var AGENT_HOOKS_SKIP_MESSAGE = "\u21B7 agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 function resolveTemplateRoot() {
@@ -9312,7 +9782,7 @@ var CopyAgentHooksTree = class extends Command {
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync6(dirname8(dest), { recursive: true });
+        mkdirSync7(dirname8(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -9409,7 +9879,7 @@ ${leaveBlock}`);
       ""
     ].join("\n");
     content = content.replace(/\n*$/, "\n") + appended;
-    if (!this.context.dryRun) writeFileSync8(misePath, content);
+    if (!this.context.dryRun) writeFileSync9(misePath, content);
     if (wiredHooks) {
       return { success: true, message: this.formatMessage("\u2705 Wired mise.toml ([hooks] enter/leave + tasks)") };
     }
@@ -9539,7 +10009,7 @@ if __name__ == "__main__":
 };
 
 // src/commands/AddMiseCodegraphScript.ts
-import { chmodSync as chmodSync2 } from "fs";
+import { chmodSync as chmodSync3 } from "fs";
 import { join as join18 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
@@ -9594,7 +10064,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync2(join18(this.context.targetDir, filePath), 493);
+      chmodSync3(join18(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -10505,7 +10975,7 @@ function publicCompositeProjectResponse(payload, plan) {
     ...provisionsAgent ? { bloodbankMode: "fleet-shared" } : {}
   };
 }
-async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}, trustedCopier) {
+async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}, trustedCopier, trustedHermesTemplate) {
   const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput = {
     plan,
@@ -10513,12 +10983,14 @@ async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrid
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
     trustedCopier,
+    trustedHermesTemplate,
     requireTrustedCopier: Boolean(
       plan.actions.some((action) => action.kind === "copier.copy.commonproject") || plannedAgent?.kind === "hermes.provision-agent"
     ),
     agentContext: plannedAgent?.kind === "hermes.provision-agent" ? {
       ...agentContext,
       trustedCopier,
+      trustedHermesTemplate,
       deferredExternalEffects: {
         runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
         ticketBoard: !plannedAgent.context.skipPlane,
@@ -10614,7 +11086,15 @@ function preflightProjectApply(plan, pjanglerRoot) {
         failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Copier attestation returned no executable identity"])
       };
     }
-    return { trustedCopier: eligibility.identity };
+    if (provisionsAgent && !eligibility.hermesTemplate) {
+      return {
+        failure: projectPreflightFailure(plan, ["Lifecycle preflight failed: Hermes template attestation returned no immutable identity"])
+      };
+    }
+    return {
+      trustedCopier: eligibility.identity,
+      ...provisionsAgent ? { trustedHermesTemplate: eligibility.hermesTemplate } : {}
+    };
   }
   return {};
 }
@@ -10883,7 +11363,7 @@ server.registerTool(
         force: overwrite,
         live: input.live ?? false,
         quiet: true
-      }, preflight.trustedCopier);
+      }, preflight.trustedCopier, preflight.trustedHermesTemplate);
       if (!result.ok) {
         return {
           isError: true,
@@ -10979,7 +11459,7 @@ server.registerTool(
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true
-      }, preflight.trustedCopier);
+      }, preflight.trustedCopier, preflight.trustedHermesTemplate);
       return {
         isError: !result.ok,
         ...asText(publicCompositeProjectResponse(
@@ -11148,6 +11628,7 @@ server.registerTool(
       const apply = input.apply === true;
       const live = input.live === true;
       let trustedCopier;
+      let trustedHermesTemplate;
       if (apply) {
         const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
         if (hermesBlocker) {
@@ -11199,6 +11680,21 @@ server.registerTool(
           };
         }
         trustedCopier = eligibility.identity;
+        if (!eligibility.hermesTemplate) {
+          return {
+            isError: true,
+            ...asText({
+              success: false,
+              recipe: "hermes-agent",
+              targetDir: resolvedTarget,
+              apply,
+              live,
+              logs: [],
+              errors: ["Lifecycle preflight failed: Hermes template attestation returned no immutable identity"]
+            })
+          };
+        }
+        trustedHermesTemplate = eligibility.hermesTemplate;
       }
       const context = {
         targetDir: resolvedTarget,
@@ -11227,6 +11723,7 @@ server.registerTool(
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
         trustedCopier,
+        trustedHermesTemplate,
         deferredExternalEffects: {
           runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,

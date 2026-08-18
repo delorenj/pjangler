@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
+const HERMES_TEMPLATE_MANIFEST = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "..", "hermes-template-assets.json"), "utf8"),
+);
+
 const SUPPORTED = new Map([
   ["templates/commonproject", { url: "git@github.com:delorenj/CommonProject.git", branch: "main" }],
   ["templates/hermes-agent", { url: "git@github.com:delorenj/hermes-agent-template.git", branch: "main" }],
@@ -26,20 +30,13 @@ const FORBIDDEN_TRACKED = [
     label: "process or socket runtime state",
   },
 ];
-const REQUIRED_HERMES_PACKAGE_ASSETS = [
-  {
-    packagePath: "templates/hermes-agent/template/.scripts/lib/fleet-env.sh",
-    submodulePath: "template/.scripts/lib/fleet-env.sh",
-  },
-  {
-    packagePath: "templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py",
-    submodulePath: "template/.scripts/lib/parse-fleet-env.py",
-  },
-  {
-    packagePath: "templates/hermes-agent/template/.scripts/heartbeat.sh",
-    submodulePath: "template/.scripts/heartbeat.sh",
-  },
-];
+const REQUIRED_HERMES_PACKAGE_ASSETS = Object.entries(HERMES_TEMPLATE_MANIFEST.files).map(
+  ([submodulePath, identity]) => ({
+    packagePath: `templates/hermes-agent/${submodulePath}`,
+    submodulePath,
+    identity,
+  }),
+);
 
 function fail(message) {
   process.stderr.write(`submodule-contract: ${message}\n`);
@@ -239,7 +236,20 @@ function validateArchive(root, contract) {
     fail("Hermes template pin must be initialized for archive verification");
     return;
   }
+  if (pin !== HERMES_TEMPLATE_MANIFEST.commit) {
+    fail(`Hermes gitlink ${pin} differs from immutable template manifest ${HERMES_TEMPLATE_MANIFEST.commit}`);
+  }
   for (const asset of REQUIRED_HERMES_PACKAGE_ASSETS) {
+    const treeEntry = run(
+      submoduleRoot,
+      "git",
+      ["ls-tree", pin, "--", asset.submodulePath],
+    );
+    const expectedEntry = `${asset.identity.mode} blob ${asset.identity.gitBlob}\t${asset.submodulePath}`;
+    if (treeEntry.status !== 0 || treeEntry.stdout.trim() !== expectedEntry) {
+      fail(`Hermes pinned archive has wrong blob identity for ${asset.submodulePath}`);
+      continue;
+    }
     const archived = run(
       submoduleRoot,
       "git",
@@ -279,10 +289,10 @@ function validateNpm(root) {
     }
     const packRecord = Array.isArray(payload) ? payload[0] : Object.values(payload ?? {})[0];
     const files = packRecord?.files?.map((entry) => entry.path) ?? [];
+    const packedFiles = new Map(packRecord?.files?.map((entry) => [entry.path, entry]) ?? []);
     assertNoForbiddenPayload(files, "npm package");
     const requiredFiles = [
       "templates/commonproject/copier.yml",
-      "templates/hermes-agent/copier.yml",
       ...REQUIRED_HERMES_PACKAGE_ASSETS.map((asset) => asset.packagePath),
     ];
     for (const required of requiredFiles) {
@@ -296,6 +306,12 @@ function validateNpm(root) {
     }
     for (const asset of REQUIRED_HERMES_PACKAGE_ASSETS) {
       if (!files.includes(asset.packagePath)) continue;
+      const packedMode = packedFiles.get(asset.packagePath)?.mode;
+      const expectedMode = asset.identity.mode === "100755" ? 0o755 : 0o644;
+      if (packedMode !== expectedMode) {
+        fail(`npm package mode differs from canonical ${asset.packagePath}`);
+        continue;
+      }
       const packed = run(root, "tar", ["-xOf", tarball, `package/${asset.packagePath}`], { encoding: null });
       if (packed.status !== 0) {
         fail(`npm package cannot read ${asset.packagePath}`);

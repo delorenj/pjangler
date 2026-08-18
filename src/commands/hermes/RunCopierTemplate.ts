@@ -8,7 +8,11 @@ import YAML from "yaml";
 import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveAgentId, deriveProfileName, type HermesAgentContext } from "./types";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
-import { verifyTrustedCopierIdentity } from "../../lifecycle/preflight";
+import {
+  materializeTrustedHermesTemplate,
+  verifyTrustedCopierIdentity,
+  verifyTrustedHermesTemplateIdentity,
+} from "../../lifecycle/preflight";
 import { hardenSubprocessEnvironment } from "../../utils/child-environment";
 
 const TICKET_PROVIDER_CREDENTIAL_KEYS = new Set([
@@ -149,6 +153,13 @@ export class RunCopierTemplate extends Command {
         message: "MCP Hermes apply requires a preflight-attested Copier identity",
       };
     }
+    if (trustedCopierRequired && !ctx.trustedHermesTemplate) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: "MCP Hermes apply requires a preflight-attested immutable template identity",
+      };
+    }
     // Interactive CLI callers retain their historical PATH behavior. MCP
     // apply has an identity and therefore must not execute `which` or resolve
     // PATH again after the handler's read-only preflight.
@@ -270,20 +281,49 @@ export class RunCopierTemplate extends Command {
           message: `Copier provenance revalidation failed: ${verified.error ?? "unknown identity failure"}`,
         };
       }
+      const templateVerified = ctx.trustedHermesTemplate
+        ? verifyTrustedHermesTemplateIdentity(ctx.trustedHermesTemplate)
+        : { ok: false, error: "immutable template identity is missing" };
+      if (!templateVerified.ok) {
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Hermes template revalidation failed: ${templateVerified.error ?? "unknown identity failure"}`,
+        };
+      }
     }
 
-    // Ensure agents/hermes/ parent exists so copier doesn't have to create it
-    // (copier handles this fine, but creating it ourselves lets us catch
-    // permission issues earlier).
-    mkdirSync(join(ctx.targetDir, "agents", "hermes"), { recursive: true });
-
+    let immutableTemplate: ReturnType<typeof materializeTrustedHermesTemplate> | undefined;
+    let result: ReturnType<typeof spawnSync>;
     const spinner = ctx.quiet ? undefined : p.spinner();
-    spinner?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
-    const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
-    const result = spawnSync(copierExecutable, args, ctx.quiet
-      ? { encoding: "utf8", env, cwd: ctx.targetDir }
-      : { stdio: "inherit", env, cwd: ctx.targetDir });
-    spinner?.stop(result.status === 0 ? "✓ copier run complete" : "✗ copier failed");
+    try {
+      if (ctx.trustedHermesTemplate) {
+        immutableTemplate = materializeTrustedHermesTemplate(ctx.trustedHermesTemplate);
+        args[1] = immutableTemplate.path;
+        const vcsRef = args.indexOf("--vcs-ref=HEAD");
+        if (vcsRef >= 0) args.splice(vcsRef, 1);
+      }
+
+      // The private snapshot is complete and reattested before the first
+      // target write. Copier receives only its absolute path; it never reads
+      // the mutable vendored worktree after this boundary.
+      mkdirSync(join(ctx.targetDir, "agents", "hermes"), { recursive: true });
+      spinner?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
+      const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
+      result = spawnSync(copierExecutable, args, ctx.quiet
+        ? { encoding: "utf8", env, cwd: ctx.targetDir }
+        : { stdio: "inherit", env, cwd: ctx.targetDir });
+      spinner?.stop(result.status === 0 ? "✓ copier run complete" : "✗ copier failed");
+    } catch (error) {
+      spinner?.stop("✗ copier failed");
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Hermes template snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    } finally {
+      immutableTemplate?.cleanup();
+    }
 
     if (result.status !== 0) {
       return {

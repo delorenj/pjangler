@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CHECKER = join(ROOT, "scripts", "check-submodule-contract.mjs");
+const HERMES_TEMPLATE_MANIFEST = JSON.parse(
+  readFileSync(join(ROOT, "hermes-template-assets.json"), "utf8"),
+);
 const temporary = [];
 
 function run(command, args, cwd, options = {}) {
@@ -143,14 +146,18 @@ function materializePackage(root, payloads = []) {
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "copier.yml"), "_subdirectory: template\n");
   }
-  for (const [path, content] of [
-    ["templates/hermes-agent/template/.scripts/lib/fleet-env.sh", "#!/usr/bin/env bash\n# canonical loader fixture\n"],
-    ["templates/hermes-agent/template/.scripts/lib/parse-fleet-env.py", "#!/usr/bin/env python3\n# canonical parser fixture\n"],
-    ["templates/hermes-agent/template/.scripts/heartbeat.sh", "#!/usr/bin/env bash\n# canonical heartbeat fixture\n"],
-  ]) {
+  for (const submodulePath of Object.keys(HERMES_TEMPLATE_MANIFEST.files)) {
+    const path = `templates/hermes-agent/${submodulePath}`;
+    const content = submodulePath === "copier.yml"
+      ? "_subdirectory: template\n"
+      : `fixture asset ${submodulePath}\n`;
     const target = join(root, path);
     mkdirSync(resolve(target, ".."), { recursive: true });
     writeFileSync(target, content);
+    chmodSync(
+      target,
+      HERMES_TEMPLATE_MANIFEST.files[submodulePath].mode === "100755" ? 0o755 : 0o644,
+    );
   }
   for (const [path, content] of payloads) {
     const target = join(root, path);
@@ -163,6 +170,29 @@ try {
   {
     const { root } = fixture();
     assert.equal(check(root).status, 0);
+  }
+
+
+  for (const omitted of [
+    {
+      path: "templates/hermes-agent/template/.scripts/05-fleet-env.sh",
+      diagnostic: /npm package is missing populated .*05-fleet-env\.sh/,
+    },
+    {
+      path: "templates/hermes-agent/template/.runtime-scaffold/.gitignore.jinja",
+      diagnostic: /npm package is missing populated .*\.runtime-scaffold\/\.gitignore\.jinja/,
+    },
+  ]) {
+    const { root } = fixture();
+    materializePackage(root, [[omitted.path, "# required Hermes runtime asset\n"]]);
+    const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    packageJson.files = ["templates", `!${omitted.path}`];
+    writeFileSync(join(root, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
+
+    const result = check(root, "--npm");
+    assert.equal(result.status, 1, `npm omission of ${omitted.path} must fail prepublish`);
+    assert.match(result.stderr, omitted.diagnostic);
+    assert.doesNotMatch(result.stderr, /mode differs|bytes differ/, "the omission mutant must start from a valid package fixture");
   }
 
   {
@@ -321,7 +351,8 @@ try {
     const hermesBare = join(cloneRoot, "hermes.git");
     const clone = join(cloneRoot, "pjangler");
     const commonPin = standaloneBareSnapshot(join(ROOT, "templates", "commonproject"), commonBare);
-    const hermesPin = standaloneBareSnapshot(join(ROOT, "templates", "hermes-agent"), hermesBare);
+    git(cloneRoot, ["clone", "--quiet", "--bare", "--no-local", join(ROOT, "templates", "hermes-agent"), hermesBare]);
+    const hermesPin = git(join(ROOT, "templates", "hermes-agent"), ["rev-parse", "HEAD"]);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
     git(clone, ["config", "user.email", "fixture@example.invalid"]);

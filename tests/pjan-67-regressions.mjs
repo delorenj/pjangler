@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -36,10 +36,21 @@ function executableSources(directory) {
     if (entry.name === ".git") continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) found.push(...executableSources(path));
-    else if (/^(?:[^.]+|.*\.(?:sh|py|jinja))$/.test(entry.name)) found.push(path);
+    else if (/^(?:[^.]+|.*\.(?:sh|py|jinja|command))$/.test(entry.name) || (statSync(path).mode & 0o111) !== 0) found.push(path);
   }
   return found;
 }
+
+const commandInventoryFixture = join(temporary, "fleet-inventory-fixture");
+mkdirSync(commandInventoryFixture, { recursive: true });
+const commandInventoryEscape = join(commandInventoryFixture, "fleet-escape.command");
+writeFileSync(commandInventoryEscape, 'source "$HERMES_FLEET_ENV"\n', "utf8");
+chmodSync(commandInventoryEscape, 0o755);
+assert.deepEqual(
+  executableSources(commandInventoryFixture),
+  [commandInventoryEscape],
+  "executable .command files must remain inside the fleet reference inventory",
+);
 
 const consumerRoots = [
   join(root, "agents", "hermes", "pm"),
@@ -66,6 +77,7 @@ const fleetReferenceAllowlist = [
   "templates/hermes-agent/template/.scripts/05-fleet-env.sh",
   "templates/hermes-agent/template/.scripts/30-telegram.sh",
   "templates/hermes-agent/template/.scripts/31-slack.sh",
+  "templates/hermes-agent/template/.scripts/70-systemd.sh",
   "templates/hermes-agent/template/.scripts/80-registry.sh",
   "templates/hermes-agent/template/.scripts/99-summary.sh",
   "templates/hermes-agent/template/.scripts/_lib.sh",
@@ -144,6 +156,11 @@ for (const asset of ["fleet-env.sh", "parse-fleet-env.py"]) {
     `tracked PM ${asset} must equal the canonical template asset`,
   );
 }
+assert.deepEqual(
+  readFileSync(join(root, "agents/hermes/pm/.scripts/70-systemd.sh")),
+  readFileSync(join(root, "templates/hermes-agent/template/.scripts/70-systemd.sh")),
+  "tracked PM systemd provisioning must equal the canonical template task",
+);
 
 mkdirSync(fakeBin, { recursive: true });
 mkdirSync(adapters, { recursive: true });

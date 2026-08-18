@@ -19,10 +19,13 @@ import type { HermesAgentContext } from "../src/commands/hermes/types";
 import { hardenSubprocessEnvironment } from "../src/utils/child-environment";
 import {
   HERMES_TEMPLATE_ATTESTATION,
+  captureAttestedHermesTemplate,
+  materializeTrustedHermesTemplate,
   preflightCommonProjectTemplate,
   preflightHermesTemplate,
   preflightRenderedHermes,
   preflightTrustedCopier,
+  verifyTrustedHermesTemplateIdentity,
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
 } from "../src/lifecycle/preflight";
@@ -148,11 +151,13 @@ try {
   // This is an integration assertion, not a prerequisite for the hermetic
   // suite. On the release host it proves the installed UV Copier is accepted.
   const actual = preflightTrustedCopier({ targetDir: join(workspace, "actual-target") });
+  let liveUvCopier: TrustedCopierIdentity | undefined;
   if (actual.ok) {
     assert.equal(actual.layout, "uv-tool");
     assert.ok(actual.identity);
     assert.equal(actual.identity.executable, realpathSync(actual.identity.resolvedFrom));
     assert.equal(verifyTrustedCopierIdentity(actual.identity).ok, true);
+    liveUvCopier = actual.identity;
     console.log(`PJAN-67 live UV Copier attested: ${actual.identity.executable} (${actual.identity.version})`);
   } else {
     console.log(`PJAN-67 live UV Copier attestation skipped: ${actual.error}`);
@@ -225,6 +230,9 @@ try {
   const previousConfig = process.env.HERMES_TEMPLATE_CONFIG;
   process.env.HERMES_TEMPLATE_CONFIG = hermesConfig;
   try {
+    const templatePreflight = preflightHermesTemplate(root);
+    assert.equal(templatePreflight.ok, true, templatePreflight.error);
+    assert.ok(templatePreflight.identity);
     const context: HermesAgentContext = {
       targetDir: hermesTarget,
       targetRepo: "check-use",
@@ -234,6 +242,7 @@ try {
       dryRun: false,
       skipPlane: true,
       trustedCopier: hermesMutation.identity,
+      trustedHermesTemplate: templatePreflight.identity,
       deferredExternalEffects: { runtimeRepo: false, ticketBoard: false, systemd: false, owner: "hermes" },
     };
     const result = await new RunCopierTemplate(context).invoke();
@@ -568,6 +577,20 @@ try {
     HERMES_TEMPLATE_ATTESTATION.commit,
     "the checked-out Hermes submodule must equal the immutable attestation commit",
   );
+  const attestedTree = hardenedSpawnSync("git", ["ls-tree", "-r", "--name-only", HERMES_TEMPLATE_ATTESTATION.commit], {
+    cwd: templateRoot,
+    encoding: "utf8",
+  });
+  assert.equal(attestedTree.status, 0, attestedTree.stderr || attestedTree.stdout);
+  const expectedTemplateAssets = attestedTree.stdout
+    .split(/\r?\n/)
+    .filter((path) => path === "copier.yml" || path.startsWith("template/"))
+    .sort();
+  assert.deepEqual(
+    Object.keys(HERMES_TEMPLATE_ATTESTATION.files).sort(),
+    expectedTemplateAssets,
+    "every Copier config/template/task byte must be bound to the pinned Git object",
+  );
   for (const [relativePath, expected] of Object.entries(HERMES_TEMPLATE_ATTESTATION.files)) {
     const blob = hardenedSpawnSync("git", ["rev-parse", `${HERMES_TEMPLATE_ATTESTATION.commit}:${relativePath}`], {
       cwd: templateRoot,
@@ -588,6 +611,162 @@ try {
     );
   }
   assert.equal(preflightHermesTemplate(root).ok, true, "the vendored Hermes template must satisfy lifecycle eligibility");
+
+  const mutableSnapshotRoot = join(workspace, "mutable-template-check-use");
+  cpSync(templateRoot, mutableSnapshotRoot, { recursive: true });
+  const capturedTemplate = captureAttestedHermesTemplate(mutableSnapshotRoot);
+  assert.equal(capturedTemplate.ok, true, capturedTemplate.error);
+  assert.ok(capturedTemplate.identity);
+  const capturedTask = capturedTemplate.identity.files.find(
+    (entry) => entry.path === "template/.scripts/05-fleet-env.sh",
+  );
+  assert.ok(capturedTask);
+  writeFileSync(
+    join(mutableSnapshotRoot, capturedTask.path),
+    "#!/bin/sh\nprintf mutable-template-ran > /must-not-execute\n",
+    "utf8",
+  );
+  writeFileSync(join(mutableSnapshotRoot, "template", "post-preflight-extra.sh"), "exit 99\n", "utf8");
+  const immutableCopy = materializeTrustedHermesTemplate(capturedTemplate.identity);
+  try {
+    assert.deepEqual(
+      readFileSync(join(immutableCopy.path, capturedTask.path)),
+      Buffer.from(capturedTask.contentBase64, "base64"),
+      "the execution snapshot must use captured bytes after the vendored path changes",
+    );
+    assert.equal(
+      existsSync(join(immutableCopy.path, "template", "post-preflight-extra.sh")),
+      false,
+      "post-preflight extras must not enter the immutable execution snapshot",
+    );
+  } finally {
+    immutableCopy.cleanup();
+  }
+  const mutatedIdentity = {
+    ...capturedTemplate.identity,
+    files: capturedTemplate.identity.files.map((entry) => (
+      entry.path === capturedTask.path
+        ? { ...entry, contentBase64: Buffer.from("changed after capture").toString("base64") }
+        : entry
+    )),
+  };
+  assert.equal(
+    verifyTrustedHermesTemplateIdentity(mutatedIdentity).ok,
+    false,
+    "an in-memory template replacement must be rejected before materialization",
+  );
+
+  if (liveUvCopier) {
+    const liveSnapshotRoot = join(workspace, "live-immutable-template");
+    cpSync(templateRoot, liveSnapshotRoot, { recursive: true });
+    const liveCaptured = captureAttestedHermesTemplate(liveSnapshotRoot);
+    assert.equal(liveCaptured.ok, true, liveCaptured.error);
+    assert.ok(liveCaptured.identity);
+    const mutableTask = join(liveSnapshotRoot, "template", ".scripts", "05-fleet-env.sh");
+    writeFileSync(
+      mutableTask,
+      "#!/bin/sh\nprintf post-preflight-source-ran > \"$PJAN67_TEMPLATE_EFFECT\"\n",
+      "utf8",
+    );
+    const immutableTarget = join(workspace, "live-immutable-target");
+    const templateEffect = join(workspace, "live-immutable-template-effect");
+    const previousEffect = process.env.PJAN67_TEMPLATE_EFFECT;
+    process.env.PJAN67_TEMPLATE_EFFECT = templateEffect;
+    try {
+      const rendered = await new RunCopierTemplate({
+        targetDir: immutableTarget,
+        targetRepo: "immutable-template",
+        role: "pm",
+        yes: true,
+        quiet: true,
+        dryRun: false,
+        skipPlane: true,
+        trustedCopier: liveUvCopier,
+        trustedHermesTemplate: liveCaptured.identity,
+        deferredExternalEffects: {
+          runtimeRepo: false,
+          ticketBoard: false,
+          systemd: false,
+          owner: "hermes",
+        },
+      }).invoke();
+      assert.equal(rendered.success, true, rendered.message);
+    } finally {
+      if (previousEffect === undefined) delete process.env.PJAN67_TEMPLATE_EFFECT;
+      else process.env.PJAN67_TEMPLATE_EFFECT = previousEffect;
+    }
+    assert.equal(existsSync(templateEffect), false, "a post-preflight vendored task replacement must never execute");
+    assert.deepEqual(
+      readFileSync(join(immutableTarget, "agents", "hermes", "pm", ".scripts", "05-fleet-env.sh")),
+      Buffer.from(
+        liveCaptured.identity.files.find((entry) => entry.path === "template/.scripts/05-fleet-env.sh")!.contentBase64,
+        "base64",
+      ),
+      "real Copier must render the exact captured task bytes",
+    );
+  }
+
+  const symlinkedCanonicalRoot = join(workspace, "symlinked-canonical-root");
+  const escapedCanonicalTemplates = join(workspace, "escaped-canonical-templates");
+  mkdirSync(symlinkedCanonicalRoot, { recursive: true });
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(escapedCanonicalTemplates, "hermes-agent"),
+    { recursive: true },
+  );
+  symlinkSync(escapedCanonicalTemplates, join(symlinkedCanonicalRoot, "templates"), "dir");
+  const escapedCanonical = preflightHermesTemplate(symlinkedCanonicalRoot);
+  assert.equal(escapedCanonical.ok, false, "a symlinked template ancestor must not escape the pjangler root");
+  assert.match(escapedCanonical.error ?? "", /escape|contain|symlink/i);
+
+  const extraCanonicalRoot = join(workspace, "extra-canonical-template");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(extraCanonicalRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  writeFileSync(
+    join(extraCanonicalRoot, "templates", "hermes-agent", "template", ".scripts", "unmanifested-task.sh"),
+    "#!/bin/sh\nexit 99\n",
+    "utf8",
+  );
+  const extraCanonical = preflightHermesTemplate(extraCanonicalRoot);
+  assert.equal(extraCanonical.ok, false, "an unmanifested executable must fail the exact template inventory");
+  assert.match(extraCanonical.error ?? "", /inventory.*extra.*unmanifested-task\.sh/i);
+
+  const symlinkedAssetRoot = join(workspace, "symlinked-canonical-asset");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(symlinkedAssetRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  const symlinkedAsset = join(
+    symlinkedAssetRoot,
+    "templates",
+    "hermes-agent",
+    "template",
+    ".scripts",
+    "05-fleet-env.sh",
+  );
+  rmSync(symlinkedAsset);
+  symlinkSync("01-config.sh", symlinkedAsset);
+  const symlinkedCanonicalAsset = preflightHermesTemplate(symlinkedAssetRoot);
+  assert.equal(symlinkedCanonicalAsset.ok, false, "a symlink inside the pinned tree must fail before effects");
+  assert.match(symlinkedCanonicalAsset.error ?? "", /05-fleet-env\.sh.*not a regular file/i);
+
+  const wrongModeRoot = join(workspace, "wrong-mode-canonical-template");
+  cpSync(
+    join(root, "templates", "hermes-agent"),
+    join(wrongModeRoot, "templates", "hermes-agent"),
+    { recursive: true },
+  );
+  chmodSync(
+    join(wrongModeRoot, "templates", "hermes-agent", "template", "role.yaml.jinja"),
+    0o755,
+  );
+  const wrongMode = preflightHermesTemplate(wrongModeRoot);
+  assert.equal(wrongMode.ok, false, "Git executable-mode drift must fail before effects");
+  assert.match(wrongMode.error ?? "", /executable mode mismatch/i);
 
   const missingParserRoot = join(workspace, "missing-parser-template");
   cpSync(
@@ -645,6 +824,10 @@ try {
     encoding: "utf8",
   }).stdout.trim();
   for (const relativeAsset of [
+    "copier.yml",
+    "template/role.yaml.jinja",
+    "template/.scripts/05-fleet-env.sh",
+    "template/.scripts/20-runtime-repo.sh",
     "template/.scripts/lib/fleet-env.sh",
     "template/.scripts/lib/parse-fleet-env.py",
     "template/.scripts/heartbeat.sh",
@@ -703,6 +886,58 @@ try {
     agentId: "parser-attestation-pm",
   };
   assert.equal(preflightRenderedHermes(renderedOptions).ok, true, "the complete rendered fixture must attest");
+
+  const postRenderIdentity = preflightHermesTemplate(root);
+  assert.equal(postRenderIdentity.ok, true, postRenderIdentity.error);
+  assert.ok(postRenderIdentity.identity);
+  const postRenderMutableTask = join(
+    tamperedCanonicalTemplate,
+    "template",
+    ".scripts",
+    "70-systemd.sh",
+  );
+  const postRenderPristine = readFileSync(postRenderMutableTask);
+  writeFileSync(postRenderMutableTask, "#!/bin/sh\nexit 99\n", "utf8");
+  try {
+    const capturedPostcondition = preflightRenderedHermes({
+      ...renderedOptions,
+      pjanglerRoot: tamperedCanonicalRoot,
+      trustedHermesTemplate: postRenderIdentity.identity,
+    });
+    assert.equal(
+      capturedPostcondition.ok,
+      true,
+      "post-render eligibility must compare against pre-effect captured bytes, not a mutable vendored path",
+    );
+  } finally {
+    writeFileSync(postRenderMutableTask, postRenderPristine);
+  }
+
+  const escapedRenderedTarget = join(workspace, "escaped-rendered-target");
+  const escapedRenderedOutside = join(workspace, "escaped-rendered-outside");
+  mkdirSync(escapedRenderedTarget, { recursive: true });
+  cpSync(renderedRole, join(escapedRenderedOutside, "agents", "hermes", "pm"), { recursive: true });
+  symlinkSync(join(escapedRenderedOutside, "agents"), join(escapedRenderedTarget, "agents"), "dir");
+  writeFileSync(
+    join(escapedRenderedTarget, ".project.json"),
+    JSON.stringify({
+      agents: {
+        "parser-attestation-pm": {
+          role: "pm",
+          role_dir: "agents/hermes/pm",
+          provisioning_state: "provisioned",
+        },
+      },
+    }),
+    "utf8",
+  );
+  const escapedRendered = preflightRenderedHermes({
+    ...renderedOptions,
+    targetDir: escapedRenderedTarget,
+    roleDir: join(escapedRenderedTarget, "agents", "hermes", "pm"),
+  });
+  assert.equal(escapedRendered.ok, false, "a symlinked role ancestor must not escape the project target");
+  assert.match(escapedRendered.error ?? "", /escape|contain|symlink/i);
   const renderedParser = join(renderedRole, ".scripts", "lib", "parse-fleet-env.py");
   const parserSource = readFileSync(renderedParser, "utf8");
   rmSync(renderedParser);
