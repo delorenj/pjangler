@@ -57,7 +57,18 @@ jobs:
       - name: Verify mise installation
         run: mise --version
 
-      - run: python -m pip install 'copier==9.14.0'
+      # pjangler only trusts a Copier installed as a uv tool: it attests the
+      # wheel against its RECORD digests under ~/.local/share/uv/tools/copier
+      # and refuses anything else on PATH as untrusted (src/lifecycle/preflight.ts).
+      # A pip install lands in the Python toolcache instead, so the lifecycle
+      # tests could never exercise a trusted Copier here.
+      - run: python -m pip install 'uv==0.11.14'
+      - run: uv tool install 'copier==9.14.0'
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify Copier is trusted where pjangler looks for it
+        run: |
+          test -x "$HOME/.local/share/uv/tools/copier/bin/copier"
+          copier --version
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck
