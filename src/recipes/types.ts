@@ -3,7 +3,15 @@ import type { CommandContext } from "../commands/Command";
 export type RecipeId = string;
 export type RuleId = string;
 export type LifecycleStatus = "pass" | "fail" | "warn" | "skip";
-export type MigrationStatus = "applied" | "noop" | "blocked" | "skipped";
+/**
+ * `partial` is the honest outcome for a rule that DID apply changes (or found
+ * nothing it was allowed to change) yet still does not pass its own audit --
+ * e.g. a step that needs an explicit opt-in flag, or a blocker the rule
+ * refuses to resolve destructively. It is the migrate-side counterpart of the
+ * postcondition check `Recipe.initializeOwnedChecks` has always run, and it
+ * exists so "Migration complete" can never be followed by a failing audit.
+ */
+export type MigrationStatus = "applied" | "noop" | "blocked" | "skipped" | "partial";
 export type RecipePhaseStatus = "changed" | "unchanged" | "planned" | "skipped" | "failed" | "cancelled";
 
 export interface LifecycleContext extends CommandContext {

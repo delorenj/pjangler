@@ -56,7 +56,7 @@ export interface AuditReport {
 export interface MigrationRuleResult {
   id: string;
   title: string;
-  status: "applied" | "noop" | "blocked" | "skipped";
+  status: "applied" | "noop" | "blocked" | "skipped" | "partial";
   summary: string;
   changedFiles: string[];
   details: string[];
@@ -585,16 +585,26 @@ function renderGeneratedProjectMiseToml(ctx: Context, template: string): string 
     .replace(/\{\{\s*project_name\s*\}\}/g, projectName);
 }
 
-function ensureMiseTomlFromTemplate(ctx: Context, changedFiles: string[]): boolean {
+/**
+ * Materialize `mise.toml` from the generated-project template when the repo has
+ * none. Returns the resulting content, or `null` when there is nothing to
+ * initialize from.
+ *
+ * PJAN-75: the content is RETURNED rather than left for the caller to read back
+ * off disk. A dry run plans the write without performing it, so a caller that
+ * re-read the path crashed with ENOENT -- which is what
+ * `migrate skills.project-manifest --dry-run` did on every repo without a
+ * mise.toml, surfacing as the useless "migrate threw: ENOENT".
+ */
+function ensureMiseTomlFromTemplate(ctx: Context, changedFiles: string[]): string | null {
   const targetPath = join(ctx.repoRoot, "mise.toml");
-  if (existsSync(targetPath)) return false;
+  if (existsSync(targetPath)) return null;
   const sourcePath = join(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
-  if (!existsSync(sourcePath)) return false;
+  if (!existsSync(sourcePath)) return null;
+  const rendered = renderGeneratedProjectMiseToml(ctx, readText(sourcePath));
   changedFiles.push(targetPath);
-  if (!ctx.dryRun) {
-    writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
-  }
-  return true;
+  if (!ctx.dryRun) writeText(targetPath, rendered);
+  return rendered;
 }
 
 function templateCommonProjectText(ctx: Context, rel: string): string | undefined {
@@ -2342,6 +2352,28 @@ function readRoleYamlAt(roleDir: string): { role: string; agentId: string; provi
   };
 }
 
+/**
+ * True when a declared/registered agent has no `role.yaml` behind it -- i.e.
+ * the role is unprovisioned or half-provisioned rather than merely drifted.
+ *
+ * PJAN-75: this predicate is deliberately SHARED between `sot.project-json`
+ * and `hermes.registry-parity`. Those two rules used to test the same
+ * condition independently and reach opposite conclusions: registry-parity
+ * called it a non-fixable blocker ("provision or restore the role, do not
+ * delete its registry/declaration") while project-json quietly deleted the
+ * declaration as invalid. A single `migrate --all` therefore destroyed the
+ * only repo-local record of an agent's identity AND still left the audit
+ * failing, because the fleet registry entry it could not see survived.
+ *
+ * An empty/missing role_dir counts as unprovisioned for the same reason: there
+ * is nothing on disk to recover the identity from, so the declaration is all
+ * that is left of it.
+ */
+function declaredRoleIsUnprovisioned(repoRoot: string, roleDir: string | undefined): boolean {
+  if (!roleDir) return true;
+  return !existsSync(join(resolve(repoRoot, roleDir), "role.yaml"));
+}
+
 function validateDeclaredAgent(ctx: Context, declared: DeclaredAgentEntry): { valid: boolean; role?: string; agentId?: string; roleDir?: string; details: string[] } {
   const details: string[] = [];
   if (!declared.roleDir) {
@@ -2396,7 +2428,7 @@ function numberSetting(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[] } {
+function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[]; unprovisioned: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
   const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename(ctx.repoRoot));
@@ -2419,7 +2451,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
       },
     ])
   );
-  const agents: Record<string, { role: string; role_dir: string; [key: string]: unknown }> = Object.fromEntries(
+  const agents: Record<string, Record<string, unknown>> = Object.fromEntries(
     Object.entries(discoveredAgents).map(([agentId, discovered]) => {
       const existingAgent = existingAgents[agentId] ?? {};
       const extras = Object.fromEntries(Object.entries(existingAgent).filter(([key]) => key !== "role" && key !== "role_dir"));
@@ -2427,6 +2459,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
     })
   );
   const dropped: string[] = [];
+  const unprovisioned: string[] = [];
   for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
     const declared: DeclaredAgentEntry = {
       agentId: declaredAgentId,
@@ -2434,8 +2467,23 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
       roleDir: typeof entry.role_dir === "string" ? entry.role_dir : undefined,
       extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir")),
     };
+    // PJAN-75: a declaration with no role.yaml behind it is an UNPROVISIONED
+    // role, not junk. role.yaml is the identity SSOT, so when it is absent the
+    // declaration is the last place the agent's role, role_dir and any
+    // provisioning extras still exist -- and `hermes.registry-parity` refuses
+    // to prune exactly this state for exactly that reason. Preserve the entry
+    // byte-for-byte and let the rule keep failing until the role is
+    // provisioned or restored. Dropping it neither fixed the audit (the fleet
+    // registry entry outlives .project.json) nor left anything to repair from.
+    if (declaredRoleIsUnprovisioned(ctx.repoRoot, declared.roleDir)) {
+      agents[declaredAgentId] = { ...entry };
+      unprovisioned.push(declaredAgentId);
+      continue;
+    }
     const validated = validateDeclaredAgent(ctx, declared);
     if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
+      // role.yaml exists, so `discoverRoles` has already contributed the
+      // canonical identity above and this stale key carries nothing unique.
       dropped.push(declaredAgentId);
       continue;
     }
@@ -2467,6 +2515,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
     agents,
     automation,
     dropped,
+    unprovisioned,
   };
 }
 
@@ -2498,11 +2547,23 @@ function projectJsonFinding(ctx: Context): AuditFinding {
       details.push(`agents.${role.agentId}.role_dir should be ${relative(ctx.repoRoot, role.roleDir)}`);
     }
   }
+  // PJAN-75: split the declaration findings by whether migrate can actually
+  // resolve them. An unprovisioned role is a human action (provision or
+  // restore role.yaml); reporting it as fixable put the rule back in the
+  // picker on every run, where the only "fix" available was the destructive
+  // prune this rule no longer performs.
   const declaredAgents = readDeclaredAgents(ctx);
-  if (declaredAgents.length > 0) {
-    for (const declared of declaredAgents) {
-      details.push(...validateDeclaredAgent(ctx, declared).details);
+  let unprovisionedDeclarations = 0;
+  for (const declared of declaredAgents) {
+    const declaredDetails = validateDeclaredAgent(ctx, declared).details;
+    if (declaredRoleIsUnprovisioned(ctx.repoRoot, declared.roleDir)) {
+      unprovisionedDeclarations += declaredDetails.length;
+      details.push(
+        ...declaredDetails.map((detail) => `${detail}; provision or restore the role, do not delete its declaration`)
+      );
+      continue;
     }
+    details.push(...declaredDetails);
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
   for (const key of ["type", "workspace", "identifier", "board_id", "state"]) {
@@ -2524,7 +2585,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     status: details.length === 0 ? "pass" : "fail",
     summary: details.length === 0 ? ".project.json matches canonical parity contract" : `${details.length} parity issue(s) detected`,
     details,
-    fixable: true,
+    fixable: details.length > unprovisionedDeclarations,
   };
 }
 
@@ -3434,14 +3495,16 @@ function unprovisionedRoleAgents(
 
   for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
     if (canonical.has(agentId)) continue;
+    // The registry stores role_dir absolute; `resolve` leaves those untouched,
+    // so the same repo-relative-aware predicate serves both sources.
     const roleDir = String(entry.role_dir ?? "");
-    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, "registry");
+    if (declaredRoleIsUnprovisioned(repoRoot, roleDir)) record(agentId, roleDir, "registry");
   }
   for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
     if (canonical.has(agentId)) continue;
     const configured = String(entry.role_dir ?? "");
     const roleDir = configured ? resolve(repoRoot, configured) : "";
-    if (!roleDir || !existsSync(join(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
+    if (declaredRoleIsUnprovisioned(repoRoot, configured)) record(agentId, roleDir, ".project.json");
   }
 
   return [...blockers.entries()].map(([agentId, value]) => ({
@@ -4175,7 +4238,7 @@ return [
       const changedFiles: string[] = [];
       const details: string[] = [];
       if (!existsSync(path)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+        if (ensureMiseTomlFromTemplate(ctx, changedFiles) === null) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
         }
         details.push("Initialized mise.toml from generated-project template");
@@ -4238,7 +4301,7 @@ return [
       const details: string[] = [];
       const misePath = join(ctx.repoRoot, "mise.toml");
       if (!existsSync(misePath)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+        if (ensureMiseTomlFromTemplate(ctx, changedFiles) === null) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
         }
         details.push("Initialized mise.toml from generated-project template");
@@ -4604,12 +4667,15 @@ return [
         }
       }
 
-      if (!existsSync(misePath)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+      let currentMise = safeReadText(misePath);
+      if (currentMise === null) {
+        const initialized = ensureMiseTomlFromTemplate(ctx, changedFiles);
+        if (initialized === null) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
         }
+        details.push("Initialized mise.toml from generated-project template");
+        currentMise = initialized;
       }
-      const currentMise = readText(misePath);
       const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
       if (nextMise !== currentMise) {
         if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
@@ -4702,6 +4768,13 @@ return [
       const path = join(ctx.repoRoot, ".project.json");
       const existing = readProjectJson(ctx) ?? {};
       const canonical = canonicalProjectJson(ctx);
+      const preservedDetails: string[] = [];
+      for (const agentId of canonical.unprovisioned) {
+        const roleDir = ((existing.agents as Record<string, Record<string, unknown>> | undefined)?.[agentId]?.role_dir);
+        preservedDetails.push(
+          `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no role.yaml)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
+        );
+      }
       for (const agentId of canonical.dropped) {
         const entry = (existing.agents as Record<string, unknown> | undefined)?.[agentId];
         const entryRecord = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : undefined;
@@ -4716,7 +4789,7 @@ return [
         droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
       }
       // Merge: canonical keys win, but preserve any extra keys the user added
-      const { dropped: _dropped, ...canonicalJson } = canonical;
+      const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson } = canonical;
       const merged = { ...existing, ...canonicalJson };
       const expected = `${JSON.stringify(merged, null, 2)}\n`;
       if (safeReadText(path) !== expected) {
@@ -4733,7 +4806,7 @@ return [
           if (!ctx.dryRun) renameSync(planeJson, backup);
         }
       }
-      const details = [...droppedDetails, ...blockedDetails];
+      const details = [...droppedDetails, ...preservedDetails, ...blockedDetails];
       return {
         id: finding.id,
         title: finding.title,
@@ -4865,18 +4938,21 @@ return [
         if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);
       }
       const misePath = join(ctx.repoRoot, "mise.toml");
-      if (!existsSync(misePath)) {
-        if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+      let currentMise = safeReadText(misePath);
+      if (currentMise === null) {
+        const initialized = ensureMiseTomlFromTemplate(ctx, changedFiles);
+        if (initialized === null) {
           return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and the packaged template is unavailable", changedFiles: [], details: [] };
         }
+        // Previously guarded by `if (existsSync(misePath))`, which a dry run
+        // never satisfies -- so the op-inject hook silently vanished from the
+        // preview of a repo that had no mise.toml yet.
+        currentMise = initialized;
       }
-      if (existsSync(misePath)) {
-        const currentMise = readText(misePath);
-        const nextMise = upsertOpInjectHook(currentMise);
-        if (nextMise !== currentMise) {
-          changedFiles.push(misePath);
-          if (!ctx.dryRun) writeText(misePath, nextMise);
-        }
+      const nextOpInjectMise = upsertOpInjectHook(currentMise);
+      if (nextOpInjectMise !== currentMise) {
+        if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+        if (!ctx.dryRun) writeText(misePath, nextOpInjectMise);
       }
       const materializePath = join(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
       const expectedMaterializer = templateMaterializeEnvScript(ctx);
@@ -5837,7 +5913,14 @@ return [
         id: finding.id,
         title: finding.title,
         status: details.some((d) => d.startsWith("blocked:")) ? "blocked" : changedFiles.length ? (ctx.dryRun ? "skipped" : "applied") : "noop",
-        summary: changedFiles.length ? (ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired") : "No changes required",
+        // PJAN-75: the summary has to follow the status. The blocked branch was
+        // missing here, so a run that stopped on a missing profile renderer
+        // still reported "Singleton runtime wired" -- and that string is what
+        // surfaced as the recipe's ERROR message, telling the operator the
+        // exact opposite of what happened.
+        summary: details.some((d) => d.startsWith("blocked:"))
+          ? "Singleton-runtime wiring blocked"
+          : changedFiles.length ? (ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired") : "No changes required",
         changedFiles,
         details,
       };
@@ -5927,6 +6010,20 @@ return [
         fixable: false,
       };
     },
+    // The audit above is `fixable: false`, so `migrate --all` never selects
+    // this rule -- but naming it explicitly must still produce an answer. It
+    // shipped with no migrate at all, which the registry surfaced as
+    // "migrate threw: check.migrate is not a function": true, but useless.
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "blocked",
+      summary: "Fleet base config is operator-owned; pjangler will not guess fleet-wide values",
+      changedFiles: [],
+      details: finding.details.length
+        ? [...finding.details, `Edit ${join(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`]
+        : [`Edit ${join(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`],
+    }),
   },
   {
     id: "hermes.profile-wiring",
@@ -6390,10 +6487,18 @@ export function formatAuditReport(report: AuditReport): string {
 
 export function formatMigrationReport(report: MigrationReport): string {
   const idWidth = report.results.reduce((width, result) => Math.max(width, result.id.length), 0);
+  const blocked = report.results.filter((result) => result.status === "blocked").length;
+  const partial = report.results.filter((result) => result.status === "partial").length;
 
+  // PJAN-75: "Migration complete" is now a claim the run has verified, so the
+  // not-ok case has to say WHICH kind of unfinished it is. A blocker means the
+  // rule refused to act; a partial means it acted and still did not reach
+  // parity, which is the state that used to be reported as success.
   const overall = report.ok
     ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}`
-    : `${red(glyph.fail)} ${bold("Migration finished with blockers")}`;
+    : blocked
+      ? `${red(glyph.fail)} ${bold("Migration finished with blockers")}`
+      : `${yellow(glyph.warn)} ${bold(`Migration incomplete  ${glyph.dot}  ${partial} rule${partial === 1 ? "" : "s"} still failing`)}`;
 
   const lines = [""];
   lines.push(`  ${overall}${report.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
@@ -6410,6 +6515,11 @@ export function formatMigrationReport(report: MigrationReport): string {
     lines.push("");
     lines.push(`  ${bold(`Changed files (${report.changedFiles.length})`)}`);
     for (const file of report.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
+  }
+  const unresolved = partial + blocked;
+  if (unresolved) {
+    lines.push("");
+    lines.push(`  ${dim(`Run \`pjangler audit\` for the full detail on the ${unresolved} rule${unresolved === 1 ? "" : "s"} still failing.`)}`);
   }
   lines.push("");
   return lines.join("\n");

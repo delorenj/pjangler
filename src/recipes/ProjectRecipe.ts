@@ -326,11 +326,13 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         phases.push(...migrationReport.results.map((result) => ({
           id: result.id,
           status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
-          changedFiles: result.status === "applied" ? result.changedFiles : [],
+          // A `partial` failed, but its writes really happened, so they stay
+          // accounted for rather than vanishing from the transaction record.
+          changedFiles: result.status === "applied" || result.status === "partial" ? result.changedFiles : [],
           message: result.summary,
         } as RecipePhaseOutcome)));
         errors.push(...migrationReport.results
-          .filter((result) => result.status === "blocked")
+          .filter((result) => result.status === "blocked" || result.status === "partial")
           .map((result) => `${result.id}: ${result.summary}`));
       }
 

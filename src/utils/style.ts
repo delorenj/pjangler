@@ -63,7 +63,7 @@ export interface StatusStyle {
 }
 
 // Covers both audit statuses (pass/fail/warn/skip) and migration result
-// statuses (applied/noop/blocked/skipped).
+// statuses (applied/noop/blocked/skipped/partial).
 const STATUS_STYLES: Record<string, StatusStyle> = {
   pass: { glyph: glyph.pass, color: green, label: "pass" },
   fail: { glyph: glyph.fail, color: red, label: "fail" },
@@ -73,6 +73,7 @@ const STATUS_STYLES: Record<string, StatusStyle> = {
   noop: { glyph: glyph.skip, color: gray, label: "noop" },
   blocked: { glyph: glyph.fail, color: red, label: "blocked" },
   skipped: { glyph: glyph.skip, color: gray, label: "skipped" },
+  partial: { glyph: glyph.warn, color: yellow, label: "partial" },
 };
 
 /** Resolve icon + color + label for a rule/migration status string. */

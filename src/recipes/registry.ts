@@ -173,6 +173,52 @@ export class RecipeRegistry {
     };
   }
 
+  /**
+   * PJAN-75: re-audit a rule that has just been migrated and demote a claimed
+   * success that did not actually reach parity.
+   *
+   * Without this, `migrate` reports whatever each rule chooses to report about
+   * itself, and a rule that applies SOME of its changes still shows a green
+   * `[applied]`. That is how `migrate` came to print "Migration complete"
+   * immediately followed by a failing `audit` on the very same rules -- the
+   * two commands were answering different questions and only `audit` was
+   * answering the one the operator asked.
+   *
+   * Only `applied` and `noop` are re-checked. `blocked` and `skipped` already
+   * say the work did not happen, and a dry run has nothing to verify because
+   * nothing was written.
+   */
+  private verifyMigration(ctx: LifecycleContext, result: LifecycleMigrationResult): LifecycleMigrationResult {
+    if (ctx.dryRun) return result;
+    if (result.status !== "applied" && result.status !== "noop") return result;
+    const owner = this.ruleOwners.get(result.id);
+    if (!owner) return result;
+    let postcondition;
+    try {
+      postcondition = owner.recipe.checks[owner.checkIndex]!.audit(ctx);
+    } catch (err) {
+      return {
+        ...result,
+        status: "partial",
+        summary: `${result.summary} (postcondition audit threw)`,
+        details: [...result.details, `postcondition audit threw: ${err instanceof Error ? err.message : String(err)}`],
+      };
+    }
+    if (postcondition.status === "pass" || postcondition.status === "skip") return result;
+    return {
+      ...result,
+      status: "partial",
+      // The audit's own summary is the authoritative account of what is still
+      // wrong, so it replaces the migrate summary rather than appending to it.
+      summary: postcondition.summary,
+      details: [
+        ...result.details,
+        `still failing after migrate: ${postcondition.summary}`,
+        ...postcondition.details,
+      ],
+    };
+  }
+
   migrateRules(ctx: LifecycleContext, ruleIds: readonly RuleId[]): LifecycleMigrationReport {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
@@ -182,7 +228,10 @@ export class RecipeRegistry {
       const owner = this.ruleOwners.get(id)!;
       try {
         const migrated = owner.recipe.migrate(ctx, [id]);
-        results.push(...migrated.map((result) => ({ ...result, recipeId: result.recipeId ?? owner.recipe.metadata.id })));
+        results.push(...migrated.map((result) => this.verifyMigration(ctx, {
+          ...result,
+          recipeId: result.recipeId ?? owner.recipe.metadata.id,
+        })));
       } catch (err) {
         const check = owner.recipe.checks[owner.checkIndex]!;
         results.push({
@@ -199,17 +248,56 @@ export class RecipeRegistry {
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),
-      ok: results.every((result) => result.status !== "blocked"),
+      // `partial` counts against ok for the same reason `blocked` does: the
+      // repo is not in parity, so the command must not exit 0.
+      ok: results.every((result) => result.status !== "blocked" && result.status !== "partial"),
       selectedRules: [...ruleIds],
       results,
       changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort(),
     };
   }
 
+  /**
+   * PJAN-75: `migrate --all` accounts for every failing rule, including the
+   * ones it is not allowed to touch.
+   *
+   * Non-fixable failures were silently excluded from the report entirely, so a
+   * repo whose only problem was an operator-owned rule -- an unprovisioned
+   * Hermes role, a fleet-wide config value -- got "Migration complete", an
+   * empty result list and exit 0, immediately followed by a failing `audit`.
+   * They are re-checked AFTER the migrations run, because a rule this pass was
+   * not allowed to fix may still have been fixed as a side effect of one it
+   * was.
+   */
   migrateAll(ctx: LifecycleContext): LifecycleMigrationReport {
     const audit = this.auditRecipes(ctx);
-    const ids = audit.rules.filter((rule) => rule.fixable && (rule.status === "fail" || rule.status === "warn")).map((rule) => rule.id);
-    return this.migrateRules(ctx, ids);
+    const failing = audit.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
+    const report = this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
+
+    const manual: LifecycleMigrationResult[] = [];
+    for (const rule of failing.filter((candidate) => !candidate.fixable)) {
+      const owner = this.ruleOwners.get(rule.id);
+      let current = rule;
+      if (owner) {
+        try {
+          current = { ...owner.recipe.checks[owner.checkIndex]!.audit(ctx), recipeId: rule.recipeId };
+        } catch {
+          // Keep the pre-migration finding rather than dropping the rule.
+        }
+      }
+      if (current.status === "pass" || current.status === "skip") continue;
+      manual.push({
+        id: current.id,
+        recipeId: current.recipeId,
+        title: current.title,
+        status: "blocked",
+        summary: current.summary,
+        changedFiles: [],
+        details: [...current.details, "not auto-fixable: this rule needs an operator decision or action"],
+      });
+    }
+    if (!manual.length) return report;
+    return { ...report, ok: false, results: [...report.results, ...manual] };
   }
 
   listRuleIds(): readonly RuleId[] {

@@ -115,7 +115,8 @@ var STATUS_STYLES = {
   applied: { glyph: glyph.pass, color: green, label: "applied" },
   noop: { glyph: glyph.skip, color: gray, label: "noop" },
   blocked: { glyph: glyph.fail, color: red, label: "blocked" },
-  skipped: { glyph: glyph.skip, color: gray, label: "skipped" }
+  skipped: { glyph: glyph.skip, color: gray, label: "skipped" },
+  partial: { glyph: glyph.warn, color: yellow, label: "partial" }
 };
 function statusStyle(status) {
   return STATUS_STYLES[status] ?? { glyph: glyph.dot, color: dim, label: status };
@@ -1248,14 +1249,13 @@ function renderGeneratedProjectMiseToml(ctx, template) {
 }
 function ensureMiseTomlFromTemplate(ctx, changedFiles) {
   const targetPath = join3(ctx.repoRoot, "mise.toml");
-  if (existsSync2(targetPath)) return false;
+  if (existsSync2(targetPath)) return null;
   const sourcePath = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", "mise.toml.jinja");
-  if (!existsSync2(sourcePath)) return false;
+  if (!existsSync2(sourcePath)) return null;
+  const rendered = renderGeneratedProjectMiseToml(ctx, readText(sourcePath));
   changedFiles.push(targetPath);
-  if (!ctx.dryRun) {
-    writeText(targetPath, renderGeneratedProjectMiseToml(ctx, readText(sourcePath)));
-  }
-  return true;
+  if (!ctx.dryRun) writeText(targetPath, rendered);
+  return rendered;
 }
 function templateCommonProjectText(ctx, rel) {
   const path = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", rel);
@@ -2449,6 +2449,10 @@ function readRoleYamlAt(roleDir) {
     text: text3
   };
 }
+function declaredRoleIsUnprovisioned(repoRoot, roleDir) {
+  if (!roleDir) return true;
+  return !existsSync2(join3(resolve3(repoRoot, roleDir), "role.yaml"));
+}
 function validateDeclaredAgent(ctx, declared) {
   const details = [];
   if (!declared.roleDir) {
@@ -2531,6 +2535,7 @@ function canonicalProjectJson(ctx) {
     })
   );
   const dropped = [];
+  const unprovisioned = [];
   for (const [declaredAgentId, entry] of Object.entries(existingAgents)) {
     const declared = {
       agentId: declaredAgentId,
@@ -2538,6 +2543,11 @@ function canonicalProjectJson(ctx) {
       roleDir: typeof entry.role_dir === "string" ? entry.role_dir : void 0,
       extras: Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "role" && key !== "role_dir"))
     };
+    if (declaredRoleIsUnprovisioned(ctx.repoRoot, declared.roleDir)) {
+      agents[declaredAgentId] = { ...entry };
+      unprovisioned.push(declaredAgentId);
+      continue;
+    }
     const validated = validateDeclaredAgent(ctx, declared);
     if (!validated.valid || !validated.role || !validated.agentId || !validated.roleDir) {
       dropped.push(declaredAgentId);
@@ -2570,7 +2580,8 @@ function canonicalProjectJson(ctx) {
     ticket_provider: ticketProvider,
     agents,
     automation,
-    dropped
+    dropped,
+    unprovisioned
   };
 }
 function projectJsonFinding(ctx) {
@@ -2602,10 +2613,17 @@ function projectJsonFinding(ctx) {
     }
   }
   const declaredAgents = readDeclaredAgents(ctx);
-  if (declaredAgents.length > 0) {
-    for (const declared of declaredAgents) {
-      details.push(...validateDeclaredAgent(ctx, declared).details);
+  let unprovisionedDeclarations = 0;
+  for (const declared of declaredAgents) {
+    const declaredDetails = validateDeclaredAgent(ctx, declared).details;
+    if (declaredRoleIsUnprovisioned(ctx.repoRoot, declared.roleDir)) {
+      unprovisionedDeclarations += declaredDetails.length;
+      details.push(
+        ...declaredDetails.map((detail) => `${detail}; provision or restore the role, do not delete its declaration`)
+      );
+      continue;
     }
+    details.push(...declaredDetails);
   }
   const ticketProvider = data.ticket_provider ?? {};
   for (const key of ["type", "workspace", "identifier", "board_id", "state"]) {
@@ -2627,7 +2645,7 @@ function projectJsonFinding(ctx) {
     status: details.length === 0 ? "pass" : "fail",
     summary: details.length === 0 ? ".project.json matches canonical parity contract" : `${details.length} parity issue(s) detected`,
     details,
-    fixable: true
+    fixable: details.length > unprovisionedDeclarations
   };
 }
 function renderSoul(role) {
@@ -3344,13 +3362,13 @@ function unprovisionedRoleAgents(registry, repoRoot, canonical) {
   for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
     if (canonical.has(agentId)) continue;
     const roleDir = String(entry.role_dir ?? "");
-    if (!roleDir || !existsSync2(join3(roleDir, "role.yaml"))) record(agentId, roleDir, "registry");
+    if (declaredRoleIsUnprovisioned(repoRoot, roleDir)) record(agentId, roleDir, "registry");
   }
   for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
     if (canonical.has(agentId)) continue;
     const configured = String(entry.role_dir ?? "");
     const roleDir = configured ? resolve3(repoRoot, configured) : "";
-    if (!roleDir || !existsSync2(join3(roleDir, "role.yaml"))) record(agentId, roleDir, ".project.json");
+    if (declaredRoleIsUnprovisioned(repoRoot, configured)) record(agentId, roleDir, ".project.json");
   }
   return [...blockers.entries()].map(([agentId, value]) => ({
     agentId,
@@ -3973,7 +3991,7 @@ function createMiseChecks() {
         const changedFiles = [];
         const details = [];
         if (!existsSync2(path)) {
-          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          if (ensureMiseTomlFromTemplate(ctx, changedFiles) === null) {
             return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
           }
           details.push("Initialized mise.toml from generated-project template");
@@ -4036,7 +4054,7 @@ function createMiseChecks() {
         const details = [];
         const misePath = join3(ctx.repoRoot, "mise.toml");
         if (!existsSync2(misePath)) {
-          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+          if (ensureMiseTomlFromTemplate(ctx, changedFiles) === null) {
             return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details: [] };
           }
           details.push("Initialized mise.toml from generated-project template");
@@ -4341,12 +4359,15 @@ function createAgentHooksChecks() {
             if (!ctx.dryRun) unlinkSync(legacyProvisionScriptPath);
           }
         }
-        if (!existsSync2(misePath)) {
-          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+        let currentMise = safeReadText(misePath);
+        if (currentMise === null) {
+          const initialized = ensureMiseTomlFromTemplate(ctx, changedFiles);
+          if (initialized === null) {
             return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and no generated-project mise template available to initialize from", changedFiles, details };
           }
+          details.push("Initialized mise.toml from generated-project template");
+          currentMise = initialized;
         }
-        const currentMise = readText(misePath);
         const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
         if (nextMise !== currentMise) {
           if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
@@ -4437,6 +4458,13 @@ function createProjectJsonChecks() {
         const path = join3(ctx.repoRoot, ".project.json");
         const existing = readProjectJson(ctx) ?? {};
         const canonical = canonicalProjectJson(ctx);
+        const preservedDetails = [];
+        for (const agentId of canonical.unprovisioned) {
+          const roleDir = existing.agents?.[agentId]?.role_dir;
+          preservedDetails.push(
+            `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no role.yaml)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
+          );
+        }
         for (const agentId of canonical.dropped) {
           const entry = existing.agents?.[agentId];
           const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
@@ -4450,7 +4478,7 @@ function createProjectJsonChecks() {
           const reason = validation.details.join("; ") || "invalid";
           droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
         }
-        const { dropped: _dropped, ...canonicalJson } = canonical;
+        const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson } = canonical;
         const merged = { ...existing, ...canonicalJson };
         const expected = `${JSON.stringify(merged, null, 2)}
 `;
@@ -4468,7 +4496,7 @@ function createProjectJsonChecks() {
             if (!ctx.dryRun) renameSync(planeJson, backup);
           }
         }
-        const details = [...droppedDetails, ...blockedDetails];
+        const details = [...droppedDetails, ...preservedDetails, ...blockedDetails];
         return {
           id: finding.id,
           title: finding.title,
@@ -4589,18 +4617,18 @@ function createMiseOpInjectChecks() {
           if (!ctx.dryRun) writeText(gitignorePath, `${gitignore.replace(/\s*$/, "")}${gitignore.trim() ? "\n\n" : ""}${requiredBlock}`);
         }
         const misePath = join3(ctx.repoRoot, "mise.toml");
-        if (!existsSync2(misePath)) {
-          if (!ensureMiseTomlFromTemplate(ctx, changedFiles)) {
+        let currentMise = safeReadText(misePath);
+        if (currentMise === null) {
+          const initialized = ensureMiseTomlFromTemplate(ctx, changedFiles);
+          if (initialized === null) {
             return { id: finding.id, title: finding.title, status: "blocked", summary: "mise.toml missing and the packaged template is unavailable", changedFiles: [], details: [] };
           }
+          currentMise = initialized;
         }
-        if (existsSync2(misePath)) {
-          const currentMise = readText(misePath);
-          const nextMise = upsertOpInjectHook(currentMise);
-          if (nextMise !== currentMise) {
-            changedFiles.push(misePath);
-            if (!ctx.dryRun) writeText(misePath, nextMise);
-          }
+        const nextOpInjectMise = upsertOpInjectHook(currentMise);
+        if (nextOpInjectMise !== currentMise) {
+          if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
+          if (!ctx.dryRun) writeText(misePath, nextOpInjectMise);
         }
         const materializePath = join3(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
         const expectedMaterializer = templateMaterializeEnvScript(ctx);
@@ -5499,7 +5527,12 @@ function createHermesChecks() {
           id: finding.id,
           title: finding.title,
           status: details.some((d) => d.startsWith("blocked:")) ? "blocked" : changedFiles.length ? ctx.dryRun ? "skipped" : "applied" : "noop",
-          summary: changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
+          // PJAN-75: the summary has to follow the status. The blocked branch was
+          // missing here, so a run that stopped on a missing profile renderer
+          // still reported "Singleton runtime wired" -- and that string is what
+          // surfaced as the recipe's ERROR message, telling the operator the
+          // exact opposite of what happened.
+          summary: details.some((d) => d.startsWith("blocked:")) ? "Singleton-runtime wiring blocked" : changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
           changedFiles,
           details
         };
@@ -5570,7 +5603,19 @@ function createHermesChecks() {
           // change behavior for every agent simultaneously.
           fixable: false
         };
-      }
+      },
+      // The audit above is `fixable: false`, so `migrate --all` never selects
+      // this rule -- but naming it explicitly must still produce an answer. It
+      // shipped with no migrate at all, which the registry surfaced as
+      // "migrate threw: check.migrate is not a function": true, but useless.
+      migrate: (ctx, finding) => ({
+        id: finding.id,
+        title: finding.title,
+        status: "blocked",
+        summary: "Fleet base config is operator-owned; pjangler will not guess fleet-wide values",
+        changedFiles: [],
+        details: finding.details.length ? [...finding.details, `Edit ${join3(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`] : [`Edit ${join3(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`]
+      })
     },
     {
       id: "hermes.profile-wiring",
@@ -5987,7 +6032,9 @@ function formatAuditReport(report) {
 }
 function formatMigrationReport(report) {
   const idWidth = report.results.reduce((width, result) => Math.max(width, result.id.length), 0);
-  const overall = report.ok ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}` : `${red(glyph.fail)} ${bold("Migration finished with blockers")}`;
+  const blocked = report.results.filter((result) => result.status === "blocked").length;
+  const partial = report.results.filter((result) => result.status === "partial").length;
+  const overall = report.ok ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}` : blocked ? `${red(glyph.fail)} ${bold("Migration finished with blockers")}` : `${yellow(glyph.warn)} ${bold(`Migration incomplete  ${glyph.dot}  ${partial} rule${partial === 1 ? "" : "s"} still failing`)}`;
   const lines = [""];
   lines.push(`  ${overall}${report.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
   lines.push(`  ${dim(report.repo)}`);
@@ -6003,6 +6050,11 @@ function formatMigrationReport(report) {
     lines.push("");
     lines.push(`  ${bold(`Changed files (${report.changedFiles.length})`)}`);
     for (const file of report.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
+  }
+  const unresolved = partial + blocked;
+  if (unresolved) {
+    lines.push("");
+    lines.push(`  ${dim(`Run \`pjangler audit\` for the full detail on the ${unresolved} rule${unresolved === 1 ? "" : "s"} still failing.`)}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -8968,10 +9020,12 @@ var ProjectRecipe = class extends Recipe {
         phases.push(...migrationReport.results.map((result) => ({
           id: result.id,
           status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
-          changedFiles: result.status === "applied" ? result.changedFiles : [],
+          // A `partial` failed, but its writes really happened, so they stay
+          // accounted for rather than vanishing from the transaction record.
+          changedFiles: result.status === "applied" || result.status === "partial" ? result.changedFiles : [],
           message: result.summary
         })));
-        errors.push(...migrationReport.results.filter((result) => result.status === "blocked").map((result) => `${result.id}: ${result.summary}`));
+        errors.push(...migrationReport.results.filter((result) => result.status === "blocked" || result.status === "partial").map((result) => `${result.id}: ${result.summary}`));
       }
       const eligibilityAudit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
       audit = eligibilityAudit;
@@ -9273,6 +9327,51 @@ var RecipeRegistry = class {
       rules
     };
   }
+  /**
+   * PJAN-75: re-audit a rule that has just been migrated and demote a claimed
+   * success that did not actually reach parity.
+   *
+   * Without this, `migrate` reports whatever each rule chooses to report about
+   * itself, and a rule that applies SOME of its changes still shows a green
+   * `[applied]`. That is how `migrate` came to print "Migration complete"
+   * immediately followed by a failing `audit` on the very same rules -- the
+   * two commands were answering different questions and only `audit` was
+   * answering the one the operator asked.
+   *
+   * Only `applied` and `noop` are re-checked. `blocked` and `skipped` already
+   * say the work did not happen, and a dry run has nothing to verify because
+   * nothing was written.
+   */
+  verifyMigration(ctx, result) {
+    if (ctx.dryRun) return result;
+    if (result.status !== "applied" && result.status !== "noop") return result;
+    const owner = this.ruleOwners.get(result.id);
+    if (!owner) return result;
+    let postcondition;
+    try {
+      postcondition = owner.recipe.checks[owner.checkIndex].audit(ctx);
+    } catch (err) {
+      return {
+        ...result,
+        status: "partial",
+        summary: `${result.summary} (postcondition audit threw)`,
+        details: [...result.details, `postcondition audit threw: ${err instanceof Error ? err.message : String(err)}`]
+      };
+    }
+    if (postcondition.status === "pass" || postcondition.status === "skip") return result;
+    return {
+      ...result,
+      status: "partial",
+      // The audit's own summary is the authoritative account of what is still
+      // wrong, so it replaces the migrate summary rather than appending to it.
+      summary: postcondition.summary,
+      details: [
+        ...result.details,
+        `still failing after migrate: ${postcondition.summary}`,
+        ...postcondition.details
+      ]
+    };
+  }
   migrateRules(ctx, ruleIds) {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
@@ -9282,7 +9381,10 @@ var RecipeRegistry = class {
       const owner = this.ruleOwners.get(id);
       try {
         const migrated = owner.recipe.migrate(ctx, [id]);
-        results.push(...migrated.map((result) => ({ ...result, recipeId: result.recipeId ?? owner.recipe.metadata.id })));
+        results.push(...migrated.map((result) => this.verifyMigration(ctx, {
+          ...result,
+          recipeId: result.recipeId ?? owner.recipe.metadata.id
+        })));
       } catch (err) {
         const check = owner.recipe.checks[owner.checkIndex];
         results.push({
@@ -9299,16 +9401,53 @@ var RecipeRegistry = class {
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),
-      ok: results.every((result) => result.status !== "blocked"),
+      // `partial` counts against ok for the same reason `blocked` does: the
+      // repo is not in parity, so the command must not exit 0.
+      ok: results.every((result) => result.status !== "blocked" && result.status !== "partial"),
       selectedRules: [...ruleIds],
       results,
       changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort()
     };
   }
+  /**
+   * PJAN-75: `migrate --all` accounts for every failing rule, including the
+   * ones it is not allowed to touch.
+   *
+   * Non-fixable failures were silently excluded from the report entirely, so a
+   * repo whose only problem was an operator-owned rule -- an unprovisioned
+   * Hermes role, a fleet-wide config value -- got "Migration complete", an
+   * empty result list and exit 0, immediately followed by a failing `audit`.
+   * They are re-checked AFTER the migrations run, because a rule this pass was
+   * not allowed to fix may still have been fixed as a side effect of one it
+   * was.
+   */
   migrateAll(ctx) {
     const audit = this.auditRecipes(ctx);
-    const ids = audit.rules.filter((rule) => rule.fixable && (rule.status === "fail" || rule.status === "warn")).map((rule) => rule.id);
-    return this.migrateRules(ctx, ids);
+    const failing = audit.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
+    const report = this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
+    const manual = [];
+    for (const rule of failing.filter((candidate) => !candidate.fixable)) {
+      const owner = this.ruleOwners.get(rule.id);
+      let current = rule;
+      if (owner) {
+        try {
+          current = { ...owner.recipe.checks[owner.checkIndex].audit(ctx), recipeId: rule.recipeId };
+        } catch {
+        }
+      }
+      if (current.status === "pass" || current.status === "skip") continue;
+      manual.push({
+        id: current.id,
+        recipeId: current.recipeId,
+        title: current.title,
+        status: "blocked",
+        summary: current.summary,
+        changedFiles: [],
+        details: [...current.details, "not auto-fixable: this rule needs an operator decision or action"]
+      });
+    }
+    if (!manual.length) return report;
+    return { ...report, ok: false, results: [...report.results, ...manual] };
   }
   listRuleIds() {
     this.ensureValid();

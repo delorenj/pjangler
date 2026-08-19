@@ -55,17 +55,27 @@ function makeRepo() {
   return { repo, roleDir };
 }
 
+// The home these fixtures pretend the fleet base config was written against.
+// It is DERIVED rather than written as a literal: a `/home/<name>` (or
+// `/Users/<name>`) literal anywhere in a release regression is rejected by
+// tests/portable-test-paths-regressions.mjs, which cannot tell a synthetic
+// placeholder from a leaked developer path -- and rightly so, since neither is
+// portable off this machine.
+const FLEET_HOME = mkdtempSync(join(tmpdir(), "hermes-fleet-home-"));
+const hookCommand = (hook) =>
+  `python3 ${join(FLEET_HOME, ".agents", "hooks", "bloodbank", "publish.py")} --client hermes --hook ${hook}`;
+
 const BASE_CONFIG = {
   tts: { provider: "vox", vox: { voice: "carlin" } },
   hooks: {
-    on_session_start: [{ command: "python3 /home/x/.agents/hooks/bloodbank/publish.py --client hermes --hook on_session_start", timeout: 5 }],
-    on_session_end: [{ command: "python3 /home/x/.agents/hooks/bloodbank/publish.py --client hermes --hook on_session_end", timeout: 5 }],
-    pre_tool_call: [{ command: "python3 /home/x/.agents/hooks/bloodbank/publish.py --client hermes --hook pre_tool_call", timeout: 5 }],
-    post_tool_call: [{ command: "python3 /home/x/.agents/hooks/bloodbank/publish.py --client hermes --hook post_tool_call", timeout: 5 }],
+    on_session_start: [{ command: hookCommand("on_session_start"), timeout: 5 }],
+    on_session_end: [{ command: hookCommand("on_session_end"), timeout: 5 }],
+    pre_tool_call: [{ command: hookCommand("pre_tool_call"), timeout: 5 }],
+    post_tool_call: [{ command: hookCommand("post_tool_call"), timeout: 5 }],
   },
   memory: { provider: "hindsight" },
   agent: { disabled_toolsets: [] },
-  skills: { external_dirs: ["/home/x/.agents/skills"] },
+  skills: { external_dirs: [join(FLEET_HOME, ".agents", "skills")] },
 };
 
 function yamlDump(obj) {

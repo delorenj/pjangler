@@ -66,3 +66,6 @@ _bmad/config.user.yaml
 # — the per-repo lane map — is real config and stays tracked.
 .momo/*.lock
 .momo/*.flock
+
+# PJAN-75 test bundle (created and removed by tests/pjan-75-regressions.mjs)
+.pjan-75-cli.mjs
