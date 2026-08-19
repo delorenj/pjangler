@@ -9,13 +9,13 @@
   "evidence_file": "_bmad-output/implementation-artifacts/issue-evidence/PJAN-67.md",
   "findings": [],
   "git": {
-    "base_sha": "90529d2ea750640b0038b4033563a2dca964a0bf",
-    "branch": "fix/PJAN-67-mcp-fail-closed",
-    "head_sha": "dd6f8815693d99b2d7067b2cc07877b56d9ee8d7"
+    "base_sha": "67f4c402d73c4d51cf8ef67d34fb0903602b9c96",
+    "branch": "fix/PJAN-67-all-mcp-child-env",
+    "head_sha": "3eacb8599f7aa7ed74ca70671e7f260c7ff739f9"
   },
   "heartbeat": {
-    "last_seen_at": "2026-08-17T18:43:27.948961+00:00",
-    "started_at": "2026-08-17T18:43:27.890474+00:00",
+    "last_seen_at": "2026-08-18T00:07:32.740130+00:00",
+    "started_at": "2026-08-17T20:59:18.299848+00:00",
     "ttl_seconds": 600
   },
   "issue": "PJAN-67",
@@ -29,14 +29,14 @@
   },
   "schema_version": "1.0",
   "status": "DONE",
-  "summary": "PJAN-67 implementation is complete at pushed parent HEAD dd6f8815693d99b2d7067b2cc07877b56d9ee8d7. PJAN-67 commits are 9cba7dc and dd6f881; vendored Hermes fix 5df96f30 is published on template feature and main and referenced by the parent through concurrent ancestry 9365625. Generic MCP recipes are explicit-target/apply gated; Hermes is dedicated, non-interactive, quiet/captured, provenance-attested, lifecycle-eligible before host/external tails, and all external effects require live plus positive per-effect consent. skipPlane suppresses providers and unavailable ambient board/channel authority is scrubbed. Concurrent 9365625 is not PJAN-67 implementation. Fresh SPEC re-review remains required; no close recommendation was made.",
-  "test_log": "PASS: template pytest -q (83 passed); npm run typecheck; npm run build with staged dist parity; node tests/pjan-67-lifecycle-preflight-regressions.mjs; node tests/pjan-67-regressions.mjs; node tests/pjan-67-trusted-lifecycle-regressions.mjs; MCP catalog/server, project-registry, fleet-shared Bloodbank, PJAN-57 lifecycle/generated-project, PJAN-71, and Momo lifecycle focused regressions; npm test full chain; check:lock; check:tracked-secrets; check:submodules -- --remote --recursive --archive --npm. Exact AC6 fixtures prove zero target/config/registry/provider/systemd/Copier effects; trusted create/sync and project/Hermes positive tails prove exactly-once effects after eligibility; raw stdio contains JSON-RPC frames only and child credentials/output are contained.",
+  "summary": "PJAN-67 live fleet-format and parser-attestation correction is complete at pushed parent 3eacb8599f7aa7ed74ca70671e7f260c7ff739f9 atop correction base 67f4c402d73c4d51cf8ef67d34fb0903602b9c96. Isolated template correction 62730216212e4d2deced0c5622c35ae7155b155f is published and canonical template main merge a39bc96c40f3b66bb87568d658dc8490235329db contains it; the parent pins that exact main tip. The data-only parser now supports only the legacy HERMES_FLEET_HOME path expansion with sanitized caller precedence, normalizes invalid Unicode diagnostics, and the writer performs canonical lossless atomic upserts with duplicate, symlink, race, mode, ownership, and rollback safeguards. Vendored and rendered lifecycle preflights require and byte-attest the parser before effects. Pjangler origin/main was not changed; fresh SPEC re-review remains required.",
+  "test_log": "PASS: template focused red baseline 9 failed and 14 passed, then 23 passed; full canonical template pytest 125 passed. Live fleet shape parsed with HERMES_FLEET_HOME removed from the caller environment; no values were printed or modified. Parent PJAN-67 lifecycle/fail-closed/child-boundary/trusted real-Copier suites passed, including MCP missing-parser zero target/provider/host/config effects. PJAN-65, PJAN-71, PJAN-72, MCP catalog/server, project registry, fleet-shared Bloodbank, lifecycle, and generated-project suites passed. npm run typecheck passed. npm run build passed with zero dist drift. npm test exited 0; only the normal PostgreSQL-unreachable and unset optional cross-repo fixture skips were reported. npm run prepublishOnly exited 0. Package-lock parity, 1071-path tracked-secret scan, and remote recursive archive/npm submodule contract passed at exact template main a39bc96c40f3b66bb87568d658dc8490235329db.",
   "worker": {
     "agent_id": "pjan67-implementation-owner",
     "agent_type": "",
     "host": "big-chungus",
     "model": "",
-    "pid": 2085729,
+    "pid": 3889467,
     "provider": "",
     "session_id": ""
   }
