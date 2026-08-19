@@ -17,7 +17,7 @@ function deriveProfileName(repo, role) {
 }
 
 // src/commands/hermes/EnsureTemplateConfig.ts
-import { homedir as homedir5, platform } from "node:os";
+import { homedir as homedir6, platform } from "node:os";
 import { existsSync as existsSync14, mkdirSync as mkdirSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join16, dirname as dirname7 } from "node:path";
 
@@ -59,7 +59,7 @@ var Command = class {
 
 // src/parity/index.ts
 import { existsSync as existsSync13 } from "node:fs";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 import { dirname as dirname6, join as join15, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
@@ -309,6 +309,7 @@ var Recipe = class {
 import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, mkdtempSync, readFileSync as readFileSync2, readlinkSync, readdirSync as readdirSync2, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync as writeFileSync2, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { basename as basename2, dirname as dirname2, join as join3, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { homedir as homedir2 } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
@@ -3159,7 +3160,8 @@ function compareBmadVersions(a, b) {
   }
   return 0;
 }
-var SHARED_PROFILE_ENTRIES = ["config.yaml", ".env", "skills"];
+var SHARED_PROFILE_ENTRIES = [".env", "skills"];
+var PROFILE_RENDER_MARKER = "GENERATED FILE -- DO NOT EDIT";
 var OWNED_PROFILE_ENTRIES = [
   "memories",
   "sessions",
@@ -3205,6 +3207,60 @@ function singletonPlan(ctx, role) {
     runtimePath: join3(runtimeDir, entry)
   }));
   return { fleetRoot, profileDir, runtimeDir, links, sharedSeeds };
+}
+function profileNameOf(role) {
+  return role.profileName || role.agentId;
+}
+function profileRendererPath(ctx) {
+  const candidates = [
+    join3(ctx.repoRoot, "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join3(ctx.repoRoot, "..", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join3(homedir2(), "code", "33GOD", "hermes-agent-template", "scripts", "hermes-profile-config.py")
+  ];
+  for (const c of candidates) {
+    if (existsSync2(c)) return resolve3(c);
+  }
+  return null;
+}
+function profileConfigFindings(profileDir, profileName) {
+  const out = [];
+  const cfg = join3(profileDir, "config.yaml");
+  const delta = join3(profileDir, "config.delta.yaml");
+  if (!existsSync2(cfg)) {
+    out.push(`profile config missing (run hermes-profile-config.py render): ${cfg}`);
+  } else if (lstatSync2(cfg).isSymbolicLink()) {
+    out.push(`config.yaml is a symlink \u2014 it detaches on the first Hermes write; render it instead: ${cfg}`);
+  } else {
+    let head = "";
+    try {
+      head = readFileSync2(cfg, "utf8").slice(0, 800);
+    } catch {
+    }
+    if (!head.includes(PROFILE_RENDER_MARKER)) {
+      out.push(`config.yaml is not a rendered artifact (missing generated header) \u2014 likely a hand-forked copy that will drift: ${cfg}`);
+    }
+  }
+  if (!existsSync2(delta)) {
+    out.push(`config.delta.yaml missing \u2014 profile is not under base+delta inheritance: ${delta}`);
+  } else if (lstatSync2(delta).isSymbolicLink()) {
+    out.push(`config.delta.yaml must be a real file, not a symlink: ${delta}`);
+  }
+  const memCfg = join3(profileDir, "hindsight", "config.json");
+  const wantBank = `agent-${profileName}`;
+  if (!existsSync2(memCfg)) {
+    out.push(`identity-memory bank not pinned (expected bank_id "${wantBank}"): ${memCfg}`);
+  } else {
+    try {
+      const parsed = JSON.parse(readFileSync2(memCfg, "utf8"));
+      const got = typeof parsed.bank_id === "string" ? parsed.bank_id : "";
+      if (got !== wantBank) {
+        out.push(`identity-memory bank_id is ${got ? `"${got}"` : "unset"}, expected "${wantBank}": ${memCfg}`);
+      }
+    } catch {
+      out.push(`identity-memory pin is unparseable JSON: ${memCfg}`);
+    }
+  }
+  return out;
 }
 function isDanglingLink(path) {
   try {
@@ -3505,9 +3561,14 @@ function hasAnyLifecycleScript(repoRoot) {
       const base = join3(repoRoot, prefix);
       if (!existsSync2(base)) continue;
       for (const entry of readdirSync2(base, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          const candidate = join3(base, entry.name, suffix);
-          if (existsSync2(candidate)) return true;
+        if (!entry.isDirectory()) continue;
+        const candidate = join3(base, entry.name, suffix);
+        if (existsSync2(candidate)) return true;
+        const parent = dirname2(candidate);
+        const stem = basename2(candidate);
+        if (!existsSync2(parent)) continue;
+        for (const sibling of readdirSync2(parent, { withFileTypes: true })) {
+          if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
     } else {
@@ -3549,9 +3610,14 @@ function hasAnySentinelScript(repoRoot) {
       const base = join3(repoRoot, prefix);
       if (!existsSync2(base)) continue;
       for (const entry of readdirSync2(base, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          const candidate = join3(base, entry.name, suffix);
-          if (existsSync2(candidate)) return true;
+        if (!entry.isDirectory()) continue;
+        const candidate = join3(base, entry.name, suffix);
+        if (existsSync2(candidate)) return true;
+        const parent = dirname2(candidate);
+        const stem = basename2(candidate);
+        if (!existsSync2(parent)) continue;
+        for (const sibling of readdirSync2(parent, { withFileTypes: true })) {
+          if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
     } else {
@@ -5349,6 +5415,7 @@ function createHermesChecks() {
             const state = linkState(link.path, link.target);
             if (state !== "ok") details.push(`${state}: ${link.path} -> ${link.target}`);
           }
+          details.push(...profileConfigFindings(plan.profileDir, profileNameOf(role)));
         }
         return {
           id: "hermes.runtime-singleton",
@@ -5409,6 +5476,24 @@ function createHermesChecks() {
             ensureParent(link.path);
             symlinkSync(link.target, link.path);
           }
+          const profileName = profileNameOf(role);
+          if (profileConfigFindings(plan.profileDir, profileName).length) {
+            const renderer = profileRendererPath(ctx);
+            if (!renderer) {
+              details.push(`blocked: profile renderer not found (expected hermes-agent-template/scripts/hermes-profile-config.py); cannot render ${plan.profileDir}/config.yaml`);
+            } else {
+              details.push(`render config.yaml + pin memory bank for ${profileName}`);
+              changedFiles.push(join3(plan.profileDir, "config.yaml"), join3(plan.profileDir, "config.delta.yaml"));
+              if (!ctx.dryRun) {
+                for (const args of [["init", "--profile", profileName], ["memory-pin", "--profile", profileName]]) {
+                  const res = spawnSync("python3", [renderer, ...args], { encoding: "utf8" });
+                  if (res.status !== 0) {
+                    details.push(`blocked: ${basename2(renderer)} ${args[0]} failed for ${profileName}: ${(res.stderr || res.stdout || "").trim().split("\n").slice(-2).join(" ")}`);
+                  }
+                }
+              }
+            }
+          }
         }
         return {
           id: finding.id,
@@ -5417,6 +5502,73 @@ function createHermesChecks() {
           summary: changedFiles.length ? ctx.dryRun ? "Planned singleton-runtime wiring" : "Singleton runtime wired" : "No changes required",
           changedFiles,
           details
+        };
+      }
+    },
+    {
+      // Fleet-base invariants. Every profile inherits ~/.hermes/config.yaml by
+      // generation, so a defect here is a defect in EVERY agent at once — and each
+      // of these has already shipped silently: no error, no log, just an agent
+      // quietly missing a capability.
+      id: "hermes.fleet-config",
+      title: "Fleet base config carries the capabilities every agent inherits",
+      audit: (ctx) => {
+        const roles = discoverRoles(ctx.repoRoot);
+        if (!roles.length) {
+          return { id: "hermes.fleet-config", title: "Fleet base config carries the capabilities every agent inherits", status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+        }
+        const base = join3(fleetHome(ctx), "config.yaml");
+        const details = [];
+        let cfg = null;
+        if (!existsSync2(base)) {
+          details.push(`fleet base config missing: ${base}`);
+        } else {
+          try {
+            cfg = YAML.parse(readFileSync2(base, "utf8")) ?? {};
+          } catch (err) {
+            details.push(`fleet base config is unparseable YAML: ${base} (${err.message})`);
+          }
+        }
+        if (cfg) {
+          const ttsProvider = cfg?.tts?.provider;
+          if (ttsProvider && ttsProvider !== "vox") {
+            details.push(`tts.provider is "${ttsProvider}" \u2014 must be "vox" (registry key). "voxxy" is the service name and matches no registered provider, so TTS silently falls back to a built-in.`);
+          }
+          const hooks = cfg?.hooks;
+          const REQUIRED_HOOKS = ["on_session_start", "on_session_end", "pre_tool_call", "post_tool_call"];
+          if (!hooks || typeof hooks !== "object") {
+            details.push(`no hooks: block in the fleet base \u2014 every agent publishes zero Bloodbank lifecycle events: ${base}`);
+          } else {
+            const missing = REQUIRED_HOOKS.filter((h) => !hooks[h]);
+            if (missing.length) details.push(`fleet base hooks missing event(s): ${missing.join(", ")}`);
+            const serialized = JSON.stringify(hooks);
+            if (!serialized.includes("hooks/bloodbank/publish.py")) {
+              details.push(`fleet base hooks do not call the canonical publisher (~/.agents/hooks/bloodbank/publish.py --client hermes)`);
+            }
+          }
+          const provider = cfg?.memory?.provider;
+          if (!provider) {
+            details.push(`memory.provider is unset in the fleet base \u2014 agents get no external memory`);
+          }
+          const disabled = cfg?.agent?.disabled_toolsets;
+          if (Array.isArray(disabled) && disabled.includes("memory")) {
+            details.push(`agent.disabled_toolsets contains "memory" \u2014 memory tools are suppressed fleet-wide even though memory.provider is set (auto recall/retain still runs, which masks it)`);
+          }
+          const dirs = cfg?.skills?.external_dirs;
+          if (!Array.isArray(dirs) || dirs.length === 0) {
+            details.push(`skills.external_dirs is empty in the fleet base \u2014 no agent can see any shared skill`);
+          }
+        }
+        return {
+          id: "hermes.fleet-config",
+          title: "Fleet base config carries the capabilities every agent inherits",
+          status: details.length === 0 ? "pass" : "fail",
+          summary: details.length === 0 ? "Fleet base config invariants satisfied" : `${details.length} fleet-base config issue(s) detected`,
+          details,
+          // Deliberately not auto-fixable: these are fleet-wide values whose
+          // correct setting is an operator decision, and a wrong guess would
+          // change behavior for every agent simultaneously.
+          fixable: false
         };
       }
     },
@@ -6163,7 +6315,7 @@ var PromptForAgentConfig = class extends Command {
 
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { homedir as homedir3 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 import { join as join8, dirname as dirname5, relative as relative6 } from "node:path";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -6173,7 +6325,7 @@ import YAML4 from "yaml";
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { homedir as homedir2, tmpdir } from "node:os";
+import { homedir as homedir3, tmpdir } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname4, isAbsolute as isAbsolute2, join as join7, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import YAML3 from "yaml";
@@ -6616,11 +6768,11 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join7(homedir2(), ".agents", "skills"),
-  join7(homedir2(), ".codex", "skills")
+  join7(homedir3(), ".agents", "skills"),
+  join7(homedir3(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join7(homedir2(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join7(homedir3(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -6727,7 +6879,7 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join7(env2.HOME || homedir2(), ".config");
+  const base = env2.XDG_CONFIG_HOME || join7(env2.HOME || homedir3(), ".config");
   return join7(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
@@ -6805,7 +6957,7 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join7(homedir2(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join7(homedir3(), "code", "pjangler", relativeRoot, file));
   }
   return candidates.find((candidate) => existsSync5(candidate));
 }
@@ -6976,7 +7128,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync5(join7(homedir2(), ".agents", "hooks"));
+  return !existsSync5(join7(homedir3(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -7484,8 +7636,8 @@ function validateProjectRecord(project, key) {
   }
 }
 function expandHome(path) {
-  if (path === "~") return homedir2();
-  if (path.startsWith("~/")) return join7(homedir2(), path.slice(2));
+  if (path === "~") return homedir3();
+  if (path.startsWith("~/")) return join7(homedir3(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -7658,7 +7810,7 @@ var RunCopierTemplate = class extends Command {
       env2.PYTHONNOUSERSITE = "1";
       env2.PYTHONSAFEPATH = "1";
     }
-    const LOCAL_TEMPLATE = join8(homedir3(), "code", "hermes-agent-template");
+    const LOCAL_TEMPLATE = join8(homedir4(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
     const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync6(join8(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
@@ -9194,7 +9346,7 @@ function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overri
     dryRun: overrides.dryRun ?? dryRun,
     force: overrides.force ?? false,
     pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot2(),
-    homeDir: overrides.homeDir ?? homedir4(),
+    homeDir: overrides.homeDir ?? homedir5(),
     acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches
   };
 }
@@ -9232,7 +9384,7 @@ function resolveTemplateConfigPath() {
   const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  const base = xdg && xdg.length ? xdg : join16(homedir5(), ".config");
+  const base = xdg && xdg.length ? xdg : join16(homedir6(), ".config");
   return join16(base, "hermes-agent-template", "config.toml");
 }
 function detectHermesBin(home) {
@@ -9247,7 +9399,7 @@ function detectHermesBin(home) {
   return candidates[0];
 }
 function renderHostConfig() {
-  const home = homedir5();
+  const home = homedir6();
   const hermesBin = detectHermesBin(home);
   const hermesRepo = join16(home, "code", "hermes-agent");
   const scaffoldDir = join16(home, "code", "hermes-agent-template", "runtime-scaffold");
@@ -9334,7 +9486,7 @@ var EnsureTemplateConfig = class extends Command {
 };
 
 // src/commands/AgentHooksCommands.ts
-import { homedir as homedir6 } from "node:os";
+import { homedir as homedir7 } from "node:os";
 import { join as join17, dirname as dirname8 } from "node:path";
 import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
@@ -9354,7 +9506,7 @@ function resolveTemplateRoot() {
     }
   } catch {
   }
-  candidates.push(join17(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join17(homedir7(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
     if (existsSync15(join17(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
@@ -9843,11 +9995,11 @@ import { cancel as cancel2, multiselect, text as text2, isCancel as isCancel5 } 
 
 // src/project/boardUrl.ts
 import { existsSync as existsSync16, readFileSync as readFileSync12, statSync as statSync3 } from "node:fs";
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir8 } from "node:os";
 import { dirname as dirname9, isAbsolute as isAbsolute3, join as join19, resolve as resolve8 } from "node:path";
 var DEFAULT_PLANE_BASE = "https://plane.delo.sh";
 var DEFAULT_PLANE_WORKSPACE = "33god";
-function resolveTemplateConfigPath2(env2 = process.env, home = homedir7()) {
+function resolveTemplateConfigPath2(env2 = process.env, home = homedir8()) {
   const fromEnv = env2.HERMES_TEMPLATE_CONFIG;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const xdg = env2.XDG_CONFIG_HOME?.trim();
@@ -9883,7 +10035,7 @@ function readTemplateConfig(env2, home) {
     return void 0;
   }
 }
-function planeBase(env2 = process.env, home = homedir7()) {
+function planeBase(env2 = process.env, home = homedir8()) {
   const fromEnv = env2.PLANE_BASE?.trim();
   if (fromEnv) return fromEnv.replace(/\/+$/, "");
   const config = readTemplateConfig(env2, home);
@@ -9925,7 +10077,7 @@ function resolveTicketRef(provider, options) {
 function boardUrl(provider, options = {}) {
   if (!provider) return void 0;
   const env2 = options.env ?? process.env;
-  const home = options.home ?? homedir7();
+  const home = options.home ?? homedir8();
   const type = (provider.type || "plane").trim().toLowerCase();
   const boardId = provider.board_id?.trim();
   if (!boardId) return void 0;
