@@ -3319,6 +3319,7 @@ function profileRendererPath(ctx: Context): string | null {
     join(ctx.repoRoot, "hermes-agent-template", "scripts", "hermes-profile-config.py"),
     join(ctx.repoRoot, "..", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
     join(homedir(), "code", "33GOD", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join(ctx.pjanglerRoot, "templates", "hermes-agent", "scripts", "hermes-profile-config.py"),
   ];
   for (const c of candidates) {
     if (existsSync(c)) return resolve(c);

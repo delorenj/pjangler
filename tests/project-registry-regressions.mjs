@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -541,6 +542,10 @@ try {
   const { hermesBin: fakeHermesBin, hermesRepo: fakeHermesRepo, callsFile: fakeHermesCalls } = createFakeHermes(multiAgentHome);
   const fleetHome = join(multiAgentHome, ".hermes");
   const fleetRegistry = join(fleetHome, "agents-registry.yaml");
+  // hermes.fleet-config audits the fleet base and is not auto-fixable, so a
+  // sandbox that never writes one fails the postcondition on state the test
+  // never configured.
+  writeFleetBaseConfig(fleetHome, multiAgentHome);
   const multiAgentEnv = {
     PJ_PROJECT_REGISTRY: multiAgentRegistry,
     HOME: multiAgentHome,

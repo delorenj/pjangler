@@ -20,6 +20,7 @@ import {
   createBmadInstallerFixture,
   createBmadPackFixture,
 } from "./helpers/bmad-fixture.mjs";
+import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = join(root, "dist", "mcp-server.js");
@@ -155,6 +156,9 @@ base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
 mkdirSync(fleetHome, { recursive: true });
+// See tests/helpers/fleet-base-config.mjs: the fleet base is operator-owned, so
+// a sandboxed HOME has none and hermes.fleet-config fails on it.
+writeFleetBaseConfig(fleetHome, isolatedHome);
 writeFileSync(join(fleetHome, "fleet.env"), [
   `export PLANE_API_KEY=${fleetAuthoritySentinel}`,
   `export PLANE_33GOD_API_KEY=${fleetAuthoritySentinel}`,

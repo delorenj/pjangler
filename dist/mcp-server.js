@@ -3208,7 +3208,8 @@ function profileRendererPath(ctx) {
   const candidates = [
     join3(ctx.repoRoot, "hermes-agent-template", "scripts", "hermes-profile-config.py"),
     join3(ctx.repoRoot, "..", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
-    join3(homedir2(), "code", "33GOD", "hermes-agent-template", "scripts", "hermes-profile-config.py")
+    join3(homedir2(), "code", "33GOD", "hermes-agent-template", "scripts", "hermes-profile-config.py"),
+    join3(ctx.pjanglerRoot, "templates", "hermes-agent", "scripts", "hermes-profile-config.py")
   ];
   for (const c of candidates) {
     if (existsSync2(c)) return resolve3(c);
