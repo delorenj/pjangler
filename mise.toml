@@ -6,25 +6,21 @@
 # on PATH (33god standard contract — the repo's PM owns the ticket board).
 _.path = [".mise/scripts", "agents/hermes/pm", "agents/hermes/pm/hermes"]
 _.file = [".env"]
+
 # This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
 # TODO: Ensure this works for all levels of nesting.
 # i.e. All linked agent files MUST be siblings at
 # any given level of nesting.
-[hooks]
-enter = [
-  "{{config_root}}/.mise/scripts/link-agentfiles.sh",
-  "'{{config_root}}/.mise/scripts/materialize-env.sh'",
-]
-
-[[watch_files]]
-patterns = ["AGENTS.md"]
-task = "link:agentfiles"
-
-[tasks."link:agentfiles"]
-description = "Symlink all agent files to AGENTS.md"
-run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"
+[[hooks.enter]]
+script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+[[hooks.enter]]
+script = "'{{config_root}}/.mise/scripts/materialize-env.sh'"
 
 [tasks."link:bins"]
 description = "Symlink pjangler bins into ~/.local/bin so they survive a node version change"
@@ -47,6 +43,27 @@ run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh --apply"
 description = "Scan a root dir for git repos and register each as a formal pjangler project (dry-run unless --apply)"
 alias = "projects:register"
 run = "{{config_root}}/.mise/scripts/backfill-projects.sh"
+
+[[watch_files]]
+patterns = ["AGENTS.md"]
+task = "link:agentfiles"
+
+[[watch_files]]
+patterns = [".agents/skills.json"]
+task = "skills:sync"
+
+[tasks."link:agentfiles"]
+description = "Symlink all agent files to AGENTS.md"
+run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+
+[tasks."skills:sync"]
+description = "Sync skills from manifest to local CLI dirs"
+depends = ["skills:provision:packs"]
+run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+
+[tasks."skills:provision:packs"]
+description = "Provision every Skillex pack declared in .agents/skills.json"
+run = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
 
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
