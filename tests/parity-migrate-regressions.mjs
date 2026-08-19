@@ -779,7 +779,15 @@ run = "echo still here"
     assert.equal(result.status, "applied", JSON.stringify(result));
     assert.equal(readFileSync(join(roleDir, "SOUL.md"), "utf8"), "custom director soul\n", "existing role contract must be preserved");
     assert.match(readFileSync(join(roleDir, "hermes"), "utf8"), /TERMINAL_CWD="\$REPO_ROOT"/);
-    assert.match(readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8"), /Environment="TERMINAL_CWD=\$REPO_ROOT"/);
+    // TERMINAL_CWD used to be a literal `Environment="TERMINAL_CWD=$REPO_ROOT"`
+    // line in the generated script. It now goes through
+    // parse-fleet-env.py --systemd-environment, which validates and quotes the
+    // value first; the line that reaches the unit is byte-identical
+    // (Environment="TERMINAL_CWD=<repo root>"). Assert the wiring rather than
+    // one spelling of the output — matching the spelling is what rotted here.
+    const systemdScript = readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8");
+    assert.match(systemdScript, /ENV_TERMINAL_CWD="\$\(systemd_environment TERMINAL_CWD "\$REPO_ROOT"\)"/);
+    assert.match(systemdScript, /^\$ENV_TERMINAL_CWD$/m);
     assert.match(readFileSync(join(roleDir, ".scripts", "20-runtime-repo.sh"), "utf8"), /migrate hermes\.runtime-singleton/);
     assert.equal(readFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "utf8"), "private state\n");
 
