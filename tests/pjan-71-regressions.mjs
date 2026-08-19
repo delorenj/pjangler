@@ -5,6 +5,14 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 
+// Every commit stamp below is a timezone-NAIVE ISO string, which git resolves
+// in the local zone. Comparing those against a fixed UTC `now` therefore gives
+// a different answer per machine: "2026-08-16T12:00:00" is 16:00Z here and
+// 12:00Z on a UTC runner, which is exactly 24h before the fixed now and flipped
+// "20 hours ago" into "1 day ago" on CI. Pin the zone so a local run and CI
+// compute the same ages.
+process.env.TZ = "UTC";
+
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const promptBin = join(root, "dist", "prompt.js");
@@ -152,8 +160,10 @@ try {
   writeFileSync(join(detachedWt, "new.txt"), "new\n", "utf8");
   git(detachedWt, ["add", "-A"]);
   git(detachedWt, ["commit", "-qm", "detached work"], {
-    GIT_AUTHOR_DATE: "2026-08-16T12:00:00",
-    GIT_COMMITTER_DATE: "2026-08-16T12:00:00",
+    // 20 hours before the fixed `now` below. Was 12:00, which under the pinned
+    // UTC zone is exactly 24h and renders "1 day ago" instead.
+    GIT_AUTHOR_DATE: "2026-08-16T16:00:00",
+    GIT_COMMITTER_DATE: "2026-08-16T16:00:00",
   });
 
   const now = new Date("2026-08-17T12:00:00Z");
