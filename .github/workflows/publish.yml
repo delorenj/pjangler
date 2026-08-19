@@ -63,11 +63,21 @@ jobs:
       # A pip install lands in the Python toolcache instead, so the lifecycle
       # tests could never exercise a trusted Copier here.
       - run: python -m pip install 'uv==0.11.14'
-      - run: uv tool install 'copier==9.14.0'
+      # The attestation also requires the tool's INTERPRETER to resolve inside
+      # ~/.local/share/uv/python, so uv has to manage the Python too — a tool
+      # installed against the runner's setup-python is rejected.
+      - run: uv python install 3.12
+      - run: uv tool install --python 3.12 'copier==9.14.0'
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
       - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify Copier is trusted where pjangler looks for it
         run: |
           test -x "$HOME/.local/share/uv/tools/copier/bin/copier"
+          interpreter="$(sed -n '1s/^#!//p' "$HOME/.local/share/uv/tools/copier/bin/copier")"
+          echo "copier interpreter: $interpreter"
+          readlink -f "$interpreter" | grep -q "^$HOME/.local/share/uv/python/" \
+            || { echo "interpreter is not uv-managed; pjangler will refuse it" >&2; exit 1; }
           copier --version
       - run: npm ci
       - run: npm run build

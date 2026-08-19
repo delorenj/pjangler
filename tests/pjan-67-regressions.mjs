@@ -477,6 +477,16 @@ const frames = raw.stdout.split(/\r?\n/).filter(Boolean).map((line, index) => {
 const rawCall = frames.find((frame) => frame.id === 2);
 assert.ok(rawCall, `missing raw tools/call response: ${raw.stdout}`);
 assert.equal(rawCall.result?.isError, true, "the captured trusted-Copier child failure must remain a structured MCP error");
+// A missing effect log means the child never ran at all, which in practice
+// means the environment has no Copier pjangler will trust. Say that, instead
+// of surfacing a bare ENOENT from readFileSync three lines later.
+assert.ok(
+  existsSync(effectLog),
+  `the trusted-Copier child never ran, so no external effects were recorded.\n` +
+    `This needs a Copier installed as a uv tool AND running on a uv-managed Python\n` +
+    `(~/.local/share/uv/tools/copier with an interpreter under ~/.local/share/uv/python).\n` +
+    `MCP response was: ${JSON.stringify(rawCall.result)}`,
+);
 assert.match(readFileSync(effectLog, "utf8"), /hermes-child:1:1:1/, "local apply must keep every unselected external effect disabled");
 assert.doesNotMatch(readFileSync(effectLog, "utf8"), /provider-credential-present/, "Copier must not inherit provider credentials without a positive board grant");
 assert.doesNotMatch(readFileSync(effectLog, "utf8"), /interactive-channel-authority-present/, "MCP Hermes children must not inherit unavailable interactive-channel authority");
