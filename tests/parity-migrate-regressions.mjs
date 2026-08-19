@@ -556,7 +556,7 @@ run = "echo still here"
   {
     const repo = makeRepo("skills-manifest-declared-pack-override");
     repos.push(repo);
-    const override = join(repo, ".agents", "skills.bak", "bmad-agent-pm");
+    const override = join(repo, ".agents", "skills.bak", "pjtest-agent-pm");
     mkdirSync(override, { recursive: true });
     writeFileSync(join(override, "SKILL.md"), "# customized\n");
     writeFileSync(
@@ -566,8 +566,8 @@ run = "echo still here"
           $schema: "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json",
           inherit_global: true,
           registry: "https://github.com/delorenj/skillex.git",
-          packs: ["bmad"],
-          skills: [{ name: "bmad-agent-pm", source: `file://${override}` }],
+          packs: ["pjtest"],
+          skills: [{ name: "pjtest-agent-pm", source: `file://${override}` }],
         },
         null,
         2,
@@ -578,7 +578,7 @@ run = "echo still here"
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
     assert.deepEqual(
       manifest.skills,
-      [{ name: "bmad-agent-pm", source: `file://${override}` }],
+      [{ name: "pjtest-agent-pm", source: `file://${override}` }],
       "an override pointing outside the pack must survive migration",
     );
     assert.equal(readFileSync(join(override, "SKILL.md"), "utf8"), "# customized\n");
