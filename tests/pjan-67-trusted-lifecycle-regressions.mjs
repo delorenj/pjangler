@@ -18,8 +18,8 @@ import YAML from "yaml";
 import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
-  createBmadPackFixture,
-} from "./helpers/bmad-fixture.mjs";
+  createSkillPackFixture,
+} from "./helpers/pack-fixture.mjs";
 import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -50,7 +50,7 @@ const fleetHome = join(isolatedHome, ".hermes");
 const fakeHermes = join(fakeBin, "hermes");
 const pjanglerWrapper = join(fakeBin, "pj");
 const fixtureRoot = join(temporary, "fixtures");
-const selectedBmadPack = createBmadPackFixture(fixtureRoot);
+const selectedBmadPack = createSkillPackFixture(fixtureRoot);
 const selectedBmadInstaller = createBmadInstallerFixture(fixtureRoot);
 const fleetAuthoritySentinel = "fleet-rehydrated-sentinel";
 
@@ -185,7 +185,7 @@ const serverEnv = {
   HERMES_AGENT_REPO: join(temporary, "hermes-agent"),
   PJANGLER_BIN: pjanglerWrapper,
   PJ_PROJECT_REGISTRY: registryPath,
-  PJ_BMAD_PACK_ROOT: selectedBmadPack,
+  PJ_PACK_ROOT_PJTEST: selectedBmadPack,
   PJ_BMAD_INSTALLER: selectedBmadInstaller,
   PJ_TICKET_PROVIDER_ADAPTERS: providerAdapters,
   PLANE_API_KEY: "trusted-positive-test-key",

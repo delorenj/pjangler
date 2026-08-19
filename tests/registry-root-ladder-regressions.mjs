@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 /**
  * Contract section 2 step 3 is an ORDERED LADDER of registry checkouts, not a
@@ -42,7 +42,7 @@ const CACHE_DIR_NAME = "https://github.com/delorenj/skillex.git".replace(/[^a-zA
 // it at a generated authenticated pack so these fixtures exercise the ladder,
 // not a machine-specific registry checkout.
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-ladder-bmad-fixture-"));
-const bmadPackRoot = createBmadPackFixture(bmadFixtureRoot);
+const bmadPackRoot = createSkillPackFixture(bmadFixtureRoot);
 
 const PACK = "demo";
 const VERSION = "2.0.0";
@@ -108,8 +108,7 @@ function pj(args, fixture) {
   const env = {
     ...process.env,
     HOME: fixture.home,
-    PJ_BMAD_PACK_ROOT: bmadPackRoot,
-    PJ_PACK_ROOT_BMAD: bmadPackRoot,
+    PJ_PACK_ROOT_PJTEST: bmadPackRoot,
   };
   delete env.PJ_SKILLS_REGISTRY_ROOT;
   return spawnSync("node", [cli, ...args], {
@@ -210,8 +209,7 @@ function fixture(label) {
     env: {
       ...process.env,
       HOME: f.home,
-      PJ_BMAD_PACK_ROOT: bmadPackRoot,
-      PJ_PACK_ROOT_BMAD: bmadPackRoot,
+      PJ_PACK_ROOT_PJTEST: bmadPackRoot,
       PJ_SKILLS_REGISTRY_ROOT: join(f.home, "empty-registry"),
     },
   });

@@ -25,14 +25,14 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const temporaries = [];
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-flatten-bmad-fixture-"));
 temporaries.push(bmadFixtureRoot);
-const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 const explicitHermesBasePack = process.env.PJ_PACK_ROOT_HERMES_BASE?.trim();
 const explicitSkillexRepo = process.env.PJ_SKILLEX_REPO?.trim();
 const hermesBasePack = explicitHermesBasePack ? resolve(explicitHermesBasePack) : undefined;
@@ -49,7 +49,7 @@ function run(args, env) {
   const result = spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, PJ_PACK_ROOT_BMAD: selectedBmadPack, ...env },
+    env: { ...process.env, PJ_PACK_ROOT_PJTEST: selectedBmadPack, ...env },
   });
   if (result.status !== 0) {
     throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -61,7 +61,7 @@ function runAllowFailure(args, env) {
   const result = spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, PJ_PACK_ROOT_BMAD: selectedBmadPack, ...env },
+    env: { ...process.env, PJ_PACK_ROOT_PJTEST: selectedBmadPack, ...env },
   });
   if (!result.stdout.trim()) {
     throw new Error(`command produced no stdout: node ${cli} ${args.join(" ")}\nstderr:\n${result.stderr}`);
@@ -188,7 +188,7 @@ try {
     const pack = makeFlatPack("flatten-basic");
     const repo = makeRepo("flatten-basic-repo");
     writeManifest(repo, { packs: [{ name: "demo-flat", version: "1.0.0" }], skills: [] });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     run(["migrate", "skills.project-manifest", repo, "--json"], env);
     const links = projectedLinks(repo);
@@ -265,7 +265,7 @@ try {
     const pack = makeFlatPack("flatten-default-off", { flattenPolicy: false });
     const repo = makeRepo("flatten-default-off-repo");
     writeManifest(repo, { packs: [{ name: "demo-flat", version: "1.0.0" }], skills: [] });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     const report = JSON.parse(runAllowFailure(["migrate", "skills.project-manifest", repo, "--json"], env));
     const result = report.results.find((entry) => entry.id === "skills.project-manifest");
@@ -280,7 +280,7 @@ try {
   // ---------------------------------------------------------------------------
   {
     const pack = makeFlatPack("flatten-manifest-flag", { packToml: false });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     const flattened = makeRepo("flatten-manifest-flag-on");
     writeManifest(flattened, { packs: [{ name: "demo-flat", flatten: true }], skills: [] });
@@ -306,7 +306,7 @@ try {
   // ---------------------------------------------------------------------------
   {
     const pack = makeFlatPack("flatten-filters");
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     const excluded = makeRepo("flatten-exclude");
     writeManifest(excluded, { packs: [{ name: "demo-flat", version: "1.0.0", exclude: ["beta"] }], skills: [] });
@@ -336,7 +336,7 @@ try {
     const pack = makeFlatPack("flatten-duplicate", { withDuplicate: true });
     const repo = makeRepo("flatten-duplicate-repo");
     writeManifest(repo, { packs: [{ name: "demo-flat", version: "1.0.0" }], skills: [] });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     const report = JSON.parse(runAllowFailure(["migrate", "skills.project-manifest", repo, "--json"], env));
     const result = report.results.find((entry) => entry.id === "skills.project-manifest");
@@ -362,7 +362,7 @@ try {
         { name: "gamma", source: `file://${override}` },
       ],
     });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     const before = JSON.parse(runAllowFailure(["audit", repo, "--json"], env));
     const beforeFinding = before.rules.find((rule) => rule.id === "skills.project-manifest");
@@ -407,7 +407,7 @@ try {
         { name: "alpha", source: `file://${outside}` },
       ],
     });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_SKILLS_REGISTRY_ROOT: registry };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_SKILLS_REGISTRY_ROOT: registry };
 
     run(["migrate", "skills.project-manifest", repo, "--json"], env);
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
@@ -445,7 +445,7 @@ try {
     assert.equal(existsSync(goldenProjectionPath), true, `explicit Skillex golden projection is missing: ${goldenProjectionPath}`);
     const repo = makeRepo("flatten-hermes-base");
     writeManifest(repo, { packs: [{ name: "hermes-base", version: "0.18.2" }], skills: [] });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_HERMES_BASE: hermesBasePack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_HERMES_BASE: hermesBasePack };
 
     run(["migrate", "skills.project-manifest", repo, "--json"], env);
     const links = projectedLinks(repo);
@@ -561,7 +561,7 @@ try {
 
     const repo = makeRepo("flatten-hostile-repo");
     writeManifest(repo, { packs: [{ name: "demo-flat", version: "1.0.0" }], skills: [] });
-    const env = { PJ_BMAD_PACK_ROOT: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
+    const env = { PJ_PACK_ROOT_PJTEST: selectedBmadPack, PJ_PACK_ROOT_DEMO_FLAT: pack };
 
     run(["migrate", "skills.project-manifest", repo, "--json"], env);
     const links = projectedLinks(repo);

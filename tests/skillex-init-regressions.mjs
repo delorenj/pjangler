@@ -19,10 +19,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
-  BMAD_FIXTURE_SKILLS,
+  PACK_FIXTURE_SKILLS,
   createBmadInstallerFixture,
-  createBmadPackFixture,
-} from "./helpers/bmad-fixture.mjs";
+  createSkillPackFixture,
+} from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const sourceCli = join(root, "dist", "index.js");
@@ -35,7 +35,7 @@ const homeDir = join(tmp, "home");
 // this hermetic HOME would resolve the pack out of whichever checkout `sync-skills.py`
 // happened to clone into `~/.agents/.cache/registries/`, over the network.
 const fixtureRegistryRoot = join(homeDir, "code", "skillex");
-const bmadPack = createBmadPackFixture(fixtureRegistryRoot);
+const bmadPack = createSkillPackFixture(fixtureRegistryRoot);
 const bmadInstaller = createBmadInstallerFixture(tmp);
 const bmadFixtureVersion = basename(bmadPack);
 const cacheRoot = join(homeDir, ".cache");
@@ -47,8 +47,8 @@ writeFileSync(
 
 function cleanBaseEnv() {
   const env = { ...process.env };
-  delete env.PJ_BMAD_PACK_ROOT;
-  delete env.PJ_PACK_ROOT_BMAD;
+  delete env.PJ_PACK_ROOT_PJTEST;
+  delete env.PJ_PACK_ROOT_PJTEST;
   env.PJ_SKILLS_REGISTRY_ROOT = fixtureRegistryRoot;
   env.PJ_BMAD_INSTALLER = bmadInstaller;
   env.XDG_CACHE_HOME = cacheRoot;
@@ -81,9 +81,9 @@ function runExpectFailure(command, args, options = {}) {
   return `${result.stdout}\n${result.stderr}`;
 }
 
-function bmadSkillNames() {
+function packSkillNames() {
   return readdirSync(bmadPack)
-    .filter((name) => name.startsWith("bmad-") && lstatSync(join(bmadPack, name)).isDirectory())
+    .filter((name) => name.startsWith("pjtest-") && lstatSync(join(bmadPack, name)).isDirectory())
     .sort();
 }
 
@@ -96,28 +96,34 @@ function assertProjectContract(projectDir, homeDir) {
   assert.equal(existsSync(join(projectDir, ".mise", "scripts", "sync-skills.py")), true, "fresh init must ship its configured skills sync engine");
 
   const manifest = JSON.parse(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"));
+  // PJAN-76: BMAD is not a Skillex pack. `bmad-method install` writes bmad-*
+  // into .agents/skills itself, so the manifest must not name any of them —
+  // two writers for one path is what broke when the registry dropped the pack.
   const bmadEntries = manifest.skills.filter((entry) => entry?.name?.startsWith("bmad-"));
-  assert.deepEqual(bmadEntries.map((entry) => entry.name), bmadSkillNames());
-  assert.ok(
-    bmadEntries.every(
-      (entry) =>
-        Object.keys(entry).sort().join(",") === "name,source" &&
-        entry.source === `file://${join(bmadPack, entry.name)}`
-    ),
-    "BMAD manifest entries must use the live {name, file:// source} schema and pinned 6.10.1-next.31 pack"
+  assert.deepEqual(
+    bmadEntries.map((entry) => entry.name),
+    [],
+    "skills.json must not record bmad-* entries; bmad-method owns them",
   );
 
   const skillsDir = join(projectDir, ".agents", "skills");
-  for (const name of bmadSkillNames()) {
-    const link = join(skillsDir, name);
-    assert.equal(lstatSync(link).isSymbolicLink(), true, `${name} must be a symlink`);
-    assert.equal(resolve(dirname(link), readlinkSync(link)), join(bmadPack, name));
+  const installedBmad = readdirSync(skillsDir).filter((name) => name.startsWith("bmad-"));
+  assert.ok(installedBmad.length > 0, "the installer must have written bmad-* skills into .agents/skills");
+  for (const name of installedBmad) {
+    assert.equal(
+      lstatSync(join(skillsDir, name)).isSymbolicLink(),
+      false,
+      `${name} must be the installer's real directory, not a pack symlink`,
+    );
   }
 
   const customSkill = join(skillsDir, "project-custom");
   mkdirSync(customSkill, { recursive: true });
   writeFileSync(join(customSkill, "SKILL.md"), "# Project custom skill\n");
   manifest.skills.unshift({ name: "project-custom", source: `file://${customSkill}` });
+  // PJAN-76: a generated project declares no packs, so the pack machinery below
+  // (projection, idempotence, self-healing) needs one declared to be about.
+  manifest.packs = [{ name: "pjtest", version: basename(bmadPack) }];
   writeFileSync(join(projectDir, ".agents", "skills.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   mkdirSync(join(projectDir, ".codex"), { recursive: true });
@@ -155,16 +161,16 @@ function assertProjectContract(projectDir, homeDir) {
   assert.equal(existsSync(join(customSkill, "SKILL.md")), true, "non-BMAD project skill must survive reprovisioning");
   const reprovisioned = JSON.parse(readFileSync(join(projectDir, ".agents", "skills.json"), "utf8"));
   assert.deepEqual(reprovisioned.skills[0], { name: "project-custom", source: `file://${customSkill}` });
-  assert.equal(lstatSync(join(projectDir, ".codex", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "canonical engine must be runnable by mise");
+  assert.equal(lstatSync(join(projectDir, ".codex", "skills", "pjtest-agent-pm")).isSymbolicLink(), true, "canonical engine must be runnable by mise");
 
-  const brokenLink = join(skillsDir, "bmad-agent-pm");
+  const brokenLink = join(skillsDir, "pjtest-agent-pm");
   unlinkSync(brokenLink);
-  symlinkSync(join(tmp, "missing-bmad-agent-pm"), brokenLink);
+  symlinkSync(join(tmp, "missing-pjtest-agent-pm"), brokenLink);
   run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
     env: projectEnv,
   });
-  assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "bmad-agent-pm"), "broken BMAD links must self-heal");
+  assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "pjtest-agent-pm"), "broken pack links must self-heal");
   const beforeIdempotent = readFileSync(join(projectDir, ".agents", "skills.json"), "utf8");
   run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
     cwd: projectDir,
@@ -175,7 +181,7 @@ function assertProjectContract(projectDir, homeDir) {
   return {
     mise,
     bmadEntries: reprovisioned.skills.filter((entry) => entry?.name?.startsWith("bmad-")),
-    bmadLinks: bmadSkillNames().map((name) => resolve(skillsDir, readlinkSync(join(skillsDir, name)))),
+    bmadSkills: readdirSync(skillsDir).filter((name) => name.startsWith("bmad-")).sort(),
     customPreserved: existsSync(join(customSkill, "SKILL.md")),
   };
 }
@@ -191,7 +197,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
   for (const name of ["../sentinel", ".", "..", join(tmp, "absolute-skill")]) {
     const malicious = {
       ...originalManifest,
-      skills: [{ name, source: pathToFileURL(join(bmadPack, "bmad-agent-pm")).href }, ...originalManifest.skills],
+      skills: [{ name, source: pathToFileURL(join(bmadPack, "pjtest-agent-pm")).href }, ...originalManifest.skills],
     };
     writeFileSync(manifestPath, `${JSON.stringify(malicious, null, 2)}\n`);
     runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
@@ -282,10 +288,10 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
   mkdirSync(partialPack);
   copyFileSync(join(bmadPack, "SHA256SUMS"), join(partialPack, "SHA256SUMS"));
   copyFileSync(join(bmadPack, "pack.toml"), join(partialPack, "pack.toml"));
-  cpSync(join(bmadPack, "bmad-agent-pm"), join(partialPack, "bmad-agent-pm"), { recursive: true });
+  cpSync(join(bmadPack, "pjtest-agent-pm"), join(partialPack, "pjtest-agent-pm"), { recursive: true });
   const partialFailure = runExpectFailure("python3", [provisioner], {
     cwd: projectDir,
-    env: { HOME: homeDir, PJ_BMAD_PACK_ROOT: partialPack },
+    env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: partialPack },
   });
   // A partial pack no longer trips a bespoke "coverage" check: under the
   // generic contract every DECLARED skill directory must exist before the
@@ -298,19 +304,19 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
 
   const tamperedPack = join(tmp, "tampered-bmad-pack");
   cpSync(bmadPack, tamperedPack, { recursive: true });
-  writeFileSync(join(tamperedPack, "bmad-agent-pm", "SKILL.md"), "tampered\n");
+  writeFileSync(join(tamperedPack, "pjtest-agent-pm", "SKILL.md"), "tampered\n");
   const tamperedFailure = runExpectFailure("python3", [provisioner], {
     cwd: projectDir,
-    env: { HOME: homeDir, PJ_BMAD_PACK_ROOT: tamperedPack },
+    env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: tamperedPack },
   });
   assert.match(tamperedFailure, /digest mismatch/);
   assert.equal(readFileSync(manifestPath, "utf8"), originalManifest, "tampered pack rejection must precede manifest mutation");
 
-  copyFileSync(join(bmadPack, "bmad-agent-pm", "SKILL.md"), join(tamperedPack, "bmad-agent-pm", "SKILL.md"));
-  mkdirSync(join(tamperedPack, "bmad-agent-pm", "unauthenticated-empty"));
+  copyFileSync(join(bmadPack, "pjtest-agent-pm", "SKILL.md"), join(tamperedPack, "pjtest-agent-pm", "SKILL.md"));
+  mkdirSync(join(tamperedPack, "pjtest-agent-pm", "unauthenticated-empty"));
   const topologyFailure = runExpectFailure("python3", [provisioner], {
     cwd: projectDir,
-    env: { HOME: homeDir, PJ_BMAD_PACK_ROOT: tamperedPack },
+    env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: tamperedPack },
   });
   assert.match(topologyFailure, /unauthenticated empty directories/);
   assert.equal(readFileSync(manifestPath, "utf8"), originalManifest, "unauthenticated topology rejection must precede manifest mutation");
@@ -318,8 +324,8 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
 
 try {
   assert.deepEqual(
-    bmadSkillNames(),
-    [...BMAD_FIXTURE_SKILLS].sort(),
+    packSkillNames(),
+    [...PACK_FIXTURE_SKILLS].sort(),
     "generated BMAD pack must expose its authenticated fixture inventory",
   );
   assert.equal(
@@ -342,7 +348,7 @@ try {
   const installed = initWith(installedCli, "installed", homeDir);
   assert.equal(installed.contract.mise, source.contract.mise, "source and packed-installed mise contracts must match");
   assert.deepEqual(installed.contract.bmadEntries, source.contract.bmadEntries, "source and packed-installed manifests must match");
-  assert.deepEqual(installed.contract.bmadLinks, source.contract.bmadLinks, "source and packed-installed BMAD symlink targets must match");
+  assert.deepEqual(installed.contract.bmadSkills, source.contract.bmadSkills, "source and packed-installed BMAD skill sets must match");
   assert.equal(source.contract.customPreserved && installed.contract.customPreserved, true);
   assertAdversarialBoundaries(source.projectDir, homeDir);
   assertProvisionerRejectsUntrustedPacks(source.projectDir, homeDir);

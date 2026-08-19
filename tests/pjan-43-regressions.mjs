@@ -15,12 +15,12 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjan-43-bmad-fixture-"));
-const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 const cleanup = [bmadFixtureRoot];
 
 function makeHome(name) {
@@ -52,8 +52,7 @@ function command(args, { cwd = root, home = makeHome("default"), extraEnv = {} }
       ...process.env,
       HOME: home,
       XDG_CACHE_HOME: join(home, ".cache"),
-      PJ_BMAD_PACK_ROOT: selectedBmadPack,
-      PJ_PACK_ROOT_BMAD: selectedBmadPack,
+      PJ_PACK_ROOT_PJTEST: selectedBmadPack,
       ...extraEnv,
     },
   });
@@ -124,8 +123,17 @@ try {
     assert.deepEqual(manifest.unrelated_top_level, { keep: true });
     assert.deepEqual(manifest.skills[0], { name: "custom-real", source: `file://${custom}` });
     assert.deepEqual(manifest.skills[1], { name: "bmad-private-custom", source: `file://${privateCustom}` });
-    assert.ok(manifest.skills.slice(2).every((entry) => entry.name.startsWith("bmad-")));
-    assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true);
+    // PJAN-76: the manifest carries exactly what the repo declared. pjangler no
+    // longer appends a pinned BMAD pack's members to it.
+    assert.equal(manifest.skills.length, 2, JSON.stringify(manifest.skills));
+    // ...and `bmad-agent-pm` stays the real directory it was. That name is the
+    // installer's namespace now, so pjangler must not replace it with a symlink
+    // into a pack — the content the test planted has to survive untouched.
+    assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), false);
+    assert.equal(
+      readFileSync(join(repo, ".agents", "skills", "bmad-agent-pm", "COPIED"), "utf8"),
+      "replace canonical collision\n",
+    );
 
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     assert.equal(finding(audit, "skills.project-manifest").status, "pass", JSON.stringify(finding(audit, "skills.project-manifest")));

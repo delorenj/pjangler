@@ -2,18 +2,16 @@ import assert from "node:assert/strict";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { provisionBmadSkills, type BmadProvisionHooks, type Context } from "../src/parity/index";
-import { BMAD_FIXTURE_SKILLS, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { provisionDeclaredPacks, type PackProvisionHooks, type Context } from "../src/parity/index";
+import { PACK_FIXTURE_NAME, PACK_FIXTURE_SKILLS, PACK_FIXTURE_VERSION, createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const pjanglerRoot = resolve(import.meta.dirname, "..");
 const temporary = mkdtempSync(join(tmpdir(), "pjangler-bmad-transaction-"));
-const sourcePack = createBmadPackFixture(join(temporary, "registry"));
-const previousPack = process.env.PJ_BMAD_PACK_ROOT;
-const previousGenericPack = process.env.PJ_PACK_ROOT_BMAD;
+const sourcePack = createSkillPackFixture(join(temporary, "registry"));
+const previousPack = process.env.PJ_PACK_ROOT_PJTEST;
 
 function selectPack(pack: string): void {
-  process.env.PJ_BMAD_PACK_ROOT = pack;
-  process.env.PJ_PACK_ROOT_BMAD = pack;
+  process.env.PJ_PACK_ROOT_PJTEST = pack;
 }
 
 function snapshot(path: string): unknown {
@@ -42,12 +40,19 @@ function fixture(label: string): { context: Context; pack: string; project: stri
   const skills = join(project, ".agents", "skills");
   mkdirSync(skills, { recursive: true });
   const manifest = join(project, ".agents", "skills.json");
-  writeFileSync(manifest, '{"skills":[{"name":"custom","source":"file:///custom"}]}\n');
+  // PJAN-76: nothing is pinned implicitly, so the pack under test is declared.
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      packs: [{ name: PACK_FIXTURE_NAME, version: PACK_FIXTURE_VERSION }],
+      skills: [{ name: "custom", source: "file:///custom" }],
+    }) + "\n",
+  );
   chmodSync(manifest, 0o600);
-  mkdirSync(join(skills, "bmad-agent-pm"));
-  writeFileSync(join(skills, "bmad-agent-pm", "legacy.txt"), "preserve exactly\n");
-  symlinkSync(join(pack, "bmad-agent-analyst"), join(skills, "bmad-agent-analyst"), "dir");
-  symlinkSync(join(pack, "bmad-stale"), join(skills, "bmad-stale"), "dir");
+  mkdirSync(join(skills, "pjtest-agent-pm"));
+  writeFileSync(join(skills, "pjtest-agent-pm", "legacy.txt"), "preserve exactly\n");
+  symlinkSync(join(pack, "pjtest-agent-analyst"), join(skills, "pjtest-agent-analyst"), "dir");
+  symlinkSync(join(pack, "pjtest-stale"), join(skills, "pjtest-stale"), "dir");
   mkdirSync(join(skills, "custom"));
   writeFileSync(join(skills, "custom", "SKILL.md"), "custom\n");
   return {
@@ -62,13 +67,13 @@ try {
     const { context, pack, project } = fixture("link-failure");
     selectPack(pack);
     const before = snapshot(project);
-    const hooks: BmadProvisionHooks = {
+    const hooks: PackProvisionHooks = {
       createLink(target, link, index) {
         if (index === 5) throw new Error("injected fifth-link failure");
         symlinkSync(target, link, "dir");
       },
     };
-    const result = provisionBmadSkills(context, null, hooks);
+    const result = provisionDeclaredPacks(context, null, hooks);
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.match(result.error ?? "", /fifth-link/);
     assert.deepEqual(snapshot(project), before, "Nth-link failure must restore exact project state");
@@ -78,9 +83,9 @@ try {
     const { context, pack, project } = fixture("pack-mutation");
     selectPack(pack);
     const before = snapshot(project);
-    const result = provisionBmadSkills(context, null, {
+    const result = provisionDeclaredPacks(context, null, {
       afterPreflight() {
-        writeFileSync(join(pack, "bmad-agent-pm", "SKILL.md"), "mutated after preflight\n");
+        writeFileSync(join(pack, "pjtest-agent-pm", "SKILL.md"), "mutated after preflight\n");
       },
     });
     assert.equal(result.ok, false, JSON.stringify(result));
@@ -100,7 +105,7 @@ try {
     chmodSync(manifest, 0o600);
     selectPack(pack);
     const before = snapshot(project);
-    const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
+    const result = provisionDeclaredPacks({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.match(result.error ?? "", /Invalid existing skills manifest/);
     assert.deepEqual(snapshot(project), before, "malformed manifest failure must not mutate project state");
@@ -120,7 +125,7 @@ try {
     symlinkSync(outside, join(agents, "skills.json"));
     selectPack(pack);
     const before = snapshot(project);
-    const result = provisionBmadSkills({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
+    const result = provisionDeclaredPacks({ repoRoot: project, dryRun: false, pjanglerRoot, homeDir: join(root, "home") });
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.match(result.error ?? "", /Refusing unsafe skills manifest/);
     assert.doesNotMatch(result.error ?? "", /outside.*could not be resolved/);
@@ -132,9 +137,9 @@ try {
     const { context, pack, project } = fixture("projection-mismatch");
     selectPack(pack);
     const before = snapshot(project);
-    const result = provisionBmadSkills(context, null, {
+    const result = provisionDeclaredPacks(context, null, {
       afterApply(_manifest, skills) {
-        const link = join(skills, "bmad-agent-analyst");
+        const link = join(skills, "pjtest-agent-analyst");
         unlinkSync(link);
         symlinkSync("/tmp/wrong-after-apply", link, "dir");
       },
@@ -147,10 +152,10 @@ try {
   {
     const { context, pack, project } = fixture("success");
     selectPack(pack);
-    const first = provisionBmadSkills(context);
+    const first = provisionDeclaredPacks(context);
     assert.equal(first.ok, true, JSON.stringify(first));
     const after = snapshot(project);
-    const second = provisionBmadSkills(context);
+    const second = provisionDeclaredPacks(context);
     // `packWarnings` carries PACKS-CONTRACT section 3b advisories. BMAD is not a
     // flattened pack, so an EMPTY array here is itself the assertion: nothing in
     // a flat pack may ever produce one.
@@ -158,16 +163,14 @@ try {
     assert.deepEqual(snapshot(project), after, "successful rerun must be idempotent");
     const skills = join(project, ".agents", "skills");
     assert.equal(
-      readdirSync(skills).filter((name) => name.startsWith("bmad-")).length,
-      BMAD_FIXTURE_SKILLS.length,
+      readdirSync(skills).filter((name) => name.startsWith("pjtest-")).length,
+      PACK_FIXTURE_SKILLS.length,
     );
   }
 
-  console.log("BMAD transactional projection regressions passed");
+  console.log("pack transactional projection regressions passed");
 } finally {
-  if (previousPack === undefined) delete process.env.PJ_BMAD_PACK_ROOT;
-  else process.env.PJ_BMAD_PACK_ROOT = previousPack;
-  if (previousGenericPack === undefined) delete process.env.PJ_PACK_ROOT_BMAD;
-  else process.env.PJ_PACK_ROOT_BMAD = previousGenericPack;
+  if (previousPack === undefined) delete process.env.PJ_PACK_ROOT_PJTEST;
+  else process.env.PJ_PACK_ROOT_PJTEST = previousPack;
   rmSync(temporary, { recursive: true, force: true });
 }

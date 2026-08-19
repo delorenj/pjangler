@@ -40,7 +40,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -64,7 +64,7 @@ const temporaries = [];
 // reach the pack under test. `sync-skills.py` carries no such implicit pin.
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-xengine-bmad-fixture-"));
 temporaries.push(bmadFixtureRoot);
-const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 // The SSOT projection, committed in the skillex checkout and regenerated with
 //   skillex pack inventory packs/hermes-base/0.18.2 --json > <this file>
 // Both this suite and skillex's own pytest suite read it, so the reference pack's
@@ -169,8 +169,7 @@ function projectWithPjangler(packEntry, packRoot, registryRoot) {
   run("node", [cli, "migrate", "skills.project-manifest", repo, "--json"], {
     env: {
       PJ_SKILLS_REGISTRY_ROOT: registryRoot,
-      PJ_BMAD_PACK_ROOT: selectedBmadPack,
-      PJ_PACK_ROOT_BMAD: selectedBmadPack,
+      PJ_PACK_ROOT_PJTEST: selectedBmadPack,
     },
   });
   return linksUnder(join(repo, ".agents", "skills"), packRoot);

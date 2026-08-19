@@ -7,19 +7,18 @@ import type { LifecycleContext } from "../recipes/types";
 import type { AuditReport, MigrationReport } from "./rules";
 
 export {
-  BMAD_PACK_VERSION,
   formatAuditReport,
   formatMigrationReport,
   formatMomoReadinessReport,
   formatRulePicker,
-  provisionBmadSkills,
+  provisionDeclaredPacks,
   registryCacheDirName,
   runMomoReadinessAudit,
 } from "./rules";
 export type {
   AuditFinding,
   AuditReport,
-  BmadProvisionHooks,
+  PackProvisionHooks,
   Context,
   MigrationReport,
   MigrationRuleResult,

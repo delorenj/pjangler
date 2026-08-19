@@ -24,16 +24,23 @@ import {
 } from "./pack";
 
 /**
- * The BMAD pack pjangler pins when a repo does not declare one in `packs[]`.
+ * BMAD is NOT a Skillex pack.
  *
- * This is now only a DEFAULT: a repo that declares `{"name":"bmad", ...}` in
- * `.agents/skills.json` `packs[]` takes over completely and this pin is not
- * consulted. It stays `sealed` from pjangler's side so the pinned release is
- * still verified byte-for-byte even though its `pack.toml` predates
- * `[policy] sealed`.
+ * pjangler used to pin a frozen `packs/bmad/<version>` in the Skillex registry
+ * and project it into `.agents/skills/bmad-*` as symlinks. That was a mirror of
+ * something `bmad-method` already does natively: `bmad-method install` writes
+ * its skills into `.agents/skills/bmad-*` and into each `--tools` root itself,
+ * per repo, versioned by `_bmad/_config/manifest.yaml`.
+ *
+ * Two sources of truth for the same files is a bug waiting for one of them to
+ * move, and on 2026-08-18 one did: the registry dropped `packs/bmad`, and every
+ * machine without a warm cache lost `pjangler project create`.
+ *
+ * BMAD is now owned end to end by the external `bmad-method` npm package, and
+ * pjangler's BMAD rules are a wrapper around it: install it, keep it current,
+ * keep its CLI projections configured. `packs[]` still exists for real Skillex
+ * packs; `bmad` is no longer special to it in any way.
  */
-export const BMAD_PACK_VERSION = "6.10.1-next.31";
-const BMAD_PACK_NAME = "bmad";
 
 export type RuleStatus = "pass" | "fail" | "warn" | "skip";
 
@@ -731,29 +738,14 @@ function projectSkillTopologyIssues(repoRoot: string): string[] {
 //
 // A repo declares packs in `.agents/skills.json` `packs[]`. Their members are
 // projected into `.agents/skills/<name>` as symlinks and are NOT expanded into
-// `skills[]`. When a repo declares no `bmad` pack, pjangler keeps its historical
-// behaviour and pins BMAD_PACK_VERSION itself, expanded into `skills[]`.
+// `skills[]`. Nothing is pinned implicitly: a repo that declares no packs gets
+// no pack projections.
 // ---------------------------------------------------------------------------
 
-/**
- * Per-pack root override, e.g. `PJ_PACK_ROOT_HERMES_BASE=/tmp/pack`.
- *
- * `PJ_BMAD_PACK_ROOT` predates it and stays a first-class alias for the `bmad`
- * pack — every regression suite and every developer script sets it.
- */
+/** Per-pack root override, e.g. `PJ_PACK_ROOT_HERMES_BASE=/tmp/pack`. */
 function packRootOverride(name: string): string | undefined {
   const generic = process.env[`PJ_PACK_ROOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]?.trim();
-  if (generic) return resolve(generic);
-  if (name === BMAD_PACK_NAME) {
-    const legacy = process.env.PJ_BMAD_PACK_ROOT?.trim();
-    if (legacy) return resolve(legacy);
-  }
-  return undefined;
-}
-
-/** The implicit BMAD pin, sealed from pjangler's side (contract section 4). */
-function bmadPackEntry(): PackManifestEntry {
-  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true, flatten: false };
+  return generic ? resolve(generic) : undefined;
 }
 
 /**
@@ -967,14 +959,17 @@ interface ResolvedPackPlanEntry {
 }
 
 interface PackPlan {
-  /** Pack skills recorded in `skills[]` — the implicit BMAD pin only. */
+  /**
+   * Pack skills recorded in `skills[]`. Always empty now that nothing is
+   * pinned implicitly — declared packs project into `.agents/skills` and are
+   * deliberately NOT expanded into `skills[]` (PACKS-CONTRACT section 3).
+   * Kept so the manifest writer keeps one shape for both.
+   */
   manifestSkills: SkillManifestEntry[];
   /** Every projection to materialize in `.agents/skills`: name -> target dir. */
   projections: Map<string, string>;
   /** Roots that own a `skills[]` entry or a `.agents/skills` symlink. */
   ownershipRoots: string[];
-  /** Roots that own the implicit `skills[]` expansion specifically. */
-  implicitRoots: string[];
   resolved: ResolvedPackPlanEntry[];
   /** Declared packs that resolved and validated (used for redundancy checks). */
   declared: ResolvedPackPlanEntry[];
@@ -988,7 +983,6 @@ interface PackPlan {
    * summary, and because a pack advisory must not read as a skipped pack.
    */
   packWarnings: string[];
-  bmadDeclared: boolean;
 }
 
 function manifestPackEntries(manifest: Record<string, unknown> | null | undefined): {
@@ -1022,47 +1016,15 @@ function buildPackPlan(ctx: Context, manifest: Record<string, unknown> | null | 
     manifestSkills: [],
     projections: new Map(),
     ownershipRoots: [],
-    implicitRoots: [],
     resolved: [],
     declared: [],
     errors: [],
     warnings: [],
     packWarnings: [],
-    bmadDeclared: false,
   };
 
   const { entries, errors } = manifestPackEntries(manifest);
   plan.errors.push(...errors);
-  plan.bmadDeclared = entries.some((entry) => entry.name === BMAD_PACK_NAME);
-
-  // Lowest precedence first: the implicit BMAD pin, when nothing declares bmad.
-  // It resolves through `resolvePackRoot` exactly like a declared pack would, so
-  // adding `packs:[{name:"bmad",...}]` to a manifest can never move the pack.
-  if (!plan.bmadDeclared) {
-    const entry = bmadPackEntry();
-    let root: string | undefined;
-    try {
-      root = resolvePackRoot(ctx, entry).root;
-      const pack = validatePack(root, entry);
-      const resolved: ResolvedPackPlanEntry = { entry, root, pack };
-      plan.resolved.push(resolved);
-      plan.implicitRoots.push(root);
-      plan.ownershipRoots.push(root);
-      plan.packWarnings.push(...pack.warnings);
-      for (const name of pack.members) {
-        const target = packMemberPath(pack, name);
-        plan.projections.set(name, target);
-        plan.manifestSkills.push({ name, source: pathToFileURL(target).href });
-      }
-    } catch (error) {
-      // Resolution itself can fail, in which case there is no root to name — the
-      // underlying message always carries the path that was rejected.
-      plan.errors.push(
-        `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${root ?? "its resolved pack root"}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
   // Declared packs, in array order — a later pack wins a name collision.
   for (const entry of entries) {
     try {
@@ -1140,6 +1102,25 @@ function manifestEntrySourcePath(entry: unknown): string | undefined {
   }
 }
 
+/**
+ * A `skills[]` entry left behind by the retired Skillex `bmad` pin.
+ *
+ * Deliberately narrow on BOTH axes. The name must be in the `bmad-*` namespace
+ * the installer owns, AND the source must point into a `packs/bmad/` tree —
+ * which is the shape pjangler itself used to write and the only shape that is
+ * unambiguously stale, since the registry no longer carries that pack at all.
+ *
+ * Matching on the name alone would evict a skill the user wrote and keeps in
+ * their own repo just because they named it `bmad-something`. That entry is
+ * theirs, it resolves, and nothing else claims the path.
+ */
+function isRetiredBmadPackEntry(entry: unknown): boolean {
+  const name = skillManifestEntryName(entry);
+  if (!name || !name.startsWith(BMAD_SKILL_NAME_PREFIX)) return false;
+  const source = manifestEntrySourcePath(entry);
+  return Boolean(source && /(^|\/)packs\/bmad\//.test(source));
+}
+
 function isPackManagedManifestEntry(entry: unknown, expectedNames: Set<string>, packRoots: string[]): boolean {
   const name = skillManifestEntryName(entry);
   if (!name) return false;
@@ -1191,7 +1172,6 @@ function canonicalSkillsManifest(
   plan: PackPlan = buildPackPlan(ctx, current)
 ): string {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
-  const expectedNames = new Set(plan.manifestSkills.map((entry) => entry.name));
   return `${JSON.stringify(
     {
       ...(current ?? {}),
@@ -1199,10 +1179,14 @@ function canonicalSkillsManifest(
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
       skills: [
+        // Two evictions, deliberately narrow. `isRetiredBmadPackEntry` clears the
+        // leftovers from when pjangler pinned a Skillex `bmad` pack;
+        // `isRedundantDeclaredPackEntry` clears hand-expanded members of a pack
+        // the repo now declares. Nothing else is removed — an entry pointing at
+        // a CONTAINER inside a declared pack's family, or anywhere outside it,
+        // is the user's.
         ...existing.filter(
-          (entry) =>
-            !isPackManagedManifestEntry(entry, expectedNames, plan.implicitRoots) &&
-            !isRedundantDeclaredPackEntry(entry, plan)
+          (entry) => !isRetiredBmadPackEntry(entry) && !isRedundantDeclaredPackEntry(entry, plan)
         ),
         ...plan.manifestSkills,
       ],
@@ -1404,10 +1388,10 @@ function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): str
   const rawManifest = safeReadText(manifestPath);
   const manifest = tryParseJson(rawManifest);
   if (rawManifest !== null && manifest === null) {
-    // Invalid JSON: never clobber it. provisionBmadSkills reports the blocker.
+    // Invalid JSON: never clobber it. provisionDeclaredPacks reports the blocker.
     return details;
   }
-  // An unresolvable pack blocks later in provisionBmadSkills; an empty pack
+  // An unresolvable pack blocks later in provisionDeclaredPacks; an empty pack
   // inventory here only makes this step more conservative.
   const packPlan = buildPackPlan(ctx, manifest);
   const expectedNames = new Set(packPlan.projections.keys());
@@ -1460,7 +1444,7 @@ function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): str
   }
   if (!applied.length) return details;
 
-  // Emit the canonical shape rather than a plain append: provisionBmadSkills
+  // Emit the canonical shape rather than a plain append: provisionDeclaredPacks
   // re-orders the manifest into [non-pack..., pack...] on every run, so a naive
   // append would be rewritten on the next migrate and never reach "noop".
   const merged = { ...(manifest ?? {}), skills: manifestSkills };
@@ -1477,7 +1461,7 @@ function migrateLegacyCommittedSkills(ctx: Context, changedFiles: string[]): str
   return details;
 }
 
-export interface BmadProvisionHooks {
+export interface PackProvisionHooks {
   afterPreflight?: () => void;
   createLink?: (target: string, link: string, index: number) => void;
   afterApply?: (manifestPath: string, skillsDir: string) => void;
@@ -1531,10 +1515,19 @@ function atomicWriteBuffer(path: string, content: Buffer, mode: number, temporar
   renameSync(temporary, path);
 }
 
-export function provisionBmadSkills(
+/**
+ * Materialize every pack DECLARED in `.agents/skills.json` `packs[]` into
+ * `.agents/skills/<name>` symlinks, and normalize the manifest around them.
+ *
+ * Formerly `provisionBmadSkills`, back when pjangler pinned a `bmad` pack
+ * implicitly and this function's main job was projecting it. BMAD is the
+ * installer's now; nothing is pinned implicitly, so this only ever handles
+ * what a repo asked for by name.
+ */
+export function provisionDeclaredPacks(
   ctx: Context,
   preservedManifest?: Record<string, unknown> | null,
-  hooks: BmadProvisionHooks = {}
+  hooks: PackProvisionHooks = {}
 ): { ok: boolean; changedFiles: string[]; error?: string; packWarnings?: string[] } {
   // Destination topology and the manifest's own file type are security
   // boundaries. Validate them before reading packs[] or resolving any registry
@@ -2989,6 +2982,46 @@ function bmadProjectNameIssues(repoRoot: string): { paths: string[]; details: st
   return { paths: [...new Set(paths)].sort(), details };
 }
 
+/**
+ * Remove `bmad-*` skill entries left behind as SYMLINKS by the retired Skillex
+ * `bmad` pin, so `bmad-method install` can write its own real directories.
+ *
+ * Only symlinks are removed, and only under the `bmad-` namespace. A real
+ * directory there is either the installer's own output (which it overwrites in
+ * place) or something a human put there, and neither is this function's to
+ * delete. The pack symlinks point into a per-machine registry cache that no
+ * longer even holds the pack, so leaving them shadows the installer with dead
+ * links.
+ */
+function evictLegacyBmadPackState(ctx: Context, changedFiles: string[]): string[] {
+  const details: string[] = [];
+  const skillDirs = [
+    join(ctx.repoRoot, ".agents", "skills"),
+    ...SUPPORTED_CLI_ROOTS.map((root) => join(ctx.repoRoot, root, "skills")),
+  ];
+  for (const dir of skillDirs) {
+    const dirStat = lstatIfPresent(dir);
+    // A CLI root whose `skills` is itself the .agents/skills alias is covered
+    // by the canonical directory above; following it would double-count.
+    if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
+      const path = join(dir, name);
+      if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
+      changedFiles.push(path);
+      details.push(`removed retired BMAD pack symlink ${relative(ctx.repoRoot, path)}`);
+      if (!ctx.dryRun) unlinkSync(path);
+    }
+  }
+  return details;
+}
+
 interface BmadInstallerInvocation {
   command: string;
   prefixArgs: string[];
@@ -3040,16 +3073,16 @@ export interface BmadLifecyclePreflightResult {
 }
 
 /**
- * Prove the exact fresh-project BMAD inputs before Copier can create a target.
- * Pack validation is read-only and sealed; the installer probe either uses an
- * explicit local executable or resolves the exact pinned npm version up front.
+ * Prove the exact fresh-project BMAD input before Copier can create a target.
+ *
+ * That input is now exactly one thing: the pinned `bmad-method` installer,
+ * resolved from npm (or an explicit local executable) up front so a create
+ * cannot fail half-way through with a scaffolded but BMAD-less directory. The
+ * pack preflight that used to sit here proved a Skillex `bmad` pin that no
+ * longer exists — and, once the registry dropped that pack, failed every
+ * create on any machine without a warm cache.
  */
-export function preflightBmadLifecycle(ctx: Context): BmadLifecyclePreflightResult {
-  const packPlan = buildPackPlan(ctx, null);
-  if (packPlan.errors.length) {
-    return { ok: false, error: packPlan.errors.join("; ") };
-  }
-
+export function preflightBmadLifecycle(_ctx: Context): BmadLifecyclePreflightResult {
   const invocation = bmadInstallerInvocation();
   const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
     encoding: "utf8",
@@ -4371,8 +4404,8 @@ return [
 
       const manifest = tryParseJson(safeReadText(manifestPath));
       // PACKS-CONTRACT: `packs[]` members are projected as symlinks and are NOT
-      // required to appear in `skills[]`. Only the implicit BMAD pin (a repo
-      // that declares no `bmad` pack) is still expanded into `skills[]`.
+      // required to appear in `skills[]`. Nothing is expanded into `skills[]`
+      // any more — BMAD, the last thing that was, is now the installer's.
       const plan = buildPackPlan(ctx, manifest);
       if (plan.errors.length) {
         details.push(...plan.errors);
@@ -4387,10 +4420,8 @@ return [
         ...(plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : []),
         ...plan.packWarnings,
       ];
-      const expectedBmad = plan.manifestSkills;
       const expectedByName = new Map(plan.projections);
       const expectedNames = new Set(expectedByName.keys());
-      const managedManifestNames = new Set(expectedBmad.map((entry) => entry.name));
 
       if (!manifest) {
         details.push(".agents/skills.json missing or invalid JSON");
@@ -4405,14 +4436,18 @@ return [
         if (!Array.isArray(manifest.skills)) {
           details.push(".agents/skills.json should define a skills array");
         } else {
-          const actualBmad = new Map(
-            manifest.skills
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, managedManifestNames, plan.implicitRoots))
-              .map((entry) => [String(entry.name), String(entry.source ?? "")])
-          );
-          const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
-          if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
-            details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+          // An entry pointing into a `packs/bmad/` tree is a leftover from the
+          // retired Skillex pin: bmad-method writes those same skills into
+          // .agents/skills itself, and the registry no longer carries the pack
+          // at all, so the entry resolves nowhere and fights the installer.
+          const bmadEntries = manifest.skills
+            .filter((entry) => isRetiredBmadPackEntry(entry))
+            .map(skillManifestEntryName)
+            .filter((name): name is string => Boolean(name));
+          if (bmadEntries.length) {
+            details.push(
+              `.agents/skills.json declares ${bmadEntries.length} bmad-* skill(s) that bmad-method owns and should drop them: ${bmadEntries.join(", ")}`
+            );
           }
           // PACKS-CONTRACT section 6: declaring a pack replaces hand-expanded
           // per-skill entries for that pack's members.
@@ -4610,7 +4645,7 @@ return [
         };
       }
 
-      const provisioned = provisionBmadSkills(ctx);
+      const provisioned = provisionDeclaredPacks(ctx);
       if (!provisioned.ok) {
         return {
           id: finding.id,
@@ -4629,7 +4664,7 @@ return [
       details.push(...(provisioned.packWarnings ?? []));
 
       // PJAN-28: runs after the BMAD projection so nothing is mutated ahead of
-      // the pack blocker above. provisionBmadSkills never touches unmanaged
+      // the pack blocker above. provisionDeclaredPacks never touches unmanaged
       // entries, and it preserves every non-pack-managed manifest entry, so
       // appending here is stable in both directions.
       details.push(...migrateLegacyCommittedSkills(ctx, changedFiles));
@@ -5098,15 +5133,34 @@ function supportedCliProjectionIssues(repoRoot: string): string[] {
   return issues;
 }
 
-const SUPPORTED_CLI_GITIGNORE_BLOCK = `# PJAN-57: all six generated CLI configurations are durable project state.
-${SUPPORTED_CLI_ROOTS.flatMap((root) => [`!${root}/`, `!${root}/**`]).join("\n")}`;
+/**
+ * Each CLI root holds hand-owned configuration (settings, commands) that IS
+ * durable project state, and a generated `skills/` projection that is not.
+ *
+ * The un-ignore lines keep the configuration tracked. The trailing re-ignore
+ * lines — last match wins in gitignore — drop the skill projections back out,
+ * because `bmad-method install` rewrites all of them on every run and version
+ * bump. Committing them means ~76 skills duplicated across seven locations,
+ * re-churned on every upgrade, when `_bmad/_config/manifest.yaml` already pins
+ * the version that reproduces them exactly.
+ */
+const SUPPORTED_CLI_GITIGNORE_BLOCK = `# Generated CLI configurations are durable project state...
+${SUPPORTED_CLI_ROOTS.flatMap((root) => [`!${root}/`, `!${root}/**`]).join("\n")}
+# ...but their skill projections are regenerated by \`bmad-method install\` and
+# \`mise run skills:sync\`, so they stay out of the tree.
+/.agents/skills/
+${SUPPORTED_CLI_ROOTS.map((root) => `${root}/skills/`).join("\n")}`;
 
 function supportedCliGitignoreIssues(repoRoot: string): string[] {
-  const text = safeReadText(join(repoRoot, ".gitignore")) ?? "";
-  return SUPPORTED_CLI_ROOTS.flatMap((root) => [
-    ...(!text.split(/\r?\n/).includes(`!${root}/`) ? [`.gitignore must unignore ${root}/`] : []),
-    ...(!text.split(/\r?\n/).includes(`!${root}/**`) ? [`.gitignore must unignore ${root}/**`] : []),
-  ]);
+  const lines = (safeReadText(join(repoRoot, ".gitignore")) ?? "").split(/\r?\n/);
+  return [
+    ...SUPPORTED_CLI_ROOTS.flatMap((root) => [
+      ...(!lines.includes(`!${root}/`) ? [`.gitignore must unignore ${root}/`] : []),
+      ...(!lines.includes(`!${root}/**`) ? [`.gitignore must unignore ${root}/**`] : []),
+      ...(!lines.includes(`${root}/skills/`) ? [`.gitignore must re-ignore the generated ${root}/skills/`] : []),
+    ]),
+    ...(!lines.includes("/.agents/skills/") ? [".gitignore must ignore the generated /.agents/skills/"] : []),
+  ];
 }
 
 function ensureSupportedCliGitignore(ctx: Context): string[] {
@@ -5230,15 +5284,16 @@ return [
         };
       }
 
-      const preservedSkillsManifest = tryParseJson(
-        safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
-      );
       const expectedChangedPaths = [
         ...requiredBmadSentinels(ctx.repoRoot, selectedModules)
           .map((file) => join(ctx.repoRoot, "_bmad", file))
           .filter((path) => !existsSync(path)),
         ...bmadProjectNameIssues(ctx.repoRoot).paths,
       ];
+      // Clear retired pack symlinks first: they point into a registry cache
+      // that no longer holds the pack, and the installer must be able to write
+      // real directories at those names.
+      const evicted = evictLegacyBmadPackState(ctx, changedFiles);
       const install = runBmadInstall(ctx.repoRoot, selectedModules);
       if (!install.ok) {
         return {
@@ -5247,31 +5302,19 @@ return [
           status: "blocked",
           summary: `Failed to run bmad-method install`,
           changedFiles: [],
-          details: [install.error ?? "Unknown error"],
-        };
-      }
-      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-      if (!provisioned.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: `BMAD installed but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-          changedFiles: [],
-          details: [provisioned.error ?? "Unknown BMAD pack error"],
+          details: [...evicted, install.error ?? "Unknown error"],
         };
       }
 
       changedFiles.push(...expectedChangedPaths.filter(existsSync));
-      changedFiles.push(...provisioned.changedFiles);
 
       return {
         id: finding.id,
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? `Installed BMAD scaffold with Skillex pack ${BMAD_PACK_VERSION} skills` : "No changes required",
+        summary: changedFiles.length ? "Installed BMAD scaffold via bmad-method" : "No changes required",
         changedFiles,
-        details: [],
+        details: evicted,
       };
     },
   },
@@ -5384,9 +5427,6 @@ return [
         };
       }
 
-      const preservedSkillsManifest = tryParseJson(
-        safeReadText(join(ctx.repoRoot, ".agents", "skills.json"))
-      );
       const install = runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL);
       if (!install.ok) {
         return {
@@ -5398,30 +5438,22 @@ return [
           details: [install.error ?? "Unknown error"],
         };
       }
-      const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-      if (!provisioned.ok) {
-        return {
-          id: finding.id,
-          title: finding.title,
-          status: "blocked",
-          summary: `BMAD upgraded but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-          changedFiles: [],
-          details: [provisioned.error ?? "Unknown BMAD pack error"],
-        };
-      }
+      const evictedChanges: string[] = [];
+      const evicted = evictLegacyBmadPackState(ctx, evictedChanges);
 
       const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
       const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
+      const changed = Array.from(new Set([
+        ...(upgraded ? [manifestPath] : []),
+        ...evictedChanges,
+      ]));
       return {
         id: finding.id,
         title: finding.title,
-        status: upgraded ? "applied" : "noop",
+        status: changed.length ? "applied" : "noop",
         summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
-        changedFiles: Array.from(new Set([
-          ...(upgraded ? [manifestPath] : []),
-          ...provisioned.changedFiles,
-        ])),
-        details: [],
+        changedFiles: changed,
+        details: evicted,
       };
     },
   },

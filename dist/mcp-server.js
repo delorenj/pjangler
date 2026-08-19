@@ -911,8 +911,6 @@ function validatePack(packRoot, entry) {
 }
 
 // src/parity/rules.ts
-var BMAD_PACK_VERSION = "6.10.1-next.31";
-var BMAD_PACK_NAME = "bmad";
 var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
 var MATERIALIZE_ENV_SCRIPT_REL = ".mise/scripts/materialize-env.sh";
 var OP_INJECT_SCRIPT = `'{{config_root}}/${MATERIALIZE_ENV_SCRIPT_REL}'`;
@@ -1340,15 +1338,7 @@ function projectSkillTopologyIssues(repoRoot) {
 }
 function packRootOverride(name) {
   const generic = process.env[`PJ_PACK_ROOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]?.trim();
-  if (generic) return resolve3(generic);
-  if (name === BMAD_PACK_NAME) {
-    const legacy = process.env.PJ_BMAD_PACK_ROOT?.trim();
-    if (legacy) return resolve3(legacy);
-  }
-  return void 0;
-}
-function bmadPackEntry() {
-  return { name: BMAD_PACK_NAME, version: BMAD_PACK_VERSION, optional: false, sealed: true, flatten: false };
+  return generic ? resolve3(generic) : void 0;
 }
 function packMemberPath(pack, name) {
   const target = pack.memberPaths.get(validateSkillName(name));
@@ -1470,39 +1460,14 @@ function buildPackPlan(ctx, manifest) {
     manifestSkills: [],
     projections: /* @__PURE__ */ new Map(),
     ownershipRoots: [],
-    implicitRoots: [],
     resolved: [],
     declared: [],
     errors: [],
     warnings: [],
-    packWarnings: [],
-    bmadDeclared: false
+    packWarnings: []
   };
   const { entries, errors } = manifestPackEntries(manifest);
   plan.errors.push(...errors);
-  plan.bmadDeclared = entries.some((entry) => entry.name === BMAD_PACK_NAME);
-  if (!plan.bmadDeclared) {
-    const entry = bmadPackEntry();
-    let root;
-    try {
-      root = resolvePackRoot(ctx, entry).root;
-      const pack = validatePack(root, entry);
-      const resolved = { entry, root, pack };
-      plan.resolved.push(resolved);
-      plan.implicitRoots.push(root);
-      plan.ownershipRoots.push(root);
-      plan.packWarnings.push(...pack.warnings);
-      for (const name of pack.members) {
-        const target = packMemberPath(pack, name);
-        plan.projections.set(name, target);
-        plan.manifestSkills.push({ name, source: pathToFileURL(target).href });
-      }
-    } catch (error) {
-      plan.errors.push(
-        `BMAD Skillex pack ${BMAD_PACK_VERSION} is not trusted at ${root ?? "its resolved pack root"}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
   for (const entry of entries) {
     try {
       const { root } = resolvePackRoot(ctx, entry);
@@ -1561,6 +1526,12 @@ function manifestEntrySourcePath(entry) {
     return void 0;
   }
 }
+function isRetiredBmadPackEntry(entry) {
+  const name = skillManifestEntryName(entry);
+  if (!name || !name.startsWith(BMAD_SKILL_NAME_PREFIX)) return false;
+  const source = manifestEntrySourcePath(entry);
+  return Boolean(source && /(^|\/)packs\/bmad\//.test(source));
+}
 function isPackManagedManifestEntry(entry, expectedNames, packRoots) {
   const name = skillManifestEntryName(entry);
   if (!name) return false;
@@ -1584,7 +1555,6 @@ function isRedundantDeclaredPackEntry(entry, plan) {
 }
 function canonicalSkillsManifest(ctx, current, plan = buildPackPlan(ctx, current)) {
   const existing = Array.isArray(current?.skills) ? current.skills : [];
-  const expectedNames = new Set(plan.manifestSkills.map((entry) => entry.name));
   return `${JSON.stringify(
     {
       ...current ?? {},
@@ -1592,8 +1562,14 @@ function canonicalSkillsManifest(ctx, current, plan = buildPackPlan(ctx, current
       inherit_global: true,
       registry: SKILLS_REGISTRY_URL,
       skills: [
+        // Two evictions, deliberately narrow. `isRetiredBmadPackEntry` clears the
+        // leftovers from when pjangler pinned a Skillex `bmad` pack;
+        // `isRedundantDeclaredPackEntry` clears hand-expanded members of a pack
+        // the repo now declares. Nothing else is removed — an entry pointing at
+        // a CONTAINER inside a declared pack's family, or anywhere outside it,
+        // is the user's.
         ...existing.filter(
-          (entry) => !isPackManagedManifestEntry(entry, expectedNames, plan.implicitRoots) && !isRedundantDeclaredPackEntry(entry, plan)
+          (entry) => !isRetiredBmadPackEntry(entry) && !isRedundantDeclaredPackEntry(entry, plan)
         ),
         ...plan.manifestSkills
       ]
@@ -1806,7 +1782,7 @@ function atomicWriteBuffer(path, content, mode, temporary) {
   chmodSync(temporary, mode);
   renameSync(temporary, path);
 }
-function provisionBmadSkills(ctx, preservedManifest, hooks = {}) {
+function provisionDeclaredPacks(ctx, preservedManifest, hooks = {}) {
   let initialDirs;
   try {
     initialDirs = prepareSafeProjectSkillsDirs({ ...ctx, dryRun: true });
@@ -2994,6 +2970,32 @@ function bmadProjectNameIssues(repoRoot) {
   }
   return { paths: [...new Set(paths)].sort(), details };
 }
+function evictLegacyBmadPackState(ctx, changedFiles) {
+  const details = [];
+  const skillDirs = [
+    join3(ctx.repoRoot, ".agents", "skills"),
+    ...SUPPORTED_CLI_ROOTS.map((root) => join3(ctx.repoRoot, root, "skills"))
+  ];
+  for (const dir of skillDirs) {
+    const dirStat = lstatIfPresent(dir);
+    if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+    let names;
+    try {
+      names = readdirSync2(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
+      const path = join3(dir, name);
+      if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
+      changedFiles.push(path);
+      details.push(`removed retired BMAD pack symlink ${relative2(ctx.repoRoot, path)}`);
+      if (!ctx.dryRun) unlinkSync(path);
+    }
+  }
+  return details;
+}
 function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION) {
   const explicit = process.env.PJ_BMAD_INSTALLER?.trim();
   if (explicit) return { command: resolve3(explicit), prefixArgs: [] };
@@ -3021,11 +3023,7 @@ function bmadInstallDisplay(repoRoot, modules = selectedBmadModules(repoRoot), v
   const invocation = bmadInstallerInvocation(version);
   return [invocation.command, ...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)].join(" ").replace(BMAD_INSTALL_TOOLS.join(","), "...");
 }
-function preflightBmadLifecycle(ctx) {
-  const packPlan = buildPackPlan(ctx, null);
-  if (packPlan.errors.length) {
-    return { ok: false, error: packPlan.errors.join("; ") };
-  }
+function preflightBmadLifecycle(_ctx) {
   const invocation = bmadInstallerInvocation();
   const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
     encoding: "utf8",
@@ -3753,10 +3751,8 @@ function createAgentHooksChecks() {
           ...plan.warnings.length ? [`${plan.warnings.length} optional pack(s) skipped`] : [],
           ...plan.packWarnings
         ];
-        const expectedBmad = plan.manifestSkills;
         const expectedByName = new Map(plan.projections);
         const expectedNames = new Set(expectedByName.keys());
-        const managedManifestNames = new Set(expectedBmad.map((entry) => entry.name));
         if (!manifest) {
           details.push(".agents/skills.json missing or invalid JSON");
         } else {
@@ -3770,12 +3766,11 @@ function createAgentHooksChecks() {
           if (!Array.isArray(manifest.skills)) {
             details.push(".agents/skills.json should define a skills array");
           } else {
-            const actualBmad = new Map(
-              manifest.skills.filter((entry) => Boolean(entry) && typeof entry === "object" && isPackManagedManifestEntry(entry, managedManifestNames, plan.implicitRoots)).map((entry) => [String(entry.name), String(entry.source ?? "")])
-            );
-            const stale = expectedBmad.filter((entry) => actualBmad.get(entry.name) !== entry.source);
-            if (stale.length > 0 || actualBmad.size !== expectedBmad.length) {
-              details.push(`.agents/skills.json should record all ${expectedBmad.length} BMAD ${BMAD_PACK_VERSION} pack entries as file:// sources`);
+            const bmadEntries = manifest.skills.filter((entry) => isRetiredBmadPackEntry(entry)).map(skillManifestEntryName).filter((name) => Boolean(name));
+            if (bmadEntries.length) {
+              details.push(
+                `.agents/skills.json declares ${bmadEntries.length} bmad-* skill(s) that bmad-method owns and should drop them: ${bmadEntries.join(", ")}`
+              );
             }
             const redundant = manifest.skills.filter((entry) => isRedundantDeclaredPackEntry(entry, plan)).map(skillManifestEntryName).filter((name) => Boolean(name));
             if (redundant.length) {
@@ -3943,7 +3938,7 @@ function createAgentHooksChecks() {
             details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`)
           };
         }
-        const provisioned = provisionBmadSkills(ctx);
+        const provisioned = provisionDeclaredPacks(ctx);
         if (!provisioned.ok) {
           return {
             id: finding.id,
@@ -4399,14 +4394,22 @@ function supportedCliProjectionIssues(repoRoot) {
   }
   return issues;
 }
-var SUPPORTED_CLI_GITIGNORE_BLOCK = `# PJAN-57: all six generated CLI configurations are durable project state.
-${SUPPORTED_CLI_ROOTS.flatMap((root) => [`!${root}/`, `!${root}/**`]).join("\n")}`;
+var SUPPORTED_CLI_GITIGNORE_BLOCK = `# Generated CLI configurations are durable project state...
+${SUPPORTED_CLI_ROOTS.flatMap((root) => [`!${root}/`, `!${root}/**`]).join("\n")}
+# ...but their skill projections are regenerated by \`bmad-method install\` and
+# \`mise run skills:sync\`, so they stay out of the tree.
+/.agents/skills/
+${SUPPORTED_CLI_ROOTS.map((root) => `${root}/skills/`).join("\n")}`;
 function supportedCliGitignoreIssues(repoRoot) {
-  const text2 = safeReadText(join3(repoRoot, ".gitignore")) ?? "";
-  return SUPPORTED_CLI_ROOTS.flatMap((root) => [
-    ...!text2.split(/\r?\n/).includes(`!${root}/`) ? [`.gitignore must unignore ${root}/`] : [],
-    ...!text2.split(/\r?\n/).includes(`!${root}/**`) ? [`.gitignore must unignore ${root}/**`] : []
-  ]);
+  const lines = (safeReadText(join3(repoRoot, ".gitignore")) ?? "").split(/\r?\n/);
+  return [
+    ...SUPPORTED_CLI_ROOTS.flatMap((root) => [
+      ...!lines.includes(`!${root}/`) ? [`.gitignore must unignore ${root}/`] : [],
+      ...!lines.includes(`!${root}/**`) ? [`.gitignore must unignore ${root}/**`] : [],
+      ...!lines.includes(`${root}/skills/`) ? [`.gitignore must re-ignore the generated ${root}/skills/`] : []
+    ]),
+    ...!lines.includes("/.agents/skills/") ? [".gitignore must ignore the generated /.agents/skills/"] : []
+  ];
 }
 function ensureSupportedCliGitignore(ctx) {
   if (!supportedCliGitignoreIssues(ctx.repoRoot).length) return [];
@@ -4521,13 +4524,11 @@ function createBmadChecks() {
             ]
           };
         }
-        const preservedSkillsManifest = tryParseJson(
-          safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
-        );
         const expectedChangedPaths = [
           ...requiredBmadSentinels(ctx.repoRoot, selectedModules).map((file) => join3(ctx.repoRoot, "_bmad", file)).filter((path) => !existsSync2(path)),
           ...bmadProjectNameIssues(ctx.repoRoot).paths
         ];
+        const evicted = evictLegacyBmadPackState(ctx, changedFiles);
         const install = runBmadInstall(ctx.repoRoot, selectedModules);
         if (!install.ok) {
           return {
@@ -4536,29 +4537,17 @@ function createBmadChecks() {
             status: "blocked",
             summary: `Failed to run bmad-method install`,
             changedFiles: [],
-            details: [install.error ?? "Unknown error"]
-          };
-        }
-        const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-        if (!provisioned.ok) {
-          return {
-            id: finding.id,
-            title: finding.title,
-            status: "blocked",
-            summary: `BMAD installed but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-            changedFiles: [],
-            details: [provisioned.error ?? "Unknown BMAD pack error"]
+            details: [...evicted, install.error ?? "Unknown error"]
           };
         }
         changedFiles.push(...expectedChangedPaths.filter(existsSync2));
-        changedFiles.push(...provisioned.changedFiles);
         return {
           id: finding.id,
           title: finding.title,
           status: changedFiles.length ? "applied" : "noop",
-          summary: changedFiles.length ? `Installed BMAD scaffold with Skillex pack ${BMAD_PACK_VERSION} skills` : "No changes required",
+          summary: changedFiles.length ? "Installed BMAD scaffold via bmad-method" : "No changes required",
           changedFiles,
-          details: []
+          details: evicted
         };
       }
     },
@@ -4656,9 +4645,6 @@ function createBmadChecks() {
             ]
           };
         }
-        const preservedSkillsManifest = tryParseJson(
-          safeReadText(join3(ctx.repoRoot, ".agents", "skills.json"))
-        );
         const install = runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL);
         if (!install.ok) {
           return {
@@ -4670,29 +4656,21 @@ function createBmadChecks() {
             details: [install.error ?? "Unknown error"]
           };
         }
-        const provisioned = provisionBmadSkills(ctx, preservedSkillsManifest);
-        if (!provisioned.ok) {
-          return {
-            id: finding.id,
-            title: finding.title,
-            status: "blocked",
-            summary: `BMAD upgraded but Skillex pack ${BMAD_PACK_VERSION} provisioning failed`,
-            changedFiles: [],
-            details: [provisioned.error ?? "Unknown BMAD pack error"]
-          };
-        }
+        const evictedChanges = [];
+        const evicted = evictLegacyBmadPackState(ctx, evictedChanges);
         const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
         const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
+        const changed = Array.from(/* @__PURE__ */ new Set([
+          ...upgraded ? [manifestPath] : [],
+          ...evictedChanges
+        ]));
         return {
           id: finding.id,
           title: finding.title,
-          status: upgraded ? "applied" : "noop",
+          status: changed.length ? "applied" : "noop",
           summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
-          changedFiles: Array.from(/* @__PURE__ */ new Set([
-            ...upgraded ? [manifestPath] : [],
-            ...provisioned.changedFiles
-          ])),
-          details: []
+          changedFiles: changed,
+          details: evicted
         };
       }
     },
@@ -5839,92 +5817,34 @@ var DockerRecipe = class extends Recipe {
 };
 
 // src/commands/hermes/EnsureTemplateConfig.ts
-import { homedir as homedir4, platform } from "node:os";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join5, dirname as dirname4 } from "node:path";
-
-// src/parity/index.ts
-import { existsSync as existsSync3 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname3, join as join4, resolve as resolve4 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-function resolvePjanglerRoot() {
-  let dir = dirname3(fileURLToPath2(import.meta.url));
-  while (dir !== dirname3(dir)) {
-    if (existsSync3(join4(dir, "package.json")) && existsSync3(join4(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname3(dir);
-  }
-  return resolve4(process.cwd());
-}
-function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
-  const repoRoot = resolve4(repoArg ?? process.cwd());
-  return {
-    ...overrides,
-    targetDir: repoRoot,
-    repoRoot,
-    dryRun: overrides.dryRun ?? dryRun,
-    force: overrides.force ?? false,
-    pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot(),
-    homeDir: overrides.homeDir ?? homedir3(),
-    acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches
-  };
-}
-function getParityRuleIds() {
-  return [...recipeRegistry.listRuleIds()];
-}
-function publicAudit(report) {
-  return {
-    ...report,
-    rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding)
-  };
-}
-function publicMigration(report) {
-  return {
-    ...report,
-    results: report.results.map(({ recipeId: _recipeId, ...result }) => result)
-  };
-}
-function runAudit(repoArg) {
-  return publicAudit(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
-}
-function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
-  return publicMigration(recipeRegistry.migrateRules(
-    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
-    ruleIds
-  ));
-}
-function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
-  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
-  return publicMigration(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
-}
-
-// src/commands/hermes/EnsureTemplateConfig.ts
+import { homedir as homedir3, platform } from "node:os";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join4, dirname as dirname3 } from "node:path";
 function resolveTemplateConfigPath() {
   const fromEnv = process.env.HERMES_TEMPLATE_CONFIG;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
-  const base = xdg && xdg.length ? xdg : join5(homedir4(), ".config");
-  return join5(base, "hermes-agent-template", "config.toml");
+  const base = xdg && xdg.length ? xdg : join4(homedir3(), ".config");
+  return join4(base, "hermes-agent-template", "config.toml");
 }
 function detectHermesBin(home) {
   const candidates = [
-    join5(home, "code", "hermes-agent", "venv", "bin", "hermes"),
-    join5(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
-    join5(home, ".local", "bin", "hermes")
+    join4(home, "code", "hermes-agent", "venv", "bin", "hermes"),
+    join4(home, "code", "hermes-agent", ".venv", "bin", "hermes"),
+    join4(home, ".local", "bin", "hermes")
   ];
   for (const c of candidates) {
-    if (existsSync4(c)) return c;
+    if (existsSync3(c)) return c;
   }
   return candidates[0];
 }
 function renderHostConfig() {
-  const home = homedir4();
+  const home = homedir3();
   const hermesBin = detectHermesBin(home);
-  const hermesRepo = join5(home, "code", "hermes-agent");
-  const scaffoldDir = join5(home, "code", "hermes-agent-template", "runtime-scaffold");
-  const skillsDir = join5(home, ".agents", "skills");
-  const pmExternalSkillGlobalDir = join5(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join5(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
+  const hermesRepo = join4(home, "code", "hermes-agent");
+  const scaffoldDir = join4(home, "code", "hermes-agent-template", "runtime-scaffold");
+  const skillsDir = join4(home, ".agents", "skills");
+  const pmExternalSkillGlobalDir = join4(home, "code", "skillex", "skill-sets", "global", ".system");
   return `# hermes-agent-template \u2014 host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
 #
@@ -5944,9 +5864,12 @@ runtime_scaffold_dir = "${scaffoldDir}"
 fleet_env = "~/.hermes/fleet.env"
 registry_file = "~/.hermes/agents-registry.yaml"
 canonical_skills_dir = "${skillsDir}"
+# BMAD is NOT listed here. "bmad-method install" writes bmad-* skills into each
+# project's own .agents/skills, so an agent sees the version its repo pins
+# rather than one frozen fleet-wide copy. This list is for genuinely shared,
+# out-of-project skill sources only.
 pm_external_skill_dirs = [
   "${pmExternalSkillGlobalDir}",
-  "${pmExternalSkillBmadDir}",
 ]
 symlinked_runtime_skills = []
 
@@ -5980,7 +5903,7 @@ var EnsureTemplateConfig = class extends Command {
     }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
-    const exists = existsSync4(path);
+    const exists = existsSync3(path);
     if (exists && !force) {
       if (!ctx.quiet) console.log(`\u2713 Config present: ${path}`);
       return { success: true, outcome: "unchanged", message: "" };
@@ -5990,7 +5913,7 @@ var EnsureTemplateConfig = class extends Command {
       return { success: true, outcome: "planned", filePath: path, message: "" };
     }
     try {
-      mkdirSync3(dirname4(path), { recursive: true });
+      mkdirSync3(dirname3(path), { recursive: true });
       writeFileSync3(path, renderHostConfig());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -6005,7 +5928,7 @@ var EnsureTemplateConfig = class extends Command {
 };
 
 // src/commands/hermes/PromptForAgentConfig.ts
-import { basename as basename3, join as join6 } from "node:path";
+import { basename as basename3, join as join5 } from "node:path";
 import { readFileSync as readFileSync3 } from "node:fs";
 import * as p from "@clack/prompts";
 
@@ -6021,7 +5944,7 @@ function deriveProfileName(repo, role) {
 // src/commands/hermes/PromptForAgentConfig.ts
 function detectTicketProvider(targetDir) {
   try {
-    const t = JSON.parse(readFileSync3(join6(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
+    const t = JSON.parse(readFileSync3(join5(targetDir, ".project.json"), "utf8"))?.ticket_provider?.type;
     return t === "plane" || t === "trello" ? t : void 0;
   } catch {
     return void 0;
@@ -6088,27 +6011,27 @@ var PromptForAgentConfig = class extends Command {
 
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
-import { homedir as homedir6 } from "node:os";
-import { join as join10, dirname as dirname7, relative as relative6 } from "node:path";
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { homedir as homedir5 } from "node:os";
+import { join as join9, dirname as dirname6, relative as relative6 } from "node:path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 import * as p2 from "@clack/prompts";
 import YAML4 from "yaml";
 
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync7, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
-import { homedir as homedir5, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename5, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute2, join as join9, relative as relative5, resolve as resolve6, sep as sep2, win32 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { copyFileSync as copyFileSync2, existsSync as existsSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync6, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import YAML3 from "yaml";
 
 // src/utils/tree-diff.ts
 import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync5, lstatSync as lstatSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
-import { join as join7, relative as relative3 } from "node:path";
+import { existsSync as existsSync4, lstatSync as lstatSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
+import { join as join6, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
-  if (!existsSync5(current)) return snapshot;
+  if (!existsSync4(current)) return snapshot;
   const rel = relative3(root, current) || ".";
   if (rel === ".git" || rel.startsWith(`.git${process.platform === "win32" ? "\\" : "/"}`)) return snapshot;
   const stat = lstatSync3(current);
@@ -6118,14 +6041,14 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
     snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync4(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
-    for (const name of readdirSync3(current)) snapshotTree(root, join7(current, name), snapshot);
+    for (const name of readdirSync3(current)) snapshotTree(root, join6(current, name), snapshot);
   } else {
     snapshot.set(rel, `other:${stat.mode}`);
   }
   return snapshot;
 }
 function changedTreePaths(root, before, after) {
-  return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join7(root, path)).sort();
+  return [.../* @__PURE__ */ new Set([...before.keys(), ...after.keys()])].filter((path) => path !== "." && before.get(path) !== after.get(path)).map((path) => join6(root, path)).sort();
 }
 
 // src/lifecycle/preflight.ts
@@ -6133,7 +6056,7 @@ import { createHash as createHash4 } from "node:crypto";
 import {
   accessSync,
   constants as constants2,
-  existsSync as existsSync6,
+  existsSync as existsSync5,
   lstatSync as lstatSync4,
   readFileSync as readFileSync5,
   readdirSync as readdirSync4,
@@ -6141,16 +6064,16 @@ import {
   statSync
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename as basename4, delimiter, isAbsolute, join as join8, relative as relative4, resolve as resolve5 } from "node:path";
+import { basename as basename4, delimiter, isAbsolute, join as join7, relative as relative4, resolve as resolve4 } from "node:path";
 import YAML2 from "yaml";
 function containedBy(parent, candidate) {
-  const rel = relative4(resolve5(parent), resolve5(candidate));
+  const rel = relative4(resolve4(parent), resolve4(candidate));
   return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
 }
 function firstExecutableOnPath(env2) {
   for (const rawEntry of (env2.PATH ?? "").split(delimiter)) {
     const entry = rawEntry || process.cwd();
-    const candidate = resolve5(entry, process.platform === "win32" ? "copier.exe" : "copier");
+    const candidate = resolve4(entry, process.platform === "win32" ? "copier.exe" : "copier");
     try {
       accessSync(candidate, constants2.X_OK);
       const stat = lstatSync4(candidate);
@@ -6164,7 +6087,7 @@ function sha2562(path) {
   return createHash4("sha256").update(readFileSync5(path)).digest("base64url");
 }
 function fingerprint(path) {
-  const absolute = resolve5(path);
+  const absolute = resolve4(path);
   const realPath = realpathSync2(absolute);
   const stat = statSync(realPath);
   if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
@@ -6209,7 +6132,7 @@ function consoleScriptContract(path) {
   if (shebang.length !== 1 || !isAbsolute(shebang[0] ?? "")) {
     return { ok: false, error: "Copier launcher must use one absolute Python interpreter" };
   }
-  const interpreterPath = resolve5(shebang[0]);
+  const interpreterPath = resolve4(shebang[0]);
   const interpreter = basename4(interpreterPath);
   if (!/^python(?:\d+(?:\.\d+)*)?$/.test(interpreter)) {
     return { ok: false, error: "Copier launcher is not an absolute Python console script" };
@@ -6221,17 +6144,17 @@ function consoleScriptContract(path) {
 }
 function defaultUvToolRoots(home) {
   return [
-    join8(home, ".local", "share", "uv", "tools", "copier"),
-    join8(home, "Library", "Application Support", "uv", "tools", "copier")
-  ].map((path) => resolve5(path));
+    join7(home, ".local", "share", "uv", "tools", "copier"),
+    join7(home, "Library", "Application Support", "uv", "tools", "copier")
+  ].map((path) => resolve4(path));
 }
 function locateUvSitePackages(toolRoot) {
-  const lib = join8(toolRoot, "lib");
+  const lib = join7(toolRoot, "lib");
   const candidates = [];
   for (const entry of readdirSync4(lib, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^python\d+(?:\.\d+)*$/.test(entry.name)) continue;
-    const sitePackages = join8(lib, entry.name, "site-packages");
-    if (existsSync6(sitePackages)) candidates.push(sitePackages);
+    const sitePackages = join7(lib, entry.name, "site-packages");
+    if (existsSync5(sitePackages)) candidates.push(sitePackages);
   }
   if (candidates.length !== 1) throw new Error(`expected one UV Copier site-packages directory, found ${candidates.length}`);
   return realpathSync2(candidates[0]);
@@ -6247,15 +6170,15 @@ function parseRecordLine(line) {
   };
 }
 function attestUvCopier(candidate, realCandidate, home) {
-  const toolRoot = defaultUvToolRoots(home).find((root) => realCandidate === join8(root, "bin", "copier"));
+  const toolRoot = defaultUvToolRoots(home).find((root) => realCandidate === join7(root, "bin", "copier"));
   if (!toolRoot) {
     return { ok: false, error: `refusing untrusted PATH-shadowed Copier executable: ${candidate}` };
   }
   const supportedEntries = new Set([
-    join8(home, ".local", "bin", "copier"),
-    join8(toolRoot, "bin", "copier")
-  ].map((path) => resolve5(path)));
-  if (!supportedEntries.has(resolve5(candidate))) {
+    join7(home, ".local", "bin", "copier"),
+    join7(toolRoot, "bin", "copier")
+  ].map((path) => resolve4(path)));
+  if (!supportedEntries.has(resolve4(candidate))) {
     return { ok: false, error: `refusing non-canonical UV Copier entry point: ${candidate}` };
   }
   try {
@@ -6263,32 +6186,32 @@ function attestUvCopier(candidate, realCandidate, home) {
     if (!launcher.ok || !launcher.interpreter) {
       return { ...launcher, executable: realCandidate, realExecutable: realCandidate };
     }
-    const expectedInterpreter = join8(toolRoot, "bin", basename4(launcher.interpreter));
-    if (resolve5(launcher.interpreter) !== resolve5(expectedInterpreter)) {
+    const expectedInterpreter = join7(toolRoot, "bin", basename4(launcher.interpreter));
+    if (resolve4(launcher.interpreter) !== resolve4(expectedInterpreter)) {
       return { ok: false, error: "UV Copier launcher interpreter is outside the attested tool environment" };
     }
     const interpreterReal = realpathSync2(launcher.interpreter);
     const uvPythonRoots = [
-      join8(home, ".local", "share", "uv", "python"),
-      join8(home, "Library", "Application Support", "uv", "python")
+      join7(home, ".local", "share", "uv", "python"),
+      join7(home, "Library", "Application Support", "uv", "python")
     ];
     if (!uvPythonRoots.some((root) => containedBy(root, interpreterReal))) {
       return { ok: false, error: "UV Copier interpreter is not managed by the canonical UV Python installation" };
     }
-    const receiptPath = join8(toolRoot, "uv-receipt.toml");
+    const receiptPath = join7(toolRoot, "uv-receipt.toml");
     const receipt = readFileSync5(receiptPath, "utf8");
     if (!/requirements\s*=\s*\[[\s\S]*?name\s*=\s*["']copier["']/.test(receipt) || !/entrypoints\s*=\s*\[[\s\S]*?name\s*=\s*["']copier["'][\s\S]*?from\s*=\s*["']copier["']/.test(receipt)) {
       return { ok: false, error: "UV tool receipt does not bind the copier entry point to the Copier package" };
     }
     const sitePackages = locateUvSitePackages(toolRoot);
-    const distInfos = readdirSync4(sitePackages, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^copier-[^-]+\.dist-info$/i.test(entry.name)).map((entry) => join8(sitePackages, entry.name));
+    const distInfos = readdirSync4(sitePackages, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^copier-[^-]+\.dist-info$/i.test(entry.name)).map((entry) => join7(sitePackages, entry.name));
     if (distInfos.length !== 1) {
       return { ok: false, error: `expected one installed Copier distribution, found ${distInfos.length}` };
     }
     const distInfo = realpathSync2(distInfos[0]);
-    const metadataPath = join8(distInfo, "METADATA");
-    const entryPointsPath = join8(distInfo, "entry_points.txt");
-    const recordPath = join8(distInfo, "RECORD");
+    const metadataPath = join7(distInfo, "METADATA");
+    const entryPointsPath = join7(distInfo, "entry_points.txt");
+    const recordPath = join7(distInfo, "RECORD");
     const metadata = readFileSync5(metadataPath, "utf8");
     const name = metadata.match(/^Name:\s*(.+)$/mi)?.[1]?.trim();
     const version = metadata.match(/^Version:\s*(.+)$/mi)?.[1]?.trim();
@@ -6309,7 +6232,7 @@ function attestUvCopier(candidate, realCandidate, home) {
     }
     const attestedFiles = /* @__PURE__ */ new Map();
     for (const entry of selected) {
-      const path = resolve5(sitePackages, entry.relativePath);
+      const path = resolve4(sitePackages, entry.relativePath);
       const allowed = path === realCandidate || containedBy(sitePackages, path);
       if (!allowed) return { ok: false, error: `Copier RECORD path escapes the tool environment: ${entry.relativePath}` };
       const actualDigest = sha2562(path);
@@ -6317,14 +6240,14 @@ function attestUvCopier(candidate, realCandidate, home) {
       if (actualDigest !== entry.digest || actualSize !== entry.size) {
         return { ok: false, error: `Copier RECORD integrity mismatch: ${entry.relativePath}` };
       }
-      attestedFiles.set(resolve5(path), fingerprint(path));
+      attestedFiles.set(resolve4(path), fingerprint(path));
     }
-    for (const path of [realCandidate, join8(toolRoot, "pyvenv.cfg"), receiptPath, metadataPath, entryPointsPath, recordPath]) {
-      attestedFiles.set(resolve5(path), fingerprint(path));
+    for (const path of [realCandidate, join7(toolRoot, "pyvenv.cfg"), receiptPath, metadataPath, entryPointsPath, recordPath]) {
+      attestedFiles.set(resolve4(path), fingerprint(path));
     }
     const identity = {
       executable: realCandidate,
-      resolvedFrom: resolve5(candidate),
+      resolvedFrom: resolve4(candidate),
       layout: "uv-tool",
       version,
       toolRoot,
@@ -6343,7 +6266,7 @@ function attestUvCopier(candidate, realCandidate, home) {
   }
 }
 function verifyTrustedCopierIdentity(identity) {
-  if (!isAbsolute(identity.executable) || resolve5(identity.executable) !== resolve5(identity.files.find((file) => file.path === identity.executable)?.path ?? "")) {
+  if (!isAbsolute(identity.executable) || resolve4(identity.executable) !== resolve4(identity.files.find((file) => file.path === identity.executable)?.path ?? "")) {
     return { ok: false, error: "trusted Copier identity has no canonical absolute launcher" };
   }
   const interpreter = sameFingerprint(identity.interpreter);
@@ -6356,9 +6279,9 @@ function verifyTrustedCopierIdentity(identity) {
 }
 function preflightTrustedCopier(options) {
   const env2 = options.env ?? process.env;
-  const home = resolve5(options.homeDir ?? userInfo().homedir);
-  const temporary = resolve5(options.temporaryDir ?? tmpdir());
-  const target = resolve5(options.targetDir);
+  const home = resolve4(options.homeDir ?? userInfo().homedir);
+  const temporary = resolve4(options.temporaryDir ?? tmpdir());
+  const target = resolve4(options.targetDir);
   const candidate = firstExecutableOnPath(env2);
   if (!candidate) return { ok: false, error: "copier not found on PATH" };
   let realCandidate;
@@ -6386,7 +6309,7 @@ function regularContainedFile(root, path, label) {
   }
 }
 function parseCopierConfig(templateRoot, label) {
-  const configPath = join8(templateRoot, "copier.yml");
+  const configPath = join7(templateRoot, "copier.yml");
   const file = regularContainedFile(templateRoot, configPath, `${label} copier.yml`);
   if (!file.ok) return { result: file };
   try {
@@ -6408,13 +6331,13 @@ function parseCopierConfig(templateRoot, label) {
 }
 function requireFiles(templateRoot, files, label) {
   for (const rel of files) {
-    const result = regularContainedFile(templateRoot, join8(templateRoot, rel), `${label} ${rel}`);
+    const result = regularContainedFile(templateRoot, join7(templateRoot, rel), `${label} ${rel}`);
     if (!result.ok) return result;
   }
   return { ok: true };
 }
 function preflightCommonProjectTemplate(pjanglerRoot) {
-  const templateRoot = join8(resolve5(pjanglerRoot), "templates", "commonproject");
+  const templateRoot = join7(resolve4(pjanglerRoot), "templates", "commonproject");
   const parsed = parseCopierConfig(templateRoot, "CommonProject template");
   if (!parsed.result.ok) return parsed.result;
   const files = requireFiles(templateRoot, [
@@ -6425,18 +6348,18 @@ function preflightCommonProjectTemplate(pjanglerRoot) {
     "template/mise.toml.jinja"
   ], "CommonProject template");
   if (!files.ok) return files;
-  const projectJson = readFileSync5(join8(templateRoot, "template", ".project.json.jinja"), "utf8");
+  const projectJson = readFileSync5(join7(templateRoot, "template", ".project.json.jinja"), "utf8");
   for (const key of ["project_name", "project_slug", "repo_path", "ticket_provider", "agents"]) {
     if (!projectJson.includes(`"${key}"`)) return { ok: false, error: `CommonProject projection is missing ${key}` };
   }
   return { ok: true };
 }
 function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
-  const templateRoot = join8(resolve5(pjanglerRoot), "templates", "hermes-agent");
+  const templateRoot = join7(resolve4(pjanglerRoot), "templates", "hermes-agent");
   const explicit = env2.PJANGLER_HERMES_TEMPLATE?.trim();
   if (explicit) {
     try {
-      if (realpathSync2(resolve5(explicit)) !== realpathSync2(templateRoot)) {
+      if (realpathSync2(resolve4(explicit)) !== realpathSync2(templateRoot)) {
         return { ok: false, error: "MCP Hermes apply requires the version-locked vendored template" };
       }
     } catch (error) {
@@ -6459,22 +6382,22 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
     "template/.scripts/80-registry.sh"
   ], "Hermes template");
   if (!required.ok) return required;
-  const role = readFileSync5(join8(templateRoot, "template", "role.yaml.jinja"), "utf8");
+  const role = readFileSync5(join7(templateRoot, "template", "role.yaml.jinja"), "utf8");
   if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
     return { ok: false, error: "Hermes role projection must declare bloodbank.enabled as a strict boolean" };
   }
-  const library = readFileSync5(join8(templateRoot, "template", ".scripts", "_lib.sh"), "utf8");
+  const library = readFileSync5(join7(templateRoot, "template", ".scripts", "_lib.sh"), "utf8");
   if (!library.includes("PJANGLER_PROJECT_ROOT") || !library.includes('"$explicit"/agents/hermes/*')) {
     return { ok: false, error: "Hermes project-root resolver must honor the explicitly contained MCP target" };
   }
-  const skipPlane = readFileSync5(join8(templateRoot, "template", ".scripts", "42-ticket-provider.sh"), "utf8");
+  const skipPlane = readFileSync5(join7(templateRoot, "template", ".scripts", "42-ticket-provider.sh"), "utf8");
   const guard = skipPlane.indexOf('if [[ "${SKIP_PLANE:-0}" == "1" ]]');
   const firstSource = skipPlane.search(/^source\s/m);
   if (guard < 0 || firstSource < 0 || guard > firstSource) {
     return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
   }
   for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "80-registry.sh"]) {
-    const text2 = readFileSync5(join8(templateRoot, "template", ".scripts", script), "utf8");
+    const text2 = readFileSync5(join7(templateRoot, "template", ".scripts", script), "utf8");
     const hostGuard = text2.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
     const source = text2.search(/^source\s/m);
     if (hostGuard < 0 || source < 0 || hostGuard > source) {
@@ -6488,8 +6411,8 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
   return { ok: true };
 }
 function preflightRenderedHermes(options) {
-  const target = resolve5(options.targetDir);
-  const roleDir = resolve5(options.roleDir);
+  const target = resolve4(options.targetDir);
+  const roleDir = resolve4(options.roleDir);
   if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
   try {
     const stat = lstatSync4(roleDir);
@@ -6499,8 +6422,8 @@ function preflightRenderedHermes(options) {
   } catch (error) {
     return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
   }
-  const templateScripts = join8(resolve5(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const renderedScripts = join8(roleDir, ".scripts");
+  const templateScripts = join7(resolve4(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
+  const renderedScripts = join7(roleDir, ".scripts");
   const requiredFiles = [
     "role.yaml",
     "SOUL.md",
@@ -6513,7 +6436,7 @@ function preflightRenderedHermes(options) {
   if (!required.ok) return required;
   for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     try {
-      if (readFileSync5(join8(renderedScripts, script), "utf8") !== readFileSync5(join8(templateScripts, script), "utf8")) {
+      if (readFileSync5(join7(renderedScripts, script), "utf8") !== readFileSync5(join7(templateScripts, script), "utf8")) {
         return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
       }
     } catch (error) {
@@ -6522,7 +6445,7 @@ function preflightRenderedHermes(options) {
   }
   let role;
   try {
-    const parsed = YAML2.parse(readFileSync5(join8(roleDir, "role.yaml"), "utf8"));
+    const parsed = YAML2.parse(readFileSync5(join7(roleDir, "role.yaml"), "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
     }
@@ -6541,8 +6464,8 @@ function preflightRenderedHermes(options) {
   if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
     return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
   }
-  const manifestPath = join8(target, ".project.json");
-  if (existsSync6(manifestPath)) {
+  const manifestPath = join7(target, ".project.json");
+  if (existsSync5(manifestPath)) {
     try {
       const manifest = JSON.parse(readFileSync5(manifestPath, "utf8"));
       const agents = manifest.agents;
@@ -6812,8 +6735,8 @@ var PROJECT_REGISTRY_SCHEMA_VERSION = 1;
 var DEFAULT_NEW_PROJECT_STATUS = "active";
 var BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join9(dirname6(manifestPath), ".copier-answers.yml");
-  if (!existsSync7(answersPath)) return [];
+  const answersPath = join8(dirname5(manifestPath), ".copier-answers.yml");
+  if (!existsSync6(answersPath)) return [];
   const current = readFileSync6(answersPath, "utf8");
   const document = YAML3.parseDocument(current);
   if (document.errors.length) return [];
@@ -6829,11 +6752,11 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
 }
 var DEFAULT_SOURCE_SKILL_ROOTS = [
   "/home/delorenj/code/skillex/all-skills",
-  join9(homedir5(), ".agents", "skills"),
-  join9(homedir5(), ".codex", "skills")
+  join8(homedir4(), ".agents", "skills"),
+  join8(homedir4(), ".codex", "skills")
 ];
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join9(homedir5(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join8(homedir4(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -6847,7 +6770,7 @@ function emptyProjectRegistry() {
   return { schema_version: PROJECT_REGISTRY_SCHEMA_VERSION, projects: createSafeRecord() };
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
-  if (!existsSync7(path)) return emptyProjectRegistry();
+  if (!existsSync6(path)) return emptyProjectRegistry();
   const raw = YAML3.parse(readFileSync6(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
@@ -6874,7 +6797,7 @@ function loadProjectRegistry(path = projectRegistryPath()) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname6(path), { recursive: true });
+  mkdirSync4(dirname5(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync4(temp, YAML3.stringify(registry, { lineWidth: 0 }), "utf8");
   renameSync2(temp, path);
@@ -6891,7 +6814,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve6(project.repo_path);
+    const repoKey = resolve5(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -6940,12 +6863,12 @@ function ticketProviderKeyVars(provider) {
   return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join9(env2.HOME || homedir5(), ".config");
-  return join9(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join8(env2.HOME || homedir4(), ".config");
+  return join8(base, "zshyzsh", "secrets.zsh");
 }
 function readShellAssignments(path, keys) {
   const found = {};
-  if (!existsSync7(path)) return found;
+  if (!existsSync6(path)) return found;
   let text2;
   try {
     text2 = readFileSync6(path, "utf8");
@@ -6984,7 +6907,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join9(input.repoPath, ".env"), label: join9(input.repoPath, ".env") });
+  if (input.repoPath) candidates.push({ path: join8(input.repoPath, ".env"), label: join8(input.repoPath, ".env") });
   const secrets = ticketProviderSecretsPath(env2);
   candidates.push({ path: secrets, label: secrets });
   for (const candidate of candidates) {
@@ -7002,25 +6925,25 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join9(override, file));
+  if (override) candidates.push(join8(override, file));
   const relativeRoots = [
-    join9("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join9("agents", "hermes", "pm", ".scripts", "providers")
+    join8("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join8("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname6(fileURLToPath3(import.meta.url));
+    let dir = dirname5(fileURLToPath2(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join9(dir, relativeRoot, file));
-      const parent = dirname6(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join8(dir, relativeRoot, file));
+      const parent = dirname5(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join9(homedir5(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join8(homedir4(), "code", "pjangler", relativeRoot, file));
   }
-  return candidates.find((candidate) => existsSync7(candidate));
+  return candidates.find((candidate) => existsSync6(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
@@ -7035,7 +6958,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join9(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join8(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -7049,12 +6972,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join9(tmpdir2(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join8(tmpdir2(), "pjangler-tp-"));
   try {
-    const providersDir = join9(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join8(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
     writeFileSync4(
-      join9(staging, ".project.json"),
+      join8(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -7073,12 +6996,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join9(providersDir, `${provider}.sh`);
+    const staged = join8(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
     const result = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
-      cwd: existsSync7(action.repoPath) ? action.repoPath : staging,
+      cwd: existsSync6(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
     });
@@ -7157,24 +7080,24 @@ function validateSafePathSegment(value, label) {
   return normalized;
 }
 function prospectiveRealPath(path) {
-  let cursor = resolve6(path);
+  let cursor = resolve5(path);
   const suffix = [];
-  while (!existsSync7(cursor)) {
-    const parent = dirname6(cursor);
-    if (parent === cursor) return resolve6(path);
+  while (!existsSync6(cursor)) {
+    const parent = dirname5(cursor);
+    if (parent === cursor) return resolve5(path);
     suffix.unshift(basename5(cursor));
     cursor = parent;
   }
-  return resolve6(realpathSync3(cursor), ...suffix);
+  return resolve5(realpathSync3(cursor), ...suffix);
 }
 function resolveContainedPath(parentDir, candidate, label) {
   const physicalParent = prospectiveRealPath(parentDir);
   const physicalCandidate = prospectiveRealPath(candidate);
   const fromParent = relative5(physicalParent, physicalCandidate);
   if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute2(fromParent)) {
-    throw new Error(`${label} must remain contained beneath parent directory ${resolve6(parentDir)}`);
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve5(parentDir)}`);
   }
-  return resolve6(candidate);
+  return resolve5(candidate);
 }
 function deriveProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -7189,7 +7112,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync7(join9(homedir5(), ".agents", "hooks"));
+  return !existsSync6(join8(homedir4(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -7203,14 +7126,14 @@ function projectRecordEquivalent(a, b) {
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
-  return resolve6(dirname6(resolve6(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
+  return resolve5(dirname5(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
   const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter2).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve6(expandHome(root));
+    const normalized = resolve5(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -7220,13 +7143,13 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve6(expanded);
-  if (existsSync7(direct)) return direct;
+  const direct = resolve5(expanded);
+  if (existsSync6(direct)) return direct;
   const name = basename5(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join9(root, name);
-    if (existsSync7(candidate)) return candidate;
+    const candidate = join8(root, name);
+    if (existsSync6(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
   const hint = `${searched} Add project-specific roots with ${PROJECT_SOURCE_SKILL_ROOTS_ENV}.`;
@@ -7236,10 +7159,10 @@ function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
   const slug = input.projectSlug === void 0 ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug") : validateSafePathSegment(input.projectSlug, "Project slug");
   const agentRole = normalizeAgentRole(input.agentRole);
-  const registryPath2 = resolve6(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const targetDir = resolve6(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
@@ -7291,7 +7214,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve6(input.pjanglerRoot ?? resolvePjanglerRoot2());
+  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -7325,7 +7248,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -7387,9 +7310,9 @@ function linkTicketProviderBoard(plan, action, boardId) {
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join9(action.repoPath, ".project.json");
+  const manifestPath = join8(action.repoPath, ".project.json");
   let next;
-  if (existsSync7(manifestPath)) {
+  if (existsSync6(manifestPath)) {
     let existing = {};
     try {
       const parsed = JSON.parse(readFileSync6(manifestPath, "utf8"));
@@ -7400,12 +7323,12 @@ function linkTicketProviderBoard(plan, action, boardId) {
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname6(manifestPath), { recursive: true });
+    mkdirSync4(dirname5(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text2 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync7(manifestPath) || readFileSync6(manifestPath, "utf8") !== text2) {
+  if (!existsSync6(manifestPath) || readFileSync6(manifestPath, "utf8") !== text2) {
     writeFileSync4(manifestPath, text2, "utf8");
     return [manifestPath];
   }
@@ -7434,7 +7357,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname6(action.targetDir), { recursive: true });
+      mkdirSync4(dirname5(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
       const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
@@ -7465,10 +7388,10 @@ async function executeProjectInitPlan(plan, options = {}) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname6(action.path), { recursive: true });
+      mkdirSync4(dirname5(action.path), { recursive: true });
       const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-      const current = existsSync7(action.path) ? readFileSync6(action.path, "utf8") : void 0;
+      const current = existsSync6(action.path) ? readFileSync6(action.path, "utf8") : void 0;
       if (current !== next) {
         writeFileSync4(action.path, next, "utf8");
         changedFiles.push(action.path);
@@ -7552,7 +7475,7 @@ function getProject(registry, slug) {
   return project;
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join8(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -7578,22 +7501,22 @@ function buildCommonProjectCopierAction(input) {
     overwrite: input.overwrite
   };
 }
-function resolvePjanglerRoot2() {
-  let dir = dirname6(new URL(import.meta.url).pathname);
-  while (dir !== dirname6(dir)) {
-    if (existsSync7(join9(dir, "package.json")) && existsSync7(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname6(dir);
+function resolvePjanglerRoot() {
+  let dir = dirname5(new URL(import.meta.url).pathname);
+  while (dir !== dirname5(dir)) {
+    if (existsSync6(join8(dir, "package.json")) && existsSync6(join8(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname5(dir);
   }
-  return resolve6(process.cwd());
+  return resolve5(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
-  if (existingSameSlug && !overwrite && resolve6(existingSameSlug.repo_path) !== resolve6(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve6(existing.repo_path) === resolve6(project.repo_path)) {
+    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
@@ -7620,8 +7543,8 @@ function validateProjectRecord(project, key) {
   }
 }
 function expandHome(path) {
-  if (path === "~") return homedir5();
-  if (path.startsWith("~/")) return join9(homedir5(), path.slice(2));
+  if (path === "~") return homedir4();
+  if (path.startsWith("~/")) return join8(homedir4(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -7654,8 +7577,8 @@ function scrubInteractiveChannelCredentials(env2) {
   delete env2.WIRE_SLACK;
 }
 function registerRenderedAgent(ctx, roleDir, role) {
-  const manifestPath = join10(ctx.targetDir, ".project.json");
-  if (!existsSync8(manifestPath) || !ctx.targetRepo) return;
+  const manifestPath = join9(ctx.targetDir, ".project.json");
+  if (!existsSync7(manifestPath) || !ctx.targetRepo) return;
   const current = readFileSync7(manifestPath, "utf8");
   const parsed = JSON.parse(current);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -7686,14 +7609,14 @@ function registerRenderedAgent(ctx, roleDir, role) {
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname7(fileURLToPath4(import.meta.url));
+    dir = dirname6(fileURLToPath3(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join10(dir, "templates", name);
-    if (existsSync8(join10(candidate, "copier.yml"))) return candidate;
-    const parent = dirname7(dir);
+    const candidate = join9(dir, "templates", name);
+    if (existsSync7(join9(candidate, "copier.yml"))) return candidate;
+    const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -7725,7 +7648,7 @@ var RunCopierTemplate = class extends Command {
     ctx.role = safeRole;
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join10(ctx.targetDir, "agents", "hermes", safeRole),
+      join9(ctx.targetDir, "agents", "hermes", safeRole),
       "Hermes role directory"
     );
     ctx.roleDir = roleDir;
@@ -7748,7 +7671,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    if (existsSync8(join10(roleDir, "role.yaml")) && !ctx.force) {
+    if (existsSync7(join9(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
         ctx.force = true;
       } else {
@@ -7794,9 +7717,9 @@ var RunCopierTemplate = class extends Command {
       env2.PYTHONNOUSERSITE = "1";
       env2.PYTHONSAFEPATH = "1";
     }
-    const LOCAL_TEMPLATE = join10(homedir6(), "code", "hermes-agent-template");
+    const LOCAL_TEMPLATE = join9(homedir5(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync8(join10(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join9(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -7845,7 +7768,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    mkdirSync5(join10(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    mkdirSync5(join9(ctx.targetDir, "agents", "hermes"), { recursive: true });
     const spinner4 = ctx.quiet ? void 0 : p2.spinner();
     spinner4?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
@@ -7858,7 +7781,7 @@ var RunCopierTemplate = class extends Command {
         message: `copier exited with status ${result.status}.${ctx.quiet && String(result.stderr ?? "").trim() ? ` ${String(result.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
       };
     }
-    const roleManifest = join10(roleDir, "role.yaml");
+    const roleManifest = join9(roleDir, "role.yaml");
     try {
       const current = readFileSync7(roleManifest, "utf8");
       const document = YAML4.parseDocument(current);
@@ -7883,8 +7806,8 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync6, readdirSync as readdirSync5 } from "fs";
-import { join as join11 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync8, writeFileSync as writeFileSync6, readdirSync as readdirSync5 } from "fs";
+import { join as join10 } from "path";
 import { spawnSync as spawnSync4 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -7895,8 +7818,8 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join11(targetDir, "agents", "hermes");
-    if (!existsSync9(rolesDir)) {
+    const rolesDir = join10(targetDir, "agents", "hermes");
+    if (!existsSync8(rolesDir)) {
       return {
         success: true,
         message: "No Hermes agents found (no agents/hermes directory)."
@@ -7912,10 +7835,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join11("agents", "hermes", role);
-      const runtimePath = join11(roleDir, "runtime");
-      const gitignorePath = join11(roleDir, ".gitignore");
-      const gitmodulesPath = join11(targetDir, ".gitmodules");
+      const roleDir = join10("agents", "hermes", role);
+      const runtimePath = join10(roleDir, "runtime");
+      const gitignorePath = join10(roleDir, ".gitignore");
+      const gitmodulesPath = join10(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -7932,14 +7855,14 @@ var UntrackHermesRuntimes = class extends Command {
       }
       let hasStaleMapping = false;
       let gitmodulesContent = "";
-      if (existsSync9(gitmodulesPath)) {
+      if (existsSync8(gitmodulesPath)) {
         gitmodulesContent = readFileSync8(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
         hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join11(targetDir, gitignorePath);
-      if (existsSync9(fullGitignorePath)) {
+      const fullGitignorePath = join10(targetDir, gitignorePath);
+      if (existsSync8(fullGitignorePath)) {
         const content = readFileSync8(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
         isIgnored = lines.includes("runtime/") || lines.includes("runtime");
@@ -7983,7 +7906,7 @@ var UntrackHermesRuntimes = class extends Command {
           details.push(`ignore runtime/ in agents/hermes/${role}/.gitignore`);
           if (!this.context.dryRun) {
             let content = "";
-            if (existsSync9(fullGitignorePath)) {
+            if (existsSync8(fullGitignorePath)) {
               content = readFileSync8(fullGitignorePath, "utf8");
             }
             if (content && !content.endsWith("\n")) {
@@ -8012,8 +7935,8 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { join as join12 } from "node:path";
-import { existsSync as existsSync10, unlinkSync as unlinkSync2 } from "node:fs";
+import { join as join11 } from "node:path";
+import { existsSync as existsSync9, unlinkSync as unlinkSync2 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -8108,15 +8031,15 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join12(roleDir, ".scripts", "30-telegram.sh");
-    if (!existsSync10(script)) {
+    const script = join11(roleDir, ".scripts", "30-telegram.sh");
+    if (!existsSync9(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
       };
     }
-    const marker = join12(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync10(marker)) unlinkSync2(marker);
+    const marker = join11(roleDir, ".scripts", ".done-30-telegram");
+    if (existsSync9(marker)) unlinkSync2(marker);
     const spinner4 = p3.spinner();
     spinner4.start("Verifying token + wiring profile");
     const result = spawnSync5("bash", [script], {
@@ -8143,8 +8066,8 @@ function cap(s) {
 
 // src/commands/hermes/WireEmail.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { join as join13 } from "node:path";
-import { existsSync as existsSync11, unlinkSync as unlinkSync3 } from "node:fs";
+import { join as join12 } from "node:path";
+import { existsSync as existsSync10, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p4 from "@clack/prompts";
 var WireEmail = class extends Command {
   async invoke() {
@@ -8166,8 +8089,8 @@ var WireEmail = class extends Command {
     if (!targetRepo || !role || !roleDir) {
       return { success: false, message: "Cannot wire email: missing target_repo/role/roleDir" };
     }
-    const script = join13(roleDir, ".scripts", "50-email.sh");
-    if (!existsSync11(script)) {
+    const script = join12(roleDir, ".scripts", "50-email.sh");
+    if (!existsSync10(script)) {
       return { success: false, message: `\u2717 ${script} not found` };
     }
     let token = process.env.CF_EMAIL_ROUTING_TOKEN;
@@ -8229,8 +8152,8 @@ var WireEmail = class extends Command {
         }
       }
     }
-    const marker = join13(roleDir, ".scripts", ".done-50-email");
-    if (existsSync11(marker)) unlinkSync3(marker);
+    const marker = join12(roleDir, ".scripts", ".done-50-email");
+    if (existsSync10(marker)) unlinkSync3(marker);
     const spinner4 = p4.spinner();
     spinner4.start("Creating Cloudflare Email Routing rule");
     const result = spawnSync6("bash", [script], {
@@ -8292,8 +8215,8 @@ var PrintHermesSummary = class extends Command {
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync12, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join14 } from "node:path";
+import { existsSync as existsSync11, readFileSync as readFileSync9, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join13 } from "node:path";
 import YAML5 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
@@ -8319,7 +8242,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     };
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
-    const roleManifest = join14(ctx.roleDir, "role.yaml");
+    const roleManifest = join13(ctx.roleDir, "role.yaml");
     const scripts = [
       ...selected.runtimeRepo ? ["20-runtime-repo.sh"] : [],
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
@@ -8330,8 +8253,8 @@ var ApplyDeferredExternalEffects = class extends Command {
     ];
     const logs = [];
     for (const script of scripts) {
-      const path = join14(ctx.roleDir, ".scripts", script);
-      if (!existsSync12(path)) {
+      const path = join13(ctx.roleDir, ".scripts", script);
+      if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
       const result = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -8368,8 +8291,8 @@ ${logs.join("\n")}` : ""}`
 
 // src/commands/hermes/ApplyDeferredHostEffects.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
-import { existsSync as existsSync13 } from "node:fs";
-import { join as join15 } from "node:path";
+import { existsSync as existsSync12 } from "node:fs";
+import { join as join14 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -8404,8 +8327,8 @@ var ApplyDeferredHostEffects = class extends Command {
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
     const logs = [];
     for (const script of scripts) {
-      const path = join15(ctx.roleDir, ".scripts", script);
-      if (!existsSync13(path)) {
+      const path = join14(ctx.roleDir, ".scripts", script);
+      if (!existsSync12(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
       const result = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
@@ -8426,7 +8349,7 @@ ${logs.join("\n")}` : ""}`
 };
 
 // src/recipes/HermesAgentRecipe.ts
-import { resolve as resolve7 } from "node:path";
+import { resolve as resolve6 } from "node:path";
 var HermesAgentRecipe = class extends Recipe {
   checks = createHermesChecks();
   metadata = {
@@ -8469,7 +8392,7 @@ var HermesAgentRecipe = class extends Recipe {
       const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
       let status = result.outcome ?? (result.success ? ctx.dryRun && result.filePath ? "planned" : result.filePath ? "changed" : "unchanged" : "failed");
       if (result.success && !ctx.dryRun && observedChanges.length) status = "changed";
-      const declaredChanges = status === "changed" && result.filePath ? [resolve7(ctx.targetDir, result.filePath)] : [];
+      const declaredChanges = status === "changed" && result.filePath ? [resolve6(ctx.targetDir, result.filePath)] : [];
       const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
       phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result.message || void 0 });
       changedFiles.push(...actualChanges);
@@ -8731,8 +8654,8 @@ var NodeRecipe = class extends Recipe {
 
 // src/recipes/ProjectRecipe.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
-import { existsSync as existsSync14, readFileSync as readFileSync10, rmSync as rmSync3 } from "node:fs";
-import { join as join16 } from "node:path";
+import { existsSync as existsSync13, readFileSync as readFileSync10, rmSync as rmSync3 } from "node:fs";
+import { join as join15 } from "node:path";
 var BOOTSTRAP_GIT_IDENTITY = {
   GIT_AUTHOR_NAME: "Pjangler Lifecycle",
   GIT_AUTHOR_EMAIL: "pjangler@localhost.invalid",
@@ -8756,24 +8679,24 @@ var PRODUCTION_RUNTIME = {
     };
   }
 };
-function publicAudit2(report) {
+function publicAudit(report) {
   return {
     ...report,
     rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding)
   };
 }
-function publicMigration2(report) {
+function publicMigration(report) {
   return {
     ...report,
     results: report.results.map(({ recipeId: _recipeId, ...result }) => result)
   };
 }
 function hasGitRepository(runtime, targetDir) {
-  if (!existsSync14(join16(targetDir, ".git"))) return false;
+  if (!existsSync13(join15(targetDir, ".git"))) return false;
   return runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]).status === 0;
 }
 function refreshPlanFromCanonicalManifest(plan) {
-  const manifestPath = join16(plan.project.repo_path, ".project.json");
+  const manifestPath = join15(plan.project.repo_path, ".project.json");
   const manifest = JSON.parse(readFileSync10(manifestPath, "utf8"));
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
@@ -8840,7 +8763,7 @@ var ProjectRecipe = class extends Recipe {
     const logs = [];
     const errors = [];
     const changedFiles = [];
-    const targetExistedAtStart = existsSync14(targetDir);
+    const targetExistedAtStart = existsSync13(targetDir);
     const transactionContext = {
       ...ctx,
       targetDir,
@@ -8944,7 +8867,7 @@ var ProjectRecipe = class extends Recipe {
         }
       }
       if (errors.length === 0 && normalized.selectedRuleIds?.length) {
-        migrationReport = publicMigration2(await this.registry.migrateRules(
+        migrationReport = publicMigration(await this.registry.migrateRules(
           { ...transactionContext, dryRun: false },
           normalized.selectedRuleIds
         ));
@@ -8959,7 +8882,7 @@ var ProjectRecipe = class extends Recipe {
         })));
         errors.push(...migrationReport.results.filter((result) => result.status === "blocked" || result.status === "partial").map((result) => `${result.id}: ${result.summary}`));
       }
-      const eligibilityAudit = errors.length === 0 ? publicAudit2(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
+      const eligibilityAudit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
       audit = eligibilityAudit;
       if (eligibilityAudit && !eligibilityAudit.ok) {
         errors.push(...eligibilityAudit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
@@ -8974,7 +8897,7 @@ var ProjectRecipe = class extends Recipe {
         if (hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
         } else {
-          const gitPath = join16(targetDir, ".git");
+          const gitPath = join15(targetDir, ".git");
           for (const { args, label, options } of [
             { args: ["init", "--initial-branch=main"], label: "git init" },
             { args: ["add", "-A"], label: "git add" },
@@ -8990,7 +8913,7 @@ var ProjectRecipe = class extends Recipe {
               phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
               break;
             }
-            if (label === "git init" && existsSync14(gitPath)) changedFiles.push(gitPath);
+            if (label === "git init" && existsSync13(gitPath)) changedFiles.push(gitPath);
             logs.push(`${label}: ok`);
           }
           if (errors.length === 0) {
@@ -8998,7 +8921,7 @@ var ProjectRecipe = class extends Recipe {
             const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
             if (!headReady) {
               errors.push("git postcondition failed: repository or initial commit is missing");
-              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync14(gitPath) ? [gitPath] : [], message: errors.at(-1) });
+              phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync13(gitPath) ? [gitPath] : [], message: errors.at(-1) });
             } else {
               if (!changedFiles.includes(gitPath)) changedFiles.push(gitPath);
               phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
@@ -9058,7 +8981,7 @@ var ProjectRecipe = class extends Recipe {
           errors.push(`project manifest refresh after external effects failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      audit = errors.length === 0 ? publicAudit2(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : audit;
+      audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : audit;
       if (errors.length === 0 && audit && !audit.ok) {
         errors.push(...audit.rules.filter((finding) => finding.status === "fail" || finding.status === "warn").map((finding) => `${finding.id}: ${finding.summary}`));
       }
@@ -9077,7 +9000,7 @@ var ProjectRecipe = class extends Recipe {
         message: errors.at(-1)
       });
     }
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync14(targetDir)) {
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync13(targetDir)) {
       try {
         rmSync3(targetDir, { recursive: true, force: true });
         changedFiles.length = 0;
@@ -9400,10 +9323,10 @@ var recipeRegistry = new RecipeRegistry([
 ]);
 
 // src/commands/AgentHooksCommands.ts
-import { homedir as homedir7 } from "node:os";
-import { join as join17, dirname as dirname8 } from "node:path";
-import { existsSync as existsSync15, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
-import { fileURLToPath as fileURLToPath5 } from "node:url";
+import { homedir as homedir6 } from "node:os";
+import { join as join16, dirname as dirname7 } from "node:path";
+import { existsSync as existsSync14, cpSync as cpSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync8 } from "node:fs";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 var AGENT_HOOKS_SKIP_MESSAGE = "\u21B7 agent-hooks layer skipped: global ~/.agents/hooks detected (these hooks already run globally).\n   Set PJ_AGENT_HOOKS_LAYER=1 to install the project-scoped layer anyway.";
 function resolveTemplateRoot() {
   const candidates = [];
@@ -9411,18 +9334,18 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname8(fileURLToPath5(import.meta.url));
+    let dir = dirname7(fileURLToPath4(import.meta.url));
     for (let i = 0; i < 8; i++) {
-      candidates.push(join17(dir, "templates", "commonproject", "template"));
-      const parent = dirname8(dir);
+      candidates.push(join16(dir, "templates", "commonproject", "template"));
+      const parent = dirname7(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
-  candidates.push(join17(homedir7(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join16(homedir6(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
-    if (existsSync15(join17(c, ".agents", "hooks", "hooks.master.json"))) return c;
+    if (existsSync14(join16(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
   throw new Error(
     "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
@@ -9448,15 +9371,15 @@ var CopyAgentHooksTree = class extends Command {
     const created = [];
     const skipped = [];
     for (const { rel, dir } of items) {
-      const src = join17(templateRoot, rel);
-      const dest = join17(this.context.targetDir, rel);
-      if (!existsSync15(src)) continue;
-      if (existsSync15(dest) && !this.context.force) {
+      const src = join16(templateRoot, rel);
+      const dest = join16(this.context.targetDir, rel);
+      if (!existsSync14(src)) continue;
+      if (existsSync14(dest) && !this.context.force) {
         skipped.push(rel);
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync6(dirname8(dest), { recursive: true });
+        mkdirSync6(dirname7(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -9477,8 +9400,8 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     if (!resolveAgentHooksLayer2()) {
       return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
     }
-    const misePath = join17(this.context.targetDir, "mise.toml");
-    if (!existsSync15(misePath)) {
+    const misePath = join16(this.context.targetDir, "mise.toml");
+    if (!existsSync14(misePath)) {
       return {
         success: false,
         message: "\u26A0\uFE0F  No mise.toml found \u2014 run `pjangler init mise` first, then re-run."
@@ -9684,7 +9607,7 @@ if __name__ == "__main__":
 
 // src/commands/AddMiseCodegraphScript.ts
 import { chmodSync as chmodSync2 } from "fs";
-import { join as join18 } from "path";
+import { join as join17 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
     const filePath = ".mise/scripts/codegraph.sh";
@@ -9738,7 +9661,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync2(join18(this.context.targetDir, filePath), 493);
+      chmodSync2(join17(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -9772,6 +9695,61 @@ SECRET_KEY=""
     };
   }
 };
+
+// src/parity/index.ts
+import { existsSync as existsSync15 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { dirname as dirname8, join as join18, resolve as resolve7 } from "node:path";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
+function resolvePjanglerRoot2() {
+  let dir = dirname8(fileURLToPath5(import.meta.url));
+  while (dir !== dirname8(dir)) {
+    if (existsSync15(join18(dir, "package.json")) && existsSync15(join18(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname8(dir);
+  }
+  return resolve7(process.cwd());
+}
+function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
+  const repoRoot = resolve7(repoArg ?? process.cwd());
+  return {
+    ...overrides,
+    targetDir: repoRoot,
+    repoRoot,
+    dryRun: overrides.dryRun ?? dryRun,
+    force: overrides.force ?? false,
+    pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot2(),
+    homeDir: overrides.homeDir ?? homedir7(),
+    acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches
+  };
+}
+function getParityRuleIds() {
+  return [...recipeRegistry.listRuleIds()];
+}
+function publicAudit2(report) {
+  return {
+    ...report,
+    rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding)
+  };
+}
+function publicMigration2(report) {
+  return {
+    ...report,
+    results: report.results.map(({ recipeId: _recipeId, ...result }) => result)
+  };
+}
+function runAudit(repoArg) {
+  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
+}
+function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
+  return publicMigration2(recipeRegistry.migrateRules(
+    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
+    ruleIds
+  ));
+}
+function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
+  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
+  return publicMigration2(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
+}
 
 // src/commands/WireMiseOpInject.ts
 var WireMiseOpInject = class extends Command {

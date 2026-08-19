@@ -27,12 +27,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjan-28-bmad-fixture-"));
-const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 const cleanup = [bmadFixtureRoot];
 
 /** Byte-for-byte content of the upstream skill the fixture registry publishes. */
@@ -90,8 +90,7 @@ function command(args, { home, registryRoot } = {}) {
     ...process.env,
     HOME: home,
     XDG_CACHE_HOME: join(home, ".cache"),
-    PJ_BMAD_PACK_ROOT: selectedBmadPack,
-    PJ_PACK_ROOT_BMAD: selectedBmadPack,
+    PJ_PACK_ROOT_PJTEST: selectedBmadPack,
   };
   delete env.PJ_SKILLS_REGISTRY_ROOT;
   if (registryRoot) env.PJ_SKILLS_REGISTRY_ROOT = registryRoot;
@@ -339,10 +338,11 @@ try {
     assert.equal(entry.source, `file://${join(skillsBak(repo), "pristine-upstream")}`);
   }
 
-  // 6. Existing behaviour is untouched. BMAD pack symlink validation still
-  //    works, and the BMAD namespace (including off-pack installer output such
-  //    as bmad-build) is owned by bmad.scaffold, not by this rule — flagging it
-  //    would fight the installer and never converge.
+  // 6. The whole BMAD namespace belongs to bmad-method, not to this rule.
+  //    Neither installer output (bmad-build) nor a plain committed tree
+  //    (bmad-agent-pm) may be reported as an unmanaged skill, swept into the
+  //    backup directory, or rewritten into a pack symlink — PJAN-76 retired the
+  //    Skillex `bmad` pin, so nothing here has any claim on those paths.
   {
     const repo = makeRepo("bmad-untouched");
     const home = makeHome("bmad-untouched");
@@ -353,10 +353,10 @@ try {
     const before = jsonCommand(["audit", repo, "--json"], { home, registryRoot: registry });
     const stale = finding(before, "skills.project-manifest");
     assert.doesNotMatch(stale.summary, /unmanaged committed skill/, stale.summary);
-    assert.match(
+    assert.doesNotMatch(
       stale.details.join("\n"),
-      new RegExp(`managed pack skill path\\(s\\) should be symlinks into their declared Skillex pack`),
-      "pack symlink validation must still fire",
+      /bmad-/,
+      "skills.project-manifest must say nothing about the installer's namespace",
     );
 
     const report = jsonCommand(
@@ -366,8 +366,12 @@ try {
     assert.equal(migrationResult(report, "skills.project-manifest").status, "applied");
     assert.equal(
       lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(),
-      true,
-      "a copied pack tree must still be replaced by a pack symlink",
+      false,
+      "a bmad-* tree is the installer's; this rule must leave it exactly as found",
+    );
+    assert.equal(
+      readFileSync(join(repo, ".agents", "skills", "bmad-agent-pm", "COPIED"), "utf8"),
+      "legacy copied tree\n",
     );
     assert.equal(
       existsSync(join(skillsBak(repo), "bmad-build")),

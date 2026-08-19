@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
-import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 // PJAN-31a: the CommonProject template shipped no .github at all, so no project
 // pjangler created ever got PR review. These guards render a REAL project with
@@ -47,7 +47,7 @@ try {
     XDG_CACHE_HOME: join(homeDir, ".cache"),
     XDG_CONFIG_HOME: join(homeDir, ".config"),
     PJ_AGENT_HOOKS_LAYER: "0",
-    PJ_BMAD_PACK_ROOT: createBmadPackFixture(fixtureRoot),
+    PJ_PACK_ROOT_PJTEST: createSkillPackFixture(fixtureRoot),
     PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
     npm_config_cache: join(tmp, "empty-npm-cache"),
     npm_config_offline: "true",

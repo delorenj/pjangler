@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
-import { BMAD_PACK_VERSION } from "../../parity";
 
 /**
  * "Bootstrap the config if it's not there."
@@ -51,7 +50,6 @@ export function renderHostConfig(): string {
   const scaffoldDir = join(home, "code", "hermes-agent-template", "runtime-scaffold");
   const skillsDir = join(home, ".agents", "skills");
   const pmExternalSkillGlobalDir = join(home, "code", "skillex", "skill-sets", "global", ".system");
-  const pmExternalSkillBmadDir = join(home, "code", "skillex", "packs", "bmad", BMAD_PACK_VERSION);
 
   return `# hermes-agent-template — host configuration
 # Bootstrapped by \`pjangler config bootstrap\` for $HOME=${home} (platform=${platform()}).
@@ -72,9 +70,12 @@ runtime_scaffold_dir = "${scaffoldDir}"
 fleet_env = "~/.hermes/fleet.env"
 registry_file = "~/.hermes/agents-registry.yaml"
 canonical_skills_dir = "${skillsDir}"
+# BMAD is NOT listed here. "bmad-method install" writes bmad-* skills into each
+# project's own .agents/skills, so an agent sees the version its repo pins
+# rather than one frozen fleet-wide copy. This list is for genuinely shared,
+# out-of-project skill sources only.
 pm_external_skill_dirs = [
   "${pmExternalSkillGlobalDir}",
-  "${pmExternalSkillBmadDir}",
 ]
 symlinked_runtime_skills = []
 

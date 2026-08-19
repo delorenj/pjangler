@@ -3,22 +3,21 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
-const selectedBmadPack = createBmadPackFixture(bmadFixtureRoot);
+const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 
 function childEnv(env = {}) {
   const merged = {
     ...process.env,
-    PJ_BMAD_PACK_ROOT: selectedBmadPack,
-    PJ_PACK_ROOT_BMAD: selectedBmadPack,
+    PJ_PACK_ROOT_PJTEST: selectedBmadPack,
     ...env,
   };
-  if (env.PJ_BMAD_PACK_ROOT && !env.PJ_PACK_ROOT_BMAD) {
-    merged.PJ_PACK_ROOT_BMAD = env.PJ_BMAD_PACK_ROOT;
+  if (env.PJ_PACK_ROOT_PJTEST && !env.PJ_PACK_ROOT_PJTEST) {
+    merged.PJ_PACK_ROOT_PJTEST = env.PJ_PACK_ROOT_PJTEST;
   }
   return merged;
 }
@@ -430,11 +429,12 @@ run = "echo still here"
     );
 
     // Pin the pack root the way every other pack block here does. The implicit
-    // BMAD pin now walks the SAME resolution ladder as a declared pack, so
-    // without a pin this block would assert against whichever registry checkout
-    // happens to exist on the host — which is a property of the machine, not of
-    // the migration under test.
-    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    // PJAN-76: no pack is pinned implicitly, so this block asserts only what
+    // the repo itself declares. The pack-root override stays so a declared pack
+    // resolves to the fixture rather than to whichever registry checkout
+    // happens to exist on the host — a property of the machine, not of the
+    // migration under test.
+    const packEnv = { PJ_PACK_ROOT_PJTEST: selectedBmadPack };
     const staleAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
     const staleFinding = staleAudit.rules.find((r) => r.id === "skills.project-manifest");
     assert.equal(staleFinding.status, "fail", JSON.stringify(staleFinding));
@@ -445,17 +445,18 @@ run = "echo still here"
     assert.equal(manifest.inherit_global, true, "migrate should create the canonical skills manifest");
     assert.equal(manifest.registry, "https://github.com/delorenj/skillex.git");
     assert.deepEqual(manifest.skills[0], { name: "example-skill", source: `file://${join(repo, ".agents", "skills", "example-skill")}` }, "non-BMAD manifest entries must be preserved");
-    assert.ok(manifest.skills.length > 1, "migrate should record the pinned BMAD pack entries");
-    assert.ok(
-      manifest.skills.slice(1).every(
-        (entry) => entry.name.startsWith("bmad-") && entry.source === `file://${join(selectedBmadPack, entry.name)}`,
-      ),
+    assert.equal(
+      manifest.skills.length,
+      1,
+      `migrate must record only what the repo declares: ${JSON.stringify(manifest.skills)}`,
     );
     assert.equal(existsSync(join(repo, ".agents", "skills", "example-skill", "SKILL.md")), true, "non-BMAD skill trees must remain intact");
-    assert.equal(lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(), true, "copied BMAD trees must be replaced with symlinks");
+    // bmad-* is the installer's namespace. A copied tree there is left exactly
+    // as found rather than rewritten into a pack symlink.
     assert.equal(
-      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
-      join(selectedBmadPack, "bmad-agent-pm")
+      lstatSync(join(repo, ".agents", "skills", "bmad-agent-pm")).isSymbolicLink(),
+      false,
+      "a bmad-* tree belongs to bmad-method and must be left alone",
     );
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-packs.py")), true, "migrate should install the generic Skillex pack provisioner");
     assert.equal(existsSync(join(repo, ".mise", "scripts", "provision-bmad-skills.py")), false, "migrate should retire the BMAD-only provisioner");
@@ -490,10 +491,10 @@ run = "echo still here"
           $schema: "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
           inherit_global: true,
           registry: "https://github.com/delorenj/skillex.git",
-          packs: ["bmad"],
+          packs: ["pjtest"],
           skills: [
             { name: "local-thing", source: `file://${localSkill}` },
-            { name: "bmad-agent-pm", source: `file://${join(selectedBmadPack, "bmad-agent-pm")}` },
+            { name: "pjtest-agent-pm", source: `file://${join(selectedBmadPack, "pjtest-agent-pm")}` },
           ],
         },
         null,
@@ -505,12 +506,12 @@ run = "echo still here"
       `[env]\n_.path = [".mise/scripts"]\n\n[tasks.skills-sync]\ndepends = ["skills-provision-bmad"]\nrun = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"\n\n[tasks.skills-provision-bmad]\nrun = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"\n`,
     );
 
-    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    const packEnv = { PJ_PACK_ROOT_PJTEST: selectedBmadPack };
     const before = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, packEnv));
     const beforeFinding = before.rules.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(beforeFinding.status, "fail", JSON.stringify(beforeFinding));
     const beforeDetails = beforeFinding.details.join("\n");
-    assert.match(beforeDetails, /duplicates 1 declared pack member\(s\).*bmad-agent-pm/);
+    assert.match(beforeDetails, /duplicates 1 declared pack member\(s\).*pjtest-agent-pm/);
     assert.match(beforeDetails, /\$schema still points at the retired/);
     assert.match(beforeDetails, /provision-bmad-skills\.py is the retired BMAD-only provisioner/);
     assert.match(beforeDetails, /still references the retired skills-provision-bmad/);
@@ -524,15 +525,15 @@ run = "echo still here"
 
     const declaredManifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
     assert.equal(declaredManifest.$schema, "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json");
-    assert.deepEqual(declaredManifest.packs, ["bmad"], "declared packs must be preserved verbatim");
+    assert.deepEqual(declaredManifest.packs, ["pjtest"], "declared packs must be preserved verbatim");
     assert.deepEqual(
       declaredManifest.skills,
       [{ name: "local-thing", source: `file://${localSkill}` }],
       "a declared pack replaces its hand-expanded members and leaves everything else alone",
     );
     assert.equal(
-      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "bmad-agent-pm"))),
-      join(selectedBmadPack, "bmad-agent-pm"),
+      resolve(join(repo, ".agents", "skills"), readlinkSync(join(repo, ".agents", "skills", "pjtest-agent-pm"))),
+      join(selectedBmadPack, "pjtest-agent-pm"),
       "declared pack members must still be projected as symlinks",
     );
     assert.equal(existsSync(join(localSkill, "SKILL.md")), true, "non-pack skills must survive");
@@ -572,7 +573,7 @@ run = "echo still here"
         2,
       ) + "\n",
     );
-    const packEnv = { PJ_BMAD_PACK_ROOT: selectedBmadPack };
+    const packEnv = { PJ_PACK_ROOT_PJTEST: selectedBmadPack };
     run(["migrate", "skills.project-manifest", repo, "--json"], root, packEnv);
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
     assert.deepEqual(
@@ -583,76 +584,95 @@ run = "echo still here"
     assert.equal(readFileSync(join(override, "SKILL.md"), "utf8"), "# customized\n");
   }
 
+  // PJAN-76: nothing is pinned implicitly, so a block that is ABOUT pack
+  // resolution has to declare the pack it means. Before, these leaned on the
+  // implicit BMAD pin being present in every repo.
+  const declarePjtestPack = (repo) => {
+    mkdirSync(join(repo, ".agents"), { recursive: true });
+    writeFileSync(
+      join(repo, ".agents", "skills.json"),
+      `${JSON.stringify({ packs: [{ name: "pjtest", version: "6.10.1-next.31" }], skills: [] }, null, 2)}\n`,
+    );
+  };
+
   {
+    // A DECLARED pack that cannot be resolved must block the migration rather
+    // than quietly producing a project missing the skills it asked for. Before
+    // PJAN-76 this was exercised through the implicit BMAD pin; the safety
+    // property is the same, it just needs something declared to be about.
     const repo = makeRepo("skills-manifest-missing-pack");
     repos.push(repo);
+    declarePjtestPack(repo);
     const report = JSON.parse(runAllowFailure(
       ["migrate", "skills.project-manifest", repo, "--json"],
       root,
-      { PJ_BMAD_PACK_ROOT: join(repo, "missing-pack") }
+      { PJ_PACK_ROOT_PJTEST: join(repo, "missing-pack") }
     ));
     const result = report.results.find((r) => r.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.ok(result.details.some((detail) => detail.includes("6.10.1-next.31")), JSON.stringify(result));
+    assert.ok(result.details.some((detail) => detail.includes("pjtest")), JSON.stringify(result));
   }
 
   {
     const repo = makeRepo("skills-manifest-partial-pack");
     repos.push(repo);
+    declarePjtestPack(repo);
     const partialPack = mkdtempSync(join(tmpdir(), "pjangler-partial-bmad-pack-"));
     repos.push(partialPack);
     copyFileSync(join(selectedBmadPack, "SHA256SUMS"), join(partialPack, "SHA256SUMS"));
     copyFileSync(join(selectedBmadPack, "pack.toml"), join(partialPack, "pack.toml"));
-    cpSync(join(selectedBmadPack, "bmad-agent-pm"), join(partialPack, "bmad-agent-pm"), { recursive: true });
+    cpSync(join(selectedBmadPack, "pjtest-agent-pm"), join(partialPack, "pjtest-agent-pm"), { recursive: true });
 
     const report = JSON.parse(runAllowFailure(
       ["migrate", "skills.project-manifest", repo, "--json"],
       root,
-      { PJ_BMAD_PACK_ROOT: partialPack }
+      { PJ_PACK_ROOT_PJTEST: partialPack }
     ));
     const result = report.results.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
     // Generic contract: every DECLARED skill directory must exist before the
     // payload is hashed, so a half-copied pack fails to resolve outright.
-    assert.match(result.details.join("\n"), /is not trusted at/);
+    assert.match(result.details.join("\n"), /could not be resolved/);
     assert.match(result.details.join("\n"), /is not present/);
-    assert.equal(existsSync(join(repo, ".agents")), false, "partial pack rejection must precede project mutation");
+    assert.equal(existsSync(join(repo, ".agents", "skills")), false, "partial pack rejection must precede project mutation");
   }
 
   {
     const repo = makeRepo("skills-manifest-tampered-pack");
     repos.push(repo);
+    declarePjtestPack(repo);
     const tamperedPack = mkdtempSync(join(tmpdir(), "pjangler-tampered-bmad-pack-"));
     repos.push(tamperedPack);
     cpSync(selectedBmadPack, tamperedPack, { recursive: true });
-    writeFileSync(join(tamperedPack, "bmad-agent-pm", "SKILL.md"), "tampered\n");
+    writeFileSync(join(tamperedPack, "pjtest-agent-pm", "SKILL.md"), "tampered\n");
 
     const report = JSON.parse(runAllowFailure(
       ["migrate", "skills.project-manifest", repo, "--json"],
       root,
-      { PJ_BMAD_PACK_ROOT: tamperedPack }
+      { PJ_PACK_ROOT_PJTEST: tamperedPack }
     ));
     const result = report.results.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
     assert.match(result.details.join("\n"), /digest mismatch/);
-    assert.equal(existsSync(join(repo, ".agents")), false, "tampered pack rejection must precede project mutation");
+    assert.equal(existsSync(join(repo, ".agents", "skills")), false, "tampered pack rejection must precede project mutation");
 
-    copyFileSync(join(selectedBmadPack, "bmad-agent-pm", "SKILL.md"), join(tamperedPack, "bmad-agent-pm", "SKILL.md"));
-    mkdirSync(join(tamperedPack, "bmad-agent-pm", "unauthenticated-empty"));
+    copyFileSync(join(selectedBmadPack, "pjtest-agent-pm", "SKILL.md"), join(tamperedPack, "pjtest-agent-pm", "SKILL.md"));
+    mkdirSync(join(tamperedPack, "pjtest-agent-pm", "unauthenticated-empty"));
     const topologyReport = JSON.parse(runAllowFailure(
       ["migrate", "skills.project-manifest", repo, "--json"],
       root,
-      { PJ_BMAD_PACK_ROOT: tamperedPack }
+      { PJ_PACK_ROOT_PJTEST: tamperedPack }
     ));
     const topologyResult = topologyReport.results.find((entry) => entry.id === "skills.project-manifest");
     assert.equal(topologyResult.status, "blocked", JSON.stringify(topologyResult));
     assert.match(topologyResult.details.join("\n"), /unauthenticated empty directories/);
-    assert.equal(existsSync(join(repo, ".agents")), false, "unauthenticated topology rejection must precede project mutation");
+    assert.equal(existsSync(join(repo, ".agents", "skills")), false, "unauthenticated topology rejection must precede project mutation");
   }
 
   {
     const repo = makeRepo("skills-manifest-symlink-boundary");
     repos.push(repo);
+    declarePjtestPack(repo);
     const outside = mkdtempSync(join(tmpdir(), "pjangler-outside-skills-"));
     repos.push(outside);
     writeFileSync(join(outside, "sentinel"), "do-not-touch\n");

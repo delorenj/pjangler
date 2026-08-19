@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
-import { createBmadInstallerFixture, createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -270,7 +270,7 @@ try {
     HOME: join(tmp, "isolated-home"),
     XDG_CACHE_HOME: join(tmp, "isolated-home", ".cache"),
     XDG_CONFIG_HOME: join(tmp, "isolated-home", ".config"),
-    PJ_BMAD_PACK_ROOT: createBmadPackFixture(fixtureRoot),
+    PJ_PACK_ROOT_PJTEST: createSkillPackFixture(fixtureRoot),
     PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
     npm_config_cache: join(tmp, "empty-npm-cache"),
     npm_config_offline: "true",

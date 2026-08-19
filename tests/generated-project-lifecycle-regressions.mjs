@@ -16,8 +16,8 @@ import { spawnSync } from "node:child_process";
 import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
-  createBmadPackFixture,
-} from "./helpers/bmad-fixture.mjs";
+  createSkillPackFixture,
+} from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const temporary = mkdtempSync(join(tmpdir(), "pjan-57-packed-lifecycle-"));
@@ -27,7 +27,7 @@ const isolatedHome = join(temporary, "home");
 const target = join(temporary, "Generated Project With Spaces");
 const registry = join(temporary, "registry", "projects.yaml");
 const fixtureRoot = join(temporary, "fixtures");
-const selectedBmadPack = createBmadPackFixture(fixtureRoot);
+const selectedBmadPack = createSkillPackFixture(fixtureRoot);
 const selectedBmadInstaller = createBmadInstallerFixture(fixtureRoot);
 const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
 const unsupportedRoots = [".agent", ".adal", ".bob", ".cline", ".codebuddy", ".codewhale", ".cortex", ".cursor", ".factory", ".firebender", ".iflow", ".junie", ".kiro", ".kode", ".neovate", ".ona", ".qoder", ".qwen", ".trae", ".zcode", ".zencoder"];
@@ -116,7 +116,7 @@ try {
     npm_config_cache: npmCache,
     npm_config_offline: "true",
     PJ_PROJECT_REGISTRY: registry,
-    PJ_BMAD_PACK_ROOT: selectedBmadPack,
+    PJ_PACK_ROOT_PJTEST: selectedBmadPack,
     PJ_BMAD_INSTALLER: selectedBmadInstaller,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -167,8 +167,18 @@ try {
     assert.equal(existsSync(rootPath), true, `${cliRoot} missing`);
     assert.equal(lstatSync(rootPath).isDirectory(), true, `${cliRoot} must be a real configuration root`);
     assert.equal(existsSync(join(rootPath, "skills", "bmad-help", "SKILL.md")), true, `${cliRoot} lacks BMAD skill configuration`);
-    const tracked = run("git", ["ls-files", "--error-unmatch", `${cliRoot}/skills`], { cwd: target, env: retryEnv, allowFailure: true });
-    assert.equal(tracked.status, 0, `${cliRoot}/skills must survive the initial commit\n${tracked.stderr}`);
+    // PJAN-76: the skills under each root are written by `bmad-method install`
+    // and rewritten wholesale on every upgrade, so they are deliberately NOT
+    // committed — `_bmad/_config/manifest.yaml` pins the version that
+    // reproduces them. The root itself still holds tracked configuration.
+    const trackedSkills = run("git", ["ls-files", "--error-unmatch", `${cliRoot}/skills`], { cwd: target, env: retryEnv, allowFailure: true });
+    assert.notEqual(
+      trackedSkills.status,
+      0,
+      `${cliRoot}/skills must stay out of the tree; bmad-method regenerates it`,
+    );
+    const ignored = run("git", ["check-ignore", "-q", `${cliRoot}/skills/`], { cwd: target, env: retryEnv, allowFailure: true });
+    assert.equal(ignored.status, 0, `${cliRoot}/skills/ must be gitignored, not merely untracked`);
   }
   for (const cliRoot of unsupportedRoots) assert.equal(existsSync(join(target, cliRoot)), false, `unsupported generated root ${cliRoot}`);
 

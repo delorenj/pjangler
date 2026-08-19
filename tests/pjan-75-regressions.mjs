@@ -26,14 +26,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createBmadPackFixture } from "./helpers/bmad-fixture.mjs";
+import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-75-"));
 // Pack resolution has to be hermetic or `skills.project-manifest` reports
 // "pack not trusted" and goes `fixable: false`, which would quietly retire the
 // very check that reproduces the ticket.
-const bmadPack = createBmadPackFixture(join(workspace, "packfix"));
+const bmadPack = createSkillPackFixture(join(workspace, "packfix"));
 
 // TMPDIR can itself sit inside a git work tree on this machine, so nothing here
 // may be allowed to walk up into an enclosing repository.
@@ -162,8 +162,7 @@ function runCli(args, { home, expectOk }) {
       HOME: home,
       GIT_CEILING_DIRECTORIES: workspace,
       NO_COLOR: "1",
-      PJ_BMAD_PACK_ROOT: bmadPack,
-      PJ_PACK_ROOT_BMAD: bmadPack,
+      PJ_PACK_ROOT_PJTEST: bmadPack,
     },
   });
   if (expectOk !== undefined) {
