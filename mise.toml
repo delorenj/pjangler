@@ -26,6 +26,10 @@ task = "link:agentfiles"
 description = "Symlink all agent files to AGENTS.md"
 run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"
 
+[tasks."link:bins"]
+description = "Symlink pjangler bins into ~/.local/bin so they survive a node version change"
+run = "{{config_root}}/.mise/scripts/link-bins.sh"
+
 [tasks."fleet:check"]
 description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"
