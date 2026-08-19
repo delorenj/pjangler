@@ -4786,7 +4786,7 @@ var init_capture = __esm({
 
 // src/mcp-server.ts
 import { existsSync as existsSync22, statSync as statSync5 } from "node:fs";
-import { basename as basename7, dirname as dirname13, join as join28, resolve as resolve15 } from "node:path";
+import { basename as basename8, dirname as dirname13, join as join28, resolve as resolve15 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -12238,7 +12238,7 @@ init_config();
 import { spawn, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync16, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync9, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync14, readSync as readSync3, readdirSync as readdirSync7, realpathSync as realpathSync7, renameSync as renameSync5, rmSync as rmSync3, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
-import { dirname as dirname10, isAbsolute as isAbsolute3, join as join20, parse as parse3, relative as relative10, resolve as resolve11, sep as sep6 } from "node:path";
+import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join20, parse as parse3, relative as relative10, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // src/utils/version.ts
@@ -12410,6 +12410,41 @@ function resolveProjectNotebookSkillSource(env2 = process.env) {
     return null;
   }
 }
+function verifiedCanonicalSkillexRootProjection(skillsRoot, link) {
+  let rootLink;
+  try {
+    rootLink = lstatSync9(skillsRoot);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (!rootLink.isSymbolicLink()) return null;
+  try {
+    assertNoSymlinkComponents2(dirname10(skillsRoot));
+    const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
+    if (uid !== void 0 && rootLink.uid !== uid) throw new Error("owner");
+    const globalRoot = realpathSync7(skillsRoot);
+    assertNoSymlinkComponents2(globalRoot);
+    const globalStat = lstatSync9(globalRoot);
+    if (!globalStat.isDirectory() || globalStat.isSymbolicLink()) throw new Error("root-type");
+    if (uid !== void 0 && globalStat.uid !== uid) throw new Error("root-owner");
+    if (globalStat.mode & 3586) throw new Error("root-mode");
+    const skillSetsRoot = dirname10(globalRoot);
+    if (basename7(globalRoot) !== "global" || basename7(skillSetsRoot) !== "skill-sets") throw new Error("layout");
+    const checkoutRoot = dirname10(skillSetsRoot);
+    const expectedSource = join20(checkoutRoot, "all-skills", "project-notebook");
+    const linkStat = lstatSync9(link);
+    if (!linkStat.isSymbolicLink()) throw new Error("projection-type");
+    if (uid !== void 0 && linkStat.uid !== uid) throw new Error("projection-owner");
+    const projectedSource = realpathSync7(link);
+    if (projectedSource !== realpathSync7(expectedSource)) throw new Error("projection-target");
+    if (!isVerifiedCanonicalSkillexProjection(projectedSource)) throw new Error("projection-digest");
+    return projectedSource;
+  } catch (error) {
+    if (error instanceof NotebookError) throw error;
+    throw new NotebookError("CONFLICT", "Existing skills root is not a verified canonical Skillex projection");
+  }
+}
 function installPackagedProjectNotebookSkill(input = {}) {
   const env2 = input.env ?? process.env;
   const source = input.source ?? resolveProjectNotebookSkillSource(env2);
@@ -12418,6 +12453,11 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
   if (!home || !resolve11(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
+  const skillsRoot = join20(home, ".agents", "skills");
+  const link = join20(skillsRoot, "project-notebook");
+  if (verifiedCanonicalSkillexRootProjection(skillsRoot, link)) {
+    return { installed: false, path: link, digest };
+  }
   const dataRoot = resolve11(env2.XDG_DATA_HOME || join20(home, ".local", "share"), "pjangler", "skills", "project-notebook");
   const payload = join20(dataRoot, `${PJANGLER_VERSION}-${digest}`);
   assertNoSymlinkComponents2(dirname10(dataRoot), true);
@@ -12459,8 +12499,6 @@ function installPackagedProjectNotebookSkill(input = {}) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Installed Project Notebook payload is not a real directory");
     verifyProjectNotebookSkillExport(payload);
   }
-  const skillsRoot = join20(home, ".agents", "skills");
-  const link = join20(skillsRoot, "project-notebook");
   assertNoSymlinkComponents2(skillsRoot, true);
   mkdirSync7(skillsRoot, { recursive: true, mode: 448 });
   assertNoSymlinkComponents2(skillsRoot);
@@ -15951,7 +15989,7 @@ server.registerTool(
         quiet: true,
         local,
         live,
-        targetRepo: input.targetRepo ?? basename7(resolvedTarget),
+        targetRepo: input.targetRepo ?? basename8(resolvedTarget),
         role: normalizeAgentRole(input.role),
         agentPurpose: input.agentPurpose,
         soulTone: input.soulTone,

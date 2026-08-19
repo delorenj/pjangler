@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PJANGLER_VERSION } from "../utils/version";
 import { captureGitSnapshot } from "./git-evidence";
@@ -237,6 +237,47 @@ export function resolveProjectNotebookSkillSource(env: NodeJS.ProcessEnv = proce
   catch { return null; }
 }
 
+function verifiedCanonicalSkillexRootProjection(skillsRoot: string, link: string): string | null {
+  let rootLink;
+  try { rootLink = lstatSync(skillsRoot); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!rootLink.isSymbolicLink()) return null;
+
+  try {
+    // Only the exact user-owned Skillex fanout topology may cross this
+    // otherwise strict no-symlink boundary. Nothing is created or replaced
+    // through the link: the existing projection is authenticated and kept.
+    assertNoSymlinkComponents(dirname(skillsRoot));
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (uid !== undefined && rootLink.uid !== uid) throw new Error("owner");
+
+    const globalRoot = realpathSync(skillsRoot);
+    assertNoSymlinkComponents(globalRoot);
+    const globalStat = lstatSync(globalRoot);
+    if (!globalStat.isDirectory() || globalStat.isSymbolicLink()) throw new Error("root-type");
+    if (uid !== undefined && globalStat.uid !== uid) throw new Error("root-owner");
+    if (globalStat.mode & 0o7002) throw new Error("root-mode");
+    const skillSetsRoot = dirname(globalRoot);
+    if (basename(globalRoot) !== "global" || basename(skillSetsRoot) !== "skill-sets") throw new Error("layout");
+
+    const checkoutRoot = dirname(skillSetsRoot);
+    const expectedSource = join(checkoutRoot, "all-skills", "project-notebook");
+    const linkStat = lstatSync(link);
+    if (!linkStat.isSymbolicLink()) throw new Error("projection-type");
+    if (uid !== undefined && linkStat.uid !== uid) throw new Error("projection-owner");
+    const projectedSource = realpathSync(link);
+    if (projectedSource !== realpathSync(expectedSource)) throw new Error("projection-target");
+    if (!isVerifiedCanonicalSkillexProjection(projectedSource)) throw new Error("projection-digest");
+    return projectedSource;
+  } catch (error) {
+    if (error instanceof NotebookError) throw error;
+    throw new NotebookError("CONFLICT", "Existing skills root is not a verified canonical Skillex projection");
+  }
+}
+
 export function installPackagedProjectNotebookSkill(input: { source?: string; env?: NodeJS.ProcessEnv } = {}): { installed: boolean; path: string; digest: string } {
   const env = input.env ?? process.env;
   const source = input.source ?? resolveProjectNotebookSkillSource(env);
@@ -245,6 +286,11 @@ export function installPackagedProjectNotebookSkill(input: { source?: string; en
   const digest = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env.HOME;
   if (!home || !resolve(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
+  const skillsRoot = join(home, ".agents", "skills");
+  const link = join(skillsRoot, "project-notebook");
+  if (verifiedCanonicalSkillexRootProjection(skillsRoot, link)) {
+    return { installed: false, path: link, digest };
+  }
   const dataRoot = resolve(env.XDG_DATA_HOME || join(home, ".local", "share"), "pjangler", "skills", "project-notebook");
   const payload = join(dataRoot, `${PJANGLER_VERSION}-${digest}`);
   assertNoSymlinkComponents(dirname(dataRoot), true);
@@ -282,8 +328,6 @@ export function installPackagedProjectNotebookSkill(input: { source?: string; en
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Installed Project Notebook payload is not a real directory");
     verifyProjectNotebookSkillExport(payload);
   }
-  const skillsRoot = join(home, ".agents", "skills");
-  const link = join(skillsRoot, "project-notebook");
   assertNoSymlinkComponents(skillsRoot, true);
   mkdirSync(skillsRoot, { recursive: true, mode: 0o700 });
   assertNoSymlinkComponents(skillsRoot);

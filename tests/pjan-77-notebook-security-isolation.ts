@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateNotebookBaseUrl } from "../src/notebook/config";
 import { readSafeEvidenceText } from "../src/notebook/git-evidence";
-import { captureWorkerEnvironment, inspectProjectNotebookIntegration, installPackagedProjectNotebookSkill, verifyProjectNotebookSkillExport } from "../src/notebook/hooks";
+import { captureWorkerEnvironment, inspectProjectNotebookIntegration, installPackagedProjectNotebookSkill, installProjectNotebookIntegration, verifyProjectNotebookSkillExport } from "../src/notebook/hooks";
 import { encodeNoteEnvelope, parseNoteEnvelope, withNoteEnvelope } from "../src/notebook/notes";
 import { compileOverviewArtifact, renderOverviewContent } from "../src/notebook/overview";
 import { OpenNotebookClient } from "../src/notebook/open-notebook-client";
@@ -95,14 +95,41 @@ try {
 
   const packedFixture = resolve("dist", "assets", "project-notebook-skill");
   assert.ok(existsSync(packedFixture), "package-pinned skill fixture exists");
-  const canonical = join(workspace, "fixture-registry", "all-skills", "project-notebook");
-  mkdirSync(join(workspace, "fixture-registry", "all-skills"), { recursive: true });
+  const fixtureRegistry = join(workspace, "fixture-registry");
+  const canonical = join(fixtureRegistry, "all-skills", "project-notebook");
+  const canonicalGlobal = join(fixtureRegistry, "skill-sets", "global");
+  mkdirSync(join(fixtureRegistry, "all-skills"), { recursive: true });
+  mkdirSync(canonicalGlobal, { recursive: true });
   cpSync(packedFixture, canonical, { recursive: true });
+  symlinkSync(canonical, join(canonicalGlobal, "project-notebook"), "dir");
   const canonicalHome = join(workspace, "canonical-home");
-  mkdirSync(join(canonicalHome, ".agents", "skills"), { recursive: true });
-  symlinkSync(canonical, join(canonicalHome, ".agents", "skills", "project-notebook"), "dir");
-  const inspected = inspectProjectNotebookIntegration({ HOME: canonicalHome, XDG_DATA_HOME: join(workspace, "canonical-data"), PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS: join(canonicalHome, ".claude", "settings.json") });
+  mkdirSync(join(canonicalHome, ".agents"), { recursive: true });
+  symlinkSync(canonicalGlobal, join(canonicalHome, ".agents", "skills"), "dir");
+  const canonicalData = join(workspace, "canonical-data");
+  const canonicalInstall = installPackagedProjectNotebookSkill({ env: { HOME: canonicalHome, XDG_DATA_HOME: canonicalData } });
+  assert.equal(canonicalInstall.installed, false, "the verified two-link Skillex projection is preserved instead of replaced");
+  assert.equal(realpathSync(canonicalInstall.path), realpathSync(canonical), "the preserved projection resolves to the canonical all-skills source");
+  assert.equal(existsSync(canonicalData), false, "a canonical projection does not create an unnecessary packed XDG payload");
+  const canonicalIntegration = installProjectNotebookIntegration({ env: { HOME: canonicalHome, XDG_DATA_HOME: canonicalData, XDG_STATE_HOME: join(workspace, "canonical-state") }, target: join(canonicalHome, ".claude", "settings.json") });
+  assert.equal(canonicalIntegration.skill.installed, false, "isolated hook installation keeps the canonical Skillex projection");
+  assert.equal(canonicalIntegration.hooksChanged, true, "isolated hook installation projects the canonical hooks");
+  const inspected = inspectProjectNotebookIntegration({ HOME: canonicalHome, XDG_DATA_HOME: canonicalData, PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS: join(canonicalHome, ".claude", "settings.json") });
   assert.equal(inspected.skill_installed, true, `canonical verified Skillex projection audits successfully without an XDG packed payload: ${inspected.details.join("; ")}`);
+  assert.equal(inspected.hooks_projected, true, `canonical verified Skillex hooks audit successfully: ${inspected.details.join("; ")}`);
+
+  const invalidRootHome = join(workspace, "invalid-root-home");
+  const invalidRoot = join(workspace, "not-skillex-global");
+  mkdirSync(join(invalidRootHome, ".agents"), { recursive: true });
+  mkdirSync(invalidRoot, { recursive: true });
+  symlinkSync(canonical, join(invalidRoot, "project-notebook"), "dir");
+  symlinkSync(invalidRoot, join(invalidRootHome, ".agents", "skills"), "dir");
+  const invalidRootData = join(workspace, "invalid-root-data");
+  assert.throws(
+    () => installPackagedProjectNotebookSkill({ env: { HOME: invalidRootHome, XDG_DATA_HOME: invalidRootData } }),
+    /not a verified canonical Skillex projection/u,
+    "a digest-valid child does not authenticate an arbitrary symlinked skills root",
+  );
+  assert.equal(existsSync(invalidRootData), false, "a rejected skills-root projection cannot create an XDG payload");
 
   const packedHome = join(workspace, "packed-home");
   const installed = installPackagedProjectNotebookSkill({ env: { HOME: packedHome, XDG_DATA_HOME: join(workspace, "packed-data") } });
