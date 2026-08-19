@@ -132,9 +132,10 @@ export class RecipeRegistry {
     };
   }
 
-  async initDependencies<TInput>(recipeId: RecipeId, ctx: LifecycleContext, input: TInput): Promise<RecipeInitResult> {
+  async initDependencies<TInput>(recipeId: RecipeId, ctx: LifecycleContext, input: TInput, excludeRecipeIds: readonly RecipeId[] = []): Promise<RecipeInitResult> {
     const results: RecipeInitResult[] = [];
     for (const dependency of this.resolveDependencies(recipeId)) {
+      if (excludeRecipeIds.includes(dependency.metadata.id)) continue;
       const result = await dependency.init(ctx, input);
       results.push(result);
       if (!result.ok) break;

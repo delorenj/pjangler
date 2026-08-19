@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { Command, type InvokeResult } from "../src/commands/Command";
 import { Recipe } from "../src/recipes/Recipe";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
+import { NotebookRecipe } from "../src/recipes/NotebookRecipe";
+import { NotebookModule } from "../src/notebook/module";
 import { recipeRegistry } from "../src/recipes/catalog";
 import { RecipeRegistry } from "../src/recipes/registry";
 import { lifecycleContext } from "../src/parity/index";
@@ -206,7 +208,8 @@ for (const [id, dependencies] of [
   ["mise", ["mise-op-inject"]],
   ["agent-hooks", ["mise"]],
   ["bmad", ["agent-hooks"]],
-  ["project", ["mise", "agent-hooks", "bmad"]],
+  ["notebook", []],
+  ["project", ["mise", "agent-hooks", "bmad", "notebook"]],
 ] as const) {
   assert.deepEqual(recipeRegistry.get(id)?.metadata.dependencies, dependencies, `${id} production dependencies`);
 }
@@ -226,6 +229,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     template: { commonproject: { enabled: true, primary_language: "typescript" } },
     ticket_provider: { type: "plane", workspace: "33god", identifier: "BOUN", board_id: "", state: "planned" },
     agents: {},
+    notebook: { state: "disabled" },
     automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
     created_at: "2026-08-11T00:00:00.000Z",
     updated_at: "2026-08-11T00:00:00.000Z",
@@ -237,6 +241,10 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     repo_path: dir,
     ticket_provider: project.ticket_provider,
     agents: {},
+    notebook: {
+      binding: project.notebook,
+      policy: { enabled: false, session_start_enabled: false, session_capture_enabled: false },
+    },
     automation: project.automation,
   };
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -245,6 +253,15 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     dir,
     plan: { ok: true, apply: true, dryRun: false, live: false, registryPath: join(dir, "registry.yaml"), project: project as never, manifest: manifest as never, actions: [] },
   };
+}
+
+function notebookFixtureRecipe(dir: string): NotebookRecipe {
+  const home = join(dir, ".test-home");
+  return new NotebookRecipe(new NotebookModule({
+    registryPath: join(dir, "registry.yaml"),
+    stateRoot: join(home, ".local", "state", "pjangler", "notebook", "v1"),
+    env: { ...process.env, HOME: home, XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") },
+  }));
 }
 
 {
@@ -259,7 +276,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
@@ -286,7 +303,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     runGit() { return { status: 0, stdout: "", stderr: "" }; },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
@@ -317,7 +334,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     runGit() { return { status: 0, stdout: "", stderr: "" }; },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
@@ -336,7 +353,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     runGit() { gitCalls++; return { status: 0, stdout: "", stderr: "" }; },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise", [failingAudit]), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise", [failingAudit]), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
@@ -354,7 +371,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     runGit() { return { status: 0, stdout: "", stderr: "" }; },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, false);
@@ -387,7 +404,7 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     },
   };
   const registry = new RecipeRegistry([
-    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), new ProjectRecipe(runtime),
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
   ]);
   const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
   assert.equal(result.ok, true, JSON.stringify(result.errors));

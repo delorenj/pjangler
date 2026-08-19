@@ -6,6 +6,7 @@ import { MiseOpInjectRecipe } from "./MiseOpInjectRecipe";
 import { MiseRecipe } from "./MiseRecipe";
 import { NodeRecipe } from "./NodeRecipe";
 import { ProjectRecipe } from "./ProjectRecipe";
+import { NotebookRecipe } from "./NotebookRecipe";
 import { RecipeRegistry } from "./registry";
 
 /** The single production lifecycle registry instance. */
@@ -17,5 +18,6 @@ export const recipeRegistry = new RecipeRegistry([
   new DockerRecipe(),
   new NodeRecipe(),
   new HermesAgentRecipe(),
+  new NotebookRecipe(),
   new ProjectRecipe(),
 ]);

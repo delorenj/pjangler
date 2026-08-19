@@ -8,6 +8,7 @@ import type {
   SourceArtifact,
   ProjectAutomation,
 } from "./index";
+import type { NotebookGlobalConfigV1, ProjectNotebookBindingV1 } from "../notebook/types";
 import {
   PROJECT_REGISTRY_SCHEMA_VERSION,
   createSafeRecord,
@@ -16,6 +17,20 @@ import {
   saveProjectRegistry,
   validateProjectRegistry,
 } from "./index";
+
+const PROJECT_OWNED_KEYS = new Set([
+  "name", "slug", "repo_path", "description", "status", "source_artifacts", "template",
+  "ticket_provider", "agents", "automation", "notebook", "created_at", "updated_at",
+]);
+const REGISTRY_OWNED_KEYS = new Set(["schema_version", "notebook", "projects"]);
+
+function projectExtensions(record: ProjectRecord): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !PROJECT_OWNED_KEYS.has(key)));
+}
+
+function registryExtensions(registry: ProjectRegistry): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(registry).filter(([key]) => !REGISTRY_OWNED_KEYS.has(key)));
+}
 
 // ---------------------------------------------------------------------------
 // RegistryStore interface
@@ -117,13 +132,15 @@ export class PgRegistryStore implements RegistryStore {
         source_artifacts: SourceArtifact[] | null;
         template: ProjectRecord["template"] | null;
         automation: ProjectAutomation | null;
+        notebook: ProjectNotebookBindingV1 | null;
+        pjangler_extensions: Record<string, unknown> | null;
         created_at: Date;
         updated_at: Date;
         repo_id: string | null;
         local_path: string | null;
       }>(
         `SELECT p.id, p.name, p.description, p.slug, p.status,
-                p.source_artifacts, p.template, p.automation,
+                p.source_artifacts, p.template, p.automation, p.notebook, p.pjangler_extensions,
                 p.created_at, p.updated_at,
                 r.id AS repo_id, r.local_path
          FROM public.projects p
@@ -137,6 +154,7 @@ export class PgRegistryStore implements RegistryStore {
         const ticketProvider = await this.loadTicketProvider(client, row.id);
         const agents = await this.loadAgents(client, row.id, slug);
         projects[slug] = {
+          ...(row.pjangler_extensions ?? {}),
           name: row.name ?? "",
           slug,
           repo_path: row.local_path ?? "",
@@ -154,13 +172,25 @@ export class PgRegistryStore implements RegistryStore {
           ticket_provider: ticketProvider,
           agents,
           automation: row.automation ?? undefined,
+          notebook: row.notebook && Object.keys(row.notebook).length ? row.notebook : undefined,
           created_at: row.created_at.toISOString(),
           updated_at: row.updated_at.toISOString(),
         };
       }
 
+      let settings: { schema_version: number; notebook: NotebookGlobalConfigV1 | null; extensions: Record<string, unknown> | null } | undefined;
+      try {
+        const settingsResult = await client.query<{ schema_version: number; notebook: NotebookGlobalConfigV1 | null; extensions: Record<string, unknown> | null }>(
+          `SELECT schema_version, notebook, extensions FROM public.pjangler_registry_settings WHERE scope = 'global'`,
+        );
+        settings = settingsResult.rows[0];
+      } catch (error) {
+        if ((error as { code?: string }).code !== "42P01" && (error as { code?: string }).code !== "42703") throw error;
+      }
       const registry: ProjectRegistry = {
+        ...(settings?.extensions ?? {}),
         schema_version: PROJECT_REGISTRY_SCHEMA_VERSION,
+        ...(settings?.notebook && Object.keys(settings.notebook).length ? { notebook: settings.notebook } : {}),
         projects,
       };
       validateProjectRegistry(registry);
@@ -175,6 +205,14 @@ export class PgRegistryStore implements RegistryStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await this.upsertSettingsInTx(client, registry);
+      // save() mirrors the authoritative YAML registry, including owned
+      // removals. Rows with slug IS NULL remain outside PJangler ownership.
+      await client.query(
+        `DELETE FROM public.projects
+         WHERE slug IS NOT NULL AND NOT (slug = ANY($1::text[]))`,
+        [Object.keys(registry.projects)],
+      );
       for (const [slug, record] of Object.entries(registry.projects)) {
         await this.upsertInTx(client, slug, record);
       }
@@ -233,8 +271,8 @@ export class PgRegistryStore implements RegistryStore {
 
     // 1. Upsert project row
     const projectResult = await client.query<{ id: string }>(
-      `INSERT INTO public.projects (name, description, slug, status, source_artifacts, template, automation)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO public.projects (name, description, slug, status, source_artifacts, template, automation, notebook, pjangler_extensions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (slug) WHERE slug IS NOT NULL
        DO UPDATE SET
          name = EXCLUDED.name,
@@ -242,7 +280,9 @@ export class PgRegistryStore implements RegistryStore {
          status = EXCLUDED.status,
          source_artifacts = EXCLUDED.source_artifacts,
          template = EXCLUDED.template,
-         automation = EXCLUDED.automation
+         automation = EXCLUDED.automation,
+         notebook = EXCLUDED.notebook,
+         pjangler_extensions = EXCLUDED.pjangler_extensions
        RETURNING id`,
       [
         record.name,
@@ -252,6 +292,8 @@ export class PgRegistryStore implements RegistryStore {
         JSON.stringify(record.source_artifacts),
         JSON.stringify(record.template),
         record.automation ? JSON.stringify(record.automation) : null,
+        JSON.stringify(record.notebook ?? {}),
+        JSON.stringify(projectExtensions(record)),
       ]
     );
     const projectId = projectResult.rows[0]?.id;
@@ -289,6 +331,18 @@ export class PgRegistryStore implements RegistryStore {
         [repoId, projectId, agentKey, agent.role, agent.role_dir ?? null, agent.provisioning_state]
       );
     }
+  }
+
+  private async upsertSettingsInTx(client: PoolClient, registry: ProjectRegistry): Promise<void> {
+    await client.query(
+      `INSERT INTO public.pjangler_registry_settings (scope, schema_version, notebook, extensions)
+       VALUES ('global', $1, $2, $3)
+       ON CONFLICT (scope) DO UPDATE SET
+         schema_version = EXCLUDED.schema_version,
+         notebook = EXCLUDED.notebook,
+         extensions = EXCLUDED.extensions`,
+      [registry.schema_version, JSON.stringify(registry.notebook ?? {}), JSON.stringify(registryExtensions(registry))],
+    );
   }
 
   private async loadTicketProvider(

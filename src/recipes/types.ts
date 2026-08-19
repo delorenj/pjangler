@@ -1,4 +1,5 @@
 import type { CommandContext } from "../commands/Command";
+import type { NotebookObservationV1, NotebookPlanV1 } from "../notebook/observation";
 
 export type RecipeId = string;
 export type RuleId = string;
@@ -24,6 +25,15 @@ export interface LifecycleContext extends CommandContext {
   live?: boolean;
   bmadVersionPin?: string;
   acceptRegistryMatches?: boolean;
+  notebookPlan?: Readonly<NotebookPlanV1>;
+  /** True only when the authoritative Registry project has a notebook binding block. */
+  notebookRegistryDeclared?: boolean;
+  /** Focused `pj notebook audit|migrate` opts undeclared repositories into the actionable declaration rule. */
+  notebookFocusedAudit?: boolean;
+  /** Exact binding projection from the Manifest snapshot used to build notebookPlan; null means absent. */
+  notebookManifestBinding?: Readonly<Record<string, unknown>> | null;
+  notebookObservation?: Readonly<NotebookObservationV1>;
+  notebookStateRoot?: string;
 }
 
 export interface RecipeMetadata {

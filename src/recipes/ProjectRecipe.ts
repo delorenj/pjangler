@@ -32,6 +32,8 @@ import type { HermesAgentContext } from "../commands/hermes/types";
 import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import type { TrustedCopierIdentity } from "../lifecycle/preflight";
+import type { NotebookPlanV1 } from "../notebook/observation";
+import { NotebookRecipe } from "./NotebookRecipe";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -170,7 +172,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
     id: "project",
     name: "project",
     description: "CommonProject plan, lifecycle composition, audit, and Git boundary",
-    dependencies: ["mise", "agent-hooks", "bmad"],
+    dependencies: ["mise", "agent-hooks", "bmad", "notebook"],
     commands: [],
     publicRuleIds: this.checks.map((check) => check.id),
   };
@@ -183,6 +185,13 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
 
   attachRegistry(registry: RecipeRegistry): void {
     this.registry = registry;
+  }
+
+  private async runNotebookLifecycle(plan: ProjectInitPlan, mode: "create" | "sync", ctx: LifecycleContext): Promise<NotebookPlanV1> {
+    if (!this.registry) throw new Error("ProjectRecipe is not attached to a RecipeRegistry");
+    const result = await this.registry.initRecipe("notebook", ctx, { plan, mode });
+    if (!result.ok || !result.notebookPlan) throw new Error(result.errors.join("; ") || "Notebook lifecycle planning failed");
+    return result.notebookPlan as NotebookPlanV1;
   }
 
   override async init(ctx: LifecycleContext, input: ProjectRecipeInput | ProjectInitPlan): Promise<ProjectRecipeResult> {
@@ -210,6 +219,12 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
     let provisionedAgentContext: (LifecycleContext & HermesAgentContext) | undefined;
     let migrationReport: MigrationReport | undefined;
     let audit: AuditReport | undefined;
+    let notebookPlan: NotebookPlanV1 | undefined;
+    let notebookRecipeForCommit: NotebookRecipe | undefined;
+    let notebookJournals: Parameters<NotebookRecipe["commitExternal"]>[0] = [];
+    let externalDispatchStarted = false;
+    let rollbackEligible = true;
+    let registryFinalizerEligible = false;
 
     try {
       if (mode === "create") {
@@ -250,11 +265,36 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
 
       if (errors.length === 0 && executed.ok && mode === "create") {
-        const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized);
+        const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized, ["notebook"]);
         logs.push(...dependencyResult.logs);
         errors.push(...dependencyResult.errors);
         changedFiles.push(...dependencyResult.changedFiles);
         phases.push(...dependencyResult.phases);
+      }
+
+      if (errors.length === 0 && executed.ok) {
+        try {
+          notebookPlan = await this.runNotebookLifecycle(plan, mode, transactionContext);
+          phases.push({
+            id: "notebook.plan",
+            status: notebookPlan.remote_effect === "reconcile" ? "planned" : "skipped",
+            changedFiles: [],
+            message: notebookPlan.reason,
+          });
+        } catch (error) {
+          errors.push(`notebook lifecycle planning failed: ${error instanceof Error ? error.message : String(error)}`);
+          phases.push({ id: "notebook.plan", status: "failed", changedFiles: [], message: errors.at(-1) });
+        }
+      }
+
+      if (errors.length === 0 && notebookPlan) {
+        const notebookRecipe = this.registry.get("notebook");
+        if (!(notebookRecipe instanceof NotebookRecipe)) throw new Error("Registered notebook recipe is not the singleton NotebookRecipe");
+        const localNotebook = await notebookRecipe.applyLocal(transactionContext, plan, notebookPlan);
+        logs.push(...localNotebook.logs);
+        errors.push(...localNotebook.errors);
+        changedFiles.push(...localNotebook.changedFiles);
+        phases.push(...localNotebook.phases);
       }
 
       const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
@@ -394,30 +434,21 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           }
         }
       }
-
-      const boardEffectArmed = externalPlanActions.some((action) => action.kind === "ticket-provider.create-or-link" && action.enabled);
-      if (errors.length === 0 && registryActions.length && !boardEffectArmed) {
-        const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
-        const persisted = await this.runtime.executePlan(registryPlan);
-        logs.push(...persisted.logs);
-        errors.push(...persisted.errors);
-        changedFiles.push(...persisted.changedFiles);
-        phases.push({
-          id: "project.registry",
-          status: persisted.ok ? (persisted.changedFiles.length ? "changed" : "unchanged") : "failed",
-          changedFiles: persisted.ok ? persisted.changedFiles : [],
-          message: persisted.ok ? "Project registry persisted" : persisted.errors.join("; "),
-        });
-      }
+      registryFinalizerEligible = errors.length === 0;
 
       if (errors.length === 0 && externalPlanActions.length) {
-        // When a board effect is armed, persist the returned binding inside the
-        // same tail immediately after the provider action. This keeps the
-        // central registry truthful without reopening ordinary local lifecycle
-        // work after the external boundary.
+        // Any enabled provider action crosses an adapter boundary, including a
+        // link/reconcile of an already-known board. Latch before handing the
+        // action to the adapter so fresh-target rollback can never delete local
+        // recovery evidence after external dispatch might have started.
+        const dispatching = externalPlanActions.some((action) => action.kind === "ticket-provider.create-or-link" && action.enabled);
+        if (dispatching) {
+          externalDispatchStarted = true;
+          rollbackEligible = false;
+        }
         const externalPlan: ProjectInitPlan = {
           ...plan,
-          actions: boardEffectArmed ? [...externalPlanActions, ...registryActions] : externalPlanActions,
+          actions: externalPlanActions,
         };
         const external = await this.runtime.executePlan(externalPlan);
         logs.push(...external.logs);
@@ -427,12 +458,59 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           id: "project.external:ticket-provider",
           status: external.ok ? (external.changedFiles.length ? "changed" : "unchanged") : "failed",
           changedFiles: external.ok ? external.changedFiles : [],
-          message: external.ok ? "Deferred ticket-provider/binding persistence phase completed" : external.errors.join("; "),
+          message: external.ok ? "Deferred ticket-provider phase completed" : external.errors.join("; "),
         });
+      }
+
+
+      if (errors.length === 0 && notebookPlan?.remote_effect === "reconcile") {
+        if (!ctx.live) {
+          phases.push({ id: "project.external:notebook", status: "skipped", changedFiles: [], message: "Notebook remote reconciliation requires --live" });
+        } else {
+          externalDispatchStarted = true;
+          rollbackEligible = false;
+          const notebookRecipe = this.registry.get("notebook");
+          if (!(notebookRecipe instanceof NotebookRecipe)) throw new Error("Registered notebook recipe is not the singleton NotebookRecipe");
+          try {
+            const applied = await notebookRecipe.applyExternal(plan, notebookPlan);
+            notebookRecipeForCommit = notebookRecipe;
+            notebookJournals = applied.data.journals ?? [];
+            logs.push(`notebook: reconciled ${applied.data.notebook_id} with Overview ${applied.data.overview_note_id}`);
+            const manifestActions = plan.actions.filter((action) => action.kind === "project.write-manifest");
+            const projected = manifestActions.length
+              ? await this.runtime.executePlan({ ...plan, actions: manifestActions })
+              : { ok: true, logs: [], errors: [], changedFiles: [] };
+            logs.push(...projected.logs);
+            errors.push(...projected.errors);
+            changedFiles.push(...projected.changedFiles);
+            if (projected.ok) {
+              notebookPlan = notebookRecipe.refreshPlan(plan, notebookPlan);
+              transactionContext.notebookPlan = notebookPlan;
+              const projectedNotebook = (plan.manifest as ProjectManifest & { notebook?: { binding?: Record<string, unknown> } }).notebook;
+              transactionContext.notebookManifestBinding = projectedNotebook?.binding
+                ? Object.freeze({ ...projectedNotebook.binding })
+                : null;
+              transactionContext.notebookObservation = Object.freeze(await notebookRecipe.observeExternal(plan, notebookPlan));
+              const candidateAudit = publicAudit(this.registry.auditRecipes(transactionContext, ["notebook"]));
+              if (!candidateAudit.ok) errors.push(...candidateAudit.rules.filter((item) => item.status === "fail" || item.status === "warn").map((item) => `${item.id}: ${item.summary}`));
+            }
+            phases.push({
+              id: "project.external:notebook",
+              status: errors.length === 0 ? (projected.changedFiles.length ? "changed" : "unchanged") : "failed",
+              changedFiles: errors.length === 0 ? projected.changedFiles : [],
+              message: errors.length === 0 ? "Notebook and stable Overview reconciled and observation-audited" : errors.at(-1),
+            });
+          } catch (error) {
+            errors.push(`notebook external effect failed: ${error instanceof Error ? error.message : String(error)}`);
+            phases.push({ id: "project.external:notebook", status: "failed", changedFiles: [], message: errors.at(-1) });
+          }
+        }
       }
 
       const deferred = provisionedAgentContext?.deferredExternalEffects;
       if (errors.length === 0 && deferred?.owner === "project" && (deferred.runtimeRepo || deferred.ticketBoard || deferred.systemd)) {
+        externalDispatchStarted = true;
+        rollbackEligible = false;
         const beforeExternal = snapshotTree(targetDir);
         const external = await new ApplyDeferredExternalEffects(provisionedAgentContext!).invoke();
         const externalChanges = changedTreePaths(targetDir, beforeExternal, snapshotTree(targetDir));
@@ -447,11 +525,33 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         });
       }
 
-      if (errors.length === 0 && (externalPlanActions.length || deferred)) {
+      if (registryFinalizerEligible && (externalPlanActions.length || notebookPlan || deferred)) {
         try {
           refreshPlanFromCanonicalManifest(plan);
         } catch (error) {
           errors.push(`project manifest refresh after external effects failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
+      // One Registry-only finalizer is the last mutation. It persists linked
+      // successes and planned/blocked recovery even when an external effect
+      // failed, then no lifecycle writer runs again in this transaction.
+      if (registryFinalizerEligible && registryActions.length) {
+        rollbackEligible = false;
+        const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
+        const persisted = await this.runtime.executePlan(registryPlan);
+        logs.push(...persisted.logs);
+        errors.push(...persisted.errors);
+        changedFiles.push(...persisted.changedFiles);
+        phases.push({
+          id: "project.registry:finalizer",
+          status: persisted.ok ? (persisted.changedFiles.length ? "changed" : "unchanged") : "failed",
+          changedFiles: persisted.ok ? persisted.changedFiles : [],
+          message: persisted.ok ? "Project Registry persisted as the final mutation" : persisted.errors.join("; "),
+        });
+        if (errors.length === 0 && persisted.ok && notebookRecipeForCommit && notebookJournals.length) {
+          try { notebookRecipeForCommit.commitExternal(notebookJournals); }
+          catch (error) { errors.push(`notebook ownership journal finalization failed: ${error instanceof Error ? error.message : String(error)}`); }
         }
       }
 
@@ -482,7 +582,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
     }
 
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && existsSync(targetDir)) {
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && !externalDispatchStarted && existsSync(targetDir)) {
       try {
         rmSync(targetDir, { recursive: true, force: true });
         changedFiles.length = 0;

@@ -18,6 +18,7 @@ import {
   planProjectInit,
   projectRegistryPath,
   resolveContainedPath,
+  type ProjectManifest,
   validateSafePathSegment,
 } from "./project/index";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
@@ -269,6 +270,20 @@ interface ProjectApplyPreflight {
   trustedCopier?: TrustedCopierIdentity;
 }
 
+function plannedNotebookBindingRepairsDrift(plan: ReturnType<typeof planProjectInit>): boolean {
+  if (!plan.actions.some((action) => action.kind === "project.write-manifest")) return false;
+  const authoritative = plan.project.notebook;
+  const notebook = (plan.manifest as ProjectManifest & { notebook?: unknown }).notebook;
+  const projected = notebook && typeof notebook === "object" && !Array.isArray(notebook)
+    ? (notebook as Record<string, unknown>).binding
+    : undefined;
+  if (!authoritative || typeof authoritative !== "object" || !projected || typeof projected !== "object" || Array.isArray(projected)) return false;
+  const projectedRecord = projected as Record<string, unknown>;
+  return ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"].every(
+    (key) => (authoritative as unknown as Record<string, unknown>)[key] === projectedRecord[key],
+  );
+}
+
 function preflightProjectApply(
   plan: ReturnType<typeof planProjectInit>,
   pjanglerRoot: string,
@@ -286,6 +301,7 @@ function preflightProjectApply(
     const blocking = audit.rules.filter((finding) => {
       if (finding.status === "pass" || finding.status === "skip") return false;
       if (finding.id === "sot.project-json") return false;
+      if (finding.id === "notebook.binding" && plannedNotebookBindingRepairsDrift(plan)) return false;
       if (provisionsAgent && finding.id.startsWith("hermes.")) return false;
       return true;
     });

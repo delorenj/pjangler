@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
+import { chmodSync, closeSync, copyFileSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import { DEFAULT_NOTEBOOK_LIMITS, notebookCredentialMaterialPath, type NotebookGlobalConfigV1, type NotebookLimitsV1, type ProjectNotebookBindingV1, type ProjectNotebookConfigV1 } from "../notebook/types";
 import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import {
@@ -67,6 +69,7 @@ export interface ProjectAutomation {
 }
 
 export interface ProjectRecord {
+  [key: string]: unknown;
   name: string;
   slug: string;
   repo_path: string;
@@ -82,16 +85,21 @@ export interface ProjectRecord {
   ticket_provider: ProjectTicketProvider;
   agents: Record<string, ProjectAgentRecord>;
   automation?: ProjectAutomation;
+  /** Authoritative Registry binding; policy overrides live in .project.json. */
+  notebook?: ProjectNotebookBindingV1;
   created_at: string;
   updated_at: string;
 }
 
 export interface ProjectRegistry {
+  [key: string]: unknown;
   schema_version: number;
+  notebook?: NotebookGlobalConfigV1;
   projects: Record<string, ProjectRecord>;
 }
 
 export interface ProjectManifest {
+  [key: string]: unknown;
   project_name: string;
   project_description: string;
   project_slug: string;
@@ -105,6 +113,8 @@ export interface ProjectManifest {
   };
   agents: Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
   automation?: ProjectAutomation;
+  /** Read-only binding projection plus repository policy overrides. */
+  notebook?: ProjectNotebookConfigV1;
 }
 
 export interface ProjectInitInput {
@@ -301,6 +311,7 @@ export function loadProjectRegistry(path = projectRegistryPath()): ProjectRegist
     }
   }
   const normalized: ProjectRegistry = {
+    ...registry,
     schema_version: Number(registry.schema_version ?? PROJECT_REGISTRY_SCHEMA_VERSION),
     projects,
   };
@@ -308,22 +319,141 @@ export function loadProjectRegistry(path = projectRegistryPath()): ProjectRegist
   return normalized;
 }
 
+const PROJECT_REGISTRY_OWNED_KEYS = [
+  "name", "slug", "repo_path", "description", "status", "source_artifacts", "template",
+  "ticket_provider", "agents", "automation", "notebook", "created_at", "updated_at",
+] as const;
+const PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"] as const;
+const TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "board_id", "board_url", "state"] as const;
+const GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"] as const;
+const GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"] as const;
+const GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"] as const;
+const GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS = Object.keys(DEFAULT_NOTEBOOK_LIMITS);
+const GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS = ["executable", "args"] as const;
+
+type RegistryYamlDocument = ReturnType<typeof YAML.parseDocument>;
+type YamlPath = Array<string | number>;
+
+function yamlPlain(document: RegistryYamlDocument, path: YamlPath): unknown {
+  let value = document.toJS() as unknown;
+  for (const key of path) {
+    if (typeof key === "number" && Array.isArray(value)) value = value[key];
+    else if (typeof key === "string" && isRecord(value)) value = value[key];
+    else return undefined;
+  }
+  return value;
+}
+
+function sameYamlValue(document: RegistryYamlDocument, path: YamlPath, desired: unknown): boolean {
+  try { return JSON.stringify(yamlPlain(document, path)) === JSON.stringify(desired); }
+  catch { return false; }
+}
+
+function setYamlLeaf(document: RegistryYamlDocument, path: YamlPath, desired: unknown): void {
+  if (sameYamlValue(document, path, desired)) return;
+  const current = document.getIn(path, true) as unknown;
+  if (YAML.isScalar(current) && (desired === null || typeof desired !== "object")) {
+    current.value = desired as never;
+    return;
+  }
+  document.setIn(path, desired);
+}
+
+/** Merge desired values into existing CST nodes so comments/style on unchanged
+ * values and unknown extension keys survive. Only explicitly owned keys may be
+ * deleted when absent from the authoritative in-memory value. */
+function mergeYamlMapping(
+  document: RegistryYamlDocument,
+  path: YamlPath,
+  desired: Record<string, unknown>,
+  ownedKeys: readonly string[] = [],
+): void {
+  if (sameYamlValue(document, path, desired)) return;
+  const current = document.getIn(path, true) as unknown;
+  if (!YAML.isMap(current)) {
+    document.setIn(path, desired);
+    return;
+  }
+  for (const key of ownedKeys) if (!Object.hasOwn(desired, key)) document.deleteIn([...path, key]);
+  for (const [key, value] of Object.entries(desired)) {
+    const child = [...path, key];
+    if (isRecord(value)) {
+      const childOwned = key === "notebook" ? PROJECT_NOTEBOOK_OWNED_KEYS
+        : key === "ticket_provider" ? TICKET_PROVIDER_OWNED_KEYS
+        : path.length === 1 && path[0] === "notebook" && key === "auth" ? GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS
+        : path.length === 1 && path[0] === "notebook" && key === "defaults" ? GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS
+        : path.length === 1 && path[0] === "notebook" && key === "limits" ? GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS
+        : path.length === 1 && path[0] === "notebook" && key === "summarizer" ? GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS
+        : [];
+      mergeYamlMapping(document, child, value, childOwned);
+    } else setYamlLeaf(document, child, value);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  try {
+    const fd = openSync(path, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  } catch { /* best effort on platforms that cannot fsync directories */ }
+}
+
 export function saveProjectRegistry(registry: ProjectRegistry, path = projectRegistryPath()): void {
   validateProjectRegistry(registry);
   mkdirSync(dirname(path), { recursive: true });
+  let text: string;
+  let mode = 0o644;
+  if (existsSync(path)) {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Project registry must be a regular file: ${path}`);
+    mode = stat.mode & 0o777;
+    const current = readFileSync(path, "utf8");
+    const document = YAML.parseDocument(current);
+    if (document.errors.length) throw new Error(`Project registry YAML is invalid: ${path}`);
+    setYamlLeaf(document, ["schema_version"], registry.schema_version);
+    if (registry.notebook !== undefined) mergeYamlMapping(document, ["notebook"], registry.notebook, GLOBAL_NOTEBOOK_OWNED_KEYS);
+    else document.delete("notebook");
+    if (!document.has("projects")) document.set("projects", {});
+    const parsed = document.toJS() as unknown;
+    const existingProjects = isRecord(parsed) && isRecord(parsed.projects) ? parsed.projects : {};
+    for (const slug of Object.keys(existingProjects)) if (!Object.hasOwn(registry.projects, slug)) document.deleteIn(["projects", slug]);
+    for (const [slug, project] of Object.entries(registry.projects)) {
+      mergeYamlMapping(document, ["projects", slug], project, PROJECT_REGISTRY_OWNED_KEYS);
+    }
+    text = String(document);
+    if (text === current) return;
+  } else {
+    text = YAML.stringify(registry, { lineWidth: 0 });
+  }
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temp, YAML.stringify(registry, { lineWidth: 0 }), "utf8");
-  renameSync(temp, path);
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", mode);
+    writeFileSync(fd, text, "utf8");
+    fchmodSync(fd, mode);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+    chmodSync(path, mode);
+    fsyncDirectory(dirname(path));
+  } catch (error) {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* retain original error */ }
+    try { unlinkSync(temp); } catch { /* retain original error */ }
+    throw error;
+  }
 }
 
 export function validateProjectRegistry(registry: ProjectRegistry): void {
   if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION) {
     throw new Error(`Unsupported project registry schema_version: ${registry.schema_version}`);
   }
+  validateGlobalNotebookConfig(registry.notebook);
   if (!isRecord(registry.projects)) throw new Error("Project registry projects must be a mapping");
   const slugs = new Set<string>();
   const repoPaths = new Map<string, string>();
   const identifiers = new Map<string, string>();
+  const notebookIds = new Map<string, string>();
+  const overviewNoteIds = new Map<string, string>();
   for (const [slug, project] of Object.entries(registry.projects)) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
@@ -342,6 +472,73 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
       }
       identifiers.set(identifier, slug);
     }
+    const notebookId = project.notebook?.notebook_id;
+    if (notebookId) {
+      const existingNotebookSlug = notebookIds.get(notebookId);
+      if (existingNotebookSlug && existingNotebookSlug !== slug) throw new Error(`Duplicate project notebook_id: ${notebookId} used by ${existingNotebookSlug} and ${slug}`);
+      notebookIds.set(notebookId, slug);
+    }
+    const overviewNoteId = project.notebook?.overview_note_id;
+    if (overviewNoteId) {
+      const existingOverviewSlug = overviewNoteIds.get(overviewNoteId);
+      if (existingOverviewSlug && existingOverviewSlug !== slug) throw new Error(`Duplicate project overview_note_id: ${overviewNoteId} used by ${existingOverviewSlug} and ${slug}`);
+      overviewNoteIds.set(overviewNoteId, slug);
+    }
+  }
+}
+
+function validateGlobalNotebookConfig(value: unknown): void {
+  if (value === undefined) return;
+  if (!isRecord(value)) throw new Error("Project registry notebook must be a mapping");
+  const credentialPath = notebookCredentialMaterialPath(value);
+  if (credentialPath) throw new Error(`Project registry Notebook configuration contains forbidden credential material at ${credentialPath}`);
+  if (value.base_url !== undefined) {
+    if (typeof value.base_url !== "string" || !value.base_url.trim()) throw new Error("Project registry notebook.base_url must be a nonempty URL");
+    let url: URL;
+    try { url = new URL(value.base_url); } catch { throw new Error("Project registry notebook.base_url must be an absolute URL"); }
+    if (url.username || url.password || url.search || url.hash) throw new Error("Project registry notebook.base_url may not contain credentials, query, or fragment");
+    const hostname = url.hostname.toLowerCase();
+    const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+    const loopback = hostname === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(host);
+    if (isIP(host) !== 0 && !loopback) throw new Error("Project registry notebook.base_url may not use a numeric non-loopback host");
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("Project registry notebook.base_url must use HTTPS or loopback HTTP");
+  }
+  if (value.auth !== undefined) {
+    if (!isRecord(value.auth) || (value.auth.mode !== "none" && value.auth.mode !== "environment")) throw new Error("Project registry notebook.auth is invalid");
+    if (value.auth.mode === "environment" && value.auth.env_var !== "OPEN_NOTEBOOK_PASSWORD") throw new Error("Project registry notebook.auth.env_var must be OPEN_NOTEBOOK_PASSWORD");
+    if (value.auth.mode === "none" && value.auth.env_var !== undefined) throw new Error("Project registry notebook.auth none mode may not name a credential variable");
+  }
+  const boundedList = (candidate: unknown, name: string): void => {
+    if (!Array.isArray(candidate) || candidate.length > 100 || candidate.some((entry) => typeof entry !== "string" || !entry || Buffer.byteLength(entry, "utf8") > 512)) throw new Error(`Project registry notebook.defaults.${name} must be a bounded string list`);
+  };
+  if (value.defaults !== undefined) {
+    if (!isRecord(value.defaults)) throw new Error("Project registry notebook.defaults must be a mapping");
+    for (const key of ["enabled", "session_start_enabled", "session_capture_enabled"] as const) {
+      if (value.defaults[key] !== undefined && typeof value.defaults[key] !== "boolean") throw new Error(`Project registry notebook.defaults.${key} must be boolean`);
+    }
+    if (value.defaults.overview_max_chars !== undefined && (!Number.isSafeInteger(value.defaults.overview_max_chars) || Number(value.defaults.overview_max_chars) <= 0)) throw new Error("Project registry notebook.defaults.overview_max_chars must be a positive integer");
+    for (const key of ["documentation_globs", "overview_references", "excluded_globs"] as const) if (value.defaults[key] !== undefined) boundedList(value.defaults[key], key);
+  }
+  const limits = { ...DEFAULT_NOTEBOOK_LIMITS } as NotebookLimitsV1;
+  if (value.limits !== undefined) {
+    if (!isRecord(value.limits)) throw new Error("Project registry notebook.limits must be a mapping");
+    for (const key of Object.keys(DEFAULT_NOTEBOOK_LIMITS) as Array<keyof NotebookLimitsV1>) {
+      const configured = value.limits[key];
+      if (configured === undefined) continue;
+      if (!Number.isSafeInteger(configured) || Number(configured) <= 0) throw new Error(`Project registry notebook.limits.${key} must be a positive integer`);
+      limits[key] = Number(configured) as never;
+    }
+  }
+  if (limits.schema_version !== 1) throw new Error("Project registry notebook.limits.schema_version must be 1");
+  if (limits.receipt_max_bytes > limits.unresolved_receipt_max_bytes) throw new Error("Project registry notebook receipt_max_bytes may not exceed unresolved_receipt_max_bytes");
+  if (limits.hook_payload_max_bytes > DEFAULT_NOTEBOOK_LIMITS.hook_payload_max_bytes) throw new Error("Project registry notebook hook_payload_max_bytes exceeds the packaged ceiling");
+  if (limits.lease_seconds * 1_000 <= limits.overall_timeout_ms) throw new Error("Project registry notebook lease_seconds must exceed one request timeout");
+  if (isRecord(value.defaults) && value.defaults.overview_max_chars !== undefined && Number(value.defaults.overview_max_chars) > limits.note_max_bytes) throw new Error("Project registry notebook overview_max_chars exceeds note_max_bytes");
+  if (value.summarizer !== undefined) {
+    if (!isRecord(value.summarizer) || typeof value.summarizer.executable !== "string" || !isAbsolute(value.summarizer.executable)
+      || value.summarizer.executable.includes("\0") || Buffer.byteLength(value.summarizer.executable, "utf8") > 1_024) throw new Error("Project registry notebook.summarizer executable must be a bounded absolute path");
+    if (value.summarizer.args !== undefined && (!Array.isArray(value.summarizer.args) || value.summarizer.args.length > 32
+      || value.summarizer.args.some((entry) => typeof entry !== "string" || entry.includes("\0") || Buffer.byteLength(entry, "utf8") > 1_024))) throw new Error("Project registry notebook.summarizer args must be bounded strings");
   }
 }
 
@@ -829,6 +1026,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const scaffold = input.scaffold ?? true;
 
   const candidateProject: ProjectRecord = {
+    ...(existing ?? {}),
     name: input.name,
     slug,
     repo_path: targetDir,
@@ -861,6 +1059,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
+    notebook: existing?.notebook
+      ? { ...existing.notebook, notebook_name: input.name.trim() }
+      : { state: "planned", notebook_name: input.name.trim() },
     created_at: existing?.created_at ?? now,
     updated_at: now,
   };
@@ -1080,7 +1281,31 @@ export async function executeProjectInitPlan(
       }
     } else if (action.kind === "project.write-manifest") {
       mkdirSync(dirname(action.path), { recursive: true });
-      const next = `${JSON.stringify(action.manifest, null, 2)}\n`;
+      let value = action.manifest as unknown as Record<string, unknown>;
+      if (existsSync(action.path)) {
+        try {
+          const currentValue = JSON.parse(readFileSync(action.path, "utf8")) as unknown;
+          if (isRecord(currentValue)) {
+            const currentNotebook = isRecord(currentValue.notebook) ? currentValue.notebook : {};
+            const desiredNotebook = isRecord(value.notebook) ? value.notebook : {};
+            value = {
+              ...currentValue,
+              ...value,
+              ticket_provider: { ...(isRecord(currentValue.ticket_provider) ? currentValue.ticket_provider : {}), ...(isRecord(value.ticket_provider) ? value.ticket_provider : {}) },
+              agents: { ...(isRecord(currentValue.agents) ? currentValue.agents : {}), ...(isRecord(value.agents) ? value.agents : {}) },
+              ...(value.notebook ? {
+                notebook: {
+                  ...currentNotebook,
+                  ...desiredNotebook,
+                  ...(isRecord(desiredNotebook.binding) ? { binding: { ...(isRecord(currentNotebook.binding) ? currentNotebook.binding : {}), ...desiredNotebook.binding } } : {}),
+                  ...(isRecord(desiredNotebook.policy) ? { policy: { ...(isRecord(currentNotebook.policy) ? currentNotebook.policy : {}), ...desiredNotebook.policy } } : {}),
+                },
+              } : {}),
+            };
+          }
+        } catch { /* invalid existing manifest is replaced by the validated plan */ }
+      }
+      const next = `${JSON.stringify(value, null, 2)}\n`;
       const current = existsSync(action.path) ? readFileSync(action.path, "utf8") : undefined;
       if (current !== next) {
         writeFileSync(action.path, next, "utf8");
@@ -1123,7 +1348,7 @@ export async function executeProjectInitPlan(
       if (isPgRegistryEnabled()) {
         try {
           const pgStore = new PgRegistryStore(pgRegistryConfigFromEnv());
-          await pgStore.upsert(pendingRegistryAction.slug, pendingRegistryAction.project);
+          await pgStore.save(registry);
           await pgStore.close();
           logs.push("registry: PG dual-write complete");
         } catch (pgErr) {
@@ -1161,6 +1386,7 @@ export function projectManifestFromRegistryProject(project: ProjectRecord): Proj
     },
     agents,
     automation: project.automation ?? defaultProjectAutomation(),
+    ...(project.notebook ? { notebook: { binding: { ...project.notebook } } } : {}),
   };
 }
 
@@ -1320,7 +1546,7 @@ export function buildCommonProjectCopierAction(input: {
 }
 
 export function resolvePjanglerRoot(): string {
-  let dir = dirname(new URL(import.meta.url).pathname);
+  let dir = dirname(fileURLToPath(import.meta.url));
   while (dir !== dirname(dir)) {
     if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "templates", "commonproject", "copier.yml"))) return dir;
     dir = dirname(dir);
@@ -1355,6 +1581,17 @@ function validateProjectRecord(project: ProjectRecord, key: string): void {
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
+  if (project.notebook !== undefined) {
+    if (!isRecord(project.notebook)) throw new Error(`Project ${key} notebook must be a mapping`);
+    const credentialPath = notebookCredentialMaterialPath(project.notebook);
+    if (credentialPath) throw new Error(`Project ${key} Notebook binding contains forbidden credential material at ${credentialPath}`);
+    if (project.notebook.state !== "disabled" && project.notebook.state !== "planned" && project.notebook.state !== "linked") throw new Error(`Project ${key} notebook state is invalid`);
+    if (project.notebook.state === "linked" && (!project.notebook.notebook_id || !project.notebook.overview_note_id)) throw new Error(`Project ${key} linked notebook is missing stable IDs`);
+    for (const field of ["notebook_id", "notebook_name", "overview_note_id", "blocked_reason"] as const) {
+      const value = project.notebook[field];
+      if (value !== undefined && (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\u0000-\u001f\u007f]/u.test(value))) throw new Error(`Project ${key} notebook.${field} is invalid`);
+    }
+  }
   for (const [agentKey, agent] of Object.entries(project.agents)) {
     validateSafePathSegment(agentKey, `Project ${key} agent key ${agentKey}`);
     if (!isRecord(agent)) throw new Error(`Project ${key} agent ${agentKey} must be a mapping`);

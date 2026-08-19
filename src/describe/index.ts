@@ -26,6 +26,9 @@ import {
   type ProjectRecord,
 } from "../project/index";
 import { computeRepoActivity, gitLine, isGitRepo, type RepoActivity } from "./activity";
+import { loadEffectiveNotebookConfig } from "../notebook/config";
+import { captureAdmissionSummary, notebookStateRoot } from "../notebook/state";
+import type { CaptureAdmissionSummaryV1, NotebookBindingState } from "../notebook/types";
 import {
   bold,
   cyan,
@@ -152,6 +155,15 @@ export interface ProjectDescription {
   activity: RepoActivity;
   type: DescribeType;
   identity: DescribeIdentity;
+  notebook: {
+    declared: boolean;
+    bindingState: NotebookBindingState | null;
+    notebookId: string | null;
+    overviewNoteId: string | null;
+    health: null;
+    remoteCheck: "skip";
+    captureAdmission: CaptureAdmissionSummaryV1 | null;
+  };
   subsystems: DescribeSubsystem[];
   configFiles: DescribeConfigFile[];
   nextSteps: DescribeNextStep[];
@@ -451,7 +463,14 @@ function describeSubsystems(repo: string, findings: readonly LifecycleAuditFindi
 
   return recipeRegistry.list().map((metadata) => {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
-    const evidence = markers.filter((marker) => existsSync(join(repo, marker)));
+    const evidence = metadata.id === "notebook"
+      ? (() => {
+          try {
+            const manifest = JSON.parse(readFileSync(join(repo, ".project.json"), "utf8")) as Record<string, unknown>;
+            return manifest.notebook && typeof manifest.notebook === "object" ? [".project.json#notebook"] : [];
+          } catch { return []; }
+        })()
+      : markers.filter((marker) => existsSync(join(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding) => ({
       id: finding.id,
       title: finding.title,
@@ -473,6 +492,28 @@ function describeSubsystems(repo: string, findings: readonly LifecycleAuditFindi
 
     return { id: metadata.id, name: metadata.name, description: metadata.description, status, parity, evidence, rules };
   });
+}
+
+function describeNotebook(repo: string, registryPath: string): ProjectDescription["notebook"] {
+  try {
+    const registry = loadProjectRegistry(registryPath);
+    const project = Object.values(registry.projects).find((entry) => resolve(entry.repo_path) === resolve(repo));
+    const manifest = existsSync(join(repo, ".project.json")) ? JSON.parse(readFileSync(join(repo, ".project.json"), "utf8")) as Record<string, unknown> : undefined;
+    const declared = Boolean(project?.notebook || (manifest?.notebook && typeof manifest.notebook === "object"));
+    if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
+    const config = loadEffectiveNotebookConfig(repo, registryPath);
+    return {
+      declared: true,
+      bindingState: config.binding.state,
+      notebookId: config.binding.notebook_id ?? null,
+      overviewNoteId: config.binding.overview_note_id ?? null,
+      health: null,
+      remoteCheck: "skip",
+      captureAdmission: captureAdmissionSummary(notebookStateRoot(), config.project_slug, config.limits),
+    };
+  } catch {
+    return { declared: true, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
+  }
 }
 
 function describeConfigFiles(repo: string): DescribeConfigFile[] {
@@ -595,6 +636,7 @@ export function describeProject(input: DescribeInput = {}): ProjectDescription {
     activity,
     type: describeType(repo),
     identity: describeIdentity(repo, registryPath),
+    notebook: describeNotebook(repo, registryPath),
     subsystems: describeSubsystems(repo, findings),
     configFiles: describeConfigFiles(repo),
     parity: { ok: report.ok, counts },
@@ -706,6 +748,12 @@ export function renderDescribe(description: ProjectDescription, options: RenderO
 
   const registryNote = identity.registered ? green("registered") : yellow("not registered");
   lines.push(field("registry", `${registryNote}  ${dim(shortenPath(identity.registryPath, options.home))}`));
+  if (description.notebook.declared) {
+    const state = description.notebook.bindingState ?? "invalid";
+    const capture = description.notebook.captureAdmission;
+    const usage = capture ? ` · unresolved ${capture.unresolved_count ?? "unknown"}/${capture.receipt_caps.max_count}` : "";
+    lines.push(field("notebook", `${cyan(state)}${dim(`${usage} · remote not observed`)}`));
+  }
 
   for (const agent of identity.agents) {
     const state = agent.provisioningState === "provisioned"

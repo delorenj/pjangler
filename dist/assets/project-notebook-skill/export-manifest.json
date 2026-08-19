@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "skill": "project-notebook",
+  "files": [
+    {
+      "path": ".source.yaml",
+      "sha256": "5113ddd7998b7511f4a1dae5a9d3cef59bc31a04e982f3ac35fa9078b238d434",
+      "mode": "0644"
+    },
+    {
+      "path": "agents/openai.yaml",
+      "sha256": "dba418f3b40d2e1362e615bdfda6cb1616ec5e49e2e8bd81ca48144ef219b29f",
+      "mode": "0644"
+    },
+    {
+      "path": "hooks/claude.settings.json",
+      "sha256": "8a469caf88ed05dc466ffaad611cb45dd0c26046595d9538415d7c89287c8800",
+      "mode": "0644"
+    },
+    {
+      "path": "hooks/hooks.master.json",
+      "sha256": "8a469caf88ed05dc466ffaad611cb45dd0c26046595d9538415d7c89287c8800",
+      "mode": "0644"
+    },
+    {
+      "path": "hooks/session-end.sh",
+      "sha256": "848d2f5ba9000c2538e21d5a21257c72a5e4799ee3a9145a4eb9d7b00179e52b",
+      "mode": "0755"
+    },
+    {
+      "path": "hooks/session-start.sh",
+      "sha256": "f146a81c3e6cfbbce28c85c3c2163255974abef61339638c2a0ac9902346905e",
+      "mode": "0755"
+    },
+    {
+      "path": "references/configuration.md",
+      "sha256": "a25d1d34f9960b2b3bf17a00191d5477b81a05bffe5d4e183c2954cc3975b535",
+      "mode": "0644"
+    },
+    {
+      "path": "references/recovery.md",
+      "sha256": "6a61d9dd0d5dd32f8a7fefcb82001bbad90523704fa1500b7e0becc3a848545c",
+      "mode": "0644"
+    },
+    {
+      "path": "scripts/project-hooks.py",
+      "sha256": "95d1b6199b0416f7fdf3306215bc10a9a647f64654ccbb26786cc228fc35ac37",
+      "mode": "0755"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "8567ab2567ec412eb8d673dd713340b81a45e69374d9baee3cb7e827999be437",
+      "mode": "0644"
+    },
+    {
+      "path": "tests/test_project_hooks.py",
+      "sha256": "7e16380d079277ee08b8ea64767b1596dc4e8f7ce1bd89c45d9d4821f6d493d3",
+      "mode": "0644"
+    }
+  ]
+}

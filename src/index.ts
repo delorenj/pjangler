@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
 import { SOUL_TONES } from "./commands/hermes/types";
@@ -33,9 +33,12 @@ import { describeProject, formatProjectDescription } from "./describe/index";
 import { computeRepoActivityBatch } from "./describe/activity";
 import { runChecklist } from "./describe/checklist";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
+import { projectNotebookDryRunProjection } from "./recipes/NotebookRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
+import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
+import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 
 /** Red ✖ prefix for user-facing error lines. */
 const xmark = `${red(glyph.fail)}`;
@@ -323,6 +326,12 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
 }
 
 const program = new Command();
+const commandArgs = process.argv.slice(2);
+program.exitOverride();
+program.configureOutput({
+  writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text); },
+});
+registerNotebookCli(program);
 
 program
   .name("pjangler")
@@ -515,10 +524,12 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       };
 
       if (!apply) {
+        const notebookPlan = projectNotebookDryRunProjection(plan, target.syncMode ? "sync" : "create");
         const payload = {
           ...plan,
           mode: target.syncMode ? "sync" : "create",
           audit: preAudit,
+          notebookPlan,
           proposedOperations: [
             ...plan.actions
               .filter((action) => actionNeedsRun(plan, action.kind, target.syncMode))
@@ -531,6 +542,10 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         if (options.json) console.log(JSON.stringify(payload, null, 2));
         else {
           console.log(formatProjectInitPlan(plan));
+          console.log(`  ${bold("Project Notebook")} ${dim(`(${notebookPlan.phases.length} phases)`)}`);
+          for (const phase of notebookPlan.phases) {
+            console.log(`     ${cyan(glyph.bullet)} ${phase.id} ${dim(`[${phase.scope}/${phase.status}] ${phase.summary}`)}`);
+          }
           if (payload.proposedOperations.length) {
             console.log(`  ${bold("Proposed operations")} ${dim(`(${payload.proposedOperations.length})`)}`);
             for (const operation of payload.proposedOperations) console.log(`     ${cyan(glyph.bullet)} ${operation}`);
@@ -1093,4 +1108,16 @@ program
     }
   });
 
-program.parse();
+try {
+  await program.parseAsync();
+} catch (error) {
+  if (isNotebookJsonInvocation(commandArgs)) {
+    const envelope = notebookParserFailureEnvelope(commandArgs);
+    process.stdout.write(renderNotebookJson(envelope));
+    process.exitCode = notebookEnvelopeExitCode(envelope);
+  } else if (error instanceof CommanderError) {
+    process.exitCode = error.exitCode;
+  } else {
+    throw error;
+  }
+}
