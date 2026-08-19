@@ -62,7 +62,11 @@ jobs:
       # and refuses anything else on PATH as untrusted (src/lifecycle/preflight.ts).
       # A pip install lands in the Python toolcache instead, so the lifecycle
       # tests could never exercise a trusted Copier here.
-      - run: python -m pip install 'uv==0.11.14'
+      # hermes-profile-config.py — the base+delta profile renderer pjangler
+      # shells out to during Hermes provisioning — is the one script it invokes
+      # with a third-party dependency. Without PyYAML it exits non-zero and
+      # hermes.runtime-singleton blocks the whole lifecycle.
+      - run: python -m pip install 'pyyaml==6.0.2' 'uv==0.11.14'
       # The attestation also requires the tool's INTERPRETER to resolve inside
       # ~/.local/share/uv/python, so uv has to manage the Python too — a tool
       # installed against the runner's setup-python is rejected.
