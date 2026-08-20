@@ -1,9 +1,11 @@
 import { NotebookError, type OpenNotebookNotebookV1, type OpenNotebookNoteV1 } from "./types";
 import { parseNoteEnvelope } from "./notes";
-import { OpenNotebookClient } from "./open-notebook-client";
+import { normalizeOpenNotebookNoteType, OpenNotebookClient } from "./open-notebook-client";
 import {
+  markRemoteMutationDefinitivelyRejected,
   mutationInputDigest,
   prepareRemoteMutation,
+  rearmRemoteMutationAfterDefinitiveRejection,
   transitionRemoteMutation,
   type RemoteMutationJournalV1,
 } from "./remote-mutation-journal";
@@ -123,13 +125,16 @@ export async function reconcileManagedNote(input: {
   if (!desiredEnvelope || desiredEnvelope.project_slug !== input.projectSlug || desiredEnvelope.logical_id !== input.logicalId) {
     throw new NotebookError("INVALID_INPUT", "Managed note create requires an exact owned PJangler envelope");
   }
+  const noteType = normalizeOpenNotebookNoteType(input.noteType);
   const digest = input.inputDigest ?? mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content });
+  const dispatchDigest = mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content, note_type: noteType });
   let journal = prepareRemoteMutation({
     root: input.stateRoot,
     projectSlug: input.projectSlug,
     kind: "note.create",
     logicalMarker: input.logicalId,
     inputDigest: digest,
+    dispatchDigest,
     sessionKey: input.sessionKey,
     bindingId: input.notebookId,
     operationId: input.operationId,
@@ -164,11 +169,20 @@ export async function reconcileManagedNote(input: {
     return { note: candidate, created: false, adopted: true, journal };
   }
   if (journal.state !== "prepared") {
-    throw new NotebookError("CONFLICT", "Note create may have been dispatched; reconcile before another POST", false, { operation_id: journal.operation_id });
+    journal = rearmRemoteMutationAfterDefinitiveRejection({
+      root: input.stateRoot,
+      journal,
+      inputDigest: digest,
+      dispatchDigest,
+      observedCandidateIds: candidates.map((item) => item.id),
+      ...(input.noteType === undefined && input.inputDigest === undefined ? { legacyV114InputDigest: digest } : {}),
+    });
   }
   input.beforeRemote?.();
-  await input.client.createNote(input.notebookId, { title: input.title, content: input.content, note_type: input.noteType }, () => {
+  await input.client.createNote(input.notebookId, { title: input.title, content: input.content, note_type: noteType }, () => {
     journal = transitionRemoteMutation({ root: input.stateRoot, journal, state: "possibly-dispatched", diagnostic: "possibly-dispatched" });
+  }, (status) => {
+    journal = markRemoteMutationDefinitivelyRejected({ root: input.stateRoot, journal, status });
   });
   candidates = await reconcile();
   if (candidates.length > 1) ambiguous("note", candidates.map((item) => item.id));

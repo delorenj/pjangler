@@ -22,7 +22,7 @@ function record(repo: string, binding: ProjectNotebookBindingV1): ProjectRecord 
 }
 
 function note(id: string, title: string, content: string, updatedAt: string | null): OpenNotebookNoteV1 {
-  return { id, title, content, note_type: "note", created_at: "2026-08-19T00:00:00.000Z", updated_at: updatedAt };
+  return { id, title, content, note_type: "human", created_at: "2026-08-19T00:00:00.000Z", updated_at: updatedAt };
 }
 
 const workspace = mkdtempSync(join(tmpdir(), "pjan-77-cli-"));

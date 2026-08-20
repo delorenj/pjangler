@@ -23,9 +23,12 @@ type RequestOptions = {
   body?: Record<string, unknown>;
   allowEmpty?: boolean;
   possiblyDispatched?: () => void;
+  definitivelyRejected?: (status: 400 | 422) => void;
   skipAuthProbe?: boolean;
   suppressAuthorization?: boolean;
 };
+
+export type OpenNotebookTransportNoteType = "human" | "ai";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -41,6 +44,16 @@ function optionalString(value: unknown, name: string, max = 8_192): string | nul
   return boundedString(value, name, max);
 }
 
+function responseTimestamp(value: Record<string, unknown>, current: "created" | "updated", legacy: "created_at" | "updated_at", subject: "notebook" | "note"): string | null | undefined {
+  return optionalString(value[current] !== undefined ? value[current] : value[legacy], `${subject} ${current}`, 128);
+}
+
+export function normalizeOpenNotebookNoteType(value: string | undefined): OpenNotebookTransportNoteType {
+  const normalized = value ?? "human";
+  if (normalized !== "human" && normalized !== "ai") throw new NotebookError("INVALID_INPUT", "Open Notebook note_type must be human or ai");
+  return normalized;
+}
+
 function parseNotebook(value: unknown): OpenNotebookNotebookV1 {
   if (!isRecord(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid notebook");
   return {
@@ -48,8 +61,8 @@ function parseNotebook(value: unknown): OpenNotebookNotebookV1 {
     name: boundedString(value.name, "notebook name", 4_096),
     description: optionalString(value.description, "notebook description", 16_384),
     archived: typeof value.archived === "boolean" ? value.archived : undefined,
-    created_at: optionalString(value.created_at, "notebook created_at", 128),
-    updated_at: optionalString(value.updated_at, "notebook updated_at", 128),
+    created_at: responseTimestamp(value, "created", "created_at", "notebook"),
+    updated_at: responseTimestamp(value, "updated", "updated_at", "notebook"),
   };
 }
 
@@ -57,18 +70,20 @@ function parseNote(value: unknown, noteMaxBytes: number): OpenNotebookNoteV1 {
   if (!isRecord(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid note");
   const content = boundedString(value.content, "note content", noteMaxBytes);
   if (Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
+  const noteType = boundedString(value.note_type, "note type", 128);
+  if (noteType !== "human" && noteType !== "ai") throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an unsupported note type");
   return {
     id: boundedString(value.id, "note id", 512),
     title: boundedString(value.title, "note title", 4_096),
     content,
-    note_type: boundedString(value.note_type, "note type", 128),
-    created_at: optionalString(value.created_at, "note created_at", 128) ?? null,
-    updated_at: optionalString(value.updated_at, "note updated_at", 128) ?? null,
+    note_type: noteType,
+    created_at: responseTimestamp(value, "created", "created_at", "note") ?? null,
+    updated_at: responseTimestamp(value, "updated", "updated_at", "note") ?? null,
   };
 }
 
 function errorForStatus(status: number, message: string): NotebookError {
-  if (status === 400 || status === 422) return new NotebookError("INVALID_INPUT", message);
+  if (status === 400 || status === 422) return new NotebookError("INVALID_INPUT", message, false, { http_status: status, definitive_rejection: true });
   if (status === 401 || status === 403) return new NotebookError("AUTHENTICATION_FAILED", message);
   if (status === 404) return new NotebookError("NOT_FOUND", message);
   if (status === 409) return new NotebookError("CONFLICT", message);
@@ -158,12 +173,14 @@ export class OpenNotebookClient {
     return value.map((item) => parseNote(item, this.config.limits.note_max_bytes));
   }
 
-  async createNote(notebookId: string, input: { title: string; content: string; note_type?: string }, possiblyDispatched?: () => void): Promise<OpenNotebookNoteV1> {
+  async createNote(notebookId: string, input: { title: string; content: string; note_type?: string }, possiblyDispatched?: () => void, definitivelyRejected?: (status: 400 | 422) => void): Promise<OpenNotebookNoteV1> {
     if (Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Note content exceeds the configured ceiling");
+    const noteType = normalizeOpenNotebookNoteType(input.note_type);
     return parseNote(await this.request("/api/notes", {
       method: "POST",
-      body: { notebook_id: notebookId, title: input.title, content: input.content, note_type: input.note_type ?? "note" },
+      body: { notebook_id: notebookId, title: input.title, content: input.content, note_type: noteType },
       possiblyDispatched,
+      definitivelyRejected,
     }), this.config.limits.note_max_bytes);
   }
 
@@ -227,6 +244,7 @@ export class OpenNotebookClient {
       });
       if (response.status >= 300 && response.status < 400) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook redirect was rejected");
       if (!response.ok) {
+        if (response.status === 400 || response.status === 422) options.definitivelyRejected?.(response.status);
         try { await readResponseBody(response, Math.min(this.config.limits.response_max_bytes, 4_096)); }
         catch { /* preserve the categorized HTTP status without response data */ }
         throw errorForStatus(response.status, `Open Notebook returned HTTP ${response.status}`);

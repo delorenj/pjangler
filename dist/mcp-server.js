@@ -2559,15 +2559,15 @@ function bounded(value, max) {
 function timestamp(value) {
   return bounded(value, 64) && Number.isFinite(Date.parse(value));
 }
-function remoteMutationResultCategory(state, candidateCount) {
+function remoteMutationResultCategory(state, candidateCount, definitiveHttpStatus) {
   if (state === "prepared") return "prepared";
-  if (state === "possibly-dispatched") return "possibly-dispatched";
+  if (state === "possibly-dispatched") return definitiveHttpStatus === void 0 ? "possibly-dispatched" : "definitive-http-rejection";
   if (state === "committed") return "committed";
   return candidateCount === 0 ? "reconciled-zero" : candidateCount === 1 ? "reconciled-one" : "reconciled-many";
 }
-function remoteMutationNextAction(state, candidateCount) {
+function remoteMutationNextAction(state, candidateCount, definitiveHttpStatus) {
   if (state === "prepared") return "dispatch once only after the durable possibly-dispatched latch";
-  if (state === "possibly-dispatched") return "reconcile by stable marker only; do not POST again";
+  if (state === "possibly-dispatched") return definitiveHttpStatus === void 0 ? "reconcile by stable marker only; do not POST again" : "reconcile by stable marker; a different corrected input may dispatch once only after zero candidates";
   if (state === "committed") return "none";
   return candidateCount === 1 ? "persist durable binding or note ownership before commit" : "resolve the zero-or-many candidate conflict without another blind POST";
 }
@@ -2582,17 +2582,20 @@ function parseRemoteMutationJournal(value) {
   if (item.kind !== "notebook.create" && item.kind !== "note.create") return null;
   if (item.state !== "prepared" && item.state !== "possibly-dispatched" && item.state !== "reconciled" && item.state !== "committed") return null;
   if (!bounded(item.logical_marker, 512) || typeof item.input_digest !== "string" || !DIGEST_RE.test(item.input_digest)) return null;
+  if (item.dispatch_digest !== void 0 && (typeof item.dispatch_digest !== "string" || !DIGEST_RE.test(item.dispatch_digest))) return null;
   if (item.session_key !== void 0 && (typeof item.session_key !== "string" || !DIGEST_RE.test(item.session_key))) return null;
   if (item.binding_id !== void 0 && !bounded(item.binding_id, 512)) return null;
+  if (item.definitive_http_status !== void 0 && item.definitive_http_status !== 400 && item.definitive_http_status !== 422) return null;
   if (!timestamp(item.prepared_at) || !timestamp(item.updated_at) || Date.parse(item.updated_at) < Date.parse(item.prepared_at)) return null;
   if (!Array.isArray(item.candidate_ids) || item.candidate_ids.length > 20 || item.candidate_ids.some((entry) => !bounded(entry, 512)) || new Set(item.candidate_ids).size !== item.candidate_ids.length) return null;
   if (item.diagnostic !== null && (typeof item.diagnostic !== "string" || Buffer.byteLength(item.diagnostic, "utf8") > 512 || /[\u0000-\u001f\u007f]/u.test(item.diagnostic))) return null;
   const candidateCount = item.candidate_ids.length;
   if (item.state === "prepared" && candidateCount !== 0) return null;
   if (item.state === "possibly-dispatched" && candidateCount !== 0) return null;
+  if (item.definitive_http_status !== void 0 && (item.state !== "possibly-dispatched" || candidateCount !== 0 || item.diagnostic === null)) return null;
   if (item.state === "committed" && (candidateCount !== 1 || item.diagnostic !== null)) return null;
-  if (item.result_category !== remoteMutationResultCategory(item.state, candidateCount)) return null;
-  if (item.next_action !== remoteMutationNextAction(item.state, candidateCount)) return null;
+  if (item.result_category !== remoteMutationResultCategory(item.state, candidateCount, item.definitive_http_status)) return null;
+  if (item.next_action !== remoteMutationNextAction(item.state, candidateCount, item.definitive_http_status)) return null;
   return item;
 }
 var REQUIRED_KEYS, OPTIONAL_KEYS, OPERATION_ID_RE, DIGEST_RE, PROJECT_SLUG_RE;
@@ -2614,7 +2617,7 @@ var init_remote_mutation_schema = __esm({
       "result_category",
       "next_action"
     ];
-    OPTIONAL_KEYS = ["binding_id", "session_key"];
+    OPTIONAL_KEYS = ["binding_id", "session_key", "dispatch_digest", "definitive_http_status"];
     OPERATION_ID_RE = /^[a-f0-9-]{16,64}$/iu;
     DIGEST_RE = /^[a-f0-9]{64}$/u;
     PROJECT_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/iu;
@@ -3654,6 +3657,14 @@ function optionalString(value, name, max = 8192) {
   if (value == null) return value;
   return boundedString2(value, name, max);
 }
+function responseTimestamp(value, current, legacy, subject) {
+  return optionalString(value[current] !== void 0 ? value[current] : value[legacy], `${subject} ${current}`, 128);
+}
+function normalizeOpenNotebookNoteType(value) {
+  const normalized = value ?? "human";
+  if (normalized !== "human" && normalized !== "ai") throw new NotebookError("INVALID_INPUT", "Open Notebook note_type must be human or ai");
+  return normalized;
+}
 function parseNotebook(value) {
   if (!isRecord3(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid notebook");
   return {
@@ -3661,25 +3672,27 @@ function parseNotebook(value) {
     name: boundedString2(value.name, "notebook name", 4096),
     description: optionalString(value.description, "notebook description", 16384),
     archived: typeof value.archived === "boolean" ? value.archived : void 0,
-    created_at: optionalString(value.created_at, "notebook created_at", 128),
-    updated_at: optionalString(value.updated_at, "notebook updated_at", 128)
+    created_at: responseTimestamp(value, "created", "created_at", "notebook"),
+    updated_at: responseTimestamp(value, "updated", "updated_at", "notebook")
   };
 }
 function parseNote(value, noteMaxBytes) {
   if (!isRecord3(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid note");
   const content = boundedString2(value.content, "note content", noteMaxBytes);
   if (Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
+  const noteType = boundedString2(value.note_type, "note type", 128);
+  if (noteType !== "human" && noteType !== "ai") throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an unsupported note type");
   return {
     id: boundedString2(value.id, "note id", 512),
     title: boundedString2(value.title, "note title", 4096),
     content,
-    note_type: boundedString2(value.note_type, "note type", 128),
-    created_at: optionalString(value.created_at, "note created_at", 128) ?? null,
-    updated_at: optionalString(value.updated_at, "note updated_at", 128) ?? null
+    note_type: noteType,
+    created_at: responseTimestamp(value, "created", "created_at", "note") ?? null,
+    updated_at: responseTimestamp(value, "updated", "updated_at", "note") ?? null
   };
 }
 function errorForStatus(status, message) {
-  if (status === 400 || status === 422) return new NotebookError("INVALID_INPUT", message);
+  if (status === 400 || status === 422) return new NotebookError("INVALID_INPUT", message, false, { http_status: status, definitive_rejection: true });
   if (status === 401 || status === 403) return new NotebookError("AUTHENTICATION_FAILED", message);
   if (status === 404) return new NotebookError("NOT_FOUND", message);
   if (status === 409) return new NotebookError("CONFLICT", message);
@@ -3769,12 +3782,14 @@ var init_open_notebook_client = __esm({
         if (!Array.isArray(value) || value.length > this.config.limits.list_max_items) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list is invalid or incomplete under configured limits");
         return value.map((item) => parseNote(item, this.config.limits.note_max_bytes));
       }
-      async createNote(notebookId, input, possiblyDispatched) {
+      async createNote(notebookId, input, possiblyDispatched, definitivelyRejected) {
         if (Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Note content exceeds the configured ceiling");
+        const noteType = normalizeOpenNotebookNoteType(input.note_type);
         return parseNote(await this.request("/api/notes", {
           method: "POST",
-          body: { notebook_id: notebookId, title: input.title, content: input.content, note_type: input.note_type ?? "note" },
-          possiblyDispatched
+          body: { notebook_id: notebookId, title: input.title, content: input.content, note_type: noteType },
+          possiblyDispatched,
+          definitivelyRejected
         }), this.config.limits.note_max_bytes);
       }
       async getOwnedNote(notebookId, noteId) {
@@ -3832,6 +3847,7 @@ var init_open_notebook_client = __esm({
           });
           if (response.status >= 300 && response.status < 400) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook redirect was rejected");
           if (!response.ok) {
+            if (response.status === 400 || response.status === 422) options.definitivelyRejected?.(response.status);
             try {
               await readResponseBody(response, Math.min(this.config.limits.response_max_bytes, 4096));
             } catch {
@@ -4119,18 +4135,22 @@ function findActiveRemoteMutation(root, projectSlug, kind, inputDigest) {
 }
 function prepareRemoteMutation(input) {
   if (!/^[a-f0-9]{64}$/u.test(input.inputDigest)) throw new NotebookError("INVALID_INPUT", "Invalid remote mutation input digest");
+  if (input.dispatchDigest !== void 0 && !/^[a-f0-9]{64}$/u.test(input.dispatchDigest)) throw new NotebookError("INVALID_INPUT", "Invalid remote mutation dispatch digest");
   if (input.sessionKey && !/^[a-f0-9]{64}$/u.test(input.sessionKey)) throw new NotebookError("INVALID_INPUT", "Invalid remote mutation session key");
   assertBoundedJournalText(input.logicalMarker, "logical marker");
   if (input.bindingId !== void 0) assertBoundedJournalText(input.bindingId, "binding ID");
   return withNotebookStateLock(input.root, input.projectSlug, 1e3, (paths) => {
     const active = listRemoteMutationJournals(input.root, input.projectSlug).find((item) => item.kind === input.kind && item.state !== "committed" && (item.input_digest === input.inputDigest || item.logical_marker === input.logicalMarker));
     if (active) {
-      if (active.input_digest === input.inputDigest || active.state !== "prepared") return active;
+      if (active.state !== "prepared") return active;
+      if (active.input_digest === input.inputDigest && active.dispatch_digest === input.dispatchDigest) return active;
       const requested = (input.now ?? /* @__PURE__ */ new Date()).getTime();
       const previous = Date.parse(active.updated_at);
+      const { dispatch_digest: _dispatchDigest, ...activeWithoutDispatchDigest } = active;
       const updated = {
-        ...active,
+        ...activeWithoutDispatchDigest,
         input_digest: input.inputDigest,
+        ...input.dispatchDigest ? { dispatch_digest: input.dispatchDigest } : {},
         ...input.bindingId ? { binding_id: input.bindingId } : {},
         ...input.sessionKey ? { session_key: input.sessionKey } : {},
         updated_at: new Date(Number.isFinite(previous) && requested <= previous ? previous + 1 : requested).toISOString(),
@@ -4147,6 +4167,7 @@ function prepareRemoteMutation(input) {
       kind: input.kind,
       logical_marker: input.logicalMarker,
       input_digest: input.inputDigest,
+      ...input.dispatchDigest ? { dispatch_digest: input.dispatchDigest } : {},
       ...input.bindingId ? { binding_id: input.bindingId } : {},
       ...input.sessionKey ? { session_key: input.sessionKey } : {},
       state: "prepared",
@@ -4190,14 +4211,83 @@ function transitionRemoteMutation(input) {
     }
     const requested = (input.now ?? /* @__PURE__ */ new Date()).getTime();
     const previous = Date.parse(current.updated_at);
+    const { definitive_http_status: _definitiveHttpStatus, ...currentWithoutRejection } = current;
     const next = {
-      ...current,
+      ...currentWithoutRejection,
       state: input.state,
       updated_at: new Date(Number.isFinite(previous) && requested <= previous ? previous + 1 : requested).toISOString(),
       candidate_ids: candidates,
       diagnostic: input.state === "committed" ? null : input.diagnostic === void 0 ? current.diagnostic : input.diagnostic,
       result_category: remoteMutationResultCategory(input.state, candidates.length),
       next_action: remoteMutationNextAction(input.state, candidates.length)
+    };
+    atomicWriteJson(path, next, paths.root);
+    return next;
+  });
+}
+function markRemoteMutationDefinitivelyRejected(input) {
+  return withNotebookStateLock(input.root, input.journal.project_slug, 1e3, (paths) => {
+    const path = journalPath(input.root, input.journal.project_slug, input.journal.operation_id);
+    const read = readNotebookStateJson(path, paths.root, 65536);
+    const current = read.value === void 0 ? null : parseRemoteMutationJournal(read.value);
+    if (!current) throw new NotebookError("CONFLICT", "Remote mutation journal has an integrity finding");
+    if (current.state !== input.journal.state || current.updated_at !== input.journal.updated_at || current.input_digest !== input.journal.input_digest || current.dispatch_digest !== input.journal.dispatch_digest || current.diagnostic !== input.journal.diagnostic || current.definitive_http_status !== input.journal.definitive_http_status || canonicalJson(current.candidate_ids) !== canonicalJson(input.journal.candidate_ids)) {
+      throw new NotebookError("CONFLICT", "Remote mutation journal changed; stale definitive rejection rejected");
+    }
+    if (current.state !== "possibly-dispatched" || current.candidate_ids.length !== 0) {
+      throw new NotebookError("CONFLICT", "Only an unresolved dispatched mutation can record a definitive HTTP rejection");
+    }
+    const requested = (input.now ?? /* @__PURE__ */ new Date()).getTime();
+    const previous = Date.parse(current.updated_at);
+    const next = {
+      ...current,
+      updated_at: new Date(Number.isFinite(previous) && requested <= previous ? previous + 1 : requested).toISOString(),
+      diagnostic: `Open Notebook definitively rejected HTTP ${input.status}`,
+      definitive_http_status: input.status,
+      result_category: remoteMutationResultCategory(current.state, 0, input.status),
+      next_action: remoteMutationNextAction(current.state, 0, input.status)
+    };
+    atomicWriteJson(path, next, paths.root);
+    return next;
+  });
+}
+function rearmRemoteMutationAfterDefinitiveRejection(input) {
+  if (!/^[a-f0-9]{64}$/u.test(input.inputDigest)) throw new NotebookError("INVALID_INPUT", "Invalid corrected remote mutation input digest");
+  if (!/^[a-f0-9]{64}$/u.test(input.dispatchDigest)) throw new NotebookError("INVALID_INPUT", "Invalid corrected remote mutation dispatch digest");
+  if (input.legacyV114InputDigest !== void 0 && !/^[a-f0-9]{64}$/u.test(input.legacyV114InputDigest)) throw new NotebookError("INVALID_INPUT", "Invalid legacy v1.14 remote mutation input digest");
+  if (input.observedCandidateIds.length !== 0) throw new NotebookError("CONFLICT", "A remote mutation with candidates cannot be rearmed");
+  return withNotebookStateLock(input.root, input.journal.project_slug, 1e3, (paths) => {
+    const path = journalPath(input.root, input.journal.project_slug, input.journal.operation_id);
+    const read = readNotebookStateJson(path, paths.root, 65536);
+    const current = read.value === void 0 ? null : parseRemoteMutationJournal(read.value);
+    if (!current) throw new NotebookError("CONFLICT", "Remote mutation journal has an integrity finding");
+    if (current.state !== input.journal.state || current.updated_at !== input.journal.updated_at || current.input_digest !== input.journal.input_digest || current.dispatch_digest !== input.journal.dispatch_digest || current.diagnostic !== input.journal.diagnostic || current.definitive_http_status !== input.journal.definitive_http_status || canonicalJson(current.candidate_ids) !== canonicalJson(input.journal.candidate_ids)) {
+      throw new NotebookError("CONFLICT", "Remote mutation journal changed; stale corrected-input rearm rejected");
+    }
+    if (current.kind !== "note.create" || current.state !== "possibly-dispatched" || current.candidate_ids.length !== 0) {
+      throw new NotebookError("CONFLICT", "Only a zero-candidate rejected note mutation can be rearmed");
+    }
+    if (current.dispatch_digest === input.dispatchDigest) {
+      throw new NotebookError("CONFLICT", "Definitively rejected note transport input must change before one retry is allowed");
+    }
+    const explicitRejection = current.definitive_http_status === 400 || current.definitive_http_status === 422;
+    const legacyV114Rejection = current.definitive_http_status === void 0 && current.diagnostic === "possibly-dispatched" && current.dispatch_digest === void 0 && input.legacyV114InputDigest !== void 0 && current.input_digest === input.legacyV114InputDigest;
+    if (!explicitRejection && !legacyV114Rejection) {
+      throw new NotebookError("CONFLICT", "Remote note dispatch is ambiguous; corrected input cannot be posted without a definitive rejection");
+    }
+    const requested = (input.now ?? /* @__PURE__ */ new Date()).getTime();
+    const previous = Date.parse(current.updated_at);
+    const { definitive_http_status: _definitiveHttpStatus, ...currentWithoutRejection } = current;
+    const next = {
+      ...currentWithoutRejection,
+      state: "prepared",
+      input_digest: input.inputDigest,
+      dispatch_digest: input.dispatchDigest,
+      updated_at: new Date(Number.isFinite(previous) && requested <= previous ? previous + 1 : requested).toISOString(),
+      candidate_ids: [],
+      diagnostic: legacyV114Rejection ? "corrected v1.14 note_type input rearmed after definitive legacy rejection" : "corrected input rearmed after definitive HTTP rejection",
+      result_category: remoteMutationResultCategory("prepared", 0),
+      next_action: remoteMutationNextAction("prepared", 0)
     };
     atomicWriteJson(path, next, paths.root);
     return next;
@@ -4304,13 +4394,16 @@ async function reconcileManagedNote(input) {
   if (!desiredEnvelope || desiredEnvelope.project_slug !== input.projectSlug || desiredEnvelope.logical_id !== input.logicalId) {
     throw new NotebookError("INVALID_INPUT", "Managed note create requires an exact owned PJangler envelope");
   }
+  const noteType = normalizeOpenNotebookNoteType(input.noteType);
   const digest = input.inputDigest ?? mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content });
+  const dispatchDigest = mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content, note_type: noteType });
   let journal = prepareRemoteMutation({
     root: input.stateRoot,
     projectSlug: input.projectSlug,
     kind: "note.create",
     logicalMarker: input.logicalId,
     inputDigest: digest,
+    dispatchDigest,
     sessionKey: input.sessionKey,
     bindingId: input.notebookId,
     operationId: input.operationId
@@ -4345,11 +4438,20 @@ async function reconcileManagedNote(input) {
     return { note: candidate2, created: false, adopted: true, journal };
   }
   if (journal.state !== "prepared") {
-    throw new NotebookError("CONFLICT", "Note create may have been dispatched; reconcile before another POST", false, { operation_id: journal.operation_id });
+    journal = rearmRemoteMutationAfterDefinitiveRejection({
+      root: input.stateRoot,
+      journal,
+      inputDigest: digest,
+      dispatchDigest,
+      observedCandidateIds: candidates.map((item) => item.id),
+      ...input.noteType === void 0 && input.inputDigest === void 0 ? { legacyV114InputDigest: digest } : {}
+    });
   }
   input.beforeRemote?.();
-  await input.client.createNote(input.notebookId, { title: input.title, content: input.content, note_type: input.noteType }, () => {
+  await input.client.createNote(input.notebookId, { title: input.title, content: input.content, note_type: noteType }, () => {
     journal = transitionRemoteMutation({ root: input.stateRoot, journal, state: "possibly-dispatched", diagnostic: "possibly-dispatched" });
+  }, (status) => {
+    journal = markRemoteMutationDefinitivelyRejected({ root: input.stateRoot, journal, status });
   });
   candidates = await reconcile();
   if (candidates.length > 1) ambiguous("note", candidates.map((item) => item.id));

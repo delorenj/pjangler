@@ -77,8 +77,8 @@ const response = (res, value, status = 200) => { const body = JSON.stringify(val
 const server = http.createServer((req, res) => { appendFileSync(log, String(req.method) + " " + String(req.url) + "\\n");
   if (req.url === "/api/auth/status") return response(res, { auth_enabled: false });
   if (req.url === "/api/config") return response(res, { version: "1.14.0" });
-  if (req.url === "/api/notebooks") return response(res, [{ id: "nb-built", name: "Built CLI Fixture", description: "pjangler.project.v1:built-cli-fixture", archived: false }]);
-  if (req.url?.startsWith("/api/notes?notebook_id=")) return response(res, [{ id: "note-built", title: "Built note", content: "bounded body", note_type: "note", created_at: null, updated_at: "2026-08-19T00:00:00.000Z" }]);
+  if (req.url === "/api/notebooks") return response(res, [{ id: "nb-built", name: "Built CLI Fixture", description: "pjangler.project.v1:built-cli-fixture", archived: false, created: "2026-08-18T00:00:00.000Z", updated: "2026-08-19T00:00:00.000Z" }]);
+  if (req.url?.startsWith("/api/notes?notebook_id=")) return response(res, [{ id: "note-built", title: "Built note", content: "bounded body", note_type: "human", created: null, updated: "2026-08-19T00:00:00.000Z" }]);
   response(res, { error: "not found" }, 404);
 });
 server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));

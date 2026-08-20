@@ -79,7 +79,7 @@ try {
     async createNote(notebookId: string, input: { title: string; content: string; note_type?: string }, latch?: () => void) {
       assert.equal(notebookId, "nb-alpha");
       latch?.();
-      const note = { id: `note-${notes.length + 1}`, title: input.title, content: input.content, note_type: input.note_type ?? "note", created_at: "2026-08-19T12:00:00.000Z", updated_at: "2026-08-19T12:00:00.000Z" };
+      const note = { id: `note-${notes.length + 1}`, title: input.title, content: input.content, note_type: input.note_type ?? "human", created_at: "2026-08-19T12:00:00.000Z", updated_at: "2026-08-19T12:00:00.000Z" };
       notes.push(note);
       if (failAfterFirstDispatch) { failAfterFirstDispatch = false; throw new NotebookError("TIMEOUT", "ambiguous create timeout", true); }
       return { ...note };
@@ -119,7 +119,7 @@ try {
 
   const foreignLogicalId = "a".repeat(64);
   const foreignEnvelope: PjanglerNoteEnvelopeV1 = { schema_version: 1, project_slug: "other", kind: "document", logical_id: foreignLogicalId, source_path: "README.md", source_revision: "a".repeat(40), content_sha256: "b".repeat(64), session_key: "c".repeat(64), captured_at: "2026-08-19T12:00:00.000Z", policy_version: NOTEBOOK_POLICY_VERSION };
-  notes.push({ id: "forged", title: "README.md", content: withNoteEnvelope(foreignEnvelope, "forged"), note_type: "note", created_at: null, updated_at: null });
+  notes.push({ id: "forged", title: "README.md", content: withNoteEnvelope(foreignEnvelope, "forged"), note_type: "human", created_at: null, updated_at: null });
   const desiredEnvelope = { ...foreignEnvelope, project_slug: "alpha" };
   await assert.rejects(() => reconcileManagedNote({ stateRoot: join(workspace, "forged-state"), projectSlug: "alpha", notebookId: "nb-alpha", logicalId: foreignLogicalId, title: "README.md", content: withNoteEnvelope(desiredEnvelope, "owned"), client: fakeClient as never }), (error: unknown) => error instanceof NotebookError && error.code === "CONFLICT");
   assert.equal(forgedUpdates, 0, "a forged/foreign envelope is never overwritten through an existing-note fast path");
