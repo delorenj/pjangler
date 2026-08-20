@@ -543,6 +543,7 @@ export async function runSessionStartHook(module: NotebookModule, payload: Claud
     if (!baseline) {
       const snapshot = captureGitSnapshot(ctx.config.repo_path, ctx.config, deadline);
       baseline = createSessionBaseline(module.stateRoot, {
+        limits: ctx.config.limits,
         session_key: sessionKey,
         project_slug: ctx.config.project_slug,
         client: id.client,

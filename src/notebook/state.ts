@@ -513,7 +513,12 @@ function readBaseline(path: string, maxBytes: number): SessionBaselineV1 | null 
   return read.value === undefined ? null : parseBaseline(read.value);
 }
 
+function baselineReceiptByteCeiling(limits: NotebookLimitsV1): number {
+  return limits.receipt_max_bytes;
+}
+
 export interface BaselineCreateInput {
+  limits: NotebookLimitsV1;
   session_key: string;
   project_slug: string;
   client: string;
@@ -532,7 +537,8 @@ export function createSessionBaseline(root: string, input: BaselineCreateInput):
   assertDigest(input.session_key, "session key");
   const paths = ensureNotebookState(root, input.project_slug);
   const path = join(paths.baselines, `${input.session_key}.json`);
-  const existing = readBaseline(path, 65_536);
+  const maxBytes = baselineReceiptByteCeiling(input.limits);
+  const existing = readBaseline(path, maxBytes);
   if (existing) return { baseline: existing, created: false };
   const baseline: SessionBaselineV1 = {
     schema_version: NOTEBOOK_SCHEMA_VERSION,
@@ -549,8 +555,20 @@ export function createSessionBaseline(root: string, input: BaselineCreateInput):
     complete: input.complete,
     incomplete_reasons: input.incomplete_reasons.slice(0, 20).map((item) => item.slice(0, 128)),
   };
-  if (!exclusiveWrite(path, jsonLine(baseline), paths.root)) {
-    const won = readBaseline(path, 65_536);
+  let text = jsonLine(baseline);
+  if (Buffer.byteLength(text, "utf8") > maxBytes) {
+    baseline.complete = false;
+    baseline.tracked_path_digests = {};
+    baseline.pre_dirty_paths = [];
+    baseline.incomplete_reasons = [...new Set(["baseline-byte-ceiling", ...baseline.incomplete_reasons])].slice(0, 20);
+    text = jsonLine(baseline);
+  }
+  if (Buffer.byteLength(text, "utf8") > maxBytes) {
+    throw new NotebookError("NOT_CONFIGURED", "Notebook receipt_max_bytes is too small for a minimal SessionStart baseline");
+  }
+  if (!parseBaseline(baseline)) throw new NotebookError("INTERNAL_ERROR", "SessionStart baseline failed its own v1 schema validation");
+  if (!exclusiveWrite(path, text, paths.root)) {
+    const won = readBaseline(path, maxBytes);
     if (!won) throw new NotebookError("INTERNAL_ERROR", "Concurrent baseline creation produced unreadable state");
     return { baseline: won, created: false };
   }
@@ -589,7 +607,7 @@ export function readOverviewClaim(root: string, projectSlug: string, sessionKey:
 export function readSessionBaseline(root: string, projectSlug: string, sessionKey: string, limits: NotebookLimitsV1): SessionBaselineV1 | null {
   assertDigest(sessionKey, "session key");
   const paths = ensureNotebookState(root, projectSlug);
-  return readBaseline(join(paths.baselines, `${sessionKey}.json`), limits.receipt_max_bytes);
+  return readBaseline(join(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
 }
 
 function acquireLock(paths: NotebookStatePaths, maxWaitMs: number): () => void {
@@ -721,9 +739,9 @@ function journalReference(value: unknown): { sessionKey?: string; unresolved: bo
 function scanAuxiliaryState(paths: NotebookStatePaths, limits: NotebookLimitsV1): AuxiliaryScan {
   const scan: AuxiliaryScan = { integrity: [], integrityCount: 0, knownBytes: 0, referencedSessions: new Set(), unresolvedJournals: [] };
   const specifications = [
-    { kind: "baselines", dir: paths.baselines, suffix: ".json", parse: parseBaseline, key: (value: SessionBaselineV1) => value.session_key },
-    { kind: "claims", dir: paths.claims, suffix: ".overview", parse: parseClaim, key: (value: OverviewClaimV1) => value.session_key },
-    { kind: "refusals", dir: paths.refusals, suffix: ".json", parse: parseRefusal, key: (value: RetentionRefusalV1) => value.session_key },
+    { kind: "baselines", dir: paths.baselines, suffix: ".json", maxBytes: baselineReceiptByteCeiling(limits), parse: parseBaseline, key: (value: SessionBaselineV1) => value.session_key },
+    { kind: "claims", dir: paths.claims, suffix: ".overview", maxBytes: limits.receipt_max_bytes, parse: parseClaim, key: (value: OverviewClaimV1) => value.session_key },
+    { kind: "refusals", dir: paths.refusals, suffix: ".json", maxBytes: limits.receipt_max_bytes, parse: parseRefusal, key: (value: RetentionRefusalV1) => value.session_key },
   ] as const;
   for (const specification of specifications) {
     if (!existsSync(specification.dir)) continue;
@@ -736,7 +754,7 @@ function scanAuxiliaryState(paths: NotebookStatePaths, limits: NotebookLimitsV1)
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join(specification.dir, entry.name), limits.receipt_max_bytes);
+      const read = safeReadJson(join(specification.dir, entry.name), specification.maxBytes);
       if (read.reason || read.value === undefined) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -855,7 +873,7 @@ function scanBaselines(paths: NotebookStatePaths, nowMs: number, limits: Noteboo
   if (!existsSync(paths.baselines)) return { current, stale };
   for (const entry of readStateDirectory(paths.baselines, paths.root)) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const baseline = readBaseline(join(paths.baselines, entry.name), limits.receipt_max_bytes);
+    const baseline = readBaseline(join(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
     if (!baseline || referenced.has(baseline.session_key)) continue;
     const expires = Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1_000;
     if (nowMs >= expires) stale += 1;
@@ -1027,7 +1045,7 @@ export function admitCaptureReceipt(input: {
     const auxiliaryBefore = scanAuxiliaryState(paths, input.limits);
     const referencedBefore = new Set([...scanBefore.referencedSessions, ...auxiliaryBefore.referencedSessions]);
     const baselinePath = join(paths.baselines, `${input.sessionKey}.json`);
-    let baseline = readBaseline(baselinePath, input.limits.receipt_max_bytes);
+    let baseline = readBaseline(baselinePath, baselineReceiptByteCeiling(input.limits));
     if (baseline) {
       const expired = now.getTime() >= Date.parse(baseline.created_at) + input.limits.receiptless_session_retention_seconds * 1_000;
       if (expired && !referencedBefore.has(input.sessionKey) && scanBefore.integrityCount === 0 && auxiliaryBefore.integrityCount === 0) {
@@ -1351,7 +1369,7 @@ export function pruneNotebookState(root: string, projectSlug: string, limits: No
     for (const entry of readStateDirectory(paths.baselines, paths.root)) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const path = join(paths.baselines, entry.name);
-      const baseline = readBaseline(path, limits.receipt_max_bytes);
+      const baseline = readBaseline(path, baselineReceiptByteCeiling(limits));
       if (!baseline || referenced.has(baseline.session_key)) continue;
       if (now.getTime() < Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1_000) continue;
       unlinkStateFile(path, paths.root);

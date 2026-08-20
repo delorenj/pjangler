@@ -60,6 +60,7 @@ try {
   assert.throws(() => validateNotebookAuth({ mode: "environment", env_var: "OTHER_SAFE_NAME" }), (error: unknown) => error instanceof NotebookError && error.code === "NOT_CONFIGURED");
   assert.equal(resolveNotebookLimits({ note_detail_fetch_concurrency: 2 }).note_detail_fetch_concurrency, 2);
   assert.throws(() => resolveNotebookLimits({ note_detail_fetch_concurrency: DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency + 1 }), (error: unknown) => error instanceof NotebookError && error.code === "NOT_CONFIGURED", "detail hydration fanout may tighten but never exceed the packaged ceiling");
+  assert.equal(DEFAULT_NOTEBOOK_LIMITS.receipt_max_bytes, 131_072, "the shared v1 baseline/receipt ceiling supports ordinary large repositories");
 
   const sessionKey = deriveSessionKey("alpha", "claude-code", "raw-session-id");
   assert.equal(sessionKey, sha256Hex("pjangler-session-v1\0alpha\0claude-code\0raw-session-id"));
@@ -75,6 +76,7 @@ try {
   };
   const start = new Date("2026-08-19T12:00:00.000Z");
   const baseline = (key: string, created = start.toISOString()) => createSessionBaseline(stateRoot, {
+    limits,
     session_key: key,
     project_slug: "alpha",
     client: "claude-code",
@@ -88,6 +90,87 @@ try {
     complete: true,
     incomplete_reasons: [],
   });
+
+  const liveShapeKey = "a".repeat(64);
+  const liveShapeTrackedPathDigests = Object.fromEntries(Array.from({ length: 563 }, (_, index) => {
+    const filler = index === 0 ? 430 : 49;
+    return [`docs/${String(index).padStart(3, "0")}-${"x".repeat(filler)}.md`, "c".repeat(64)];
+  }));
+  const liveShapeInput = {
+    limits: DEFAULT_NOTEBOOK_LIMITS,
+    session_key: liveShapeKey,
+    project_slug: "shape",
+    client: "claude-code",
+    created_at: start.toISOString(),
+    repo_path: repo,
+    git_head: "d".repeat(40),
+    git_status_digest: "e".repeat(64),
+    policy_version: NOTEBOOK_POLICY_VERSION,
+    tracked_path_digests: liveShapeTrackedPathDigests,
+    pre_dirty_paths: [] as string[],
+    complete: true,
+    incomplete_reasons: [] as string[],
+  };
+  const liveShape = createSessionBaseline(stateRoot, liveShapeInput);
+  const liveShapePath = join(ensureNotebookState(stateRoot, "shape").baselines, `${liveShapeKey}.json`);
+  assert.equal(lstatSync(liveShapePath).size, 74_674, "the live 563-path baseline shape is reproduced above the former 65,536-byte ceiling");
+  assert.equal(liveShape.baseline.complete, true);
+  assert.equal(Object.keys(liveShape.baseline.tracked_path_digests).length, 563);
+  const legacyLowLimits = { ...DEFAULT_NOTEBOOK_LIMITS, receipt_max_bytes: 65_536 };
+  assert.equal(readSessionBaseline(stateRoot, "shape", liveShapeKey, legacyLowLimits), null, "a genuinely lower configured ceiling cannot trust an oversize entry");
+  const lowCeilingSummary = captureAdmissionSummary(stateRoot, "shape", legacyLowLimits, start);
+  assert.equal(lowCeilingSummary.unresolved_count, null);
+  assert.deepEqual(lowCeilingSummary.integrity_entries, [{ entry_id: `baselines/${liveShapeKey}.json`, reason: "oversize" }]);
+  const liveShapeBytes = readFileSync(liveShapePath);
+  const raisedCeilingBaseline = readSessionBaseline(stateRoot, "shape", liveShapeKey, DEFAULT_NOTEBOOK_LIMITS);
+  assert.equal(raisedCeilingBaseline?.complete, true, "raising the same versioned ceiling adopts the preserved baseline without migration");
+  assert.equal(Object.keys(raisedCeilingBaseline?.tracked_path_digests ?? {}).length, 563);
+  assert.equal(captureAdmissionSummary(stateRoot, "shape", DEFAULT_NOTEBOOK_LIMITS, start).unmeasurable_entry_count, 0);
+  const adopted = createSessionBaseline(stateRoot, { ...liveShapeInput, git_head: "f".repeat(40), tracked_path_digests: {} });
+  assert.equal(adopted.created, false, "SessionStart adopts the existing valid baseline rather than overwriting its provenance");
+  assert.equal(adopted.baseline.git_head, "d".repeat(40));
+  assert.deepEqual(readFileSync(liveShapePath), liveShapeBytes, "ceiling recovery is byte-preserving");
+  const recoveredAdmission = admitCaptureReceipt({
+    root: stateRoot,
+    projectSlug: "shape",
+    repoPath: repo,
+    sessionKey: liveShapeKey,
+    endRevision: "f".repeat(40),
+    endStatusDigest: "0".repeat(64),
+    limits: DEFAULT_NOTEBOOK_LIMITS,
+    now: new Date(start.getTime() + 1_000),
+  });
+  assert.equal(recoveredAdmission.outcome, "admitted", "SessionEnd admits the preserved baseline after the shared ceiling rises");
+  if (recoveredAdmission.outcome !== "admitted") throw new Error("raised-ceiling admission fixture failed");
+  assert.equal(recoveredAdmission.receipt.baseline_ref, "d".repeat(40));
+  assert.deepEqual(readFileSync(liveShapePath), liveShapeBytes, "admission references rather than rewrites the recovered baseline");
+
+  const boundedKey = deriveSessionKey("bounded-shape", "claude-code", "hostile-oversize");
+  const boundedLimits = { ...DEFAULT_NOTEBOOK_LIMITS, receipt_max_bytes: 4_096 };
+  const bounded = createSessionBaseline(stateRoot, {
+    limits: boundedLimits,
+    session_key: boundedKey,
+    project_slug: "bounded-shape",
+    client: "claude-code",
+    created_at: start.toISOString(),
+    repo_path: repo,
+    git_head: "a".repeat(40),
+    git_status_digest: "b".repeat(64),
+    policy_version: NOTEBOOK_POLICY_VERSION,
+    tracked_path_digests: Object.fromEntries(Array.from({ length: 1_000 }, (_, index) => [`docs/${String(index).padStart(4, "0")}-${"x".repeat(512)}.md`, "c".repeat(64)])),
+    pre_dirty_paths: Array.from({ length: 2_000 }, (_, index) => `dirty/${String(index).padStart(4, "0")}-${"y".repeat(512)}.md`),
+    complete: true,
+    incomplete_reasons: [],
+  });
+  assert.equal(bounded.baseline.complete, false, "an above-ceiling snapshot becomes an explicit incomplete baseline");
+  assert.deepEqual(bounded.baseline.incomplete_reasons, ["baseline-byte-ceiling"]);
+  assert.deepEqual(bounded.baseline.tracked_path_digests, {});
+  assert.deepEqual(bounded.baseline.pre_dirty_paths, []);
+  const boundedPath = join(ensureNotebookState(stateRoot, "bounded-shape").baselines, `${boundedKey}.json`);
+  assert.ok(lstatSync(boundedPath).size <= boundedLimits.receipt_max_bytes, "the writer never emits state its readers must reject");
+  assert.equal(readSessionBaseline(stateRoot, "bounded-shape", boundedKey, boundedLimits)?.complete, false);
+  assert.equal(captureAdmissionSummary(stateRoot, "bounded-shape", boundedLimits, start).unmeasurable_entry_count, 0, "a bounded incomplete baseline is operational state, not state-integrity");
+
   baseline(sessionKey);
   const firstClaim = createOverviewClaim(stateRoot, {
     session_key: sessionKey,
@@ -139,7 +222,7 @@ try {
 
   const casKey = deriveSessionKey("cas", "claude-code", "lease-race");
   const casLimits = { ...limits, unresolved_receipt_max_count: 10, automatic_attempt_limit: 3 };
-  createSessionBaseline(stateRoot, { session_key: casKey, project_slug: "cas", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
+  createSessionBaseline(stateRoot, { limits: casLimits, session_key: casKey, project_slug: "cas", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
   const casAdmission = admitCaptureReceipt({ root: stateRoot, projectSlug: "cas", repoPath: repo, sessionKey: casKey, endRevision: null, endStatusDigest: null, limits: casLimits, now: start });
   assert.equal(casAdmission.outcome, "admitted");
   if (casAdmission.outcome !== "admitted") throw new Error("CAS fixture admission failed");
@@ -154,13 +237,13 @@ try {
   assert.throws(() => authorizeCaptureRetry({ root: stateRoot, projectSlug: "cas", receiptId: exhausted.receipt_id, limits: casLimits }), /cannot be retried/u, "one authorization cannot be raced into a loop");
 
   const lockKey = deriveSessionKey("lock-recovery", "claude-code", "crashed-owner");
-  createSessionBaseline(stateRoot, { session_key: lockKey, project_slug: "lock-recovery", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
+  createSessionBaseline(stateRoot, { limits, session_key: lockKey, project_slug: "lock-recovery", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
   const lockPaths = ensureNotebookState(stateRoot, "lock-recovery");
   writeFileSync(join(lockPaths.locks, "admission.lock"), `${JSON.stringify({ schema_version: 1, token: "11111111-1111-4111-8111-111111111111", pid: 999999, acquired_at: start.toISOString(), expires_at: new Date(start.getTime() - 1).toISOString() })}\n`, { mode: 0o600 });
   assert.equal(admitCaptureReceipt({ root: stateRoot, projectSlug: "lock-recovery", repoPath: repo, sessionKey: lockKey, endRevision: null, endStatusDigest: null, limits, now: start }).outcome, "admitted", "a crash-left expired lock is recovered without permanent blockage");
 
   const journalKey = deriveSessionKey("journal-ref", "claude-code", "kept-baseline");
-  createSessionBaseline(stateRoot, { session_key: journalKey, project_slug: "journal-ref", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
+  createSessionBaseline(stateRoot, { limits, session_key: journalKey, project_slug: "journal-ref", client: "claude-code", created_at: start.toISOString(), repo_path: repo, git_head: "a".repeat(40), git_status_digest: null, policy_version: NOTEBOOK_POLICY_VERSION, tracked_path_digests: {}, pre_dirty_paths: [], complete: true, incomplete_reasons: [] });
   const journalPaths = ensureNotebookState(stateRoot, "journal-ref");
   const operationId = "22222222-2222-4222-8222-222222222222";
   writeFileSync(join(journalPaths.journals, `${operationId}.json`), `${JSON.stringify({ schema_version: 1, operation_id: operationId, project_slug: "journal-ref", kind: "note.create", logical_marker: "capture", input_digest: "f".repeat(64), binding_id: "nb-journal", session_key: journalKey, state: "reconciled", prepared_at: start.toISOString(), updated_at: start.toISOString(), candidate_ids: ["remote-1"], diagnostic: null, result_category: "reconciled-one", next_action: "persist durable binding or note ownership before commit" })}\n`, { mode: 0o600 });

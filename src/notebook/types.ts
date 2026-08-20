@@ -111,6 +111,7 @@ export interface NotebookLimitsV1 {
   receiptless_session_retention_seconds: number;
   unresolved_receipt_max_count: number;
   unresolved_receipt_max_bytes: number;
+  /** Shared serialized ceiling for SessionBaselineV1 and CaptureReceiptV1 state records. */
   receipt_max_bytes: number;
   automatic_attempt_limit: number;
   lease_seconds: number;
@@ -142,7 +143,7 @@ export const DEFAULT_NOTEBOOK_LIMITS: Readonly<NotebookLimitsV1> = Object.freeze
   receiptless_session_retention_seconds: 86_400,
   unresolved_receipt_max_count: 100,
   unresolved_receipt_max_bytes: 8_388_608,
-  receipt_max_bytes: 65_536,
+  receipt_max_bytes: 131_072,
   automatic_attempt_limit: 2,
   lease_seconds: 300,
   integrity_max_entries: 20,

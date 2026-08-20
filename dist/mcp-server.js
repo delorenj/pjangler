@@ -175,7 +175,7 @@ var init_types = __esm({
       receiptless_session_retention_seconds: 86400,
       unresolved_receipt_max_count: 100,
       unresolved_receipt_max_bytes: 8388608,
-      receipt_max_bytes: 65536,
+      receipt_max_bytes: 131072,
       automatic_attempt_limit: 2,
       lease_seconds: 300,
       integrity_max_entries: 20,
@@ -3086,10 +3086,13 @@ function readBaseline(path, maxBytes) {
   const read = safeReadJson(path, maxBytes);
   return read.value === void 0 ? null : parseBaseline(read.value);
 }
+function baselineReceiptByteCeiling(limits) {
+  return limits.receipt_max_bytes;
+}
 function readSessionBaseline(root, projectSlug, sessionKey, limits) {
   assertDigest(sessionKey, "session key");
   const paths = ensureNotebookState(root, projectSlug);
-  return readBaseline(join15(paths.baselines, `${sessionKey}.json`), limits.receipt_max_bytes);
+  return readBaseline(join15(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
 }
 function acquireLock(paths, maxWaitMs) {
   const lock = join15(paths.locks, "admission.lock");
@@ -3191,9 +3194,9 @@ function journalReference(value) {
 function scanAuxiliaryState(paths, limits) {
   const scan = { integrity: [], integrityCount: 0, knownBytes: 0, referencedSessions: /* @__PURE__ */ new Set(), unresolvedJournals: [] };
   const specifications = [
-    { kind: "baselines", dir: paths.baselines, suffix: ".json", parse: parseBaseline, key: (value) => value.session_key },
-    { kind: "claims", dir: paths.claims, suffix: ".overview", parse: parseClaim, key: (value) => value.session_key },
-    { kind: "refusals", dir: paths.refusals, suffix: ".json", parse: parseRefusal, key: (value) => value.session_key }
+    { kind: "baselines", dir: paths.baselines, suffix: ".json", maxBytes: baselineReceiptByteCeiling(limits), parse: parseBaseline, key: (value) => value.session_key },
+    { kind: "claims", dir: paths.claims, suffix: ".overview", maxBytes: limits.receipt_max_bytes, parse: parseClaim, key: (value) => value.session_key },
+    { kind: "refusals", dir: paths.refusals, suffix: ".json", maxBytes: limits.receipt_max_bytes, parse: parseRefusal, key: (value) => value.session_key }
   ];
   for (const specification of specifications) {
     if (!existsSync14(specification.dir)) continue;
@@ -3210,7 +3213,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join15(specification.dir, entry.name), limits.receipt_max_bytes);
+      const read = safeReadJson(join15(specification.dir, entry.name), specification.maxBytes);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3333,7 +3336,7 @@ function scanBaselines(paths, nowMs, limits, referenced) {
   if (!existsSync14(paths.baselines)) return { current, stale };
   for (const entry of readStateDirectory(paths.baselines, paths.root)) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const baseline = readBaseline(join15(paths.baselines, entry.name), limits.receipt_max_bytes);
+    const baseline = readBaseline(join15(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
     if (!baseline || referenced.has(baseline.session_key)) continue;
     const expires = Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3;
     if (nowMs >= expires) stale += 1;
@@ -3592,7 +3595,7 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
     for (const entry of readStateDirectory(paths.baselines, paths.root)) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const path = join15(paths.baselines, entry.name);
-      const baseline = readBaseline(path, limits.receipt_max_bytes);
+      const baseline = readBaseline(path, baselineReceiptByteCeiling(limits));
       if (!baseline || referenced.has(baseline.session_key)) continue;
       if (now.getTime() < Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3) continue;
       unlinkStateFile(path, paths.root);
