@@ -23,5 +23,18 @@
       "grace_hours": 0,
       "auto_review": true
     }
+  },
+  "notebook": {
+    "binding": {
+      "state": "linked",
+      "notebook_name": "pjangler",
+      "notebook_id": "notebook:d056y916vkd0ewwpaf6s",
+      "overview_note_id": "note:chglbzp3okfxyr1iwxkt"
+    },
+    "policy": {
+      "enabled": true,
+      "session_start_enabled": true,
+      "session_capture_enabled": true
+    }
   }
 }
