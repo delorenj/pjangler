@@ -18,6 +18,26 @@ node dist/index.js --help
 pjangler --help
 ```
 
+## Project notebook
+
+`pjangler notebook` manages one companion Open Notebook for a registered
+repository. The binding and stable Overview note IDs live in `.project.json`
+and the project registry; endpoint, authentication mode, defaults, and finite
+capture limits live in the registry's global `notebook` configuration.
+
+```bash
+pjangler notebook status . --json
+pjangler notebook create . --live --json
+pjangler notebook list notes . --json
+pjangler notebook search notes "release evidence" . --json
+pjangler notebook audit . --json
+pjangler notebook migrate . --live --apply --json
+```
+
+True `SessionStart` and `SessionEnd` hooks are projected separately from the
+project-scoped hook masters. Their per-repository policy stays fail-open and
+disabled until explicitly enabled in `.project.json`.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,
