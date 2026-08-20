@@ -48,12 +48,15 @@ try {
     if (url.pathname === "/api/config") return json({ version: "1.14.0", auth_enabled: false });
     if (url.pathname === "/api/auth/status") return json({ auth_enabled: false, provider: null });
     if (url.pathname === "/api/notebooks") return json([{ id: "nb-1", name: "Alpha", description: "pjangler.project.v1:alpha", archived: false, created: "2026-08-18T00:00:00Z", updated: "2026-08-19T00:00:00Z" }]);
-    if (url.pathname === "/api/notes" && init.method === "GET") return json(notes);
+    if (url.pathname === "/api/notes" && init.method === "GET") {
+      return json(notes.map((note) => ({ ...note, content: null })));
+    }
     if (url.pathname === "/api/notes" && init.method === "POST") {
       const body = JSON.parse(String(init.body)) as { notebook_id: string; title: string; content: string; note_type: string };
       assert.equal(body.note_type, "human", "managed domain kinds are not sent as Open Notebook transport note types");
       return json({ id: "note-created", title: body.title, content: body.content, note_type: body.note_type, created: "2026-08-19T00:00:00Z", updated: "2026-08-19T00:00:01Z" }, 201);
     }
+    if (url.pathname === "/api/notes/note-1" && init.method === "GET") return json(notes[0]);
     if (url.pathname === "/api/notes/note-1" && init.method === "PUT") return json({ ...notes[0], title: "Updated" });
     if (url.pathname === "/api/notes/note-1" && init.method === "DELETE") return new Response(null, { status: 204 });
     throw new Error(`unexpected fake request: ${init.method ?? "GET"} ${url}`);
@@ -66,6 +69,7 @@ try {
   assert.equal(listedNotebook.updated_at, "2026-08-19T00:00:00Z", "v1.14 notebook `updated` maps to the domain timestamp");
   const listedNote = (await client.listNotes("nb-1"))[0]!;
   assert.equal(listedNote.id, "note-1", "NoteResponse does not need notebook_id");
+  assert.equal(listedNote.content, "body", "v1.14 null list content is hydrated only through the proven member detail endpoint");
   assert.equal(listedNote.updated_at, "2026-08-19T00:00:00Z", "v1.14 note `updated` maps to the domain timestamp");
   const createdNote = await client.createNote("nb-1", { title: "Created", content: "body" });
   assert.equal(createdNote.note_type, "human");
@@ -76,6 +80,44 @@ try {
   assert.equal(Object.hasOwn(Object.getPrototypeOf(client), "updateNote"), false, "the adapter exposes no unscoped update port");
   assert.equal(Object.hasOwn(Object.getPrototypeOf(client), "deleteNote"), false, "the adapter exposes no unscoped delete port");
   assert.equal(calls.some((call) => call.path.startsWith("/api/search")), false, "public v1 never calls global search");
+
+  let activeDetails = 0;
+  let maxActiveDetails = 0;
+  const fanoutMembers = Array.from({ length: 5 }, (_, index) => ({
+    id: `fanout-${index}`,
+    title: `Fanout ${index}`,
+    content: null,
+    note_type: "human",
+    created: null,
+    updated: "2026-08-19T00:00:00Z",
+  }));
+  const fanoutClient = new OpenNotebookClient(config({ limits: { ...DEFAULT_NOTEBOOK_LIMITS, response_max_bytes: 1_024, overall_timeout_ms: 500, note_detail_fetch_concurrency: 2 } }), { fetch: async (request) => {
+    const url = new URL(String(request));
+    if (url.pathname === "/api/notes") return json(fanoutMembers);
+    activeDetails += 1;
+    maxActiveDetails = Math.max(maxActiveDetails, activeDetails);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    activeDetails -= 1;
+    const id = decodeURIComponent(url.pathname.slice("/api/notes/".length));
+    const member = fanoutMembers.find((item) => item.id === id)!;
+    return json({ ...member, content: `body ${id}` });
+  } });
+  assert.equal((await fanoutClient.listNotes("nb-1")).length, fanoutMembers.length);
+  assert.equal(maxActiveDetails, 2, "detail hydration obeys the configured finite fanout ceiling");
+
+  const malformedDetail = new OpenNotebookClient(config(), { fetch: async (request) => {
+    const url = new URL(String(request));
+    if (url.pathname === "/api/notes") return json([{ id: "member-1", title: "Member", content: null, note_type: "human", created: null, updated: null }]);
+    return json({ id: "different-id", title: "Member", content: "body", note_type: "human", created: null, updated: null });
+  } });
+  await assert.rejects(() => malformedDetail.listNotes("nb-1"), assertCode("REMOTE_PROTOCOL_ERROR"));
+
+  const missingCanonicalContent = new OpenNotebookClient(config(), { fetch: async (request) => {
+    const url = new URL(String(request));
+    const note = { id: "member-1", title: "Member", content: null, note_type: "human", created: null, updated: null };
+    return url.pathname === "/api/notes" ? json([note]) : json(note);
+  } });
+  await assert.rejects(() => missingCanonicalContent.listNotes("nb-1"), assertCode("REMOTE_PROTOCOL_ERROR"));
 
   let mutationCalls = 0;
   const missing = new OpenNotebookClient(config(), { fetch: async (request, init = {}) => {
@@ -214,6 +256,11 @@ try {
     if (url.pathname === "/api/notebooks" && init.method === "GET") return json([{ id: "nb-live", name: "Recover", description: "pjangler.project.v1:recover", archived: false, created: "2026-08-19T19:59:00Z", updated: "2026-08-19T19:59:00Z" }]);
     if (url.pathname === "/api/notebooks" && init.method === "POST") { legacyNotebookPosts += 1; throw new Error("must not duplicate the marker-owned notebook"); }
     if (url.pathname === "/api/notes" && init.method === "GET") { legacyEvents.push("list"); return json(legacyNotes); }
+    if (url.pathname.startsWith("/api/notes/") && init.method === "GET") {
+      legacyEvents.push("detail");
+      const id = decodeURIComponent(url.pathname.slice("/api/notes/".length));
+      return json(legacyNotes.find((note) => note.id === id));
+    }
     if (url.pathname === "/api/notes" && init.method === "POST") {
       legacyEvents.push("post");
       const body = JSON.parse(String(init.body)) as { title: string; content: string; note_type: string };
@@ -231,7 +278,7 @@ try {
   assert.equal(legacyNotebookPosts, 0, "stable-marker recovery never duplicates the existing notebook");
   const legacyRecovered = await reconcileManagedNote({ stateRoot: legacyState, projectSlug: "recover", notebookId: "nb-live", logicalId: recoveryLogicalId, title: "Project Overview", content: recoveryContent, client: legacyClient });
   assert.equal(legacyRecovered.note.id, "overview-live");
-  assert.deepEqual(legacyEvents, ["list", "post", "list"], "the legacy v1.14 correction proves zero candidates before its single corrected POST");
+  assert.deepEqual(legacyEvents, ["list", "post", "list", "detail"], "the legacy v1.14 correction proves zero candidates before its single corrected POST, then hydrates the proven member");
   assert.equal(legacyRecovered.journal.operation_id, legacyJournal.operation_id, "legacy recovery reuses the authoritative journal");
   assert.equal(legacyRecovered.journal.input_digest, legacyDigest, "the durable operation identity remains stable across transport correction");
   assert.equal(legacyRecovered.journal.dispatch_digest, mutationInputDigest({ kind: "note.create", notebook_id: "nb-live", logical_id: recoveryLogicalId, title: "Project Overview", content: recoveryContent, note_type: "human" }));
@@ -254,6 +301,11 @@ try {
   const rejectedClient = new OpenNotebookClient(config({ project_slug: "recover", binding: { state: "linked", notebook_id: "nb-rejected", notebook_name: "Recover" } }), { fetch: async (request, init = {}) => {
     const url = new URL(String(request));
     if (url.pathname === "/api/notes" && init.method === "GET") { rejectedEvents.push("list"); return json(rejectedNotes); }
+    if (url.pathname.startsWith("/api/notes/") && init.method === "GET") {
+      rejectedEvents.push("detail");
+      const id = decodeURIComponent(url.pathname.slice("/api/notes/".length));
+      return json(rejectedNotes.find((note) => note.id === id));
+    }
     if (url.pathname === "/api/notes" && init.method === "POST") {
       rejectedEvents.push("post");
       rejectedPosts += 1;
@@ -274,7 +326,54 @@ try {
   const corrected = await reconcileManagedNote({ stateRoot: rejectedState, projectSlug: "recover", notebookId: "nb-rejected", logicalId: recoveryLogicalId, title: "Corrected title", content: recoveryContent, client: rejectedClient });
   assert.equal(corrected.note.id, "corrected-note");
   assert.equal(corrected.journal.operation_id, rejectedJournal.operation_id, "corrected input reuses the authoritative rejected journal");
-  assert.deepEqual(rejectedEvents, ["list", "post", "list", "list", "post", "list"], "every dispatch attempt is preceded by a fresh zero-candidate reconciliation");
+  assert.deepEqual(rejectedEvents, ["list", "post", "list", "list", "post", "list", "detail"], "every dispatch attempt is preceded by a fresh zero-candidate reconciliation and success hydrates the proven member");
+
+  const persistedState = join(workspace, "persisted-null-summary-state");
+  const persistedLogicalId = "overview:v1:recover";
+  const persistedContent = withNoteEnvelope({
+    schema_version: 1,
+    project_slug: "recover",
+    kind: "overview",
+    logical_id: persistedLogicalId,
+    overview_descriptor: {
+      schema_version: 1,
+      project_slug: "recover",
+      project_name: "Recover",
+      purpose: "Recovered project",
+      references: [],
+      compiler_policy_version: NOTEBOOK_POLICY_VERSION,
+    },
+    policy_version: NOTEBOOK_POLICY_VERSION,
+  }, "persisted overview");
+  const persistedDigest = mutationInputDigest({ kind: "note.create", notebook_id: "nb-live", logical_id: persistedLogicalId, title: "Project Overview", content: persistedContent });
+  const persistedDispatchDigest = mutationInputDigest({ kind: "note.create", notebook_id: "nb-live", logical_id: persistedLogicalId, title: "Project Overview", content: persistedContent, note_type: "human" });
+  let persistedJournal = prepareRemoteMutation({ root: persistedState, projectSlug: "recover", kind: "note.create", logicalMarker: persistedLogicalId, inputDigest: persistedDigest, dispatchDigest: persistedDispatchDigest, bindingId: "nb-live" });
+  persistedJournal = transitionRemoteMutation({ root: persistedState, journal: persistedJournal, state: "possibly-dispatched", diagnostic: "possibly-dispatched" });
+  const persistedEvents: string[] = [];
+  let persistedPosts = 0;
+  const persistedClient = new OpenNotebookClient(config({ project_slug: "recover", binding: { state: "linked", notebook_id: "nb-live", notebook_name: "Recover" } }), { fetch: async (request, init = {}) => {
+    const url = new URL(String(request));
+    if (url.pathname === "/api/notes" && init.method === "GET") {
+      persistedEvents.push("scoped-list");
+      return json([{ id: "note:live-overview", title: "Project Overview", content: null, note_type: "human", created: "2026-08-19T20:02:00.000Z", updated: "2026-08-19T20:02:00.000Z", command_id: null }]);
+    }
+    if (decodeURIComponent(url.pathname) === "/api/notes/note:live-overview" && init.method === "GET") {
+      persistedEvents.push("member-detail");
+      return json({ id: "note:live-overview", title: "Project Overview", content: persistedContent, note_type: "human", created: "2026-08-19T20:02:00.000Z", updated: "2026-08-19T20:02:00.000Z", command_id: null });
+    }
+    if (url.pathname === "/api/notes" && init.method === "POST") {
+      persistedPosts += 1;
+      throw new Error("an already-persisted marker note must never be posted again");
+    }
+    throw new Error(`unexpected persisted recovery request: ${init.method ?? "GET"} ${url.pathname}`);
+  } });
+  const persistedRecovered = await reconcileManagedNote({ stateRoot: persistedState, projectSlug: "recover", notebookId: "nb-live", logicalId: persistedLogicalId, title: "Project Overview", content: persistedContent, client: persistedClient });
+  assert.equal(persistedRecovered.note.id, "note:live-overview");
+  assert.equal(persistedRecovered.adopted, true);
+  assert.equal(persistedRecovered.journal.operation_id, persistedJournal.operation_id, "the persisted note completes the authoritative journal instead of reserving another operation");
+  assert.equal(persistedRecovered.journal.state, "reconciled");
+  assert.equal(persistedPosts, 0, "membership plus full-envelope hydration adopts the existing note with zero POSTs");
+  assert.deepEqual(persistedEvents, ["scoped-list", "member-detail"], "detail hydration occurs only after notebook-scoped membership proof");
 
   notebooks.push({ id: "duplicate-marker", name: "Same name allowed", description: "pjangler.project.v1:alpha" });
   await assert.rejects(() => reconcileProjectNotebook({ stateRoot: join(workspace, "other-state"), projectSlug: "alpha", name: "Alpha", client: reconcileClient }), assertCode("CONFLICT"));

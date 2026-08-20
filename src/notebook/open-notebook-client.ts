@@ -26,6 +26,7 @@ type RequestOptions = {
   definitivelyRejected?: (status: 400 | 422) => void;
   skipAuthProbe?: boolean;
   suppressAuthorization?: boolean;
+  deadlineMonotonicMs?: number;
 };
 
 export type OpenNotebookTransportNoteType = "human" | "ai";
@@ -66,10 +67,12 @@ function parseNotebook(value: unknown): OpenNotebookNotebookV1 {
   };
 }
 
-function parseNote(value: unknown, noteMaxBytes: number): OpenNotebookNoteV1 {
+type ScopedNoteListItemV1 = Omit<OpenNotebookNoteV1, "content"> & { content: string | null };
+
+function parseNoteRecord(value: unknown, noteMaxBytes: number, allowNullContent: boolean): ScopedNoteListItemV1 {
   if (!isRecord(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid note");
-  const content = boundedString(value.content, "note content", noteMaxBytes);
-  if (Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
+  const content = value.content === null && allowNullContent ? null : boundedString(value.content, "note content", noteMaxBytes);
+  if (content !== null && Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
   const noteType = boundedString(value.note_type, "note type", 128);
   if (noteType !== "human" && noteType !== "ai") throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an unsupported note type");
   return {
@@ -80,6 +83,16 @@ function parseNote(value: unknown, noteMaxBytes: number): OpenNotebookNoteV1 {
     created_at: responseTimestamp(value, "created", "created_at", "note") ?? null,
     updated_at: responseTimestamp(value, "updated", "updated_at", "note") ?? null,
   };
+}
+
+function parseScopedNoteListItem(value: unknown, noteMaxBytes: number): ScopedNoteListItemV1 {
+  return parseNoteRecord(value, noteMaxBytes, true);
+}
+
+function parseNote(value: unknown, noteMaxBytes: number): OpenNotebookNoteV1 {
+  const note = parseNoteRecord(value, noteMaxBytes, false);
+  if (note.content === null) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned invalid note content");
+  return note as OpenNotebookNoteV1;
 }
 
 function errorForStatus(status: number, message: string): NotebookError {
@@ -168,9 +181,30 @@ export class OpenNotebookClient {
   }
 
   async listNotes(notebookId: string): Promise<OpenNotebookNoteV1[]> {
-    const value = await this.request(`/api/notes?notebook_id=${encodeURIComponent(notebookId)}`);
+    const operationDeadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      performance.now() + this.config.limits.overall_timeout_ms,
+    );
+    const value = await this.request(`/api/notes?notebook_id=${encodeURIComponent(notebookId)}`, { deadlineMonotonicMs: operationDeadline });
     if (!Array.isArray(value) || value.length > this.config.limits.list_max_items) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list is invalid or incomplete under configured limits");
-    return value.map((item) => parseNote(item, this.config.limits.note_max_bytes));
+    const members = value.map((item) => parseScopedNoteListItem(item, this.config.limits.note_max_bytes));
+    if (new Set(members.map((item) => item.id)).size !== members.length) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list contains duplicate IDs");
+    const notes = new Array<OpenNotebookNoteV1>(members.length);
+    let nextIndex = 0;
+    const hydrate = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const member = members[index];
+        if (!member) return;
+        const detail = parseNote(await this.request(`/api/notes/${encodeURIComponent(member.id)}`, { deadlineMonotonicMs: operationDeadline }), this.config.limits.note_max_bytes);
+        if (detail.id !== member.id) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note detail ID does not match the proven notebook member");
+        notes[index] = detail;
+      }
+    };
+    const workerCount = Math.min(members.length, this.config.limits.note_detail_fetch_concurrency);
+    await Promise.all(Array.from({ length: workerCount }, () => hydrate()));
+    return notes;
   }
 
   async createNote(notebookId: string, input: { title: string; content: string; note_type?: string }, possiblyDispatched?: () => void, definitivelyRejected?: (status: 400 | 422) => void): Promise<OpenNotebookNoteV1> {
@@ -227,9 +261,13 @@ export class OpenNotebookClient {
     if (!options.suppressAuthorization && this.config.auth.mode === "environment" && this.authEnabled !== false) {
       headers.Authorization = `Bearer ${runtimeNotebookCredential(this.config, this.env)}`;
     }
-    const remaining = this.deadlineMonotonicMs === undefined
+    const deadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      options.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+    );
+    const remaining = deadline === Number.POSITIVE_INFINITY
       ? this.config.limits.overall_timeout_ms
-      : Math.floor(this.deadlineMonotonicMs - performance.now());
+      : Math.floor(deadline - performance.now());
     if (remaining <= 0) throw new NotebookError("TIMEOUT", "Open Notebook request timed out", true);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(this.config.limits.overall_timeout_ms, remaining)));

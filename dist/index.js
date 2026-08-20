@@ -191,6 +191,7 @@ var init_types = __esm({
       note_max_bytes: 1048576,
       source_file_max_bytes: 524288,
       list_max_items: 1e3,
+      note_detail_fetch_concurrency: 8,
       excerpt_max_chars: 320,
       diagnostic_max_chars: 512,
       overall_timeout_ms: 5e3,
@@ -963,6 +964,7 @@ function validateGlobalNotebookConfig(value) {
   if (limits.schema_version !== 1) throw new Error("Project registry notebook.limits.schema_version must be 1");
   if (limits.receipt_max_bytes > limits.unresolved_receipt_max_bytes) throw new Error("Project registry notebook receipt_max_bytes may not exceed unresolved_receipt_max_bytes");
   if (limits.hook_payload_max_bytes > DEFAULT_NOTEBOOK_LIMITS.hook_payload_max_bytes) throw new Error("Project registry notebook hook_payload_max_bytes exceeds the packaged ceiling");
+  if (limits.note_detail_fetch_concurrency > DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency) throw new Error("Project registry notebook note_detail_fetch_concurrency exceeds the packaged ceiling");
   if (limits.lease_seconds * 1e3 <= limits.overall_timeout_ms) throw new Error("Project registry notebook lease_seconds must exceed one request timeout");
   if (isRecord(value.defaults) && value.defaults.overview_max_chars !== void 0 && Number(value.defaults.overview_max_chars) > limits.note_max_bytes) throw new Error("Project registry notebook overview_max_chars exceeds note_max_bytes");
   if (value.summarizer !== void 0) {
@@ -1962,6 +1964,9 @@ function resolveNotebookLimits(overrides = {}) {
   }
   if (result2.hook_payload_max_bytes > DEFAULT_NOTEBOOK_LIMITS.hook_payload_max_bytes) {
     throw new NotebookError("NOT_CONFIGURED", "hook_payload_max_bytes may tighten but not exceed the packaged absolute ceiling");
+  }
+  if (result2.note_detail_fetch_concurrency > DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency) {
+    throw new NotebookError("NOT_CONFIGURED", "note_detail_fetch_concurrency may tighten but not exceed the packaged fanout ceiling");
   }
   if (result2.lease_seconds * 1e3 <= result2.overall_timeout_ms) {
     throw new NotebookError("NOT_CONFIGURED", "lease_seconds must exceed one bounded remote request timeout so workers can renew without overlap");
@@ -3983,10 +3988,10 @@ function parseNotebook(value) {
     updated_at: responseTimestamp(value, "updated", "updated_at", "notebook")
   };
 }
-function parseNote(value, noteMaxBytes) {
+function parseNoteRecord(value, noteMaxBytes, allowNullContent) {
   if (!isRecord3(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid note");
-  const content = boundedString2(value.content, "note content", noteMaxBytes);
-  if (Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
+  const content = value.content === null && allowNullContent ? null : boundedString2(value.content, "note content", noteMaxBytes);
+  if (content !== null && Buffer.byteLength(content, "utf8") > noteMaxBytes) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note content exceeds the configured ceiling");
   const noteType = boundedString2(value.note_type, "note type", 128);
   if (noteType !== "human" && noteType !== "ai") throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an unsupported note type");
   return {
@@ -3997,6 +4002,14 @@ function parseNote(value, noteMaxBytes) {
     created_at: responseTimestamp(value, "created", "created_at", "note") ?? null,
     updated_at: responseTimestamp(value, "updated", "updated_at", "note") ?? null
   };
+}
+function parseScopedNoteListItem(value, noteMaxBytes) {
+  return parseNoteRecord(value, noteMaxBytes, true);
+}
+function parseNote(value, noteMaxBytes) {
+  const note2 = parseNoteRecord(value, noteMaxBytes, false);
+  if (note2.content === null) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned invalid note content");
+  return note2;
 }
 function errorForStatus(status, message) {
   if (status === 400 || status === 422) return new NotebookError("INVALID_INPUT", message, false, { http_status: status, definitive_rejection: true });
@@ -4085,9 +4098,30 @@ var init_open_notebook_client = __esm({
         return parseNotebook(await this.request(`/api/notebooks/${encodeURIComponent(id)}`, { method: "PUT", body: input }));
       }
       async listNotes(notebookId) {
-        const value = await this.request(`/api/notes?notebook_id=${encodeURIComponent(notebookId)}`);
+        const operationDeadline = Math.min(
+          this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+          performance.now() + this.config.limits.overall_timeout_ms
+        );
+        const value = await this.request(`/api/notes?notebook_id=${encodeURIComponent(notebookId)}`, { deadlineMonotonicMs: operationDeadline });
         if (!Array.isArray(value) || value.length > this.config.limits.list_max_items) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list is invalid or incomplete under configured limits");
-        return value.map((item) => parseNote(item, this.config.limits.note_max_bytes));
+        const members = value.map((item) => parseScopedNoteListItem(item, this.config.limits.note_max_bytes));
+        if (new Set(members.map((item) => item.id)).size !== members.length) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list contains duplicate IDs");
+        const notes = new Array(members.length);
+        let nextIndex = 0;
+        const hydrate = async () => {
+          while (true) {
+            const index = nextIndex;
+            nextIndex += 1;
+            const member = members[index];
+            if (!member) return;
+            const detail = parseNote(await this.request(`/api/notes/${encodeURIComponent(member.id)}`, { deadlineMonotonicMs: operationDeadline }), this.config.limits.note_max_bytes);
+            if (detail.id !== member.id) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook note detail ID does not match the proven notebook member");
+            notes[index] = detail;
+          }
+        };
+        const workerCount = Math.min(members.length, this.config.limits.note_detail_fetch_concurrency);
+        await Promise.all(Array.from({ length: workerCount }, () => hydrate()));
+        return notes;
       }
       async createNote(notebookId, input, possiblyDispatched, definitivelyRejected) {
         if (Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Note content exceeds the configured ceiling");
@@ -4139,7 +4173,11 @@ var init_open_notebook_client = __esm({
         if (!options.suppressAuthorization && this.config.auth.mode === "environment" && this.authEnabled !== false) {
           headers.Authorization = `Bearer ${runtimeNotebookCredential(this.config, this.env)}`;
         }
-        const remaining = this.deadlineMonotonicMs === void 0 ? this.config.limits.overall_timeout_ms : Math.floor(this.deadlineMonotonicMs - performance.now());
+        const deadline = Math.min(
+          this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+          options.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY
+        );
+        const remaining = deadline === Number.POSITIVE_INFINITY ? this.config.limits.overall_timeout_ms : Math.floor(deadline - performance.now());
         if (remaining <= 0) throw new NotebookError("TIMEOUT", "Open Notebook request timed out", true);
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(this.config.limits.overall_timeout_ms, remaining)));

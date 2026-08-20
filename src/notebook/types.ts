@@ -100,6 +100,7 @@ export interface NotebookLimitsV1 {
   note_max_bytes: number;
   source_file_max_bytes: number;
   list_max_items: number;
+  note_detail_fetch_concurrency: number;
   excerpt_max_chars: number;
   diagnostic_max_chars: number;
   overall_timeout_ms: number;
@@ -130,6 +131,7 @@ export const DEFAULT_NOTEBOOK_LIMITS: Readonly<NotebookLimitsV1> = Object.freeze
   note_max_bytes: 1_048_576,
   source_file_max_bytes: 524_288,
   list_max_items: 1_000,
+  note_detail_fetch_concurrency: 8,
   excerpt_max_chars: 320,
   diagnostic_max_chars: 512,
   overall_timeout_ms: 5_000,

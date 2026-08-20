@@ -162,6 +162,9 @@ export function resolveNotebookLimits(overrides: Partial<NotebookLimitsV1> = {})
   if (result.hook_payload_max_bytes > DEFAULT_NOTEBOOK_LIMITS.hook_payload_max_bytes) {
     throw new NotebookError("NOT_CONFIGURED", "hook_payload_max_bytes may tighten but not exceed the packaged absolute ceiling");
   }
+  if (result.note_detail_fetch_concurrency > DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency) {
+    throw new NotebookError("NOT_CONFIGURED", "note_detail_fetch_concurrency may tighten but not exceed the packaged fanout ceiling");
+  }
   if (result.lease_seconds * 1_000 <= result.overall_timeout_ms) {
     throw new NotebookError("NOT_CONFIGURED", "lease_seconds must exceed one bounded remote request timeout so workers can renew without overlap");
   }

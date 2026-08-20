@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyProjectRegistry, saveProjectRegistry, type ProjectRecord } from "../src/project/index";
-import { resolveEffectiveNotebookConfig, validateNotebookAuth, validateNotebookBaseUrl } from "../src/notebook/config";
+import { resolveEffectiveNotebookConfig, resolveNotebookLimits, validateNotebookAuth, validateNotebookBaseUrl } from "../src/notebook/config";
 import { sessionCaptureLogicalId, sha256Hex } from "../src/notebook/notes";
 import {
   admitCaptureReceipt,
@@ -58,6 +58,8 @@ try {
   }
   assert.deepEqual(validateNotebookAuth({ mode: "environment", env_var: "OPEN_NOTEBOOK_PASSWORD" }), { mode: "environment", env_var: "OPEN_NOTEBOOK_PASSWORD" });
   assert.throws(() => validateNotebookAuth({ mode: "environment", env_var: "OTHER_SAFE_NAME" }), (error: unknown) => error instanceof NotebookError && error.code === "NOT_CONFIGURED");
+  assert.equal(resolveNotebookLimits({ note_detail_fetch_concurrency: 2 }).note_detail_fetch_concurrency, 2);
+  assert.throws(() => resolveNotebookLimits({ note_detail_fetch_concurrency: DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency + 1 }), (error: unknown) => error instanceof NotebookError && error.code === "NOT_CONFIGURED", "detail hydration fanout may tighten but never exceed the packaged ceiling");
 
   const sessionKey = deriveSessionKey("alpha", "claude-code", "raw-session-id");
   assert.equal(sessionKey, sha256Hex("pjangler-session-v1\0alpha\0claude-code\0raw-session-id"));
