@@ -150,9 +150,16 @@ function remoteAudit(ctx: LifecycleContext): LifecycleAuditFinding {
     return finding("notebook.remote-notebook", "Remote notebook", "warn", "Unresolved notebook-create journal requires marker reconciliation and durable Registry ownership", journalDetails(journals), true);
   }
   const observed = observation(ctx);
-  if (!observed || observed.remote_check === "skip") return finding("notebook.remote-notebook", "Remote notebook", "skip", "Remote notebook was not observed; no hidden network request was made");
-  if (observed.remote_check === "pass" && observed.health === "healthy" && observed.notebook) return finding("notebook.remote-notebook", "Remote notebook", "pass", "Stable notebook ID, marker, name, and archive state were observed exactly");
-  return finding("notebook.remote-notebook", "Remote notebook", "fail", observed.error?.message ?? "Remote notebook is missing, ambiguous, or unavailable", [], true);
+  if (!observed || observed.notebook_check.status === "skip") return finding("notebook.remote-notebook", "Remote notebook", "skip", "Remote notebook was not observed; no hidden network request was made");
+  if (observed.notebook_check.status === "pass" && observed.notebook) return finding("notebook.remote-notebook", "Remote notebook", "pass", "Stable notebook ID, marker, name, and archive state were observed exactly");
+  return finding(
+    "notebook.remote-notebook",
+    "Remote notebook",
+    "fail",
+    observed.error?.message ?? "Remote notebook is missing, ambiguous, unavailable, or metadata-drifted",
+    observed.notebook_check.drift.map((item) => `${item.path}: ${item.reason}`),
+    true,
+  );
 }
 
 function overviewAudit(ctx: LifecycleContext): LifecycleAuditFinding {
@@ -168,7 +175,7 @@ function overviewAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   }
   const observed = observation(ctx);
   if (!observed || observed.remote_check === "skip") return finding("notebook.overview-note", "Overview note", "skip", "Overview was not observed; no hidden network request was made");
-  if (observed.remote_check === "pass" && observed.overview?.present && observed.overview.member && observed.overview.envelope_owned && observed.overview.drift.length === 0) return finding("notebook.overview-note", "Overview note", "pass", "Bound Overview membership, project ownership, logical ID, and descriptor freshness were proved");
+  if (observed.overview?.present && observed.overview.member && observed.overview.envelope_owned && observed.overview.drift.length === 0) return finding("notebook.overview-note", "Overview note", "pass", "Bound Overview membership, project ownership, logical ID, and descriptor freshness were proved");
   return finding("notebook.overview-note", "Overview note", "fail", "Overview is missing, foreign, or drifted", observed.overview?.drift.map((item) => `${item.path}: ${item.reason}`) ?? [], true);
 }
 

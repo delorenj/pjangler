@@ -46,12 +46,12 @@ try {
   writeFileSync(join(repo, ".project.json"), `${JSON.stringify({
     project_name: "Alpha", project_description: "CLI fixture", project_slug: "alpha", repo_path: repo,
     ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", board_id: "board", state: "linked" }, agents: {},
-    notebook: { binding, policy: { enabled: true, session_start_enabled: false, session_capture_enabled: false } },
+    notebook: { binding, policy: { enabled: true, session_start_enabled: false, session_capture_enabled: false, overview_references: [".project.json"] } },
   }, null, 2)}\n`);
 
   const overviewEnvelope = {
     schema_version: 1 as const, project_slug: "alpha", kind: "overview" as const, logical_id: "overview:v1:alpha", policy_version: NOTEBOOK_POLICY_VERSION,
-    overview_descriptor: { schema_version: 1 as const, project_slug: "alpha", project_name: "Alpha", purpose: "CLI fixture", references: [], compiler_policy_version: NOTEBOOK_POLICY_VERSION },
+    overview_descriptor: { schema_version: 1 as const, project_slug: "alpha", project_name: "Alpha", purpose: "CLI fixture", references: [{ path: ".project.json", status: "missing" as const, reason: "not-tracked" }], compiler_policy_version: NOTEBOOK_POLICY_VERSION },
   };
   const userEnvelope = { schema_version: 1 as const, project_slug: "alpha", kind: "user-note" as const, logical_id: "user-note:v1:11111111-1111-4111-8111-111111111111", policy_version: NOTEBOOK_POLICY_VERSION };
   const foreignEnvelope = { ...userEnvelope, project_slug: "beta", logical_id: "user-note:v1:22222222-2222-4222-8222-222222222222" };
@@ -66,8 +66,19 @@ try {
   ];
   let updateCalls = 0;
   let deleteCalls = 0;
+  let notebookListFailure = false;
+  let noteListFailure = false;
+  let notebooks = [{ id: "nb-alpha", name: "Alpha", description: "pjangler.project.v1:alpha", archived: false }];
   const fakeClient = {
-    async listNotes(notebookId: string) { assert.equal(notebookId, "nb-alpha"); return notes.map((item) => ({ ...item })); },
+    async listNotebooks() {
+      if (notebookListFailure) throw new NotebookError("SERVICE_UNAVAILABLE", "bounded fixture failure", true);
+      return notebooks.map((item) => ({ ...item }));
+    },
+    async listNotes(notebookId: string) {
+      assert.equal(notebookId, "nb-alpha");
+      if (noteListFailure) throw new NotebookError("SERVICE_UNAVAILABLE", "bounded Overview fixture failure", true);
+      return notes.map((item) => ({ ...item }));
+    },
     async createNote(_notebookId: string, input: { title: string; content: string; note_type?: string }, beforeDispatch?: () => void) {
       beforeDispatch?.();
       const created = note(`created-${notes.length}`, input.title, input.content, "2026-08-19T05:00:00.000Z");
@@ -92,6 +103,53 @@ try {
   assert.equal(clientConstructions, 0, "--local-only status never constructs the remote adapter");
   const statusJson = renderNotebookJson(successEnvelope("notebook.status", localStatus.config, localStatus.data, localStatus.health));
   assert.equal(JSON.parse(statusJson).schema_version, 1);
+
+  const exactOverviewContent = notes[0]!.content;
+  notes[0]!.content = withNoteEnvelope({
+    ...overviewEnvelope,
+    overview_descriptor: {
+      ...overviewEnvelope.overview_descriptor,
+      references: [{ path: ".project.json", status: "missing", reason: "captured-before-reference-change" }],
+    },
+  }, "Overview");
+  const driftedOverviewAudit = await module.audit(repo, false);
+  assert.equal(driftedOverviewAudit.health, "drifted", "aggregate health remains drifted while the Overview descriptor is stale");
+  assert.equal(driftedOverviewAudit.data.remote_check, "fail", "aggregate remote_check remains failed until Overview drift is repaired");
+  const remoteNotebookRule = driftedOverviewAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook");
+  const overviewRule = driftedOverviewAudit.data.rules.find((rule) => rule.id === "notebook.overview-note");
+  assert.equal(remoteNotebookRule?.status, "pass", "an exact bound notebook passes independently of Overview drift");
+  assert.equal(overviewRule?.status, "fail", "the stale Overview fails only its owning audit rule");
+  assert.deepEqual(overviewRule?.details, [".project.json: reference-changed"]);
+  notes[0]!.content = exactOverviewContent;
+
+  notebooks = [...notebooks, { id: "nb-duplicate", name: "Alpha duplicate", description: "pjangler.project.v1:alpha", archived: false }];
+  const ambiguousNotebookAudit = await module.audit(repo, false);
+  assert.equal(ambiguousNotebookAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.status, "fail", "duplicate stable markers remain a remote-notebook failure");
+  assert.deepEqual(ambiguousNotebookAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.details, ["notebook.marker: ambiguous:2"]);
+  assert.equal(ambiguousNotebookAudit.data.rules.find((rule) => rule.id === "notebook.overview-note")?.status, "pass", "an exact bound Overview is independently reported even while notebook ownership is ambiguous");
+
+  notebooks = [{ id: "nb-alpha", name: "Renamed elsewhere", description: "pjangler.project.v1:alpha", archived: true }];
+  const metadataDriftAudit = await module.audit(repo, false);
+  assert.deepEqual(metadataDriftAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.details, ["notebook.name: mismatch", "notebook.archived: archived"], "name/archive drift remains a remote-notebook failure");
+
+  notebooks = [];
+  const missingNotebookAudit = await module.audit(repo, false);
+  assert.equal(missingNotebookAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.status, "fail", "a missing bound notebook remains failed");
+  assert.deepEqual(missingNotebookAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.details, ["notebook: bound-id-not-found", "notebook.marker: missing"]);
+
+  notebookListFailure = true;
+  const unavailableNotebookAudit = await module.audit(repo, false);
+  assert.equal(unavailableNotebookAudit.health, "unavailable");
+  assert.deepEqual(unavailableNotebookAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.details, ["remote: unavailable:SERVICE_UNAVAILABLE"]);
+  notebookListFailure = false;
+  notebooks = [{ id: "nb-alpha", name: "Alpha", description: "pjangler.project.v1:alpha", archived: false }];
+
+  noteListFailure = true;
+  const unavailableOverviewAudit = await module.audit(repo, false);
+  assert.equal(unavailableOverviewAudit.health, "unavailable");
+  assert.equal(unavailableOverviewAudit.data.rules.find((rule) => rule.id === "notebook.remote-notebook")?.status, "pass", "a scoped-note outage cannot erase already-proved notebook metadata");
+  assert.equal(unavailableOverviewAudit.data.rules.find((rule) => rule.id === "notebook.overview-note")?.status, "fail");
+  noteListFailure = false;
 
   const listed = await module.listNotes(repo, 20);
   assert.deepEqual(listed.data.items.map((item) => item.id), ["overview-alpha", "user-alpha", "foreign", "document", "invalid-time-a", "invalid-time-b"], "list order is updated_at descending then id ascending, with invalid/null timestamps stable at the end");

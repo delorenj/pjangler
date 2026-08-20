@@ -294,7 +294,7 @@ projects:
     notebook.observeExternal = async () => {
       events.push("notebook-observe-healthy");
       if (failAfterNotebook) throw new Error("injected post-notebook tail failure");
-      return { schema_version: 1, fetched_at: new Date().toISOString(), project_slug: "alpha", binding_used: effective(repo, "linked").binding, remote_check: "pass", health: "healthy", auth_mode: "none", base_url_configured: true, notebook: { id: "nb-alpha", name: "Alpha", description: "pjangler.project.v1:alpha" }, scoped_notes: [], overview: { present: true, member: true, drift: [] }, error: null, skill_installed: true, hooks_projected: true };
+      return { schema_version: 1, fetched_at: new Date().toISOString(), project_slug: "alpha", binding_used: effective(repo, "linked").binding, remote_check: "pass", health: "healthy", auth_mode: "none", base_url_configured: true, notebook_check: { status: "pass", drift: [] }, notebook: { id: "nb-alpha", name: "Alpha", description: "pjangler.project.v1:alpha" }, scoped_notes: [], overview: { present: true, member: true, envelope_owned: true, drift: [] }, error: null, skill_installed: true, hooks_projected: true };
     };
     const project = new ProjectRecipe(runtime);
     Object.defineProperty(project, "checks", { value: [] });

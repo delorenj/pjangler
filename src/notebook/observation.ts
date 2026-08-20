@@ -22,6 +22,10 @@ export interface NotebookObservationV1 {
   health: NotebookHealth;
   auth_mode: EffectiveNotebookConfigV1["auth"]["mode"];
   base_url_configured: boolean;
+  notebook_check: {
+    status: "pass" | "fail" | "skip";
+    drift: Array<{ path: string; reason: string }>;
+  };
   notebook: OpenNotebookNotebookV1 | null;
   scoped_notes: Array<Pick<OpenNotebookNoteV1, "id" | "title" | "note_type" | "created_at" | "updated_at"> & { envelope_logical_id: string | null }>;
   overview: { present: boolean; member: boolean; envelope_owned: boolean; drift: Array<{ path: string; reason: string }> } | null;
@@ -63,21 +67,38 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
       ...base,
       remote_check: "skip",
       health: localOnly ? null : "unconfigured",
+      notebook_check: { status: "skip", drift: [] },
       notebook: null,
       scoped_notes: [],
       overview: null,
       error: null,
     };
   }
+  let notebookCheck: NotebookObservationV1["notebook_check"] | null = null;
+  let observedNotebook: OpenNotebookNotebookV1 | null = null;
   try {
     const client = module.clientForConfig(local.config);
     const notebooks = await client.listNotebooks();
     const id = local.config.binding.notebook_id;
     const notebook = id ? notebooks.find((item) => item.id === id) ?? null : null;
+    const marker = projectNotebookMarker(local.config.project_slug);
+    const markerCandidates = notebooks.filter((item) => item.description?.split(/\r?\n/u)[0] === marker);
+    const notebookDrift: Array<{ path: string; reason: string }> = [];
+    if (!id) notebookDrift.push({ path: "binding.notebook_id", reason: "missing" });
+    if (!notebook) notebookDrift.push({ path: "notebook", reason: "bound-id-not-found" });
+    if (markerCandidates.length === 0) notebookDrift.push({ path: "notebook.marker", reason: "missing" });
+    else if (markerCandidates.length > 1) notebookDrift.push({ path: "notebook.marker", reason: `ambiguous:${markerCandidates.length}` });
+    if (notebook && notebook.description?.split(/\r?\n/u)[0] !== marker) notebookDrift.push({ path: "notebook.marker", reason: "bound-notebook-mismatch" });
+    if (notebook && notebook.name !== notebookDisplayName(local.resolved)) notebookDrift.push({ path: "notebook.name", reason: "mismatch" });
+    if (notebook?.archived === true) notebookDrift.push({ path: "notebook.archived", reason: "archived" });
+    notebookCheck = {
+      status: notebookDrift.length === 0 ? "pass" : "fail",
+      drift: notebookDrift,
+    };
+    observedNotebook = notebook;
     if (!notebook) {
-      return { ...base, remote_check: "fail", health: local.config.binding.state === "planned" ? "blocked" : "drifted", notebook: null, scoped_notes: [], overview: null, error: null };
+      return { ...base, remote_check: "fail", health: local.config.binding.state === "planned" ? "blocked" : "drifted", notebook_check: notebookCheck, notebook: null, scoped_notes: [], overview: null, error: null };
     }
-    const markerMatches = notebook.description?.split(/\r?\n/u)[0] === projectNotebookMarker(local.config.project_slug);
     const notes = await client.listNotes(notebook.id);
     const overviewId = local.config.binding.overview_note_id;
     const overviewNote = overviewId ? notes.find((item) => item.id === overviewId) : undefined;
@@ -92,12 +113,12 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
         drift: parsed?.envelope.kind === "overview" ? overviewDescriptorDrift(parsed.envelope.overview_descriptor, current) : [{ path: "overview", reason: "invalid-envelope" }],
       };
     }
-    const metadataMatches = notebook.archived !== true && notebook.name === notebookDisplayName(local.resolved);
-    const healthy = markerMatches && metadataMatches && Boolean(overview?.present) && Boolean(overview?.envelope_owned) && overview!.drift.length === 0;
+    const healthy = notebookCheck.status === "pass" && Boolean(overview?.present) && Boolean(overview?.envelope_owned) && overview!.drift.length === 0;
     return {
       ...base,
       remote_check: healthy ? "pass" : "fail",
       health: healthy ? "healthy" : "drifted",
+      notebook_check: notebookCheck,
       notebook,
       scoped_notes: notes.map((note) => ({
         id: note.id,
@@ -116,7 +137,8 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
       ...base,
       remote_check: "fail",
       health: "unavailable",
-      notebook: null,
+      notebook_check: notebookCheck ?? { status: "fail", drift: [{ path: "remote", reason: `unavailable:${normalized.code}` }] },
+      notebook: observedNotebook,
       scoped_notes: [],
       overview: null,
       error: { code: normalized.code, retryable: normalized.retryable, message: normalized.message.slice(0, 512) },

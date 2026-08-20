@@ -12113,9 +12113,16 @@ function remoteAudit(ctx) {
     return finding("notebook.remote-notebook", "Remote notebook", "warn", "Unresolved notebook-create journal requires marker reconciliation and durable Registry ownership", journalDetails(journals), true);
   }
   const observed = observation(ctx);
-  if (!observed || observed.remote_check === "skip") return finding("notebook.remote-notebook", "Remote notebook", "skip", "Remote notebook was not observed; no hidden network request was made");
-  if (observed.remote_check === "pass" && observed.health === "healthy" && observed.notebook) return finding("notebook.remote-notebook", "Remote notebook", "pass", "Stable notebook ID, marker, name, and archive state were observed exactly");
-  return finding("notebook.remote-notebook", "Remote notebook", "fail", observed.error?.message ?? "Remote notebook is missing, ambiguous, or unavailable", [], true);
+  if (!observed || observed.notebook_check.status === "skip") return finding("notebook.remote-notebook", "Remote notebook", "skip", "Remote notebook was not observed; no hidden network request was made");
+  if (observed.notebook_check.status === "pass" && observed.notebook) return finding("notebook.remote-notebook", "Remote notebook", "pass", "Stable notebook ID, marker, name, and archive state were observed exactly");
+  return finding(
+    "notebook.remote-notebook",
+    "Remote notebook",
+    "fail",
+    observed.error?.message ?? "Remote notebook is missing, ambiguous, unavailable, or metadata-drifted",
+    observed.notebook_check.drift.map((item) => `${item.path}: ${item.reason}`),
+    true
+  );
 }
 function overviewAudit(ctx) {
   if (!enabled(ctx)) return finding("notebook.overview-note", "Overview note", "skip", "Project Notebook is not declared for this repository");
@@ -12139,7 +12146,7 @@ function overviewAudit(ctx) {
   }
   const observed = observation(ctx);
   if (!observed || observed.remote_check === "skip") return finding("notebook.overview-note", "Overview note", "skip", "Overview was not observed; no hidden network request was made");
-  if (observed.remote_check === "pass" && observed.overview?.present && observed.overview.member && observed.overview.envelope_owned && observed.overview.drift.length === 0) return finding("notebook.overview-note", "Overview note", "pass", "Bound Overview membership, project ownership, logical ID, and descriptor freshness were proved");
+  if (observed.overview?.present && observed.overview.member && observed.overview.envelope_owned && observed.overview.drift.length === 0) return finding("notebook.overview-note", "Overview note", "pass", "Bound Overview membership, project ownership, logical ID, and descriptor freshness were proved");
   return finding("notebook.overview-note", "Overview note", "fail", "Overview is missing, foreign, or drifted", observed.overview?.drift.map((item) => `${item.path}: ${item.reason}`) ?? [], true);
 }
 function skillAudit(ctx) {
@@ -12785,21 +12792,38 @@ async function prepareNotebookObservationResolved(module, resolved, config, loca
       ...base,
       remote_check: "skip",
       health: localOnly ? null : "unconfigured",
+      notebook_check: { status: "skip", drift: [] },
       notebook: null,
       scoped_notes: [],
       overview: null,
       error: null
     };
   }
+  let notebookCheck = null;
+  let observedNotebook = null;
   try {
     const client = module.clientForConfig(local.config);
     const notebooks = await client.listNotebooks();
     const id = local.config.binding.notebook_id;
     const notebook = id ? notebooks.find((item) => item.id === id) ?? null : null;
+    const marker = projectNotebookMarker(local.config.project_slug);
+    const markerCandidates = notebooks.filter((item) => item.description?.split(/\r?\n/u)[0] === marker);
+    const notebookDrift = [];
+    if (!id) notebookDrift.push({ path: "binding.notebook_id", reason: "missing" });
+    if (!notebook) notebookDrift.push({ path: "notebook", reason: "bound-id-not-found" });
+    if (markerCandidates.length === 0) notebookDrift.push({ path: "notebook.marker", reason: "missing" });
+    else if (markerCandidates.length > 1) notebookDrift.push({ path: "notebook.marker", reason: `ambiguous:${markerCandidates.length}` });
+    if (notebook && notebook.description?.split(/\r?\n/u)[0] !== marker) notebookDrift.push({ path: "notebook.marker", reason: "bound-notebook-mismatch" });
+    if (notebook && notebook.name !== notebookDisplayName(local.resolved)) notebookDrift.push({ path: "notebook.name", reason: "mismatch" });
+    if (notebook?.archived === true) notebookDrift.push({ path: "notebook.archived", reason: "archived" });
+    notebookCheck = {
+      status: notebookDrift.length === 0 ? "pass" : "fail",
+      drift: notebookDrift
+    };
+    observedNotebook = notebook;
     if (!notebook) {
-      return { ...base, remote_check: "fail", health: local.config.binding.state === "planned" ? "blocked" : "drifted", notebook: null, scoped_notes: [], overview: null, error: null };
+      return { ...base, remote_check: "fail", health: local.config.binding.state === "planned" ? "blocked" : "drifted", notebook_check: notebookCheck, notebook: null, scoped_notes: [], overview: null, error: null };
     }
-    const markerMatches = notebook.description?.split(/\r?\n/u)[0] === projectNotebookMarker(local.config.project_slug);
     const notes = await client.listNotes(notebook.id);
     const overviewId = local.config.binding.overview_note_id;
     const overviewNote = overviewId ? notes.find((item) => item.id === overviewId) : void 0;
@@ -12814,12 +12838,12 @@ async function prepareNotebookObservationResolved(module, resolved, config, loca
         drift: parsed?.envelope.kind === "overview" ? overviewDescriptorDrift(parsed.envelope.overview_descriptor, current) : [{ path: "overview", reason: "invalid-envelope" }]
       };
     }
-    const metadataMatches = notebook.archived !== true && notebook.name === notebookDisplayName(local.resolved);
-    const healthy = markerMatches && metadataMatches && Boolean(overview?.present) && Boolean(overview?.envelope_owned) && overview.drift.length === 0;
+    const healthy = notebookCheck.status === "pass" && Boolean(overview?.present) && Boolean(overview?.envelope_owned) && overview.drift.length === 0;
     return {
       ...base,
       remote_check: healthy ? "pass" : "fail",
       health: healthy ? "healthy" : "drifted",
+      notebook_check: notebookCheck,
       notebook,
       scoped_notes: notes.map((note2) => ({
         id: note2.id,
@@ -12838,7 +12862,8 @@ async function prepareNotebookObservationResolved(module, resolved, config, loca
       ...base,
       remote_check: "fail",
       health: "unavailable",
-      notebook: null,
+      notebook_check: notebookCheck ?? { status: "fail", drift: [{ path: "remote", reason: `unavailable:${normalized.code}` }] },
+      notebook: observedNotebook,
       scoped_notes: [],
       overview: null,
       error: { code: normalized.code, retryable: normalized.retryable, message: normalized.message.slice(0, 512) }
