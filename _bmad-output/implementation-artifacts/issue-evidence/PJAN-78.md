@@ -3,7 +3,7 @@
 ## Issue
 
 - Ticket: PJAN-78
-- Plane state: In Progress
+- Plane state: Completed
 - Worker: Codex
 - Trigger: Drumjangler Vite OOM caused by a repo-root Toad skill being linked back inside the Toad repository.
 
@@ -32,7 +32,33 @@
 - PJangler test chain passed lock parity, package-lock parity, submodule contract, tracked-secret gate, release/security/BMAD transaction/parity/fanout suites through the PJAN-57 dogfood fixture.
 - Full PJangler suite baseline gap: current `mise` rejects the unrelated PJAN-57 fixture's quoted `[[hooks.enter]]` TOML before later suites run.
 - `git diff --check`: passed in CommonProject.
+- PJangler pins the guard on published `main` at `ff29bfc`; Drumjangler installs
+  the byte-identical generated script at `fddcc86`.
+- Toad was removed from the 33GOD component registry and submodule graph at
+  `8a04200`; its self-projection was removed from the recovery repository at
+  `dd66ae6` and its Skillex catalog projections at `23eeccf`.
+- A target-string sweep across active code, CLI, Hermes, HeyMa, and user skill
+  roots removed 64 runtime-only projections and then reported zero remaining
+  links into the retired Toad checkout.
+- The live Drumjangler Vite process remained HTTP 200 after more than 44 minutes;
+  the final 60-second sample showed bounded RSS rather than the former rapid
+  climb to OOM. TypeScript and the production Vite build also passed.
+
+## Ledger Update
+
+- Bloodbank evidence event: `88da80ff-f59c-4fce-ae78-3c8710b2139b`.
+- Bloodbank close-gate event: `621c041b-d518-466d-8f9f-f58d8e6e5f66`.
+- Ledger updated: yes
+
+## Known Gaps
+
+- The full PJangler chain still stops at the unrelated existing PJAN-57 fixture
+  because the installed `mise` rejects that fixture's quoted
+  `[[hooks.enter]]` TOML. All fanout, security, parity, typecheck, build, and
+  focused topology checks complete before that baseline failure.
 
 ## Close Recommendation
 
-- Ready after the PJangler submodule-pin commit is pushed and the live Toad loop sweep verifies zero remaining filesystem cycles.
+- Close recommendation: ready
+- Rationale: the source guard, consumer pin, live projection sweep, and real
+  runtime proof are complete; no Toad link remains in the audited active roots.
