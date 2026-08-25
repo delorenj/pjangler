@@ -1,12 +1,12 @@
 [mcp_servers.pjangler]
 command = "mise"
 args = [
-    "x",
-    "--",
-    "node",
-    "/home/delorenj/code/pjangler/dist/mcp-server.js",
-    "-s",
-    "user",
+  "x",
+  "--",
+  "node",
+  "/home/delorenj/code/33GOD/pjangler/dist/mcp-server.js",
+  "-s",
+  "user",
 ]
 
 [mcp_servers.plane]
@@ -22,3 +22,10 @@ args = [
 PLANE_API_KEY = "op://DeLoSecrets/Plane/Main/AutomaticAI API Token"
 PLANE_WORKSPACE_SLUG = "33god"
 PLANE_BASE_URL = "https://plane.delo.sh"
+
+[mcp_servers.codegraph]
+command = "codegraph"
+args = ["serve", "--mcp"]
+
+[mcp_servers.vox]
+url = "https://vox.delo.sh/mcp"
