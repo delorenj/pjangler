@@ -28,4 +28,4 @@ command = "codegraph"
 args = ["serve", "--mcp"]
 
 [mcp_servers.vox]
-url = "https://vox.delo.sh/mcp"
+url = "https://vox.delo.sh/mcp/"
