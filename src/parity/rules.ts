@@ -129,7 +129,18 @@ export interface RecipeOwnedCheck {
 // emitted as an array of `[[hooks.enter]]` tables purely for readability and
 // stable diffs — mise 2026.7.5 executes the `enter = [ ... ]` array-of-strings
 // form correctly too, so migrating a repo off it is cosmetic, not a fix.
-const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
+// PJAN-82: every managed script is handed config_root EXPLICITLY as its
+// SUBJECT, not just as the path it is loaded from.
+//
+// A mise enter hook runs with cwd set to the directory the operator cd'd into,
+// and that is true for a PARENT config's hook too — measured on mise 2026.8.10.
+// `mise run <task>` does run at config_root, which is why reading the subject
+// from cwd looked correct for years: only the enter-hook path was wrong. The
+// consequence on this machine was that entering 33GOD/pjangler ran 33GOD's copy
+// of provision-packs.py and sync-skills.py against pjangler — force-rewriting
+// pjangler/.agents/skills.json and planting dangling links in seven sibling
+// repos. config_root locates the file; the argument locates the subject.
+const LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'";
 // PJAN-24/PJAN-57: mise owns only a simple, quoted script invocation. The
 // managed script owns mktemp reservation, path quoting, cleanup traps, and the
 // successful-inject-before-atomic-mv contract without mise interpolating shell
@@ -184,11 +195,11 @@ function taskHeaderPattern(name: string): RegExp {
   return new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]$`);
 }
 const PROVISION_PACKS_SCRIPT =
-  `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}'`;
+  `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}' --root '{{config_root}}'`;
 const LEGACY_PROVISION_BMAD_SKILLS_SCRIPT =
   `python3 '{{config_root}}/${LEGACY_PROVISION_SCRIPT_REL}'`;
 const SYNC_SKILLS_SCRIPT =
-  `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project`;
+  `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project --root '{{config_root}}'`;
 // PACKS-CONTRACT section 7: the old schemas host 404s. It is accepted on read
 // (so an un-migrated repo still audits) but always rewritten by migrate/init.
 const SKILLS_SCHEMA_URL = "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json";
@@ -256,7 +267,7 @@ task = "${SKILLS_SYNC_TASK}"
 
 ${taskHeader(LINK_AGENTFILES_TASK)}
 description = "Symlink all agent files to AGENTS.md"
-run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+run = ${JSON.stringify(LINK_AGENTFILES_SCRIPT)}
 
 ${taskHeader(SKILLS_SYNC_TASK)}
 description = "Sync skills from manifest to local CLI dirs"
@@ -2190,8 +2201,18 @@ function isMiseCoreHookEntry(value: string): boolean {
     || trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT
     || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)
     || /provision-(?:packs|bmad-skills)\.py/.test(trimmed)
-    || /link-(?:project-skills-to-clis|agentfiles)\.sh'?\s*$/.test(trimmed)
-    || /unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed);
+    // PJAN-82: tolerate a trailing argument list.
+    //
+    // These patterns decide which existing hook records this owner REPLACES.
+    // They were anchored to end-of-string right after the script filename, so
+    // the moment the canonical form gained an explicit `'{{config_root}}'`
+    // subject argument the owner stopped recognizing its OWN output: every
+    // `pj migrate mise.config-root` found nothing it owned, prepended the
+    // canonical block again, and left the previous copy in place as a foreign
+    // record. Three runs produced three link-agentfiles enter hooks while
+    // `pj audit` reported "mise AGENTS-linking parity verified".
+    || /link-(?:project-skills-to-clis|agentfiles)\.sh'?(?:\s+\S.*)?$/.test(trimmed)
+    || /unlink-project-skills-from-clis\.sh'?(?:\s+\S.*)?$/.test(trimmed);
 }
 
 function reconcileHookOwner(

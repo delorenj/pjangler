@@ -143,6 +143,22 @@ export class NotebookRecipe extends Recipe<NotebookRecipeInput> {
     if (!plan.apply || ctx.dryRun || !notebookPlan.config.policy.enabled || notebookPlan.config.binding.state === "disabled") {
       return { recipeId: this.metadata.id, ok: true, dryRun: Boolean(ctx.dryRun), changedFiles: [], logs: ["notebook: local skill/hooks skipped"], errors: [], phases: [{ id: "notebook.local", status: "skipped", changedFiles: [], message: "Notebook is disabled or this is a plan-only invocation" }] };
     }
+    // PJAN-82: do not mutate the operator's GLOBAL agent configuration on behalf
+    // of a notebook that cannot do anything.
+    //
+    // remote_effect is "none" exactly when no endpoint is configured, and the
+    // adjacent phases said so out loud:
+    //   notebook.plan  skipped | no safe global endpoint configured
+    //   notebook.local changed | Canonical Project Notebook skill and hooks verified
+    // The guard only consulted policy/binding, and the default policy is
+    // enabled, so every `pj init` on this machine installed a global skill link
+    // and rewrote ~/.claude/settings.json for a feature it had just declared
+    // inert — which is what made a global-state defect reachable from 100% of
+    // invocations. `pj notebook migrate --apply` still projects it on request.
+    if (notebookPlan.remote_effect === "none") {
+      const message = `Notebook has no configured endpoint (${notebookPlan.reason}); global skill and hook projection deferred to \`pj notebook migrate --apply\``;
+      return { recipeId: this.metadata.id, ok: true, dryRun: false, changedFiles: [], logs: [`notebook: ${message}`], errors: [], phases: [{ id: "notebook.local", status: "skipped", changedFiles: [], message }] };
+    }
     try {
       const env = integrationEnvironment(this.module, ctx);
       ctx.notebookStateRoot = notebookStateRoot(env);

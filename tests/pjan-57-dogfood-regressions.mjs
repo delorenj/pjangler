@@ -137,6 +137,45 @@ run = "echo untouched"
     assert.equal(readFileSync(join(repo, "mise.toml"), "utf8"), first, "TOML migration must be byte-idempotent");
   }
 
+  // PJAN-82: a migration must recognize its OWN output.
+  //
+  // The record-preservation fixture above has no link-agentfiles hook, so the
+  // byte-idempotence assertion never exercised that owner. Its ownership
+  // predicate was anchored to end-of-string right after the script filename, so
+  // when the canonical form gained an explicit '{{config_root}}' subject
+  // argument the owner stopped matching what it had just written: each run
+  // found nothing it owned, prepended the canonical block again, and left the
+  // previous copy behind. Three runs, three enter hooks, and `pj audit` said
+  // "parity verified" throughout.
+  {
+    const repo = makeEnvRepo("toml-managed-hook-idempotence", "# no secrets\n");
+    writeFileSync(join(repo, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+
+[[hooks.enter]]
+script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+
+[tasks.keepme]
+run = "echo untouched"
+`);
+    const hookCount = (text) => (text.match(/link-agentfiles\.sh/g) ?? []).length;
+    const bytes = [];
+    for (let pass = 0; pass < 3; pass += 1) {
+      const migrated = jsonCli(["migrate", "mise.config-root", repo, "--json"]);
+      assert.equal(migrated.payload.ok, true, JSON.stringify(migrated.payload));
+      bytes.push(readFileSync(join(repo, "mise.toml"), "utf8"));
+    }
+    assert.equal(bytes[1], bytes[0], "the second mise.config-root migration must be a byte no-op");
+    assert.equal(bytes[2], bytes[1], "the third mise.config-root migration must be a byte no-op");
+    // Twice: once in the [[hooks.enter]] record, once in the managed task's run.
+    assert.equal(hookCount(bytes[0]), 2, `exactly one managed hook + one task reference: ${bytes[0]}`);
+    assert.match(bytes[0], /link-agentfiles\.sh' '\{\{config_root\}\}'/, "the managed hook hands the script its subject root");
+    assert.match(bytes[0], /sync-skills\.py' --scope project --root '\{\{config_root\}\}'/, "the skills hook hands the script its subject root");
+    assert.match(bytes[0], /\[tasks\.keepme\]\nrun = "echo untouched"/, "a foreign task survives");
+  }
+
   // PJAN-82: the mise-parses-cleanly assertion needs its own fixture.
   //
   // It used to run against the record-preservation fixture above, whose foreign

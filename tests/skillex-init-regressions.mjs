@@ -128,11 +128,11 @@ function assertProjectContract(projectDir, homeDir) {
 
   mkdirSync(join(projectDir, ".codex"), { recursive: true });
   const projectEnv = { HOME: homeDir };
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py"), "--root", projectDir], {
     cwd: projectDir,
     env: projectEnv,
   });
-  run("python3", [join(projectDir, ".mise", "scripts", "sync-skills.py"), "--scope", "project"], {
+  run("python3", [join(projectDir, ".mise", "scripts", "sync-skills.py"), "--scope", "project", "--root", projectDir], {
     cwd: projectDir,
     env: projectEnv,
   });
@@ -166,13 +166,13 @@ function assertProjectContract(projectDir, homeDir) {
   const brokenLink = join(skillsDir, "pjtest-agent-pm");
   unlinkSync(brokenLink);
   symlinkSync(join(tmp, "missing-pjtest-agent-pm"), brokenLink);
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py"), "--root", projectDir], {
     cwd: projectDir,
     env: projectEnv,
   });
   assert.equal(resolve(dirname(brokenLink), readlinkSync(brokenLink)), join(bmadPack, "pjtest-agent-pm"), "broken pack links must self-heal");
   const beforeIdempotent = readFileSync(join(projectDir, ".agents", "skills.json"), "utf8");
-  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
+  run("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py"), "--root", projectDir], {
     cwd: projectDir,
     env: projectEnv,
   });
@@ -200,7 +200,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
       skills: [{ name, source: pathToFileURL(join(bmadPack, "pjtest-agent-pm")).href }, ...originalManifest.skills],
     };
     writeFileSync(manifestPath, `${JSON.stringify(malicious, null, 2)}\n`);
-    runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+    runExpectFailure("python3", [syncScript, "--scope", "project", "--root", projectDir], { cwd: projectDir, env });
     assert.equal(readFileSync(cliSentinel, "utf8"), "do-not-delete\n", `malicious name ${name} must not touch outside sentinel`);
   }
   writeFileSync(
@@ -208,7 +208,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
     `${JSON.stringify({ ...originalManifest, skills: [{ name: "remote-file", source: "file://attacker.example/tmp/skill" }] }, null, 2)}\n`
   );
   assert.match(
-    runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env }),
+    runExpectFailure("python3", [syncScript, "--scope", "project", "--root", projectDir], { cwd: projectDir, env }),
     /Non-local file URI authority/
   );
   assert.equal(readFileSync(cliSentinel, "utf8"), "do-not-delete\n");
@@ -221,7 +221,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
     skills: [{ name: "encoded-custom", source: pathToFileURL(encodedSource).href }, ...originalManifest.skills],
   };
   writeFileSync(manifestPath, `${JSON.stringify(encodedManifest, null, 2)}\n`);
-  run("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+  run("python3", [syncScript, "--scope", "project", "--root", projectDir], { cwd: projectDir, env });
   assert.equal(
     resolve(dirname(join(projectDir, ".codex", "skills", "encoded-custom")), readlinkSync(join(projectDir, ".codex", "skills", "encoded-custom"))),
     encodedSource,
@@ -234,7 +234,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
   writeFileSync(join(outsideCli, "sentinel"), "outside-cli-safe\n");
   rmSync(join(projectDir, ".codex"), { recursive: true, force: true });
   symlinkSync(outsideCli, join(projectDir, ".codex"), "dir");
-  runExpectFailure("python3", [syncScript, "--scope", "project"], { cwd: projectDir, env });
+  runExpectFailure("python3", [syncScript, "--scope", "project", "--root", projectDir], { cwd: projectDir, env });
   assert.equal(readFileSync(join(outsideCli, "sentinel"), "utf8"), "outside-cli-safe\n");
   assert.equal(existsSync(join(outsideCli, "skills")), false, "symlinked CLI parent must not receive fanout");
 
@@ -243,7 +243,7 @@ function assertAdversarialBoundaries(projectDir, homeDir) {
   writeFileSync(join(outsideSkills, "sentinel"), "outside-skills-safe\n");
   rmSync(join(projectDir, ".agents", "skills"), { recursive: true, force: true });
   symlinkSync(outsideSkills, join(projectDir, ".agents", "skills"), "dir");
-  runExpectFailure("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py")], {
+  runExpectFailure("python3", [join(projectDir, ".mise", "scripts", "provision-packs.py"), "--root", projectDir], {
     cwd: projectDir,
     env,
   });
@@ -289,7 +289,7 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
   copyFileSync(join(bmadPack, "SHA256SUMS"), join(partialPack, "SHA256SUMS"));
   copyFileSync(join(bmadPack, "pack.toml"), join(partialPack, "pack.toml"));
   cpSync(join(bmadPack, "pjtest-agent-pm"), join(partialPack, "pjtest-agent-pm"), { recursive: true });
-  const partialFailure = runExpectFailure("python3", [provisioner], {
+  const partialFailure = runExpectFailure("python3", [provisioner, "--root", projectDir], {
     cwd: projectDir,
     env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: partialPack },
   });
@@ -305,7 +305,7 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
   const tamperedPack = join(tmp, "tampered-bmad-pack");
   cpSync(bmadPack, tamperedPack, { recursive: true });
   writeFileSync(join(tamperedPack, "pjtest-agent-pm", "SKILL.md"), "tampered\n");
-  const tamperedFailure = runExpectFailure("python3", [provisioner], {
+  const tamperedFailure = runExpectFailure("python3", [provisioner, "--root", projectDir], {
     cwd: projectDir,
     env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: tamperedPack },
   });
@@ -314,7 +314,7 @@ function assertProvisionerRejectsUntrustedPacks(projectDir, homeDir) {
 
   copyFileSync(join(bmadPack, "pjtest-agent-pm", "SKILL.md"), join(tamperedPack, "pjtest-agent-pm", "SKILL.md"));
   mkdirSync(join(tamperedPack, "pjtest-agent-pm", "unauthenticated-empty"));
-  const topologyFailure = runExpectFailure("python3", [provisioner], {
+  const topologyFailure = runExpectFailure("python3", [provisioner, "--root", projectDir], {
     cwd: projectDir,
     env: { HOME: homeDir, PJ_PACK_ROOT_PJTEST: tamperedPack },
   });

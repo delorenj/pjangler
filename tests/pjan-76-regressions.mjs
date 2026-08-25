@@ -174,10 +174,18 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   }
 
   // ...and the generated projections stay out of git.
+  //
+  // PJAN-82: no trailing slash. A trailing slash matches a directory only, and
+  // the projection is not always a directory: bmad-method writes a real one
+  // into .claude/.codex/.opencode while sync-skills.py projects
+  // .gemini/.copilot/.kimi-code as a SYMLINK to ../.agents/skills. So
+  // `.gemini/skills/` never matched, the `!.gemini/**` un-ignore won, and
+  // `git add -A` staged three generated projections as tracked symlinks.
   const gitignore = readFileSync(join(target, ".gitignore"), "utf8").split(/\r?\n/);
-  assert.ok(gitignore.includes("/.agents/skills/"), ".gitignore must ignore the generated /.agents/skills/");
+  assert.ok(gitignore.includes("/.agents/skills"), ".gitignore must ignore the generated /.agents/skills");
   for (const supported of SUPPORTED) {
-    assert.ok(gitignore.includes(`${supported}/skills/`), `.gitignore must ignore the generated ${supported}/skills/`);
+    assert.ok(gitignore.includes(`${supported}/skills`), `.gitignore must ignore the generated ${supported}/skills`);
+    assert.ok(!gitignore.includes(`${supported}/skills/`), `${supported}/skills must have NO trailing slash — it can be a symlink`);
   }
 });
 

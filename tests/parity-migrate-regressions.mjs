@@ -225,7 +225,11 @@ run = "echo still here"
     assert.match(mise, /script = "custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
     assert.match(mise, /\[\[hooks\.leave\]\]\nscript = "custom-leave-hook"/, "migrate must preserve unrelated leave hooks as a table");
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
-    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh'"/, "link-agentfiles hook must be single-quoted (space-safe)");
+    // PJAN-82: every path is still single-quoted (space-safe), and the script is
+    // now handed config_root as its SUBJECT. An enter hook's cwd is the entered
+    // directory, so a script that reads its subject from cwd reshapes whichever
+    // nested repo you cd'd into.
+    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh' '\{\{config_root\}\}'"/, "link-agentfiles hook must be single-quoted (space-safe) and carry its subject root");
     assert.match(
       mise,
       /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/,
@@ -233,8 +237,8 @@ run = "echo still here"
     );
     assert.match(
       mise,
-      /script = "python3 '\{\{config_root\}\}\/\.mise\/scripts\/sync-skills\.py' --scope project"/,
-      "migrate should install the shipped project-local skills sync engine"
+      /script = "python3 '\{\{config_root\}\}\/\.mise\/scripts\/sync-skills\.py' --scope project --root '\{\{config_root\}\}'"/,
+      "migrate should install the shipped project-local skills sync engine, rooted at config_root"
     );
     assert.match(mise, /\[tasks\."skills:sync"\]/, "migrate should add the canonical skills:sync task");
     assertMiseParses(repo, "preserve-hooks");

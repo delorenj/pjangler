@@ -5743,7 +5743,7 @@ function validatePack(packRoot, entry) {
 }
 
 // src/parity/rules.ts
-var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'";
+var LINK_AGENTFILES_SCRIPT = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'";
 var MATERIALIZE_ENV_SCRIPT_REL = ".mise/scripts/materialize-env.sh";
 var OP_INJECT_SCRIPT = `'{{config_root}}/${MATERIALIZE_ENV_SCRIPT_REL}'`;
 var PROVISION_PACKS_SCRIPT_REL = ".mise/scripts/provision-packs.py";
@@ -5769,9 +5769,9 @@ function taskHeaderPattern(name) {
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]$`);
 }
-var PROVISION_PACKS_SCRIPT = `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}'`;
+var PROVISION_PACKS_SCRIPT = `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}' --root '{{config_root}}'`;
 var LEGACY_PROVISION_BMAD_SKILLS_SCRIPT = `python3 '{{config_root}}/${LEGACY_PROVISION_SCRIPT_REL}'`;
-var SYNC_SKILLS_SCRIPT = `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project`;
+var SYNC_SKILLS_SCRIPT = `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project --root '{{config_root}}'`;
 var SKILLS_SCHEMA_URL = "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json";
 var RETIRED_SKILLS_SCHEMA_URLS = [
   "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json"
@@ -5810,7 +5810,7 @@ task = "${SKILLS_SYNC_TASK}"
 
 ${taskHeader(LINK_AGENTFILES_TASK)}
 description = "Symlink all agent files to AGENTS.md"
-run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+run = ${JSON.stringify(LINK_AGENTFILES_SCRIPT)}
 
 ${taskHeader(SKILLS_SYNC_TASK)}
 description = "Sync skills from manifest to local CLI dirs"
@@ -7120,7 +7120,7 @@ script = ${JSON.stringify(script)}`);
 function isMiseCoreHookEntry(value) {
   const trimmed2 = value.trim();
   if (isOpInjectHookEntry(trimmed2)) return false;
-  return trimmed2 === SYNC_SKILLS_SCRIPT || trimmed2 === PROVISION_PACKS_SCRIPT || trimmed2 === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed2) || /provision-(?:packs|bmad-skills)\.py/.test(trimmed2) || /link-(?:project-skills-to-clis|agentfiles)\.sh'?\s*$/.test(trimmed2) || /unlink-project-skills-from-clis\.sh'?\s*$/.test(trimmed2);
+  return trimmed2 === SYNC_SKILLS_SCRIPT || trimmed2 === PROVISION_PACKS_SCRIPT || trimmed2 === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed2) || /provision-(?:packs|bmad-skills)\.py/.test(trimmed2) || /link-(?:project-skills-to-clis|agentfiles)\.sh'?(?:\s+\S.*)?$/.test(trimmed2) || /unlink-project-skills-from-clis\.sh'?(?:\s+\S.*)?$/.test(trimmed2);
 }
 function reconcileHookOwner(text2, owns, canonicalScripts, header = "") {
   const { text: stripped, records } = stripHookBlocks(text2);
@@ -13532,6 +13532,10 @@ var NotebookRecipe = class extends Recipe {
   async applyLocal(ctx, plan, notebookPlan) {
     if (!plan.apply || ctx.dryRun || !notebookPlan.config.policy.enabled || notebookPlan.config.binding.state === "disabled") {
       return { recipeId: this.metadata.id, ok: true, dryRun: Boolean(ctx.dryRun), changedFiles: [], logs: ["notebook: local skill/hooks skipped"], errors: [], phases: [{ id: "notebook.local", status: "skipped", changedFiles: [], message: "Notebook is disabled or this is a plan-only invocation" }] };
+    }
+    if (notebookPlan.remote_effect === "none") {
+      const message = `Notebook has no configured endpoint (${notebookPlan.reason}); global skill and hook projection deferred to \`pj notebook migrate --apply\``;
+      return { recipeId: this.metadata.id, ok: true, dryRun: false, changedFiles: [], logs: [`notebook: ${message}`], errors: [], phases: [{ id: "notebook.local", status: "skipped", changedFiles: [], message }] };
     }
     try {
       const env2 = integrationEnvironment(this.module, ctx);

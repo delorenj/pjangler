@@ -27,6 +27,7 @@
 
 import assert from "node:assert/strict";
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -180,7 +181,16 @@ function projectWithSyncSkills(packEntry, packRoot, registryRoot) {
   const repo = makeRepo("xengine-py-fanout", packEntry);
   const home = makeTemp("xengine-home");
   mkdirSync(join(repo, ".claude"), { recursive: true });
-  run("python3", [syncSkills, "--scope", "project"], {
+  // PJAN-82: install the engine into the fixture at the SAME path a generated
+  // project carries it, and hand it the root explicitly. The script refuses to
+  // act on a repo it does not live in — that guard is what stops a parent mise
+  // config's enter hook from reshaping whichever child repo you cd'd into — so
+  // running the template copy in place against a foreign cwd is exactly the
+  // shape it now rejects, and testing it that way would test nothing real.
+  const engine = join(repo, ".mise", "scripts", "sync-skills.py");
+  mkdirSync(dirname(engine), { recursive: true });
+  cpSync(syncSkills, engine);
+  run("python3", [engine, "--scope", "project", "--root", repo], {
     cwd: repo,
     env: { HOME: home, PJ_SKILLS_REGISTRY_ROOT: registryRoot },
   });
