@@ -8,3 +8,17 @@ args = [
     "-s",
     "user",
 ]
+
+[mcp_servers.plane]
+command = "op"
+args = [
+  "run",
+  "--",
+  "/home/delorenj/code/mcp/plane-mcp-server/.venv/bin/plane-mcp-server",
+  "stdio",
+]
+
+[mcp_servers.plane.env]
+PLANE_API_KEY = "op://DeLoSecrets/Plane/Main/AutomaticAI API Token"
+PLANE_WORKSPACE_SLUG = "33god"
+PLANE_BASE_URL = "https://plane.delo.sh"
