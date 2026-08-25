@@ -747,7 +747,12 @@ export function renderDescribe(description: ProjectDescription, options: RenderO
   }
 
   const registryNote = identity.registered ? green("registered") : yellow("not registered");
-  lines.push(field("registry", `${registryNote}  ${dim(shortenPath(identity.registryPath, options.home))}`));
+  // Clamp like the `remote` row above: a registry outside $HOME (a --registry
+  // override, a deep TMPDIR) is an unbounded string and blew straight past the
+  // layout width.
+  const registryPath = shortenPath(identity.registryPath, options.home);
+  const registryRoom = Math.max(10, width - LABEL - visibleWidth(registryNote) - 6);
+  lines.push(field("registry", `${registryNote}  ${dim(truncateVisible(registryPath, registryRoom))}`));
   if (description.notebook.declared) {
     const state = description.notebook.bindingState ?? "invalid";
     const capture = description.notebook.captureAdmission;

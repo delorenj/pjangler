@@ -15461,7 +15461,9 @@ function renderDescribe(description, options = {}) {
     lines.push(field("git", yellow("not a git repository")));
   }
   const registryNote = identity.registered ? green("registered") : yellow("not registered");
-  lines.push(field("registry", `${registryNote}  ${dim(shortenPath(identity.registryPath, options.home))}`));
+  const registryPath2 = shortenPath(identity.registryPath, options.home);
+  const registryRoom = Math.max(10, width - LABEL - visibleWidth(registryNote) - 6);
+  lines.push(field("registry", `${registryNote}  ${dim(truncateVisible(registryPath2, registryRoom))}`));
   if (description.notebook.declared) {
     const state = description.notebook.bindingState ?? "invalid";
     const capture = description.notebook.captureAdmission;
