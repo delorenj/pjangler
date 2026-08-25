@@ -1073,6 +1073,17 @@ program
       console.log(formatProjectDescription(description));
       if (!options.interactive) return;
 
+      // PJAN-82: the TTY refusal is a precondition of the MODE, so it is
+      // checked before anything about this repo's content. It used to sit after
+      // the "nothing fixable" early return, which meant `--interactive` piped
+      // into anything exited 0 whenever the repo happened to be clean — the
+      // guard only fired on repos that had work to do.
+      // Follows `migrate`'s established precedent: refuse rather than guess.
+      if (!process.stdin.isTTY) {
+        console.error(`${xmark} --interactive needs a TTY; use \`pjangler migrate --all\` non-interactively`);
+        process.exit(1);
+      }
+
       // Interactive mode expands the collapsed "migrate --all" step back into
       // per-rule choices: the read-only report wants one line, but a checklist
       // is only worth showing if each finding can be ticked on its own.
@@ -1083,11 +1094,6 @@ program
       if (!fixable.length) {
         console.log(`  ${green(glyph.pass)} ${dim("Nothing fixable to apply.")}`);
         return;
-      }
-      // Follows `migrate`'s established precedent: refuse rather than guess.
-      if (!process.stdin.isTTY) {
-        console.error(`${xmark} --interactive needs a TTY; use \`pjangler migrate --all\` non-interactively`);
-        process.exit(1);
       }
 
       const result = await runChecklist({

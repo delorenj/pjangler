@@ -6,6 +6,8 @@ stated intent and pre-resolved customization fields so the target skips its own 
 
 | Shim                       | Forwards to                          |
 | -------------------------- | ------------------------------------ |
+| `bmad-quick-dev`           | `bmad-build`                         |
+| `bmad-dev-auto`            | `bmad-build-auto`                    |
 | `bmad-create-story`        | Retained in full                     |
 | `bmad-dev-story`           | Retained in full                     |
 | `bmad-create-prd`          | `bmad-prd` (create intent)           |
@@ -15,6 +17,7 @@ stated intent and pre-resolved customization fields so the target skips its own 
 | `bmad-market-research`     | `bmad-deep-recon` (market type)      |
 | `bmad-domain-research`     | `bmad-deep-recon` (domain type)      |
 | `bmad-technical-research`  | `bmad-deep-recon` (technical type)   |
+| `bmad-sprint-status`       | `bmad-sprint-planning` (status view) |
 
 Enterprise users may still depend on these IDs, so they ship by default. Removal rides the
 v7 cut — never a 6.x minor.

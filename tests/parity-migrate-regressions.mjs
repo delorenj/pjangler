@@ -721,13 +721,35 @@ run = "echo still here"
     const staleFinding = staleAudit.rules.find((r) => r.id === "bmad.version");
     assert.equal(staleFinding.status, "warn", JSON.stringify(staleFinding));
     assert.equal(staleFinding.fixable, true, "stale BMAD should be fixable");
-    assert.match(staleFinding.summary, /behind next 6\.10\.1-next\.12/, JSON.stringify(staleFinding));
+    assert.match(staleFinding.summary, /behind stable 6\.10\.0/, JSON.stringify(staleFinding));
 
     // dry-run migrate previews the upgrade without writing.
     const dry = JSON.parse(run(["migrate", "bmad.version", stale, "--dry-run", "--json"], root, bmadEnv));
     const dryResult = dry.results.find((r) => r.id === "bmad.version");
     assert.equal(dryResult.status, "applied", JSON.stringify(dryResult));
     assert.match(dryResult.summary, /Would upgrade BMAD 6\.8\.0 -> 6\.10\.1-next\.12/, JSON.stringify(dryResult));
+
+    // PJAN-82: at or ahead of STABLE but behind the moving `next` prerelease
+    // -> pass, with the prerelease still reported. `next` advances every few
+    // days, so warning here made every repository on the machine permanently
+    // non-parity: auditRecipes counts anything but pass/skip as not-ok and
+    // ProjectRecipe turns a not-ok postcondition audit into a transaction
+    // error, so a brand-new project broke the moment upstream cut a release.
+    const prerelease = makeRepo("bmad-version-prerelease-only");
+    repos.push(prerelease);
+    writeManifest(prerelease, "6.10.1-next.3");
+    const preAudit = JSON.parse(runAllowFailure(["audit", prerelease, "--json"], root, bmadEnv));
+    const preFinding = preAudit.rules.find((r) => r.id === "bmad.version");
+    assert.equal(preFinding.status, "pass", JSON.stringify(preFinding));
+    assert.equal(preFinding.fixable, false, "a moving prerelease is news, not a fixable defect");
+    assert.match(preFinding.summary, /at or ahead of stable 6\.10\.0/, JSON.stringify(preFinding));
+    assert.ok(preFinding.details.some((d) => d.includes("6.10.1-next.12")), `the available prerelease stays visible: ${JSON.stringify(preFinding)}`);
+    // ... and an explicit, targeted migrate still takes it, even though the
+    // audit passed. `migrate --all` does not, because it only selects fail/warn.
+    const preDry = JSON.parse(run(["migrate", "bmad.version", prerelease, "--dry-run", "--json"], root, bmadEnv));
+    const preDryResult = preDry.results.find((r) => r.id === "bmad.version");
+    assert.equal(preDryResult.status, "applied", JSON.stringify(preDryResult));
+    assert.match(preDryResult.summary, /Would upgrade BMAD 6\.10\.1-next\.3 -> 6\.10\.1-next\.12/, JSON.stringify(preDryResult));
 
     // Current install (== target channel) -> pass, not fixable.
     const current = makeRepo("bmad-version-current");

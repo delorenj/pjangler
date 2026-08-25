@@ -73,8 +73,28 @@ const ctx = (repoRoot: string): LifecycleContext => ({
   });
   assert.equal(pinned.status, "pass", "fresh transactions compare BMAD against their exact preflight pin");
   assert.match(pinned.summary, /pinned/);
-  const movingChannel = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
-  assert.equal(movingChannel.status, "warn", "standalone legacy audits must retain moving-next currency behavior");
+  // PJAN-82: an unpinned audit needs a floor that does not move. With only the
+  // `next` tag resolved there is no published stable to compare against, so the
+  // rule declines to judge rather than reporting a defect it cannot substantiate.
+  const noStableFloor = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  assert.equal(noStableFloor.status, "skip", "an unpinned audit with no resolvable stable tag cannot judge currency");
+  assert.match(noStableFloor.summary, /stable currency floor unknown/);
+  // With a stable tag present, being behind THAT is the real currency defect,
+  // while being behind only the moving prerelease is not.
+  writeFileSync(
+    join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "99.0.0", next: "99.0.1-next.1" } }),
+  );
+  const behindStable = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  assert.equal(behindStable.status, "warn", "being behind the published stable release is a real currency defect");
+  assert.equal(behindStable.fixable, true);
+  writeFileSync(
+    join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "0.0.1", next: "99.0.1-next.1" } }),
+  );
+  const prereleaseOnly = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  assert.equal(prereleaseOnly.status, "pass", "being behind only the moving prerelease channel is news, not a defect");
+  assert.equal(prereleaseOnly.fixable, false);
   writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 100.0.0\n");
   const aheadOfPin = versionCheck.audit({
     repoRoot: repo,
@@ -83,7 +103,11 @@ const ctx = (repoRoot: string): LifecycleContext => ({
     dryRun: true,
     bmadVersionPin: BMAD_INSTALLER_VERSION,
   });
-  assert.equal(aheadOfPin.status, "warn", "an exact transaction pin must reject unexpectedly newer installer output");
+  // PJAN-82: a violated deterministic pin is a `fail`, not a `warn`. `warn` and
+  // `fail` were interchangeable while both made the audit not-ok; now that only
+  // real defects do, the distinction has to be stated: a pin mismatch is exactly
+  // reproducible and exactly wrong.
+  assert.equal(aheadOfPin.status, "fail", "an exact transaction pin must reject unexpectedly newer installer output");
   assert.match(aheadOfPin.summary, /does not match pinned/);
   rmSync(repo, { recursive: true, force: true });
 }
