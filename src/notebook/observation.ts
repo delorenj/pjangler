@@ -11,7 +11,7 @@ import type {
 import { normalizeNotebookError } from "./output";
 import { projectNotebookMarker } from "./reconcile";
 import { notebookDisplayName, type ResolvedNotebookProjectV1 } from "./config";
-import { inspectProjectNotebookIntegration } from "./hooks";
+import { inspectProjectNotebookIntegration, type ProjectNotebookHostBlockV1 } from "./hooks";
 
 export interface NotebookObservationV1 {
   schema_version: 1;
@@ -32,6 +32,12 @@ export interface NotebookObservationV1 {
   error: { code: NotebookErrorCode; retryable: boolean; message: string } | null;
   skill_installed?: boolean | null;
   hooks_projected?: boolean | null;
+  /**
+   * PJAN-82: the host skill projection is owned outside PJángler and was left
+   * untouched. Audits report this as a machine-scoped advisory instead of
+   * failing the repository for something the repository cannot fix.
+   */
+  skill_host_block?: ProjectNotebookHostBlockV1 | null;
 }
 
 export interface NotebookPlanV1 {
@@ -61,6 +67,7 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
     base_url_configured: Boolean(local.config.base_url),
     skill_installed: integration.skill_installed,
     hooks_projected: integration.hooks_projected,
+    skill_host_block: integration.blocked ?? null,
   };
   if (localOnly || !local.config.base_url) {
     return {

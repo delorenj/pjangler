@@ -239,6 +239,19 @@ export function registerNotebookCli(program: Command, module = new NotebookModul
       run: async () => ({ config: module.context(repo, false).config, data: await migrateNotebook(module, repo, { apply: Boolean(options.apply), live: Boolean(options.live) }) }),
     }));
 
+  // PJAN-82: the host skill projection is machine state, so it gets its own
+  // command instead of riding on a per-repository migration. Drift here used to
+  // surface only as an opaque `pj init` abort with no way to inspect or fix it.
+  notebook.command("skill")
+    .description("Inspect and reconcile the host Project Notebook skill projection")
+    .argument("[repo]", "Registered repository", process.cwd())
+    .option("--apply", "Restore the drifted canonical projection from the version-pinned export")
+    .option("--json", "Emit JSON v1")
+    .action(async (repo: string, options: CommonOptions & { apply?: boolean }) => execute({
+      command: "notebook.skill", repo, json: Boolean(options.json), module,
+      run: async () => ({ config: module.context(repo, false).config, data: module.repairSkillProjection(Boolean(options.apply)) }),
+    }));
+
   const hook = notebook.command("hook", { hidden: true }).description("Internal managed hook entry points");
   for (const [name, expected] of [["session-start", "SessionStart"], ["session-close", "SessionEnd"]] as const) {
     hook.command(name, { hidden: true })
@@ -291,7 +304,7 @@ export function isNotebookJsonInvocation(args: readonly string[]): boolean {
 function parserCommand(args: readonly string[]): string {
   const primary = args[1];
   const secondary = args[2];
-  if (primary === "status" || primary === "create" || primary === "audit" || primary === "migrate") return `notebook.${primary}`;
+  if (primary === "status" || primary === "create" || primary === "audit" || primary === "migrate" || primary === "skill") return `notebook.${primary}`;
   if (primary === "overview") return args.includes("--set-file") ? "notebook.overview.set" : "notebook.overview.get";
   if (primary === "list" && secondary === "notes") return "notebook.notes.list";
   if (primary === "add" && secondary === "note") return "notebook.notes.add";

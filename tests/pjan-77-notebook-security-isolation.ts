@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateNotebookBaseUrl } from "../src/notebook/config";
 import { readSafeEvidenceText } from "../src/notebook/git-evidence";
-import { captureWorkerEnvironment, inspectProjectNotebookIntegration, installPackagedProjectNotebookSkill, installProjectNotebookIntegration, verifyProjectNotebookSkillExport } from "../src/notebook/hooks";
+import { captureWorkerEnvironment, describeProjectNotebookSkillDrift, inspectProjectNotebookIntegration, installPackagedProjectNotebookSkill, installProjectNotebookIntegration, repairProjectNotebookSkillProjection, verifyProjectNotebookSkillExport } from "../src/notebook/hooks";
 import { encodeNoteEnvelope, parseNoteEnvelope, withNoteEnvelope } from "../src/notebook/notes";
 import { compileOverviewArtifact, renderOverviewContent } from "../src/notebook/overview";
 import { OpenNotebookClient } from "../src/notebook/open-notebook-client";
@@ -124,12 +124,55 @@ try {
   symlinkSync(canonical, join(invalidRoot, "project-notebook"), "dir");
   symlinkSync(invalidRoot, join(invalidRootHome, ".agents", "skills"), "dir");
   const invalidRootData = join(workspace, "invalid-root-data");
-  assert.throws(
-    () => installPackagedProjectNotebookSkill({ env: { HOME: invalidRootHome, XDG_DATA_HOME: invalidRootData } }),
-    /not a verified canonical Skillex projection/u,
-    "a digest-valid child does not authenticate an arbitrary symlinked skills root",
-  );
+  // PJAN-82: the safety property is "do not write", not "throw". An
+  // unauthenticated skills root is reported and left alone; raising here made a
+  // machine-level condition abort (and roll back) unrelated project creation.
+  const invalidRootInstall = installPackagedProjectNotebookSkill({ env: { HOME: invalidRootHome, XDG_DATA_HOME: invalidRootData } });
+  assert.equal(invalidRootInstall.installed, false, "a digest-valid child does not authenticate an arbitrary symlinked skills root");
+  assert.equal(invalidRootInstall.blocked?.code, "skills-root-unsupported", "an unauthenticated skills root is reported as a host block");
+  assert.ok(invalidRootInstall.blocked?.repair.includes("pj notebook skill"), "a host block names the repair command");
   assert.equal(existsSync(invalidRootData), false, "a rejected skills-root projection cannot create an XDG payload");
+  const invalidRootIntegration = installProjectNotebookIntegration({ env: { HOME: invalidRootHome, XDG_DATA_HOME: invalidRootData, XDG_STATE_HOME: join(workspace, "invalid-root-state") }, target: join(invalidRootHome, ".claude", "settings.json") });
+  assert.equal(invalidRootIntegration.hooksChanged, false, "a blocked skill install never arms a SessionStart command");
+  assert.equal(invalidRootIntegration.blocked?.code, "skills-root-unsupported", "the block travels to the integration caller");
+  assert.equal(existsSync(join(invalidRootHome, ".claude", "settings.json")), false, "a blocked integration writes no global Claude settings");
+
+  // PJAN-82: content drift in the canonical projection is the exact condition
+  // that destroyed a freshly-rendered project. It must degrade, name the file,
+  // and be repairable from the version-pinned export.
+  const driftHome = join(workspace, "drift-home");
+  const driftRegistry = join(workspace, "drift-registry");
+  const driftCanonical = join(driftRegistry, "all-skills", "project-notebook");
+  const driftGlobal = join(driftRegistry, "skill-sets", "global");
+  mkdirSync(join(driftRegistry, "all-skills"), { recursive: true });
+  mkdirSync(driftGlobal, { recursive: true });
+  cpSync(packedFixture, driftCanonical, { recursive: true });
+  rmSync(join(driftCanonical, "export-manifest.json"), { force: true });
+  rmSync(join(driftCanonical, "SHA256SUMS"), { force: true });
+  symlinkSync(driftCanonical, join(driftGlobal, "project-notebook"), "dir");
+  mkdirSync(join(driftHome, ".agents"), { recursive: true });
+  symlinkSync(driftGlobal, join(driftHome, ".agents", "skills"), "dir");
+  const driftEnv = { HOME: driftHome, XDG_DATA_HOME: join(workspace, "drift-data"), XDG_STATE_HOME: join(workspace, "drift-state") };
+  assert.equal(installPackagedProjectNotebookSkill({ env: driftEnv }).blocked, undefined, "an undrifted copied projection authenticates");
+  const driftedFile = join(driftCanonical, "hooks", "session-start.sh");
+  writeFileSync(driftedFile, `${readFileSync(driftedFile, "utf8")}\n# local edit\n`);
+  const driftInstall = installPackagedProjectNotebookSkill({ env: driftEnv });
+  assert.equal(driftInstall.installed, false, "a drifted canonical projection is not replaced");
+  assert.equal(driftInstall.blocked?.code, "projection-drift", "content drift is reported as projection drift");
+  assert.ok(driftInstall.blocked?.details.some((detail) => detail.startsWith("hooks/session-start.sh:")), `drift names the differing file: ${driftInstall.blocked?.details.join("; ")}`);
+  assert.deepEqual(describeProjectNotebookSkillDrift(driftCanonical).filter((detail) => detail.startsWith("hooks/session-start.sh")).length, 1, "drift diagnostics enumerate per-file differences");
+  const observedDrift = inspectProjectNotebookIntegration(driftEnv);
+  assert.equal(observedDrift.skill_installed, false, "a drifted projection does not audit as installed");
+  assert.equal(observedDrift.blocked?.code, "projection-drift", "the observation carries the host block for the audit layer");
+  const plannedRepair = repairProjectNotebookSkillProjection({ env: driftEnv });
+  assert.equal(plannedRepair.status, "planned", `a dry-run repair plans without writing: ${plannedRepair.summary}`);
+  assert.deepEqual(plannedRepair.changed_files, [driftedFile], "the repair plan names exactly the drifted file");
+  assert.match(readFileSync(driftedFile, "utf8"), /# local edit/u, "a dry-run repair writes nothing");
+  const appliedRepair = repairProjectNotebookSkillProjection({ env: driftEnv, apply: true });
+  assert.equal(appliedRepair.status, "repaired", appliedRepair.summary);
+  assert.doesNotMatch(readFileSync(driftedFile, "utf8"), /# local edit/u, "the repair restores the pinned bytes");
+  assert.equal(repairProjectNotebookSkillProjection({ env: driftEnv }).status, "clean", "the repair is idempotent and converges");
+  assert.equal(installPackagedProjectNotebookSkill({ env: driftEnv }).blocked, undefined, "a repaired projection authenticates again");
 
   const packedHome = join(workspace, "packed-home");
   const installed = installPackagedProjectNotebookSkill({ env: { HOME: packedHome, XDG_DATA_HOME: join(workspace, "packed-data") } });
@@ -152,7 +195,10 @@ try {
   mkdirSync(foreign);
   writeFileSync(join(foreign, "SKILL.md"), "foreign");
   symlinkSync(foreign, join(foreignHome, ".agents", "skills", "project-notebook"), "dir");
-  assert.throws(() => installPackagedProjectNotebookSkill({ env: { HOME: foreignHome, XDG_DATA_HOME: join(workspace, "foreign-data") } }), /foreign|customized/u);
+  const foreignInstall = installPackagedProjectNotebookSkill({ env: { HOME: foreignHome, XDG_DATA_HOME: join(workspace, "foreign-data") } });
+  assert.equal(foreignInstall.installed, false, "a foreign skill path is never replaced");
+  assert.equal(foreignInstall.blocked?.code, "projection-foreign", "a foreign skill path is reported as a host block");
+  assert.match(realpathSync(join(foreignHome, ".agents", "skills", "project-notebook")), /foreign-skill$/u, "the foreign target is left exactly as the operator left it");
 
   console.log("pjan-77 notebook security/isolation: ok");
 } finally {

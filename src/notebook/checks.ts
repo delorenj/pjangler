@@ -179,10 +179,27 @@ function overviewAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   return finding("notebook.overview-note", "Overview note", "fail", "Overview is missing, foreign, or drifted", observed.overview?.drift.map((item) => `${item.path}: ${item.reason}`) ?? [], true);
 }
 
+/**
+ * PJAN-82: a host-owned skill projection is not a repository defect.
+ *
+ * `~/.agents/skills` belongs to the machine, not to the repo being audited. When
+ * it is owned elsewhere (a Skillex fanout that has drifted, or a deliberately
+ * customized path) no amount of work in this repository can change it, so
+ * reporting `fail` made every project on the machine fail at once — and, because
+ * `auditRecipes` treats anything that is not pass/skip as not-ok and
+ * `ProjectRecipe` turns a not-ok postcondition audit into a transaction error,
+ * that host state was enough to fail (and roll back) a brand-new project.
+ * These are reported as `skip` carrying the exact drift and the repair command.
+ */
+function hostBlockFinding(id: string, title: string, block: NonNullable<NotebookObservationV1["skill_host_block"]>): LifecycleAuditFinding {
+  return finding(id, title, "skip", `Host skill projection is owned outside PJángler: ${block.summary}`, [...block.details, `Repair: ${block.repair}`], false);
+}
+
 function skillAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!enabled(ctx)) return finding("notebook.skill-installed", "Project Notebook skill", "skip", "Project Notebook is not declared for this repository");
   const observed = observation(ctx);
   if (observed?.skill_installed === true) return finding("notebook.skill-installed", "Project Notebook skill", "pass", "Digest-verified Project Notebook skill is installed");
+  if (observed?.skill_host_block) return hostBlockFinding("notebook.skill-installed", "Project Notebook skill", observed.skill_host_block);
   if (observed?.skill_installed === false) return finding("notebook.skill-installed", "Project Notebook skill", "fail", "Digest-verified Project Notebook skill is not installed", ["Run pj notebook migrate --apply"], true);
   return finding("notebook.skill-installed", "Project Notebook skill", "skip", "Skill installation was not observed; no global path was read", [], true);
 }
@@ -191,6 +208,7 @@ function hooksAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!enabled(ctx)) return finding("notebook.hooks-projected", "Project Notebook hooks", "skip", "Project Notebook is not declared for this repository");
   const observed = observation(ctx);
   if (observed?.hooks_projected === true) return finding("notebook.hooks-projected", "Project Notebook hooks", "pass", "True SessionStart and SessionEnd hook entries are projected once");
+  if (observed?.skill_host_block) return hostBlockFinding("notebook.hooks-projected", "Project Notebook hooks", observed.skill_host_block);
   if (observed?.hooks_projected === false) return finding("notebook.hooks-projected", "Project Notebook hooks", "fail", "Canonical true-boundary hooks are missing, duplicated, or drifted", ["Run pj notebook migrate --apply"], true);
   return finding("notebook.hooks-projected", "Project Notebook hooks", "skip", "Hook projection was not observed; no global settings file was read", [], true);
 }

@@ -135,6 +135,45 @@ run = "echo untouched"
       assert.equal(second.results[0].status, "noop", `${rule} second migration`);
     }
     assert.equal(readFileSync(join(repo, "mise.toml"), "utf8"), first, "TOML migration must be byte-idempotent");
+  }
+
+  // PJAN-82: the mise-parses-cleanly assertion needs its own fixture.
+  //
+  // It used to run against the record-preservation fixture above, whose foreign
+  // hook records deliberately carry `condition` and a `custom_key`. mise's
+  // HookDef accepts only `script` and `shell` and rejects the whole config file
+  // on any other key, so that assertion could never pass and `npm test` — the
+  // release gate — has been red on main. Preserving an operator's foreign keys
+  // byte-for-byte is still the correct behaviour; whether the local mise likes
+  // those keys is the operator's problem, not a property of the migration. What
+  // PJangler must guarantee is that the records IT writes parse cleanly.
+  {
+    const repo = makeEnvRepo("toml-mise-parse", "# no secrets\n");
+    const foreignSupported = `[[hooks.enter]]
+# foreign record comment must stay attached
+script = "echo foreign-enter"
+shell = "bash"
+`;
+    writeFileSync(join(repo, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+script = "op inject -i .env.op > .env"
+
+[[hooks.enter]]
+# positively owned legacy record: all of this record may be replaced
+script = "op inject -i .env.op > .env"
+shell = "bash"
+
+${foreignSupported}
+[tasks.foreign]
+run = "echo untouched"
+`);
+    for (const rule of ["mise.config-root", "secrets.env-op"]) {
+      const migrated = jsonCli(["migrate", rule, repo, "--json"]);
+      assert.equal(migrated.payload.ok, true, JSON.stringify(migrated.payload));
+    }
+    const written = readFileSync(join(repo, "mise.toml"), "utf8");
+    assert.ok(written.includes(foreignSupported.trim()), "a supported foreign enter record survives byte-for-byte");
+    assert.equal((written.match(/materialize-env\.sh/g) ?? []).length, 1, "canonical materializer hook must be unique");
     const parseState = join(temporary, "mise-parse-state");
     const parseEnv = {
       ...process.env,

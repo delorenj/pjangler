@@ -200,11 +200,50 @@ function expectedPackedSkill(): { source: string; manifest: SkillExportManifestV
   throw new NotebookError("NOT_CONFIGURED", "PJángler package has no verified Project Notebook skill export");
 }
 
+function isCanonicalSkillexProjectionPath(path: string): boolean {
+  return resolve(path).split(sep).join("/").endsWith("/all-skills/project-notebook");
+}
+
 function isVerifiedCanonicalSkillexProjection(path: string): boolean {
-  const normalized = resolve(path).split(sep).join("/");
-  if (!normalized.endsWith("/all-skills/project-notebook")) return false;
+  if (!isCanonicalSkillexProjectionPath(path)) return false;
   try { verifyProjectNotebookSkillExport(path); return true; }
   catch { return false; }
+}
+
+/**
+ * PJAN-82: name the files that actually differ.
+ *
+ * `verifyProjectNotebookSkillExport` only ever said "does not match the
+ * package-pinned export digest", which is unactionable: the operator is told a
+ * tree of eleven files is wrong and nothing about which one. A single
+ * uncommitted edit to one hook script in the Skillex working copy is what took
+ * `pj init` down, and the only way to find it was to hand-diff the trees.
+ */
+export function describeProjectNotebookSkillDrift(source: string): string[] {
+  let expected;
+  try { expected = expectedPackedSkill(); }
+  catch { return ["the PJángler package carries no verified Project Notebook export to compare against"]; }
+  let actual: SkillExportManifestV1["files"];
+  try {
+    const absolute = resolve(source);
+    const packed = parsePackedManifest(absolute);
+    actual = packed?.files ?? enumerateSkillPayload(absolute);
+  } catch (error) {
+    return [boundedDiagnostic(error)];
+  }
+  const pinned = new Map(expected.manifest.files.map((entry) => [entry.path, entry]));
+  const present = new Map(actual.map((entry) => [entry.path, entry]));
+  const drift: string[] = [];
+  for (const entry of actual) {
+    const match = pinned.get(entry.path);
+    if (!match) { drift.push(`${entry.path}: not part of the pinned export`); continue; }
+    if (match.sha256 !== entry.sha256) drift.push(`${entry.path}: content differs from the pinned export`);
+    else if (match.mode !== entry.mode) drift.push(`${entry.path}: mode ${entry.mode} differs from pinned ${match.mode}`);
+  }
+  for (const entry of expected.manifest.files) {
+    if (!present.has(entry.path)) drift.push(`${entry.path}: missing from the projection`);
+  }
+  return drift.length ? drift.slice(0, 20) : ["no per-file drift detected; the export enumeration itself differs"];
 }
 
 export function verifyProjectNotebookSkillExport(source: string): SkillExportManifestV1 {
@@ -237,14 +276,51 @@ export function resolveProjectNotebookSkillSource(env: NodeJS.ProcessEnv = proce
   catch { return null; }
 }
 
-function verifiedCanonicalSkillexRootProjection(skillsRoot: string, link: string): string | null {
+/**
+ * PJAN-82: the reason PJángler will not touch the host skill projection.
+ *
+ * This is an advisory about the operator's machine, never a project defect.
+ * `repair` is the exact command that clears it.
+ */
+export interface ProjectNotebookHostBlockV1 {
+  code: "projection-drift" | "projection-foreign" | "skills-root-unsupported";
+  summary: string;
+  details: string[];
+  repair: string;
+  /** The canonical Skillex projection directory, when one was identified and is repairable. */
+  repairable_source?: string;
+}
+
+type SkillsRootProbe =
+  | { state: "absent" }
+  | { state: "plain" }
+  | { state: "adopted"; source: string }
+  | { state: "declined"; block: ProjectNotebookHostBlockV1 };
+
+const REPAIR_COMMAND = "pj notebook skill --apply";
+
+/**
+ * PJAN-82: probe, do not enforce.
+ *
+ * This used to throw `CONFLICT "Existing skills root is not a verified
+ * canonical Skillex projection"` for every non-adoptable host topology. That
+ * exception travelled all the way up through `NotebookRecipe.applyLocal` into
+ * `ProjectRecipe`'s error list and tripped the fresh-target rollback, so one
+ * uncommitted edit in a Skillex working copy `rm -rf`'d a brand-new project
+ * that had already been fully rendered. Adoption is opportunistic: declining to
+ * adopt must read as "leave the host alone", not "destroy the work".
+ */
+function probeCanonicalSkillexRootProjection(skillsRoot: string, link: string): SkillsRootProbe {
   let rootLink;
   try { rootLink = lstatSync(skillsRoot); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
     throw error;
   }
-  if (!rootLink.isSymbolicLink()) return null;
+  if (!rootLink.isSymbolicLink()) return { state: "plain" };
+
+  const decline = (code: ProjectNotebookHostBlockV1["code"], summary: string, details: string[] = []): SkillsRootProbe =>
+    ({ state: "declined", block: { code, summary, details, repair: REPAIR_COMMAND } });
 
   try {
     // Only the exact user-owned Skillex fanout topology may cross this
@@ -270,15 +346,40 @@ function verifiedCanonicalSkillexRootProjection(skillsRoot: string, link: string
     if (uid !== undefined && linkStat.uid !== uid) throw new Error("projection-owner");
     const projectedSource = realpathSync(link);
     if (projectedSource !== realpathSync(expectedSource)) throw new Error("projection-target");
-    if (!isVerifiedCanonicalSkillexProjection(projectedSource)) throw new Error("projection-digest");
-    return projectedSource;
+    if (!isVerifiedCanonicalSkillexProjection(projectedSource)) {
+      return {
+        state: "declined",
+        block: {
+          code: "projection-drift",
+          summary: `Canonical Skillex projection of project-notebook has drifted from the version-pinned export at ${projectedSource}`,
+          details: describeProjectNotebookSkillDrift(projectedSource),
+          repair: REPAIR_COMMAND,
+          repairable_source: projectedSource,
+        },
+      };
+    }
+    return { state: "adopted", source: projectedSource };
   } catch (error) {
-    if (error instanceof NotebookError) throw error;
-    throw new NotebookError("CONFLICT", "Existing skills root is not a verified canonical Skillex projection");
+    if (error instanceof NotebookError) {
+      return decline("projection-drift", error.message, describeProjectNotebookSkillDrift(link));
+    }
+    return decline(
+      "skills-root-unsupported",
+      `${skillsRoot} is a symlink but not the supported Skillex fanout topology (<checkout>/skill-sets/global with project-notebook projected from <checkout>/all-skills)`,
+      [`probe rejected at: ${error instanceof Error ? error.message : String(error)}`],
+    );
   }
 }
 
-export function installPackagedProjectNotebookSkill(input: { source?: string; env?: NodeJS.ProcessEnv } = {}): { installed: boolean; path: string; digest: string } {
+export interface ProjectNotebookSkillInstallV1 {
+  installed: boolean;
+  path: string;
+  digest: string;
+  /** Set when the host projection is owned elsewhere and was deliberately left untouched. */
+  blocked?: ProjectNotebookHostBlockV1;
+}
+
+export function installPackagedProjectNotebookSkill(input: { source?: string; env?: NodeJS.ProcessEnv } = {}): ProjectNotebookSkillInstallV1 {
   const env = input.env ?? process.env;
   const source = input.source ?? resolveProjectNotebookSkillSource(env);
   if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable");
@@ -288,9 +389,12 @@ export function installPackagedProjectNotebookSkill(input: { source?: string; en
   if (!home || !resolve(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
   const skillsRoot = join(home, ".agents", "skills");
   const link = join(skillsRoot, "project-notebook");
-  if (verifiedCanonicalSkillexRootProjection(skillsRoot, link)) {
-    return { installed: false, path: link, digest };
-  }
+  const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
+  if (probe.state === "adopted") return { installed: false, path: link, digest };
+  // A symlinked skills root PJángler cannot authenticate is never written
+  // through: the fall-through below would `mkdir` and no-symlink-assert the
+  // root, which cannot succeed for a symlink. Report and leave it alone.
+  if (probe.state === "declined") return { installed: false, path: link, digest, blocked: probe.block };
   const dataRoot = resolve(env.XDG_DATA_HOME || join(home, ".local", "share"), "pjangler", "skills", "project-notebook");
   const payload = join(dataRoot, `${PJANGLER_VERSION}-${digest}`);
   assertNoSymlinkComponents(dirname(dataRoot), true);
@@ -336,15 +440,132 @@ export function installPackagedProjectNotebookSkill(input: { source?: string; en
     try { lstatSync(link); linkExists = true; } catch { /* absent */ }
   }
   if (linkExists) {
+    // PJAN-82: refusing to replace a foreign path is correct. Throwing about it
+    // is not — the safety property is "do not write", and that is satisfied by
+    // returning. A customized global skill path is an operator decision, not a
+    // reason to fail the project transaction that happened to observe it.
+    const foreign = (details: string[]): ProjectNotebookSkillInstallV1 => ({
+      installed: false,
+      path: link,
+      digest,
+      blocked: {
+        code: "projection-foreign",
+        summary: `${link} is customized or foreign; PJángler will not replace it`,
+        details,
+        repair: REPAIR_COMMAND,
+      },
+    });
     const stat = lstatSync(link);
-    if (!stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Existing Project Notebook skill path is customized or foreign; refusing to replace it");
+    if (!stat.isSymbolicLink()) return foreign(["the path is a real file or directory, not a PJángler-owned link"]);
     const target = realpathSync(link);
-    if (target !== realpathSync(payload) && !isVerifiedCanonicalSkillexProjection(target)) throw new NotebookError("CONFLICT", "Existing Project Notebook skill path is customized or foreign; refusing to replace it");
-    verifyProjectNotebookSkillExport(target);
+    if (target !== realpathSync(payload) && !isVerifiedCanonicalSkillexProjection(target)) {
+      return foreign(isCanonicalSkillexProjectionPath(target)
+        ? describeProjectNotebookSkillDrift(target)
+        : [`the link targets ${target}, which is neither the pinned payload nor a canonical Skillex projection`]);
+    }
+    try { verifyProjectNotebookSkillExport(target); }
+    catch { return foreign(describeProjectNotebookSkillDrift(target)); }
     return { installed: false, path: link, digest };
   }
   symlinkSync(payload, link, "dir");
   return { installed: true, path: link, digest };
+}
+
+export interface ProjectNotebookSkillRepairV1 {
+  status: "clean" | "planned" | "repaired" | "blocked";
+  summary: string;
+  source: string | null;
+  drift: string[];
+  changed_files: string[];
+}
+
+/**
+ * PJAN-82: repair a drifted canonical Skillex projection from the pinned export.
+ *
+ * PJángler owns these bytes: `dist/assets/project-notebook-skill` is tracked in
+ * this repository and `<skillex>/all-skills/project-notebook` carries a
+ * `.source.yaml` recording itself as an extraction of it. So the projection is
+ * downstream, and reconciling it means writing PJángler's pinned content back
+ * over the local edit — not adopting the local edit.
+ *
+ * Only the exact manifest payload is written, and only into a path proved to be
+ * the canonical projection through the same topology probe the installer uses.
+ * Files not in the manifest are removed because their presence is itself the
+ * drift; anything that is not a regular file blocks the repair rather than
+ * being deleted.
+ */
+export function repairProjectNotebookSkillProjection(input: { env?: NodeJS.ProcessEnv; apply?: boolean } = {}): ProjectNotebookSkillRepairV1 {
+  const env = input.env ?? process.env;
+  const home = env.HOME;
+  if (!home || !resolve(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to repair the Project Notebook skill projection");
+  const skillsRoot = join(home, ".agents", "skills");
+  const link = join(skillsRoot, "project-notebook");
+  const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
+  if (probe.state === "adopted") return { status: "clean", summary: "Canonical Skillex projection already matches the version-pinned export", source: probe.source, drift: [], changed_files: [] };
+  if (probe.state !== "declined") {
+    return { status: "clean", summary: "No canonical Skillex projection is in use; the version-pinned payload is installed directly", source: null, drift: [], changed_files: [] };
+  }
+  const source = probe.block.repairable_source;
+  if (!source) return { status: "blocked", summary: probe.block.summary, source: null, drift: probe.block.details, changed_files: [] };
+
+  const expected = expectedPackedSkill();
+  const wanted = new Set(expected.manifest.files.map((entry) => entry.path));
+  assertOwnedSkillTree(source);
+  const present: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const rel = relative(source, path).split(sep).join("/");
+      if (entry.isDirectory()) { walk(path); continue; }
+      if (!entry.isFile()) throw new NotebookError("CONFLICT", `Refusing to repair a projection containing a non-regular entry: ${rel}`);
+      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS")) continue;
+      present.push(rel);
+    }
+  };
+  walk(source);
+  const stale = present.filter((rel) => !wanted.has(rel)).sort();
+  const changed = expected.manifest.files
+    .filter((entry) => {
+      const path = join(source, ...entry.path.split("/"));
+      if (!existsSync(path)) return true;
+      const stat = lstatSync(path);
+      if (!stat.isFile()) return true;
+      if (createHash("sha256").update(readFileSync(path)).digest("hex") !== entry.sha256) return true;
+      const mode = stat.mode & 0o777;
+      const executable = entry.mode === "0755";
+      return (executable && (mode & 0o100) === 0) || (!executable && (mode & 0o111) !== 0);
+    })
+    .map((entry) => entry.path);
+
+  const affected = [...new Set([...changed, ...stale])].sort();
+  if (!affected.length) {
+    return { status: "blocked", summary: `${source} does not verify against the pinned export, but no per-file difference was found`, source, drift: probe.block.details, changed_files: [] };
+  }
+  if (!input.apply) {
+    return {
+      status: "planned",
+      summary: `Would restore ${affected.length} file(s) in ${source} from the version-pinned export`,
+      source,
+      drift: probe.block.details,
+      changed_files: affected.map((rel) => join(source, ...rel.split("/"))),
+    };
+  }
+  for (const rel of stale) rmSync(join(source, ...rel.split("/")), { force: true });
+  for (const rel of changed) {
+    const destination = join(source, ...rel.split("/"));
+    const entry = expected.manifest.files.find((item) => item.path === rel)!;
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+    copyFileSync(join(expected.source, ...rel.split("/")), destination);
+    chmodSync(destination, entry.mode === "0755" ? 0o755 : 0o644);
+  }
+  verifyProjectNotebookSkillExport(source);
+  return {
+    status: "repaired",
+    summary: `Restored ${affected.length} file(s) in ${source} from the version-pinned export; commit the change in the Skillex checkout`,
+    source,
+    drift: probe.block.details,
+    changed_files: affected.map((rel) => join(source, ...rel.split("/"))),
+  };
 }
 
 export interface ProjectNotebookHookCheckV1 {
@@ -352,19 +573,57 @@ export interface ProjectNotebookHookCheckV1 {
   findings: Array<{ kind: string; event: string; message: string }>;
 }
 
-export function inspectProjectNotebookIntegration(env: NodeJS.ProcessEnv = process.env): { skill_installed: boolean; hooks_projected: boolean; details: string[] } {
+export interface ProjectNotebookIntegrationObservationV1 {
+  skill_installed: boolean;
+  hooks_projected: boolean;
+  details: string[];
+  /**
+   * PJAN-82: set when the global skill projection is owned outside PJángler.
+   * Audits must report this as a host advisory, never as a defect of the
+   * repository being audited — the repository cannot fix it and must not be
+   * failed for it.
+   */
+  blocked?: ProjectNotebookHostBlockV1;
+}
+
+export function inspectProjectNotebookIntegration(env: NodeJS.ProcessEnv = process.env): ProjectNotebookIntegrationObservationV1 {
   const home = env.HOME;
   if (!home) return { skill_installed: false, hooks_projected: false, details: ["HOME is unavailable"] };
-  const link = join(home, ".agents", "skills", "project-notebook");
+  const skillsRoot = join(home, ".agents", "skills");
+  const link = join(skillsRoot, "project-notebook");
   try {
     const expected = expectedPackedSkill();
     const dataRoot = resolve(env.XDG_DATA_HOME || join(home, ".local", "share"), "pjangler", "skills", "project-notebook");
     const expectedPayload = join(dataRoot, `${PJANGLER_VERSION}-${expected.digest}`);
+    const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
+    if (probe.state === "declined") return { skill_installed: false, hooks_projected: false, details: probe.block.details, blocked: probe.block };
     const stat = lstatSync(link);
-    if (!stat.isSymbolicLink()) return { skill_installed: false, hooks_projected: false, details: ["Project Notebook skill path is not an owned link"] };
+    if (!stat.isSymbolicLink()) {
+      return {
+        skill_installed: false,
+        hooks_projected: false,
+        details: ["Project Notebook skill path is not an owned link"],
+        blocked: { code: "projection-foreign", summary: `${link} is not a PJángler-owned link`, details: ["the path is a real file or directory"], repair: REPAIR_COMMAND },
+      };
+    }
     const source = realpathSync(link);
     const packedPayloadMatches = existsSync(expectedPayload) && source === realpathSync(expectedPayload);
-    if (!packedPayloadMatches && !isVerifiedCanonicalSkillexProjection(source)) return { skill_installed: false, hooks_projected: false, details: ["Project Notebook skill link targets a foreign or stale payload"] };
+    if (!packedPayloadMatches && !isVerifiedCanonicalSkillexProjection(source)) {
+      const details = isCanonicalSkillexProjectionPath(source)
+        ? describeProjectNotebookSkillDrift(source)
+        : [`the link targets ${source}, which is neither the version-pinned payload nor a canonical Skillex projection`];
+      return {
+        skill_installed: false,
+        hooks_projected: false,
+        details,
+        blocked: {
+          code: isCanonicalSkillexProjectionPath(source) ? "projection-drift" : "projection-foreign",
+          summary: `Project Notebook skill link targets a foreign or stale payload: ${source}`,
+          details,
+          repair: REPAIR_COMMAND,
+        },
+      };
+    }
     verifyProjectNotebookSkillExport(source);
     const hooks = checkProjectNotebookHooks({ source, env });
     return {
@@ -415,9 +674,14 @@ export function checkProjectNotebookHooks(input: { source?: string; env?: NodeJS
   }
 }
 
-export function installProjectNotebookIntegration(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): { skill: ReturnType<typeof installPackagedProjectNotebookSkill>; hooksChanged: boolean } {
+export function installProjectNotebookIntegration(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): { skill: ProjectNotebookSkillInstallV1; hooksChanged: boolean; blocked?: ProjectNotebookHostBlockV1 } {
   const env = input.env ?? process.env;
   const skill = installPackagedProjectNotebookSkill({ source: input.source, env });
+  // The projected hook command is the fixed path $HOME/.agents/skills/
+  // project-notebook/hooks/session-*.sh (see EVENT_WRAPPERS in the projector),
+  // so projecting hooks while that path is unverified would arm a SessionStart
+  // command pointing at content PJángler has not authenticated. Report and stop.
+  if (skill.blocked) return { skill, hooksChanged: false, blocked: skill.blocked };
   const source = realpathSync(skill.path);
   const home = env.HOME;
   if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to install Project Notebook hooks");

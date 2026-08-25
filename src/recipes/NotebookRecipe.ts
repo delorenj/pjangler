@@ -148,6 +148,22 @@ export class NotebookRecipe extends Recipe<NotebookRecipeInput> {
       ctx.notebookStateRoot = notebookStateRoot(env);
       const applied = this.module.installIntegration(env);
       ctx.notebookObservation = Object.freeze(await prepareNotebookObservationResolved(this.module, resolvedForPlan(plan), notebookPlan.config, true, env));
+      // PJAN-82: the global skill projection lives on the machine, not in this
+      // repository. When it is owned elsewhere PJángler leaves it alone and says
+      // so; it must never be a reason to fail (and therefore roll back) the
+      // project transaction that merely observed it.
+      if (applied.blocked) {
+        const advisory = `notebook: global skill projection left untouched — ${applied.blocked.summary}`;
+        return {
+          recipeId: this.metadata.id,
+          ok: true,
+          dryRun: false,
+          changedFiles: applied.changedFiles,
+          logs: [advisory, ...applied.blocked.details.map((detail) => `notebook:   ${detail}`), `notebook: repair with ${applied.blocked.repair}`],
+          errors: [],
+          phases: [{ id: "notebook.local", status: "skipped", changedFiles: applied.changedFiles, message: advisory }],
+        };
+      }
       return {
         recipeId: this.metadata.id,
         ok: true,

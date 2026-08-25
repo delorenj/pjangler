@@ -40,7 +40,7 @@ import { validateCommittedGitRef } from "./git-evidence";
 import { prepareNotebookObservation } from "./observation";
 import { createNotebookChecks } from "./checks";
 import { homedir } from "node:os";
-import { installProjectNotebookIntegration } from "./hooks";
+import { installProjectNotebookIntegration, repairProjectNotebookSkillProjection, type ProjectNotebookHostBlockV1, type ProjectNotebookSkillRepairV1 } from "./hooks";
 import {
   NOTEBOOK_POLICY_VERSION,
   NOTEBOOK_SCHEMA_VERSION,
@@ -150,7 +150,7 @@ export class NotebookModule {
     this.registryStore = options.registryStore;
   }
 
-  installIntegration(env: NodeJS.ProcessEnv = this.environment): { changedFiles: string[] } {
+  installIntegration(env: NodeJS.ProcessEnv = this.environment): { changedFiles: string[]; blocked?: ProjectNotebookHostBlockV1 } {
     const installed = installProjectNotebookIntegration({ env });
     const home = env.HOME!;
     return {
@@ -158,7 +158,13 @@ export class NotebookModule {
         ...(installed.skill.installed ? [installed.skill.path] : []),
         ...(installed.hooksChanged ? [resolve(env.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? `${home}/.claude/settings.json`)] : []),
       ],
+      ...(installed.blocked ? { blocked: installed.blocked } : {}),
     };
+  }
+
+  /** PJAN-82: reconcile a drifted canonical Skillex projection from the pinned export. */
+  repairSkillProjection(apply: boolean, env: NodeJS.ProcessEnv = this.environment): ProjectNotebookSkillRepairV1 {
+    return repairProjectNotebookSkillProjection({ env, apply });
   }
 
   repairBindingProjection(repo = process.cwd()): string[] {
