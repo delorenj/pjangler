@@ -215,7 +215,7 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
 
   const before = json(["audit", repoRoot], { home });
   const rule = findings(before, "skills.project-manifest");
-  assert.equal(rule.status, "fail", "expected the unmanaged committed skill to fail the audit");
+  assert.equal(rule.status, "fail", "expected the undeclared skill entry to fail the audit");
   assert.equal(
     rule.fixable,
     true,

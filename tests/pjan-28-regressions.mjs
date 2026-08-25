@@ -134,7 +134,7 @@ function skillsBak(repo) {
 }
 
 try {
-  // 1. Audit surfaces unmanaged committed skills and names every one of them.
+  // 1. Audit surfaces undeclared skill entries and names every one of them.
   {
     const repo = makeRepo("audit-unmanaged");
     const home = makeHome("audit-unmanaged");
@@ -154,8 +154,8 @@ try {
     const audit = jsonCommand(["audit", repo, "--json"], { home, registryRoot: registry });
     const value = finding(audit, "skills.project-manifest");
     assert.equal(value.status, "fail");
-    assert.equal(value.fixable, true, "unmanaged committed skills must be reported as fixable");
-    assert.match(value.summary, /2 unmanaged committed skill\(s\)/, value.summary);
+    assert.equal(value.fixable, true, "undeclared skill entries must be reported as fixable");
+    assert.match(value.summary, /2 undeclared skill entr\(ies\)/, value.summary);
     for (const name of ["hand-rolled", "pristine-upstream"]) {
       assert.ok(
         value.details.some((detail) => detail === `.agents/skills/${name} is committed but absent from .agents/skills.json`),
@@ -205,7 +205,7 @@ try {
 
     // The finding is unchanged by a report-only run, so this stays actionable.
     const audit = jsonCommand(["audit", repo, "--json"], { home, registryRoot: registry });
-    assert.match(finding(audit, "skills.project-manifest").summary, /2 unmanaged committed skill\(s\)/);
+    assert.match(finding(audit, "skills.project-manifest").summary, /2 undeclared skill entr\(ies\)/);
   }
 
   // 3. With the flag: a confident (byte-identical) registry hit becomes a
@@ -352,7 +352,7 @@ try {
 
     const before = jsonCommand(["audit", repo, "--json"], { home, registryRoot: registry });
     const stale = finding(before, "skills.project-manifest");
-    assert.doesNotMatch(stale.summary, /unmanaged committed skill/, stale.summary);
+    assert.doesNotMatch(stale.summary, /undeclared skill entr/, stale.summary);
     assert.doesNotMatch(
       stale.details.join("\n"),
       /bmad-/,

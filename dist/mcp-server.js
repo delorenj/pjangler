@@ -5780,6 +5780,38 @@ var SKILLS_REGISTRY_URL = "https://github.com/delorenj/skillex.git";
 var SKILLS_BACKUP_DIRNAME = "skills.bak";
 var SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"];
 var BMAD_SKILL_NAME_PREFIX = "bmad-";
+var RETIRED_PACK_NAMES = /* @__PURE__ */ new Set(["bmad"]);
+function retiredPackDeclarations(manifest) {
+  const packs = manifest?.packs;
+  if (!Array.isArray(packs)) return [];
+  const names = [];
+  for (const entry of packs) {
+    const name = typeof entry === "string" ? entry : entry && typeof entry === "object" && typeof entry.name === "string" ? entry.name : void 0;
+    if (name && RETIRED_PACK_NAMES.has(name)) names.push(name);
+  }
+  return names;
+}
+function dropRetiredPackDeclarations(manifestPath, dryRun) {
+  const raw = safeReadText(manifestPath);
+  if (raw === null) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const manifest = parsed;
+  const dropped = retiredPackDeclarations(manifest);
+  if (!dropped.length) return [];
+  manifest.packs = manifest.packs.filter((entry) => {
+    const name = typeof entry === "string" ? entry : entry && typeof entry === "object" && typeof entry.name === "string" ? entry.name : void 0;
+    return !(name && RETIRED_PACK_NAMES.has(name));
+  });
+  if (!dryRun) writeText(manifestPath, `${JSON.stringify(manifest, null, 2)}
+`);
+  return dropped;
+}
 var PROJECT_CLI_SKILL_DIRS = [
   ".claude/skills",
   ".codex/skills",
@@ -8605,6 +8637,12 @@ function createAgentHooksChecks() {
             details.push(".agents/skills.json should define a skills array");
           } else {
             const bmadEntries = manifest.skills.filter((entry) => isRetiredBmadPackEntry(entry)).map(skillManifestEntryName).filter((name) => Boolean(name));
+            const retiredPacks = retiredPackDeclarations(manifest);
+            if (retiredPacks.length) {
+              details.push(
+                `.agents/skills.json declares retired pack(s) that bmad-method owns and Skillex no longer carries: ${retiredPacks.join(", ")}`
+              );
+            }
             if (bmadEntries.length) {
               details.push(
                 `.agents/skills.json declares ${bmadEntries.length} bmad-* skill(s) that bmad-method owns and should drop them: ${bmadEntries.join(", ")}`
@@ -8666,7 +8704,7 @@ function createAgentHooksChecks() {
         }
         if (unmanagedSkillNames.length) {
           details.push(
-            `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+            `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} undeclared skill entr(ies) into the manifest`
           );
         }
         for (const rel of [".mise/scripts/link-project-skills-to-clis.sh", ".mise/scripts/unlink-project-skills-from-clis.sh"]) {
@@ -8722,7 +8760,7 @@ function createAgentHooksChecks() {
           id: "skills.project-manifest",
           title: "Skillex project skills manifest",
           status: details.length === 0 ? "pass" : "fail",
-          summary: details.length === 0 ? `Skillex skills manifest parity verified${packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})` : ""}`,
+          summary: details.length === 0 ? `Skillex skills manifest parity verified${packAdvisories.length ? ` (${packAdvisories.join("; ")})` : ""}` : `${details.length} Skillex migration issue(s) detected${unmanagedSkillNames.length ? ` (${unmanagedSkillNames.length} undeclared skill entr(ies): ${unmanagedSkillNames.join(", ")})` : ""}`,
           details,
           fixable
         };
@@ -8775,6 +8813,11 @@ function createAgentHooksChecks() {
             changedFiles,
             details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`)
           };
+        }
+        const droppedPacks = dropRetiredPackDeclarations(manifestPath, Boolean(ctx.dryRun));
+        if (droppedPacks.length) {
+          if (!ctx.dryRun) changedFiles.push(manifestPath);
+          details.push(`dropped retired pack declaration(s) bmad-method owns: ${droppedPacks.join(", ")}`);
         }
         const provisioned = provisionDeclaredPacks(ctx);
         if (!provisioned.ok) {

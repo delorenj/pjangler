@@ -229,6 +229,58 @@ const SKILLS_REGISTRY_SKILL_DIRS = ["all-skills", "skills"] as const;
 // manifest and backing them up would be undone by the next BMAD install and
 // re-reported forever — the same drift loop the backup dir exists to avoid.
 const BMAD_SKILL_NAME_PREFIX = "bmad-";
+/**
+ * PJAN-82: pack names the contract forbids anyone to declare.
+ *
+ * PJAN-76 settled that BMAD is owned by `bmad-method install` and is never a
+ * Skillex pack "on either side"; skillex deleted `packs/bmad` accordingly. But a
+ * repo that still declared `packs: [{name: "bmad"}]` could not be repaired at
+ * all: provisioning the declared packs runs FIRST, the pack resolves nowhere, and
+ * the whole skills.project-manifest migration returned `blocked`. docsidian sat
+ * on 528 dangling links behind that single dead declaration with no way through.
+ *
+ * A declaration the contract forbids is dropped, not obeyed — otherwise the
+ * unresolvable thing gets a veto over its own removal.
+ */
+const RETIRED_PACK_NAMES: ReadonlySet<string> = new Set(["bmad"]);
+
+function retiredPackDeclarations(manifest: Record<string, unknown> | null | undefined): string[] {
+  const packs = manifest?.packs;
+  if (!Array.isArray(packs)) return [];
+  const names: string[] = [];
+  for (const entry of packs) {
+    const name = typeof entry === "string"
+      ? entry
+      : (entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string"
+        ? (entry as { name: string }).name
+        : undefined);
+    if (name && RETIRED_PACK_NAMES.has(name)) names.push(name);
+  }
+  return names;
+}
+
+/** Strip forbidden pack declarations, returning the dropped names. */
+function dropRetiredPackDeclarations(manifestPath: string, dryRun: boolean): string[] {
+  const raw = safeReadText(manifestPath);
+  if (raw === null) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { return []; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const manifest = parsed as Record<string, unknown>;
+  const dropped = retiredPackDeclarations(manifest);
+  if (!dropped.length) return [];
+  manifest.packs = (manifest.packs as unknown[]).filter((entry) => {
+    const name = typeof entry === "string"
+      ? entry
+      : (entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string"
+        ? (entry as { name: string }).name
+        : undefined);
+    return !(name && RETIRED_PACK_NAMES.has(name));
+  });
+  if (!dryRun) writeText(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return dropped;
+}
 // PACKS-CONTRACT section 6b: exactly six supported agent CLIs, project scope.
 // `.augment`, `.hermes`, `.openclaw`, `.kimi`, `.crush` and `.cursor` are
 // RETIRED — sync-skills.py never writes them again, so their topology is no
@@ -1293,10 +1345,18 @@ function digestSkillEntry(root: string): string | null {
  * Names under `.agents/skills` that no contract accounts for.
  *
  * Shared by the audit and the migration so the two can never drift. An entry is
- * "unmanaged" when it is NOT in the BMAD namespace (see
+ * "undeclared" when it is NOT in the BMAD namespace (see
  * BMAD_SKILL_NAME_PREFIX), NOT recorded in `.agents/skills.json`, and NOT a
  * projection of a backed-up skill (`skills-sync` re-materializes mapped entries
  * as symlinks into `.agents/skills.bak`, which must never be re-reported).
+ *
+ * PJAN-82: it used to report these as "unmanaged COMMITTED skill(s)", which is
+ * a claim this function cannot make — it never consults git. On the reporting
+ * machine 58 of them were gitignored generated symlinks, and the word sent the
+ * reader looking for a tracking problem that did not exist. The real condition
+ * is "present in the projection, accounted for by nothing", which since the
+ * fan-out engine started reconciling is usually sediment the next sync removes
+ * rather than content anyone needs to adopt.
  */
 function legacyCommittedSkillNames(
   skillsDir: string,
@@ -4479,6 +4539,12 @@ return [
             .filter((entry) => isRetiredBmadPackEntry(entry))
             .map(skillManifestEntryName)
             .filter((name): name is string => Boolean(name));
+          const retiredPacks = retiredPackDeclarations(manifest);
+          if (retiredPacks.length) {
+            details.push(
+              `.agents/skills.json declares retired pack(s) that bmad-method owns and Skillex no longer carries: ${retiredPacks.join(", ")}`,
+            );
+          }
           if (bmadEntries.length) {
             details.push(
               `.agents/skills.json declares ${bmadEntries.length} bmad-* skill(s) that bmad-method owns and should drop them: ${bmadEntries.join(", ")}`
@@ -4552,7 +4618,7 @@ return [
       }
       if (unmanagedSkillNames.length) {
         details.push(
-          `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} unmanaged committed skill(s) into the manifest`
+          `Run \`pj migrate skills.project-manifest --accept-registry-matches\` to map ${unmanagedSkillNames.length} undeclared skill entr(ies) into the manifest`
         );
       }
 
@@ -4621,7 +4687,7 @@ return [
               }`
             : `${details.length} Skillex migration issue(s) detected${
                 unmanagedSkillNames.length
-                  ? ` (${unmanagedSkillNames.length} unmanaged committed skill(s): ${unmanagedSkillNames.join(", ")})`
+                  ? ` (${unmanagedSkillNames.length} undeclared skill entr(ies): ${unmanagedSkillNames.join(", ")})`
                   : ""
               }`,
         details,
@@ -4678,6 +4744,14 @@ return [
           changedFiles,
           details: unsafeScriptTargets.map((path) => `${path} must be removed or repaired manually`),
         };
+      }
+
+      // Drop forbidden declarations before provisioning: otherwise an
+      // unresolvable pack blocks the very migration that would remove it.
+      const droppedPacks = dropRetiredPackDeclarations(manifestPath, Boolean(ctx.dryRun));
+      if (droppedPacks.length) {
+        if (!ctx.dryRun) changedFiles.push(manifestPath);
+        details.push(`dropped retired pack declaration(s) bmad-method owns: ${droppedPacks.join(", ")}`);
       }
 
       const provisioned = provisionDeclaredPacks(ctx);
