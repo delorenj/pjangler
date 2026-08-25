@@ -6044,7 +6044,8 @@ function templateVersioningScript(ctx) {
   return templateScript(ctx, "versioning.sh");
 }
 function templateLinkAgentfilesScript(ctx) {
-  return templateScript(ctx, "link-agentfiles.sh");
+  const source = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", ".mise", "scripts", "link-agentfiles.sh");
+  return existsSync2(source) ? readText(source) : templateScript(ctx, "link-agentfiles.sh");
 }
 function templateMaterializeEnvScript(ctx) {
   const source = join3(ctx.pjanglerRoot, "templates", "commonproject", "template", MATERIALIZE_ENV_SCRIPT_REL);

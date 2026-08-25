@@ -163,8 +163,32 @@ try {
 
     const script = join(repo, ".mise", "scripts", "link-agentfiles.sh");
     assert.equal(existsSync(script), true, "migrate must copy .mise/scripts/link-agentfiles.sh");
-    assert.match(readFileSync(script, "utf8"), /AI agent symlinks verified/);
+    const scriptText = readFileSync(script, "utf8");
+    assert.match(scriptText, /AGENTS\.md links verified in/);
+    // PJAN-82: the two load-bearing halves of the hardened script. Assert the
+    // BEHAVIOUR, not just that a file arrived — the previous version was copied
+    // faithfully for months while destroying hand-written CLAUDE.md files.
+    assert.match(scriptText, /refusing to replace the real file/, "must refuse to clobber a regular CLAUDE.md");
+    assert.match(scriptText, /refusing to act on/, "must refuse a root it does not belong to");
     assertAgentSymlinks(repo);
+
+    // Prove it, rather than trusting the text.
+    const precious = join(repo, "CLAUDE.md");
+    rmSync(precious, { force: true });
+    writeFileSync(precious, "HAND-WRITTEN, MUST SURVIVE\n");
+    const clobber = spawnSync(script, [repo], { cwd: repo, encoding: "utf8" });
+    assert.notEqual(clobber.status, 0, "a real CLAUDE.md must make the script refuse");
+    assert.equal(readFileSync(precious, "utf8"), "HAND-WRITTEN, MUST SURVIVE\n", "the file must be untouched");
+    rmSync(precious, { force: true });
+
+    // And that a foreign root is refused, which is what stops a parent mise
+    // config's enter hook from relinking whichever child you cd'd into.
+    const foreign = mkdtempSync(join(tmpdir(), "pjangler-foreign-root-"));
+    repos.push(foreign);
+    writeFileSync(join(foreign, "AGENTS.md"), "other\n");
+    const crossRepo = spawnSync(script, [foreign], { cwd: foreign, encoding: "utf8" });
+    assert.notEqual(crossRepo.status, 0, "a foreign root must be refused");
+    assert.equal(existsSync(join(foreign, "CLAUDE.md")), false, "nothing may be written into the foreign root");
   }
 
   {

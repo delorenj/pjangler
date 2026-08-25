@@ -591,7 +591,17 @@ function templateVersioningScript(ctx: Context): string | undefined {
 }
 
 function templateLinkAgentfilesScript(ctx: Context): string | undefined {
-  return templateScript(ctx, "link-agentfiles.sh");
+  // PJAN-82: read the CommonProject template, exactly like
+  // templateMaterializeEnvScript does. This used to read pjangler's OWN
+  // .mise/scripts/link-agentfiles.sh (shipped through the package.json files
+  // allowlist), which made two different sources of truth for two scripts
+  // sitting in the same directory. Hardening the template copy therefore
+  // propagated to nobody: `pj migrate mise.config-root` compared every repo
+  // against pjangler's stale copy and reported "No changes required" while the
+  // cwd-relative version that destroys a hand-written CLAUDE.md stayed
+  // installed everywhere, including in pjangler itself.
+  const source = join(ctx.pjanglerRoot, "templates", "commonproject", "template", ".mise", "scripts", "link-agentfiles.sh");
+  return existsSync(source) ? readText(source) : templateScript(ctx, "link-agentfiles.sh");
 }
 
 function templateMaterializeEnvScript(ctx: Context): string | undefined {
