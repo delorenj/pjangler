@@ -280,7 +280,30 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
   const targetExists = existsSync(targetDir);
   if (targetExists && !statSync(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : undefined;
-  const syncMode = Boolean(targetGitRoot && resolve(targetGitRoot) === resolve(targetDir));
+  // PJAN-84: adopt anything that is ALREADY a pjangler project, not only a git root.
+  //
+  // `syncMode` used to mean "this directory is a git root". A failed init over a
+  // pre-existing target leaves an orphan carrying .project.json,
+  // .copier-answers.yml, mise.toml, _bmad/ and the CLI roots but NO .git and no
+  // registry row — so re-planning it reported `mode: create` and proposed
+  // `copier.copy.commonproject` again, re-rendering the template over a
+  // populated tree. Every retry produced the same orphan, which is what "fails
+  // in a new way on every repo" actually was.
+  //
+  // `.project.json` is the canonical manifest and the thing `sot.project-json`
+  // owns; `.copier-answers.yml` is proof a render already happened. Either one
+  // means this is not greenfield, so finish what is here instead of starting
+  // over. Copier's post-render tasks were made idempotent in PJAN-82, so an
+  // adopting re-render no longer destroys .gitignore or a hand-written
+  // CLAUDE.md — which is what made adoption safe to do at all.
+  const alreadyScaffolded = targetExists && (
+    existsSync(join(targetDir, ".project.json"))
+    || existsSync(join(targetDir, ".copier-answers.yml"))
+  );
+  const syncMode = Boolean(
+    (targetGitRoot && resolve(targetGitRoot) === resolve(targetDir))
+    || alreadyScaffolded,
+  );
 
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {

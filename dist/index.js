@@ -17702,7 +17702,10 @@ async function resolveProjectInitTarget(name, options) {
   const targetExists = existsSync24(targetDir);
   if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve18(targetGitRoot) === resolve18(targetDir));
+  const alreadyScaffolded = targetExists && (existsSync24(join29(targetDir, ".project.json")) || existsSync24(join29(targetDir, ".copier-answers.yml")));
+  const syncMode = Boolean(
+    targetGitRoot && resolve18(targetGitRoot) === resolve18(targetDir) || alreadyScaffolded
+  );
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename8(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
