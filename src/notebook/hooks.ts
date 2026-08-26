@@ -137,7 +137,10 @@ function enumerateSkillPayload(source: string): SkillExportManifestV1["files"] {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join(directory, entry.name);
       const rel = relative(source, path).split(sep).join("/");
-      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS")) continue;
+      // PJAN-84: `.source.yaml` is Skillex's provenance metadata about its own
+      // extracted copy, rewritten on every re-sync. It is generated, like the
+      // manifest and the checksums, and must not participate in the digest.
+      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       if (!safeSkillRelativePath(rel)) throw new NotebookError("CONFLICT", `Project Notebook skill export path is unsafe: ${rel}`);
       const stat = lstatSync(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a symlink");
@@ -468,7 +471,47 @@ export function installPackagedProjectNotebookSkill(input: { source?: string; en
     return { installed: false, path: link, digest };
   }
   symlinkSync(payload, link, "dir");
+  collectSupersededPayloads(dataRoot, [payload, link]);
   return { installed: true, path: link, digest };
+}
+
+/**
+ * PJAN-84: collect superseded payloads.
+ *
+ * Each re-pin materializes an immutable `<version>-<digest>` directory under the
+ * XDG data root and nothing ever removed the previous one, so the store grew by
+ * a full copy of the skill on every PJangler release and every content change.
+ *
+ * Exactly one payload can be in use: the hook command is the fixed path
+ * `$HOME/.agents/skills/project-notebook`, a single link. So anything that is
+ * neither the payload just written nor the target of that link is unreachable.
+ * Deliberately narrow: only direct children of the data root whose names match
+ * the `<version>-<64 hex>` shape are considered, a staging directory in flight is
+ * skipped, and a failure to remove one is swallowed — reclaiming disk must never
+ * be able to fail an install.
+ */
+function collectSupersededPayloads(dataRoot: string, keep: readonly string[]): string[] {
+  const kept = new Set<string>();
+  for (const path of keep) {
+    try { kept.add(realpathSync(path)); }
+    catch { /* absent or unreadable: nothing to keep */ }
+  }
+  const removed: string[] = [];
+  let entries: string[];
+  try { entries = readdirSync(dataRoot); }
+  catch { return removed; }
+  for (const name of entries) {
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?-[0-9a-f]{64}$/u.test(name)) continue;
+    const candidate = join(dataRoot, name);
+    try {
+      const stat = lstatSync(candidate);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      if (kept.has(realpathSync(candidate))) continue;
+      rmSync(candidate, { recursive: true, force: true });
+      removed.push(candidate);
+    } catch { /* leave anything that resists inspection or removal */ }
+  }
+  return removed;
 }
 
 export interface ProjectNotebookSkillRepairV1 {
@@ -518,7 +561,10 @@ export function repairProjectNotebookSkillProjection(input: { env?: NodeJS.Proce
       const rel = relative(source, path).split(sep).join("/");
       if (entry.isDirectory()) { walk(path); continue; }
       if (!entry.isFile()) throw new NotebookError("CONFLICT", `Refusing to repair a projection containing a non-regular entry: ${rel}`);
-      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS")) continue;
+      // PJAN-84: `.source.yaml` is Skillex's provenance metadata about its own
+      // extracted copy, rewritten on every re-sync. It is generated, like the
+      // manifest and the checksums, and must not participate in the digest.
+      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       present.push(rel);
     }
   };

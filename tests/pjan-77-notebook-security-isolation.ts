@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { validateNotebookBaseUrl } from "../src/notebook/config";
 import { readSafeEvidenceText } from "../src/notebook/git-evidence";
 import { captureWorkerEnvironment, describeProjectNotebookSkillDrift, inspectProjectNotebookIntegration, installPackagedProjectNotebookSkill, installProjectNotebookIntegration, repairProjectNotebookSkillProjection, verifyProjectNotebookSkillExport } from "../src/notebook/hooks";
@@ -183,6 +183,38 @@ try {
   assert.ok(firstPayloadFile);
   writeFileSync(join(payload, "SKILL.md"), `${readFileSync(join(payload, "SKILL.md"), "utf8")}\ntampered\n`);
   assert.throws(() => installPackagedProjectNotebookSkill({ env: { HOME: packedHome, XDG_DATA_HOME: join(workspace, "packed-data") } }), /digest mismatch/u, "an installed payload is reverified before reuse");
+
+  // PJAN-84: superseded payloads are collected, foreign directories are not.
+  //
+  // Each re-pin materialized an immutable <version>-<digest> directory and
+  // nothing removed the previous one, so the store grew by a full copy of the
+  // skill on every release. Exactly one payload can be reachable — the hook
+  // command is the fixed $HOME/.agents/skills/project-notebook link.
+  {
+    const gcHome = join(workspace, "gc-home");
+    const gcData = join(workspace, "gc-data");
+    const store = join(gcData, "pjangler", "skills", "project-notebook");
+    mkdirSync(store, { recursive: true });
+    const stale = [
+      `1.0.0-${"a".repeat(64)}`,
+      `1.2.0-${"b".repeat(64)}`,
+      `9.9.9-next.1-${"c".repeat(64)}`,
+    ];
+    for (const name of stale) mkdirSync(join(store, name), { recursive: true });
+    mkdirSync(join(store, "not-a-payload"), { recursive: true });
+    const collected = installPackagedProjectNotebookSkill({ env: { HOME: gcHome, XDG_DATA_HOME: gcData } });
+    assert.equal(collected.installed, true);
+    for (const name of stale) {
+      assert.equal(existsSync(join(store, name)), false, `superseded payload ${name} must be collected`);
+    }
+    assert.equal(existsSync(join(store, "not-a-payload")), true, "a directory that is not a payload is never touched");
+    assert.equal(existsSync(realpathSync(collected.path)), true, "the payload the link points at survives");
+    assert.equal(dirname(realpathSync(collected.path)), realpathSync(store), "the surviving payload is the one just written");
+    // A second install is still a no-op and does not collect the live payload.
+    const again = installPackagedProjectNotebookSkill({ env: { HOME: gcHome, XDG_DATA_HOME: gcData } });
+    assert.equal(again.installed, false);
+    assert.equal(existsSync(realpathSync(collected.path)), true, "collection must never remove the payload in use");
+  }
 
   const hostile = join(workspace, "hostile-source");
   cpSync(canonical, hostile, { recursive: true });

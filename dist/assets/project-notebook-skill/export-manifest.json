@@ -3,11 +3,6 @@
   "skill": "project-notebook",
   "files": [
     {
-      "path": ".source.yaml",
-      "sha256": "5113ddd7998b7511f4a1dae5a9d3cef59bc31a04e982f3ac35fa9078b238d434",
-      "mode": "0644"
-    },
-    {
       "path": "agents/openai.yaml",
       "sha256": "dba418f3b40d2e1362e615bdfda6cb1616ec5e49e2e8bd81ca48144ef219b29f",
       "mode": "0644"

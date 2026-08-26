@@ -98,26 +98,32 @@ function validateMetadata(root, entries) {
     if (record.url !== expected.url) fail(`${path} URL must be ${expected.url}`);
     if (record.branch !== expected.branch) fail(`${path} branch must be ${expected.branch}`);
 
-    // PJAN-84: .gitmodules declaring `branch = main` is a claim about the
-    // CHECKOUT, and the checkout was not honouring it. templates/hermes-agent
-    // sat on a detached HEAD for long enough that its local `main` fell 24
-    // commits behind the commit actually recorded in the superproject — so a
-    // `git checkout main` there silently rewound the template by 24 commits.
-    // Every other check here passed throughout, because they all read the
-    // recorded pin and the remote, and neither notices where the worktree is
-    // standing.
-    // Only an INITIALIZED submodule has a checkout to stand anywhere. A fresh
-    // clone before `git submodule update --init` legitimately has none, and the
-    // pin/remote checks above already cover what is recorded.
+    // PJAN-84: if the declared branch exists locally, checking it out must not
+    // rewind the submodule.
+    //
+    // templates/hermes-agent sat detached long enough that its local `main` fell
+    // 24 commits BEHIND the commit the superproject records, so `git checkout
+    // main` there silently rewound the template by 24 commits — and every other
+    // check here passed throughout, because they all read the recorded pin and
+    // the remote and neither notices the state of the local branch.
+    //
+    // Deliberately NOT a requirement that the checkout be attached: `git
+    // submodule update --init` detaches by design, so demanding an attached
+    // branch would fail every clean CI clone. The invariant that actually bites
+    // is that the declared branch, if present, contains the pin.
+    //
+    // An uninitialized submodule is exempt; it has no local branch to be stale.
     if (!existsSync(join(root, path, ".git"))) continue;
-    const head = run(root, "git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"]);
-    const onBranch = head.status === 0 ? String(head.stdout).trim() : "";
-    if (!onBranch) {
-      fail(`${path} checkout could not be read`);
-    } else if (onBranch === "HEAD") {
-      fail(`${path} is on a detached HEAD; .gitmodules declares branch = ${expected.branch}`);
-    } else if (onBranch !== expected.branch) {
-      fail(`${path} is checked out on ${onBranch}; .gitmodules declares branch = ${expected.branch}`);
+    const pin = gitlinks.get(path)?.sha;
+    const branchSha = run(root, "git", ["-C", path, "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`]);
+    if (pin && branchSha.status === 0) {
+      const localBranch = String(branchSha.stdout).trim();
+      if (localBranch !== pin) {
+        const contains = run(root, "git", ["-C", path, "merge-base", "--is-ancestor", pin, localBranch]);
+        if (contains.status !== 0) {
+          fail(`${path} local ${expected.branch} (${localBranch.slice(0, 10)}) does not contain the pinned commit ${pin.slice(0, 10)}; checking it out would rewind the submodule`);
+        }
+      }
     }
   }
 

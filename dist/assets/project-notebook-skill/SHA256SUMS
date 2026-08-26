@@ -1,4 +1,3 @@
-5113ddd7998b7511f4a1dae5a9d3cef59bc31a04e982f3ac35fa9078b238d434  .source.yaml
 dba418f3b40d2e1362e615bdfda6cb1616ec5e49e2e8bd81ca48144ef219b29f  agents/openai.yaml
 8a469caf88ed05dc466ffaad611cb45dd0c26046595d9538415d7c89287c8800  hooks/claude.settings.json
 8a469caf88ed05dc466ffaad611cb45dd0c26046595d9538415d7c89287c8800  hooks/hooks.master.json

@@ -12578,7 +12578,7 @@ function enumerateSkillPayload(source) {
     for (const entry of readdirSync7(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join20(directory, entry.name);
       const rel = relative10(source, path).split(sep6).join("/");
-      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS")) continue;
+      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       if (!safeSkillRelativePath(rel)) throw new NotebookError("CONFLICT", `Project Notebook skill export path is unsafe: ${rel}`);
       const stat = lstatSync9(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a symlink");
@@ -12853,7 +12853,37 @@ function installPackagedProjectNotebookSkill(input = {}) {
     return { installed: false, path: link, digest };
   }
   symlinkSync2(payload, link, "dir");
+  collectSupersededPayloads(dataRoot, [payload, link]);
   return { installed: true, path: link, digest };
+}
+function collectSupersededPayloads(dataRoot, keep) {
+  const kept = /* @__PURE__ */ new Set();
+  for (const path of keep) {
+    try {
+      kept.add(realpathSync7(path));
+    } catch {
+    }
+  }
+  const removed = [];
+  let entries;
+  try {
+    entries = readdirSync7(dataRoot);
+  } catch {
+    return removed;
+  }
+  for (const name of entries) {
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?-[0-9a-f]{64}$/u.test(name)) continue;
+    const candidate = join20(dataRoot, name);
+    try {
+      const stat = lstatSync9(candidate);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      if (kept.has(realpathSync7(candidate))) continue;
+      rmSync3(candidate, { recursive: true, force: true });
+      removed.push(candidate);
+    } catch {
+    }
+  }
+  return removed;
 }
 function repairProjectNotebookSkillProjection(input = {}) {
   const env2 = input.env ?? process.env;
@@ -12881,7 +12911,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
         continue;
       }
       if (!entry.isFile()) throw new NotebookError("CONFLICT", `Refusing to repair a projection containing a non-regular entry: ${rel}`);
-      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS")) continue;
+      if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       present.push(rel);
     }
   };

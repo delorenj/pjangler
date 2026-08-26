@@ -156,26 +156,37 @@ try {
     assert.equal(check(root).status, 0);
   }
 
-  // PJAN-84: .gitmodules declaring `branch = main` is a claim about the
-  // CHECKOUT, and nothing verified it. templates/hermes-agent sat on a detached
-  // HEAD long enough that its local `main` fell 24 commits behind the commit the
-  // superproject records — so `git checkout main` there silently rewound the
-  // template. Every other check here passed throughout, because they all read
-  // the recorded pin and the remote, and neither notices where the worktree is
-  // standing. An UNINITIALIZED submodule has no checkout and is exempt.
+  // PJAN-84: the declared branch, if it exists locally, must contain the pin.
+  //
+  // templates/hermes-agent sat detached long enough that its local `main` fell
+  // 24 commits BEHIND the commit the superproject records, so `git checkout
+  // main` there silently rewound the template. Every other check here passed
+  // throughout, because they all read the recorded pin and the remote and
+  // neither notices the state of the local branch.
+  //
+  // A detached HEAD is explicitly NOT a failure: `git submodule update --init`
+  // detaches by design, so demanding an attached branch would fail every clean
+  // CI clone — which is exactly what an earlier draft of this check did.
   {
     const { root } = worktreeFixture();
-    assert.equal(check(root, "--recursive").status, 0, "an attached submodule satisfies the contract");
-    git(join(root, "templates", "hermes-agent"), ["checkout", "--quiet", "--detach", "HEAD"]);
-    const detached = check(root, "--recursive");
-    assert.equal(detached.status, 1, "a detached submodule checkout must fail the contract");
-    assert.match(detached.stderr, /templates\/hermes-agent is on a detached HEAD; \.gitmodules declares branch = main/);
-    git(join(root, "templates", "hermes-agent"), ["checkout", "--quiet", "main"]);
-    assert.equal(check(root, "--recursive").status, 0, "reattaching clears it");
-    git(join(root, "templates", "hermes-agent"), ["checkout", "--quiet", "-b", "not-main"]);
-    const wrongBranch = check(root, "--recursive");
-    assert.equal(wrongBranch.status, 1, "a submodule on the wrong branch must fail too");
-    assert.match(wrongBranch.stderr, /checked out on not-main; \.gitmodules declares branch = main/);
+    const sub = join(root, "templates", "hermes-agent");
+    assert.equal(check(root, "--recursive").status, 0, "an attached, current submodule satisfies the contract");
+
+    git(sub, ["checkout", "--quiet", "--detach", "HEAD"]);
+    assert.equal(check(root, "--recursive").status, 0, "a detached checkout is CI's normal state, not a defect");
+
+    // Advance the pin, leaving the local branch behind it.
+    writeFileSync(join(sub, "template", "drift.txt"), "advanced\n");
+    git(sub, ["add", "-A"]);
+    git(sub, ["commit", "--quiet", "-m", "advance past the local branch"]);
+    git(root, ["add", "templates/hermes-agent"]);
+    const stale = check(root, "--recursive");
+    assert.equal(stale.status, 1, "a local branch behind the pin must fail: checking it out would rewind");
+    assert.match(stale.stderr, /local main \([0-9a-f]{10}\) does not contain the pinned commit [0-9a-f]{10}; checking it out would rewind/);
+
+    // Fast-forwarding the branch onto the pin clears it.
+    git(sub, ["branch", "--force", "main", "HEAD"]);
+    assert.equal(check(root, "--recursive").status, 0, "a branch that contains the pin is fine, attached or not");
   }
 
   {

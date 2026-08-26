@@ -6,7 +6,15 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const target = resolve(repoRoot, "dist", "assets", "project-notebook-skill");
-const generatedNames = new Set(["export-manifest.json", "SHA256SUMS"]);
+// PJAN-84: `.source.yaml` is Skillex's OWN provenance metadata about its
+// extracted copy — "extracted_at", "modified_locally" — written by skill_ssot.py
+// and rewritten whenever Skillex re-syncs. It described the projection, never the
+// skill, and pinning it did two things: it shipped a `modified_locally: false`
+// claim to every npm user about a copy PJangler cannot know anything about, and
+// it made a Skillex bookkeeping write indistinguishable from a real content
+// change, which is the drift class that took `pj init` down. Excluded from both
+// sides of the comparison, exactly like the manifest and the checksums.
+const generatedNames = new Set(["export-manifest.json", "SHA256SUMS", ".source.yaml"]);
 const rawJwt = /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9])/u;
 const credentialAssignment = /(?:password|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\s*[:=]\s*["']([^"'\r\n]{12,})["']/giu;
 
@@ -56,7 +64,7 @@ function enumerate(directory, { packed = false } = {}) {
     for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join(current, entry.name);
       const rel = relative(directory, path).split(sep).join("/");
-      if (packed && !rel.includes("/") && generatedNames.has(rel)) continue;
+      if (!rel.includes("/") && generatedNames.has(rel)) continue;
       const stat = lstatSync(path);
       if (stat.isSymbolicLink()) throw new Error(`Symlinks are forbidden in the Project Notebook skill export: ${rel}`);
       if (entry.isDirectory()) walk(path);
