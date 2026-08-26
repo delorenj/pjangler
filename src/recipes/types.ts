@@ -22,6 +22,17 @@ export interface LifecycleContext extends CommandContext {
   repoRoot: string;
   pjanglerRoot: string;
   homeDir: string;
+  /**
+   * PJAN-84: the project registry this run reads.
+   *
+   * Every rule that consults the registry used to fall back to
+   * `projectRegistryPath()` independently, so `--registry` could not reach them.
+   * `describe --registry` was the visible symptom: describe/index.ts passed the
+   * override to describeIdentity and describeNotebook and then built the parity
+   * context WITHOUT it, so the identity block and the notebook rules answered
+   * about two different registries in one report.
+   */
+  registryPath?: string;
   live?: boolean;
   bmadVersionPin?: string;
   acceptRegistryMatches?: boolean;

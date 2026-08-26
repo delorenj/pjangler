@@ -49,7 +49,13 @@ function registryDeclared(ctx: LifecycleContext): boolean {
 }
 
 function resolvedConfig(ctx: LifecycleContext) {
-  return ctx.notebookPlan?.config ?? loadEffectiveNotebookConfig(ctx.repoRoot);
+  // PJAN-84: honour the run's registry. Falling back to projectRegistryPath()
+  // here is what made `describe --registry` report notebook findings about the
+  // DEFAULT registry while its identity block described the override.
+  return ctx.notebookPlan?.config
+    ?? (ctx.registryPath
+      ? loadEffectiveNotebookConfig(ctx.repoRoot, ctx.registryPath)
+      : loadEffectiveNotebookConfig(ctx.repoRoot));
 }
 
 function bindingProjection(value: unknown): Record<string, unknown> | null {

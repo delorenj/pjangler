@@ -224,18 +224,30 @@ export class RecipeRegistry {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
     if (unknown.length) throw new Error(`Unknown parity rules: ${unknown.join(", ")}`);
-    const results: LifecycleMigrationResult[] = [];
+    // PJAN-84: verify AFTER every selected rule has run, not inside the loop.
+    //
+    // verifyMigration used to be applied per result as it was produced, so rule
+    // N's postcondition was read before rules N+1..M had run. A rule that a
+    // LATER rule repaired was therefore still reported `partial`, and since
+    // `partial` counts against `ok`, `migrate --all` exited 1 describing a repo
+    // that was in parity by the time the run ended. Observed on pjangler:
+    // bmad.cli-roots reported "3 supported projection issue(s)" that
+    // bmad.scaffold's BMAD reinstall had already resolved.
+    //
+    // PJAN-75's property is untouched: a claimed success must still be supported
+    // by the rule's own audit. Only WHEN that audit is read changes.
+    const raw: LifecycleMigrationResult[] = [];
     for (const id of ruleIds) {
       const owner = this.ruleOwners.get(id)!;
       try {
         const migrated = owner.recipe.migrate(ctx, [id]);
-        results.push(...migrated.map((result) => this.verifyMigration(ctx, {
+        raw.push(...migrated.map((result) => ({
           ...result,
           recipeId: result.recipeId ?? owner.recipe.metadata.id,
         })));
       } catch (err) {
         const check = owner.recipe.checks[owner.checkIndex]!;
-        results.push({
+        raw.push({
           id,
           recipeId: owner.recipe.metadata.id,
           title: check.title,
@@ -246,6 +258,7 @@ export class RecipeRegistry {
         });
       }
     }
+    const results = raw.map((result) => this.verifyMigration(ctx, result));
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),

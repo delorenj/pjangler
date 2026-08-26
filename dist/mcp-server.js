@@ -12144,7 +12144,7 @@ function registryDeclared(ctx) {
   return enabled(ctx);
 }
 function resolvedConfig(ctx) {
-  return ctx.notebookPlan?.config ?? loadEffectiveNotebookConfig(ctx.repoRoot);
+  return ctx.notebookPlan?.config ?? (ctx.registryPath ? loadEffectiveNotebookConfig(ctx.repoRoot, ctx.registryPath) : loadEffectiveNotebookConfig(ctx.repoRoot));
 }
 function bindingProjection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -14380,18 +14380,18 @@ var RecipeRegistry = class {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
     if (unknown.length) throw new Error(`Unknown parity rules: ${unknown.join(", ")}`);
-    const results = [];
+    const raw = [];
     for (const id of ruleIds) {
       const owner = this.ruleOwners.get(id);
       try {
         const migrated = owner.recipe.migrate(ctx, [id]);
-        results.push(...migrated.map((result2) => this.verifyMigration(ctx, {
+        raw.push(...migrated.map((result2) => ({
           ...result2,
           recipeId: result2.recipeId ?? owner.recipe.metadata.id
         })));
       } catch (err) {
         const check = owner.recipe.checks[owner.checkIndex];
-        results.push({
+        raw.push({
           id,
           recipeId: owner.recipe.metadata.id,
           title: check.title,
@@ -14402,6 +14402,7 @@ var RecipeRegistry = class {
         });
       }
     }
+    const results = raw.map((result2) => this.verifyMigration(ctx, result2));
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),
@@ -14888,17 +14889,17 @@ function publicMigration2(report) {
     results: report.results.map(({ recipeId: _recipeId, ...result2 }) => result2)
   };
 }
-function runAudit(repoArg) {
-  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
+function runAudit(repoArg, registryPath2) {
+  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath2 ? { registryPath: registryPath2 } : {})));
 }
-function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
+function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false, registryPath2) {
   return publicMigration2(recipeRegistry.migrateRules(
-    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
+    lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath2 ? { registryPath: registryPath2 } : {}),
     ruleIds
   ));
 }
-function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
-  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
+function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false, registryPath2) {
+  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath2 ? { registryPath: registryPath2 } : {});
   return publicMigration2(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
 }
 
@@ -15553,7 +15554,7 @@ function describeProject(input = {}) {
   if (!existsSync21(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
-  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
+  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath: registryPath2 }));
   const findings = report.rules;
   const counts = { pass: 0, fail: 0, warn: 0, skip: 0 };
   for (const finding2 of findings) counts[finding2.status] += 1;

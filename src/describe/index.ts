@@ -622,7 +622,7 @@ export function describeProject(input: DescribeInput = {}): ProjectDescription {
   if (!statSync(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
 
   const registryPath = input.registryPath ?? projectRegistryPath();
-  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
+  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath }));
   const findings = report.rules;
 
   const counts: Record<LifecycleStatus, number> = { pass: 0, fail: 0, warn: 0, skip: 0 };

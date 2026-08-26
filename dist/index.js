@@ -12902,7 +12902,7 @@ function registryDeclared(ctx) {
   return enabled(ctx);
 }
 function resolvedConfig(ctx) {
-  return ctx.notebookPlan?.config ?? loadEffectiveNotebookConfig(ctx.repoRoot);
+  return ctx.notebookPlan?.config ?? (ctx.registryPath ? loadEffectiveNotebookConfig(ctx.repoRoot, ctx.registryPath) : loadEffectiveNotebookConfig(ctx.repoRoot));
 }
 function bindingProjection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -15360,18 +15360,18 @@ var RecipeRegistry = class {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
     if (unknown.length) throw new Error(`Unknown parity rules: ${unknown.join(", ")}`);
-    const results = [];
+    const raw = [];
     for (const id of ruleIds) {
       const owner = this.ruleOwners.get(id);
       try {
         const migrated = owner.recipe.migrate(ctx, [id]);
-        results.push(...migrated.map((result2) => this.verifyMigration(ctx, {
+        raw.push(...migrated.map((result2) => ({
           ...result2,
           recipeId: result2.recipeId ?? owner.recipe.metadata.id
         })));
       } catch (err) {
         const check = owner.recipe.checks[owner.checkIndex];
-        results.push({
+        raw.push({
           id,
           recipeId: owner.recipe.metadata.id,
           title: check.title,
@@ -15382,6 +15382,7 @@ var RecipeRegistry = class {
         });
       }
     }
+    const results = raw.map((result2) => this.verifyMigration(ctx, result2));
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),
@@ -15868,17 +15869,17 @@ function publicMigration2(report) {
     results: report.results.map(({ recipeId: _recipeId, ...result2 }) => result2)
   };
 }
-function runAudit(repoArg) {
-  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
+function runAudit(repoArg, registryPath2) {
+  return publicAudit2(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath2 ? { registryPath: registryPath2 } : {})));
 }
-function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false) {
+function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = false, registryPath2) {
   return publicMigration2(recipeRegistry.migrateRules(
-    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
+    lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath2 ? { registryPath: registryPath2 } : {}),
     ruleIds
   ));
 }
-function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false) {
-  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
+function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false, registryPath2) {
+  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath2 ? { registryPath: registryPath2 } : {});
   return publicMigration2(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
 }
 
@@ -16808,7 +16809,7 @@ function describeProject(input = {}) {
   if (!existsSync22(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
-  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true));
+  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath: registryPath2 }));
   const findings = report.rules;
   const counts = { pass: 0, fail: 0, warn: 0, skip: 0 };
   for (const finding2 of findings) counts[finding2.status] += 1;
@@ -17964,7 +17965,7 @@ commandCmd.command("create").argument("<name>", "Command name").argument("<promp
   console.log(`  ${dim("For now, manually create commands in src/commands/")}`);
   console.log("");
 });
-program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)").option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)").option("--json", "Output machine-parseable JSON").action((repo, options) => {
+program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)").option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action((repo, options) => {
   try {
     const profile = options.profile;
     const live = options.live ?? false;
@@ -17981,7 +17982,7 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
       console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
       process.exit(1);
     }
-    const report = runAudit(repo);
+    const report = runAudit(repo, options.registry);
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
@@ -17996,17 +17997,18 @@ program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd
 program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to open interactive rule selector)").argument("[repo]", "Path to repo (default: cwd)").description("Idempotent migration recipe for a parity rule (or open the rule selector)").option("--all", "Apply every migration recipe in order").option("--dry-run", "Preview changes without writing files").option(
   "--accept-registry-matches",
   "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
-).option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
+).option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action(async (ruleId, repo, options) => {
   try {
     const all = options.all ?? false;
     const dryRun = options.dryRun ?? false;
     const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
+    const registryOverride = options.registry;
     if (all) {
       let actualRepo = repo;
       if (ruleId && !actualRepo) {
         actualRepo = ruleId;
       }
-      const report2 = runMigration(void 0, actualRepo, dryRun, true, acceptRegistryMatches);
+      const report2 = runMigration(void 0, actualRepo, dryRun, true, acceptRegistryMatches, registryOverride);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
@@ -18015,12 +18017,12 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
         console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
         process.exit(1);
       }
-      const report2 = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches);
+      const report2 = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches, registryOverride);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
     if (ruleId && getParityRuleIds().includes(ruleId)) {
-      const report2 = runMigration(ruleId, void 0, dryRun, false, acceptRegistryMatches);
+      const report2 = runMigration(ruleId, void 0, dryRun, false, acceptRegistryMatches, registryOverride);
       printMigrationReport(report2, options.json);
       process.exit(report2.ok ? 0 : 1);
     }
@@ -18039,7 +18041,7 @@ program.command("migrate").argument("[rule-id]", "Rule ID to migrate (omit to op
       console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
       process.exit(0);
     }
-    const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches);
+    const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches, registryOverride);
     printMigrationReport(report, false);
     process.exit(report.ok ? 0 : 1);
   } catch (err) {
@@ -18133,7 +18135,7 @@ program.command("describe").argument("[repo]", "Path to the repo to describe (de
       console.log(`  ${dim("Nothing applied.")}`);
       return;
     }
-    const report = runMigrationForRules(result2.selected, description.repo, false);
+    const report = runMigrationForRules(result2.selected, description.repo, false, false, options.registry);
     printMigrationReport(report, false);
     if (!report.ok) process.exit(1);
   } catch (err) {

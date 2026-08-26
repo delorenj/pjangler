@@ -837,6 +837,7 @@ program
   .description("Deterministic parity audit against 33god project standard")
   .option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)")
   .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
   .action((repo: string | undefined, options) => {
     try {
@@ -855,7 +856,7 @@ program
         console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
         process.exit(1);
       }
-      const report = runAudit(repo);
+      const report = runAudit(repo, options.registry as string | undefined);
       if (options.json) {
         console.log(JSON.stringify(report, null, 2));
       } else {
@@ -883,12 +884,14 @@ program
     "--accept-registry-matches",
     "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
   )
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
   .action(async (ruleId: string | undefined, repo: string | undefined, options) => {
     try {
       const all = options.all ?? false;
       const dryRun = options.dryRun ?? false;
       const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
+      const registryOverride = options.registry as string | undefined;
 
       if (all) {
         // When --all is used, any positional argument is the repo path, not a rule-id.
@@ -896,7 +899,7 @@ program
         if (ruleId && !actualRepo) {
           actualRepo = ruleId;
         }
-        const report = runMigration(undefined, actualRepo, dryRun, true, acceptRegistryMatches);
+        const report = runMigration(undefined, actualRepo, dryRun, true, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -907,14 +910,14 @@ program
           console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
           process.exit(1);
         }
-        const report = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches);
+        const report = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
 
       // Single valid rule-id applies to cwd.
       if (ruleId && getParityRuleIds().includes(ruleId)) {
-        const report = runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches);
+        const report = runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -939,7 +942,7 @@ program
         console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
         process.exit(0);
       }
-      const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches);
+      const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches, registryOverride);
       printMigrationReport(report, false);
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
@@ -1105,7 +1108,7 @@ program
         return;
       }
 
-      const report = runMigrationForRules(result.selected, description.repo, false);
+      const report = runMigrationForRules(result.selected, description.repo, false, false, options.registry as string | undefined);
       printMigrationReport(report, false);
       if (!report.ok) process.exit(1);
     } catch (err) {

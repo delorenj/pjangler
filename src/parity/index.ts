@@ -76,8 +76,13 @@ function publicMigration(report: ReturnType<typeof recipeRegistry.migrateRules>)
   } as MigrationReport;
 }
 
-export function runAudit(repoArg?: string): AuditReport {
-  return publicAudit(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true)));
+export function runAudit(repoArg?: string, registryPath?: string): AuditReport {
+  // PJAN-84: the registry the caller asked for reaches the rules. Without this,
+  // `pj audit` had no --registry at all and every registry-reading rule fell
+  // back to projectRegistryPath() independently, so auditing a project outside
+  // the default registry produced findings about a project the registry had
+  // never heard of.
+  return publicAudit(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath ? { registryPath } : {})));
 }
 
 export function runMigrationForRules(
@@ -85,9 +90,10 @@ export function runMigrationForRules(
   repoArg: string | undefined,
   dryRun: boolean,
   acceptRegistryMatches = false,
+  registryPath?: string,
 ): MigrationReport {
   return publicMigration(recipeRegistry.migrateRules(
-    lifecycleContext(repoArg, dryRun, acceptRegistryMatches),
+    lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath ? { registryPath } : {}),
     ruleIds,
   ));
 }
@@ -98,8 +104,9 @@ export function runMigration(
   dryRun: boolean,
   all: boolean,
   acceptRegistryMatches = false,
+  registryPath?: string,
 ): MigrationReport {
-  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches);
+  const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath ? { registryPath } : {});
   return publicMigration(all
     ? recipeRegistry.migrateAll(ctx)
     : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
