@@ -353,6 +353,73 @@ try {
   assertAdversarialBoundaries(source.projectDir, homeDir);
   assertProvisionerRejectsUntrustedPacks(source.projectDir, homeDir);
 
+  // PJAN-84: a repo's own skills/ reaches the CLIs, and a globally-inherited
+  // name is never copied in beside it.
+  //
+  // pjangler authored pjangler-dev and pjangler-parity-rules — the two skills
+  // describing how to develop pjangler — and projected neither anywhere, so they
+  // were invisible to every agent developing pjangler. Meanwhile seven links
+  // duplicated skills the global scope already provides.
+  {
+    const repo = join(tmp, "repo-local-discovery");
+    const home = join(tmp, "repo-local-home");
+    const registry = join(tmp, "repo-local-registry");
+    mkdirSync(join(repo, ".mise", "scripts"), { recursive: true });
+    mkdirSync(join(repo, ".agents"), { recursive: true });
+    mkdirSync(join(repo, ".claude", "skills"), { recursive: true });
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    mkdirSync(join(registry, "all-skills"), { recursive: true });
+    const engine = join(repo, ".mise", "scripts", "sync-skills.py");
+    copyFileSync(join(root, "templates", "commonproject", "template", ".mise", "scripts", "sync-skills.py"), engine);
+
+    for (const name of ["shared-wide", "repo-only-a", "repo-only-b"]) {
+      mkdirSync(join(repo, "skills", name), { recursive: true });
+      writeFileSync(join(repo, "skills", name, "SKILL.md"), `---\nname: ${name}\n---\n`);
+    }
+    // The global scope already provides `shared-wide`, pointing at this repo —
+    // exactly how pjangler's machine-wide skills are declared.
+    writeFileSync(
+      join(home, ".agents", "skills.json"),
+      `${JSON.stringify({ scope: "global", skills: [{ name: "shared-wide", source: `file://${join(repo, "skills", "shared-wide")}` }] }, null, 2)}\n`
+    );
+    writeFileSync(join(repo, ".agents", "skills.json"), `${JSON.stringify({ inherit_global: true, skills: [] }, null, 2)}\n`);
+    // A leftover duplicate of the inherited name, of the shape the pre-PJAN-82
+    // materializing fan-out left behind.
+    symlinkSync(join(repo, "skills", "shared-wide"), join(repo, ".claude", "skills", "shared-wide"), "dir");
+
+    const syncEnv = { HOME: home, PJ_SKILLS_REGISTRY_ROOT: registry };
+    run("python3", [engine, "--scope", "project", "--root", repo], { cwd: repo, env: syncEnv });
+
+    const projected = readdirSync(join(repo, ".claude", "skills")).sort();
+    assert.deepEqual(projected, ["repo-only-a", "repo-only-b"], `repo-local skills are projected and the inherited one is not copied: ${projected.join(", ")}`);
+    assert.equal(
+      readlinkSync(join(repo, ".claude", "skills", "repo-only-a")),
+      join(repo, "skills", "repo-only-a"),
+      "a discovered skill links straight at the repo's own directory"
+    );
+
+    // A second run must change nothing: discovery is derived from the directory,
+    // so there is no declaration to drift from it.
+    const before = readdirSync(join(repo, ".claude", "skills")).sort().join("|");
+    run("python3", [engine, "--scope", "project", "--root", repo], { cwd: repo, env: syncEnv });
+    assert.equal(readdirSync(join(repo, ".claude", "skills")).sort().join("|"), before, "repo-local discovery must be idempotent");
+
+    // An explicit declaration still wins over discovery.
+    const overrideSource = join(registry, "all-skills", "repo-only-a");
+    mkdirSync(overrideSource, { recursive: true });
+    writeFileSync(join(overrideSource, "SKILL.md"), "---\nname: repo-only-a\n---\n");
+    writeFileSync(
+      join(repo, ".agents", "skills.json"),
+      `${JSON.stringify({ inherit_global: true, skills: [{ name: "repo-only-a", source: `file://${overrideSource}` }] }, null, 2)}\n`
+    );
+    run("python3", [engine, "--scope", "project", "--root", repo], { cwd: repo, env: syncEnv });
+    assert.equal(
+      readlinkSync(join(repo, ".claude", "skills", "repo-only-a")),
+      overrideSource,
+      "an explicit skills[] entry overrides the discovered repo-local directory"
+    );
+  }
+
   const miseMode = runMiseIntegration ? "mise integration exercised" : "mise integration skipped";
   console.log(`Skillex init regressions passed (fresh HOME generated BMAD pack; ${miseMode})`);
 } finally {
