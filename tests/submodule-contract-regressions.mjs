@@ -25,18 +25,20 @@ function git(cwd, args, options = {}) {
   return result.stdout.trim();
 }
 
+function configureFixtureIdentity(cwd) {
+  git(cwd, ["config", "--local", "user.email", "fixture@example.invalid"]);
+  git(cwd, ["config", "--local", "user.name", "Fixture"]);
+}
+
 function standaloneBareSnapshot(source, bare) {
   git(resolve(bare, ".."), ["init", "--quiet", "--bare", "--initial-branch=main", bare]);
+  configureFixtureIdentity(bare);
   const tree = git(source, ["rev-parse", "HEAD^{tree}"]);
   const objects = git(source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
   const env = {
     ...process.env,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: objects,
-    GIT_AUTHOR_NAME: "Fixture",
-    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
     GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
-    GIT_COMMITTER_NAME: "Fixture",
-    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
     GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
   };
   const pin = git(bare, ["commit-tree", tree, "-m", "standalone tree snapshot"], { env });
@@ -56,8 +58,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "pjangler-submodule-contract-"));
   temporary.push(root);
   git(root, ["init", "--quiet"]);
-  git(root, ["config", "user.email", "fixture@example.invalid"]);
-  git(root, ["config", "user.name", "Fixture"]);
+  configureFixtureIdentity(root);
   writeFileSync(join(root, "seed.txt"), "seed\n");
   git(root, ["add", "seed.txt"]);
   git(root, ["commit", "--quiet", "-m", "seed"]);
@@ -92,8 +93,7 @@ function worktreeFixture() {
     const source = join(cradle, `${template}.src`);
     mkdirSync(join(source, "template", ".mise", "scripts"), { recursive: true });
     git(cradle, ["init", "--quiet", "--initial-branch=main", source]);
-    git(source, ["config", "user.email", "fixture@example.invalid"]);
-    git(source, ["config", "user.name", "Fixture"]);
+    configureFixtureIdentity(source);
     writeFileSync(join(source, "template", ".mise", "scripts", "provision-packs.py"), "#!/usr/bin/env python3\n");
     git(source, ["add", "-A"]);
     git(source, ["commit", "--quiet", "-m", "seed template"]);
@@ -103,14 +103,14 @@ function worktreeFixture() {
   const root = join(cradle, "parent");
   mkdirSync(root, { recursive: true });
   git(cradle, ["init", "--quiet", "--initial-branch=main", root]);
-  git(root, ["config", "user.email", "fixture@example.invalid"]);
-  git(root, ["config", "user.name", "Fixture"]);
+  configureFixtureIdentity(root);
   git(root, ["config", "protocol.file.allow", "always"]);
   writeFileSync(join(root, "seed.txt"), "seed\n");
   git(root, ["add", "seed.txt"]);
   git(root, ["commit", "--quiet", "-m", "seed"]);
   for (const template of ["commonproject", "hermes-agent"]) {
     git(root, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", sources[template], `templates/${template}`]);
+    configureFixtureIdentity(join(root, "templates", template));
   }
   writeFileSync(
     join(root, ".gitmodules"),
@@ -270,8 +270,6 @@ try {
     // 3. Committing the submodule alone is NOT enough — the parent still pins
     //    the old commit, so the gate must stay red until the pin is bumped.
     const submodule = join(root, "templates", "commonproject");
-    git(submodule, ["config", "user.email", "fixture@example.invalid"]);
-    git(submodule, ["config", "user.name", "Fixture"]);
     git(submodule, ["add", "-A"]);
     git(submodule, ["commit", "--quiet", "-m", "edit template"]);
     result = check(root, "--recursive");
@@ -330,8 +328,7 @@ try {
     const hermesPin = standaloneBareSnapshot(join(ROOT, "templates", "hermes-agent"), hermesBare);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
-    git(clone, ["config", "user.email", "fixture@example.invalid"]);
-    git(clone, ["config", "user.name", "Fixture"]);
+    configureFixtureIdentity(clone);
     git(clone, ["update-index", "--cacheinfo", `160000,${commonPin},templates/commonproject`]);
     git(clone, ["update-index", "--cacheinfo", `160000,${hermesPin},templates/hermes-agent`]);
     git(clone, ["commit", "--quiet", "-m", "pin standalone template snapshots"]);
@@ -357,8 +354,7 @@ try {
     const shallow = join(shallowRoot, "shallow");
     const bare = join(shallowRoot, "snapshot.git");
     git(shallowRoot, ["init", "--quiet", "--initial-branch=main", source]);
-    git(source, ["config", "user.email", "fixture@example.invalid"]);
-    git(source, ["config", "user.name", "Fixture"]);
+    configureFixtureIdentity(source);
     writeFileSync(join(source, "fixture.txt"), "first\n");
     git(source, ["add", "fixture.txt"]);
     git(source, ["commit", "--quiet", "-m", "first"]);
