@@ -9088,15 +9088,32 @@ function isValidOpReference(value) {
   if (queryIndex >= 0 && !/^attribute=[A-Za-z0-9._~-]+$/.test(queryPart)) return false;
   return true;
 }
+function assignmentOpReference(line) {
+  const separator = line.indexOf("=");
+  if (separator < 0) return null;
+  const key = line.slice(0, separator).trim().replace(/^export\s+/u, "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) return null;
+  let value = line.slice(separator + 1).trim();
+  const quoted = value.startsWith('"') && value.endsWith('"') && value.length > 1 || value.startsWith("'") && value.endsWith("'") && value.length > 1;
+  if (quoted) value = value.slice(1, -1);
+  else value = value.replace(/\s+#.*$/u, "").trim();
+  return value.startsWith("op://") ? value : null;
+}
 function malformedOpReferences(text3) {
   const occurrences = [];
   const lines = text3.split("\n");
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
+    const commentOnly = line.trimStart().startsWith("#");
+    const assigned = commentOnly ? null : assignmentOpReference(line);
+    if (assigned !== null) {
+      if (!isValidOpReference(assigned)) occurrences.push({ line: index + 1, value: assigned, commentOnly: false });
+      continue;
+    }
     for (const match of line.matchAll(/op:\/\/[^\s"'`]+/g)) {
       const value = match[0];
       if (!isValidOpReference(value)) {
-        occurrences.push({ line: index + 1, value, commentOnly: line.trimStart().startsWith("#") });
+        occurrences.push({ line: index + 1, value, commentOnly });
       }
     }
   }
@@ -9817,6 +9834,7 @@ function createMiseOpInjectChecks() {
       title: ".env.op + gitignore secrets contract",
       audit: (ctx) => {
         const details = [];
+        let envOpNeedsHands = false;
         const envOpPath = join4(ctx.repoRoot, ".env.op");
         const envOpExists = existsSync3(envOpPath);
         const envOp = envOpExists ? readText(envOpPath) : void 0;
@@ -9874,6 +9892,7 @@ function createMiseOpInjectChecks() {
       migrate: (ctx, finding2) => {
         const changedFiles = [];
         const details = [];
+        let envOpNeedsHands = false;
         const envOpPath = join4(ctx.repoRoot, ".env.op");
         const canonicalEnvOpPath = join4(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op");
         if (!existsSync3(canonicalEnvOpPath)) {
@@ -9892,9 +9911,9 @@ function createMiseOpInjectChecks() {
             return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
           if (activeMalformed.length || invalidActive.length) {
+            envOpNeedsHands = true;
             details.push(...activeMalformed.length ? [`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(activeMalformed.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`] : []);
             details.push(...invalidActive.length ? [`Unsafe active value(s) remain on line(s) ${invalidActive.map((entry) => entry.number).join(", ")}; repair them manually`] : []);
-            return { id: finding2.id, title: finding2.title, status: "blocked", summary: "Manual cleanup still required", changedFiles: [], details };
           } else {
             const repaired = removeMalformedCommentOpReferences(current);
             const next = repaired.text;
@@ -9944,6 +9963,16 @@ function createMiseOpInjectChecks() {
           }
         }
         const uniqueChangedFiles = [...new Set(changedFiles)].sort();
+        if (envOpNeedsHands) {
+          return {
+            id: finding2.id,
+            title: finding2.title,
+            status: "blocked",
+            summary: uniqueChangedFiles.length ? "Repaired the mise contract; .env.op content still needs hands" : "Manual .env.op cleanup still required",
+            changedFiles: uniqueChangedFiles,
+            details
+          };
+        }
         return {
           id: finding2.id,
           title: finding2.title,

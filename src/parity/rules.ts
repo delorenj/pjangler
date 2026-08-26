@@ -4165,15 +4165,55 @@ function isValidOpReference(value: string): boolean {
   return true;
 }
 
+/**
+ * PJAN-84: a 1Password item name may contain a space, and `op` accepts it.
+ *
+ * Verified against the real CLI: `op inject` resolves
+ * `T=op://DeLoSecrets/DeLoHQ Bot/token` bare, double-quoted, and single-quoted.
+ * Percent-encoding is NOT accepted — `%20` is decoded and then split, so the
+ * encoded form fails where the literal space works.
+ *
+ * The scanner below was whitespace-delimited, so it read that value as
+ * `op://DeLoSecrets/DeLoHQ`, counted two segments, and reported "Malformed
+ * active op:// reference(s)". holocene's env migration was blocked on a
+ * reference that resolves correctly, and the message told the operator to
+ * repair a file that was already right.
+ *
+ * An assignment's value is therefore taken whole: everything after the first
+ * `=`, trimmed, with matching surrounding quotes removed. A trailing
+ * space-hash comment is stripped only from an UNQUOTED value, which is the
+ * dotenv convention; a `#` still inside the reference after that remains
+ * invalid, as before. References appearing in prose or mid-line keep the old
+ * whitespace-delimited scan, because there is no value boundary to use.
+ */
+function assignmentOpReference(line: string): string | null {
+  const separator = line.indexOf("=");
+  if (separator < 0) return null;
+  const key = line.slice(0, separator).trim().replace(/^export\s+/u, "");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) return null;
+  let value = line.slice(separator + 1).trim();
+  const quoted = (value.startsWith('"') && value.endsWith('"') && value.length > 1)
+    || (value.startsWith("'") && value.endsWith("'") && value.length > 1);
+  if (quoted) value = value.slice(1, -1);
+  else value = value.replace(/\s+#.*$/u, "").trim();
+  return value.startsWith("op://") ? value : null;
+}
+
 function malformedOpReferences(text: string): OpReferenceOccurrence[] {
   const occurrences: OpReferenceOccurrence[] = [];
   const lines = text.split("\n");
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
+    const commentOnly = line.trimStart().startsWith("#");
+    const assigned = commentOnly ? null : assignmentOpReference(line);
+    if (assigned !== null) {
+      if (!isValidOpReference(assigned)) occurrences.push({ line: index + 1, value: assigned, commentOnly: false });
+      continue;
+    }
     for (const match of line.matchAll(/op:\/\/[^\s"'`]+/g)) {
       const value = match[0];
       if (!isValidOpReference(value)) {
-        occurrences.push({ line: index + 1, value, commentOnly: line.trimStart().startsWith("#") });
+        occurrences.push({ line: index + 1, value, commentOnly });
       }
     }
   }
@@ -4986,6 +5026,7 @@ return [
     title: ".env.op + gitignore secrets contract",
     audit: (ctx) => {
       const details: string[] = [];
+      let envOpNeedsHands = false;
       const envOpPath = join(ctx.repoRoot, ".env.op");
       const envOpExists = existsSync(envOpPath);
       const envOp = envOpExists ? readText(envOpPath) : undefined;
@@ -5047,6 +5088,7 @@ return [
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
       const details: string[] = [];
+      let envOpNeedsHands = false;
       const envOpPath = join(ctx.repoRoot, ".env.op");
       const canonicalEnvOpPath = join(ctx.pjanglerRoot, "templates", "commonproject", "template", ".env.op");
       if (!existsSync(canonicalEnvOpPath)) {
@@ -5069,9 +5111,24 @@ return [
             return !value.startsWith("op://") && !/^https?:\/\//.test(value) && !/^[A-Za-z0-9_.:-]+$/.test(value) && !quotedLiteral;
           });
         if (activeMalformed.length || invalidActive.length) {
+          // PJAN-84: report the .env.op content, but do not let it veto the
+          // repairs that have nothing to do with it.
+          //
+          // This used to `return blocked` here, which skipped the .gitignore
+          // block, the mise.toml op-inject hook, and the materialize-env.sh
+          // install — three fixes that never touch .env.op's contents. A repo
+          // whose .env.op holds a deliberately inline local-only value (one
+          // KeepyMoney file says so in a comment: "Local-only creds (threat
+          // model: none)") could therefore never get its enter hook repaired,
+          // and the cwd-relative `op inject -i .env.op > .env` hook that drops a
+          // stray .env into any subdirectory you jump into stayed forever.
+          //
+          // Same shape as the retired `bmad` pack declaration that blocked the
+          // migration which would have removed it: an unresolvable thing must
+          // never get a veto over everything around it.
+          envOpNeedsHands = true;
           details.push(...(activeMalformed.length ? [`Malformed active op:// reference(s) remain on line(s) ${Array.from(new Set(activeMalformed.map((entry) => entry.line))).join(", ")}; repair them manually without replacing valid user references`] : []));
           details.push(...(invalidActive.length ? [`Unsafe active value(s) remain on line(s) ${invalidActive.map((entry) => entry.number).join(", ")}; repair them manually`] : []));
-          return { id: finding.id, title: finding.title, status: "blocked", summary: "Manual cleanup still required", changedFiles: [], details };
         } else {
           const repaired = removeMalformedCommentOpReferences(current);
           // A comment-only file is an intentional opt-out. Preserve it exactly
@@ -5122,6 +5179,18 @@ return [
         }
       }
       const uniqueChangedFiles = [...new Set(changedFiles)].sort();
+      if (envOpNeedsHands) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "blocked",
+          summary: uniqueChangedFiles.length
+            ? "Repaired the mise contract; .env.op content still needs hands"
+            : "Manual .env.op cleanup still required",
+          changedFiles: uniqueChangedFiles,
+          details,
+        };
+      }
       return {
         id: finding.id,
         title: finding.title,

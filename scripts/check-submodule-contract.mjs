@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { readFileSync, lstatSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { existsSync, readFileSync, lstatSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SUPPORTED = new Map([
@@ -97,6 +97,28 @@ function validateMetadata(root, entries) {
     if (!record) continue;
     if (record.url !== expected.url) fail(`${path} URL must be ${expected.url}`);
     if (record.branch !== expected.branch) fail(`${path} branch must be ${expected.branch}`);
+
+    // PJAN-84: .gitmodules declaring `branch = main` is a claim about the
+    // CHECKOUT, and the checkout was not honouring it. templates/hermes-agent
+    // sat on a detached HEAD for long enough that its local `main` fell 24
+    // commits behind the commit actually recorded in the superproject — so a
+    // `git checkout main` there silently rewound the template by 24 commits.
+    // Every other check here passed throughout, because they all read the
+    // recorded pin and the remote, and neither notices where the worktree is
+    // standing.
+    // Only an INITIALIZED submodule has a checkout to stand anywhere. A fresh
+    // clone before `git submodule update --init` legitimately has none, and the
+    // pin/remote checks above already cover what is recorded.
+    if (!existsSync(join(root, path, ".git"))) continue;
+    const head = run(root, "git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"]);
+    const onBranch = head.status === 0 ? String(head.stdout).trim() : "";
+    if (!onBranch) {
+      fail(`${path} checkout could not be read`);
+    } else if (onBranch === "HEAD") {
+      fail(`${path} is on a detached HEAD; .gitmodules declares branch = ${expected.branch}`);
+    } else if (onBranch !== expected.branch) {
+      fail(`${path} is checked out on ${onBranch}; .gitmodules declares branch = ${expected.branch}`);
+    }
   }
 
   for (const entry of entries) {
