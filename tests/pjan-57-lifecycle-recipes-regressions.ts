@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Command, type InvokeResult } from "../src/commands/Command";
 import { Recipe } from "../src/recipes/Recipe";
-import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
+import { ProjectRecipe, unsafeToRemove, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
 import { NotebookRecipe } from "../src/recipes/NotebookRecipe";
 import { NotebookModule } from "../src/notebook/module";
 import { recipeRegistry } from "../src/recipes/catalog";
@@ -367,6 +367,80 @@ function notebookFixtureRecipe(dir: string): NotebookRecipe {
   assert.deepEqual(result.changedFiles, [], "rolled-back paths must not survive in changedFiles");
 }
 
+// PJAN-84: the rollback reports what it did NOT undo.
+//
+// `changedFiles.length = 0` claimed the transaction had changed nothing — while
+// every write it made OUTSIDE the target was still on disk. A run that installed
+// a global skill link and rewrote ~/.claude/settings.json reported
+// `changedFiles: []` and then deleted the only thing that referenced them.
+{
+  const fixture = projectFixture();
+  rmSync(fixture.dir, { recursive: true, force: true });
+  const outside = join(dirname(fixture.dir), `host-effect-${basename(fixture.dir)}.txt`);
+  fixture.plan.actions = [{
+    kind: "project.write-manifest",
+    path: join(fixture.dir, ".project.json"),
+    manifest: fixture.plan.manifest,
+  }];
+  const runtime: ProjectRecipeRuntime = {
+    async executePlan(plan) {
+      mkdirSync(fixture.dir, { recursive: true });
+      const inside = join(fixture.dir, "partial.txt");
+      writeFileSync(inside, "partial\n");
+      writeFileSync(outside, "a write this transaction cannot take back\n");
+      return { ok: false, plan, logs: [], errors: ["injected downstream failure"], changedFiles: [inside, outside] };
+    },
+    preflightBmad() { return { ok: true }; },
+    runGit() { return { status: 0, stdout: "", stderr: "" }; },
+  };
+  const registry = new RecipeRegistry([
+    new FakeRecipe("mise"), new FakeRecipe("agent-hooks", [], ["mise"]), new FakeRecipe("bmad", [], ["agent-hooks"]), notebookFixtureRecipe(fixture.dir), new ProjectRecipe(runtime),
+  ]);
+  const result = await registry.initRecipe("project", ctx(fixture.dir), { plan: fixture.plan, mode: "create" });
+  assert.equal(result.ok, false);
+  assert.equal(existsSync(fixture.dir), false, "the newly-created target is still removed");
+  assert.deepEqual(result.changedFiles, [outside], "a change outside the target must survive in changedFiles, because it survived on disk");
+  const rollback = result.phases.find((phase) => phase.id === "project.rollback");
+  assert.ok(rollback, "a rollback phase must be reported");
+  assert.match(rollback.message ?? "", /1 change\(s\) outside it were NOT undone/);
+  assert.ok(result.logs.some((line) => line.includes("not undone (outside the target)") && line.includes(outside)));
+  rmSync(outside, { force: true });
+}
+
+// PJAN-84: the rollback refuses to delete through a symlink.
+//
+// Node's recursive remove does not follow a symlink at the leaf, but it DOES
+// traverse symlinked parent components — so if any ancestor became a symlink
+// during the transaction, `rmSync(targetDir)` lands somewhere nobody named.
+// Every other place in this codebase that touches an unproved path checked this
+// first; the one operation that deletes a whole tree did not.
+//
+// Tested as a unit because projectFixture() hardcodes its own mkdtemp dir
+// throughout the plan and manifest, so the path cannot be relocated under a
+// symlink without also rewriting the plan the guard is not part of. The
+// integration wiring is covered by the changed-files case above, which proves
+// the rollback block runs.
+{
+  const cradle = mkdtempSync(join(tmpdir(), "pjan-84-unsafe-remove-"));
+  const real = join(cradle, "real");
+  mkdirSync(join(real, "project"), { recursive: true });
+  symlinkSync(real, join(cradle, "via"), "dir");
+
+  assert.equal(unsafeToRemove(join(real, "project")), null, "a real path with real ancestors is safe to remove");
+
+  const throughParent = unsafeToRemove(join(cradle, "via", "project"));
+  assert.ok(throughParent, "a symlinked ANCESTOR must be refused");
+  assert.match(throughParent, /is a symlink on the path to/);
+  assert.ok(throughParent.includes(join(cradle, "via")), "the refusal names the offending component");
+
+  symlinkSync(join(real, "project"), join(cradle, "leaf"), "dir");
+  const atLeaf = unsafeToRemove(join(cradle, "leaf"));
+  assert.ok(atLeaf, "a symlinked TARGET must be refused");
+  assert.match(atLeaf, /would leave the tree it points at orphaned/);
+
+  assert.equal(unsafeToRemove(join(real, "never-created")), null, "an absent path is safe: there is nothing to traverse");
+  rmSync(cradle, { recursive: true, force: true });
+}
 {
   const fixture = projectFixture();
   let gitCalls = 0;

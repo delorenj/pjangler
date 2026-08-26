@@ -4313,10 +4313,10 @@ function validateCommittedGitRef(repoPath, gitRef) {
   if (!gitRef || gitRef.length > 256 || gitRef.startsWith("-")) return false;
   return git(repoPath, ["rev-parse", "--verify", `${gitRef}^{commit}`], 64 * 1024).ok;
 }
-function safeRelative(repoPath, relativePath) {
-  if (!relativePath || relativePath.includes("\0") || relativePath.startsWith("/") || relativePath.split(/[\\/]/u).includes("..")) return null;
+function safeRelative(repoPath, relativePath2) {
+  if (!relativePath2 || relativePath2.includes("\0") || relativePath2.startsWith("/") || relativePath2.split(/[\\/]/u).includes("..")) return null;
   const root = realpathSync5(repoPath);
-  const candidate = resolve9(root, relativePath);
+  const candidate = resolve9(root, relativePath2);
   const rel = relative8(root, candidate);
   if (rel === ".." || rel.startsWith(`..${sep4}`) || rel.startsWith(sep4)) return null;
   return { root, candidate };
@@ -4334,8 +4334,8 @@ function hasSymlinkComponent(root, candidate) {
   }
   return false;
 }
-function readSafeEvidenceText(repoPath, relativePath, maxBytes) {
-  const safe = safeRelative(repoPath, relativePath);
+function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
+  const safe = safeRelative(repoPath, relativePath2);
   if (!safe || hasSymlinkComponent(safe.root, safe.candidate)) return { status: "excluded", reason: "unsafe-path" };
   let fd;
   try {
@@ -4375,7 +4375,7 @@ function readSafeEvidenceText(repoPath, relativePath, maxBytes) {
     } catch {
       return { status: "excluded", reason: "binary" };
     }
-    if (looksSecret(relativePath, content)) return { status: "excluded", reason: "secret-like" };
+    if (looksSecret(relativePath2, content)) return { status: "excluded", reason: "secret-like" };
     return { status: "present", content, content_sha256: sha256Hex(bytes), bytes: total };
   } finally {
     closeSync5(fd);
@@ -5259,7 +5259,7 @@ var init_capture = __esm({
 // src/index.ts
 import { spawnSync as spawnSync15 } from "node:child_process";
 import { existsSync as existsSync24, readFileSync as readFileSync20, statSync as statSync6 } from "node:fs";
-import { basename as basename8, join as join29, resolve as resolve17 } from "node:path";
+import { basename as basename8, join as join29, resolve as resolve18 } from "node:path";
 import { Command as Command3, CommanderError } from "commander";
 
 // src/commands/hermes/types.ts
@@ -5648,9 +5648,9 @@ function assertRealDirectory(path, label) {
   }
   return path;
 }
-function assertNoSymlinkComponents(root, relativePath) {
+function assertNoSymlinkComponents(root, relativePath2) {
   let current = root;
-  for (const part of relativePath.split("/")) {
+  for (const part of relativePath2.split("/")) {
     if (!part) continue;
     current = join3(current, part);
     let stat;
@@ -5973,7 +5973,7 @@ function packContainerLeaves(containerDir) {
     for (const child of children) {
       if (child.startsWith(".") || child.startsWith("_")) continue;
       const childPath = join3(directory, child);
-      const relativePath = prefix ? `${prefix}/${child}` : child;
+      const relativePath2 = prefix ? `${prefix}/${child}` : child;
       let stat;
       try {
         stat = lstatSync(childPath);
@@ -5981,15 +5981,15 @@ function packContainerLeaves(containerDir) {
         continue;
       }
       if (stat.isSymbolicLink()) {
-        symlinked.push(relativePath);
+        symlinked.push(relativePath2);
         continue;
       }
       if (!stat.isDirectory()) continue;
       if (isRegularFile(join3(childPath, "SKILL.md"))) {
-        leaves.push(relativePath);
+        leaves.push(relativePath2);
         continue;
       }
-      visit(childPath, relativePath);
+      visit(childPath, relativePath2);
     }
   };
   visit(containerDir, "");
@@ -6753,25 +6753,25 @@ function packRootAttests(root, entry) {
   return true;
 }
 function resolvePackRootInRegistry(registryRoot, entry) {
-  let relativePath;
+  let relativePath2;
   if (entry.registryPath) {
-    relativePath = safeRelativePath(entry.registryPath, `pack ${entry.name} registry_path`);
+    relativePath2 = safeRelativePath(entry.registryPath, `pack ${entry.name} registry_path`);
   } else {
-    relativePath = `packs/${entry.name}`;
-    const packDir = join4(registryRoot, relativePath);
-    assertNoSymlinkComponents(registryRoot, relativePath);
+    relativePath2 = `packs/${entry.name}`;
+    const packDir = join4(registryRoot, relativePath2);
+    assertNoSymlinkComponents(registryRoot, relativePath2);
     assertRealDirectory(packDir, `Pack ${entry.name} directory`);
     if (entry.version) {
-      relativePath = `${relativePath}/${entry.version}`;
+      relativePath2 = `${relativePath2}/${entry.version}`;
     } else if (!isRegularFile(join4(packDir, "pack.toml"))) {
       const selected = selectPackVersion(packDir);
-      if (selected !== null) relativePath = `${relativePath}/${selected}`;
+      if (selected !== null) relativePath2 = `${relativePath2}/${selected}`;
     }
   }
-  assertNoSymlinkComponents(registryRoot, relativePath);
-  const root = join4(registryRoot, relativePath);
+  assertNoSymlinkComponents(registryRoot, relativePath2);
+  const root = join4(registryRoot, relativePath2);
   assertRealDirectory(root, `Pack ${entry.name} root`);
-  return { root, relativePath, attested: packRootAttests(root, entry) };
+  return { root, relativePath: relativePath2, attested: packRootAttests(root, entry) };
 }
 function manifestPackEntries(manifest) {
   const raw = manifest?.packs;
@@ -12883,8 +12883,8 @@ var NodeRecipe = class extends Recipe {
 // src/recipes/ProjectRecipe.ts
 init_project();
 import { spawnSync as spawnSync13 } from "node:child_process";
-import { existsSync as existsSync18, readFileSync as readFileSync16, rmSync as rmSync4 } from "node:fs";
-import { join as join22 } from "node:path";
+import { existsSync as existsSync18, lstatSync as lstatSync10, readFileSync as readFileSync16, rmSync as rmSync4 } from "node:fs";
+import { dirname as dirname11, isAbsolute as isAbsolute5, join as join22, relative as relativePath, resolve as resolve13 } from "node:path";
 init_tree_diff();
 
 // src/recipes/NotebookRecipe.ts
@@ -14762,6 +14762,28 @@ var PRODUCTION_RUNTIME = {
     };
   }
 };
+function unsafeToRemove(targetDir) {
+  const absolute = resolve13(targetDir);
+  let cursor = absolute;
+  const seen = /* @__PURE__ */ new Set();
+  while (!seen.has(cursor)) {
+    seen.add(cursor);
+    try {
+      const stat = lstatSync10(cursor);
+      if (stat.isSymbolicLink()) {
+        return cursor === absolute ? `${absolute} is a symlink; removing it would leave the tree it points at orphaned` : `${cursor} is a symlink on the path to ${absolute}; a recursive remove would traverse it`;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        return `${cursor} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    const parent = dirname11(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
 function publicAudit(report) {
   return {
     ...report,
@@ -15172,16 +15194,32 @@ var ProjectRecipe = class extends Recipe {
         message: errors.at(-1)
       });
     }
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && !externalDispatchStarted && existsSync18(targetDir)) {
-      try {
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && existsSync18(targetDir)) {
+      const unsafe = unsafeToRemove(targetDir);
+      if (unsafe) {
+        errors.push(`fresh-target rollback refused: ${unsafe}`);
+        phases.push({
+          id: "project.rollback",
+          status: "failed",
+          changedFiles: [],
+          message: errors.at(-1)
+        });
+      } else try {
         rmSync4(targetDir, { recursive: true, force: true });
+        const insideTarget = (path) => {
+          const relative11 = relativePath(resolve13(targetDir), resolve13(path));
+          return relative11 === "" || !relative11.startsWith("..") && !isAbsolute5(relative11);
+        };
+        const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
+        changedFiles.push(...orphaned);
         logs.push(`Rolled back newly-created target: ${targetDir}`);
+        for (const path of orphaned) logs.push(`  not undone (outside the target): ${path}`);
         phases.push({
           id: "project.rollback",
           status: "changed",
-          changedFiles: [],
-          message: "Removed the newly-created target after transaction failure"
+          changedFiles: orphaned,
+          message: orphaned.length ? `Removed the newly-created target; ${orphaned.length} change(s) outside it were NOT undone` : "Removed the newly-created target after transaction failure"
         });
       } catch (error) {
         errors.push(`fresh-target rollback failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -15512,7 +15550,7 @@ var recipeRegistry = new RecipeRegistry([
 
 // src/commands/AgentHooksCommands.ts
 import { homedir as homedir8 } from "node:os";
-import { join as join23, dirname as dirname11 } from "node:path";
+import { join as join23, dirname as dirname12 } from "node:path";
 import { existsSync as existsSync19, cpSync as cpSync2, mkdirSync as mkdirSync8, readFileSync as readFileSync17, writeFileSync as writeFileSync11 } from "node:fs";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 init_project();
@@ -15523,10 +15561,10 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname11(fileURLToPath6(import.meta.url));
+    let dir = dirname12(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 8; i++) {
       candidates.push(join23(dir, "templates", "commonproject", "template"));
-      const parent = dirname11(dir);
+      const parent = dirname12(dir);
       if (parent === dir) break;
       dir = parent;
     }
@@ -15568,7 +15606,7 @@ var CopyAgentHooksTree = class extends Command {
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync8(dirname11(dest), { recursive: true });
+        mkdirSync8(dirname12(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -15888,18 +15926,18 @@ SECRET_KEY=""
 // src/parity/index.ts
 import { existsSync as existsSync20 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
-import { dirname as dirname12, join as join25, resolve as resolve13 } from "node:path";
+import { dirname as dirname13, join as join25, resolve as resolve14 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 function resolvePjanglerRoot2() {
-  let dir = dirname12(fileURLToPath7(import.meta.url));
-  while (dir !== dirname12(dir)) {
+  let dir = dirname13(fileURLToPath7(import.meta.url));
+  while (dir !== dirname13(dir)) {
     if (existsSync20(join25(dir, "package.json")) && existsSync20(join25(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname12(dir);
+    dir = dirname13(dir);
   }
-  return resolve13(process.cwd());
+  return resolve14(process.cwd());
 }
 function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
-  const repoRoot = resolve13(repoArg ?? process.cwd());
+  const repoRoot = resolve14(repoArg ?? process.cwd());
   return {
     ...overrides,
     targetDir: repoRoot,
@@ -16078,7 +16116,7 @@ init_project();
 // src/project/boardUrl.ts
 import { existsSync as existsSync21, readFileSync as readFileSync18, statSync as statSync3 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
-import { dirname as dirname13, isAbsolute as isAbsolute5, join as join26, resolve as resolve14 } from "node:path";
+import { dirname as dirname14, isAbsolute as isAbsolute6, join as join26, resolve as resolve15 } from "node:path";
 var DEFAULT_PLANE_BASE = "https://plane.delo.sh";
 var DEFAULT_PLANE_WORKSPACE = "33god";
 function resolveTemplateConfigPath2(env2 = process.env, home = homedir10()) {
@@ -16174,10 +16212,10 @@ function boardUrl(provider, options = {}) {
   return ref ? `${base}/${workspace}/browse/${ref}` : `${base}/${workspace}/projects/${boardId}/issues`;
 }
 function findProjectRoot(from) {
-  let dir = resolve14(from);
+  let dir = resolve15(from);
   for (; ; ) {
     if (existsSync21(join26(dir, ".project.json"))) return dir;
-    const parent = dirname13(dir);
+    const parent = dirname14(dir);
     if (parent === dir) return void 0;
     dir = parent;
   }
@@ -16194,7 +16232,7 @@ function readTicketProvider(root) {
 }
 function currentBranch(from) {
   try {
-    let dir = resolve14(from);
+    let dir = resolve15(from);
     for (; ; ) {
       const dotgit = join26(dir, ".git");
       if (existsSync21(dotgit)) {
@@ -16203,13 +16241,13 @@ function currentBranch(from) {
           const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync18(dotgit, "utf8"));
           if (!pointer) return void 0;
           const target = pointer[1].trim();
-          gitDir = isAbsolute5(target) ? target : resolve14(dir, target);
+          gitDir = isAbsolute6(target) ? target : resolve15(dir, target);
         }
         const head = readFileSync18(join26(gitDir, "HEAD"), "utf8").trim();
         const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
         return ref ? ref[1].trim() : void 0;
       }
-      const parent = dirname13(dir);
+      const parent = dirname14(dir);
       if (parent === dir) return void 0;
       dir = parent;
     }
@@ -16260,7 +16298,7 @@ function openUrl(url, env2 = process.env, platform2 = process.platform) {
 
 // src/describe/index.ts
 import { existsSync as existsSync22, readFileSync as readFileSync19, readdirSync as readdirSync8, statSync as statSync5 } from "node:fs";
-import { join as join28, resolve as resolve15 } from "node:path";
+import { join as join28, resolve as resolve16 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
@@ -16281,7 +16319,7 @@ function git3(repo, args) {
   return result2.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve18) => {
+  return new Promise((resolve19) => {
     const child = spawn3("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
@@ -16289,7 +16327,7 @@ function gitAsync(repo, args) {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve18(value);
+      resolve19(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -16663,8 +16701,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve15(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve15(project.repo_path) === resolved);
+    const resolved = resolve16(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve16(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -16675,7 +16713,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve15(record.repo_path) !== resolve15(repo)) {
+  if (record && resolve16(record.repo_path) !== resolve16(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -16765,7 +16803,7 @@ function describeSubsystems(repo, findings) {
 function describeNotebook(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
-    const project = Object.values(registry.projects).find((entry) => resolve15(entry.repo_path) === resolve15(repo));
+    const project = Object.values(registry.projects).find((entry) => resolve16(entry.repo_path) === resolve16(repo));
     const manifest = existsSync22(join28(repo, ".project.json")) ? JSON.parse(readFileSync19(join28(repo, ".project.json"), "utf8")) : void 0;
     const declared = Boolean(project?.notebook || manifest?.notebook && typeof manifest.notebook === "object");
     if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
@@ -16862,7 +16900,7 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve15(input.repoArg ?? process.cwd());
+  const repo = resolve16(input.repoArg ?? process.cwd());
   if (!existsSync22(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
@@ -17088,7 +17126,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve18) => {
+  return new Promise((resolve19) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -17108,7 +17146,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve18({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve19({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -17125,7 +17163,7 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve18({ outcome: "cancel", selected: [] });
+      resolve19({ outcome: "cancel", selected: [] });
     });
   });
 }
@@ -17136,8 +17174,8 @@ init_style();
 // src/notebook/cli.ts
 init_project();
 init_capture();
-import { closeSync as closeSync7, constants as constants6, existsSync as existsSync23, fstatSync as fstatSync5, lstatSync as lstatSync10, openSync as openSync7, readSync as readSync4 } from "node:fs";
-import { resolve as resolve16 } from "node:path";
+import { closeSync as closeSync7, constants as constants6, existsSync as existsSync23, fstatSync as fstatSync5, lstatSync as lstatSync11, openSync as openSync7, readSync as readSync4 } from "node:fs";
+import { resolve as resolve17 } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 // src/notebook/migration.ts
@@ -17241,7 +17279,7 @@ function fallbackConfig(repo) {
   return {
     schema_version: 1,
     project_slug: "unknown",
-    repo_path: resolve16(repo),
+    repo_path: resolve17(repo),
     base_url: null,
     auth: { mode: "none" },
     policy: { enabled: false, session_start_enabled: false, session_capture_enabled: false, overview_max_chars: 4e3, documentation_globs: ["**/*.md", "**/*.mdx"] },
@@ -17277,9 +17315,9 @@ async function execute(input) {
   }
 }
 function readBoundedRegularFile(path, maxBytes) {
-  const absolute = resolve16(path);
+  const absolute = resolve17(path);
   if (!existsSync23(absolute)) throw new NotebookError("INVALID_INPUT", `File not found: ${absolute}`);
-  const before = lstatSync10(absolute);
+  const before = lstatSync11(absolute);
   if (!before.isFile() || before.isSymbolicLink()) throw new NotebookError("INVALID_INPUT", `File must be a regular non-symlink: ${absolute}`);
   if (before.size > maxBytes) throw new NotebookError("INVALID_INPUT", `File exceeds the configured ceiling: ${absolute}`);
   const fd = openSync7(absolute, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
@@ -17533,7 +17571,7 @@ function readJson2(path) {
 function findGitRoot(cwd) {
   const result2 = spawnSync15("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result2.status !== 0) return void 0;
-  return resolve17(result2.stdout.trim());
+  return resolve18(result2.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -17646,7 +17684,7 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve17(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve18(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
@@ -17659,12 +17697,12 @@ async function resolveProjectInitTarget(name, options) {
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve17(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve18(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
   const targetExists = existsSync24(targetDir);
   if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const syncMode = Boolean(targetGitRoot && resolve17(targetGitRoot) === resolve17(targetDir));
+  const syncMode = Boolean(targetGitRoot && resolve18(targetGitRoot) === resolve18(targetDir));
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename8(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);

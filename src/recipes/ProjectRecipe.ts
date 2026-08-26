@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
 import {
   createSafeRecord,
   executeProjectInitPlan,
@@ -91,6 +91,45 @@ const PRODUCTION_RUNTIME: ProjectRecipeRuntime = {
     };
   },
 };
+
+/**
+ * PJAN-84: prove the path being deleted is the path that was created.
+ *
+ * The rollback was `rmSync(targetDir, {recursive: true, force: true})` on the
+ * sole evidence that `existsSync(targetDir)` had been false at the start. Node's
+ * recursive remove does not FOLLOW a symlink at the leaf, but it does traverse
+ * symlinked PARENT components — so if any ancestor of the target became a
+ * symlink during the transaction, the delete lands somewhere nobody named. Every
+ * other place in this codebase that touches an unproved path checks this first
+ * (src/notebook/hooks.ts, src/parity/pack.ts); the one operation that deletes a
+ * whole directory tree did not.
+ *
+ * Returns null when the path is safe to remove, or the reason it is not.
+ */
+export function unsafeToRemove(targetDir: string): string | null {
+  const absolute = resolve(targetDir);
+  let cursor = absolute;
+  const seen = new Set<string>();
+  while (!seen.has(cursor)) {
+    seen.add(cursor);
+    try {
+      const stat = lstatSync(cursor);
+      if (stat.isSymbolicLink()) {
+        return cursor === absolute
+          ? `${absolute} is a symlink; removing it would leave the tree it points at orphaned`
+          : `${cursor} is a symlink on the path to ${absolute}; a recursive remove would traverse it`;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return `${cursor} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
 
 function publicAudit(report: ReturnType<RecipeRegistry["auditRecipes"]>): AuditReport {
   return {
@@ -591,16 +630,50 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
     }
 
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && !externalDispatchStarted && existsSync(targetDir)) {
-      try {
+    // `externalDispatchStarted` and `rollbackEligible` were assigned together
+    // everywhere except the registry finalizer, so this conjunction always
+    // reduced to `rollbackEligible` — two names for one fact. Because the latch
+    // had no single meaning, nothing forced the notebook and Hermes HOST writes
+    // earlier in this method to answer "does this need to latch?", and a failure
+    // after them deleted the project while leaving that host state behind.
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && existsSync(targetDir)) {
+      const unsafe = unsafeToRemove(targetDir);
+      if (unsafe) {
+        // Refusing leaves the target in place and says why. That is strictly
+        // better than deleting through a symlink: the operator can inspect it,
+        // and `pj init` over an existing directory is a supported path.
+        errors.push(`fresh-target rollback refused: ${unsafe}`);
+        phases.push({
+          id: "project.rollback",
+          status: "failed",
+          changedFiles: [],
+          message: errors.at(-1),
+        });
+      } else try {
         rmSync(targetDir, { recursive: true, force: true });
+        // Report what survived rather than erasing the record.
+        //
+        // This used to be `changedFiles.length = 0`, which claimed the
+        // transaction had changed nothing — while every write it made OUTSIDE
+        // the target was still on disk. A run that installed a global skill
+        // link and rewrote ~/.claude/settings.json reported `changedFiles: []`
+        // and deleted the only thing that referenced them.
+        const insideTarget = (path: string) => {
+          const relative = relativePath(resolve(targetDir), resolve(path));
+          return relative === "" || (!relative.startsWith("..") && !isAbsolute(relative));
+        };
+        const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
+        changedFiles.push(...orphaned);
         logs.push(`Rolled back newly-created target: ${targetDir}`);
+        for (const path of orphaned) logs.push(`  not undone (outside the target): ${path}`);
         phases.push({
           id: "project.rollback",
           status: "changed",
-          changedFiles: [],
-          message: "Removed the newly-created target after transaction failure",
+          changedFiles: orphaned,
+          message: orphaned.length
+            ? `Removed the newly-created target; ${orphaned.length} change(s) outside it were NOT undone`
+            : "Removed the newly-created target after transaction failure",
         });
       } catch (error) {
         errors.push(`fresh-target rollback failed: ${error instanceof Error ? error.message : String(error)}`);

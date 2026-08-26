@@ -3984,10 +3984,10 @@ function validateCommittedGitRef(repoPath, gitRef) {
   if (!gitRef || gitRef.length > 256 || gitRef.startsWith("-")) return false;
   return git(repoPath, ["rev-parse", "--verify", `${gitRef}^{commit}`], 64 * 1024).ok;
 }
-function safeRelative(repoPath, relativePath) {
-  if (!relativePath || relativePath.includes("\0") || relativePath.startsWith("/") || relativePath.split(/[\\/]/u).includes("..")) return null;
+function safeRelative(repoPath, relativePath2) {
+  if (!relativePath2 || relativePath2.includes("\0") || relativePath2.startsWith("/") || relativePath2.split(/[\\/]/u).includes("..")) return null;
   const root = realpathSync5(repoPath);
-  const candidate = resolve9(root, relativePath);
+  const candidate = resolve9(root, relativePath2);
   const rel = relative8(root, candidate);
   if (rel === ".." || rel.startsWith(`..${sep4}`) || rel.startsWith(sep4)) return null;
   return { root, candidate };
@@ -4005,8 +4005,8 @@ function hasSymlinkComponent(root, candidate) {
   }
   return false;
 }
-function readSafeEvidenceText(repoPath, relativePath, maxBytes) {
-  const safe = safeRelative(repoPath, relativePath);
+function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
+  const safe = safeRelative(repoPath, relativePath2);
   if (!safe || hasSymlinkComponent(safe.root, safe.candidate)) return { status: "excluded", reason: "unsafe-path" };
   let fd;
   try {
@@ -4046,7 +4046,7 @@ function readSafeEvidenceText(repoPath, relativePath, maxBytes) {
     } catch {
       return { status: "excluded", reason: "binary" };
     }
-    if (looksSecret(relativePath, content)) return { status: "excluded", reason: "secret-like" };
+    if (looksSecret(relativePath2, content)) return { status: "excluded", reason: "secret-like" };
     return { status: "present", content, content_sha256: sha256Hex(bytes), bytes: total };
   } finally {
     closeSync5(fd);
@@ -4929,7 +4929,7 @@ var init_capture = __esm({
 
 // src/mcp-server.ts
 import { existsSync as existsSync22, statSync as statSync5 } from "node:fs";
-import { basename as basename8, dirname as dirname13, join as join28, resolve as resolve15 } from "node:path";
+import { basename as basename8, dirname as dirname14, join as join28, resolve as resolve16 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -5200,9 +5200,9 @@ function assertRealDirectory(path, label) {
   }
   return path;
 }
-function assertNoSymlinkComponents(root, relativePath) {
+function assertNoSymlinkComponents(root, relativePath2) {
   let current = root;
-  for (const part of relativePath.split("/")) {
+  for (const part of relativePath2.split("/")) {
     if (!part) continue;
     current = join2(current, part);
     let stat;
@@ -5525,7 +5525,7 @@ function packContainerLeaves(containerDir) {
     for (const child of children) {
       if (child.startsWith(".") || child.startsWith("_")) continue;
       const childPath = join2(directory, child);
-      const relativePath = prefix ? `${prefix}/${child}` : child;
+      const relativePath2 = prefix ? `${prefix}/${child}` : child;
       let stat;
       try {
         stat = lstatSync(childPath);
@@ -5533,15 +5533,15 @@ function packContainerLeaves(containerDir) {
         continue;
       }
       if (stat.isSymbolicLink()) {
-        symlinked.push(relativePath);
+        symlinked.push(relativePath2);
         continue;
       }
       if (!stat.isDirectory()) continue;
       if (isRegularFile(join2(childPath, "SKILL.md"))) {
-        leaves.push(relativePath);
+        leaves.push(relativePath2);
         continue;
       }
-      visit(childPath, relativePath);
+      visit(childPath, relativePath2);
     }
   };
   visit(containerDir, "");
@@ -6305,25 +6305,25 @@ function packRootAttests(root, entry) {
   return true;
 }
 function resolvePackRootInRegistry(registryRoot, entry) {
-  let relativePath;
+  let relativePath2;
   if (entry.registryPath) {
-    relativePath = safeRelativePath(entry.registryPath, `pack ${entry.name} registry_path`);
+    relativePath2 = safeRelativePath(entry.registryPath, `pack ${entry.name} registry_path`);
   } else {
-    relativePath = `packs/${entry.name}`;
-    const packDir = join3(registryRoot, relativePath);
-    assertNoSymlinkComponents(registryRoot, relativePath);
+    relativePath2 = `packs/${entry.name}`;
+    const packDir = join3(registryRoot, relativePath2);
+    assertNoSymlinkComponents(registryRoot, relativePath2);
     assertRealDirectory(packDir, `Pack ${entry.name} directory`);
     if (entry.version) {
-      relativePath = `${relativePath}/${entry.version}`;
+      relativePath2 = `${relativePath2}/${entry.version}`;
     } else if (!isRegularFile(join3(packDir, "pack.toml"))) {
       const selected = selectPackVersion(packDir);
-      if (selected !== null) relativePath = `${relativePath}/${selected}`;
+      if (selected !== null) relativePath2 = `${relativePath2}/${selected}`;
     }
   }
-  assertNoSymlinkComponents(registryRoot, relativePath);
-  const root = join3(registryRoot, relativePath);
+  assertNoSymlinkComponents(registryRoot, relativePath2);
+  const root = join3(registryRoot, relativePath2);
   assertRealDirectory(root, `Pack ${entry.name} root`);
-  return { root, relativePath, attested: packRootAttests(root, entry) };
+  return { root, relativePath: relativePath2, attested: packRootAttests(root, entry) };
 }
 function manifestPackEntries(manifest) {
   const raw = manifest?.packs;
@@ -12125,8 +12125,8 @@ var NodeRecipe = class extends Recipe {
 // src/recipes/ProjectRecipe.ts
 init_project();
 import { spawnSync as spawnSync13 } from "node:child_process";
-import { existsSync as existsSync18, readFileSync as readFileSync16, rmSync as rmSync4 } from "node:fs";
-import { join as join22 } from "node:path";
+import { existsSync as existsSync18, lstatSync as lstatSync10, readFileSync as readFileSync16, rmSync as rmSync4 } from "node:fs";
+import { dirname as dirname11, isAbsolute as isAbsolute5, join as join22, relative as relativePath, resolve as resolve13 } from "node:path";
 init_tree_diff();
 
 // src/recipes/NotebookRecipe.ts
@@ -13782,6 +13782,28 @@ var PRODUCTION_RUNTIME = {
     };
   }
 };
+function unsafeToRemove(targetDir) {
+  const absolute = resolve13(targetDir);
+  let cursor = absolute;
+  const seen = /* @__PURE__ */ new Set();
+  while (!seen.has(cursor)) {
+    seen.add(cursor);
+    try {
+      const stat = lstatSync10(cursor);
+      if (stat.isSymbolicLink()) {
+        return cursor === absolute ? `${absolute} is a symlink; removing it would leave the tree it points at orphaned` : `${cursor} is a symlink on the path to ${absolute}; a recursive remove would traverse it`;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        return `${cursor} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    const parent = dirname11(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
 function publicAudit(report) {
   return {
     ...report,
@@ -14192,16 +14214,32 @@ var ProjectRecipe = class extends Recipe {
         message: errors.at(-1)
       });
     }
-    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && !externalDispatchStarted && existsSync18(targetDir)) {
-      try {
+    if (errors.length > 0 && mode === "create" && !targetExistedAtStart && rollbackEligible && existsSync18(targetDir)) {
+      const unsafe = unsafeToRemove(targetDir);
+      if (unsafe) {
+        errors.push(`fresh-target rollback refused: ${unsafe}`);
+        phases.push({
+          id: "project.rollback",
+          status: "failed",
+          changedFiles: [],
+          message: errors.at(-1)
+        });
+      } else try {
         rmSync4(targetDir, { recursive: true, force: true });
+        const insideTarget = (path) => {
+          const relative11 = relativePath(resolve13(targetDir), resolve13(path));
+          return relative11 === "" || !relative11.startsWith("..") && !isAbsolute5(relative11);
+        };
+        const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
+        changedFiles.push(...orphaned);
         logs.push(`Rolled back newly-created target: ${targetDir}`);
+        for (const path of orphaned) logs.push(`  not undone (outside the target): ${path}`);
         phases.push({
           id: "project.rollback",
           status: "changed",
-          changedFiles: [],
-          message: "Removed the newly-created target after transaction failure"
+          changedFiles: orphaned,
+          message: orphaned.length ? `Removed the newly-created target; ${orphaned.length} change(s) outside it were NOT undone` : "Removed the newly-created target after transaction failure"
         });
       } catch (error) {
         errors.push(`fresh-target rollback failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -14532,7 +14570,7 @@ var recipeRegistry = new RecipeRegistry([
 
 // src/commands/AgentHooksCommands.ts
 import { homedir as homedir8 } from "node:os";
-import { join as join23, dirname as dirname11 } from "node:path";
+import { join as join23, dirname as dirname12 } from "node:path";
 import { existsSync as existsSync19, cpSync as cpSync2, mkdirSync as mkdirSync8, readFileSync as readFileSync17, writeFileSync as writeFileSync11 } from "node:fs";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 init_project();
@@ -14543,10 +14581,10 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname11(fileURLToPath6(import.meta.url));
+    let dir = dirname12(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 8; i++) {
       candidates.push(join23(dir, "templates", "commonproject", "template"));
-      const parent = dirname11(dir);
+      const parent = dirname12(dir);
       if (parent === dir) break;
       dir = parent;
     }
@@ -14588,7 +14626,7 @@ var CopyAgentHooksTree = class extends Command {
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync8(dirname11(dest), { recursive: true });
+        mkdirSync8(dirname12(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -14908,18 +14946,18 @@ SECRET_KEY=""
 // src/parity/index.ts
 import { existsSync as existsSync20 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
-import { dirname as dirname12, join as join25, resolve as resolve13 } from "node:path";
+import { dirname as dirname13, join as join25, resolve as resolve14 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 function resolvePjanglerRoot2() {
-  let dir = dirname12(fileURLToPath7(import.meta.url));
-  while (dir !== dirname12(dir)) {
+  let dir = dirname13(fileURLToPath7(import.meta.url));
+  while (dir !== dirname13(dir)) {
     if (existsSync20(join25(dir, "package.json")) && existsSync20(join25(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname12(dir);
+    dir = dirname13(dir);
   }
-  return resolve13(process.cwd());
+  return resolve14(process.cwd());
 }
 function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
-  const repoRoot = resolve13(repoArg ?? process.cwd());
+  const repoRoot = resolve14(repoArg ?? process.cwd());
   return {
     ...overrides,
     targetDir: repoRoot,
@@ -15077,7 +15115,7 @@ function getRecipeInfo(name) {
 
 // src/describe/index.ts
 import { existsSync as existsSync21, readFileSync as readFileSync18, readdirSync as readdirSync8, statSync as statSync4 } from "node:fs";
-import { join as join27, resolve as resolve14 } from "node:path";
+import { join as join27, resolve as resolve15 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
@@ -15408,8 +15446,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve14(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve14(project.repo_path) === resolved);
+    const resolved = resolve15(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve15(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -15420,7 +15458,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve14(record.repo_path) !== resolve14(repo)) {
+  if (record && resolve15(record.repo_path) !== resolve15(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -15510,7 +15548,7 @@ function describeSubsystems(repo, findings) {
 function describeNotebook(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
-    const project = Object.values(registry.projects).find((entry) => resolve14(entry.repo_path) === resolve14(repo));
+    const project = Object.values(registry.projects).find((entry) => resolve15(entry.repo_path) === resolve15(repo));
     const manifest = existsSync21(join27(repo, ".project.json")) ? JSON.parse(readFileSync18(join27(repo, ".project.json"), "utf8")) : void 0;
     const declared = Boolean(project?.notebook || manifest?.notebook && typeof manifest.notebook === "object");
     if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
@@ -15607,7 +15645,7 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve14(input.repoArg ?? process.cwd());
+  const repo = resolve15(input.repoArg ?? process.cwd());
   if (!existsSync21(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
@@ -15807,7 +15845,7 @@ function validateExternalEffectConsent(input, options) {
   return selected;
 }
 function resolveTargetDir(targetDir) {
-  const dir = resolve15(targetDir ?? process.cwd());
+  const dir = resolve16(targetDir ?? process.cwd());
   if (!existsSync22(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
@@ -15817,12 +15855,12 @@ function resolveTargetDir(targetDir) {
   return dir;
 }
 function resolvePjanglerRoot3() {
-  let dir = dirname13(fileURLToPath8(import.meta.url));
-  while (dir !== dirname13(dir)) {
+  let dir = dirname14(fileURLToPath8(import.meta.url));
+  while (dir !== dirname14(dir)) {
     if (existsSync22(join28(dir, "package.json")) && existsSync22(join28(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
-    dir = dirname13(dir);
+    dir = dirname14(dir);
   }
   throw new Error("Unable to resolve pjangler root");
 }
@@ -16174,8 +16212,8 @@ server.registerTool(
       );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
-      const explicitTargetDir = input.targetDir ? resolve15(input.targetDir) : void 0;
-      const parentDir = resolve15(input.parentDir ?? (explicitTargetDir ? dirname13(explicitTargetDir) : process.cwd()));
+      const explicitTargetDir = input.targetDir ? resolve16(input.targetDir) : void 0;
+      const parentDir = resolve16(input.parentDir ?? (explicitTargetDir ? dirname14(explicitTargetDir) : process.cwd()));
       if (!existsSync22(parentDir) || !statSync5(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
@@ -16327,7 +16365,7 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
-        scaffold: !(input.targetDir && existsSync22(join28(resolve15(input.targetDir), ".git")))
+        scaffold: !(input.targetDir && existsSync22(join28(resolve16(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());
