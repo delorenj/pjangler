@@ -4,6 +4,18 @@ import type { CommandContext } from "../commands/Command";
 import type { LifecycleContext, RecipeCheck, RecipeInitResult, RecipeMetadata } from "./types";
 
 export class NodeRecipe extends Recipe {
+  // PJAN-84: deliberately no checks, and this is the reason.
+  //
+  // An audit rule here would have to answer "did pjangler install this?", and
+  // the recipe records no provenance — nothing distinguishes the package.json
+  // `pj add node` wrote from the one npm wrote. Requiring README.md and
+  // src/ wherever a package.json exists would flag every library, every
+  // monorepo package, and every repo that keeps its sources elsewhere.
+  //
+  // So the honest state is what `describe` already reports: the subsystem's
+  // presence comes from marker files and its parity reads "unchecked". A rule
+  // that produced false positives would be worse than no rule. Give this checks
+  // when the recipe starts recording what it wrote — not before.
   readonly checks: readonly RecipeCheck[] = [];
   readonly metadata: RecipeMetadata = {
     id: "node",

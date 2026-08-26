@@ -4450,6 +4450,53 @@ function unsupportedRootAttestation(repoRoot: string, rootName: keyof typeof UNS
   return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
 }
 
+/**
+ * PJAN-84: template scripts that are OPTIONAL but must not drift.
+ *
+ * Four of the six CommonProject scripts have a byte-parity owner
+ * (link-agentfiles.sh here, materialize-env.sh in secrets.env-op,
+ * provision-packs.py and sync-skills.py in skills.project-manifest). These two
+ * had none, so a repo could carry a months-old copy and nothing noticed.
+ *
+ * They are optional by design and stay so: the template guards the codegraph
+ * hook with `[ -f ... ] && ... || true`, and hindsight-setup.sh backs a task
+ * nobody has to run. pjangler itself carries neither. Demanding their presence
+ * would contradict that guard — so the rule is "if it is here, it matches", and
+ * absence is silence.
+ */
+const OPTIONAL_TEMPLATE_SCRIPTS = [
+  ".mise/scripts/codegraph.sh",
+  ".mise/scripts/hindsight-setup.sh",
+] as const;
+
+function optionalTemplateScriptIssues(ctx: Context): string[] {
+  const issues: string[] = [];
+  for (const rel of OPTIONAL_TEMPLATE_SCRIPTS) {
+    const path = join(ctx.repoRoot, rel);
+    if (!existsSync(path)) continue;
+    const expected = templateCommonProjectText(ctx, rel);
+    if (expected === undefined) continue;
+    if (safeReadText(path) !== expected) issues.push(`${rel} is present but has drifted from the shipped template`);
+  }
+  return issues;
+}
+
+function refreshOptionalTemplateScripts(ctx: Context): string[] {
+  const changed: string[] = [];
+  for (const rel of OPTIONAL_TEMPLATE_SCRIPTS) {
+    const path = join(ctx.repoRoot, rel);
+    if (!existsSync(path)) continue;
+    const expected = templateCommonProjectText(ctx, rel);
+    if (expected === undefined || safeReadText(path) === expected) continue;
+    changed.push(path);
+    if (!ctx.dryRun) {
+      writeText(path, expected);
+      chmodSync(path, 0o755);
+    }
+  }
+  return changed;
+}
+
 export function createMiseChecks(): RecipeOwnedCheck[] {
 return [
   {
@@ -4469,6 +4516,7 @@ return [
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
       details.push(...managedHookSubjectIssues(text));
+      details.push(...optionalTemplateScriptIssues(ctx));
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
       details.push(...retiredTaskNameIssues(text));
@@ -4506,6 +4554,7 @@ return [
       if (expectedScript === undefined) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh — update @delorenj/pjangler (broken package)", changedFiles, details: [] };
       }
+      changedFiles.push(...refreshOptionalTemplateScripts(ctx));
       if (safeReadText(linkAgentfilesPath) !== expectedScript) {
         changedFiles.push(linkAgentfilesPath);
         if (!ctx.dryRun) {

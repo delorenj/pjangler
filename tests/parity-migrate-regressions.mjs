@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
@@ -171,6 +171,43 @@ try {
     assert.match(scriptText, /refusing to replace the real file/, "must refuse to clobber a regular CLAUDE.md");
     assert.match(scriptText, /refusing to act on/, "must refuse a root it does not belong to");
     assertAgentSymlinks(repo);
+
+    // PJAN-84: an OPTIONAL template script must not drift, but may be absent.
+    //
+    // Four of the six CommonProject scripts had a byte-parity owner;
+    // codegraph.sh and hindsight-setup.sh had none, so a repo could carry a
+    // months-old copy and nothing noticed. They stay optional — the template
+    // guards the codegraph hook with `[ -f ... ] && ... || true`, and pjangler
+    // itself carries neither — so the rule is "if it is here, it matches", and
+    // absence is silence. Turning it on found six repos carrying a stale
+    // hindsight-setup.sh.
+    {
+      const optional = makeRepo("optional-template-scripts");
+      repos.push(optional);
+      writeFileSync(join(optional, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
+      const shipped = join(root, "templates", "commonproject", "template", ".mise", "scripts", "codegraph.sh");
+      const local = join(optional, ".mise", "scripts", "codegraph.sh");
+      mkdirSync(dirname(local), { recursive: true });
+
+      const silent = JSON.parse(runAllowFailure(["audit", optional, "--json"], root))
+        .rules.find((entry) => entry.id === "mise.config-root");
+      assert.ok(
+        !silent.details.some((detail) => detail.includes("codegraph.sh")),
+        `an absent optional script must be silent: ${JSON.stringify(silent.details)}`,
+      );
+
+      copyFileSync(shipped, local);
+      writeFileSync(local, `${readFileSync(local, "utf8")}\n# drifted\n`);
+      const drifted = JSON.parse(runAllowFailure(["audit", optional, "--json"], root))
+        .rules.find((entry) => entry.id === "mise.config-root");
+      assert.ok(
+        drifted.details.some((detail) => detail === ".mise/scripts/codegraph.sh is present but has drifted from the shipped template"),
+        `a present-but-drifted optional script must be reported: ${JSON.stringify(drifted.details)}`,
+      );
+
+      run(["migrate", "mise.config-root", optional, "--json"], root);
+      assert.equal(readFileSync(local, "utf8"), readFileSync(shipped, "utf8"), "migrate must refresh it from the template");
+    }
 
     // PJAN-84: the audit must reject a hook that runs a managed script without
     // handing it config_root as its SUBJECT.

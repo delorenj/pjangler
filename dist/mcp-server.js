@@ -8511,6 +8511,36 @@ function unsupportedRootAttestation(repoRoot, rootName) {
   }
   return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
 }
+var OPTIONAL_TEMPLATE_SCRIPTS = [
+  ".mise/scripts/codegraph.sh",
+  ".mise/scripts/hindsight-setup.sh"
+];
+function optionalTemplateScriptIssues(ctx) {
+  const issues = [];
+  for (const rel of OPTIONAL_TEMPLATE_SCRIPTS) {
+    const path = join3(ctx.repoRoot, rel);
+    if (!existsSync2(path)) continue;
+    const expected = templateCommonProjectText(ctx, rel);
+    if (expected === void 0) continue;
+    if (safeReadText(path) !== expected) issues.push(`${rel} is present but has drifted from the shipped template`);
+  }
+  return issues;
+}
+function refreshOptionalTemplateScripts(ctx) {
+  const changed = [];
+  for (const rel of OPTIONAL_TEMPLATE_SCRIPTS) {
+    const path = join3(ctx.repoRoot, rel);
+    if (!existsSync2(path)) continue;
+    const expected = templateCommonProjectText(ctx, rel);
+    if (expected === void 0 || safeReadText(path) === expected) continue;
+    changed.push(path);
+    if (!ctx.dryRun) {
+      writeText(path, expected);
+      chmodSync(path, 493);
+    }
+  }
+  return changed;
+}
 function createMiseChecks() {
   return [
     {
@@ -8530,6 +8560,7 @@ function createMiseChecks() {
         if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
         if (!text2.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
         details.push(...managedHookSubjectIssues(text2));
+        details.push(...optionalTemplateScriptIssues(ctx));
         if (!text2.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
         if (!text2.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
         details.push(...retiredTaskNameIssues(text2));
@@ -8567,6 +8598,7 @@ function createMiseChecks() {
         if (expectedScript === void 0) {
           return { id: finding2.id, title: finding2.title, status: "blocked", summary: "pjangler install is missing .mise/scripts/link-agentfiles.sh \u2014 update @delorenj/pjangler (broken package)", changedFiles, details: [] };
         }
+        changedFiles.push(...refreshOptionalTemplateScripts(ctx));
         if (safeReadText(linkAgentfilesPath) !== expectedScript) {
           changedFiles.push(linkAgentfilesPath);
           if (!ctx.dryRun) {
@@ -10793,6 +10825,18 @@ build
 
 // src/recipes/DockerRecipe.ts
 var DockerRecipe = class extends Recipe {
+  // PJAN-84: deliberately no checks, and this is the reason.
+  //
+  // An audit rule here would have to answer "did pjangler install this?", and
+  // the recipe records no provenance — nothing distinguishes the Dockerfile
+  // `pj add docker` wrote from one the operator wrote by hand. Requiring all
+  // three artifacts whenever any of them is present would flag every repo with
+  // a hand-written Dockerfile and no compose file, which is most of them.
+  //
+  // So the honest state is what `describe` already reports: the subsystem's
+  // presence comes from marker files and its parity reads "unchecked". A rule
+  // that produced false positives would be worse than no rule. Give this checks
+  // when the recipe starts recording what it wrote — not before.
   checks = [];
   metadata = {
     id: "docker",
@@ -12098,6 +12142,18 @@ var AddSrcDirectory = class extends Command {
 
 // src/recipes/NodeRecipe.ts
 var NodeRecipe = class extends Recipe {
+  // PJAN-84: deliberately no checks, and this is the reason.
+  //
+  // An audit rule here would have to answer "did pjangler install this?", and
+  // the recipe records no provenance — nothing distinguishes the package.json
+  // `pj add node` wrote from the one npm wrote. Requiring README.md and
+  // src/ wherever a package.json exists would flag every library, every
+  // monorepo package, and every repo that keeps its sources elsewhere.
+  //
+  // So the honest state is what `describe` already reports: the subsystem's
+  // presence comes from marker files and its parity reads "unchecked". A rule
+  // that produced false positives would be worse than no rule. Give this checks
+  // when the recipe starts recording what it wrote — not before.
   checks = [];
   metadata = {
     id: "node",
