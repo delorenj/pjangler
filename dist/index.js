@@ -7640,6 +7640,27 @@ function upsertOpInjectHook(text3) {
     [OP_INJECT_SCRIPT]
   );
 }
+var MANAGED_HOOK_SUBJECTS = [
+  { name: "link-agentfiles.sh", marker: "link-agentfiles.sh", subject: /link-agentfiles\.sh'?\s+'?\{\{config_root\}\}'?/u },
+  { name: "sync-skills.py", marker: "sync-skills.py", subject: /--root\s+'?\{\{config_root\}\}'?/u },
+  { name: "provision-packs.py", marker: "provision-packs.py", subject: /--root\s+'?\{\{config_root\}\}'?/u }
+];
+function managedHookSubjectIssues(text3) {
+  const issues = [];
+  for (const record of stripHookBlocks(text3).records) {
+    if (record.kind !== "enter") continue;
+    const script = record.script?.trim();
+    if (!script) continue;
+    for (const managed of MANAGED_HOOK_SUBJECTS) {
+      if (!script.includes(managed.marker)) continue;
+      if (managed.subject.test(script)) continue;
+      issues.push(
+        `hooks.enter runs ${managed.name} without handing it {{config_root}} as its subject; an enter hook's cwd is the directory you cd'd into, so it would act on that repo instead`
+      );
+    }
+  }
+  return issues;
+}
 function retiredTaskNameIssues(text3) {
   const issues = [];
   for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
@@ -9284,6 +9305,7 @@ function createMiseChecks() {
         const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
         if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
         if (!text3.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
+        details.push(...managedHookSubjectIssues(text3));
         if (!text3.includes('patterns = ["AGENTS.md"]')) details.push("watch_files must monitor AGENTS.md");
         if (!text3.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
         details.push(...retiredTaskNameIssues(text3));

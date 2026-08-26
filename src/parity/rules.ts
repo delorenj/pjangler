@@ -2346,6 +2346,46 @@ function upsertOpInjectHook(text: string): string {
  * same three syntactic positions `renameRetiredMiseTasks` rewrites. Anything
  * this reports is fixable by that function, so audit and migrate never disagree.
  */
+/**
+ * PJAN-84: a hook must name its SUBJECT, not just the script to run.
+ *
+ * `{{config_root}}` in a hook string locates the FILE. Nothing located the
+ * file's subject, and a mise enter hook runs with cwd set to the directory the
+ * operator cd'd into — including for a PARENT config's hook — so a script that
+ * read its subject from cwd reshaped whichever nested repo you entered. That is
+ * how 33GOD's copies of provision-packs.py and sync-skills.py came to rewrite
+ * `pjangler/.agents/skills.json` and plant dangling links in seven siblings.
+ *
+ * The check that was here verified only that the hook string CONTAINED
+ * `'{{config_root}}/.mise/scripts/link-agentfiles.sh'`, which the subject-bearing
+ * form also contains — so it passed on both, and never looked at the two python
+ * hooks at all. Every cwd hazard PJAN-82 fixed sat under a green audit the whole
+ * time.
+ */
+const MANAGED_HOOK_SUBJECTS: ReadonlyArray<{ name: string; marker: string; subject: RegExp }> = [
+  { name: "link-agentfiles.sh", marker: "link-agentfiles.sh", subject: /link-agentfiles\.sh'?\s+'?\{\{config_root\}\}'?/u },
+  { name: "sync-skills.py", marker: "sync-skills.py", subject: /--root\s+'?\{\{config_root\}\}'?/u },
+  { name: "provision-packs.py", marker: "provision-packs.py", subject: /--root\s+'?\{\{config_root\}\}'?/u },
+];
+
+function managedHookSubjectIssues(text: string): string[] {
+  const issues: string[] = [];
+  for (const record of stripHookBlocks(text).records) {
+    if (record.kind !== "enter") continue;
+    const script = record.script?.trim();
+    if (!script) continue;
+    for (const managed of MANAGED_HOOK_SUBJECTS) {
+      if (!script.includes(managed.marker)) continue;
+      if (managed.subject.test(script)) continue;
+      issues.push(
+        `hooks.enter runs ${managed.name} without handing it {{config_root}} as its subject; ` +
+        "an enter hook's cwd is the directory you cd'd into, so it would act on that repo instead"
+      );
+    }
+  }
+  return issues;
+}
+
 function retiredTaskNameIssues(text: string): string[] {
   const issues: string[] = [];
   for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
@@ -4400,6 +4440,7 @@ return [
       const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
+      details.push(...managedHookSubjectIssues(text));
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
       details.push(...retiredTaskNameIssues(text));

@@ -172,6 +172,44 @@ try {
     assert.match(scriptText, /refusing to act on/, "must refuse a root it does not belong to");
     assertAgentSymlinks(repo);
 
+    // PJAN-84: the audit must reject a hook that runs a managed script without
+    // handing it config_root as its SUBJECT.
+    //
+    // The old check only asserted the hook string CONTAINED
+    // `'{{config_root}}/.mise/scripts/link-agentfiles.sh'`, which the
+    // subject-bearing form also contains — so it passed on both, and never
+    // looked at the two python hooks at all. Every cwd hazard sat under a green
+    // audit. Re-running the audit here found 22 more repos on this machine.
+    {
+      const bare = makeRepo("subjectless-hooks");
+      repos.push(bare);
+      writeFileSync(join(bare, "mise.toml"), `[env]
+_.path = [".mise/scripts"]
+
+[[hooks.enter]]
+script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
+`);
+      const audited = JSON.parse(runAllowFailure(["audit", bare, "--json"], root));
+      const rule = audited.rules.find((entry) => entry.id === "mise.config-root");
+      const subjectIssues = rule.details.filter((detail) => detail.includes("as its subject"));
+      assert.equal(subjectIssues.length, 3, `all three managed hooks must be reported: ${JSON.stringify(rule.details)}`);
+      for (const name of ["link-agentfiles.sh", "sync-skills.py", "provision-packs.py"]) {
+        assert.ok(subjectIssues.some((detail) => detail.includes(name)), `${name} must be named`);
+      }
+      run(["migrate", "mise.config-root", bare, "--json"], root);
+      const repaired = JSON.parse(runAllowFailure(["audit", bare, "--json"], root))
+        .rules.find((entry) => entry.id === "mise.config-root");
+      assert.equal(
+        repaired.details.filter((detail) => detail.includes("as its subject")).length,
+        0,
+        `migrate must clear every subject issue: ${JSON.stringify(repaired.details)}`,
+      );
+    }
+
     // Prove it, rather than trusting the text.
     const precious = join(repo, "CLAUDE.md");
     rmSync(precious, { force: true });
