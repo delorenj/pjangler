@@ -18,7 +18,7 @@
 // canonical shape is admitted, and each way of bending it is refused.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -110,7 +110,7 @@ try {
     const it = lab();
     const elsewhere = join(it.home, "not-a-registry");
     mkdirSync(elsewhere, { recursive: true });
-    rmSync(join(it.home, ".agents", "skills"), { force: true });
+    unlinkSync(join(it.home, ".agents", "skills"));
     symlinkSync(elsewhere, join(it.home, ".agents", "skills"), "dir");
     const result = sync(it);
     assert.notEqual(result.status, 0, "an arbitrary alias target must be refused");
@@ -124,7 +124,7 @@ try {
     const it = lab();
     const inCache = join(it.home, ".agents", ".cache", "planted");
     mkdirSync(inCache, { recursive: true });
-    rmSync(join(it.home, ".agents", "skills"), { force: true });
+    unlinkSync(join(it.home, ".agents", "skills"));
     symlinkSync(inCache, join(it.home, ".agents", "skills"), "dir");
     const result = sync(it);
     assert.notEqual(result.status, 0, "the cache root must never host the projection");
