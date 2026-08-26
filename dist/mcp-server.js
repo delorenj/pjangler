@@ -4977,6 +4977,26 @@ var Command = class {
 
 // src/recipes/Recipe.ts
 init_style();
+
+// src/recipes/types.ts
+function stampFinding(check, finding2, recipeId) {
+  return {
+    ...finding2,
+    scope: finding2.scope ?? check.scope ?? "project",
+    ...recipeId ? { recipeId } : {}
+  };
+}
+function auditCheck(check, ctx, recipeId) {
+  return stampFinding(check, check.audit(ctx), recipeId);
+}
+function isHostScoped(finding2) {
+  return finding2.scope === "host";
+}
+function gatesProject(finding2) {
+  return finding2.status === "fail" && !isHostScoped(finding2);
+}
+
+// src/recipes/Recipe.ts
 function commandStatus(result2, dryRun) {
   if (result2.outcome) return result2.outcome;
   if (!result2.success) return "failed";
@@ -5078,7 +5098,7 @@ var Recipe = class {
     };
   }
   audit(ctx) {
-    return this.checks.map((check) => ({ ...check.audit(ctx), recipeId: this.metadata.id }));
+    return this.checks.map((check) => auditCheck(check, ctx, this.metadata.id));
   }
   migrate(ctx, ruleIds) {
     const selected = this.checks.filter((check) => ruleIds.includes(check.id));
@@ -6502,6 +6522,7 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
   } catch {
     return [];
   }
+  const repoSkillsRoot = resolve3(skillsDir, "..", "..", "skills");
   for (const name of entries) {
     if (expectedNames.has(name) || manifestNames.has(name)) continue;
     if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
@@ -6513,6 +6534,9 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
       linkTarget = null;
     }
     if (linkTarget && (packRoots.some((root) => isContainedBy(root, linkTarget)) || isContainedBy(backupDir, linkTarget))) {
+      continue;
+    }
+    if (linkTarget && linkTarget === join3(repoSkillsRoot, name) && existsSync2(join3(linkTarget, "SKILL.md"))) {
       continue;
     }
     names.push(name);
@@ -8740,7 +8764,7 @@ function createAgentHooksChecks() {
           manifestNames
         );
         for (const name of unmanagedSkillNames) {
-          details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
+          details.push(`.agents/skills/${name} is present in the projection but declared by nothing`);
         }
         if (unmanagedSkillNames.length) {
           details.push(
@@ -9893,6 +9917,8 @@ function createHermesChecks() {
     {
       id: "systemd.sentinel",
       title: "Hermes systemd/sentinel units enabled + active",
+      // PJAN-84: host-scoped — systemd --user units on this machine.
+      scope: "host",
       audit: (ctx) => {
         const roles = discoverRoles(ctx.repoRoot);
         if (!roles.length) {
@@ -10110,6 +10136,8 @@ function createHermesChecks() {
       // quietly missing a capability.
       id: "hermes.fleet-config",
       title: "Fleet base config carries the capabilities every agent inherits",
+      // PJAN-84: host-scoped — $HOME/.hermes/fleet.env, shared by every agent.
+      scope: "host",
       audit: (ctx) => {
         const roles = discoverRoles(ctx.repoRoot);
         if (!roles.length) {
@@ -10185,6 +10213,8 @@ function createHermesChecks() {
     {
       id: "hermes.profile-wiring",
       title: "Launcher + systemd HERMES_HOME points at the named profile",
+      // PJAN-84: host-scoped — $HOME/.hermes/profiles and the launcher's HERMES_HOME.
+      scope: "host",
       audit: (ctx) => {
         const roles = discoverRoles(ctx.repoRoot);
         if (!roles.length) {
@@ -10281,6 +10311,8 @@ function createHermesChecks() {
     {
       id: "hermes.registry-parity",
       title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+      // PJAN-84: host-scoped — $HOME/.hermes/agents-registry.yaml.
+      scope: "host",
       audit: (ctx) => {
         const roles = discoverRoles(ctx.repoRoot);
         const details = [];
@@ -10586,6 +10618,12 @@ function formatAuditReport(report) {
   const lines = [""];
   lines.push(`  ${overall}${tally.length ? `  ${dim(glyph.dot)}  ${joinDot(tally)}` : ""}`);
   lines.push(`  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(prettyTimestamp(report.auditedAt))}`);
+  const hostTrouble = report.rules.filter((rule) => rule.scope === "host" && (rule.status === "fail" || rule.status === "warn"));
+  if (hostTrouble.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("This machine needs attention")}  ${dim(glyph.dot)}  ${dim("not this project \u2014 these cannot be fixed from here")}`);
+    for (const rule of hostTrouble) lines.push(`     ${dim(glyph.arrow)} ${rule.id}: ${rule.summary}`);
+  }
   lines.push("");
   for (const rule of report.rules) {
     const style = statusStyle(rule.status);
@@ -12163,11 +12201,12 @@ function observation(ctx) {
   return ctx.notebookObservation;
 }
 var NotebookCheck = class {
-  constructor(id, title, auditFn, migrateFn) {
+  constructor(id, title, auditFn, migrateFn, scope) {
     this.id = id;
     this.title = title;
     this.auditFn = auditFn;
     this.migrateFn = migrateFn;
+    this.scope = scope;
   }
   audit(ctx) {
     return this.auditFn(ctx);
@@ -12353,8 +12392,13 @@ function createNotebookChecks() {
     new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit),
     new NotebookCheck("notebook.remote-notebook", "Remote notebook", remoteAudit),
     new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit),
-    new NotebookCheck("notebook.skill-installed", "Project Notebook skill", skillAudit),
-    new NotebookCheck("notebook.hooks-projected", "Project Notebook hooks", hooksAudit),
+    // PJAN-84: host-scoped. These describe $HOME/.agents/skills and
+    // $HOME/.claude/settings.json — the machine's shared agent configuration.
+    // No work in the audited repository can change either, and reporting them as
+    // the repository's failure is what let one drifted symlink fail (and roll
+    // back) a brand-new project, and every project on the box at once.
+    new NotebookCheck("notebook.skill-installed", "Project Notebook skill", skillAudit, void 0, "host"),
+    new NotebookCheck("notebook.hooks-projected", "Project Notebook hooks", hooksAudit, void 0, "host"),
     new NotebookCheck("notebook.capture-receipts", "Capture receipts", captureAudit, (ctx, current) => {
       if (ctx.dryRun) return result(current, "applied", "Would expire only elapsed succeeded receipts and elapsed unreferenced receiptless state");
       try {
@@ -13979,7 +14023,7 @@ var ProjectRecipe = class extends Recipe {
       const eligibilityAudit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : void 0;
       audit = eligibilityAudit;
       if (eligibilityAudit && !eligibilityAudit.ok) {
-        errors.push(...eligibilityAudit.rules.filter((finding2) => finding2.status === "fail" || finding2.status === "warn").map((finding2) => `${finding2.id}: ${finding2.summary}`));
+        errors.push(...eligibilityAudit.rules.filter((finding2) => gatesProject(finding2)).map((finding2) => `${finding2.id}: ${finding2.summary}`));
       }
       phases.push({
         id: "project.audit:eligibility",
@@ -14131,7 +14175,7 @@ var ProjectRecipe = class extends Recipe {
       }
       audit = errors.length === 0 ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true })) : audit;
       if (errors.length === 0 && audit && !audit.ok) {
-        errors.push(...audit.rules.filter((finding2) => finding2.status === "fail" || finding2.status === "warn").map((finding2) => `${finding2.id}: ${finding2.summary}`));
+        errors.push(...audit.rules.filter((finding2) => gatesProject(finding2)).map((finding2) => `${finding2.id}: ${finding2.summary}`));
       }
       phases.push({
         id: "project.audit",
@@ -14326,7 +14370,20 @@ var RecipeRegistry = class {
     const rules = selected.flatMap((recipe) => recipe.audit(ctx).map((finding2) => ({ ...finding2, recipeId: finding2.recipeId ?? recipe.metadata.id })));
     return {
       repo: ctx.repoRoot,
-      ok: rules.every((rule) => rule.status === "pass" || rule.status === "skip"),
+      // PJAN-84: `ok` answers "is the audited PROJECT in parity?".
+      //
+      // It used to be `every(pass || skip)`, which made two unrelated claims:
+      // that a `warn` is a failure, and that a HOST condition is the
+      // repository's failure. The first is why `pj audit` exited 1 while
+      // reporting zero failed rules; the second is why a drifted symlink under
+      // ~/.agents could fail — and roll back — a brand-new project, and every
+      // project on the machine at once.
+      //
+      // Host findings are still reported, and `hostOk` says whether any of them
+      // needs attention, so nothing is hidden — it just no longer gates a repo
+      // that cannot fix it.
+      ok: rules.every((rule) => !gatesProject(rule)),
+      hostOk: rules.every((rule) => !isHostScoped(rule) || rule.status === "pass" || rule.status === "skip"),
       auditedAt: (/* @__PURE__ */ new Date()).toISOString(),
       rules
     };
@@ -14353,7 +14410,7 @@ var RecipeRegistry = class {
     if (!owner) return result2;
     let postcondition;
     try {
-      postcondition = owner.recipe.checks[owner.checkIndex].audit(ctx);
+      postcondition = auditCheck(owner.recipe.checks[owner.checkIndex], ctx);
     } catch (err) {
       return {
         ...result2,
@@ -14436,7 +14493,7 @@ var RecipeRegistry = class {
       let current = rule;
       if (owner) {
         try {
-          current = { ...owner.recipe.checks[owner.checkIndex].audit(ctx), recipeId: rule.recipeId };
+          current = auditCheck(owner.recipe.checks[owner.checkIndex], ctx, rule.recipeId);
         } catch {
         }
       }

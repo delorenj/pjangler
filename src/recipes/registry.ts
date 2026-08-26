@@ -1,3 +1,4 @@
+import { auditCheck, gatesProject, isHostScoped } from "./types";
 import type {
   LifecycleAuditFinding,
   LifecycleAuditReport,
@@ -168,7 +169,20 @@ export class RecipeRegistry {
     const rules = selected.flatMap((recipe) => recipe.audit(ctx).map((finding) => ({ ...finding, recipeId: finding.recipeId ?? recipe.metadata.id })));
     return {
       repo: ctx.repoRoot,
-      ok: rules.every((rule) => rule.status === "pass" || rule.status === "skip"),
+      // PJAN-84: `ok` answers "is the audited PROJECT in parity?".
+      //
+      // It used to be `every(pass || skip)`, which made two unrelated claims:
+      // that a `warn` is a failure, and that a HOST condition is the
+      // repository's failure. The first is why `pj audit` exited 1 while
+      // reporting zero failed rules; the second is why a drifted symlink under
+      // ~/.agents could fail — and roll back — a brand-new project, and every
+      // project on the machine at once.
+      //
+      // Host findings are still reported, and `hostOk` says whether any of them
+      // needs attention, so nothing is hidden — it just no longer gates a repo
+      // that cannot fix it.
+      ok: rules.every((rule) => !gatesProject(rule)),
+      hostOk: rules.every((rule) => !isHostScoped(rule) || rule.status === "pass" || rule.status === "skip"),
       auditedAt: new Date().toISOString(),
       rules,
     };
@@ -196,7 +210,7 @@ export class RecipeRegistry {
     if (!owner) return result;
     let postcondition;
     try {
-      postcondition = owner.recipe.checks[owner.checkIndex]!.audit(ctx);
+      postcondition = auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx);
     } catch (err) {
       return {
         ...result,
@@ -294,7 +308,7 @@ export class RecipeRegistry {
       let current = rule;
       if (owner) {
         try {
-          current = { ...owner.recipe.checks[owner.checkIndex]!.audit(ctx), recipeId: rule.recipeId };
+          current = auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx, rule.recipeId);
         } catch {
           // Keep the pre-migration finding rather than dropping the rule.
         }

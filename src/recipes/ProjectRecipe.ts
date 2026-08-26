@@ -22,6 +22,7 @@ import {
 } from "../parity/rules";
 import { Recipe } from "./Recipe";
 import type { RecipeRegistry } from "./registry";
+import { gatesProject } from "./types";
 import type {
   LifecycleContext,
   RecipeInitResult,
@@ -382,7 +383,11 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       audit = eligibilityAudit;
       if (eligibilityAudit && !eligibilityAudit.ok) {
         errors.push(...eligibilityAudit.rules
-          .filter((finding) => finding.status === "fail" || finding.status === "warn")
+          // PJAN-84: only a PROJECT-scoped failure is this transaction's problem.
+          // A host finding — a drifted ~/.agents symlink, a systemd unit, the
+          // fleet registry — cannot be fixed by the repo being created, and
+          // failing here used to delete it (see the rollback guard below).
+          .filter((finding) => gatesProject(finding))
           .map((finding) => `${finding.id}: ${finding.summary}`));
       }
       phases.push({
@@ -560,7 +565,11 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         : audit;
       if (errors.length === 0 && audit && !audit.ok) {
         errors.push(...audit.rules
-          .filter((finding) => finding.status === "fail" || finding.status === "warn")
+          // PJAN-84: only a PROJECT-scoped failure is this transaction's problem.
+          // A host finding — a drifted ~/.agents symlink, a systemd unit, the
+          // fleet registry — cannot be fixed by the repo being created, and
+          // failing here used to delete it (see the rollback guard below).
+          .filter((finding) => gatesProject(finding))
           .map((finding) => `${finding.id}: ${finding.summary}`));
       }
       phases.push({

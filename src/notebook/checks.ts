@@ -83,6 +83,8 @@ class NotebookCheck implements RecipeCheck {
     readonly title: string,
     private readonly auditFn: (ctx: LifecycleContext) => LifecycleAuditFinding,
     private readonly migrateFn?: (ctx: LifecycleContext, finding: LifecycleAuditFinding) => LifecycleMigrationResult,
+    /** PJAN-84: "host" for the two rules about $HOME. Absent means "project". */
+    readonly scope?: "project" | "host",
   ) {}
   audit(ctx: LifecycleContext): LifecycleAuditFinding { return this.auditFn(ctx); }
   migrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
@@ -276,8 +278,13 @@ export function createNotebookChecks(): readonly RecipeCheck[] {
     new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit),
     new NotebookCheck("notebook.remote-notebook", "Remote notebook", remoteAudit),
     new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit),
-    new NotebookCheck("notebook.skill-installed", "Project Notebook skill", skillAudit),
-    new NotebookCheck("notebook.hooks-projected", "Project Notebook hooks", hooksAudit),
+    // PJAN-84: host-scoped. These describe $HOME/.agents/skills and
+    // $HOME/.claude/settings.json — the machine's shared agent configuration.
+    // No work in the audited repository can change either, and reporting them as
+    // the repository's failure is what let one drifted symlink fail (and roll
+    // back) a brand-new project, and every project on the box at once.
+    new NotebookCheck("notebook.skill-installed", "Project Notebook skill", skillAudit, undefined, "host"),
+    new NotebookCheck("notebook.hooks-projected", "Project Notebook hooks", hooksAudit, undefined, "host"),
     new NotebookCheck("notebook.capture-receipts", "Capture receipts", captureAudit, (ctx, current) => {
       if (ctx.dryRun) return result(current, "applied", "Would expire only elapsed succeeded receipts and elapsed unreferenced receiptless state");
       try {

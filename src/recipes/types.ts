@@ -75,6 +75,8 @@ export interface RecipePhaseOutcome {
 }
 
 export interface LifecycleAuditFinding {
+  /** See LifecycleScope. Absent means "project". */
+  scope?: LifecycleScope;
   id: RuleId;
   title: string;
   status: LifecycleStatus;
@@ -96,7 +98,10 @@ export interface LifecycleMigrationResult {
 
 export interface LifecycleAuditReport {
   repo: string;
+  /** Is the audited PROJECT in parity? Host-scoped findings never affect this. */
   ok: boolean;
+  /** Is the MACHINE's shared state healthy? Reported separately, never gating. */
+  hostOk: boolean;
   auditedAt: string;
   rules: LifecycleAuditFinding[];
 }
@@ -110,11 +115,79 @@ export interface LifecycleMigrationReport {
   changedFiles: string[];
 }
 
+/**
+ * PJAN-84: whose problem is this finding?
+ *
+ * `project` — the repository being audited can change it. A failure gates the
+ *   project: it is exactly what `pj audit` and the init transaction are for.
+ * `host` — it is about this MACHINE ($HOME, systemd, the fleet registry, the
+ *   global skill projection). No amount of work in the repository can change it,
+ *   so failing the repository for it is a category error.
+ *
+ * Absent means `project`, so a rule that has never thought about scope keeps
+ * gating — the safe default.
+ *
+ * Why this exists: `auditRecipes` counted anything but pass/skip as not-ok, and
+ * `ProjectRecipe` turned a not-ok postcondition audit into a transaction error.
+ * So one drifted symlink under ~/.agents could fail — and roll back — a
+ * brand-new project, and every project on the machine at once. PJAN-82 fixed the
+ * two rules that happened to be firing; this fixes the semantics, so the next
+ * host-scoped rule cannot re-create it.
+ */
+export type LifecycleScope = "project" | "host";
+
 export interface RecipeCheck {
   readonly id: RuleId;
   readonly title: string;
+  /** Defaults to "project" when absent. */
+  readonly scope?: LifecycleScope;
   audit(ctx: LifecycleContext): LifecycleAuditFinding;
   migrate(ctx: LifecycleContext, finding: LifecycleAuditFinding): LifecycleMigrationResult;
+}
+
+/**
+ * The ONE place a check's audit is turned into a stamped finding.
+ *
+ * Every caller must go through this. `Recipe.audit` was the only stamper, but
+ * `verifyMigration` and `migrateAll` call `checks[i].audit(ctx)` directly — so a
+ * field stamped only in `Recipe.audit` would be silently absent in exactly the
+ * two places that decide whether a migration succeeded.
+ */
+export function stampFinding(
+  check: RecipeCheck,
+  finding: LifecycleAuditFinding,
+  recipeId?: string,
+): LifecycleAuditFinding {
+  return {
+    ...finding,
+    scope: finding.scope ?? check.scope ?? "project",
+    ...(recipeId ? { recipeId } : {}),
+  };
+}
+
+export function auditCheck(
+  check: RecipeCheck,
+  ctx: LifecycleContext,
+  recipeId?: string,
+): LifecycleAuditFinding {
+  return stampFinding(check, check.audit(ctx), recipeId);
+}
+
+/** A finding that must not gate the repository it was found in. */
+export function isHostScoped(finding: Pick<LifecycleAuditFinding, "scope">): boolean {
+  return finding.scope === "host";
+}
+
+/**
+ * Does this finding mean the audited PROJECT is out of parity?
+ *
+ * `warn` deliberately does not. A warn that counts against ok is just a fail
+ * with a different glyph, which is how `pj audit` came to exit 1 while
+ * reporting zero failed rules. Migration selection is a different question and
+ * still picks up fail AND warn.
+ */
+export function gatesProject(finding: Pick<LifecycleAuditFinding, "status" | "scope">): boolean {
+  return finding.status === "fail" && !isHostScoped(finding);
 }
 
 export interface LifecycleRecipe<TInput = unknown> {

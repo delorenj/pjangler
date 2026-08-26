@@ -158,7 +158,7 @@ try {
     assert.match(value.summary, /2 undeclared skill entr\(ies\)/, value.summary);
     for (const name of ["hand-rolled", "pristine-upstream"]) {
       assert.ok(
-        value.details.some((detail) => detail === `.agents/skills/${name} is committed but absent from .agents/skills.json`),
+        value.details.some((detail) => detail === `.agents/skills/${name} is present in the projection but declared by nothing`),
         `finding must enumerate ${name}: ${JSON.stringify(value.details)}`,
       );
     }

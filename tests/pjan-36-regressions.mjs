@@ -295,14 +295,24 @@ try {
     }
 
     // The AuditFinding wire shape is frozen: PJAN-36 added presentation, not fields.
+    //
+    // PJAN-84 added exactly one field, `scope`, and it is not presentation. `ok`
+    // stopped meaning "every rule passed" and started meaning "the audited
+    // PROJECT is in parity", because host-scoped findings — $HOME, systemd, the
+    // fleet registry, the global skill projection — cannot be fixed by the repo
+    // and were failing every project on the machine at once. A consumer cannot
+    // interpret the new `ok` without seeing which findings it excluded, so the
+    // field is load-bearing and is always present.
     const report = JSON.parse(runCli(["audit", fixture, "--json"], { NO_COLOR: "1" }).stdout);
     assert.ok(report.rules.length > 0, "the fixture audit must produce rules to inspect");
+    assert.equal(typeof report.hostOk, "boolean", "the report must say whether the MACHINE is healthy, separately from ok");
     for (const rule of report.rules) {
       assert.deepEqual(
         Object.keys(rule).sort(),
-        ["details", "fixable", "id", "status", "summary", "title"],
+        ["details", "fixable", "id", "scope", "status", "summary", "title"],
         `audit --json rule ${rule.id} must expose exactly the canonical AuditFinding keys`,
       );
+      assert.ok(["project", "host"].includes(rule.scope), `rule ${rule.id} must declare a scope`);
     }
   }
 

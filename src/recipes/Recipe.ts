@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { Command } from "../commands/Command";
 import type { CommandContext, InvokeResult } from "../commands/Command";
 import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
+import { auditCheck } from "./types";
 import type {
   LifecycleAuditFinding,
   LifecycleContext,
@@ -149,7 +150,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
   abstract init(ctx: LifecycleContext, input: TInput): Promise<RecipeInitResult>;
 
   audit(ctx: LifecycleContext): LifecycleAuditFinding[] {
-    return this.checks.map((check) => ({ ...check.audit(ctx), recipeId: this.metadata.id }));
+    return this.checks.map((check) => auditCheck(check, ctx, this.metadata.id));
   }
 
   migrate(ctx: LifecycleContext, ruleIds: readonly string[]): LifecycleMigrationResult[] {

@@ -51,11 +51,20 @@ export interface AuditFinding {
   summary: string;
   details: string[];
   fixable: boolean;
+  /**
+   * PJAN-84: "project" (the repo can fix it, and a failure gates the repo) or
+   * "host" (this machine's shared state — reported, never gating). Absent means
+   * "project".
+   */
+  scope?: "project" | "host";
 }
 
 export interface AuditReport {
   repo: string;
+  /** Is the audited PROJECT in parity? Host findings never affect this. */
   ok: boolean;
+  /** Is this machine's shared state healthy? Reported separately, never gating. */
+  hostOk?: boolean;
   auditedAt: string;
   rules: AuditFinding[];
 }
@@ -118,6 +127,12 @@ export interface Context {
 export interface RecipeOwnedCheck {
   id: string;
   title: string;
+  /**
+   * PJAN-84: "host" for a rule about this MACHINE's shared state, which the
+   * audited repository cannot change. Absent means "project". See
+   * LifecycleScope in src/recipes/types.ts.
+   */
+  scope?: "project" | "host";
   audit: (ctx: Context) => AuditFinding;
   migrate: (ctx: Context, finding: AuditFinding) => MigrationRuleResult;
 }
@@ -1384,6 +1399,15 @@ function legacyCommittedSkillNames(
   } catch {
     return [];
   }
+  // PJAN-84: a repo's OWN authored skill is declared by its directory.
+  //
+  // `<repo>/skills/<name>/SKILL.md` is projected by sync-skills.py without any
+  // manifest entry, because `.agents/skills.json` is generated and gitignored in
+  // these repos — a hand-written entry there does not survive a fresh clone, and
+  // a declaration that restates a directory's contents is a second copy of the
+  // truth that drifts from the first. This is the TypeScript mirror of that rule,
+  // so the audit agrees with the engine instead of demanding a duplicate.
+  const repoSkillsRoot = resolve(skillsDir, "..", "..", "skills");
   for (const name of entries) {
     if (expectedNames.has(name) || manifestNames.has(name)) continue;
     if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
@@ -1398,6 +1422,10 @@ function legacyCommittedSkillNames(
       linkTarget &&
       (packRoots.some((root) => isContainedBy(root, linkTarget)) || isContainedBy(backupDir, linkTarget))
     ) {
+      continue;
+    }
+    // The projection of this repo's own `skills/<name>`, by that exact name.
+    if (linkTarget && linkTarget === join(repoSkillsRoot, name) && existsSync(join(linkTarget, "SKILL.md"))) {
       continue;
     }
     names.push(name);
@@ -4705,7 +4733,7 @@ return [
         manifestNames
       );
       for (const name of unmanagedSkillNames) {
-        details.push(`.agents/skills/${name} is committed but absent from .agents/skills.json`);
+        details.push(`.agents/skills/${name} is present in the projection but declared by nothing`);
       }
       if (unmanagedSkillNames.length) {
         details.push(
@@ -6017,6 +6045,8 @@ return [
   {
     id: "systemd.sentinel",
     title: "Hermes systemd/sentinel units enabled + active",
+    // PJAN-84: host-scoped — systemd --user units on this machine.
+    scope: "host",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
       if (!roles.length) {
@@ -6251,6 +6281,8 @@ return [
     // quietly missing a capability.
     id: "hermes.fleet-config",
     title: "Fleet base config carries the capabilities every agent inherits",
+    // PJAN-84: host-scoped — $HOME/.hermes/fleet.env, shared by every agent.
+    scope: "host",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
       if (!roles.length) {
@@ -6346,6 +6378,8 @@ return [
   {
     id: "hermes.profile-wiring",
     title: "Launcher + systemd HERMES_HOME points at the named profile",
+    // PJAN-84: host-scoped — $HOME/.hermes/profiles and the launcher's HERMES_HOME.
+    scope: "host",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
       if (!roles.length) {
@@ -6450,6 +6484,8 @@ return [
   {
     id: "hermes.registry-parity",
     title: "Fleet registry matches .project.json (no duplicate or stale agents)",
+    // PJAN-84: host-scoped — $HOME/.hermes/agents-registry.yaml.
+    scope: "host",
     audit: (ctx) => {
       const roles = discoverRoles(ctx.repoRoot);
       const details: string[] = [];
@@ -6793,6 +6829,15 @@ export function formatAuditReport(report: AuditReport): string {
   const lines = [""];
   lines.push(`  ${overall}${tally.length ? `  ${dim(glyph.dot)}  ${joinDot(tally)}` : ""}`);
   lines.push(`  ${dim(report.repo)}  ${dim(glyph.dot)}  ${dim(prettyTimestamp(report.auditedAt))}`);
+  // PJAN-84: a host finding no longer fails the repo, so it has to be visible on
+  // its own line — otherwise "Parity audit passed" would be the only thing an
+  // operator reads while their machine's shared state is broken.
+  const hostTrouble = report.rules.filter((rule) => rule.scope === "host" && (rule.status === "fail" || rule.status === "warn"));
+  if (hostTrouble.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("This machine needs attention")}  ${dim(glyph.dot)}  ${dim("not this project — these cannot be fixed from here")}`);
+    for (const rule of hostTrouble) lines.push(`     ${dim(glyph.arrow)} ${rule.id}: ${rule.summary}`);
+  }
   lines.push("");
   for (const rule of report.rules) {
     const style = statusStyle(rule.status);
