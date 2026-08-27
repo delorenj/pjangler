@@ -67,6 +67,11 @@ function hostSchema(): ConfigSchema {
         ["oauth_file", quote("~/.hermes/auth.json")],
         ["codex_home", quote("~/.codex")],
         ["canonical_skills_dir", quote(join(home, ".agents", "skills"))],
+        // Compatibility for the currently committed template gitlink. Newer
+        // templates consume vox_plugin_dir, while old clean checkouts still
+        // consume voxxy_plugin_dir; retaining both keeps config upgrades safe
+        // across the gitlink transition without replacing operator values.
+        ["voxxy_plugin_dir", quote(join(home, "code", "voxxy", "plugins", "tts", "voxxy"))],
         ["vox_plugin_name", quote("vox")],
         ["vox_plugin_dir", quote(join(home, "code", "voxxy", "plugins", "tts", "vox"))],
         ["vox_voice", quote("carlin")],
@@ -105,8 +110,208 @@ export function renderHostConfig(): string {
   return `# hermes-agent-template — host configuration\n# Bootstrapped by \`pj config bootstrap\` for $HOME=${homedir()} (platform=${platform()}).\n# Existing values and additional keys are preserved by \`--force\`; it only adds\n# fields missing from the schema pinned in this pjangler release.\n# Resolution precedence: env var > ~/.hermes/fleet.env > this file > fallback.\n\n${sections}\n`;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export interface TomlTableHeader {
+  kind: "table" | "array-table";
+  path: string[];
+  headerStart: number;
+  bodyStart: number;
+  bodyEnd: number;
+}
+
+type MultilineString = "basic" | "literal" | undefined;
+
+function isEscaped(value: string, index: number): boolean {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+/** Track TOML multiline strings so header-looking payload lines stay payload. */
+function scanMultilineState(line: string, initial: MultilineString): MultilineString {
+  let state = initial;
+  let string: "basic" | "literal" | undefined;
+  for (let index = 0; index < line.length;) {
+    if (state) {
+      const marker = state === "basic" ? '\"\"\"' : "'''";
+      const close = line.indexOf(marker, index);
+      if (close === -1) return state;
+      if (state === "basic" && isEscaped(line, close)) {
+        index = close + marker.length;
+        continue;
+      }
+      state = undefined;
+      index = close + marker.length;
+      continue;
+    }
+    if (string === "basic") {
+      if (line[index] === '\"' && !isEscaped(line, index)) string = undefined;
+      index += 1;
+      continue;
+    }
+    if (string === "literal") {
+      if (line[index] === "'") string = undefined;
+      index += 1;
+      continue;
+    }
+    if (line[index] === "#") break;
+    if (line.startsWith('\"\"\"', index)) {
+      state = "basic";
+      index += 3;
+      continue;
+    }
+    if (line.startsWith("'''", index)) {
+      state = "literal";
+      index += 3;
+      continue;
+    }
+    if (line[index] === '\"') string = "basic";
+    else if (line[index] === "'") string = "literal";
+    index += 1;
+  }
+  return state;
+}
+
+function parseBasicKey(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "string" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Parse a TOML dotted key, including quoted segments, without losing spelling. */
+function parseDottedKey(raw: string): string[] | undefined {
+  const path: string[] = [];
+  let cursor = 0;
+  const whitespace = () => {
+    while (cursor < raw.length && /[ \t]/.test(raw[cursor]!)) cursor += 1;
+  };
+  whitespace();
+  while (cursor < raw.length) {
+    let key: string | undefined;
+    if (raw[cursor] === '\"') {
+      const start = cursor;
+      cursor += 1;
+      while (cursor < raw.length) {
+        if (raw[cursor] === '\"' && !isEscaped(raw, cursor)) {
+          cursor += 1;
+          key = parseBasicKey(raw.slice(start, cursor));
+          break;
+        }
+        cursor += 1;
+      }
+    } else if (raw[cursor] === "'") {
+      const end = raw.indexOf("'", cursor + 1);
+      if (end !== -1) {
+        key = raw.slice(cursor + 1, end);
+        cursor = end + 1;
+      }
+    } else {
+      const match = raw.slice(cursor).match(/^[A-Za-z0-9_-]+/);
+      if (match) {
+        key = match[0];
+        cursor += match[0].length;
+      }
+    }
+    if (key === undefined) return undefined;
+    path.push(key);
+    whitespace();
+    if (cursor === raw.length) return path;
+    if (raw[cursor] !== ".") return undefined;
+    cursor += 1;
+    whitespace();
+    if (cursor === raw.length) return undefined;
+  }
+  return path.length ? path : undefined;
+}
+
+function parseHeaderLine(line: string): Pick<TomlTableHeader, "kind" | "path"> | undefined {
+  const text = line.trimStart();
+  if (!text.startsWith("[")) return undefined;
+  const kind: TomlTableHeader["kind"] = text.startsWith("[[") ? "array-table" : "table";
+  const openLength = kind === "array-table" ? 2 : 1;
+  const close = kind === "array-table" ? "]]" : "]";
+  let string: "basic" | "literal" | undefined;
+  let closeAt = -1;
+  for (let cursor = openLength; cursor < text.length; cursor += 1) {
+    if (string === "basic") {
+      if (text[cursor] === '\"' && !isEscaped(text, cursor)) string = undefined;
+      continue;
+    }
+    if (string === "literal") {
+      if (text[cursor] === "'") string = undefined;
+      continue;
+    }
+    if (text[cursor] === '\"') {
+      string = "basic";
+      continue;
+    }
+    if (text[cursor] === "'") {
+      string = "literal";
+      continue;
+    }
+    if (text.startsWith(close, cursor)) {
+      closeAt = cursor;
+      break;
+    }
+  }
+  if (closeAt === -1) return undefined;
+  const tail = text.slice(closeAt + close.length);
+  if (!/^[ \t]*(?:#.*)?$/.test(tail)) return undefined;
+  const path = parseDottedKey(text.slice(openLength, closeAt));
+  return path ? { kind, path } : undefined;
+}
+
+/**
+ * Parse table spans while preserving the original document byte-for-byte.
+ * Every table owns content only until the next normal OR array-table header.
+ */
+export function parseTomlTableHeaders(source: string): TomlTableHeader[] {
+  const parsed: Array<Omit<TomlTableHeader, "bodyEnd">> = [];
+  let offset = 0;
+  let multiline: MultilineString;
+  for (const match of source.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
+    const segment = match[0];
+    if (!segment) break;
+    const line = segment.replace(/(?:\r\n|\n|\r)$/, "");
+    if (!multiline) {
+      const header = parseHeaderLine(line);
+      if (header) {
+        parsed.push({
+          ...header,
+          headerStart: offset,
+          bodyStart: offset + segment.length,
+        });
+      }
+    }
+    multiline = scanMultilineState(line, multiline);
+    offset += segment.length;
+  }
+  return parsed.map((header, index) => ({
+    ...header,
+    bodyEnd: parsed[index + 1]?.headerStart ?? source.length,
+  }));
+}
+
+function ownedBareKeys(source: string, table: TomlTableHeader): Set<string> {
+  const keys = new Set<string>();
+  let multiline: MultilineString;
+  const body = source.slice(table.bodyStart, table.bodyEnd);
+  for (const match of body.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
+    const segment = match[0];
+    if (!segment) break;
+    const line = segment.replace(/(?:\r\n|\n|\r)$/, "");
+    if (!multiline) {
+      const assignment = line.match(/^\s*((?:"(?:\\.|[^"\\])*"|'[^']*'|[A-Za-z0-9_-]+))\s*=/);
+      if (assignment) {
+        const path = parseDottedKey(assignment[1]!);
+        if (path?.length === 1) keys.add(path[0]!);
+      }
+    }
+    multiline = scanMultilineState(line, multiline);
+  }
+  return keys;
 }
 
 /**
@@ -117,22 +322,27 @@ function escapeRegExp(value: string): string {
 export function mergeHostConfig(existing: string): string {
   let merged = existing;
   for (const { section, values } of hostSchema()) {
-    const header = new RegExp(`^\\[${escapeRegExp(section)}\\]\\s*$`, "m");
-    const headerMatch = header.exec(merged);
-    if (!headerMatch || headerMatch.index === undefined) {
+    const tables = parseTomlTableHeaders(merged);
+    const matching = tables.filter((table) => table.kind === "table" && table.path.length === 1 && table.path[0] === section);
+    if (matching.length > 1) {
+      throw new Error(`Cannot merge [${section}]: config contains duplicate table headers`);
+    }
+    const table = matching[0];
+    if (!table) {
+      const incompatible = tables.find((candidate) => candidate.path[0] === section);
+      if (incompatible) {
+        throw new Error(`Cannot merge [${section}]: config defines ${incompatible.kind === "array-table" ? "an array table" : "a child table"} at [${incompatible.path.join(".")}] without an owning [${section}] table`);
+      }
       const prefix = merged.length === 0 ? "" : merged.endsWith("\n") ? "\n" : "\n\n";
       merged += `${prefix}[${section}]\n${values.map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
       continue;
     }
-
-    const bodyStart = headerMatch.index + headerMatch[0].length;
-    const nextHeaderOffset = merged.slice(bodyStart).search(/^\[[^\]]+\]\s*$/m);
-    const bodyEnd = nextHeaderOffset === -1 ? merged.length : bodyStart + nextHeaderOffset;
-    const body = merged.slice(bodyStart, bodyEnd);
-    const missing = values.filter(([key]) => !new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`, "m").test(body));
+    const existingKeys = ownedBareKeys(merged, table);
+    const missing = values.filter(([key]) => !existingKeys.has(key));
     if (!missing.length) continue;
-    const addition = `${body.endsWith("\n") ? "" : "\n"}${missing.map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
-    merged = `${merged.slice(0, bodyEnd)}${addition}${merged.slice(bodyEnd)}`;
+    const body = merged.slice(table.bodyStart, table.bodyEnd);
+    const addition = `${body.length === 0 || body.endsWith("\n") ? "" : "\n"}${missing.map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
+    merged = `${merged.slice(0, table.bodyEnd)}${addition}${merged.slice(table.bodyEnd)}`;
   }
   return merged;
 }

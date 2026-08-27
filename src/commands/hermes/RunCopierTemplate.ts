@@ -9,6 +9,7 @@ import { Command, type InvokeResult } from "../Command";
 import { HERMES_AGENT_TEMPLATE, deriveAgentId, deriveProfileName, type HermesAgentContext } from "./types";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
 import { verifyTrustedCopierIdentity } from "../../lifecycle/preflight";
+import { existingRoleRefusal } from "./ValidateHermesOptions";
 
 const TICKET_PROVIDER_CREDENTIAL_KEYS = new Set([
   "PLANE_API_KEY",
@@ -136,6 +137,12 @@ export class RunCopierTemplate extends Command {
       "Hermes role directory",
     );
     ctx.roleDir = roleDir;
+    const nonInteractiveRefusal = (ctx.yes || ctx.quiet) && !ctx.force
+      ? existingRoleRefusal(roleDir)
+      : undefined;
+    if (nonInteractiveRefusal) {
+      return { success: false, outcome: "failed", message: nonInteractiveRefusal };
+    }
     const trustedCopierRequired = Boolean(ctx.deferredExternalEffects && !ctx.dryRun);
     if (trustedCopierRequired && !ctx.trustedCopier) {
       return {
@@ -164,13 +171,7 @@ export class RunCopierTemplate extends Command {
     // rejects this before config bootstrap; retain the guard here for direct
     // command callers and only prompt interactive callers.
     if (existsSync(join(roleDir, "role.yaml")) && !ctx.force) {
-      if (ctx.yes) {
-        return {
-          success: false,
-          outcome: "failed",
-          message: `Hermes role already exists at ${roleDir}; non-interactive mode will not overwrite it. Re-run with --force to re-render explicitly.`,
-        };
-      } else {
+      if (!ctx.yes && !ctx.quiet) {
         const proceed = await p.confirm({
           message: `${safeRole}/role.yaml already exists — re-render with --overwrite?`,
           initialValue: false,

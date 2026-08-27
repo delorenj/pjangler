@@ -1070,6 +1070,7 @@ configCmd
       if (result.message) console.error(result.message);
       process.exit(1);
     }
+    if (result.message) console.log(result.message);
   });
 
 // ============================================================================

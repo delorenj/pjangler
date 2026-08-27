@@ -3,8 +3,8 @@
 #
 # Transaction order:
 #   clean tree -> remote/template gates -> npm ci/build/typecheck/tests -> auth
-#   -> bump package + lock -> inspect exact tarball -> commit + annotated tag
-#   -> atomically push the configured main ref + tag -> publish that tarball
+#   -> bump package + lock -> inspect staged tarball -> commit with normal hooks
+#   -> re-audit + rebuild exact tarball -> annotated tag -> atomic push -> publish
 #
 # Usage:
 #   release.sh [patch|minor|major]   bump level (default: patch)
@@ -400,12 +400,24 @@ inspect_tarball
 preflight_publish_cli
 npm run check:tracked-secrets
 
-# All fallible package/provenance gates are complete before final refs exist.
-# Disable repository hooks so the reviewed tree cannot be changed after the
-# exact tarball is built and before the release commit is recorded.
-git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"
-git tag -a "$NEW" -m "$NEW" HEAD
+# Hooks are part of the repository's release policy and must run normally.
+# Capture the parent first, then re-prove the committed payload and rebuild the
+# exact tarball after all pre/post-commit hooks have had their chance to act.
+RELEASE_BASE_HEAD="$(git rev-parse HEAD)"
+git commit -m "release($RELEASE_TICKET_ID): $NEW"
+[ "$(git rev-parse HEAD^)" = "$RELEASE_BASE_HEAD" ] ||
+  die "release hook changed HEAD topology; no tag or remote ref was created"
+[ "$(git diff-tree --no-commit-id --name-only -r HEAD | sort)" = $'package-lock.json\npackage.json' ] ||
+  die "release commit contains paths outside package.json/package-lock.json"
+[ "$("$SCRIPTS_DIR/versioning.sh" current)" = "$NEW" ] ||
+  die "release hook changed the committed version; no tag or remote ref was created"
 require_clean_tree
+npm run check:lock
+npm run check:audit:prod
+inspect_tarball
+preflight_publish_cli
+npm run check:tracked-secrets
+git tag -a "$NEW" -m "$NEW" HEAD
 
 # Commit and annotated tag become remotely durable together. A concurrent main
 # update rejects this normal fast-forward push rather than overwriting it.

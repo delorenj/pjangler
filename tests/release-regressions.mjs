@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -27,6 +28,7 @@ const indexOf = (needle) => {
   assert.notEqual(index, -1, `release.sh missing ${needle}`);
   return index;
 };
+const releaseCommit = 'git commit -m "release($RELEASE_TICKET_ID): $NEW"';
 
 try {
   assert.equal(
@@ -138,8 +140,13 @@ try {
   );
   assert.ok(
     indexOf("npm install --package-lock-only --ignore-scripts") <
-      indexOf('git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"'),
+      indexOf(releaseCommit),
     "lockfile regeneration must be inside the release commit",
+  );
+  assert.doesNotMatch(
+    source,
+    /core\.hooksPath\s*=\s*\/dev\/null|--no-verify|GIT_GUARD_OFF/,
+    "release must run repository hooks without any bypass",
   );
   assert.doesNotMatch(source, /release\(PJAN-44\)/, "release commits must not carry a stale hard-coded ticket");
   assert.match(source, /RELEASE_TICKET:-/, "release should accept an explicit ticket override");
@@ -148,7 +155,7 @@ try {
   assert.match(source, /\^PJAN-\[1-9\]\[0-9\]\*\$/, "release must validate the exact ticket format");
   assert.ok(
     indexOf('RELEASE_TICKET_ID="$(resolve_release_ticket)"') <
-      indexOf('git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"'),
+      indexOf(releaseCommit),
     "the validated release ticket must be resolved before commit creation",
   );
   assert.ok(
@@ -198,8 +205,8 @@ try {
   assert.match(source, /PJAN21_PG_HARNESS_SELF_TEST=0 PJANGLER_REQUIRE/);
   assert.match(source, /npm run check:audit:prod/);
   assert.ok(
-    source.lastIndexOf("npm run check:audit:prod") <
-      indexOf('git -c core.hooksPath=/dev/null commit'),
+    source.lastIndexOf("npm run check:audit:prod", indexOf(releaseCommit)) <
+      indexOf(releaseCommit),
     "production audit must rerun after the bumped lock is generated",
   );
   assert.match(source, /--resume-push/);
@@ -209,8 +216,8 @@ try {
   assert.match(source, /E404\|404 Not Found/);
   assert.match(source, /failed without a definitive 404/);
   assert.ok(
-    source.lastIndexOf("preflight_publish_cli") <
-      indexOf('git -c core.hooksPath=/dev/null commit'),
+    source.lastIndexOf("preflight_publish_cli", indexOf(releaseCommit)) <
+      indexOf(releaseCommit),
     "exact-tarball preflight must precede the final commit",
   );
   // PJAN-61: the PRE-bump preflight must stay gated to the retry paths. On the
@@ -228,10 +235,20 @@ try {
     "the bump path must still preflight the exact tarball AFTER the version bump",
   );
   assert.ok(
-    source.lastIndexOf("npm run check:tracked-secrets") <
-      indexOf('git -c core.hooksPath=/dev/null commit'),
+    source.lastIndexOf("npm run check:tracked-secrets", indexOf(releaseCommit)) <
+      indexOf(releaseCommit),
     "payload secret gate must precede the final commit",
   );
+  const commitIndex = indexOf(releaseCommit);
+  const tagIndex = indexOf('git tag -a "$NEW" -m "$NEW" HEAD');
+  assert.ok(indexOf('RELEASE_BASE_HEAD="$(git rev-parse HEAD)"') < commitIndex);
+  assert.ok(indexOf('git rev-parse HEAD^') > commitIndex, "hook-safe transaction must verify the release parent");
+  assert.ok(indexOf("git diff-tree --no-commit-id --name-only -r HEAD") > commitIndex, "hook-safe transaction must verify committed paths");
+  assert.ok(source.lastIndexOf("require_clean_tree") > commitIndex, "post-commit hooks must leave a clean tree");
+  assert.ok(source.lastIndexOf("inspect_tarball") > commitIndex, "the published tarball must be rebuilt after hooks");
+  assert.ok(source.lastIndexOf("preflight_publish_cli") > commitIndex, "the rebuilt tarball must be preflighted after hooks");
+  assert.ok(source.lastIndexOf("npm run check:tracked-secrets") > commitIndex, "the committed payload must be rescanned after hooks");
+  assert.ok(tagIndex > source.lastIndexOf("npm run check:tracked-secrets"), "no release tag may exist before post-hook gates pass");
   assert.match(pgSource, /"ON_ERROR_STOP=1"/);
   assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-pack\.XXXXXX"/);
   assert.match(source, /--pack-destination "\$PACK_DIR"/);
@@ -290,6 +307,42 @@ try {
   });
   assert.notEqual(invalidTicket.status, 0);
   assert.match(invalidTicket.stderr, /release ticket is missing or invalid/);
+
+  // Execute the exact commit line from release.sh against a configured
+  // rejecting hook. A normal commit must invoke it and leave HEAD untouched.
+  const hookDir = join(temp, ".githooks");
+  const hookSentinel = join(temp, "release-hook-ran");
+  const commitHarness = join(temp, "release-commit-harness.sh");
+  mkdirSync(hookDir);
+  writeFileSync(
+    join(hookDir, "pre-commit"),
+    "#!/usr/bin/env sh\nprintf 'ran\\n' > \"$PJAN86_HOOK_SENTINEL\"\nexit 73\n",
+  );
+  chmodSync(join(hookDir, "pre-commit"), 0o755);
+  git(["config", "core.hooksPath", ".githooks"]);
+  writeFileSync(join(temp, "package.json"), '{"name":"fixture","version":"1.0.1"}\n');
+  git(["add", "package.json"]);
+  writeFileSync(
+    commitHarness,
+    `#!/usr/bin/env bash\nset -euo pipefail\nRELEASE_TICKET_ID=PJAN-86\nNEW=v1.0.1\n${releaseCommit}\n`,
+  );
+  chmodSync(commitHarness, 0o755);
+  const beforeRejectedCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim();
+  const rejectedCommit = spawnSync(commitHarness, [], {
+    cwd: temp,
+    encoding: "utf8",
+    env: { ...process.env, PJAN86_HOOK_SENTINEL: hookSentinel },
+  });
+  assert.notEqual(rejectedCommit.status, 0, "configured pre-commit hook must block the release commit");
+  assert.equal(readFileSync(hookSentinel, "utf8"), "ran\n");
+  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim(), beforeRejectedCommit);
+  git(["restore", "--staged", "package.json"]);
+  git(["restore", "package.json"]);
+  git(["config", "--unset", "core.hooksPath"]);
+  rmSync(hookDir, { recursive: true, force: true });
+  rmSync(commitHarness, { force: true });
+  rmSync(hookSentinel, { force: true });
+  assert.equal(existsSync(hookSentinel), false);
 
   writeFileSync(join(temp, "dirty.txt"), "must block release\n");
 

@@ -1,11 +1,51 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import { Command, type InvokeResult } from "../Command";
 import { normalizeAgentRole, resolveContainedPath } from "../../project/index";
 import type { HermesAgentContext } from "./types";
 
 export const EMAIL_UNSUPPORTED_MESSAGE =
   "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
+
+const HARMLESS_ROLE_PLACEHOLDERS = new Set([".gitkeep", ".DS_Store", "Thumbs.db"]);
+
+/**
+ * Find pre-existing role content that requires explicit overwrite consent.
+ * Empty directories and inert placeholder/OS metadata files are harmless;
+ * ignored runtime state, symlinks, and every template-shaped file are not.
+ */
+export function existingRoleDirectoryBlockers(roleDir: string): string[] {
+  let root;
+  try {
+    root = lstatSync(roleDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  if (!root.isDirectory() || root.isSymbolicLink()) return ["<target is not a real directory>"];
+
+  const blockers: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        visit(path);
+      } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name)) {
+        blockers.push(relative(roleDir, path));
+      }
+    }
+  };
+  visit(roleDir);
+  return blockers.sort();
+}
+
+export function existingRoleRefusal(roleDir: string): string | undefined {
+  const blockers = existingRoleDirectoryBlockers(roleDir);
+  if (!blockers.length) return undefined;
+  const sample = blockers.slice(0, 3).join(", ");
+  const remainder = blockers.length > 3 ? ` and ${blockers.length - 3} more` : "";
+  return `Hermes target directory is not empty at ${roleDir} (found ${sample}${remainder}); non-interactive mode will not render into it. Re-run with --force to re-render explicitly.`;
+}
 
 /**
  * Effect-free CLI/recipe option validation.
@@ -27,11 +67,12 @@ export class ValidateHermesOptions extends Command {
       join(ctx.targetDir, "agents", "hermes", role),
       "Hermes role directory",
     );
-    if (ctx.yes && !ctx.force && existsSync(join(roleDir, "role.yaml"))) {
+    const refusal = (ctx.yes || ctx.quiet) && !ctx.force ? existingRoleRefusal(roleDir) : undefined;
+    if (refusal) {
       return {
         success: false,
         outcome: "failed",
-        message: `Hermes role already exists at ${roleDir}; non-interactive mode will not overwrite it. Re-run with --force to re-render explicitly.`,
+        message: refusal,
       };
     }
 

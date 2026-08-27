@@ -3022,6 +3022,114 @@ function checkUnit(unit: string): { enabled: boolean; active: boolean } {
   return { enabled, active };
 }
 
+function persistRoleServiceState(
+  role: RoleMeta,
+  updates: Partial<Record<"gateway" | "heartbeat", "active" | "deferred">>,
+): { changed: boolean; error?: string } {
+  try {
+    const stat = lstatSync(role.roleYamlPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return { changed: false, error: `refusing unsafe role manifest ${role.roleYamlPath}` };
+    }
+    const current = readFileSync(role.roleYamlPath, "utf8");
+    const document = YAML.parseDocument(current);
+    if (document.errors.length) throw document.errors[0];
+    const serviceState = document.get("service_state", true);
+    if (serviceState !== undefined && serviceState !== null && !YAML.isMap(serviceState)) {
+      return { changed: false, error: `${role.roleYamlPath} service_state must be a YAML mapping` };
+    }
+    for (const [leaf, value] of Object.entries(updates)) {
+      document.setIn(["service_state", leaf], value);
+    }
+    const next = String(document);
+    if (next === current) return { changed: false };
+
+    // The declaration becomes durable only after every unit action and probe
+    // succeeds. A same-directory rename atomically replaces role.yaml without
+    // following a symlink or exposing a partially serialized manifest.
+    const transaction = mkdtempSync(join(dirname(role.roleYamlPath), ".pjangler-role-state-"));
+    try {
+      atomicWriteBuffer(
+        role.roleYamlPath,
+        Buffer.from(next),
+        Number(stat.mode) & 0o777,
+        join(transaction, "role.yaml"),
+      );
+    } finally {
+      rmSync(transaction, { recursive: true, force: true });
+    }
+    return { changed: true };
+  } catch (error) {
+    return { changed: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function reconcileHermesRoleUnits(
+  ctx: Context,
+  role: RoleMeta,
+  changedFiles: string[],
+  details: string[],
+): boolean {
+  const gatewayUnit = `hermes-${role.agentId}-gateway.service`;
+  const heartbeatUnit = `hermes-${role.agentId}-heartbeat.timer`;
+  const gatewayDeferred = role.serviceStateGateway === "deferred";
+  const stateUpdates: Partial<Record<"gateway" | "heartbeat", "active" | "deferred">> = {};
+  if (role.serviceStateHeartbeat !== "active") stateUpdates.heartbeat = "active";
+  if (!gatewayDeferred && role.serviceStateGateway !== "active") stateUpdates.gateway = "active";
+
+  if (ctx.dryRun) {
+    details.push("would run: systemctl --user daemon-reload");
+    details.push(`would run: systemctl --user enable --now ${heartbeatUnit}`);
+    details.push(`would run: systemctl --user ${gatewayDeferred ? "disable" : "enable"} --now ${gatewayUnit}`);
+    if (Object.keys(stateUpdates).length) {
+      if (!changedFiles.includes(role.roleYamlPath)) changedFiles.push(role.roleYamlPath);
+      details.push(`would atomically record verified service_state in ${relative(ctx.repoRoot, role.roleYamlPath)}`);
+    }
+    return true;
+  }
+
+  const reload = systemctlUser(["daemon-reload"]);
+  if (!reload.ok) {
+    details.push(`script failed: systemctl --user daemon-reload: ${reload.stderr || reload.stdout || "unknown error"}`);
+    return false;
+  }
+  const heartbeat = systemctlUser(["enable", "--now", heartbeatUnit]);
+  const gateway = systemctlUser([gatewayDeferred ? "disable" : "enable", "--now", gatewayUnit]);
+  if (!heartbeat.ok) {
+    details.push(`script failed: could not enable ${heartbeatUnit}: ${heartbeat.stderr || heartbeat.stdout || "unknown error"}`);
+  }
+  if (!gateway.ok) {
+    details.push(`script failed: could not ${gatewayDeferred ? "disable" : "enable"} ${gatewayUnit}: ${gateway.stderr || gateway.stdout || "unknown error"}`);
+  }
+  if (!heartbeat.ok || !gateway.ok) return false;
+
+  const heartbeatState = checkUnit(heartbeatUnit);
+  const gatewayState = checkUnit(gatewayUnit);
+  const heartbeatHealthy = heartbeatState.enabled && heartbeatState.active;
+  const gatewayHealthy = gatewayDeferred
+    ? !gatewayState.enabled && !gatewayState.active
+    : gatewayState.enabled && gatewayState.active;
+  if (!heartbeatHealthy) {
+    details.push(`script failed: ${heartbeatUnit} did not become enabled+active after systemctl reported success`);
+  }
+  if (!gatewayHealthy) {
+    details.push(`script failed: ${gatewayUnit} did not become ${gatewayDeferred ? "disabled+inactive" : "enabled+active"} after systemctl reported success`);
+  }
+  if (!heartbeatHealthy || !gatewayHealthy) return false;
+
+  const persisted = persistRoleServiceState(role, stateUpdates);
+  if (persisted.error) {
+    details.push(`script failed: could not update ${relative(ctx.repoRoot, role.roleYamlPath)}: ${persisted.error}`);
+    return false;
+  }
+  if (persisted.changed) {
+    if (!changedFiles.includes(role.roleYamlPath)) changedFiles.push(role.roleYamlPath);
+    details.push(`atomically recorded verified service_state in ${relative(ctx.repoRoot, role.roleYamlPath)}`);
+  }
+  details.push(`verified ${heartbeatUnit} enabled+active and ${gatewayUnit} ${gatewayDeferred ? "disabled+inactive" : "enabled+active"}`);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // BMAD version helpers (shared by bmad.scaffold + bmad.version)
 // ---------------------------------------------------------------------------
@@ -6186,21 +6294,10 @@ return [
         const manifestNeedsReconcile = [role.serviceStateGateway, role.serviceStateHeartbeat]
           .some((state) => state === "pending" || state === "error");
         if (allUnitsPresent && !unitsStale && !manifestNeedsReconcile) {
-          const gatewayUnit = units[0]!;
-          const heartbeatUnit = units[1]!;
-          const gatewayDeferred = role.serviceStateGateway === "deferred";
-          if (ctx.dryRun) {
-            details.push(`would run: systemctl --user enable --now ${heartbeatUnit}`);
-            details.push(`would run: systemctl --user ${gatewayDeferred ? "disable" : "enable"} --now ${gatewayUnit}`);
-          } else {
-            systemctlUser(["daemon-reload"]);
-            const heartbeat = systemctlUser(["enable", "--now", heartbeatUnit]);
-            const gateway = systemctlUser([gatewayDeferred ? "disable" : "enable", "--now", gatewayUnit]);
-            if (!heartbeat.ok) details.push(`script failed: could not enable ${heartbeatUnit}: ${heartbeat.stderr || heartbeat.stdout}`);
-            if (!gateway.ok) details.push(`script failed: could not ${gatewayDeferred ? "disable" : "enable"} ${gatewayUnit}: ${gateway.stderr || gateway.stdout}`);
-          }
+          reconcileHermesRoleUnits(ctx, role, changedFiles, details);
           continue;
         }
+        let regenerated = false;
         for (const script of [join(role.roleDir, ".scripts", "70-systemd.sh")]) {
           if (!existsSync(script)) {
             details.push(`script failed: missing ${script}`);
@@ -6217,8 +6314,18 @@ return [
             if (result.status !== 0) {
               details.push(`script failed: ${script}: ${result.stderr.trim() || result.stdout.trim()}`);
             } else {
+              regenerated = true;
               details.push(`regenerated systemd units for ${role.agentId} from ${role.roleDir}`);
             }
+          }
+        }
+        if (ctx.dryRun) continue;
+        if (regenerated) {
+          const refreshed = discoverRoles(ctx.repoRoot).find((candidate) => candidate.agentId === role.agentId);
+          if (!refreshed) {
+            details.push(`script failed: regenerated role ${role.agentId} could not be rediscovered`);
+          } else {
+            reconcileHermesRoleUnits(ctx, refreshed, changedFiles, details);
           }
         }
       }
@@ -6226,7 +6333,7 @@ return [
         id: finding.id,
         title: finding.title,
         status: details.some((detail) => detail.includes("failed:")) ? "blocked" : details.length ? (ctx.dryRun ? "skipped" : "applied") : "noop",
-        summary: details.length ? (ctx.dryRun ? "Planned systemd remediation commands" : "Attempted systemd remediation") : "No changes required",
+        summary: details.length ? (ctx.dryRun ? "Planned systemd remediation commands" : "Reconciled and verified systemd service state") : "No changes required",
         changedFiles,
         details,
       };
