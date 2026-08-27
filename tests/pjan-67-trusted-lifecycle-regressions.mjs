@@ -21,9 +21,14 @@ import {
   createSkillPackFixture,
 } from "./helpers/pack-fixture.mjs";
 import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
+import {
+  committedSubmoduleGitlink,
+  materializeCommittedSubmodule,
+  materializeGitCommit,
+  readGitCommitFile,
+} from "./helpers/committed-submodule.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const serverPath = join(root, "dist", "mcp-server.js");
 const installed = spawnSync("which", ["copier"], { encoding: "utf8" });
 if (installed.status !== 0 || !installed.stdout.trim()) {
   console.log("PJAN-67 trusted lifecycle integration: SKIP (Copier is not installed)");
@@ -34,6 +39,42 @@ assert.equal(installedPython.status, 0, installedPython.stderr);
 const realPython = realpathSync(installedPython.stdout.trim());
 
 const temporary = mkdtempSync(join(root, ".pjan-67-trusted-lifecycle-"));
+const fixturePjanglerRoot = join(temporary, "committed-parent-fixture");
+mkdirSync(join(fixturePjanglerRoot, "dist"), { recursive: true });
+copyFileSync(join(root, "package.json"), join(fixturePjanglerRoot, "package.json"));
+copyFileSync(join(root, "dist", "index.js"), join(fixturePjanglerRoot, "dist", "index.js"));
+copyFileSync(join(root, "dist", "mcp-server.js"), join(fixturePjanglerRoot, "dist", "mcp-server.js"));
+const fixtureVersioning = join(fixturePjanglerRoot, ".mise", "scripts", "versioning.sh");
+mkdirSync(dirname(fixtureVersioning), { recursive: true });
+writeFileSync(fixtureVersioning, readGitCommitFile(root, "HEAD", ".mise/scripts/versioning.sh"), "utf8");
+chmodSync(fixtureVersioning, 0o755);
+materializeCommittedSubmodule(
+  root,
+  "templates/commonproject",
+  join(fixturePjanglerRoot, "templates", "commonproject"),
+);
+
+// Build the Hermes fixture from the parent HEAD gitlink through git archive.
+// Deliberately dirty an independent source checkout first: neither that byte
+// nor the advanced shared submodule worktree may influence this lifecycle run.
+const HERMES_GITLINK = committedSubmoduleGitlink(root, "templates/hermes-agent");
+const dirtyHermesSource = join(temporary, "dirty-hermes-source");
+const clonedHermes = spawnSync(
+  "git",
+  ["clone", "--quiet", "--no-hardlinks", join(root, "templates", "hermes-agent"), dirtyHermesSource],
+  { cwd: root, encoding: "utf8" },
+);
+assert.equal(clonedHermes.status, 0, clonedHermes.stderr);
+writeFileSync(join(dirtyHermesSource, "copier.yml"), "PJAN-67 DIRTY WORKTREE SENTINEL\n");
+assert.match(
+  spawnSync("git", ["status", "--short"], { cwd: dirtyHermesSource, encoding: "utf8" }).stdout,
+  /copier\.yml/,
+);
+const committedHermesTemplate = join(fixturePjanglerRoot, "templates", "hermes-agent");
+materializeGitCommit(dirtyHermesSource, HERMES_GITLINK, committedHermesTemplate);
+assert.doesNotMatch(readFileSync(join(committedHermesTemplate, "copier.yml"), "utf8"), /DIRTY WORKTREE SENTINEL/);
+
+const serverPath = join(fixturePjanglerRoot, "dist", "mcp-server.js");
 const enclosingProjectManifest = join(temporary, ".project.json");
 const enclosingProjectManifestBefore = '{"project_name":"PJAN-67 enclosing sentinel","agents":{}}\n';
 writeFileSync(enclosingProjectManifest, enclosingProjectManifestBefore, "utf8");
@@ -76,7 +117,7 @@ printf 'runtime-migrate:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:pjangler:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
-exec "${process.execPath}" "${join(root, "dist", "index.js")}" "$@"
+exec "${process.execPath}" "${join(fixturePjanglerRoot, "dist", "index.js")}" "$@"
 `);
 
 executable(join(fakeBin, "python3"), `#!/bin/sh
@@ -209,6 +250,7 @@ const serverEnv = {
   HERMES_BIN: fakeHermes,
   HERMES_AGENT_REPO: join(temporary, "hermes-agent"),
   PJANGLER_BIN: pjanglerWrapper,
+  PJANGLER_HERMES_TEMPLATE: "",
   PJ_PROJECT_REGISTRY: registryPath,
   PJ_PACK_ROOT_PJTEST: selectedBmadPack,
   PJ_BMAD_INSTALLER: selectedBmadInstaller,
@@ -246,7 +288,7 @@ function payload(result) {
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
-  cwd: root,
+  cwd: fixturePjanglerRoot,
   env: serverEnv,
 });
 const client = new Client({ name: "pjan-67-trusted-positive", version: "1.0.0" });

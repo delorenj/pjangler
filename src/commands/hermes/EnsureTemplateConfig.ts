@@ -1,18 +1,24 @@
 import { homedir, platform } from "node:os";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
-  statSync,
   unlinkSync,
   writeFileSync,
+  type Stats,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
-import { parse as parseToml } from "smol-toml";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
 
@@ -321,13 +327,49 @@ function ownedBareKeys(source: string, table: TomlTableHeader): Set<string> {
   return keys;
 }
 
-function assertValidToml(source: string, label: string): void {
-  try {
-    parseToml(source);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`${label} is not valid TOML: ${detail}`);
+const TOMLLIB_VALIDATE = String.raw`
+import sys
+
+try:
+    import tomllib
+except Exception as exc:
+    sys.stderr.write("TOMLLIB_UNAVAILABLE:" + repr(exc))
+    raise SystemExit(2)
+
+try:
+    source = sys.stdin.buffer.read().decode("utf-8", errors="strict")
+    tomllib.loads(source)
+except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+    sys.stderr.write("TOML_INVALID:" + exc.__class__.__name__ + ": " + str(exc))
+    raise SystemExit(1)
+`;
+
+/** Validate the exact bytes with the Python tomllib consumer used by Hermes. */
+function assertValidTomlBytes(source: Buffer, label: string): void {
+  const validation = spawnSync("python3", ["-c", TOMLLIB_VALIDATE], {
+    input: source,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (validation.error) {
+    const missing = (validation.error as NodeJS.ErrnoException).code === "ENOENT";
+    throw new Error(
+      missing
+        ? `${label} cannot be validated: python3 with tomllib is required but was not found`
+        : `${label} validation failed to start: ${validation.error.message}`,
+    );
   }
+  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) {
+    throw new Error(`${label} cannot be validated: python3 with tomllib is required (${validation.stderr.replace(/^TOMLLIB_UNAVAILABLE:/, "")})`);
+  }
+  if (validation.status !== 0) {
+    const detail = validation.stderr.replace(/^TOML_INVALID:/, "").trim() || `python3 exited ${validation.status ?? "without a status"}`;
+    throw new Error(`${label} is not valid TOML 1.0 for Python tomllib: ${detail}`);
+  }
+}
+
+function assertValidToml(source: string, label: string): void {
+  assertValidTomlBytes(Buffer.from(source, "utf8"), label);
 }
 
 /**
@@ -370,39 +412,154 @@ export function mergeHostConfig(existing: string): string {
 }
 
 /**
+ * Snapshot of an operator-owned regular config. The identity and content hash
+ * are checked again immediately before rename so a concurrent writer cannot be
+ * silently overwritten by an additive bootstrap prepared from stale bytes.
+ */
+interface ConfigSnapshot {
+  bytes: Buffer;
+  dev: number;
+  ino: number;
+  mode: number;
+  hash: string;
+}
+
+function describePathType(stats: Stats): string {
+  if (stats.isSymbolicLink()) return "symbolic link";
+  if (stats.isDirectory()) return "directory";
+  if (stats.isFIFO()) return "FIFO";
+  if (stats.isSocket()) return "socket";
+  if (stats.isCharacterDevice()) return "character device";
+  if (stats.isBlockDevice()) return "block device";
+  return "non-regular file";
+}
+
+/** lstat is the first operation on the config leaf, including the no-force path. */
+function inspectConfigPath(path: string): Stats | undefined {
+  let stats: Stats;
+  try {
+    stats = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Unsafe Hermes template config path ${path}: expected a regular file, found ${describePathType(stats)}`);
+  }
+  return stats;
+}
+
+function hashBytes(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Open without following a replacement symlink and snapshot exact bytes. */
+function readRegularConfigSnapshot(path: string, expected?: Stats): ConfigSnapshot {
+  const before = inspectConfigPath(path);
+  if (!before) throw new Error(`Hermes template config disappeared before it could be read: ${path}`);
+  if (expected && (before.dev !== expected.dev || before.ino !== expected.ino)) {
+    throw new Error(`Hermes template config changed concurrently before it could be read: ${path}`);
+  }
+
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error(`Hermes template config changed type or identity while opening: ${path}`);
+    }
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.mtimeMs !== opened.mtimeMs ||
+      after.ctimeMs !== opened.ctimeMs
+    ) {
+      throw new Error(`Hermes template config changed while it was being read: ${path}`);
+    }
+    return {
+      bytes,
+      dev: opened.dev,
+      ino: opened.ino,
+      mode: opened.mode & 0o777,
+      hash: hashBytes(bytes),
+    };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function assertConfigUnchanged(path: string, previous: ConfigSnapshot | undefined): void {
+  if (!previous) {
+    if (inspectConfigPath(path)) {
+      throw new Error(`Hermes template config appeared concurrently before installation: ${path}`);
+    }
+    return;
+  }
+  const current = readRegularConfigSnapshot(path);
+  if (current.dev !== previous.dev || current.ino !== previous.ino || current.hash !== previous.hash) {
+    throw new Error(`Hermes template config changed concurrently; refusing to overwrite operator changes: ${path}`);
+  }
+}
+
+/**
  * Replace one config atomically and prove the exact installed bytes parse.
  * If the post-rename read unexpectedly disagrees, restore the prior bytes (or
- * remove a newly-created file) before reporting failure.
+ * remove a newly-created file) while preserving both primary and rollback
+ * errors for the caller.
  */
-function installValidatedConfig(path: string, next: string, previous: string | undefined): void {
-  assertValidToml(next, "Rendered Hermes template config");
+function installValidatedConfig(path: string, next: string, previous: ConfigSnapshot | undefined): void {
+  const nextBytes = Buffer.from(next, "utf8");
+  assertValidTomlBytes(nextBytes, "Rendered Hermes template config");
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true });
   const stagingDirectory = mkdtempSync(join(directory, ".pjangler-config-"));
   const stagedPath = join(stagingDirectory, "config.toml");
   let installed = false;
   try {
-    const mode = previous === undefined ? 0o600 : statSync(path).mode & 0o777;
-    writeFileSync(stagedPath, next, { encoding: "utf8", mode });
-    const staged = readFileSync(stagedPath, "utf8");
-    if (staged !== next) throw new Error("Staged Hermes template config bytes changed before installation");
-    assertValidToml(staged, "Staged Hermes template config");
+    const mode = previous?.mode ?? 0o600;
+    writeFileSync(stagedPath, nextBytes, { mode });
+    const staged = readFileSync(stagedPath);
+    if (!staged.equals(nextBytes)) throw new Error("Staged Hermes template config bytes changed before installation");
+    assertValidTomlBytes(staged, "Staged Hermes template config");
+
+    assertConfigUnchanged(path, previous);
 
     renameSync(stagedPath, path);
     installed = true;
-    const written = readFileSync(path, "utf8");
-    if (written !== next) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
-    assertValidToml(written, "Installed Hermes template config");
+    const written = readRegularConfigSnapshot(path);
+    if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
+    assertValidTomlBytes(written.bytes, "Installed Hermes template config");
   } catch (error) {
+    let rollbackError: unknown;
     if (installed) {
-      if (previous === undefined) {
-        unlinkSync(path);
-      } else {
-        const rollbackPath = join(stagingDirectory, "rollback.toml");
-        writeFileSync(rollbackPath, previous, { encoding: "utf8", mode: statSync(path).mode & 0o777 });
-        assertValidToml(readFileSync(rollbackPath, "utf8"), "Rollback Hermes template config");
-        renameSync(rollbackPath, path);
+      try {
+        if (previous === undefined) {
+          unlinkSync(path);
+        } else {
+          const rollbackPath = join(stagingDirectory, "rollback.toml");
+          assertValidTomlBytes(previous.bytes, "Rollback Hermes template config");
+          writeFileSync(rollbackPath, previous.bytes, { mode: previous.mode });
+          const stagedRollback = readFileSync(rollbackPath);
+          if (!stagedRollback.equals(previous.bytes)) throw new Error("Rollback config bytes changed before installation");
+          assertValidTomlBytes(stagedRollback, "Staged rollback Hermes template config");
+          renameSync(rollbackPath, path);
+          const restored = readRegularConfigSnapshot(path);
+          if (!restored.bytes.equals(previous.bytes)) throw new Error("Restored Hermes template config bytes differ from the original");
+          assertValidTomlBytes(restored.bytes, "Restored Hermes template config");
+        }
+      } catch (rollbackFailure) {
+        rollbackError = rollbackFailure;
       }
+    }
+    if (rollbackError) {
+      const primary = error instanceof Error ? error.message : String(error);
+      const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+      throw new Error(`${primary}; rollback also failed: ${rollback}`, {
+        cause: new AggregateError([error, rollbackError], "Hermes config installation and rollback both failed"),
+      });
     }
     throw error;
   } finally {
@@ -423,16 +580,25 @@ export class EnsureTemplateConfig extends Command {
     }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
-    const exists = existsSync(path);
+    let pathStats: Stats | undefined;
+    try {
+      pathStats = inspectConfigPath(path);
+    } catch (error) {
+      return { success: false, outcome: "failed", message: `Failed to inspect ${path}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const exists = pathStats !== undefined;
     if (exists && !force) {
       return { success: true, outcome: "unchanged", message: `Config present: ${path}` };
     }
 
     let next = renderHostConfig();
     let current = "";
+    let previous: ConfigSnapshot | undefined;
     try {
       if (exists) {
-        current = readFileSync(path, "utf8");
+        previous = readRegularConfigSnapshot(path, pathStats);
+        assertValidTomlBytes(previous.bytes, "Existing Hermes template config");
+        current = previous.bytes.toString("utf8");
         next = mergeHostConfig(current);
       } else {
         assertValidToml(next, "Rendered Hermes template config");
@@ -453,7 +619,7 @@ export class EnsureTemplateConfig extends Command {
     }
 
     try {
-      installValidatedConfig(path, next, exists ? current : undefined);
+      installValidatedConfig(path, next, previous);
     } catch (error) {
       return { success: false, outcome: "failed", message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }

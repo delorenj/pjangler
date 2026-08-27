@@ -192,18 +192,18 @@ var init_types = __esm({
 });
 
 // src/utils/tree-diff.ts
-import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync4, lstatSync as lstatSync3, readFileSync as readFileSync5, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
+import { createHash as createHash4 } from "node:crypto";
+import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
 import { join as join6, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
   if (!existsSync4(current)) return snapshot;
   const rel = relative3(root, current) || ".";
   if (rel === ".git" || rel.startsWith(`.git${process.platform === "win32" ? "\\" : "/"}`)) return snapshot;
-  const stat = lstatSync3(current);
+  const stat = lstatSync4(current);
   if (stat.isSymbolicLink()) {
     snapshot.set(rel, `link:${readlinkSync2(current)}`);
   } else if (stat.isFile()) {
-    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
+    snapshot.set(rel, `file:${createHash4("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
     for (const name of readdirSync3(current)) snapshotTree(root, join6(current, name), snapshot);
@@ -222,16 +222,16 @@ var init_tree_diff = __esm({
 });
 
 // src/lifecycle/preflight.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import {
   accessSync,
-  constants as constants2,
+  constants as constants3,
   existsSync as existsSync5,
-  lstatSync as lstatSync4,
+  lstatSync as lstatSync5,
   readFileSync as readFileSync6,
   readdirSync as readdirSync4,
   realpathSync as realpathSync3,
-  statSync as statSync2
+  statSync
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename as basename4, delimiter, isAbsolute, join as join7, relative as relative4, resolve as resolve4 } from "node:path";
@@ -245,8 +245,8 @@ function firstExecutableOnPath(env2) {
     const entry = rawEntry || process.cwd();
     const candidate = resolve4(entry, process.platform === "win32" ? "copier.exe" : "copier");
     try {
-      accessSync(candidate, constants2.X_OK);
-      const stat = lstatSync4(candidate);
+      accessSync(candidate, constants3.X_OK);
+      const stat = lstatSync5(candidate);
       if (stat.isFile() || stat.isSymbolicLink()) return candidate;
     } catch {
     }
@@ -254,12 +254,12 @@ function firstExecutableOnPath(env2) {
   return void 0;
 }
 function sha2562(path) {
-  return createHash4("sha256").update(readFileSync6(path)).digest("base64url");
+  return createHash5("sha256").update(readFileSync6(path)).digest("base64url");
 }
 function fingerprint(path) {
   const absolute = resolve4(path);
   const realPath = realpathSync3(absolute);
-  const stat = statSync2(realPath);
+  const stat = statSync(realPath);
   if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
   return {
     path: absolute,
@@ -406,7 +406,7 @@ function attestUvCopier(candidate, realCandidate, home) {
       const allowed = path === realCandidate || containedBy(sitePackages, path);
       if (!allowed) return { ok: false, error: `Copier RECORD path escapes the tool environment: ${entry.relativePath}` };
       const actualDigest = sha2562(path);
-      const actualSize = statSync2(path).size;
+      const actualSize = statSync(path).size;
       if (actualDigest !== entry.digest || actualSize !== entry.size) {
         return { ok: false, error: `Copier RECORD integrity mismatch: ${entry.relativePath}` };
       }
@@ -472,7 +472,7 @@ function regularContainedFile(root, path, label) {
     const rootReal = realpathSync3(root);
     const fileReal = realpathSync3(path);
     if (!containedBy(rootReal, fileReal)) return { ok: false, error: `${label} escapes its vendored template root` };
-    if (!lstatSync4(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
+    if (!lstatSync5(path).isFile()) return { ok: false, error: `${label} is not a regular file` };
     return { ok: true };
   } catch (error) {
     return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
@@ -585,7 +585,7 @@ function preflightRenderedHermes(options) {
   const roleDir = resolve4(options.roleDir);
   if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
   try {
-    const stat = lstatSync4(roleDir);
+    const stat = lstatSync5(roleDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
       return { ok: false, error: "rendered Hermes role must be a real directory" };
     }
@@ -966,9 +966,9 @@ var init_RegistryStore = __esm({
 });
 
 // src/project/index.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
+import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
-import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync2, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync as closeSync3, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync3, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -1073,11 +1073,11 @@ function mergeYamlMapping(document, path, desired, ownedKeys = []) {
 }
 function fsyncDirectory(path) {
   try {
-    const fd = openSync2(path, "r");
+    const fd = openSync3(path, "r");
     try {
       fsyncSync(fd);
     } finally {
-      closeSync2(fd);
+      closeSync3(fd);
     }
   } catch {
   }
@@ -1088,7 +1088,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
   let text2;
   let mode = 420;
   if (existsSync6(path)) {
-    const stat = lstatSync5(path);
+    const stat = lstatSync6(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Project registry must be a regular file: ${path}`);
     mode = stat.mode & 511;
     const current = readFileSync7(path, "utf8");
@@ -1112,18 +1112,18 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
   let fd;
   try {
-    fd = openSync2(temp, "wx", mode);
+    fd = openSync3(temp, "wx", mode);
     writeFileSync4(fd, text2, "utf8");
     fchmodSync(fd, mode);
     fsyncSync(fd);
-    closeSync2(fd);
+    closeSync3(fd);
     fd = void 0;
     renameSync3(temp, path);
     chmodSync2(path, mode);
     fsyncDirectory(dirname5(path));
   } catch (error) {
     if (fd !== void 0) try {
-      closeSync2(fd);
+      closeSync3(fd);
     } catch {
     }
     try {
@@ -1403,7 +1403,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
-    const result2 = spawnSync2("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+    const result2 = spawnSync3("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
       cwd: existsSync6(action.repoPath) ? action.repoPath : staging,
       encoding: "utf8",
       env: childEnv
@@ -1768,7 +1768,7 @@ async function executeProjectInitPlan(plan, options = {}) {
         copierEnv.PYTHONNOUSERSITE = "1";
         copierEnv.PYTHONSAFEPATH = "1";
       }
-      const result2 = spawnSync2(copierExecutable, action.command.slice(1), {
+      const result2 = spawnSync3(copierExecutable, action.command.slice(1), {
         encoding: "utf8",
         cwd: action.cwd,
         ...copierEnv ? { env: copierEnv } : {}
@@ -2037,7 +2037,7 @@ var init_project = __esm({
 // src/notebook/config.ts
 import { randomUUID } from "node:crypto";
 import { isIP as isIP2 } from "node:net";
-import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync7, openSync as openSync3, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
+import { closeSync as closeSync4, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync4, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname7, resolve as resolve7 } from "node:path";
 function isRecord2(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -2296,26 +2296,26 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
   if (!existsSync14(manifestPath) || readFileSync13(manifestPath, "utf8") !== manifestText) {
     let mode = 420;
     if (existsSync14(manifestPath)) {
-      const current2 = lstatSync7(manifestPath);
+      const current2 = lstatSync8(manifestPath);
       if (!current2.isFile() || current2.isSymbolicLink()) throw new NotebookError("CONFLICT", `${manifestPath} must be a regular non-symlink file`);
       mode = current2.mode & 511;
     }
     const temp = resolve7(dirname7(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
-    const fd = openSync3(temp, "wx", mode);
+    const fd = openSync4(temp, "wx", mode);
     try {
       writeFileSync8(fd, manifestText, "utf8");
       fchmodSync2(fd, mode);
       fsyncSync2(fd);
     } finally {
-      closeSync3(fd);
+      closeSync4(fd);
     }
     renameSync4(temp, manifestPath);
     try {
-      const directory = openSync3(dirname7(manifestPath), "r");
+      const directory = openSync4(dirname7(manifestPath), "r");
       try {
         fsyncSync2(directory);
       } finally {
-        closeSync3(directory);
+        closeSync4(directory);
       }
     } catch {
     }
@@ -2357,7 +2357,7 @@ var init_config = __esm({
 });
 
 // src/notebook/notes.ts
-import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID2 } from "node:crypto";
 function canonicalJson(value) {
   if (value === void 0 || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") throw new NotebookError("INVALID_INPUT", "Canonical JSON value is not JSON-compatible");
   if (value === null || typeof value !== "object") {
@@ -2370,7 +2370,7 @@ function canonicalJson(value) {
   return `{${Object.keys(record).filter((key) => record[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 function sha256Hex(value) {
-  return createHash5("sha256").update(value).digest("hex");
+  return createHash6("sha256").update(value).digest("hex");
 }
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -2627,17 +2627,17 @@ var init_remote_mutation_schema = __esm({
 });
 
 // src/notebook/state.ts
-import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID3 } from "node:crypto";
 import {
-  closeSync as closeSync4,
-  constants as constants3,
+  closeSync as closeSync5,
+  constants as constants4,
   existsSync as existsSync15,
   fchmodSync as fchmodSync3,
-  fstatSync as fstatSync2,
+  fstatSync as fstatSync3,
   fsyncSync as fsyncSync3,
-  lstatSync as lstatSync8,
+  lstatSync as lstatSync9,
   mkdirSync as mkdirSync6,
-  openSync as openSync4,
+  openSync as openSync5,
   readSync,
   readdirSync as readdirSync7,
   renameSync as renameSync5,
@@ -2668,7 +2668,7 @@ function openPinnedDirectory(path, root, create) {
   assertContained(absoluteRoot, absolute);
   if (!existsSync15("/proc/self/fd")) throw new NotebookError("INTERNAL_ERROR", "Descriptor-pinned Notebook state requires procfs");
   const parsed = parse(absolute);
-  let fd = openSync4(parsed.root, DIRECTORY_OPEN_FLAGS);
+  let fd = openSync5(parsed.root, DIRECTORY_OPEN_FLAGS);
   let cursor = parsed.root;
   try {
     for (const part of absolute.slice(parsed.root.length).split(sep3).filter(Boolean)) {
@@ -2676,7 +2676,7 @@ function openPinnedDirectory(path, root, create) {
       cursor = join17(cursor, part);
       let childFd;
       try {
-        childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
+        childFd = openSync5(child, DIRECTORY_OPEN_FLAGS);
       } catch (error) {
         if (!create || error.code !== "ENOENT") throw error;
         try {
@@ -2684,17 +2684,17 @@ function openPinnedDirectory(path, root, create) {
         } catch (mkdirError) {
           if (mkdirError.code !== "EEXIST") throw mkdirError;
         }
-        childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
+        childFd = openSync5(child, DIRECTORY_OPEN_FLAGS);
       }
-      closeSync4(fd);
+      closeSync5(fd);
       fd = childFd;
-      const stat = fstatSync2(fd);
+      const stat = fstatSync3(fd);
       if (!stat.isDirectory()) throw new NotebookError("INTERNAL_ERROR", "Notebook state path component is not a directory");
       if (cursor === absoluteRoot || relative8(absoluteRoot, cursor).startsWith("..") === false) assertOwned(stat);
     }
     return fd;
   } catch (error) {
-    closeSync4(fd);
+    closeSync5(fd);
     if (error.code === "ELOOP" || error.code === "ENOTDIR") {
       throw new NotebookError("INTERNAL_ERROR", "Notebook state path contains a symlink component");
     }
@@ -2715,13 +2715,13 @@ function ensureDirectory(path, root) {
   assertContained(absoluteRoot, absolute);
   const fd = openPinnedDirectory(absolute, absoluteRoot, true);
   try {
-    const stat = fstatSync2(fd);
+    const stat = fstatSync3(fd);
     if (!stat.isDirectory()) throw new NotebookError("INTERNAL_ERROR", "Notebook state directory is not a real directory");
     assertOwned(stat);
     fchmodSync3(fd, 448);
     fsyncSync3(fd);
   } finally {
-    closeSync4(fd);
+    closeSync5(fd);
   }
 }
 function notebookStatePaths(root, projectSlug) {
@@ -2757,7 +2757,7 @@ function fsyncDirectory2(path) {
     fsyncSync3(fd);
   } catch {
   } finally {
-    if (fd !== void 0) closeSync4(fd);
+    if (fd !== void 0) closeSync5(fd);
   }
 }
 function readStateDirectory(path, root) {
@@ -2765,7 +2765,7 @@ function readStateDirectory(path, root) {
   try {
     return readdirSync7(`/proc/self/fd/${fd}`, { withFileTypes: true });
   } finally {
-    closeSync4(fd);
+    closeSync5(fd);
   }
 }
 function readNotebookStateDirectory(path, root) {
@@ -2779,12 +2779,12 @@ function unlinkStateFile(path, root, allowMissing = false) {
   let fileFd;
   try {
     try {
-      fileFd = openSync4(target, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+      fileFd = openSync5(target, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
     } catch (error) {
       if (allowMissing && error.code === "ENOENT") return false;
       throw error;
     }
-    const stat = fstatSync2(fileFd);
+    const stat = fstatSync3(fileFd);
     if (!stat.isFile() || (stat.mode & 511) !== 384) {
       throw new NotebookError("CONFLICT", "Refusing to remove a suspect Notebook state entry; run pj notebook audit --json");
     }
@@ -2793,8 +2793,8 @@ function unlinkStateFile(path, root, allowMissing = false) {
     fsyncSync3(parentFd);
     return true;
   } finally {
-    if (fileFd !== void 0) closeSync4(fileFd);
-    closeSync4(parentFd);
+    if (fileFd !== void 0) closeSync5(fileFd);
+    closeSync5(parentFd);
   }
 }
 function renameStateFile(source, target, root) {
@@ -2804,12 +2804,12 @@ function renameStateFile(source, target, root) {
   const targetPath = pinnedLeaf(parentFd, target);
   let sourceFd;
   try {
-    sourceFd = openSync4(sourcePath, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
-    const stat = fstatSync2(sourceFd);
+    sourceFd = openSync5(sourcePath, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+    const stat = fstatSync3(sourceFd);
     if (!stat.isFile() || (stat.mode & 511) !== 384) throw new NotebookError("CONFLICT", "Notebook state rename source has an integrity finding");
     assertOwned(stat);
     try {
-      lstatSync8(targetPath);
+      lstatSync9(targetPath);
       throw new NotebookError("CONFLICT", "Notebook state rename target already exists");
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -2817,8 +2817,8 @@ function renameStateFile(source, target, root) {
     renameSync5(sourcePath, targetPath);
     fsyncSync3(parentFd);
   } finally {
-    if (sourceFd !== void 0) closeSync4(sourceFd);
-    closeSync4(parentFd);
+    if (sourceFd !== void 0) closeSync5(sourceFd);
+    closeSync5(parentFd);
   }
 }
 function atomicWriteJson(path, value, root, afterParentPinned) {
@@ -2833,28 +2833,28 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
   try {
     afterParentPinned?.();
     try {
-      const existingFd = openSync4(target, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+      const existingFd = openSync5(target, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
       try {
-        const existing = fstatSync2(existingFd);
+        const existing = fstatSync3(existingFd);
         if (!existing.isFile()) throw new NotebookError("INTERNAL_ERROR", "Refusing to replace a non-regular Notebook state file");
         assertOwned(existing);
         if ((existing.mode & 511) !== 384) throw new NotebookError("CONFLICT", "Refusing to replace a Notebook state file with unsafe permissions");
         existingIdentity = { dev: existing.dev, ino: existing.ino };
       } finally {
-        closeSync4(existingFd);
+        closeSync5(existingFd);
       }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    const fd = openSync4(temp, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | (constants3.O_NOFOLLOW ?? 0), 384);
+    const fd = openSync5(temp, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | (constants4.O_NOFOLLOW ?? 0), 384);
     try {
       writeFileSync9(fd, text2, "utf8");
       fsyncSync3(fd);
     } finally {
-      closeSync4(fd);
+      closeSync5(fd);
     }
     try {
-      const current = lstatSync8(target);
+      const current = lstatSync9(target);
       if (!existingIdentity || !current.isFile() || current.isSymbolicLink() || current.dev !== existingIdentity.dev || current.ino !== existingIdentity.ino) {
         throw new NotebookError("CONFLICT", "Notebook state target changed during atomic update; preserving both entries for audit");
       }
@@ -2870,7 +2870,7 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
     }
     throw error;
   } finally {
-    closeSync4(parentFd);
+    closeSync5(parentFd);
   }
   return Buffer.byteLength(text2, "utf8");
 }
@@ -2880,9 +2880,9 @@ function exclusiveWrite(path, text2, root) {
   const target = pinnedLeaf(parentFd, path);
   let fd;
   try {
-    fd = openSync4(target, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | (constants3.O_NOFOLLOW ?? 0), 384);
+    fd = openSync5(target, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | (constants4.O_NOFOLLOW ?? 0), 384);
   } catch (error) {
-    closeSync4(parentFd);
+    closeSync5(parentFd);
     if (error.code === "EEXIST") return false;
     throw error;
   }
@@ -2890,12 +2890,12 @@ function exclusiveWrite(path, text2, root) {
     writeFileSync9(fd, text2, "utf8");
     fsyncSync3(fd);
   } finally {
-    closeSync4(fd);
+    closeSync5(fd);
   }
   try {
     fsyncSync3(parentFd);
   } finally {
-    closeSync4(parentFd);
+    closeSync5(parentFd);
   }
   return true;
 }
@@ -3039,13 +3039,13 @@ function safeReadJson(path, maxBytes) {
   }
   let fd;
   try {
-    fd = openSync4(pinnedLeaf(parentFd, path), constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+    fd = openSync5(pinnedLeaf(parentFd, path), constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   } catch (error) {
-    closeSync4(parentFd);
+    closeSync5(parentFd);
     return { reason: error.code === "ELOOP" ? "non-regular" : "unreadable", bytes: 0 };
   }
   try {
-    const stat = fstatSync2(fd);
+    const stat = fstatSync3(fd);
     if (!stat.isFile()) return { reason: "non-regular", bytes: 0 };
     if ((stat.mode & 511) !== 384) return { reason: "unsafe-permissions", bytes: stat.size };
     try {
@@ -3065,14 +3065,14 @@ function safeReadJson(path, maxBytes) {
       if (total > maxBytes) return { reason: "oversize", bytes: total };
       chunks.push(chunk.subarray(0, count));
     }
-    const after = fstatSync2(fd);
+    const after = fstatSync3(fd);
     if (after.size !== stat.size || total !== stat.size) return { reason: "unreadable", bytes: total };
     return { value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total))), bytes: total };
   } catch (error) {
     return { reason: error instanceof SyntaxError || error instanceof TypeError ? "invalid-json" : "unreadable", bytes: 0 };
   } finally {
-    closeSync4(fd);
-    closeSync4(parentFd);
+    closeSync5(fd);
+    closeSync5(parentFd);
   }
 }
 function safeEntryId(kind, name) {
@@ -3646,7 +3646,7 @@ var init_state = __esm({
       "REMOTE_PROTOCOL_ERROR",
       "INTERNAL_ERROR"
     ]);
-    DIRECTORY_OPEN_FLAGS = constants3.O_RDONLY | (constants3.O_DIRECTORY ?? 0) | (constants3.O_NOFOLLOW ?? 0);
+    DIRECTORY_OPEN_FLAGS = constants4.O_RDONLY | (constants4.O_DIRECTORY ?? 0) | (constants4.O_NOFOLLOW ?? 0);
   }
 });
 
@@ -3913,11 +3913,11 @@ var init_open_notebook_client = __esm({
 });
 
 // src/notebook/git-evidence.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
-import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync9, openSync as openSync5, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
+import { spawnSync as spawnSync9 } from "node:child_process";
+import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync4, lstatSync as lstatSync10, openSync as openSync6, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
 import { extname, join as join19, relative as relative9, resolve as resolve9, sep as sep4 } from "node:path";
 function git(repo, args, maxBuffer = 4 * 1024 * 1024, timeout = 5e3) {
-  const result2 = spawnSync8("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
+  const result2 = spawnSync9("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
   return { ok: result2.status === 0, stdout: result2.stdout ?? "" };
 }
 function statusPaths(value) {
@@ -3995,7 +3995,7 @@ function hasSymlinkComponent(root, candidate) {
   for (const part of rel.split(sep4).filter(Boolean)) {
     cursor = join19(cursor, part);
     try {
-      if (lstatSync9(cursor).isSymbolicLink()) return true;
+      if (lstatSync10(cursor).isSymbolicLink()) return true;
     } catch {
       return true;
     }
@@ -4007,12 +4007,12 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
   if (!safe || hasSymlinkComponent(safe.root, safe.candidate)) return { status: "excluded", reason: "unsafe-path" };
   let fd;
   try {
-    fd = openSync5(safe.candidate, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+    fd = openSync6(safe.candidate, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
   } catch {
     return { status: "excluded", reason: "not-regular" };
   }
   try {
-    const before = fstatSync3(fd);
+    const before = fstatSync4(fd);
     if (!before.isFile()) return { status: "excluded", reason: "not-regular" };
     if (before.size > maxBytes) return { status: "excluded", reason: "oversize" };
     let physical;
@@ -4033,7 +4033,7 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
       if (total > maxBytes) return { status: "excluded", reason: "oversize" };
       chunks.push(chunk.subarray(0, count));
     }
-    const after = fstatSync3(fd);
+    const after = fstatSync4(fd);
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || total !== before.size) return { status: "excluded", reason: "changed-during-read" };
     const bytes = Buffer.concat(chunks, total);
     if (bytes.includes(0)) return { status: "excluded", reason: "binary" };
@@ -4046,7 +4046,7 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
     if (looksSecret(relativePath2, content)) return { status: "excluded", reason: "secret-like" };
     return { status: "present", content, content_sha256: sha256Hex(bytes), bytes: total };
   } finally {
-    closeSync5(fd);
+    closeSync6(fd);
   }
 }
 function looksGenerated(path) {
@@ -4512,7 +4512,7 @@ var init_reconcile = __esm({
 });
 
 // src/notebook/summarizer.ts
-import { spawnSync as spawnSync11 } from "node:child_process";
+import { spawnSync as spawnSync12 } from "node:child_process";
 import { isAbsolute as isAbsolute4 } from "node:path";
 function evidenceItems(evidence) {
   const items = [];
@@ -4611,7 +4611,7 @@ function summarizeCapture(config, evidence) {
   const items = evidenceItems(evidence);
   const payload = JSON.stringify({ schema_version: 1, evidence: items });
   if (Buffer.byteLength(payload, "utf8") > config.limits.request_max_bytes) return { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary };
-  const result2 = spawnSync11(config.summarizer.executable, config.summarizer.args, {
+  const result2 = spawnSync12(config.summarizer.executable, config.summarizer.args, {
     cwd: config.repo_path,
     input: Buffer.from(payload, "utf8"),
     timeout: config.limits.overall_timeout_ms,
@@ -4925,7 +4925,7 @@ var init_capture = __esm({
 });
 
 // src/mcp-server.ts
-import { existsSync as existsSync23, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync23, statSync as statSync5 } from "node:fs";
 import { basename as basename8, dirname as dirname14, join as join30, resolve as resolve16 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10983,19 +10983,24 @@ var DockerRecipe = class extends Recipe {
 // src/commands/hermes/EnsureTemplateConfig.ts
 import { homedir as homedir3, platform } from "node:os";
 import {
+  closeSync as closeSync2,
+  constants as constants2,
   existsSync as existsSync3,
+  fstatSync as fstatSync2,
+  lstatSync as lstatSync3,
   mkdirSync as mkdirSync3,
   mkdtempSync as mkdtempSync2,
+  openSync as openSync2,
   readFileSync as readFileSync3,
   realpathSync as realpathSync2,
   renameSync as renameSync2,
   rmSync as rmSync2,
-  statSync,
   unlinkSync as unlinkSync2,
   writeFileSync as writeFileSync3
 } from "node:fs";
+import { createHash as createHash3 } from "node:crypto";
+import { spawnSync as spawnSync2 } from "node:child_process";
 import { join as join4, dirname as dirname3 } from "node:path";
-import { parse as parseToml } from "smol-toml";
 var HERMES_GIT_URL = "https://github.com/delorenj/hermes-agent.git";
 var HERMES_GIT_REF = "main";
 var HERMES_GIT_SHA = "0408fec7a153e6c32c064acd2b8053917f1525f1";
@@ -11270,13 +11275,44 @@ function ownedBareKeys(source, table) {
   }
   return keys;
 }
-function assertValidToml(source, label) {
-  try {
-    parseToml(source);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`${label} is not valid TOML: ${detail}`);
+var TOMLLIB_VALIDATE = String.raw`
+import sys
+
+try:
+    import tomllib
+except Exception as exc:
+    sys.stderr.write("TOMLLIB_UNAVAILABLE:" + repr(exc))
+    raise SystemExit(2)
+
+try:
+    source = sys.stdin.buffer.read().decode("utf-8", errors="strict")
+    tomllib.loads(source)
+except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+    sys.stderr.write("TOML_INVALID:" + exc.__class__.__name__ + ": " + str(exc))
+    raise SystemExit(1)
+`;
+function assertValidTomlBytes(source, label) {
+  const validation = spawnSync2("python3", ["-c", TOMLLIB_VALIDATE], {
+    input: source,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  });
+  if (validation.error) {
+    const missing = validation.error.code === "ENOENT";
+    throw new Error(
+      missing ? `${label} cannot be validated: python3 with tomllib is required but was not found` : `${label} validation failed to start: ${validation.error.message}`
+    );
   }
+  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) {
+    throw new Error(`${label} cannot be validated: python3 with tomllib is required (${validation.stderr.replace(/^TOMLLIB_UNAVAILABLE:/, "")})`);
+  }
+  if (validation.status !== 0) {
+    const detail = validation.stderr.replace(/^TOML_INVALID:/, "").trim() || `python3 exited ${validation.status ?? "without a status"}`;
+    throw new Error(`${label} is not valid TOML 1.0 for Python tomllib: ${detail}`);
+  }
+}
+function assertValidToml(source, label) {
+  assertValidTomlBytes(Buffer.from(source, "utf8"), label);
 }
 function mergeHostConfig(existing) {
   assertValidToml(existing, "Existing Hermes template config");
@@ -11310,34 +11346,120 @@ ${values.map(([key, value]) => `${key} = ${value}`).join("\n")}
   assertValidToml(merged, "Merged Hermes template config");
   return merged;
 }
+function describePathType(stats) {
+  if (stats.isSymbolicLink()) return "symbolic link";
+  if (stats.isDirectory()) return "directory";
+  if (stats.isFIFO()) return "FIFO";
+  if (stats.isSocket()) return "socket";
+  if (stats.isCharacterDevice()) return "character device";
+  if (stats.isBlockDevice()) return "block device";
+  return "non-regular file";
+}
+function inspectConfigPath(path) {
+  let stats;
+  try {
+    stats = lstatSync3(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Unsafe Hermes template config path ${path}: expected a regular file, found ${describePathType(stats)}`);
+  }
+  return stats;
+}
+function hashBytes(bytes) {
+  return createHash3("sha256").update(bytes).digest("hex");
+}
+function readRegularConfigSnapshot(path, expected) {
+  const before = inspectConfigPath(path);
+  if (!before) throw new Error(`Hermes template config disappeared before it could be read: ${path}`);
+  if (expected && (before.dev !== expected.dev || before.ino !== expected.ino)) {
+    throw new Error(`Hermes template config changed concurrently before it could be read: ${path}`);
+  }
+  let descriptor;
+  try {
+    descriptor = openSync2(path, constants2.O_RDONLY | (constants2.O_NOFOLLOW ?? 0));
+    const opened = fstatSync2(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error(`Hermes template config changed type or identity while opening: ${path}`);
+    }
+    const bytes = readFileSync3(descriptor);
+    const after = fstatSync2(descriptor);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
+      throw new Error(`Hermes template config changed while it was being read: ${path}`);
+    }
+    return {
+      bytes,
+      dev: opened.dev,
+      ino: opened.ino,
+      mode: opened.mode & 511,
+      hash: hashBytes(bytes)
+    };
+  } finally {
+    if (descriptor !== void 0) closeSync2(descriptor);
+  }
+}
+function assertConfigUnchanged(path, previous) {
+  if (!previous) {
+    if (inspectConfigPath(path)) {
+      throw new Error(`Hermes template config appeared concurrently before installation: ${path}`);
+    }
+    return;
+  }
+  const current = readRegularConfigSnapshot(path);
+  if (current.dev !== previous.dev || current.ino !== previous.ino || current.hash !== previous.hash) {
+    throw new Error(`Hermes template config changed concurrently; refusing to overwrite operator changes: ${path}`);
+  }
+}
 function installValidatedConfig(path, next, previous) {
-  assertValidToml(next, "Rendered Hermes template config");
+  const nextBytes = Buffer.from(next, "utf8");
+  assertValidTomlBytes(nextBytes, "Rendered Hermes template config");
   const directory = dirname3(path);
   mkdirSync3(directory, { recursive: true });
   const stagingDirectory = mkdtempSync2(join4(directory, ".pjangler-config-"));
   const stagedPath = join4(stagingDirectory, "config.toml");
   let installed = false;
   try {
-    const mode = previous === void 0 ? 384 : statSync(path).mode & 511;
-    writeFileSync3(stagedPath, next, { encoding: "utf8", mode });
-    const staged = readFileSync3(stagedPath, "utf8");
-    if (staged !== next) throw new Error("Staged Hermes template config bytes changed before installation");
-    assertValidToml(staged, "Staged Hermes template config");
+    const mode = previous?.mode ?? 384;
+    writeFileSync3(stagedPath, nextBytes, { mode });
+    const staged = readFileSync3(stagedPath);
+    if (!staged.equals(nextBytes)) throw new Error("Staged Hermes template config bytes changed before installation");
+    assertValidTomlBytes(staged, "Staged Hermes template config");
+    assertConfigUnchanged(path, previous);
     renameSync2(stagedPath, path);
     installed = true;
-    const written = readFileSync3(path, "utf8");
-    if (written !== next) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
-    assertValidToml(written, "Installed Hermes template config");
+    const written = readRegularConfigSnapshot(path);
+    if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
+    assertValidTomlBytes(written.bytes, "Installed Hermes template config");
   } catch (error) {
+    let rollbackError;
     if (installed) {
-      if (previous === void 0) {
-        unlinkSync2(path);
-      } else {
-        const rollbackPath = join4(stagingDirectory, "rollback.toml");
-        writeFileSync3(rollbackPath, previous, { encoding: "utf8", mode: statSync(path).mode & 511 });
-        assertValidToml(readFileSync3(rollbackPath, "utf8"), "Rollback Hermes template config");
-        renameSync2(rollbackPath, path);
+      try {
+        if (previous === void 0) {
+          unlinkSync2(path);
+        } else {
+          const rollbackPath = join4(stagingDirectory, "rollback.toml");
+          assertValidTomlBytes(previous.bytes, "Rollback Hermes template config");
+          writeFileSync3(rollbackPath, previous.bytes, { mode: previous.mode });
+          const stagedRollback = readFileSync3(rollbackPath);
+          if (!stagedRollback.equals(previous.bytes)) throw new Error("Rollback config bytes changed before installation");
+          assertValidTomlBytes(stagedRollback, "Staged rollback Hermes template config");
+          renameSync2(rollbackPath, path);
+          const restored = readRegularConfigSnapshot(path);
+          if (!restored.bytes.equals(previous.bytes)) throw new Error("Restored Hermes template config bytes differ from the original");
+          assertValidTomlBytes(restored.bytes, "Restored Hermes template config");
+        }
+      } catch (rollbackFailure) {
+        rollbackError = rollbackFailure;
       }
+    }
+    if (rollbackError) {
+      const primary = error instanceof Error ? error.message : String(error);
+      const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+      throw new Error(`${primary}; rollback also failed: ${rollback}`, {
+        cause: new AggregateError([error, rollbackError], "Hermes config installation and rollback both failed")
+      });
     }
     throw error;
   } finally {
@@ -11356,15 +11478,24 @@ var EnsureTemplateConfig = class extends Command {
     }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
-    const exists = existsSync3(path);
+    let pathStats;
+    try {
+      pathStats = inspectConfigPath(path);
+    } catch (error) {
+      return { success: false, outcome: "failed", message: `Failed to inspect ${path}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const exists = pathStats !== void 0;
     if (exists && !force) {
       return { success: true, outcome: "unchanged", message: `Config present: ${path}` };
     }
     let next = renderHostConfig();
     let current = "";
+    let previous;
     try {
       if (exists) {
-        current = readFileSync3(path, "utf8");
+        previous = readRegularConfigSnapshot(path, pathStats);
+        assertValidTomlBytes(previous.bytes, "Existing Hermes template config");
+        current = previous.bytes.toString("utf8");
         next = mergeHostConfig(current);
       } else {
         assertValidToml(next, "Rendered Hermes template config");
@@ -11384,7 +11515,7 @@ var EnsureTemplateConfig = class extends Command {
       };
     }
     try {
-      installValidatedConfig(path, next, exists ? current : void 0);
+      installValidatedConfig(path, next, previous);
     } catch (error) {
       return { success: false, outcome: "failed", message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -11480,7 +11611,7 @@ var PromptForAgentConfig = class extends Command {
 };
 
 // src/commands/hermes/ValidateHermesOptions.ts
-import { lstatSync as lstatSync6, readdirSync as readdirSync5 } from "node:fs";
+import { lstatSync as lstatSync7, readdirSync as readdirSync5 } from "node:fs";
 import { join as join9, relative as relative6 } from "node:path";
 init_project();
 var EMAIL_UNSUPPORTED_MESSAGE = "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
@@ -11488,7 +11619,7 @@ var HARMLESS_ROLE_PLACEHOLDERS = /* @__PURE__ */ new Set([".gitkeep", ".DS_Store
 function existingRoleDirectoryBlockers(roleDir) {
   let root;
   try {
-    root = lstatSync6(roleDir);
+    root = lstatSync7(roleDir);
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -11498,11 +11629,10 @@ function existingRoleDirectoryBlockers(roleDir) {
   const visit = (directory) => {
     for (const entry of readdirSync5(directory, { withFileTypes: true })) {
       const path = join9(directory, entry.name);
-      if (entry.isSymbolicLink()) {
-        blockers.push(relative6(roleDir, path));
-      } else if (entry.isDirectory()) {
+      const stats = lstatSync7(path);
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
         visit(path);
-      } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name)) {
+      } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name) || !stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
         blockers.push(relative6(roleDir, path));
       }
     }
@@ -11542,7 +11672,7 @@ var ValidateHermesOptions = class extends Command {
 };
 
 // src/commands/hermes/RunCopierTemplate.ts
-import { spawnSync as spawnSync3 } from "node:child_process";
+import { spawnSync as spawnSync4 } from "node:child_process";
 import { homedir as homedir5 } from "node:os";
 import { join as join10, dirname as dirname6, relative as relative7 } from "node:path";
 import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
@@ -11664,7 +11794,7 @@ var RunCopierTemplate = class extends Command {
       };
     }
     if (!ctx.trustedCopier) {
-      const which = spawnSync3("which", ["copier"], { encoding: "utf8" });
+      const which = spawnSync4("which", ["copier"], { encoding: "utf8" });
       if (which.status !== 0) {
         return {
           success: false,
@@ -11774,7 +11904,7 @@ var RunCopierTemplate = class extends Command {
     const spinner3 = ctx.quiet ? void 0 : p2.spinner();
     spinner3?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
-    const result2 = spawnSync3(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
+    const result2 = spawnSync4(copierExecutable, args, ctx.quiet ? { encoding: "utf8", env: env2, cwd: ctx.targetDir } : { stdio: "inherit", env: env2, cwd: ctx.targetDir });
     spinner3?.stop(result2.status === 0 ? "\u2713 copier run complete" : "\u2717 copier failed");
     if (result2.status !== 0) {
       return {
@@ -11811,7 +11941,7 @@ var RunCopierTemplate = class extends Command {
 // src/commands/hermes/UntrackHermesRuntimes.ts
 import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
 import { join as join11 } from "path";
-import { spawnSync as spawnSync4 } from "node:child_process";
+import { spawnSync as spawnSync5 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
@@ -11843,7 +11973,7 @@ var UntrackHermesRuntimes = class extends Command {
       const gitignorePath = join11(roleDir, ".gitignore");
       const gitmodulesPath = join11(targetDir, ".gitmodules");
       let isTracked = false;
-      const lsResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+      const lsResult = spawnSync5("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
         encoding: "utf8"
       });
@@ -11875,7 +12005,7 @@ var UntrackHermesRuntimes = class extends Command {
         if (isTracked) {
           details.push(`untrack agents/hermes/${role}/runtime`);
           if (!this.context.dryRun) {
-            const rmResult = spawnSync4("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
+            const rmResult = spawnSync5("git", ["rm", "--cached", "-r", "-f", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8"
             });
@@ -11885,7 +12015,7 @@ var UntrackHermesRuntimes = class extends Command {
                 message: `\u2717 Failed to untrack ${runtimePath}: ${rmResult.stderr.trim() || `exit ${rmResult.status}`}`
               };
             }
-            const verifyResult = spawnSync4("git", ["ls-files", "--stage", "--", runtimePath], {
+            const verifyResult = spawnSync5("git", ["ls-files", "--stage", "--", runtimePath], {
               cwd: targetDir,
               encoding: "utf8"
             });
@@ -11937,7 +12067,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 };
 
 // src/commands/hermes/WireTelegram.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
+import { spawnSync as spawnSync6 } from "node:child_process";
 import { join as join12 } from "node:path";
 import { existsSync as existsSync9, unlinkSync as unlinkSync4 } from "node:fs";
 import * as p3 from "@clack/prompts";
@@ -11968,7 +12098,7 @@ var WireTelegram = class extends Command {
     let token = process.env.TELEGRAM_BOT_TOKEN;
     let source = token ? "env" : null;
     if (!token) {
-      const tryOp = spawnSync5("op", ["read", vaultRef], { encoding: "utf8" });
+      const tryOp = spawnSync6("op", ["read", vaultRef], { encoding: "utf8" });
       if (tryOp.status === 0) {
         token = tryOp.stdout.trim();
         source = "op";
@@ -12007,7 +12137,7 @@ var WireTelegram = class extends Command {
         initialValue: true
       });
       if (!p3.isCancel(persist) && persist) {
-        const create = spawnSync5(
+        const create = spawnSync6(
           "op",
           [
             "item",
@@ -12045,7 +12175,7 @@ var WireTelegram = class extends Command {
     if (existsSync9(marker)) unlinkSync4(marker);
     const spinner3 = p3.spinner();
     spinner3.start("Verifying token + wiring profile");
-    const result2 = spawnSync5("bash", [script], {
+    const result2 = spawnSync6("bash", [script], {
       stdio: "inherit",
       env: {
         ...process.env,
@@ -12120,7 +12250,7 @@ var PrintHermesSummary = class extends Command {
 };
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
-import { spawnSync as spawnSync6 } from "node:child_process";
+import { spawnSync as spawnSync7 } from "node:child_process";
 import { existsSync as existsSync11, readFileSync as readFileSync11, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join14 } from "node:path";
 import YAML6 from "yaml";
@@ -12164,7 +12294,7 @@ var ApplyDeferredExternalEffects = class extends Command {
       if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
-      const result2 = spawnSync6(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      const result2 = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
       if (String(result2.stdout ?? "").trim()) logs.push(String(result2.stdout).trim());
       if (String(result2.stderr ?? "").trim()) logs.push(String(result2.stderr).trim());
       if (result2.error || result2.status !== 0) {
@@ -12197,7 +12327,7 @@ ${logs.join("\n")}` : ""}`
 };
 
 // src/commands/hermes/ApplyDeferredHostEffects.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
+import { spawnSync as spawnSync8 } from "node:child_process";
 import { existsSync as existsSync12 } from "node:fs";
 import { join as join15 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
@@ -12240,7 +12370,7 @@ var ApplyDeferredHostEffects = class extends Command {
       if (!existsSync12(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
-      const result2 = spawnSync7(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
+      const result2 = spawnSync8(path, [], { cwd: ctx.roleDir, env: env2, encoding: "utf8" });
       if (String(result2.stdout ?? "").trim()) logs.push(String(result2.stdout).trim());
       if (String(result2.stderr ?? "").trim()) logs.push(String(result2.stderr).trim());
       if (result2.error || result2.status !== 0) {
@@ -12654,8 +12784,8 @@ var NodeRecipe = class extends Recipe {
 
 // src/recipes/ProjectRecipe.ts
 init_project();
-import { spawnSync as spawnSync12 } from "node:child_process";
-import { existsSync as existsSync19, lstatSync as lstatSync11, readFileSync as readFileSync19, rmSync as rmSync5 } from "node:fs";
+import { spawnSync as spawnSync13 } from "node:child_process";
+import { existsSync as existsSync19, lstatSync as lstatSync12, readFileSync as readFileSync19, rmSync as rmSync5 } from "node:fs";
 import { dirname as dirname11, isAbsolute as isAbsolute5, join as join24, relative as relativePath, resolve as resolve13 } from "node:path";
 init_tree_diff();
 
@@ -12957,12 +13087,12 @@ import { resolve as resolve12 } from "node:path";
 init_notes();
 init_git_evidence();
 init_types();
-import { spawnSync as spawnSync9 } from "node:child_process";
+import { spawnSync as spawnSync10 } from "node:child_process";
 import { realpathSync as realpathSync7 } from "node:fs";
 import { relative as relative10, resolve as resolve10, sep as sep5 } from "node:path";
 var DEFAULT_OVERVIEW_REFERENCES = [".project.json", "README.md", "AGENTS.md", "CLAUDE.md", "docs/architecture.md"];
 function git2(repo, args, timeout) {
-  const result2 = spawnSync9("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 1024 * 1024, timeout, shell: false });
+  const result2 = spawnSync10("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 1024 * 1024, timeout, shell: false });
   return { ok: result2.status === 0, stdout: result2.stdout?.trim() ?? "" };
 }
 function normalizedReference(repo, value) {
@@ -13095,9 +13225,9 @@ init_reconcile();
 init_config();
 
 // src/notebook/hooks.ts
-import { spawn, spawnSync as spawnSync10 } from "node:child_process";
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
-import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync10, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
+import { spawn, spawnSync as spawnSync11 } from "node:child_process";
+import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
+import { chmodSync as chmodSync4, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -13150,13 +13280,13 @@ function assertOwnedSkillTree(source) {
   assertNoSymlinkComponents2(source);
   const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
   const walk = (directory) => {
-    const directoryStat = lstatSync10(directory);
+    const directoryStat = lstatSync11(directory);
     if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a non-directory component");
     if (uid !== void 0 && directoryStat.uid !== uid) throw new NotebookError("CONFLICT", "Project Notebook skill source is not owned by the current user");
     if (directoryStat.mode & 3586) throw new NotebookError("CONFLICT", "Project Notebook skill source has unsafe directory mode bits");
     for (const entry of readdirSync8(directory, { withFileTypes: true })) {
       const path = join22(directory, entry.name);
-      const stat = lstatSync10(path);
+      const stat = lstatSync11(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a symlink");
       if (entry.isDirectory()) walk(path);
       else if (!entry.isFile()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a non-regular entry");
@@ -13176,12 +13306,12 @@ function enumerateSkillPayload(source) {
       const rel = relative11(source, path).split(sep6).join("/");
       if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       if (!safeSkillRelativePath(rel)) throw new NotebookError("CONFLICT", `Project Notebook skill export path is unsafe: ${rel}`);
-      const stat = lstatSync10(path);
+      const stat = lstatSync11(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a symlink");
       if (entry.isDirectory()) walk(path);
       else if (entry.isFile()) {
         const expectedMode = rel.endsWith(".sh") || rel.startsWith("scripts/") ? "0755" : "0644";
-        result2.push({ path: rel, sha256: createHash7("sha256").update(readFileSync17(path)).digest("hex"), mode: expectedMode });
+        result2.push({ path: rel, sha256: createHash8("sha256").update(readFileSync17(path)).digest("hex"), mode: expectedMode });
       } else throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
     }
   };
@@ -13201,9 +13331,9 @@ function parsePackedManifest(source) {
     if (!safeSkillRelativePath(entry.path) || paths.has(entry.path)) throw new NotebookError("CONFLICT", "Project Notebook skill export path is unsafe or duplicated");
     paths.add(entry.path);
     const path = join22(source, ...entry.path.split("/"));
-    const stat = lstatSync10(path);
+    const stat = lstatSync11(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
-    const actual = createHash7("sha256").update(readFileSync17(path)).digest("hex");
+    const actual = createHash8("sha256").update(readFileSync17(path)).digest("hex");
     if (actual !== entry.sha256) throw new NotebookError("CONFLICT", `Project Notebook skill digest mismatch: ${entry.path}`);
     const actualMode = stat.mode & 511;
     const executable = entry.mode === "0755";
@@ -13224,7 +13354,7 @@ function expectedPackedSkill() {
     assertOwnedSkillTree(candidate);
     const manifest = parsePackedManifest(candidate);
     if (!manifest) continue;
-    const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
+    const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
     return { source: candidate, manifest, digest };
   }
   throw new NotebookError("NOT_CONFIGURED", "PJ\xE1ngler package has no verified Project Notebook skill export");
@@ -13308,7 +13438,7 @@ var REPAIR_COMMAND = "pj notebook skill --apply";
 function probeCanonicalSkillexRootProjection(skillsRoot, link) {
   let rootLink;
   try {
-    rootLink = lstatSync10(skillsRoot);
+    rootLink = lstatSync11(skillsRoot);
   } catch (error) {
     if (error.code === "ENOENT") return { state: "absent" };
     throw error;
@@ -13321,7 +13451,7 @@ function probeCanonicalSkillexRootProjection(skillsRoot, link) {
     if (uid !== void 0 && rootLink.uid !== uid) throw new Error("owner");
     const globalRoot = realpathSync8(skillsRoot);
     assertNoSymlinkComponents2(globalRoot);
-    const globalStat = lstatSync10(globalRoot);
+    const globalStat = lstatSync11(globalRoot);
     if (!globalStat.isDirectory() || globalStat.isSymbolicLink()) throw new Error("root-type");
     if (uid !== void 0 && globalStat.uid !== uid) throw new Error("root-owner");
     if (globalStat.mode & 3586) throw new Error("root-mode");
@@ -13329,7 +13459,7 @@ function probeCanonicalSkillexRootProjection(skillsRoot, link) {
     if (basename7(globalRoot) !== "global" || basename7(skillSetsRoot) !== "skill-sets") throw new Error("layout");
     const checkoutRoot = dirname10(skillSetsRoot);
     const expectedSource = join22(checkoutRoot, "all-skills", "project-notebook");
-    const linkStat = lstatSync10(link);
+    const linkStat = lstatSync11(link);
     if (!linkStat.isSymbolicLink()) throw new Error("projection-type");
     if (uid !== void 0 && linkStat.uid !== uid) throw new Error("projection-owner");
     const projectedSource = realpathSync8(link);
@@ -13363,7 +13493,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const source = input.source ?? resolveProjectNotebookSkillSource(env2);
   if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable");
   const manifest = verifyProjectNotebookSkillExport(source);
-  const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
   if (!home || !resolve11(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
   const skillsRoot = join22(home, ".agents", "skills");
@@ -13376,7 +13506,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   assertNoSymlinkComponents2(dirname10(dataRoot), true);
   mkdirSync7(dataRoot, { recursive: true, mode: 448 });
   assertNoSymlinkComponents2(dataRoot);
-  const dataStat = lstatSync10(dataRoot);
+  const dataStat = lstatSync11(dataRoot);
   if (!dataStat.isDirectory() || dataStat.isSymbolicLink() || typeof process.getuid === "function" && dataStat.uid !== process.getuid()) throw new NotebookError("CONFLICT", "Project Notebook skill data root is not a current-user directory");
   chmodSync4(dataRoot, 448);
   if (!existsSync17(payload)) {
@@ -13389,13 +13519,13 @@ function installPackagedProjectNotebookSkill(input = {}) {
         copyFileSync3(join22(source, ...entry.path.split("/")), destination);
         const mode = entry.mode === "0755" ? 493 : 420;
         chmodSync4(destination, mode);
-        const fd = openSync6(destination, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
+        const fd = openSync7(destination, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
         try {
-          const current = fstatSync4(fd);
+          const current = fstatSync5(fd);
           if (!current.isFile()) throw new NotebookError("CONFLICT", `Installed skill entry is not regular: ${entry.path}`);
           fsyncSync4(fd);
         } finally {
-          closeSync6(fd);
+          closeSync7(fd);
         }
       }
       writeFileSync10(join22(staging, "export-manifest.json"), `${JSON.stringify(manifest, null, 2)}
@@ -13408,7 +13538,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
       if (existsSync17(staging)) rmSync4(staging, { recursive: true, force: true });
     }
   } else {
-    const stat = lstatSync10(payload);
+    const stat = lstatSync11(payload);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Installed Project Notebook payload is not a real directory");
     verifyProjectNotebookSkillExport(payload);
   }
@@ -13418,7 +13548,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   let linkExists = existsSync17(link);
   if (!linkExists) {
     try {
-      lstatSync10(link);
+      lstatSync11(link);
       linkExists = true;
     } catch {
     }
@@ -13435,7 +13565,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
         repair: REPAIR_COMMAND
       }
     });
-    const stat = lstatSync10(link);
+    const stat = lstatSync11(link);
     if (!stat.isSymbolicLink()) return foreign(["the path is a real file or directory, not a PJ\xE1ngler-owned link"]);
     const target = realpathSync8(link);
     if (target !== realpathSync8(payload) && !isVerifiedCanonicalSkillexProjection(target)) {
@@ -13471,7 +13601,7 @@ function collectSupersededPayloads(dataRoot, keep) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?-[0-9a-f]{64}$/u.test(name)) continue;
     const candidate = join22(dataRoot, name);
     try {
-      const stat = lstatSync10(candidate);
+      const stat = lstatSync11(candidate);
       if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
       if (kept.has(realpathSync8(candidate))) continue;
       rmSync4(candidate, { recursive: true, force: true });
@@ -13516,9 +13646,9 @@ function repairProjectNotebookSkillProjection(input = {}) {
   const changed = expected.manifest.files.filter((entry) => {
     const path = join22(source, ...entry.path.split("/"));
     if (!existsSync17(path)) return true;
-    const stat = lstatSync10(path);
+    const stat = lstatSync11(path);
     if (!stat.isFile()) return true;
-    if (createHash7("sha256").update(readFileSync17(path)).digest("hex") !== entry.sha256) return true;
+    if (createHash8("sha256").update(readFileSync17(path)).digest("hex") !== entry.sha256) return true;
     const mode = stat.mode & 511;
     const executable = entry.mode === "0755";
     return executable && (mode & 64) === 0 || !executable && (mode & 73) !== 0;
@@ -13564,7 +13694,7 @@ function inspectProjectNotebookIntegration(env2 = process.env) {
     const expectedPayload = join22(dataRoot, `${PJANGLER_VERSION}-${expected.digest}`);
     const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
     if (probe.state === "declined") return { skill_installed: false, hooks_projected: false, details: probe.block.details, blocked: probe.block };
-    const stat = lstatSync10(link);
+    const stat = lstatSync11(link);
     if (!stat.isSymbolicLink()) {
       return {
         skill_installed: false,
@@ -13625,7 +13755,7 @@ function checkProjectNotebookHooks(input = {}) {
   const home = env2.HOME;
   if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to check Project Notebook hooks");
   const target = resolve11(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join22(home, ".claude", "settings.json"));
-  const result2 = spawnSync10("/usr/bin/python3", ["-I", ...projectorArguments(source, "check", { target })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
+  const result2 = spawnSync11("/usr/bin/python3", ["-I", ...projectorArguments(source, "check", { target })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
   if (result2.status !== 0 && result2.status !== 1) throw new NotebookError("CONFLICT", (result2.stderr || "Project Notebook projector check failed").trim().slice(0, 512));
   try {
     const parsed = JSON.parse(result2.stdout);
@@ -13644,11 +13774,11 @@ function installProjectNotebookIntegration(input = {}) {
   if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to install Project Notebook hooks");
   const target = resolve11(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join22(home, ".claude", "settings.json"));
   const stateHome = resolve11(env2.XDG_STATE_HOME || join22(home, ".local", "state"));
-  const result2 = spawnSync10("/usr/bin/python3", ["-I", ...projectorArguments(source, "install", { target, stateHome })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
+  const result2 = spawnSync11("/usr/bin/python3", ["-I", ...projectorArguments(source, "install", { target, stateHome })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
   if (result2.status !== 0) {
     if (skill.installed) {
       try {
-        const stat = lstatSync10(skill.path);
+        const stat = lstatSync11(skill.path);
         if (stat.isSymbolicLink() && realpathSync8(skill.path) === source) unlinkSync6(skill.path);
       } catch {
       }
@@ -13669,7 +13799,7 @@ function assertNoSymlinkComponents2(path, allowMissing = false) {
     cursor = join22(cursor, component);
     let stat;
     try {
-      stat = lstatSync10(cursor);
+      stat = lstatSync11(cursor);
     } catch (error) {
       if (allowMissing && error.code === "ENOENT") return;
       throw error;
@@ -14299,7 +14429,7 @@ var PRODUCTION_RUNTIME = {
   executePlan: executeProjectInitPlan,
   preflightBmad: preflightBmadLifecycle,
   runGit(cwd, args, options) {
-    const result2 = spawnSync12("git", [...args], {
+    const result2 = spawnSync13("git", [...args], {
       cwd,
       encoding: "utf8",
       env: options?.env ? { ...process.env, ...options.env } : process.env
@@ -14319,7 +14449,7 @@ function unsafeToRemove(targetDir) {
   while (!seen.has(cursor)) {
     seen.add(cursor);
     try {
-      const stat = lstatSync11(cursor);
+      const stat = lstatSync12(cursor);
       if (stat.isSymbolicLink()) {
         return cursor === absolute ? `${absolute} is a symlink; removing it would leave the tree it points at orphaned` : `${cursor} is a symlink on the path to ${absolute}; a recursive remove would traverse it`;
       }
@@ -15643,20 +15773,20 @@ function getRecipeInfo(name) {
 }
 
 // src/describe/index.ts
-import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync4 } from "node:fs";
 import { join as join29, resolve as resolve15 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
-import { spawn as spawn2, spawnSync as spawnSync13 } from "node:child_process";
-import { statSync as statSync4 } from "node:fs";
+import { spawn as spawn2, spawnSync as spawnSync14 } from "node:child_process";
+import { statSync as statSync3 } from "node:fs";
 import { join as join28 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
 var GIT_MAX_BUFFER = 16 * 1024 * 1024;
 function git3(repo, args) {
-  const result2 = spawnSync13("git", ["-C", repo, ...args], {
+  const result2 = spawnSync14("git", ["-C", repo, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER
@@ -15779,7 +15909,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync4(join28(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync3(join28(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -16176,7 +16306,7 @@ function describeNextSteps(description, findings) {
 function describeProject(input = {}) {
   const repo = resolve15(input.repoArg ?? process.cwd());
   if (!existsSync22(repo)) throw new Error(`Path does not exist: ${repo}`);
-  if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath: registryPath2 }));
   const findings = report.rules;
@@ -16375,7 +16505,7 @@ function resolveTargetDir(targetDir) {
   if (!existsSync23(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
-  if (!statSync6(dir).isDirectory()) {
+  if (!statSync5(dir).isDirectory()) {
     throw new Error(`Target path is not a directory: ${dir}`);
   }
   return dir;
@@ -16741,7 +16871,7 @@ server.registerTool(
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
       const explicitTargetDir = input.targetDir ? resolve16(input.targetDir) : void 0;
       const parentDir = resolve16(input.parentDir ?? (explicitTargetDir ? dirname14(explicitTargetDir) : process.cwd()));
-      if (!existsSync23(parentDir) || !statSync6(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
+      if (!existsSync23(parentDir) || !statSync5(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
         explicitTargetDir ?? join30(parentDir, projectSlug),

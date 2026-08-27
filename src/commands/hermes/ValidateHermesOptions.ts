@@ -11,8 +11,9 @@ const HARMLESS_ROLE_PLACEHOLDERS = new Set([".gitkeep", ".DS_Store", "Thumbs.db"
 
 /**
  * Find pre-existing role content that requires explicit overwrite consent.
- * Empty directories and inert placeholder/OS metadata files are harmless;
- * ignored runtime state, symlinks, and every template-shaped file are not.
+ * Empty directories and inert, single-link regular placeholder/OS metadata
+ * files are harmless. Ignored runtime state, links, special files, and every
+ * template-shaped file are not.
  */
 export function existingRoleDirectoryBlockers(roleDir: string): string[] {
   let root;
@@ -28,11 +29,18 @@ export function existingRoleDirectoryBlockers(roleDir: string): string[] {
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
-      if (entry.isSymbolicLink()) {
-        blockers.push(relative(roleDir, path));
-      } else if (entry.isDirectory()) {
+      // Do not trust a placeholder-looking name or Dirent type: lstat the leaf
+      // without following it so sockets/FIFOs/devices, symlinks, and hardlinks
+      // can never be treated as inert metadata.
+      const stats = lstatSync(path);
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
         visit(path);
-      } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name)) {
+      } else if (
+        !HARMLESS_ROLE_PLACEHOLDERS.has(entry.name) ||
+        !stats.isFile() ||
+        stats.isSymbolicLink() ||
+        stats.nlink !== 1
+      ) {
         blockers.push(relative(roleDir, path));
       }
     }

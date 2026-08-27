@@ -16,6 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  materializeCommittedSubmodule,
+  readGitCommitFile,
+} from "./helpers/committed-submodule.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -25,16 +29,22 @@ const ISSUE = "issue-pjan-50";
 const KEY = "fixture-plane-key";
 const BASE = `https://plane.delo.sh/api/v1/workspaces/${WORKSPACE}`;
 
-const COPIES = {
-  "canonical-template": join(root, "templates", "hermes-agent", "template", ".scripts"),
-  "deployed-pm": join(root, "agents", "hermes", "pm", ".scripts"),
-};
-
 function tempDir(label) {
   const path = mkdtempSync(join(tmpdir(), `pjan-50-${label}-`));
   cleanup.push(path);
   return path;
 }
+
+const committedTemplate = tempDir("committed-template");
+const HERMES_GITLINK = materializeCommittedSubmodule(
+  root,
+  "templates/hermes-agent",
+  committedTemplate,
+);
+const COPIES = {
+  "canonical-template": join(committedTemplate, "template", ".scripts"),
+  "deployed-pm": join(root, "agents", "hermes", "pm", ".scripts"),
+};
 
 function stagePlane(copy) {
   const dir = tempDir(copy);
@@ -151,6 +161,30 @@ const attachments = [
 ];
 
 try {
+  // The object reader used for the canonical fixture must be immune even to a
+  // deliberately dirty source checkout. This guards against quietly reverting
+  // to readFileSync(templates/hermes-agent/...) in future test refactors.
+  const dirtyTemplate = tempDir("dirty-template-source");
+  const cloned = spawnSync(
+    "git",
+    ["clone", "--quiet", "--no-hardlinks", join(root, "templates", "hermes-agent"), dirtyTemplate],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(cloned.status, 0, cloned.stderr);
+  const dirtyPlane = join(dirtyTemplate, "template", ".scripts", "providers", "plane.sh");
+  writeFileSync(dirtyPlane, "PJAN-50 DIRTY WORKTREE SENTINEL\n");
+  assert.match(
+    spawnSync("git", ["status", "--short"], { cwd: dirtyTemplate, encoding: "utf8" }).stdout,
+    /plane\.sh/,
+  );
+  const objectPlane = readGitCommitFile(
+    dirtyTemplate,
+    HERMES_GITLINK,
+    "template/.scripts/providers/plane.sh",
+  );
+  assert.equal(objectPlane, readFileSync(join(COPIES["canonical-template"], "providers", "plane.sh"), "utf8"));
+  assert.doesNotMatch(objectPlane, /DIRTY WORKTREE SENTINEL/);
+
   // The canonical template is the source of truth. The deployed PM contract
   // and provider scripts must be exact refreshes, not hand-merged variants.
   for (const path of [
@@ -263,9 +297,9 @@ try {
     assert.deepEqual(JSON.parse(run.stdout).attachments, []);
   }
 
-  const roleTemplate = readFileSync(join(root, "templates", "hermes-agent", "template", "role.yaml.jinja"), "utf8");
+  const roleTemplate = readFileSync(join(committedTemplate, "template", "role.yaml.jinja"), "utf8");
   assert.match(roleTemplate, /^\s+cancelled:\s+""/m, "rendered roles must expose a cancelled state override");
-  const providerDocs = readFileSync(join(root, "templates", "hermes-agent", "docs", "sentinel", "providers.md"), "utf8");
+  const providerDocs = readFileSync(join(committedTemplate, "docs", "sentinel", "providers.md"), "utf8");
   assert.match(providerDocs, /`cancelled`/, "provider contract docs must list cancelled");
   assert.match(providerDocs, /attachments/, "provider contract docs must describe attachment hydration");
 

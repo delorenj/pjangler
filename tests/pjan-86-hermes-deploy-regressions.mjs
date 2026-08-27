@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 
@@ -25,6 +27,7 @@ function run(args, cwd, env = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
+    timeout: 10_000,
     env: { ...process.env, NO_COLOR: "1", ...env },
   });
 }
@@ -51,6 +54,7 @@ function committedHermesTemplate(path) {
   return { gitlink, content: show.stdout };
 }
 
+let openSocketServer;
 try {
   const fakeBin = join(temp, "bin");
   const copierSentinel = join(temp, "copier-ran");
@@ -154,6 +158,75 @@ try {
     assert.equal(existsSync(copierSentinel), false, `${label} placeholder symlink refusal must precede Copier`);
   }
 
+  // Placeholder names are harmless only for single-link regular files. A
+  // FIFO, Unix socket, device node (where the host permits one), or hardlink
+  // must be rejected without opening the entry or starting any later phase.
+  const specialPlaceholders = [];
+
+  const fifoRepo = join(temp, "fifo-placeholder-repo");
+  const fifoRole = join(fifoRepo, "agents", "hermes", "pm");
+  const fifoPath = join(fifoRole, ".gitkeep");
+  mkdirSync(fifoRole, { recursive: true });
+  const madeFifo = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
+  assert.equal(madeFifo.status, 0, madeFifo.stderr);
+  specialPlaceholders.push(["FIFO", fifoRepo, fifoPath, (stats) => stats.isFIFO()]);
+
+  const socketRepo = join(temp, "socket-placeholder-repo");
+  const socketRole = join(socketRepo, "agents", "hermes", "pm");
+  const socketPath = join(socketRole, ".DS_Store");
+  mkdirSync(socketRole, { recursive: true });
+  const socketServer = createServer();
+  openSocketServer = socketServer;
+  await new Promise((resolveListen, rejectListen) => {
+    socketServer.once("error", rejectListen);
+    socketServer.listen(socketPath, resolveListen);
+  });
+  specialPlaceholders.push(["socket", socketRepo, socketPath, (stats) => stats.isSocket()]);
+
+  const hardlinkRepo = join(temp, "hardlink-placeholder-repo");
+  const hardlinkRole = join(hardlinkRepo, "agents", "hermes", "pm");
+  const hardlinkSource = join(temp, "hardlink-placeholder-source");
+  const hardlinkPath = join(hardlinkRole, "Thumbs.db");
+  mkdirSync(hardlinkRole, { recursive: true });
+  writeFileSync(hardlinkSource, "operator-owned hardlink bytes\n");
+  linkSync(hardlinkSource, hardlinkPath);
+  specialPlaceholders.push(["hardlink", hardlinkRepo, hardlinkPath, (stats) => stats.isFile() && stats.nlink > 1]);
+
+  // Device nodes require CAP_MKNOD and are unavailable in ordinary CI/user
+  // namespaces. Exercise one when permitted; the source-level isFile tripwire
+  // below deterministically covers the same classifier everywhere else.
+  const deviceRepo = join(temp, "device-placeholder-repo");
+  const deviceRole = join(deviceRepo, "agents", "hermes", "pm");
+  const devicePath = join(deviceRole, ".gitkeep");
+  mkdirSync(deviceRole, { recursive: true });
+  const madeDevice = spawnSync("mknod", [devicePath, "c", "1", "3"], { encoding: "utf8" });
+  if (madeDevice.status === 0) {
+    specialPlaceholders.push(["device", deviceRepo, devicePath, (stats) => stats.isCharacterDevice()]);
+  }
+
+  for (const [label, repo, path, expectedType] of specialPlaceholders) {
+    const before = lstatSync(path);
+    assert.equal(expectedType(before), true, `${label} fixture must have the intended file type`);
+    const specialConfig = join(temp, `${label}-placeholder-xdg`);
+    const blocked = run(["hermes-agent", "--yes"], repo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: specialConfig,
+    });
+    assert.notEqual(blocked.status, 0, `${label} placeholder must be rejected`);
+    assert.match(`${blocked.stdout}\n${blocked.stderr}`, /\.gitkeep|\.DS_Store|Thumbs\.db/);
+    const after = lstatSync(path);
+    assert.equal(expectedType(after), true, `${label} placeholder type must remain unchanged`);
+    assert.equal(after.ino, before.ino, `${label} placeholder inode must remain unchanged`);
+    assert.equal(after.nlink, before.nlink, `${label} placeholder link count must remain unchanged`);
+    assert.equal(existsSync(specialConfig), false, `${label} refusal must precede config mutation`);
+    assert.equal(existsSync(copierSentinel), false, `${label} refusal must precede Copier`);
+  }
+  await new Promise((resolveClose, rejectClose) => {
+    socketServer.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+  openSocketServer = undefined;
+  assert.equal(readFileSync(hardlinkSource, "utf8"), "operator-owned hardlink bytes\n");
+
   const runtimeRepo = join(temp, "runtime-only-repo");
   const runtimeState = join(runtimeRepo, "agents", "hermes", "pm", "runtime", "checkpoint.json");
   mkdirSync(join(runtimeRepo, "agents", "hermes", "pm", "runtime"), { recursive: true });
@@ -199,6 +272,129 @@ try {
   assert.equal(bootstrap.status, 0, bootstrap.stderr);
   assert.match(bootstrap.stdout, /Bootstrapped config without replacing existing values:/);
   assert.equal(existsSync(bootstrapPath), true);
+
+  // The config leaf is lstat'd before any force/exists/read branch. Live and
+  // dangling symlinks plus every tested special-file form fail unchanged; in
+  // particular, a FIFO must never be opened and hang the command.
+  for (const [label, target, targetExists] of [
+    ["live-config-symlink", join(temp, "live-config-target.toml"), true],
+    ["dangling-config-symlink", join(temp, "missing-config-target.toml"), false],
+  ]) {
+    const unsafeHome = join(temp, `${label}-xdg`);
+    const unsafePath = join(unsafeHome, "hermes-agent-template", "config.toml");
+    mkdirSync(join(unsafeHome, "hermes-agent-template"), { recursive: true });
+    if (targetExists) writeFileSync(target, "[fleet]\noperator = true\n");
+    symlinkSync(target, unsafePath);
+    const beforeTarget = targetExists ? readFileSync(target) : undefined;
+    const rejected = run(["config", "bootstrap"], bootstrapRepo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: unsafeHome,
+    });
+    assert.notEqual(rejected.status, 0, `${label} must fail closed`);
+    assert.match(rejected.stderr, /expected a regular file, found symbolic link/);
+    assert.equal(lstatSync(unsafePath).isSymbolicLink(), true);
+    assert.equal(readlinkSync(unsafePath), target);
+    if (targetExists) assert.equal(readFileSync(target).equals(beforeTarget), true);
+    else assert.equal(existsSync(target), false);
+  }
+
+  const directoryConfigHome = join(temp, "directory-config-xdg");
+  const directoryConfigPath = join(directoryConfigHome, "hermes-agent-template", "config.toml");
+  mkdirSync(directoryConfigPath, { recursive: true });
+  writeFileSync(join(directoryConfigPath, "operator-sentinel"), "keep\n");
+  const directoryConfig = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: directoryConfigHome,
+  });
+  assert.notEqual(directoryConfig.status, 0);
+  assert.match(directoryConfig.stderr, /expected a regular file, found directory/);
+  assert.equal(readFileSync(join(directoryConfigPath, "operator-sentinel"), "utf8"), "keep\n");
+
+  const fifoConfigHome = join(temp, "fifo-config-xdg");
+  const fifoConfigPath = join(fifoConfigHome, "hermes-agent-template", "config.toml");
+  mkdirSync(join(fifoConfigHome, "hermes-agent-template"), { recursive: true });
+  const madeConfigFifo = spawnSync("mkfifo", [fifoConfigPath], { encoding: "utf8" });
+  assert.equal(madeConfigFifo.status, 0, madeConfigFifo.stderr);
+  const fifoConfig = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: fifoConfigHome,
+  });
+  assert.notEqual(fifoConfig.status, 0);
+  assert.notEqual(fifoConfig.error?.code, "ETIMEDOUT", "config FIFO refusal must not hang on a read");
+  assert.match(fifoConfig.stderr, /expected a regular file, found FIFO/);
+  assert.equal(lstatSync(fifoConfigPath).isFIFO(), true);
+
+  const socketConfigHome = join(temp, "socket-config-xdg");
+  const socketConfigPath = join(socketConfigHome, "hermes-agent-template", "config.toml");
+  mkdirSync(join(socketConfigHome, "hermes-agent-template"), { recursive: true });
+  const configSocketServer = createServer();
+  openSocketServer = configSocketServer;
+  await new Promise((resolveListen, rejectListen) => {
+    configSocketServer.once("error", rejectListen);
+    configSocketServer.listen(socketConfigPath, resolveListen);
+  });
+  const socketConfig = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: socketConfigHome,
+  });
+  assert.notEqual(socketConfig.status, 0);
+  assert.match(socketConfig.stderr, /expected a regular file, found socket/);
+  assert.equal(lstatSync(socketConfigPath).isSocket(), true);
+  await new Promise((resolveClose, rejectClose) => {
+    configSocketServer.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+  openSocketServer = undefined;
+
+  // Validation must exactly match the deployed Python tomllib consumer and
+  // operate on bytes, not Node's replacement-character UTF-8 decoding.
+  const invalidTomlCases = [
+    [
+      "toml-11-escape",
+      Buffer.concat([Buffer.from("[fleet]\nvalue = \"", "utf8"), Buffer.from([0x5c, 0x65]), Buffer.from("\"\n", "utf8")]),
+      /TOMLDecodeError/,
+    ],
+    ["invalid-calendar-date", Buffer.from("[fleet]\nvalue = 2023-02-30\n", "utf8"), /TOMLDecodeError|day is out of range/],
+    [
+      "invalid-utf8",
+      Buffer.concat([Buffer.from("[fleet]\nvalue = \"", "utf8"), Buffer.from([0xc3, 0x28]), Buffer.from("\"\n", "utf8")]),
+      /UnicodeDecodeError/,
+    ],
+  ];
+  for (const [label, source, expectedError] of invalidTomlCases) {
+    const invalidHome = join(temp, `${label}-xdg`);
+    const invalidPath = join(invalidHome, "hermes-agent-template", "config.toml");
+    mkdirSync(join(invalidHome, "hermes-agent-template"), { recursive: true });
+    writeFileSync(invalidPath, source);
+    const before = statSync(invalidPath);
+    const invalid = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: invalidHome,
+    });
+    assert.notEqual(invalid.status, 0, `${label} must fail tomllib validation`);
+    assert.match(invalid.stderr, /not valid TOML 1\.0 for Python tomllib/);
+    assert.match(invalid.stderr, expectedError);
+    assert.doesNotMatch(invalid.stdout, /Updated|Bootstrapped/);
+    assert.equal(readFileSync(invalidPath).equals(source), true, `${label} must preserve exact bytes`);
+    const after = statSync(invalidPath);
+    assert.equal(after.ino, before.ino, `${label} must not replace the file`);
+    assert.equal(after.mtimeMs, before.mtimeMs, `${label} must not write the file`);
+  }
+
+  const noPythonHome = join(temp, "no-python-xdg");
+  const noPythonPath = join(noPythonHome, "hermes-agent-template", "config.toml");
+  const noPythonSource = Buffer.from("[fleet]\nhermes_bin = \"/operator/hermes\"\n", "utf8");
+  mkdirSync(join(noPythonHome, "hermes-agent-template"), { recursive: true });
+  writeFileSync(noPythonPath, noPythonSource);
+  const noPythonBefore = statSync(noPythonPath);
+  const noPython = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: noPythonHome,
+  });
+  assert.notEqual(noPython.status, 0);
+  assert.match(noPython.stderr, /python3 with tomllib is required but was not found/);
+  assert.equal(readFileSync(noPythonPath).equals(noPythonSource), true);
+  assert.equal(statSync(noPythonPath).ino, noPythonBefore.ino);
 
   // Forced config bootstrap is an additive schema upgrade. Operator values,
   // comments, unknown keys, and richer sections survive byte-for-byte.
@@ -497,6 +693,7 @@ exit 1
   const recipe = readFileSync(join(root, "src", "recipes", "HermesAgentRecipe.ts"), "utf8");
   const copier = readFileSync(join(root, "src", "commands", "hermes", "RunCopierTemplate.ts"), "utf8");
   const configBootstrap = readFileSync(join(root, "src", "commands", "hermes", "EnsureTemplateConfig.ts"), "utf8");
+  const optionValidation = readFileSync(join(root, "src", "commands", "hermes", "ValidateHermesOptions.ts"), "utf8");
   const externalEffects = readFileSync(join(root, "src", "commands", "hermes", "ApplyDeferredExternalEffects.ts"), "utf8");
   const mcpServer = readFileSync(join(root, "src", "mcp-server.ts"), "utf8");
   const summary = readFileSync(join(root, "src", "commands", "hermes", "PrintHermesSummary.ts"), "utf8");
@@ -506,14 +703,25 @@ exit 1
   assert.match(copier, /if \(ctx\.force\) args\.push\("--overwrite"\)/);
   assert.match(copier, /if \(ctx\.yes \|\| ctx\.quiet\) args\.push\("--defaults"\)/);
   assert.doesNotMatch(copier, /ctx\.yes\)\s*\{\s*ctx\.force\s*=\s*true/);
-  assert.match(configBootstrap, /parse as parseToml/);
+  assert.match(configBootstrap, /spawnSync\("python3", \["-c", TOMLLIB_VALIDATE\]/);
+  assert.match(configBootstrap, /tomllib\.loads\(source\)/);
+  assert.doesNotMatch(configBootstrap, /smol-toml|parse as parseToml/);
+  assert.ok(configBootstrap.indexOf("pathStats = inspectConfigPath(path)") < configBootstrap.indexOf("if (exists && !force)"));
   assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
-  assert.match(configBootstrap, /assertValidToml\(written, "Installed Hermes template config"\)/);
+  assert.match(configBootstrap, /assertValidTomlBytes\(written\.bytes, "Installed Hermes template config"\)/);
+  assert.match(configBootstrap, /current\.hash !== previous\.hash/);
+  assert.match(configBootstrap, /rollback also failed/);
+  assert.match(optionValidation, /const stats = lstatSync\(path\)/);
+  assert.match(optionValidation, /!stats\.isFile\(\)/);
+  assert.match(optionValidation, /stats\.nlink !== 1/);
   assert.doesNotMatch(externalEffects, /20-runtime-repo\.sh|selected\.runtimeRepo/);
   assert.match(mcpServer, /Deprecated no-op\. Hermes always converges ignored role-local runtime state/);
   assert.doesNotMatch(mcpServer, /runtimeRepo:\s*externalEffects|externalEffects\.runtimeRepo/);
   assert.doesNotMatch(summary, /@clack\/prompts|Provisioned|\bDone\.|runtime\s+gh:/);
 } finally {
+  if (openSocketServer) {
+    await new Promise((resolveClose) => openSocketServer.close(() => resolveClose()));
+  }
   rmSync(temp, { recursive: true, force: true });
 }
 
