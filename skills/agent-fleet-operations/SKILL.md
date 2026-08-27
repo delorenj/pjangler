@@ -30,6 +30,27 @@ detects and converges violations. Canon: `hermes-agent-template/docs/architectur
 § "Bloodbank wiring". The retired scrum-master role's duties folded into the PM
 heartbeat (see Krebs lifecycle: `~/code/33GOD/krebs/spec/lifecycle.v1.yaml`).
 
+### Full command journey
+
+```text
+producer → bloodbank.cmd.v1.agent.invocation.start
+  → BLOODBANK_COMMANDS work-queue stream
+  → fleet-shared durable pull consumer
+  → validate envelope + prompt + actor + schema
+  → authorize data.target_agent_id against the fleet registry
+  → journal command state in mode-0600 SQLite
+  → dispatch selected Hermes profile
+  → emit conversation/invocation started + completed|failed events
+  → BLOODBANK_EVENTS → Candystore → Holocene/toaster
+```
+
+Commands are short-lived intent and do not become Candystore rows directly.
+The gateway's lifecycle **events** are the durable audit trail. A running gateway
+does not prove a target is routable: eligibility is default-deny and requires
+`bloodbank.enabled: true`, `gateway_scope: fleet`, matching
+`target_agent_id`, and a nonblank `profile_name` in the current registry. A past
+`completed` row in the execution journal proves historical execution only.
+
 ## Operating Principles
 
 - **Fleet truth lives in `~/.hermes/`.** `fleet.env`, `config.yaml`, and `agents-registry.yaml` are the shared sources; repo-local `agents/hermes/<role>/runtime/` contains only overrides and local state.
@@ -45,6 +66,7 @@ heartbeat (see Krebs lifecycle: `~/code/33GOD/krebs/spec/lifecycle.v1.yaml`).
 | Add an MCP server / hook / skill so **every** agent client gets it (incl. project-scoped) | [references/extension-points.md](references/extension-points.md) | the matching plane; MCP has no SSOT yet |
 | Update Hermes core, shared config, or future-agent provisioning | [references/hermes-fleet-updates.md](references/hermes-fleet-updates.md) | the matching lane inside it |
 | Run a fleet self-check or debug MCP failures that differ across repo-backed daemons | [references/fleet-self-check.md](references/fleet-self-check.md) | hermes-fleet-updates for remediation lanes |
+| Trace or debug a Bloodbank command from producer through Hermes lifecycle events | this skill's full command journey | `bloodbank-integration` → `references/event-journey.md` for the transport contract |
 | Capture a governance rule/workflow in the PM template and propagate to existing PM agents | [references/pm-template-maintenance.md](references/pm-template-maintenance.md) | hermes-fleet-updates for backfill vs shared-config classification |
 | Provision a new PM agent into a repo | → **33god-projects** `references/project-creation.md` | this skill only for runtime/template details |
 
@@ -73,6 +95,9 @@ heartbeat (see Krebs lifecycle: `~/code/33GOD/krebs/spec/lifecycle.v1.yaml`).
 - systemd units set `HERMES_HOME` to the named profile path, not the raw runtime path.
 - For Bloodbank lifecycle events emitted by hooks, use v1 names (`bloodbank.v1.agent.*`).
 - Bloodbank hook install is owned by Bloodbank's fan-out (`~/code/33GOD/bloodbank/services/agent-hooks/sync.py --install`). Generated Hermes configs should call `~/.agents/hooks/bloodbank/publish.py --client hermes --hook <event>`, not a Hermes-local publisher.
+- Before a live command proof, audit the current target's Bloodbank registry
+  eligibility. Never enable a target merely to make a smoke test pass; command
+  dispatch invokes a real agent and requires explicit operational authority.
 
 ## Voice / TTS defaults
 

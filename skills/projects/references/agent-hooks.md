@@ -23,7 +23,7 @@ should point there, not to per-agent or `.old` script folders:
 - **Recall (passive):** a `UserPromptSubmit` hook recalls relevant memories before each prompt;
   results arrive in `<hindsight-memory>` tags. Bank resolution:
   `BANK=$(basename "$(git rev-parse --show-toplevel)")`, falling back to `general`
-  (`infra` for homelab, `33GOD`/`33god-core` for the platform).
+  (`infra` for homelab, exact bank `33GOD` for the platform).
 - **Retain (active):** `hindsight memory retain $BANK "<learning>" --context <category>`
   (categories: architecture, conventions, debugging, deployment, dependencies, preferences,
   session-summary, code-edit).
@@ -58,7 +58,7 @@ trees. Legacy `claude/publish.py`, `codex/publish.py`, `copilot/publish.py`, and
 bloodbank:
   subscribe:
     - "bloodbank.evt.v1.repo.<repo>.>"          # all events for this repo
-    - "bloodbank.cmd.v1.agent.<agent_id>.>"     # commands addressed to this agent
+    - "bloodbank.cmd.v1.agent.invocation.start" # one command contract; target is in data
   producer: "hermes-agent:<agent_id>"
 ```
 
@@ -79,15 +79,36 @@ emits via `.scripts/sentinel/bin/emit-event.py`; producer identity is
 - `bloodbank.cmd.v1.agent.invocation.start` — the single command subject; the
   target agent travels in `data.target_agent_id`, never in the subject.
 
+### Plane facts use a separate ingress boundary
+
+Agent hooks do not publish Plane ticket lifecycle facts. Plane sends signed
+webhooks for both self-hosted workspaces to the one active n8n workflow at
+`https://n8n.delo.sh/webhook/plane`. That workflow verifies raw-body HMAC,
+normalizes the provider action, resolves `board_id` through the shared fleet
+registry, and publishes `bloodbank.evt.v1.repo.task.*`.
+
+PJangler owns the identity dependency in that journey: repo-root
+`.project.json.ticket_provider` is reconciled into
+`~/.hermes/agents-registry.yaml`, which the n8n node reads on every execution.
+Never guess a repo from the Plane workspace; `automaticai` is just another
+workspace tenant slug on the same self-hosted `plane.delo.sh` instance.
+
+The complete event/command trace lives in the `bloodbank-integration` skill at
+`references/event-journey.md`.
+
 Skipping (e.g. local-only provisioning): `SKIP_BLOODBANK=1` makes `60-bloodbank.sh` a no-op.
 
 ## Wiring checklist when adding/repairing an agent
 
-1. `role.yaml` has the `bloodbank.subscribe` subjects + `producer` for this `agent_id`/`repo`.
-2. `runtime/bloodbank-consumer.py` exists and is fully rendered (no `{{...}}`); re-run
-   `./.scripts/60-bloodbank.sh` if not.
-3. The live CLI hook config calls `~/.agents/hooks/bloodbank/publish.py --client <agent> --hook ...`;
+1. Repo-root `.project.json` has the canonical `project_slug`,
+   `ticket_provider.{type,workspace,identifier,board_id,state}`, and agent entry.
+2. The shared fleet registry record has the correct `profile_name` and explicit
+   `bloodbank.{enabled,gateway_scope,target_agent_id}`. There is no per-agent
+   consumer file or service.
+3. `hermes-fleet-bloodbank-gateway.service` is the only command consumer; a live
+   dispatch additionally requires the target's current `enabled: true` policy.
+4. The live CLI hook config calls `~/.agents/hooks/bloodbank/publish.py --client <agent> --hook ...`;
    run `cd ~/code/33GOD/bloodbank && mise run health:hooks:check` after repair.
-4. Hindsight: the harness `UserPromptSubmit` recall hook is active and the bank resolves to the
+5. Hindsight: the harness `UserPromptSubmit` recall hook is active and the bank resolves to the
    repo (verify with `hindsight memory recall $BANK "smoke" --budget low`).
-5. Memory surface present: `runtime/memories/MEMORY.md` + `USER.md`.
+6. Memory surface present: `runtime/memories/MEMORY.md` + `USER.md`.
