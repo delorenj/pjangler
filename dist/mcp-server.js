@@ -234,7 +234,7 @@ import {
   statSync
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename as basename4, delimiter, isAbsolute, join as join7, relative as relative4, resolve as resolve4 } from "node:path";
+import { basename as basename5, delimiter, isAbsolute, join as join7, relative as relative4, resolve as resolve4 } from "node:path";
 import YAML2 from "yaml";
 function containedBy(parent, candidate) {
   const rel = relative4(resolve4(parent), resolve4(candidate));
@@ -303,7 +303,7 @@ function consoleScriptContract(path) {
     return { ok: false, error: "Copier launcher must use one absolute Python interpreter" };
   }
   const interpreterPath = resolve4(shebang[0]);
-  const interpreter = basename4(interpreterPath);
+  const interpreter = basename5(interpreterPath);
   if (!/^python(?:\d+(?:\.\d+)*)?$/.test(interpreter)) {
     return { ok: false, error: "Copier launcher is not an absolute Python console script" };
   }
@@ -356,7 +356,7 @@ function attestUvCopier(candidate, realCandidate, home) {
     if (!launcher.ok || !launcher.interpreter) {
       return { ...launcher, executable: realCandidate, realExecutable: realCandidate };
     }
-    const expectedInterpreter = join7(toolRoot, "bin", basename4(launcher.interpreter));
+    const expectedInterpreter = join7(toolRoot, "bin", basename5(launcher.interpreter));
     if (resolve4(launcher.interpreter) !== resolve4(expectedInterpreter)) {
       return { ok: false, error: "UV Copier launcher interpreter is outside the attested tool environment" };
     }
@@ -395,7 +395,7 @@ function attestUvCopier(candidate, realCandidate, home) {
     const recordEntries = readFileSync6(recordPath, "utf8").split(/\r?\n/).map(parseRecordLine).filter((entry) => Boolean(entry));
     const selected = recordEntries.filter((entry) => {
       const normalized = entry.relativePath.replaceAll("\\", "/");
-      return normalized.startsWith("copier/") || normalized === `${basename4(distInfo)}/METADATA` || normalized === `${basename4(distInfo)}/entry_points.txt` || normalized === "../../../bin/copier";
+      return normalized.startsWith("copier/") || normalized === `${basename5(distInfo)}/METADATA` || normalized === `${basename5(distInfo)}/entry_points.txt` || normalized === "../../../bin/copier";
     });
     if (!selected.some((entry) => entry.relativePath === "../../../bin/copier") || !selected.some((entry) => entry.relativePath.replaceAll("\\", "/") === "copier/__main__.py")) {
       return { ok: false, error: "Copier RECORD does not bind its launcher and package entry point" };
@@ -970,7 +970,7 @@ import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
 import { chmodSync as chmodSync3, closeSync as closeSync3, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync3, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
+import { basename as basename6, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import YAML3 from "yaml";
 function synchronizeCopierIdentity(manifestPath, manifest) {
@@ -1487,7 +1487,7 @@ function prospectiveRealPath(path) {
   while (!existsSync6(cursor)) {
     const parent = dirname5(cursor);
     if (parent === cursor) return resolve5(path);
-    suffix.unshift(basename5(cursor));
+    suffix.unshift(basename6(cursor));
     cursor = parent;
   }
   return resolve5(realpathSync4(cursor), ...suffix);
@@ -1547,7 +1547,7 @@ function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   const expanded = expandHome(sourceSkill);
   const direct = resolve5(expanded);
   if (existsSync6(direct)) return direct;
-  const name = basename5(sourceSkill);
+  const name = basename6(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
     const candidate = join8(root, name);
@@ -2645,7 +2645,7 @@ import {
   writeFileSync as writeFileSync9
 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
-import { basename as basename6, dirname as dirname8, join as join17, parse, relative as relative8, resolve as resolve8, sep as sep3 } from "node:path";
+import { basename as basename7, dirname as dirname8, join as join17, parse, relative as relative8, resolve as resolve8, sep as sep3 } from "node:path";
 function notebookStateRoot(env2 = process.env) {
   const base = env2.XDG_STATE_HOME || join17(env2.HOME || homedir6(), ".local", "state");
   return resolve8(base, "pjangler", "notebook", NOTEBOOK_STATE_VERSION);
@@ -2702,7 +2702,7 @@ function openPinnedDirectory(path, root, create) {
   }
 }
 function pinnedLeaf(parentFd, path) {
-  return `/proc/self/fd/${parentFd}/${basename6(path)}`;
+  return `/proc/self/fd/${parentFd}/${basename7(path)}`;
 }
 function assertOwned(stat) {
   if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
@@ -2827,7 +2827,7 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
   const text2 = jsonLine(value);
   const parentFd = openPinnedDirectory(dirname8(path), root, false);
   const target = pinnedLeaf(parentFd, path);
-  const tempName = `.${basename6(path)}.${process.pid}.${randomUUID3()}.tmp`;
+  const tempName = `.${basename7(path)}.${process.pid}.${randomUUID3()}.tmp`;
   const temp = `/proc/self/fd/${parentFd}/${tempName}`;
   let existingIdentity = null;
   try {
@@ -3584,7 +3584,7 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
       if (receipt.state !== "succeeded" || Date.parse(receipt.updated_at) > successCutoff) continue;
       const path = join17(paths.receipts, `${receipt.receipt_id}.json`);
       unlinkStateFile(path, paths.root);
-      removed.push(safeEntryId("receipts", basename6(path)));
+      removed.push(safeEntryId("receipts", basename7(path)));
     }
     const remaining = scanReceipts(paths, limits);
     const remainingAuxiliary = scanAuxiliaryState(paths, limits);
@@ -3598,9 +3598,9 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
       unlinkStateFile(path, paths.root);
       removed.push(safeEntryId("baselines", entry.name));
       const claim = join17(paths.claims, `${baseline.session_key}.overview`);
-      if (unlinkStateFile(claim, paths.root, true)) removed.push(safeEntryId("claims", basename6(claim)));
+      if (unlinkStateFile(claim, paths.root, true)) removed.push(safeEntryId("claims", basename7(claim)));
       const refusal = join17(paths.refusals, `${baseline.session_key}.json`);
-      if (unlinkStateFile(refusal, paths.root, true)) removed.push(safeEntryId("refusals", basename6(refusal)));
+      if (unlinkStateFile(refusal, paths.root, true)) removed.push(safeEntryId("refusals", basename7(refusal)));
     }
     fsyncDirectory2(paths.project);
     return removed;
@@ -4926,7 +4926,7 @@ var init_capture = __esm({
 
 // src/mcp-server.ts
 import { existsSync as existsSync23, statSync as statSync5 } from "node:fs";
-import { basename as basename8, dirname as dirname14, join as join30, resolve as resolve16 } from "node:path";
+import { basename as basename9, dirname as dirname14, join as join30, resolve as resolve16 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -11003,7 +11003,7 @@ import {
 } from "node:fs";
 import { createHash as createHash3 } from "node:crypto";
 import { spawn, spawnSync as spawnSync2 } from "node:child_process";
-import { join as join4, dirname as dirname3 } from "node:path";
+import { basename as basename3, join as join4, dirname as dirname3 } from "node:path";
 var HERMES_GIT_URL = "https://github.com/delorenj/hermes-agent.git";
 var HERMES_GIT_REF = "main";
 var HERMES_GIT_SHA = "0408fec7a153e6c32c064acd2b8053917f1525f1";
@@ -11439,6 +11439,42 @@ var TRANSACTION_CANDIDATE = "candidate.toml";
 var TRANSACTION_OPERATOR_FILE = "operator-config";
 var TRANSACTION_STATE = "state.json";
 var TRANSACTION_STATE_NEXT = "state-next.json";
+var ATOMIC_RENAME_PYTHON = "/usr/bin/python3";
+var ATOMIC_RENAME_TIMEOUT_MS = 5e3;
+var RENAMEAT2_HELPER = String.raw`
+# PJANGLER_RENAMEAT2_HELPER
+import ctypes
+import os
+import sys
+
+RENAME_NOREPLACE = 1
+RENAME_EXCHANGE = 2
+
+if len(sys.argv) != 4 or sys.argv[1] not in ("exchange", "noreplace"):
+    sys.stderr.write("invalid renameat2 invocation")
+    raise SystemExit(2)
+
+mode, source, target = sys.argv[1:]
+for value in (source, target):
+    parts = value.split("/")
+    if not value or value.startswith("/") or any(part in ("", ".", "..") for part in parts) or "\\x00" in value:
+        sys.stderr.write("unsafe relative renameat2 path")
+        raise SystemExit(2)
+
+libc = ctypes.CDLL(None, use_errno=True)
+renameat2 = getattr(libc, "renameat2", None)
+if renameat2 is None:
+    sys.stderr.write("renameat2 unavailable")
+    raise SystemExit(3)
+renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+renameat2.restype = ctypes.c_int
+flags = RENAME_EXCHANGE if mode == "exchange" else RENAME_NOREPLACE
+result = renameat2(3, os.fsencode(source), 3, os.fsencode(target), flags)
+if result != 0:
+    error = ctypes.get_errno()
+    sys.stderr.write("renameat2 failed: " + os.strerror(error))
+    raise SystemExit(4)
+`;
 function snapshotIdentity(snapshot) {
   return {
     dev: snapshot.dev,
@@ -11459,6 +11495,111 @@ function assertSnapshotIdentity(actual, expected, label) {
 function assertLinkCount(actual, expected, label) {
   if (actual.nlink !== expected) {
     throw new Error(`${label} has unsafe link count ${actual.nlink}; expected exactly ${expected}`);
+  }
+}
+function openConfigDirectory(path) {
+  const directory = dirname3(path);
+  const before = lstatSync3(directory);
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new Error(`Unsafe Hermes config directory ${directory}: expected a non-symlink directory`);
+  }
+  const descriptor = openSync2(
+    directory,
+    constants2.O_RDONLY | (constants2.O_DIRECTORY ?? 0) | (constants2.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const opened = fstatSync2(descriptor);
+    if (!opened.isDirectory() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error(`Hermes config directory changed identity while opening: ${directory}`);
+    }
+    return { descriptor, path: directory, identity: opened };
+  } catch (error) {
+    closeSync2(descriptor);
+    throw error;
+  }
+}
+function assertConfigDirectoryPath(directory) {
+  const current = lstatSync3(directory.path);
+  if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== directory.identity.dev || current.ino !== directory.identity.ino) {
+    throw new Error(`Hermes config directory changed identity during atomic installation: ${directory.path}`);
+  }
+}
+function trustedAtomicRenamePython() {
+  if (platform() !== "linux") {
+    throw new Error("Atomic Hermes config installation requires Linux renameat2 support");
+  }
+  let resolved;
+  try {
+    resolved = realpathSync2(ATOMIC_RENAME_PYTHON);
+  } catch (error) {
+    throw new Error(`Atomic Hermes config installation requires ${ATOMIC_RENAME_PYTHON}`, { cause: error });
+  }
+  const stats = lstatSync3(resolved);
+  if (!stats.isFile() || stats.isSymbolicLink() || typeof stats.uid === "number" && stats.uid !== 0 || (stats.mode & 18) !== 0) {
+    throw new Error(`Unsafe atomic rename helper interpreter: ${resolved}`);
+  }
+  return resolved;
+}
+function assertSafeRelativeRenamePath(path) {
+  if (path.length === 0 || path.startsWith("/") || path.includes("\0") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    throw new Error(`Unsafe relative path for atomic Hermes config rename: ${JSON.stringify(path)}`);
+  }
+}
+var AtomicRenameOutcomeUnknown = class extends Error {
+  constructor(message, cause) {
+    super(message, cause === void 0 ? void 0 : { cause });
+    this.name = "AtomicRenameOutcomeUnknown";
+  }
+};
+function atomicRenameAt2(configPath, source, target, mode) {
+  assertSafeRelativeRenamePath(source);
+  assertSafeRelativeRenamePath(target);
+  const directory = openConfigDirectory(configPath);
+  try {
+    assertConfigDirectoryPath(directory);
+    let helper;
+    try {
+      helper = spawnSync2(
+        trustedAtomicRenamePython(),
+        ["-I", "-S", "-c", RENAMEAT2_HELPER, mode, source, target],
+        {
+          cwd: "/",
+          encoding: "utf8",
+          env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
+          maxBuffer: 64 * 1024,
+          timeout: ATOMIC_RENAME_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+          stdio: ["ignore", "pipe", "pipe", directory.descriptor]
+        }
+      );
+    } catch (error) {
+      throw new Error(`Atomic Hermes config ${mode} helper failed before invocation: ${errorDetail(error)}`, { cause: error });
+    }
+    if (helper.error) {
+      const code = helper.error.code;
+      if (code === "ETIMEDOUT") {
+        throw new AtomicRenameOutcomeUnknown(
+          `Atomic Hermes config ${mode} timed out after ${ATOMIC_RENAME_TIMEOUT_MS}ms; syscall completion is unknown`,
+          helper.error
+        );
+      }
+      throw new Error(`Atomic Hermes config ${mode} helper failed to start: ${helper.error.message}`, { cause: helper.error });
+    }
+    if (helper.status !== 0) {
+      throw new Error(
+        `Atomic Hermes config ${mode} failed: ${String(helper.stderr).trim() || `helper exited ${helper.status ?? "without a status"}`}`
+      );
+    }
+    try {
+      assertConfigDirectoryPath(directory);
+    } catch (error) {
+      throw new AtomicRenameOutcomeUnknown(
+        `Atomic Hermes config ${mode} completed against an inherited directory whose canonical pathname then changed`,
+        error
+      );
+    }
+  } finally {
+    closeSync2(directory.descriptor);
   }
 }
 function errorDetail(error) {
@@ -11605,7 +11746,15 @@ function readTransactionMarker(directory) {
   const identityValid = (identity) => Boolean(
     identity && [identity.dev, identity.ino, identity.mode, identity.mtimeMs].every(Number.isFinite) && typeof identity.hash === "string" && /^[0-9a-f]{64}$/.test(identity.hash)
   );
-  if (parsed.version !== 1 || !Number.isInteger(parsed.ownerPid) || parsed.phase !== "prepared" && parsed.phase !== "committed" && parsed.phase !== "conflict" || typeof parsed.hadPrevious !== "boolean" || !identityValid(parsed.candidate) || parsed.hadPrevious && !identityValid(parsed.previous)) {
+  if (parsed.version !== 1 || !Number.isInteger(parsed.ownerPid) || ![
+    "prepared",
+    "install-exchange",
+    "installed",
+    "committed",
+    "rollback-exchange",
+    "rollback-capture",
+    "conflict"
+  ].includes(parsed.phase ?? "") || typeof parsed.hadPrevious !== "boolean" || !identityValid(parsed.candidate) || parsed.hadPrevious && !identityValid(parsed.previous)) {
     throw new Error("transaction state is missing or invalid");
   }
   return parsed;
@@ -11616,6 +11765,14 @@ function manualRecoveryError(directory, detail, cause) {
     cause === void 0 ? void 0 : { cause }
   );
 }
+var AtomicConfigConflict = class extends Error {
+  canonicalPreserved;
+  constructor(message, canonicalPreserved, cause) {
+    super(message, cause === void 0 ? void 0 : { cause });
+    this.name = "AtomicConfigConflict";
+    this.canonicalPreserved = canonicalPreserved;
+  }
+};
 function markTransactionConflict(directory, marker) {
   try {
     writeTransactionMarker(directory, { ...marker, phase: "conflict" });
@@ -11667,6 +11824,9 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
     }
     const candidatePath = join4(transactionDirectory, TRANSACTION_CANDIDATE);
     const operatorPath = join4(transactionDirectory, TRANSACTION_OPERATOR_FILE);
+    const candidateRelative = `${entry.name}/${TRANSACTION_CANDIDATE}`;
+    const operatorRelative = `${entry.name}/${TRANSACTION_OPERATOR_FILE}`;
+    const configRelative = basename3(path);
     const candidateStats = inspectTransactionFile(candidatePath, "Transaction candidate");
     const operatorStats = inspectTransactionFile(operatorPath, "Protected operator config");
     let marker;
@@ -11696,6 +11856,36 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
       }
       rmSync2(transactionDirectory, { recursive: true, force: true });
       continue;
+    }
+    if (marker?.phase === "rollback-exchange" && operatorStats && marker.previous) {
+      let canonicalAfterRollback;
+      let capturedCandidate;
+      try {
+        canonicalAfterRollback = readRegularConfigSnapshot(path);
+        capturedCandidate = readRegularConfigSnapshot(operatorPath, operatorStats);
+      } catch (error) {
+        throw manualRecoveryError(
+          transactionDirectory,
+          `Interrupted rollback exchange cannot be inspected safely: ${errorDetail(error)}`,
+          error
+        );
+      }
+      const exchangeCompleted = (() => {
+        try {
+          assertSnapshotIdentity(canonicalAfterRollback, marker.previous, "Canonical config after interrupted rollback exchange");
+          assertLinkCount(canonicalAfterRollback, 1, "Canonical config after interrupted rollback exchange");
+          assertSnapshotIdentity(capturedCandidate, marker.candidate, "Candidate captured by interrupted rollback exchange");
+          assertLinkCount(capturedCandidate, 1, "Candidate captured by interrupted rollback exchange");
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      if (exchangeCompleted) {
+        unlinkSync2(operatorPath);
+        rmSync2(transactionDirectory, { recursive: true, force: true });
+        continue;
+      }
     }
     if (operatorStats) {
       if (!marker || !marker.hadPrevious || !marker.previous) {
@@ -11727,10 +11917,87 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
         );
       }
       if (candidateStats) {
+        const stagedEntry = readRegularConfigSnapshot(candidatePath, candidateStats);
+        const isCompletedInstallExchange = (() => {
+          if (marker.phase !== "install-exchange") return false;
+          try {
+            assertSnapshotIdentity(canonical, marker.candidate, "Canonical candidate after interrupted install exchange");
+            assertLinkCount(canonical, 1, "Canonical candidate after interrupted install exchange");
+            assertSnapshotIdentity(stagedEntry, marker.previous, "Displaced original after interrupted install exchange");
+            assertSnapshotIdentity(protectedOriginal, marker.previous, "Protected original after interrupted install exchange");
+            if (!sameIdentity(stagedEntry, protectedOriginal)) {
+              throw new Error("displaced and protected originals are different inodes");
+            }
+            assertLinkCount(stagedEntry, 2, "Displaced original after interrupted install exchange");
+            assertLinkCount(protectedOriginal, 2, "Protected original after interrupted install exchange");
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+        if (isCompletedInstallExchange) {
+          let reverseExchanged = false;
+          let displacedCanonical2;
+          try {
+            atomicRenameAt2(path, candidateRelative, configRelative, "exchange");
+            reverseExchanged = true;
+            const restoredCanonical = readRegularConfigSnapshot(path);
+            displacedCanonical2 = readRegularConfigSnapshot(candidatePath);
+            const stillProtected = readRegularConfigSnapshot(operatorPath);
+            assertSnapshotIdentity(restoredCanonical, marker.previous, "Canonical original after interrupted install reversal");
+            assertSnapshotIdentity(stillProtected, marker.previous, "Protected original after interrupted install reversal");
+            if (!sameIdentity(restoredCanonical, stillProtected)) {
+              throw new Error("restored and protected originals are different inodes");
+            }
+            assertLinkCount(restoredCanonical, 2, "Canonical original after interrupted install reversal");
+            assertLinkCount(stillProtected, 2, "Protected original after interrupted install reversal");
+            assertSnapshotIdentity(displacedCanonical2, marker.candidate, "Candidate captured by interrupted install reversal");
+            assertLinkCount(displacedCanonical2, 1, "Candidate captured by interrupted install reversal");
+            unlinkSync2(candidatePath);
+            unlinkSync2(operatorPath);
+            reverseExchanged = false;
+            const released = readRegularConfigSnapshot(path);
+            assertSnapshotIdentity(released, marker.previous, "Recovered original after interrupted install reversal");
+            assertLinkCount(released, 1, "Recovered original after interrupted install reversal");
+            rmSync2(transactionDirectory, { recursive: true, force: true });
+            continue;
+          } catch (error) {
+            if (reverseExchanged) {
+              let reverseError;
+              let reverseVerificationError;
+              try {
+                atomicRenameAt2(path, candidateRelative, configRelative, "exchange");
+                reverseExchanged = false;
+                if (displacedCanonical2) {
+                  const preservedCanonical = readRegularConfigSnapshot(path);
+                  const retainedDisplaced = readRegularConfigSnapshot(candidatePath);
+                  assertSnapshotIdentity(preservedCanonical, displacedCanonical2, "Canonical config after reversed recovery exchange");
+                  assertLinkCount(preservedCanonical, 1, "Canonical config after reversed recovery exchange");
+                  assertSnapshotIdentity(retainedDisplaced, marker.previous, "Displaced original after reversed recovery exchange");
+                }
+              } catch (reverseFailure) {
+                if (reverseExchanged) reverseError = reverseFailure;
+                else reverseVerificationError = reverseFailure;
+              }
+              const detail = `Interrupted install exchange could not be reversed safely: ${errorDetail(error)}${reverseError ? `; restoring the captured canonical entry failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; restored state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`;
+              if (!reverseExchanged && displacedCanonical2 && !reverseVerificationError) {
+                throw manualRecoveryError(transactionDirectory, detail, error);
+              }
+              throw new Error(
+                `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
+                { cause: error }
+              );
+            }
+            throw manualRecoveryError(
+              transactionDirectory,
+              `Interrupted install exchange could not be finalized safely: ${errorDetail(error)}`,
+              error
+            );
+          }
+        }
         try {
-          const stagedCandidate = readRegularConfigSnapshot(candidatePath, candidateStats);
-          assertSnapshotIdentity(stagedCandidate, marker.candidate, "Staged transaction candidate");
-          assertLinkCount(stagedCandidate, 1, "Staged transaction candidate");
+          assertSnapshotIdentity(stagedEntry, marker.candidate, "Staged transaction candidate");
+          assertLinkCount(stagedEntry, 1, "Staged transaction candidate");
           if (!sameIdentity(canonical, protectedOriginal)) {
             throw new Error("canonical path no longer references the protected operator inode");
           }
@@ -11770,25 +12037,114 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
         rmSync2(transactionDirectory, { recursive: true, force: true });
         continue;
       }
+      let recoveryExchanged = false;
+      let displacedCanonical;
       try {
-        assertSnapshotIdentity(canonical, marker.candidate, "Canonical Hermes config before recovery rollback");
-        assertLinkCount(canonical, 1, "Canonical Hermes config before recovery rollback");
-        assertLinkCount(protectedOriginal, 1, "Protected operator config before recovery rollback");
+        assertSnapshotIdentity(canonical, marker.candidate, "Canonical Hermes config before recovery rollback intent");
+        assertLinkCount(canonical, 1, "Canonical Hermes config before recovery rollback intent");
+        assertSnapshotIdentity(protectedOriginal, marker.previous, "Protected operator config before recovery rollback intent");
+        assertLinkCount(protectedOriginal, 1, "Protected operator config before recovery rollback intent");
+        linkSync(operatorPath, candidatePath);
+        const rollbackOriginal = readRegularConfigSnapshot(operatorPath);
+        const rollbackAlias = readRegularConfigSnapshot(candidatePath);
+        if (!sameIdentity(rollbackOriginal, rollbackAlias)) {
+          throw new Error("recovery rollback protection links do not reference the same original inode");
+        }
+        assertLinkCount(rollbackOriginal, 2, "Protected original before recovery rollback exchange");
+        assertLinkCount(rollbackAlias, 2, "Protected rollback alias before recovery rollback exchange");
+        marker = { ...marker, phase: "rollback-exchange" };
+        writeTransactionMarker(transactionDirectory, marker);
+        atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
+        recoveryExchanged = true;
+        const restored = readRegularConfigSnapshot(path);
+        displacedCanonical = readRegularConfigSnapshot(operatorPath);
+        const retainedOriginal = readRegularConfigSnapshot(candidatePath);
+        assertSnapshotIdentity(restored, marker.previous, "Recovered Hermes config");
+        assertSnapshotIdentity(retainedOriginal, marker.previous, "Retained original during recovery rollback");
+        if (!sameIdentity(restored, retainedOriginal)) {
+          throw new Error("recovered and retained originals are different inodes");
+        }
+        assertLinkCount(restored, 2, "Recovered Hermes config");
+        assertLinkCount(retainedOriginal, 2, "Retained original during recovery rollback");
+        assertSnapshotIdentity(displacedCanonical, marker.candidate, "Candidate captured during recovery rollback");
+        assertLinkCount(displacedCanonical, 1, "Candidate captured during recovery rollback");
+        unlinkSync2(operatorPath);
+        unlinkSync2(candidatePath);
+        recoveryExchanged = false;
       } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Canonical Hermes config changed after candidate installation: ${errorDetail(error)}`,
-          error
+        if (!recoveryExchanged) {
+          throw manualRecoveryError(
+            transactionDirectory,
+            `Atomic recovery rollback failed before it could be verified: ${errorDetail(error)}`,
+            error
+          );
+        }
+        try {
+          const liveCanonical = readRegularConfigSnapshot(path);
+          assertSnapshotIdentity(liveCanonical, marker.previous, "Canonical original before reversing failed recovery rollback");
+        } catch (concurrentReplacement) {
+          throw manualRecoveryError(
+            transactionDirectory,
+            `Canonical Hermes config changed after recovery rollback exchange and was left in place: ${errorDetail(concurrentReplacement)}`,
+            new AggregateError([error, concurrentReplacement], "Recovery rollback and canonical verification both failed")
+          );
+        }
+        let reverseError;
+        let reverseVerificationError;
+        try {
+          atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
+          recoveryExchanged = false;
+          if (displacedCanonical) {
+            const preservedCanonical = readRegularConfigSnapshot(path);
+            const retainedOriginal = readRegularConfigSnapshot(operatorPath);
+            const retainedOriginalAlias = readRegularConfigSnapshot(candidatePath);
+            assertSnapshotIdentity(preservedCanonical, displacedCanonical, "Canonical Hermes config after reversed recovery rollback");
+            assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed recovery rollback");
+            assertSnapshotIdentity(retainedOriginal, marker.previous, "Protected original after reversed recovery rollback");
+            assertSnapshotIdentity(retainedOriginalAlias, marker.previous, "Protected original alias after reversed recovery rollback");
+            if (!sameIdentity(retainedOriginal, retainedOriginalAlias)) {
+              throw new Error("protected recovery rollback links diverged after reverse exchange");
+            }
+            assertLinkCount(retainedOriginal, 2, "Protected original after reversed recovery rollback");
+            assertLinkCount(retainedOriginalAlias, 2, "Protected original alias after reversed recovery rollback");
+          }
+        } catch (reverseFailure) {
+          if (recoveryExchanged) reverseError = reverseFailure;
+          else reverseVerificationError = reverseFailure;
+        }
+        const detail = `Canonical Hermes config was not this transaction's candidate during atomic recovery: ${errorDetail(error)}${reverseError ? `; reversing the exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`;
+        if (!recoveryExchanged && displacedCanonical && !reverseVerificationError) {
+          throw manualRecoveryError(transactionDirectory, detail, error);
+        }
+        throw new Error(
+          `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
+          { cause: error }
         );
       }
-      renameSync2(operatorPath, path);
-      const restored = readRegularConfigSnapshot(path);
-      assertSnapshotIdentity(restored, marker.previous, "Recovered Hermes config");
-      assertLinkCount(restored, 1, "Recovered Hermes config");
       rmSync2(transactionDirectory, { recursive: true, force: true });
       continue;
     }
     if (candidateStats) {
+      if (!marker) {
+        throw manualRecoveryError(
+          transactionDirectory,
+          `Staged Hermes config exists but transaction metadata is torn or incomplete: ${errorDetail(markerError)}`,
+          markerError
+        );
+      }
+      let stagedCandidate;
+      try {
+        stagedCandidate = readRegularConfigSnapshot(candidatePath, candidateStats);
+        assertSnapshotIdentity(stagedCandidate, marker.candidate, "Staged transaction candidate before recovery cleanup");
+        assertLinkCount(stagedCandidate, 1, "Staged transaction candidate before recovery cleanup");
+      } catch (error) {
+        throw manualRecoveryError(
+          transactionDirectory,
+          `Staged transaction entry is not this transaction's candidate and will not be removed: ${errorDetail(error)}`,
+          error
+        );
+      }
+      unlinkSync2(candidatePath);
       rmSync2(transactionDirectory, { recursive: true, force: true });
       continue;
     }
@@ -11816,18 +12172,47 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
     }
     const installed = inspectConfigPath(path);
     if (installed) {
+      let captured = false;
+      let capturedCanonical;
       try {
-        const installedSnapshot = readRegularConfigSnapshot(path, installed);
-        assertSnapshotIdentity(installedSnapshot, marker.candidate, "Interrupted new Hermes config");
-        assertLinkCount(installedSnapshot, 1, "Interrupted new Hermes config");
+        const liveCandidate = readRegularConfigSnapshot(path, installed);
+        assertSnapshotIdentity(liveCandidate, marker.candidate, "Interrupted new Hermes config before recovery capture");
+        assertLinkCount(liveCandidate, 1, "Interrupted new Hermes config before recovery capture");
+        marker = { ...marker, phase: "rollback-capture" };
+        writeTransactionMarker(transactionDirectory, marker);
+        atomicRenameAt2(path, configRelative, candidateRelative, "noreplace");
+        captured = true;
+        capturedCanonical = readRegularConfigSnapshot(candidatePath);
+        assertSnapshotIdentity(capturedCanonical, marker.candidate, "Interrupted new Hermes config");
+        assertLinkCount(capturedCanonical, 1, "Interrupted new Hermes config");
+        unlinkSync2(candidatePath);
+        captured = false;
       } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Canonical Hermes config changed after creation candidate installation: ${errorDetail(error)}`,
-          error
+        let restoreError;
+        let restoreVerificationError;
+        if (captured) {
+          try {
+            atomicRenameAt2(path, candidateRelative, configRelative, "noreplace");
+            captured = false;
+            if (capturedCanonical) {
+              const preservedCanonical = readRegularConfigSnapshot(path);
+              assertSnapshotIdentity(preservedCanonical, capturedCanonical, "Canonical Hermes config after reversed creation recovery");
+              assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed creation recovery");
+            }
+          } catch (restoreFailure) {
+            if (captured) restoreError = restoreFailure;
+            else restoreVerificationError = restoreFailure;
+          }
+        }
+        const detail = `Atomic recovery of an interrupted new Hermes config failed: ${errorDetail(error)}${restoreError ? `; restoring the captured path failed: ${errorDetail(restoreError)}` : ""}${restoreVerificationError ? `; restored path could not be verified: ${errorDetail(restoreVerificationError)}` : ""}`;
+        if (!captured && (!capturedCanonical || !restoreVerificationError)) {
+          throw manualRecoveryError(transactionDirectory, detail, error);
+        }
+        throw new Error(
+          `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
+          { cause: error }
         );
       }
-      unlinkSync2(path);
     }
     rmSync2(transactionDirectory, { recursive: true, force: true });
   }
@@ -11841,6 +12226,10 @@ function installValidatedConfig(path, next, previous) {
   chmodSync2(transactionDirectory, 448);
   const stagedPath = join4(transactionDirectory, TRANSACTION_CANDIDATE);
   const operatorPath = join4(transactionDirectory, TRANSACTION_OPERATOR_FILE);
+  const transactionName = basename3(transactionDirectory);
+  const stagedRelative = `${transactionName}/${TRANSACTION_CANDIDATE}`;
+  const operatorRelative = `${transactionName}/${TRANSACTION_OPERATOR_FILE}`;
+  const configRelative = basename3(path);
   let installed = false;
   let operatorArtifactHoldsOriginal = false;
   let retainTransactionForRecovery = false;
@@ -11877,15 +12266,120 @@ function installValidatedConfig(path, next, previous) {
       }
       assertLinkCount(linkedCanonical, 2, "Canonical Hermes config after protection link");
       assertLinkCount(protectedOriginal, 2, "Protected Hermes config after protection link");
+      marker = { ...marker, phase: "install-exchange" };
+      writeTransactionMarker(transactionDirectory, marker);
+      try {
+        atomicRenameAt2(path, stagedRelative, configRelative, "exchange");
+      } catch (error) {
+        if (error instanceof AtomicRenameOutcomeUnknown) {
+          throw new AtomicConfigConflict(
+            `Atomic Hermes config install outcome is unknown: ${error.message}`,
+            false,
+            error
+          );
+        }
+        throw error;
+      }
+      installed = true;
+      let exchangedOut;
+      try {
+        const installedCandidate = readRegularConfigSnapshot(path);
+        exchangedOut = readRegularConfigSnapshot(stagedPath);
+        const stillProtected = readRegularConfigSnapshot(operatorPath);
+        assertSnapshotIdentity(installedCandidate, marker.candidate, "Atomically installed Hermes candidate");
+        assertLinkCount(installedCandidate, 1, "Atomically installed Hermes candidate");
+        assertSnapshotIdentity(exchangedOut, previous, "Hermes config captured by atomic install");
+        assertSnapshotIdentity(stillProtected, previous, "Protected Hermes config after atomic install");
+        if (!sameIdentity(exchangedOut, stillProtected)) {
+          throw new Error("Atomic install did not capture the protected operator inode");
+        }
+        assertLinkCount(exchangedOut, 2, "Hermes config captured by atomic install");
+        assertLinkCount(stillProtected, 2, "Protected Hermes config after atomic install");
+      } catch (exchangeMismatch) {
+        try {
+          const liveCandidate = readRegularConfigSnapshot(path);
+          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical candidate before reversing failed install exchange");
+          assertLinkCount(liveCandidate, 1, "Canonical candidate before reversing failed install exchange");
+        } catch (concurrentReplacement) {
+          throw new AtomicConfigConflict(
+            `Canonical Hermes config changed after the install exchange; it was left in place without a reverse exchange: ${errorDetail(concurrentReplacement)}`,
+            true,
+            new AggregateError(
+              [exchangeMismatch, concurrentReplacement],
+              "Hermes install exchange and canonical verification both failed"
+            )
+          );
+        }
+        let reverseError;
+        let reverseVerificationError;
+        try {
+          atomicRenameAt2(path, stagedRelative, configRelative, "exchange");
+          installed = false;
+          if (exchangedOut) {
+            const restoredCanonical = readRegularConfigSnapshot(path);
+            const restoredCandidate = readRegularConfigSnapshot(stagedPath);
+            const retainedOriginal = readRegularConfigSnapshot(operatorPath);
+            assertSnapshotIdentity(restoredCanonical, exchangedOut, "Canonical Hermes config after reversed install exchange");
+            assertLinkCount(restoredCanonical, 1, "Canonical Hermes config after reversed install exchange");
+            assertSnapshotIdentity(restoredCandidate, marker.candidate, "Candidate after reversed install exchange");
+            assertLinkCount(restoredCandidate, 1, "Candidate after reversed install exchange");
+            assertSnapshotIdentity(retainedOriginal, previous, "Protected original after reversed install exchange");
+            assertLinkCount(retainedOriginal, 1, "Protected original after reversed install exchange");
+          }
+        } catch (error) {
+          if (installed) reverseError = error;
+          else reverseVerificationError = error;
+        }
+        throw new AtomicConfigConflict(
+          `Atomic Hermes config install captured an unexpected canonical inode: ${errorDetail(exchangeMismatch)}${reverseError ? `; reversing the exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`,
+          installed === false && Boolean(exchangedOut) && !reverseVerificationError,
+          new AggregateError(
+            [exchangeMismatch, ...reverseError ? [reverseError] : [], ...reverseVerificationError ? [reverseVerificationError] : []],
+            "Hermes config atomic install CAS failed"
+          )
+        );
+      }
+      unlinkSync2(stagedPath);
+      const singlyProtected = readRegularConfigSnapshot(operatorPath);
+      assertSnapshotIdentity(singlyProtected, previous, "Protected Hermes config after displaced-link cleanup");
+      assertLinkCount(singlyProtected, 1, "Protected Hermes config after displaced-link cleanup");
+    } else {
+      marker = { ...marker, phase: "install-exchange" };
+      writeTransactionMarker(transactionDirectory, marker);
+      try {
+        atomicRenameAt2(path, stagedRelative, configRelative, "noreplace");
+      } catch (error) {
+        if (error instanceof AtomicRenameOutcomeUnknown) {
+          throw new AtomicConfigConflict(
+            `Atomic Hermes config create outcome is unknown: ${error.message}`,
+            false,
+            error
+          );
+        }
+        throw error;
+      }
+      installed = true;
     }
-    renameSync2(stagedPath, path);
-    installed = true;
+    marker = { ...marker, phase: "installed" };
+    writeTransactionMarker(transactionDirectory, marker);
     const written = readRegularConfigSnapshot(path);
     if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
     assertValidTomlBytes(written.bytes, "Installed Hermes template config");
     assertSnapshotIdentity(written, marker.candidate, "Installed Hermes config");
     assertLinkCount(written, 1, "Installed Hermes config");
-    writeTransactionMarker(transactionDirectory, { ...marker, phase: "committed" });
+    marker = { ...marker, phase: "committed" };
+    writeTransactionMarker(transactionDirectory, marker);
+    try {
+      const committable = readRegularConfigSnapshot(path);
+      assertSnapshotIdentity(committable, marker.candidate, "Canonical Hermes config before releasing protected state");
+      assertLinkCount(committable, 1, "Canonical Hermes config before releasing protected state");
+    } catch (error) {
+      throw new AtomicConfigConflict(
+        `Canonical Hermes config changed after successful candidate validation: ${errorDetail(error)}`,
+        true,
+        error
+      );
+    }
     if (operatorArtifactHoldsOriginal) {
       unlinkSync2(operatorPath);
       operatorArtifactHoldsOriginal = false;
@@ -11897,42 +12391,198 @@ function installValidatedConfig(path, next, previous) {
     let conflictError;
     let conflictMarkerError;
     let finalState = installed ? "unknown" : "unchanged";
-    if (installed) {
-      try {
-        if (!marker) throw new Error("transaction candidate identity is unavailable");
-        const canonicalCandidate = readRegularConfigSnapshot(path);
-        assertSnapshotIdentity(canonicalCandidate, marker.candidate, "Canonical Hermes config before rollback");
-        assertLinkCount(canonicalCandidate, 1, "Canonical Hermes config before rollback");
-        if (previous && operatorArtifactHoldsOriginal) {
-          const protectedOriginal = readRegularConfigSnapshot(operatorPath);
-          assertSnapshotIdentity(protectedOriginal, previous, "Protected operator config before rollback");
-          assertLinkCount(protectedOriginal, 1, "Protected operator config before rollback");
-        }
-      } catch (concurrentChange) {
-        conflictError = concurrentChange;
-        retainTransactionForRecovery = true;
-        if (marker) conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-      }
-      if (!conflictError) {
+    if (error instanceof AtomicConfigConflict) {
+      conflictError = error;
+      retainTransactionForRecovery = true;
+      if (marker) conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
+    }
+    if (!conflictError && installed) {
+      if (!marker) {
+        restorationError = new Error("transaction candidate identity is unavailable");
+      } else if (previous && operatorArtifactHoldsOriginal) {
         try {
-          if (previous && operatorArtifactHoldsOriginal) {
-            renameSync2(operatorPath, path);
-            operatorArtifactHoldsOriginal = false;
-            installed = false;
-            finalState = "restored";
-          } else if (previous === void 0) {
-            unlinkSync2(path);
-            installed = false;
-            finalState = "removed";
-          } else {
-            throw new Error("protected operator inode is unavailable");
-          }
-        } catch (restoreFailure) {
-          restorationError = restoreFailure;
+          const liveCandidate = readRegularConfigSnapshot(path);
+          const protectedOriginal = readRegularConfigSnapshot(operatorPath);
+          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical Hermes config before rollback intent");
+          assertLinkCount(liveCandidate, 1, "Canonical Hermes config before rollback intent");
+          assertSnapshotIdentity(protectedOriginal, previous, "Protected operator config before rollback intent");
+          assertLinkCount(protectedOriginal, 1, "Protected operator config before rollback intent");
+        } catch (preflightConflict) {
+          conflictError = new AtomicConfigConflict(
+            `Canonical Hermes config changed before rollback could begin: ${errorDetail(preflightConflict)}`,
+            true,
+            preflightConflict
+          );
+          retainTransactionForRecovery = true;
+          conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
         }
+        let rollbackExchanged = false;
+        let displacedCanonical;
+        if (!conflictError) try {
+          linkSync(operatorPath, stagedPath);
+          const protectedRollbackOriginal = readRegularConfigSnapshot(operatorPath);
+          const protectedRollbackAlias = readRegularConfigSnapshot(stagedPath);
+          assertSnapshotIdentity(protectedRollbackOriginal, previous, "Protected original before rollback exchange");
+          assertSnapshotIdentity(protectedRollbackAlias, previous, "Protected rollback alias before rollback exchange");
+          if (!sameIdentity(protectedRollbackOriginal, protectedRollbackAlias)) {
+            throw new Error("rollback protection links do not reference the same original inode");
+          }
+          assertLinkCount(protectedRollbackOriginal, 2, "Protected original before rollback exchange");
+          assertLinkCount(protectedRollbackAlias, 2, "Protected rollback alias before rollback exchange");
+          marker = { ...marker, phase: "rollback-exchange" };
+          writeTransactionMarker(transactionDirectory, marker);
+          atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
+          rollbackExchanged = true;
+          const restoredOriginal = readRegularConfigSnapshot(path);
+          displacedCanonical = readRegularConfigSnapshot(operatorPath);
+          const retainedRollbackOriginal = readRegularConfigSnapshot(stagedPath);
+          assertSnapshotIdentity(restoredOriginal, previous, "Restored Hermes config after rollback exchange");
+          assertSnapshotIdentity(retainedRollbackOriginal, previous, "Retained original after rollback exchange");
+          if (!sameIdentity(restoredOriginal, retainedRollbackOriginal)) {
+            throw new Error("restored and retained rollback originals are different inodes");
+          }
+          assertLinkCount(restoredOriginal, 2, "Restored Hermes config after rollback exchange");
+          assertLinkCount(retainedRollbackOriginal, 2, "Retained original after rollback exchange");
+          assertSnapshotIdentity(displacedCanonical, marker.candidate, "Hermes candidate captured by rollback exchange");
+          assertLinkCount(displacedCanonical, 1, "Hermes candidate captured by rollback exchange");
+          unlinkSync2(operatorPath);
+          operatorArtifactHoldsOriginal = false;
+          unlinkSync2(stagedPath);
+          installed = false;
+          finalState = "restored";
+        } catch (rollbackFailure) {
+          if (!rollbackExchanged) {
+            restorationError = rollbackFailure;
+          } else {
+            let canonicalStillRestored = false;
+            try {
+              const liveCanonical = readRegularConfigSnapshot(path);
+              assertSnapshotIdentity(liveCanonical, previous, "Canonical original before reversing failed rollback exchange");
+              canonicalStillRestored = true;
+            } catch (concurrentReplacement) {
+              conflictError = new AtomicConfigConflict(
+                `Canonical Hermes config changed after rollback exchange; it was left in place without a reverse exchange: ${errorDetail(concurrentReplacement)}`,
+                true,
+                new AggregateError(
+                  [rollbackFailure, concurrentReplacement],
+                  "Hermes rollback exchange and canonical verification both failed"
+                )
+              );
+              retainTransactionForRecovery = true;
+              conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
+            }
+            if (!canonicalStillRestored) {
+            } else {
+              let reverseError;
+              let reverseVerificationError;
+              try {
+                atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
+                rollbackExchanged = false;
+                installed = true;
+                if (displacedCanonical) {
+                  const preservedCanonical = readRegularConfigSnapshot(path);
+                  const retainedOriginal = readRegularConfigSnapshot(operatorPath);
+                  const retainedOriginalAlias = readRegularConfigSnapshot(stagedPath);
+                  assertSnapshotIdentity(preservedCanonical, displacedCanonical, "Canonical Hermes config after reversed rollback exchange");
+                  assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed rollback exchange");
+                  assertSnapshotIdentity(retainedOriginal, previous, "Protected original after reversed rollback exchange");
+                  assertSnapshotIdentity(retainedOriginalAlias, previous, "Protected original alias after reversed rollback exchange");
+                  if (!sameIdentity(retainedOriginal, retainedOriginalAlias)) {
+                    throw new Error("protected rollback links diverged after reverse exchange");
+                  }
+                  assertLinkCount(retainedOriginal, 2, "Protected original after reversed rollback exchange");
+                  assertLinkCount(retainedOriginalAlias, 2, "Protected original alias after reversed rollback exchange");
+                }
+              } catch (reverseFailure) {
+                if (rollbackExchanged) reverseError = reverseFailure;
+                else reverseVerificationError = reverseFailure;
+              }
+              conflictError = new AtomicConfigConflict(
+                `Atomic rollback captured a canonical inode other than this transaction's candidate: ${errorDetail(rollbackFailure)}${reverseError ? `; reversing the rollback exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed rollback state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`,
+                !rollbackExchanged && Boolean(displacedCanonical) && !reverseVerificationError,
+                new AggregateError(
+                  [rollbackFailure, ...reverseError ? [reverseError] : [], ...reverseVerificationError ? [reverseVerificationError] : []],
+                  "Hermes config atomic rollback CAS failed"
+                )
+              );
+              retainTransactionForRecovery = true;
+              conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
+            }
+          }
+        }
+      } else if (previous === void 0) {
+        try {
+          const liveCandidate = readRegularConfigSnapshot(path);
+          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical new Hermes config before rollback capture");
+          assertLinkCount(liveCandidate, 1, "Canonical new Hermes config before rollback capture");
+        } catch (preflightConflict) {
+          conflictError = new AtomicConfigConflict(
+            `Canonical Hermes config changed before new-config rollback could begin: ${errorDetail(preflightConflict)}`,
+            true,
+            preflightConflict
+          );
+          retainTransactionForRecovery = true;
+          conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
+        }
+        let captured = false;
+        let capturedCanonical;
+        if (!conflictError) try {
+          marker = { ...marker, phase: "rollback-capture" };
+          writeTransactionMarker(transactionDirectory, marker);
+          atomicRenameAt2(path, configRelative, stagedRelative, "noreplace");
+          captured = true;
+          capturedCanonical = readRegularConfigSnapshot(stagedPath);
+          assertSnapshotIdentity(capturedCanonical, marker.candidate, "New Hermes candidate captured for rollback");
+          assertLinkCount(capturedCanonical, 1, "New Hermes candidate captured for rollback");
+          unlinkSync2(stagedPath);
+          installed = false;
+          finalState = "removed";
+        } catch (rollbackFailure) {
+          if (!captured) {
+            restorationError = rollbackFailure;
+          } else {
+            let restoreError;
+            let restoreVerificationError;
+            try {
+              atomicRenameAt2(path, stagedRelative, configRelative, "noreplace");
+              captured = false;
+              installed = true;
+              if (capturedCanonical) {
+                const preservedCanonical = readRegularConfigSnapshot(path);
+                assertSnapshotIdentity(preservedCanonical, capturedCanonical, "Canonical Hermes config after reversed new-config rollback");
+                assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed new-config rollback");
+              }
+            } catch (restoreFailure) {
+              if (captured) restoreError = restoreFailure;
+              else restoreVerificationError = restoreFailure;
+            }
+            conflictError = new AtomicConfigConflict(
+              `Atomic new-config rollback captured unexpected operator state: ${errorDetail(rollbackFailure)}${restoreError ? `; restoring the captured path failed: ${errorDetail(restoreError)}` : ""}${restoreVerificationError ? `; restored path could not be verified: ${errorDetail(restoreVerificationError)}` : ""}`,
+              !captured && Boolean(capturedCanonical) && !restoreVerificationError,
+              new AggregateError(
+                [rollbackFailure, ...restoreError ? [restoreError] : [], ...restoreVerificationError ? [restoreVerificationError] : []],
+                "Hermes new-config atomic rollback CAS failed"
+              )
+            );
+            retainTransactionForRecovery = true;
+            conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
+          }
+        }
+      } else {
+        restorationError = new Error("protected operator inode is unavailable");
       }
-    } else if (operatorArtifactHoldsOriginal) {
+    } else if (!conflictError && operatorArtifactHoldsOriginal) {
       try {
+        if (!previous || !marker) throw new Error("pre-install transaction identity is unavailable");
+        const canonicalOriginal = readRegularConfigSnapshot(path);
+        const protectedOriginal = readRegularConfigSnapshot(operatorPath);
+        assertSnapshotIdentity(canonicalOriginal, previous, "Canonical original before releasing unused protection");
+        assertSnapshotIdentity(protectedOriginal, previous, "Protected original before releasing unused protection");
+        if (!sameIdentity(canonicalOriginal, protectedOriginal)) {
+          throw new Error("canonical and protected originals diverged before unused protection could be released");
+        }
+        assertLinkCount(canonicalOriginal, 2, "Canonical original before releasing unused protection");
+        assertLinkCount(protectedOriginal, 2, "Protected original before releasing unused protection");
         unlinkSync2(operatorPath);
         operatorArtifactHoldsOriginal = false;
       } catch (cleanupFailure) {
@@ -11951,14 +12601,15 @@ function installValidatedConfig(path, next, previous) {
     }
     if (conflictError) {
       const markerDetail = conflictMarkerError ? `; additionally failed to record conflict state: ${errorDetail(conflictMarkerError)}` : "";
-      failure = manualRecoveryError(
-        transactionDirectory,
-        `${primary}; canonical Hermes config changed after candidate installation: ${errorDetail(conflictError)}${markerDetail}`,
-        new AggregateError(
-          [error, conflictError, ...conflictMarkerError ? [conflictMarkerError] : []],
-          "Hermes config installation failed after a concurrent canonical-path change"
-        )
+      const detail = error instanceof AtomicConfigConflict ? `${primary}${markerDetail}` : `${primary}; canonical Hermes config changed after candidate installation: ${errorDetail(conflictError)}${markerDetail}`;
+      const cause = new AggregateError(
+        [error, conflictError, ...conflictMarkerError ? [conflictMarkerError] : []],
+        "Hermes config installation failed after a concurrent canonical-path change"
       );
+      failure = conflictError instanceof AtomicConfigConflict && !conflictError.canonicalPreserved ? new Error(
+        `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
+        { cause }
+      ) : manualRecoveryError(transactionDirectory, detail, cause);
     } else if (restorationError) {
       retainTransactionForRecovery = true;
       failure = new Error(
@@ -12113,7 +12764,7 @@ var EnsureTemplateConfig = class extends Command {
 };
 
 // src/commands/hermes/PromptForAgentConfig.ts
-import { basename as basename3, join as join5 } from "node:path";
+import { basename as basename4, join as join5 } from "node:path";
 import { readFileSync as readFileSync4 } from "node:fs";
 import * as p from "@clack/prompts";
 
@@ -12138,7 +12789,7 @@ function detectTicketProvider(targetDir) {
 var PromptForAgentConfig = class extends Command {
   async invoke() {
     const ctx = this.context;
-    const defaultRepo = basename3(ctx.targetDir).toLowerCase();
+    const defaultRepo = basename4(ctx.targetDir).toLowerCase();
     ctx.targetRepo = (ctx.targetRepo ?? defaultRepo).toLowerCase();
     ctx.role ??= "pm";
     ctx.agentPurpose ??= `${ctx.role} agent for ${ctx.targetRepo}`;
@@ -13812,7 +14463,7 @@ init_config();
 import { spawn as spawn2, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync5, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync9, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
-import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
+import { basename as basename8, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // src/utils/version.ts
@@ -14040,7 +14691,7 @@ function probeCanonicalSkillexRootProjection(skillsRoot, link) {
     if (uid !== void 0 && globalStat.uid !== uid) throw new Error("root-owner");
     if (globalStat.mode & 3586) throw new Error("root-mode");
     const skillSetsRoot = dirname10(globalRoot);
-    if (basename7(globalRoot) !== "global" || basename7(skillSetsRoot) !== "skill-sets") throw new Error("layout");
+    if (basename8(globalRoot) !== "global" || basename8(skillSetsRoot) !== "skill-sets") throw new Error("layout");
     const checkoutRoot = dirname10(skillSetsRoot);
     const expectedSource = join22(checkoutRoot, "all-skills", "project-notebook");
     const linkStat = lstatSync11(link);
@@ -17847,7 +18498,7 @@ server.registerTool(
         quiet: true,
         local,
         live,
-        targetRepo: input.targetRepo ?? basename8(resolvedTarget),
+        targetRepo: input.targetRepo ?? basename9(resolvedTarget),
         role: normalizeAgentRole(input.role),
         agentPurpose: input.agentPurpose,
         soulTone: input.soulTone,

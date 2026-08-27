@@ -15,6 +15,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -699,6 +700,127 @@ exec "${systemPython.stdout.trim()}" "$@"
     "unsafe original topology must fail before transaction creation",
   );
 
+  // Deterministically replace the canonical leaf after protection/link checks
+  // but immediately before renameat2(EXCHANGE). A Node preload intercepts only
+  // the bounded atomic-helper spawn, so this is a process-level reproduction of
+  // the old check-to-rename window without a production test hook.
+  const exchangeRaceHome = join(temp, "exchange-window-xdg");
+  const exchangeRaceDirectory = join(exchangeRaceHome, "hermes-agent-template");
+  const exchangeRacePath = join(exchangeRaceDirectory, "config.toml");
+  const exchangeRaceStage = join(exchangeRaceDirectory, "external-replacement.toml");
+  const exchangeRacePreload = join(temp, "exchange-window-preload.cjs");
+  const exchangeRaceSentinel = join(temp, "exchange-window-injected");
+  const exchangeRaceOriginal = Buffer.from("# original before exchange window\n[fleet]\nhermes_bin = \"/operator/exchange-original\"\n", "utf8");
+  const exchangeRaceReplacement = Buffer.from("# replacement in exchange window\n[fleet]\nhermes_bin = \"/operator/exchange-newer\"\n", "utf8");
+  mkdirSync(exchangeRaceDirectory, { recursive: true });
+  writeFileSync(exchangeRacePath, exchangeRaceOriginal);
+  chmodSync(exchangeRacePath, 0o640);
+  utimesSync(exchangeRacePath, preservedMtime, preservedMtime);
+  const exchangeRaceOriginalStats = statSync(exchangeRacePath);
+  writeFileSync(exchangeRaceStage, exchangeRaceReplacement);
+  chmodSync(exchangeRaceStage, 0o600);
+  const exchangeRaceMtime = new Date("2025-03-04T05:06:07.000Z");
+  utimesSync(exchangeRaceStage, exchangeRaceMtime, exchangeRaceMtime);
+  const exchangeRaceReplacementStats = statSync(exchangeRaceStage);
+  writeFileSync(exchangeRacePreload, `
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const originalSpawnSync = childProcess.spawnSync;
+let injected = false;
+childProcess.spawnSync = function(command, args, options) {
+  if (!injected && Array.isArray(args) && args.some((value) => typeof value === "string" && value.includes("PJANGLER_RENAMEAT2_HELPER"))) {
+    injected = true;
+    fs.renameSync(${JSON.stringify(exchangeRaceStage)}, ${JSON.stringify(exchangeRacePath)});
+    fs.writeFileSync(${JSON.stringify(exchangeRaceSentinel)}, "injected\\n");
+  }
+  return originalSpawnSync.call(this, command, args, options);
+};
+syncBuiltinESMExports();
+`);
+  const exchangeRace = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    NODE_OPTIONS: `--require=${exchangeRacePreload}`,
+    XDG_CONFIG_HOME: exchangeRaceHome,
+  });
+  assert.notEqual(exchangeRace.status, 0);
+  assert.equal(existsSync(exchangeRaceSentinel), true, "preload must inject exactly at the atomic helper boundary");
+  assert.match(exchangeRace.stderr, /Atomic Hermes config install captured an unexpected canonical inode/);
+  assert.match(exchangeRace.stderr, /canonical Hermes config was preserved/);
+  assert.equal(readFileSync(exchangeRacePath).equals(exchangeRaceReplacement), true);
+  const exchangeRaceAfter = statSync(exchangeRacePath);
+  assert.equal(exchangeRaceAfter.dev, exchangeRaceReplacementStats.dev);
+  assert.equal(exchangeRaceAfter.ino, exchangeRaceReplacementStats.ino);
+  assert.equal(exchangeRaceAfter.mtimeMs, exchangeRaceReplacementStats.mtimeMs);
+  assert.equal(exchangeRaceAfter.mode & 0o777, exchangeRaceReplacementStats.mode & 0o777);
+  const exchangeRaceTransactions = readdirSync(exchangeRaceDirectory).filter((name) => name.startsWith(".pjangler-config-txn-"));
+  assert.equal(exchangeRaceTransactions.length, 1);
+  const exchangeRaceTransaction = join(exchangeRaceDirectory, exchangeRaceTransactions[0]);
+  const exchangeRaceMarker = JSON.parse(readFileSync(join(exchangeRaceTransaction, "state.json"), "utf8"));
+  assert.equal(exchangeRaceMarker.phase, "conflict");
+  assert.equal(readFileSync(join(exchangeRaceTransaction, "operator-config")).equals(exchangeRaceOriginal), true);
+  const exchangeRaceProtected = statSync(join(exchangeRaceTransaction, "operator-config"));
+  assert.equal(exchangeRaceProtected.ino, exchangeRaceOriginalStats.ino);
+  assert.equal(exchangeRaceProtected.nlink, 1);
+  assert.ok(
+    readdirSync(exchangeRaceTransaction).includes("candidate.toml"),
+    "reversed install exchange must retain its staged candidate",
+  );
+
+  // A bounded helper timeout has an unknown syscall outcome. It must retain
+  // the journal, staged candidate, and protected original instead of assuming
+  // renameat2 did not run and deleting recovery state.
+  const helperTimeoutHome = join(temp, "atomic-helper-timeout-xdg");
+  const helperTimeoutDirectory = join(helperTimeoutHome, "hermes-agent-template");
+  const helperTimeoutPath = join(helperTimeoutDirectory, "config.toml");
+  const helperTimeoutPreload = join(temp, "atomic-helper-timeout-preload.cjs");
+  const helperTimeoutSentinel = join(temp, "atomic-helper-timeout-injected");
+  const helperTimeoutOriginal = Buffer.from("# original before helper timeout\n[fleet]\nhermes_bin = \"/operator/helper-timeout\"\n", "utf8");
+  mkdirSync(helperTimeoutDirectory, { recursive: true });
+  writeFileSync(helperTimeoutPath, helperTimeoutOriginal);
+  chmodSync(helperTimeoutPath, 0o640);
+  utimesSync(helperTimeoutPath, preservedMtime, preservedMtime);
+  const helperTimeoutBefore = statSync(helperTimeoutPath);
+  writeFileSync(helperTimeoutPreload, `
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const originalSpawnSync = childProcess.spawnSync;
+let injected = false;
+childProcess.spawnSync = function(command, args, options) {
+  if (!injected && Array.isArray(args) && args.some((value) => typeof value === "string" && value.includes("PJANGLER_RENAMEAT2_HELPER"))) {
+    injected = true;
+    fs.writeFileSync(${JSON.stringify(helperTimeoutSentinel)}, "injected\\n");
+    const error = new Error("fixture helper timeout");
+    error.code = "ETIMEDOUT";
+    return { pid: 0, output: [], stdout: "", stderr: "", status: null, signal: "SIGKILL", error };
+  }
+  return originalSpawnSync.call(this, command, args, options);
+};
+syncBuiltinESMExports();
+`);
+  const helperTimeout = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    NODE_OPTIONS: `--require=${helperTimeoutPreload}`,
+    XDG_CONFIG_HOME: helperTimeoutHome,
+  });
+  assert.notEqual(helperTimeout.status, 0);
+  assert.equal(existsSync(helperTimeoutSentinel), true);
+  assert.match(helperTimeout.stderr, /syscall completion is unknown/);
+  assert.match(helperTimeout.stderr, /retained for manual recovery/);
+  assert.equal(readFileSync(helperTimeoutPath).equals(helperTimeoutOriginal), true);
+  const helperTimeoutAfter = statSync(helperTimeoutPath);
+  assert.equal(helperTimeoutAfter.ino, helperTimeoutBefore.ino);
+  assert.equal(helperTimeoutAfter.mtimeMs, helperTimeoutBefore.mtimeMs);
+  assert.equal(helperTimeoutAfter.mode & 0o777, helperTimeoutBefore.mode & 0o777);
+  assert.equal(helperTimeoutAfter.nlink, 2, "protected original must remain linked after unknown helper outcome");
+  const helperTimeoutTransactions = readdirSync(helperTimeoutDirectory).filter((name) => name.startsWith(".pjangler-config-txn-"));
+  assert.equal(helperTimeoutTransactions.length, 1);
+  const helperTimeoutTransaction = join(helperTimeoutDirectory, helperTimeoutTransactions[0]);
+  assert.equal(JSON.parse(readFileSync(join(helperTimeoutTransaction, "state.json"), "utf8")).phase, "conflict");
+  assert.equal(readFileSync(join(helperTimeoutTransaction, "operator-config")).equals(helperTimeoutOriginal), true);
+  assert.equal(existsSync(join(helperTimeoutTransaction, "candidate.toml")), true);
+
   // A non-cooperating writer replaces the canonical leaf while installed TOML
   // validation is paused. The failed installer must not rename the protected
   // original over those newer bytes. Both valid and torn recovery markers must
@@ -804,7 +926,7 @@ exec "${systemPython.stdout.trim()}" "$@"
     XDG_CONFIG_HOME: casHome,
   });
   assert.notEqual(preparedCrashRecovery.status, 0);
-  assert.match(preparedCrashRecovery.stderr, /Canonical Hermes config changed after candidate installation/);
+  assert.match(preparedCrashRecovery.stderr, /Canonical Hermes config before recovery rollback intent/);
   assert.match(preparedCrashRecovery.stderr, /retained for manual recovery/);
   assertReplacementPreserved();
   assert.equal(existsSync(casTransaction), true);
@@ -820,6 +942,81 @@ exec "${systemPython.stdout.trim()}" "$@"
   assert.match(tornCrashRecovery.stderr, /retained for manual recovery/);
   assertReplacementPreserved();
   assert.equal(existsSync(casTransaction), true);
+
+  // A valid replacement arriving while the installed candidate's consumer
+  // validation is paused must also fail closed. The validator succeeds, then
+  // the committed-marker/live-CAS boundary detects the new inode without ever
+  // exchanging it out of the canonical path.
+  const successCasPythonBin = join(temp, "success-cas-python-bin");
+  const successCasPython = join(successCasPythonBin, "python3");
+  const successCasCalls = join(temp, "success-cas-validator-calls");
+  const successCasReady = join(temp, "success-cas-validation-ready");
+  const successCasRelease = join(temp, "success-cas-validation-release");
+  mkdirSync(successCasPythonBin, { recursive: true });
+  writeFileSync(successCasPython, `#!/bin/sh
+count=0
+if [ -f "$SUCCESS_CAS_CALLS" ]; then
+  count=$(/bin/cat "$SUCCESS_CAS_CALLS")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$SUCCESS_CAS_CALLS"
+if [ "$count" -eq 6 ]; then
+  : > "$SUCCESS_CAS_READY"
+  while [ ! -e "$SUCCESS_CAS_RELEASE" ]; do
+    /bin/sleep 0.02
+  done
+fi
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(successCasPython, 0o755);
+  const successCasHome = join(temp, "success-cas-xdg");
+  const successCasDirectory = join(successCasHome, "hermes-agent-template");
+  const successCasPath = join(successCasDirectory, "config.toml");
+  const successCasReplacementStage = join(successCasDirectory, "newer-valid.toml");
+  const successCasOriginal = Buffer.from("# original before successful validation race\n[fleet]\nhermes_bin = \"/operator/success-original\"\n", "utf8");
+  const successCasReplacement = Buffer.from("# newer valid config during validation\n[fleet]\nhermes_bin = \"/operator/success-newer\"\n", "utf8");
+  mkdirSync(successCasDirectory, { recursive: true });
+  writeFileSync(successCasPath, successCasOriginal);
+  chmodSync(successCasPath, 0o640);
+  utimesSync(successCasPath, preservedMtime, preservedMtime);
+  const successCasOriginalStats = statSync(successCasPath);
+  const successCasWriter = runAsync(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: `${successCasPythonBin}${delimiter}${commandEnv.PATH}`,
+    SUCCESS_CAS_CALLS: successCasCalls,
+    SUCCESS_CAS_READY: successCasReady,
+    SUCCESS_CAS_RELEASE: successCasRelease,
+    XDG_CONFIG_HOME: successCasHome,
+  });
+  await waitForPath(successCasReady, "successful installed candidate validation pause");
+  writeFileSync(successCasReplacementStage, successCasReplacement);
+  chmodSync(successCasReplacementStage, 0o600);
+  const successCasMtime = new Date("2025-04-05T06:07:08.000Z");
+  utimesSync(successCasReplacementStage, successCasMtime, successCasMtime);
+  const successCasReplacementStats = statSync(successCasReplacementStage);
+  renameSync(successCasReplacementStage, successCasPath);
+  writeFileSync(successCasRelease, "release\n");
+  const successCasFailure = await successCasWriter.done;
+  assert.notEqual(successCasFailure.status, 0);
+  assert.match(successCasFailure.stderr, /Canonical Hermes config changed after successful candidate validation/);
+  assert.match(successCasFailure.stderr, /canonical Hermes config was preserved/);
+  assert.equal(readFileSync(successCasCalls, "utf8").trim(), "6", "successful validation conflict must not re-run the validator");
+  assert.equal(readFileSync(successCasPath).equals(successCasReplacement), true);
+  const successCasAfter = statSync(successCasPath);
+  assert.equal(successCasAfter.dev, successCasReplacementStats.dev);
+  assert.equal(successCasAfter.ino, successCasReplacementStats.ino);
+  assert.equal(successCasAfter.mtimeMs, successCasReplacementStats.mtimeMs);
+  assert.equal(successCasAfter.mode & 0o777, successCasReplacementStats.mode & 0o777);
+  const successCasTransactions = readdirSync(successCasDirectory).filter((name) => name.startsWith(".pjangler-config-txn-"));
+  assert.equal(successCasTransactions.length, 1);
+  const successCasTransaction = join(successCasDirectory, successCasTransactions[0]);
+  const successCasMarker = JSON.parse(readFileSync(join(successCasTransaction, "state.json"), "utf8"));
+  assert.equal(successCasMarker.phase, "conflict");
+  assert.equal(readFileSync(join(successCasTransaction, "operator-config")).equals(successCasOriginal), true);
+  const successCasProtected = statSync(join(successCasTransaction, "operator-config"));
+  assert.equal(successCasProtected.ino, successCasOriginalStats.ino);
+  assert.equal(successCasProtected.nlink, 1);
+  assert.equal(existsSync(join(successCasTransaction, "candidate.toml")), false);
 
   // Simulate process death after the candidate rename: the protected hard link
   // and prepared non-secret marker survive in the same directory. The next
@@ -892,6 +1089,121 @@ exec "${systemPython.stdout.trim()}" "$@"
   assert.equal(existsSync(emptyStaleTransaction), false, "an empty transaction left before candidate staging must be reaped");
   assert.equal(readFileSync(stalePath).equals(staleSource), true);
   assert.equal(statSync(stalePath).ino, staleBefore.ino);
+
+  // Crash after EXCHANGE, either before verification or after verification but
+  // before stagedPath unlink/phase=installed, has one exact topology:
+  // canonical=candidate and stagedPath=operator-config=previous (nlink 2).
+  // Recovery must atomically reverse it and restore the original automatically.
+  const exactExchangeCrashHome = join(temp, "exact-install-exchange-crash-xdg");
+  const exactExchangeCrashDirectory = join(exactExchangeCrashHome, "hermes-agent-template");
+  const exactExchangeCrashPath = join(exactExchangeCrashDirectory, "config.toml");
+  const exactExchangeCrashTransaction = join(exactExchangeCrashDirectory, ".pjangler-config-txn-99999995-exact01");
+  const exactExchangeCandidate = Buffer.from("[fleet]\nhermes_bin = \"/transaction/exact-candidate\"\n", "utf8");
+  const exactExchangeOriginal = Buffer.from("# exact pre-exchange original\n[fleet]\nhermes_bin = \"/operator/exact-original\"\n", "utf8");
+  mkdirSync(exactExchangeCrashTransaction, { recursive: true, mode: 0o700 });
+  writeFileSync(exactExchangeCrashPath, exactExchangeCandidate, { mode: 0o640 });
+  const exactExchangeOperator = join(exactExchangeCrashTransaction, "operator-config");
+  const exactExchangeStaged = join(exactExchangeCrashTransaction, "candidate.toml");
+  writeFileSync(exactExchangeOperator, exactExchangeOriginal, { mode: 0o640 });
+  utimesSync(exactExchangeOperator, preservedMtime, preservedMtime);
+  linkSync(exactExchangeOperator, exactExchangeStaged);
+  const exactExchangeCandidateStats = statSync(exactExchangeCrashPath);
+  const exactExchangeOriginalStats = statSync(exactExchangeOperator);
+  assert.equal(exactExchangeOriginalStats.nlink, 2);
+  writeFileSync(join(exactExchangeCrashTransaction, "state.json"), `${JSON.stringify({
+    version: 1,
+    ownerPid: 99999995,
+    phase: "install-exchange",
+    hadPrevious: true,
+    candidate: identity(exactExchangeCandidateStats, exactExchangeCandidate),
+    previous: identity(exactExchangeOriginalStats, exactExchangeOriginal),
+  })}\n`, { mode: 0o600 });
+  const exactExchangeRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: exactExchangeCrashHome,
+  });
+  assert.notEqual(exactExchangeRecovery.status, 0);
+  assert.match(exactExchangeRecovery.stderr, /python3 with tomllib is required but was not found/);
+  assert.equal(readFileSync(exactExchangeCrashPath).equals(exactExchangeOriginal), true);
+  const exactExchangeRecovered = statSync(exactExchangeCrashPath);
+  assert.equal(exactExchangeRecovered.ino, exactExchangeOriginalStats.ino);
+  assert.equal(exactExchangeRecovered.mtimeMs, exactExchangeOriginalStats.mtimeMs);
+  assert.equal(exactExchangeRecovered.mode & 0o777, exactExchangeOriginalStats.mode & 0o777);
+  assert.equal(exactExchangeRecovered.nlink, 1);
+  assert.equal(existsSync(exactExchangeCrashTransaction), false);
+
+  // A third inode captured by the same crash boundary is not that topology.
+  // Recovery must retain every entry, not mistake it for a disposable candidate.
+  const exchangeCrashHome = join(temp, "install-exchange-crash-xdg");
+  const exchangeCrashDirectory = join(exchangeCrashHome, "hermes-agent-template");
+  const exchangeCrashPath = join(exchangeCrashDirectory, "config.toml");
+  const exchangeCrashTransaction = join(exchangeCrashDirectory, ".pjangler-config-txn-99999997-xchg01");
+  const exchangeCrashCandidate = Buffer.from("[fleet]\nhermes_bin = \"/transaction/candidate\"\n", "utf8");
+  const exchangeCrashOriginal = Buffer.from("[fleet]\nhermes_bin = \"/operator/pre-exchange\"\n", "utf8");
+  const exchangeCrashCaptured = Buffer.from("[fleet]\nhermes_bin = \"/operator/captured-external\"\n", "utf8");
+  mkdirSync(exchangeCrashTransaction, { recursive: true, mode: 0o700 });
+  writeFileSync(exchangeCrashPath, exchangeCrashCandidate, { mode: 0o640 });
+  writeFileSync(join(exchangeCrashTransaction, "operator-config"), exchangeCrashOriginal, { mode: 0o640 });
+  writeFileSync(join(exchangeCrashTransaction, "candidate.toml"), exchangeCrashCaptured, { mode: 0o600 });
+  const exchangeCrashCandidateStats = statSync(exchangeCrashPath);
+  const exchangeCrashOriginalStats = statSync(join(exchangeCrashTransaction, "operator-config"));
+  const exchangeCrashCapturedStats = statSync(join(exchangeCrashTransaction, "candidate.toml"));
+  writeFileSync(join(exchangeCrashTransaction, "state.json"), `${JSON.stringify({
+    version: 1,
+    ownerPid: 99999997,
+    phase: "install-exchange",
+    hadPrevious: true,
+    candidate: identity(exchangeCrashCandidateStats, exchangeCrashCandidate),
+    previous: identity(exchangeCrashOriginalStats, exchangeCrashOriginal),
+  })}\n`, { mode: 0o600 });
+  const exchangeCrashRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: exchangeCrashHome,
+  });
+  assert.notEqual(exchangeCrashRecovery.status, 0);
+  assert.match(exchangeCrashRecovery.stderr, /will not be removed|cannot be cleaned safely/);
+  assert.equal(readFileSync(exchangeCrashPath).equals(exchangeCrashCandidate), true);
+  assert.equal(readFileSync(join(exchangeCrashTransaction, "operator-config")).equals(exchangeCrashOriginal), true);
+  assert.equal(readFileSync(join(exchangeCrashTransaction, "candidate.toml")).equals(exchangeCrashCaptured), true);
+  assert.equal(statSync(join(exchangeCrashTransaction, "candidate.toml")).ino, exchangeCrashCapturedStats.ino);
+  assert.equal(existsSync(exchangeCrashTransaction), true);
+
+  // Crash after new-file rollback capture: stagedPath may contain a canonical
+  // inode that raced the pre-read. Its identity differs from marker.candidate,
+  // so recovery must fail unchanged and retain it for manual disposition.
+  const captureCrashHome = join(temp, "rollback-capture-crash-xdg");
+  const captureCrashDirectory = join(captureCrashHome, "hermes-agent-template");
+  const captureCrashTransaction = join(captureCrashDirectory, ".pjangler-config-txn-99999996-capt01");
+  const captureExpected = Buffer.from("[fleet]\nhermes_bin = \"/transaction/new-candidate\"\n", "utf8");
+  const captureExternal = Buffer.from("[fleet]\nhermes_bin = \"/operator/captured-race\"\n", "utf8");
+  mkdirSync(captureCrashTransaction, { recursive: true, mode: 0o700 });
+  const captureIdentityPath = join(captureCrashDirectory, "identity-source.toml");
+  writeFileSync(captureIdentityPath, captureExpected, { mode: 0o600 });
+  const captureExpectedStats = statSync(captureIdentityPath);
+  unlinkSync(captureIdentityPath);
+  const captureCrashStaged = join(captureCrashTransaction, "candidate.toml");
+  writeFileSync(captureCrashStaged, captureExternal, { mode: 0o600 });
+  const captureExternalStats = statSync(captureCrashStaged);
+  writeFileSync(join(captureCrashTransaction, "state.json"), `${JSON.stringify({
+    version: 1,
+    ownerPid: 99999996,
+    phase: "rollback-capture",
+    hadPrevious: false,
+    candidate: identity(captureExpectedStats, captureExpected),
+  })}\n`, { mode: 0o600 });
+  const captureCrashRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: captureCrashHome,
+  });
+  assert.notEqual(captureCrashRecovery.status, 0);
+  assert.match(captureCrashRecovery.stderr, /not this transaction's candidate and will not be removed/);
+  assert.equal(readFileSync(captureCrashStaged).equals(captureExternal), true);
+  const captureExternalAfter = statSync(captureCrashStaged);
+  assert.equal(captureExternalAfter.ino, captureExternalStats.ino);
+  assert.equal(captureExternalAfter.mtimeMs, captureExternalStats.mtimeMs);
+  assert.equal(existsSync(captureCrashTransaction), true);
+  assert.equal(existsSync(join(captureCrashDirectory, "config.toml")), false);
 
   // Forced config bootstrap is an additive schema upgrade. Operator values,
   // comments, unknown keys, and richer sections survive byte-for-byte.
@@ -1373,23 +1685,35 @@ exit 1
   assert.match(configBootstrap, /current\.ino !== lock\.identity\.ino/);
   assert.doesNotMatch(configBootstrap, /processIsAlive|process\.kill\(pid, 0\)/);
   assert.ok(configBootstrap.indexOf("pathStats = inspectConfigPath(path)") < configBootstrap.indexOf("if (exists && !force)"));
-  assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
+  assert.match(configBootstrap, /PJANGLER_RENAMEAT2_HELPER/);
+  assert.match(configBootstrap, /trustedAtomicRenamePython\(\)/);
+  assert.match(configBootstrap, /stdio: \["ignore", "pipe", "pipe", directory\.descriptor\]/);
+  assert.match(configBootstrap, /atomicRenameAt2\(path, stagedRelative, configRelative, "exchange"\)/);
+  assert.match(configBootstrap, /atomicRenameAt2\(path, stagedRelative, configRelative, "noreplace"\)/);
+  assert.doesNotMatch(configBootstrap, /renameSync\(stagedPath, path\)|renameSync\(operatorPath, path\)/);
   assert.match(configBootstrap, /assertValidTomlBytes\(written\.bytes, "Installed Hermes template config"\)/);
   assert.match(configBootstrap, /assertSnapshotIdentity\(current, previous/);
   assert.match(configBootstrap, /assertLinkCount\(previous, 1, `Existing Hermes template config/);
   assert.match(configBootstrap, /linkSync\(path, operatorPath\)/);
   assert.match(configBootstrap, /assertLinkCount\(linkedCanonical, 2/);
   assert.match(configBootstrap, /assertLinkCount\(protectedOriginal, 2/);
-  assert.match(configBootstrap, /renameSync\(operatorPath, path\)/);
   assert.ok(
-    configBootstrap.indexOf("assertSnapshotIdentity(canonicalCandidate, marker.candidate") < configBootstrap.lastIndexOf("renameSync(operatorPath, path)"),
-    "live rollback must prove the canonical candidate identity before replacing it",
+    configBootstrap.indexOf("Canonical Hermes config before rollback intent") < configBootstrap.lastIndexOf('atomicRenameAt2(path, operatorRelative, configRelative, "exchange")'),
+    "live rollback must pre-read the candidate before its atomic exchange",
   );
+  assert.match(configBootstrap, /phase: "install-exchange"/);
+  assert.match(configBootstrap, /phase: "rollback-exchange"/);
+  assert.match(configBootstrap, /phase: "rollback-capture"/);
   assert.match(configBootstrap, /phase: "conflict"/);
   assert.match(configBootstrap, /retained for manual recovery/);
   assert.ok(
-    configBootstrap.indexOf("renameSync(operatorPath, path)") < configBootstrap.indexOf('assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config")'),
+    configBootstrap.lastIndexOf('atomicRenameAt2(path, operatorRelative, configRelative, "exchange")') < configBootstrap.indexOf('assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config")'),
     "the original inode must be restored before any post-restore validator call",
+  );
+  assert.ok(
+    configBootstrap.indexOf('phase: "committed"') < configBootstrap.indexOf("Canonical Hermes config before releasing protected state") &&
+      configBootstrap.indexOf("Canonical Hermes config before releasing protected state") < configBootstrap.indexOf("unlinkSync(operatorPath)", configBootstrap.indexOf("Canonical Hermes config before releasing protected state")),
+    "success must journal committed intent, re-read the live candidate, then release the protected original",
   );
   assert.doesNotMatch(configBootstrap, /assertValidTomlBytes\(previous\.bytes, "Rollback/);
   assert.match(configBootstrap, /recoverInterruptedConfigTransactions\(path, !ctx\.dryRun\)/);
