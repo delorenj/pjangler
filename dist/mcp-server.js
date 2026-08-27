@@ -11291,14 +11291,29 @@ except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
     sys.stderr.write("TOML_INVALID:" + exc.__class__.__name__ + ": " + str(exc))
     raise SystemExit(1)
 `;
+var TOMLLIB_VALIDATION_TIMEOUT_MS = 5e3;
+function isolatedPythonEnvironment() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("PYTHON"))
+  );
+}
 function assertValidTomlBytes(source, label) {
-  const validation = spawnSync2("python3", ["-c", TOMLLIB_VALIDATE], {
+  const validation = spawnSync2("python3", ["-I", "-S", "-c", TOMLLIB_VALIDATE], {
     input: source,
     encoding: "utf8",
-    maxBuffer: 1024 * 1024
+    env: isolatedPythonEnvironment(),
+    maxBuffer: 1024 * 1024,
+    timeout: TOMLLIB_VALIDATION_TIMEOUT_MS,
+    killSignal: "SIGKILL"
   });
   if (validation.error) {
-    const missing = validation.error.code === "ENOENT";
+    const code = validation.error.code;
+    if (code === "ETIMEDOUT") {
+      throw new Error(
+        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms; Hermes template config was not changed`
+      );
+    }
+    const missing = code === "ENOENT";
     throw new Error(
       missing ? `${label} cannot be validated: python3 with tomllib is required but was not found` : `${label} validation failed to start: ${validation.error.message}`
     );

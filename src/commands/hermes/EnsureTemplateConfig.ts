@@ -344,15 +344,38 @@ except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
     raise SystemExit(1)
 `;
 
+const TOMLLIB_VALIDATION_TIMEOUT_MS = 5_000;
+
+/**
+ * Python's isolated mode ignores PYTHON* settings itself. Removing them from
+ * the child environment as well keeps project/operator configuration from even
+ * reaching the validator process and makes that boundary independently
+ * auditable.
+ */
+function isolatedPythonEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("PYTHON")),
+  );
+}
+
 /** Validate the exact bytes with the Python tomllib consumer used by Hermes. */
 function assertValidTomlBytes(source: Buffer, label: string): void {
-  const validation = spawnSync("python3", ["-c", TOMLLIB_VALIDATE], {
+  const validation = spawnSync("python3", ["-I", "-S", "-c", TOMLLIB_VALIDATE], {
     input: source,
     encoding: "utf8",
+    env: isolatedPythonEnvironment(),
     maxBuffer: 1024 * 1024,
+    timeout: TOMLLIB_VALIDATION_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
   if (validation.error) {
-    const missing = (validation.error as NodeJS.ErrnoException).code === "ENOENT";
+    const code = (validation.error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") {
+      throw new Error(
+        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms; Hermes template config was not changed`,
+      );
+    }
+    const missing = code === "ENOENT";
     throw new Error(
       missing
         ? `${label} cannot be validated: python3 with tomllib is required but was not found`

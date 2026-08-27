@@ -396,6 +396,136 @@ try {
   assert.equal(readFileSync(noPythonPath).equals(noPythonSource), true);
   assert.equal(statSync(noPythonPath).ino, noPythonBefore.ino);
 
+  // Python validation is an isolated stdlib boundary. Neither a cwd-local
+  // tomllib.py nor one injected through PYTHONPATH may execute, and no
+  // PYTHON* environment entry may reach even the selected python3 executable.
+  const systemPython = spawnSync("which", ["python3"], { encoding: "utf8" });
+  assert.equal(systemPython.status, 0, systemPython.stderr);
+  const isolatedPythonBin = join(temp, "isolated-python-bin");
+  const localImportSentinel = join(temp, "local-tomllib-imported");
+  const pathImportSentinel = join(temp, "pythonpath-tomllib-imported");
+  const environmentLeakSentinel = join(temp, "python-environment-leaked");
+  const flagLeakSentinel = join(temp, "python-isolation-flags-missing");
+  mkdirSync(isolatedPythonBin, { recursive: true });
+  const isolatedPythonWrapper = join(isolatedPythonBin, "python3");
+  writeFileSync(isolatedPythonWrapper, `#!/bin/sh
+if /usr/bin/env | /usr/bin/grep -q '^PYTHON'; then
+  : > "$VALIDATOR_ENV_LEAK_SENTINEL"
+fi
+if [ "$1" != "-I" ] || [ "$2" != "-S" ] || [ "$3" != "-c" ]; then
+  : > "$VALIDATOR_FLAG_LEAK_SENTINEL"
+fi
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(isolatedPythonWrapper, 0o755);
+  writeFileSync(join(bootstrapRepo, "tomllib.py"), `
+import os
+open(os.environ["LOCAL_TOMLLIB_SENTINEL"], "w", encoding="utf-8").write("imported\\n")
+class TOMLDecodeError(Exception):
+    pass
+def loads(_source):
+    return {}
+`);
+  const poisonedPythonPath = join(temp, "poisoned-pythonpath");
+  mkdirSync(poisonedPythonPath, { recursive: true });
+  writeFileSync(join(poisonedPythonPath, "tomllib.py"), `
+import os
+open(os.environ["PATH_TOMLLIB_SENTINEL"], "w", encoding="utf-8").write("imported\\n")
+class TOMLDecodeError(Exception):
+    pass
+def loads(_source):
+    return {}
+`);
+  const isolatedHome = join(temp, "isolated-validator-xdg");
+  const isolatedPath = join(isolatedHome, "hermes-agent-template", "config.toml");
+  const isolatedInvalidSource = Buffer.concat([
+    Buffer.from("[fleet]\nvalue = \"", "utf8"),
+    Buffer.from([0x5c, 0x65]),
+    Buffer.from("\"\n", "utf8"),
+  ]);
+  mkdirSync(join(isolatedHome, "hermes-agent-template"), { recursive: true });
+  writeFileSync(isolatedPath, isolatedInvalidSource);
+  const isolatedBefore = statSync(isolatedPath);
+  const isolatedValidation = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: `${isolatedPythonBin}${delimiter}${commandEnv.PATH}`,
+    PYTHONHOME: join(temp, "hostile-python-home"),
+    PYTHONPATH: poisonedPythonPath,
+    PYTHONSTARTUP: join(temp, "hostile-python-startup.py"),
+    PYTHONWARNINGS: "error",
+    LOCAL_TOMLLIB_SENTINEL: localImportSentinel,
+    PATH_TOMLLIB_SENTINEL: pathImportSentinel,
+    VALIDATOR_ENV_LEAK_SENTINEL: environmentLeakSentinel,
+    VALIDATOR_FLAG_LEAK_SENTINEL: flagLeakSentinel,
+    XDG_CONFIG_HOME: isolatedHome,
+  });
+  assert.notEqual(isolatedValidation.status, 0);
+  assert.match(isolatedValidation.stderr, /not valid TOML 1\.0 for Python tomllib.*TOMLDecodeError/s);
+  assert.doesNotMatch(isolatedValidation.stdout, /Updated|Bootstrapped/);
+  assert.equal(existsSync(localImportSentinel), false, "cwd-local tomllib must not execute");
+  assert.equal(existsSync(pathImportSentinel), false, "PYTHONPATH tomllib must not execute while the local poison is present");
+  assert.equal(existsSync(environmentLeakSentinel), false, "PYTHON* entries must be removed from the validator child env");
+  assert.equal(existsSync(flagLeakSentinel), false, "validator must invoke python3 with -I -S before -c");
+  assert.equal(readFileSync(isolatedPath).equals(isolatedInvalidSource), true);
+  const isolatedAfter = statSync(isolatedPath);
+  assert.equal(isolatedAfter.ino, isolatedBefore.ino);
+  assert.equal(isolatedAfter.mtimeMs, isolatedBefore.mtimeMs);
+
+  // Repeat from a cwd without the local module so the PYTHONPATH poison is an
+  // independently reachable import candidate under a non-isolated invocation.
+  const pathPoisonRepo = join(temp, "pythonpath-poison-repo");
+  const pathPoisonHome = join(temp, "pythonpath-validator-xdg");
+  const pathPoisonConfig = join(pathPoisonHome, "hermes-agent-template", "config.toml");
+  mkdirSync(pathPoisonRepo, { recursive: true });
+  mkdirSync(join(pathPoisonHome, "hermes-agent-template"), { recursive: true });
+  writeFileSync(pathPoisonConfig, isolatedInvalidSource);
+  const pathPoisonBefore = statSync(pathPoisonConfig);
+  const pathPoisonValidation = run(["config", "bootstrap", "--force"], pathPoisonRepo, {
+    ...commandEnv,
+    PATH: `${isolatedPythonBin}${delimiter}${commandEnv.PATH}`,
+    PYTHONPATH: poisonedPythonPath,
+    PATH_TOMLLIB_SENTINEL: pathImportSentinel,
+    VALIDATOR_ENV_LEAK_SENTINEL: environmentLeakSentinel,
+    VALIDATOR_FLAG_LEAK_SENTINEL: flagLeakSentinel,
+    XDG_CONFIG_HOME: pathPoisonHome,
+  });
+  assert.notEqual(pathPoisonValidation.status, 0);
+  assert.match(pathPoisonValidation.stderr, /not valid TOML 1\.0 for Python tomllib.*TOMLDecodeError/s);
+  assert.equal(existsSync(pathImportSentinel), false, "PYTHONPATH tomllib must not execute without a local poison module");
+  assert.equal(existsSync(environmentLeakSentinel), false);
+  assert.equal(existsSync(flagLeakSentinel), false);
+  assert.equal(readFileSync(pathPoisonConfig).equals(isolatedInvalidSource), true);
+  const pathPoisonAfter = statSync(pathPoisonConfig);
+  assert.equal(pathPoisonAfter.ino, pathPoisonBefore.ino);
+  assert.equal(pathPoisonAfter.mtimeMs, pathPoisonBefore.mtimeMs);
+
+  // A stuck interpreter is bounded and reported as a validator timeout without
+  // touching the operator's exact bytes or file identity.
+  const timeoutPythonBin = join(temp, "timeout-python-bin");
+  const timeoutPython = join(timeoutPythonBin, "python3");
+  mkdirSync(timeoutPythonBin, { recursive: true });
+  writeFileSync(timeoutPython, "#!/bin/sh\nexec /bin/sleep 30\n");
+  chmodSync(timeoutPython, 0o755);
+  const timeoutHome = join(temp, "timeout-validator-xdg");
+  const timeoutPath = join(timeoutHome, "hermes-agent-template", "config.toml");
+  const timeoutSource = Buffer.from("[fleet]\nhermes_bin = \"/operator/hermes\"\n", "utf8");
+  mkdirSync(join(timeoutHome, "hermes-agent-template"), { recursive: true });
+  writeFileSync(timeoutPath, timeoutSource);
+  const timeoutBefore = statSync(timeoutPath);
+  const timedOut = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: timeoutPythonBin,
+    XDG_CONFIG_HOME: timeoutHome,
+  });
+  assert.notEqual(timedOut.status, 0);
+  assert.notEqual(timedOut.error?.code, "ETIMEDOUT", "CLI must report its validator timeout before the outer process timeout");
+  assert.match(timedOut.stderr, /validation timed out after 5000ms; Hermes template config was not changed/);
+  assert.doesNotMatch(timedOut.stdout, /Updated|Bootstrapped/);
+  assert.equal(readFileSync(timeoutPath).equals(timeoutSource), true);
+  const timeoutAfter = statSync(timeoutPath);
+  assert.equal(timeoutAfter.ino, timeoutBefore.ino);
+  assert.equal(timeoutAfter.mtimeMs, timeoutBefore.mtimeMs);
+
   // Forced config bootstrap is an additive schema upgrade. Operator values,
   // comments, unknown keys, and richer sections survive byte-for-byte.
   const configRepo = join(temp, "config-repo");
@@ -703,7 +833,10 @@ exit 1
   assert.match(copier, /if \(ctx\.force\) args\.push\("--overwrite"\)/);
   assert.match(copier, /if \(ctx\.yes \|\| ctx\.quiet\) args\.push\("--defaults"\)/);
   assert.doesNotMatch(copier, /ctx\.yes\)\s*\{\s*ctx\.force\s*=\s*true/);
-  assert.match(configBootstrap, /spawnSync\("python3", \["-c", TOMLLIB_VALIDATE\]/);
+  assert.match(configBootstrap, /spawnSync\("python3", \["-I", "-S", "-c", TOMLLIB_VALIDATE\]/);
+  assert.match(configBootstrap, /!name\.toUpperCase\(\)\.startsWith\("PYTHON"\)/);
+  assert.match(configBootstrap, /timeout: TOMLLIB_VALIDATION_TIMEOUT_MS/);
+  assert.match(configBootstrap, /killSignal: "SIGKILL"/);
   assert.match(configBootstrap, /tomllib\.loads\(source\)/);
   assert.doesNotMatch(configBootstrap, /smol-toml|parse as parseToml/);
   assert.ok(configBootstrap.indexOf("pathStats = inspectConfigPath(path)") < configBootstrap.indexOf("if (exists && !force)"));
