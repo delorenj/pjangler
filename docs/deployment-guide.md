@@ -58,7 +58,9 @@ The release task owns the only supported bump-and-publish transaction:
    `PGPASSWORD` for the disposable instance. A release fails rather than
    skipping this database gate.
 8. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
-   parity, and make one `release(PJAN-44): vX.Y.Z` commit.
+   parity, and make one `release(PJAN-<ticket>): vX.Y.Z` commit. Set
+   `RELEASE_TICKET=PJAN-<number>` when neither the branch nor HEAD subject
+   carries the ticket reference.
 9. Build and inspect the actual tarball, run the production audit and
    tracked/package secret scan.
 10. Create the commit/tag only after those gates, then atomically push both.

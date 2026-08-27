@@ -12,10 +12,11 @@ A recipe bootstraps a whole subsystem by composing Commands. Run with `pj add <n
 | `mise` | Mise task runner + environment setup | `AddMiseToml`, `AddDotenv`, `AddMiseTasksStructure`, `AddMiseBaseToml`, `AddMiseBaseScript`, `AddMiseCodegraphScript` |
 | `docker` | Docker containerization setup | `AddDockerfile`, `AddDockerCompose`, `AddDockerignore` |
 | `node` | Node.js project template | `AddPackageJson`, `AddReadme`, `AddSrcDirectory` (`NodeCommands.ts`) |
-| `hermes-agent` | Add a Hermes agent role (copier + BotFather + CF email + submodule) | `EnsureTemplateConfig`, `PromptForAgentConfig`, `RunCopierTemplate`, `UntrackHermesRuntimes`, `WireTelegram`, `WireEmail`, `PrintHermesSummary` |
+| `hermes-agent` | Render and verify a Hermes role (pinned Copier template + optional BotFather wiring + local runtime) | `PromptForAgentConfig`, `ValidateHermesOptions`, `EnsureTemplateConfig`, `RunCopierTemplate`, `UntrackHermesRuntimes`, `WireTelegram`, `WireEmail`; `PrintHermesSummary` runs only after postconditions |
 | `agent-hooks` | Retrofit the project-scoped agent-hooks + skill fan-out layer | `CopyAgentHooksTree`, `WireMiseAgentHooks` |
 
-> Note: `RECIPE_REGISTRY` lists `hermes-agent` commands as the 7-step chain minus `UntrackHermesRuntimes`, but `HermesAgentRecipe.ts` includes it as step 4. The recipe class is authoritative for execution.
+> `WireEmail` is a fail-closed compatibility guard. The pinned template has no
+> email provisioner, so `--email` is rejected before any mutation.
 
 ## Commands (`COMMAND_REGISTRY` — `src/utils/registry.ts`)
 

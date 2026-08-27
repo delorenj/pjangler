@@ -25,7 +25,7 @@ export interface HermesAgentContext extends CommandContext {
   yes?: boolean;              // non-interactive; accept all defaults
   local?: boolean;            // local-only: skip runtime repo / Plane / Bloodbank / systemd
   live?: boolean;             // explicit external-effect authority (still requires per-effect opt-ins)
-  forceConfig?: boolean;      // regenerate ~/.config/hermes-agent-template/config.toml
+  forceConfig?: boolean;      // add missing pinned-schema fields to the host config
   skipTelegram?: boolean;
   skipEmail?: boolean;
   skipRuntimeRepo?: boolean;
@@ -57,7 +57,12 @@ export interface HermesAgentContext extends CommandContext {
   agentId?: string;           // <targetRepo>-<role>
   profileName?: string;       // named Hermes profile, conventionally <targetRepo>-<role>
   roleDir?: string;           // <projectRoot>/agents/hermes/<role>
-  runtimeRepo?: string;       // delorenj/agent-hm-<repo>-<role>
+  runtimeRepo?: string;       // legacy compatibility metadata; runtime is role-local
+
+  // --- final presentation (set only by HermesAgentRecipe) ---
+  deploymentOutcome?: "planned" | "verified" | "verified-deferred" | "failed";
+  deploymentDeferrals?: string[];
+  deploymentPostconditions?: string[];
 }
 
 export const HERMES_AGENT_TEMPLATE = "gh:delorenj/hermes-agent-template";

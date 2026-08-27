@@ -981,8 +981,8 @@ program
 program
   .command("hermes-agent")
   .alias("hermes")
-  .description("Provision the PM agent for the current repo (defaults everything; only asks about Telegram)")
-  .option("-y, --yes", "Non-interactive: accept all defaults (also skips the Telegram prompt)")
+  .description("Render and postcondition-verify the PM agent for the current repo")
+  .option("-y, --yes", "Non-interactive defaults; never overwrites an existing role without --force")
   .option("--target-repo <name>", "Target repo name (default: basename of cwd)")
   .option("--role <role>", "Agent role override (default: pm — the only role in the fleet)")
   .option("--purpose <text>", "One-line agent purpose (default: \"pm agent for <repo>\")")
@@ -993,13 +993,13 @@ program
   .option("--model-api-mode <mode>", 'Inference API mode override ("" = inherit shared default profile)')
   .option("--model-key-env <name>", "Environment variable name holding the scoped model credential")
   .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
-  .option("--email", "Also provision the delo.sh email address (off by default; never prompted)")
+  .option("--email", "Unsupported by the pinned template; rejected before any mutation")
   .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
   .option("--skip-plane", "Skip creating or linking the ticket board")
   .option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway")
   .option("--skip-systemd", "Skip installing systemd --user units")
   .option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
-  .option("--force-config", "Regenerate ~/.config/hermes-agent-template/config.toml even if it exists")
+  .option("--force-config", "Merge missing pinned-schema fields into the host config without replacing existing values")
   .option("--dry-run", "Preview what would run; don't execute copier")
   .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")
   .action(async (options) => {
@@ -1057,7 +1057,7 @@ const configCmd = program
 configCmd
   .command("bootstrap")
   .description("Create ~/.config/hermes-agent-template/config.toml with host-correct defaults if missing")
-  .option("--force", "Overwrite an existing config file")
+  .option("--force", "Merge missing pinned-schema fields without replacing existing values")
   .option("--dry-run", "Show what would be written without writing")
   .action(async (options) => {
     const ctx: HermesAgentContext = {

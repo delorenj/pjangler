@@ -96,10 +96,10 @@ function resolveVendoredTemplate(name: string): string | undefined {
 }
 
 /**
- * Invokes `copier copy gh:delorenj/hermes-agent-template ./agents/hermes/<role>`
- * with the collected --data flags.  Telegram and email steps are *always*
- * skipped here — the recipe's later commands (WireTelegram, WireEmail) handle
- * them in a TUI-friendly way after the bulk provisioning is done.
+ * Invokes Copier against the pinned vendored template (with explicit fallbacks)
+ * and the collected --data flags. Telegram and email steps are always skipped
+ * in the template process; the recipe handles Telegram afterward and rejects
+ * unsupported email requests before reaching this command.
  *
  * Honors dryRun: prints what would run, doesn't execute copier.
  */
@@ -136,10 +136,6 @@ export class RunCopierTemplate extends Command {
       "Hermes role directory",
     );
     ctx.roleDir = roleDir;
-    // Derive runtime repo name upfront so PrintHermesSummary can show it
-    // even in dry-run mode (where copier never executes).
-    ctx.runtimeRepo = `delorenj/agent-hm-${targetRepo}-${safeRole}`;
-
     const trustedCopierRequired = Boolean(ctx.deferredExternalEffects && !ctx.dryRun);
     if (trustedCopierRequired && !ctx.trustedCopier) {
       return {
@@ -163,12 +159,17 @@ export class RunCopierTemplate extends Command {
       }
     }
 
-    // Idempotency: if role.yaml already exists, copier will refuse to
-    // overwrite without --force.  In --yes mode we automatically re-render
-    // (idempotent refresh); otherwise we ask.
+    // Idempotency: non-interactive mode never turns consent to defaults into
+    // consent to overwrite an existing role. ValidateHermesOptions normally
+    // rejects this before config bootstrap; retain the guard here for direct
+    // command callers and only prompt interactive callers.
     if (existsSync(join(roleDir, "role.yaml")) && !ctx.force) {
       if (ctx.yes) {
-        ctx.force = true;
+        return {
+          success: false,
+          outcome: "failed",
+          message: `Hermes role already exists at ${roleDir}; non-interactive mode will not overwrite it. Re-run with --force to re-render explicitly.`,
+        };
       } else {
         const proceed = await p.confirm({
           message: `${safeRole}/role.yaml already exists — re-render with --overwrite?`,
@@ -252,6 +253,7 @@ export class RunCopierTemplate extends Command {
       "--trust",
       "--vcs-ref=HEAD",
     ];
+    if (ctx.yes || ctx.quiet) args.push("--defaults");
     if (ctx.force) args.push("--overwrite");
 
     if (ctx.dryRun) {
@@ -318,7 +320,8 @@ export class RunCopierTemplate extends Command {
 
     return {
       success: true,
-      message: `✓ Provisioned ${roleDir}  (runtime: gh:${ctx.runtimeRepo})`,
+      outcome: "changed",
+      message: `Rendered Hermes role at ${roleDir}; lifecycle postconditions are pending`,
     };
   }
 }

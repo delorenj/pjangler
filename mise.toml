@@ -4,7 +4,7 @@
 [env]
 # .mise/scripts for repo tooling; agents/hermes/pm puts the PM hermes wrapper
 # on PATH (33god standard contract — the repo's PM owns the ticket board).
-_.path = [".mise/scripts", "agents/hermes/pm", "agents/hermes/pm/hermes"]
+_.path = [".mise/scripts", "agents/hermes/pm"]
 _.file = [".env"]
 
 # This block will handle the linking of

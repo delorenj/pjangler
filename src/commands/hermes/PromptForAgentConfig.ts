@@ -29,7 +29,8 @@ function detectTicketProvider(targetDir: string): TicketProvider | undefined {
  * choose: repo, role, board, purpose, tone, and model all have one correct
  * default. This command applies those defaults unconditionally and — in
  * interactive mode — asks exactly ONE question: whether to wire the Telegram
- * bot now. Email is never provisioned unless explicitly opted in via `--email`.
+ * bot now. The compatibility `--email` flag is rejected by the next effect-free
+ * validation step because the pinned template has no email provisioner.
  *
  * Any field pre-supplied via a CLI flag (or by the MCP layer) is preserved;
  * we only fill in what's missing. Downstream commands read the mutated context.
@@ -57,7 +58,7 @@ export class PromptForAgentConfig extends Command {
     // Board provider: honor an explicit flag, else inherit the repo's existing
     // .project.json provider, else plane.
     ctx.ticketProvider ??= detectTicketProvider(ctx.targetDir) ?? "plane";
-    // Email is never provisioned by default — opt in with `--email`.
+    // The default remains skipped; explicit --email is rejected before effects.
     ctx.skipEmail ??= true;
 
     ctx.agentId = deriveAgentId(ctx.targetRepo!, ctx.role!);

@@ -1,6 +1,7 @@
 import { Recipe, mergeInitResults } from "./Recipe";
 import { EnsureTemplateConfig } from "../commands/hermes/EnsureTemplateConfig";
 import { PromptForAgentConfig } from "../commands/hermes/PromptForAgentConfig";
+import { ValidateHermesOptions } from "../commands/hermes/ValidateHermesOptions";
 import { RunCopierTemplate } from "../commands/hermes/RunCopierTemplate";
 import { UntrackHermesRuntimes } from "../commands/hermes/UntrackHermesRuntimes";
 import { WireTelegram } from "../commands/hermes/WireTelegram";
@@ -9,23 +10,81 @@ import { PrintHermesSummary } from "../commands/hermes/PrintHermesSummary";
 import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
 import { ApplyDeferredHostEffects } from "../commands/hermes/ApplyDeferredHostEffects";
 import type { HermesAgentContext } from "../commands/hermes/types";
-import { createHermesChecks } from "../parity/rules";
+import { createHermesChecks, createMiseChecks, createProjectChecks } from "../parity/rules";
 import type { LifecycleContext, RecipeInitResult, RecipeMetadata, RecipePhaseOutcome, RecipePhaseStatus } from "./types";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import YAML from "yaml";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { preflightRenderedHermes } from "../lifecycle/preflight";
+
+function deploymentDeferrals(ctx: HermesAgentContext): string[] {
+  const deferred: string[] = [];
+  if (ctx.local || ctx.skipPlane) deferred.push("ticket-board provisioning");
+  if (ctx.local || ctx.skipSystemd) deferred.push("systemd service activation");
+  const projectManifest = join(ctx.targetDir, ".project.json");
+  if (!ctx.skipPlane && existsSync(projectManifest)) {
+    try {
+      const project = JSON.parse(readFileSync(projectManifest, "utf8")) as {
+        ticket_provider?: { state?: unknown };
+      };
+      const state = project.ticket_provider?.state;
+      if (typeof state === "string" && state !== "linked") deferred.push(`ticket board (${state})`);
+    } catch {
+      deferred.push("ticket board state unreadable");
+    }
+  }
+  const rolePath = ctx.roleDir ? join(ctx.roleDir, "role.yaml") : "";
+  if (rolePath && existsSync(rolePath)) {
+    try {
+      const role = YAML.parse(readFileSync(rolePath, "utf8")) as {
+        service_state?: { gateway?: unknown; heartbeat?: unknown };
+      } | null;
+      const gateway = role?.service_state?.gateway;
+      const heartbeat = role?.service_state?.heartbeat;
+      if (typeof gateway === "string" && gateway !== "active") deferred.push(`gateway (${gateway})`);
+      if (typeof heartbeat === "string" && heartbeat !== "active") deferred.push(`heartbeat (${heartbeat})`);
+    } catch {
+      deferred.push("service state unreadable");
+    }
+  } else if (!ctx.dryRun) {
+    deferred.push("role service state unavailable");
+  }
+  return [...new Set(deferred)];
+}
+
+async function summaryResult(ctx: LifecycleContext): Promise<RecipeInitResult> {
+  const summary = await new PrintHermesSummary(ctx).invoke();
+  return {
+    recipeId: "hermes-agent",
+    ok: summary.success,
+    dryRun: Boolean(ctx.dryRun),
+    changedFiles: [],
+    logs: summary.message ? [summary.message] : [],
+    errors: summary.success ? [] : [summary.message || "Hermes summary could not be rendered"],
+    phases: [{
+      id: "hermes.summary",
+      status: summary.success ? "unchanged" : "failed",
+      changedFiles: [],
+      message: summary.message || undefined,
+    }],
+  };
+}
 
 /**
  * Recipe that provisions a Hermes agent role into the current project repo.
  *
  * Chain (each command mutates the shared context):
- *   1. EnsureTemplateConfig  — bootstrap ~/.config/hermes-agent-template/config.toml if missing
- *   2. PromptForAgentConfig  — TUI (or accepts defaults via --yes)
- *   3. RunCopierTemplate     — copier copy gh:delorenj/hermes-agent-template
- *   4. UntrackHermesRuntimes — untrack the runtime repo submodule & gitignore it
- *   5. WireTelegram          — BotFather token capture (skippable)
- *   6. WireEmail             — CF Email Routing rule (skippable)
- *   7. PrintHermesSummary    — connection points + next commands
+ *   1. PromptForAgentConfig  — collect/default effect-free inputs
+ *   2. ValidateHermesOptions — reject unsupported or destructive modes
+ *   3. EnsureTemplateConfig  — bootstrap/merge the pinned host config schema
+ *   4. RunCopierTemplate     — render the pinned vendored Copier template
+ *   5. UntrackHermesRuntimes — keep runtime state out of the repository
+ *   6. WireTelegram          — BotFather token capture (skippable)
+ *   7. WireEmail             — defense-in-depth unsupported-option guard
+ *
+ * PrintHermesSummary is deliberately not an ingredient. It runs only after
+ * the final postcondition audit, so presentation can never outrun reality.
  *
  * We deliberately swallow the base Recipe's "✓/⚠️ created file" line — our
  * commands print their own rich status via @clack/prompts, and we don't want
@@ -39,13 +98,14 @@ export class HermesAgentRecipe extends Recipe {
     description: "Add and reconcile a Hermes agent role",
     dependencies: [],
     commands: [
-      "EnsureTemplateConfig",
       "PromptForAgentConfig",
+      "ValidateHermesOptions",
+      "EnsureTemplateConfig",
       "RunCopierTemplate",
       "UntrackHermesRuntimes",
       "WireTelegram",
       "WireEmail",
-      "PrintHermesSummary",
+      "PrintHermesSummary (postconditions only)",
     ],
     publicRuleIds: this.checks.map((check) => check.id),
   };
@@ -62,13 +122,13 @@ export class HermesAgentRecipe extends Recipe {
     // that binding while the singleton catalog is being evaluated would store
     // `undefined` before the command module finishes initializing.
     const ingredients = [
-      EnsureTemplateConfig,
       PromptForAgentConfig,
+      ValidateHermesOptions,
+      EnsureTemplateConfig,
       RunCopierTemplate,
       UntrackHermesRuntimes,
       WireTelegram,
       WireEmail,
-      PrintHermesSummary,
     ] as const;
     for (const [ingredientIndex, CommandClass] of ingredients.entries()) {
       if (typeof CommandClass !== "function") {
@@ -151,33 +211,55 @@ export class HermesAgentRecipe extends Recipe {
     if (!commandResult.ok) return commandResult;
     const lifecycle = await this.initializeOwnedChecks(ctx);
     const localResult = mergeInitResults(this.metadata.id, Boolean(ctx.dryRun), [commandResult, lifecycle]);
-    if (!localResult.ok || ctx.dryRun) return localResult;
+    if (!localResult.ok) return localResult;
 
     const hermesContext = ctx as HermesAgentContext;
-    if (hermesContext.deferredExternalEffects?.owner !== "hermes") return localResult;
+    if (ctx.dryRun) {
+      hermesContext.deploymentOutcome = "planned";
+      hermesContext.deploymentDeferrals = deploymentDeferrals(hermesContext);
+      hermesContext.deploymentPostconditions = ["dry-run made no repository or host changes"];
+      return mergeInitResults(this.metadata.id, true, [localResult, await summaryResult(ctx)]);
+    }
+
     const selected = hermesContext.deferredExternalEffects;
-    if (!selected.runtimeRepo && !selected.ticketBoard && !selected.systemd) return localResult;
+    // The Project recipe owns external dispatch and the whole-project audit for
+    // MCP project transactions. It is the only caller that returns before this
+    // recipe's final direct-command presentation.
+    if (selected?.owner === "project" || (ctx.quiet && !selected)) return localResult;
 
-    const beforeExternal = snapshotTree(ctx.targetDir);
-    const external = await new ApplyDeferredExternalEffects(ctx).invoke();
-    const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
-    const externalResult: RecipeInitResult = {
-      recipeId: this.metadata.id,
-      ok: external.success,
-      dryRun: false,
-      changedFiles: externalChanges,
-      logs: external.message ? [external.message] : [],
-      errors: external.success ? [] : [external.message || "Deferred Hermes external effects failed"],
-      phases: [{
-        id: "hermes.external-effects",
-        status: external.success ? "changed" : "failed",
-        changedFiles: external.success ? externalChanges : [],
-        message: external.message || undefined,
-      }],
-    };
-    if (!externalResult.ok) return mergeInitResults(this.metadata.id, false, [localResult, externalResult]);
+    let appliedResult = localResult;
+    if (selected?.owner === "hermes" && (selected.runtimeRepo || selected.ticketBoard || selected.systemd)) {
+      const beforeExternal = snapshotTree(ctx.targetDir);
+      const external = await new ApplyDeferredExternalEffects(ctx).invoke();
+      const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
+      const externalResult: RecipeInitResult = {
+        recipeId: this.metadata.id,
+        ok: external.success,
+        dryRun: false,
+        changedFiles: externalChanges,
+        logs: external.message ? [external.message] : [],
+        errors: external.success ? [] : [external.message || "Deferred Hermes external effects failed"],
+        phases: [{
+          id: "hermes.external-effects",
+          status: external.success ? "changed" : "failed",
+          changedFiles: external.success ? externalChanges : [],
+          message: external.message || undefined,
+        }],
+      };
+      appliedResult = mergeInitResults(this.metadata.id, false, [localResult, externalResult]);
+      if (!externalResult.ok) return appliedResult;
+    }
 
-    const findings = this.audit(ctx).filter((finding) => finding.status !== "pass" && finding.status !== "skip");
+    // Copier exit zero is not deployment success. Re-audit every Hermes-owned
+    // invariant plus the two project contracts this command changes/depends on.
+    const crossChecks = [
+      ...createMiseChecks().filter((check) => check.id === "mise.config-root"),
+      ...createProjectChecks().filter((check) => check.id === "sot.project-json"),
+    ];
+    const findings = [
+      ...this.audit(ctx),
+      ...crossChecks.map((check) => check.audit(ctx)),
+    ].filter((finding) => finding.status !== "pass" && finding.status !== "skip");
     const verification: RecipeInitResult = {
       recipeId: this.metadata.id,
       ok: findings.length === 0,
@@ -192,7 +274,19 @@ export class HermesAgentRecipe extends Recipe {
         message: findings.length ? "Hermes postcondition audit failed" : "Hermes postcondition audit passed",
       }],
     };
-    return mergeInitResults(this.metadata.id, false, [localResult, externalResult, verification]);
+    const verifiedResult = mergeInitResults(this.metadata.id, false, [appliedResult, verification]);
+    if (!verification.ok) {
+      hermesContext.deploymentOutcome = "failed";
+      return verifiedResult;
+    }
+
+    hermesContext.deploymentDeferrals = deploymentDeferrals(hermesContext);
+    hermesContext.deploymentOutcome = hermesContext.deploymentDeferrals.length ? "verified-deferred" : "verified";
+    hermesContext.deploymentPostconditions = [
+      "Hermes lifecycle audit passed",
+      "mise PATH and canonical project manifest passed",
+    ];
+    return mergeInitResults(this.metadata.id, false, [verifiedResult, await summaryResult(ctx)]);
   }
 
   protected printNextSteps(): void {

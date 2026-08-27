@@ -62,6 +62,24 @@ done
 
 log() { printf 'release: %s\n' "$1" >&2; }
 die() { log "$1"; exit 1; }
+extract_release_ticket() {
+  printf '%s\n' "$1" | grep -Eo 'PJAN-[1-9][0-9]*' | head -n 1 || true
+}
+resolve_release_ticket() {
+  local ticket branch subject
+  ticket="${RELEASE_TICKET:-}"
+  if [ -z "$ticket" ]; then
+    branch="$(git branch --show-current)"
+    ticket="$(extract_release_ticket "$branch")"
+  fi
+  if [ -z "$ticket" ]; then
+    subject="$(git log -1 --pretty=%s)"
+    ticket="$(extract_release_ticket "$subject")"
+  fi
+  [[ "$ticket" =~ ^PJAN-[1-9][0-9]*$ ]] ||
+    die "release ticket is missing or invalid; set RELEASE_TICKET=PJAN-<number> or release from a ticketed branch/commit"
+  printf '%s\n' "$ticket"
+}
 cleanup_pack_dir() {
   if [ -n "$PACK_DIR" ] && [ -d "$PACK_DIR" ]; then
     case "$PACK_DIR" in
@@ -267,6 +285,12 @@ else
     die "remote tag already exists: $TARGET"
 fi
 
+RELEASE_TICKET_ID=""
+if [ -z "$PUBLISH_CURRENT" ] && [ -z "$RESUME_PUSH" ]; then
+  RELEASE_TICKET_ID="$(resolve_release_ticket)"
+  log "release commit ticket: $RELEASE_TICKET_ID"
+fi
+
 log "installing from the committed npm lockfile..."; npm ci
 log "auditing production dependencies..."; npm run check:audit:prod
 log "building..."; npm run build
@@ -379,7 +403,7 @@ npm run check:tracked-secrets
 # All fallible package/provenance gates are complete before final refs exist.
 # Disable repository hooks so the reviewed tree cannot be changed after the
 # exact tarball is built and before the release commit is recorded.
-git -c core.hooksPath=/dev/null commit -m "release(PJAN-44): $NEW"
+git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"
 git tag -a "$NEW" -m "$NEW" HEAD
 require_clean_tree
 

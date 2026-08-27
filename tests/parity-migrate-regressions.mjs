@@ -290,7 +290,12 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
     run(["migrate", "mise.config-root", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.match(mise, /agents\/hermes\/pm\/hermes/, "mise.toml _.path should include agents/hermes/pm/hermes when that executable exists");
+    assert.match(mise, /agents\/hermes\/pm/, "mise.toml _.path should include the launcher directory");
+    assert.doesNotMatch(
+      mise,
+      /"agents\/hermes\/pm\/hermes"/,
+      "mise.toml _.path must never include the executable file itself",
+    );
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");

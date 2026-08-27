@@ -105,6 +105,8 @@ interface RoleMeta {
   ticketProviderIdentifier: string;
   bloodbankEnabled: string;
   deploymentSystemd: string;
+  serviceStateGateway: string;
+  serviceStateHeartbeat: string;
   legacyReconcileEnabled: string;
   legacyReconcileGraceHours: string;
   legacyReconcileAutoReview: string;
@@ -551,6 +553,8 @@ function discoverRoles(repoRoot: string): RoleMeta[] {
         ticketProviderIdentifier: yamlGet(text, "plane.identifier"),
         bloodbankEnabled: yamlGet(text, "bloodbank.enabled"),
         deploymentSystemd: yamlGet(text, "deployment.systemd"),
+        serviceStateGateway: yamlGet(text, "service_state.gateway"),
+        serviceStateHeartbeat: yamlGet(text, "service_state.heartbeat"),
         legacyReconcileEnabled: yamlGet(text, "reconcile.enabled"),
         legacyReconcileGraceHours: yamlGet(text, "reconcile.grace_hours"),
         legacyReconcileAutoReview: yamlGet(text, "reconcile.auto_review"),
@@ -1914,14 +1918,13 @@ function replaceOrAppendManagedBlock(text: string, startMarker: RegExp, block: s
 }
 
 const BASE_MISE_PATH_ENTRIES = [".mise/scripts", "agents/hermes/pm"];
-const CONDITIONAL_HERMES_PATHS = ["agents/hermes/pm/hermes", "agent/hermes/pm/hermes"];
 
-function requiredMisePathEntries(ctx: Context): string[] {
-  const required = [...BASE_MISE_PATH_ENTRIES];
-  for (const candidate of CONDITIONAL_HERMES_PATHS) {
-    if (existsSync(join(ctx.repoRoot, candidate)) && !required.includes(candidate)) required.push(candidate);
-  }
-  return required;
+function requiredMisePathEntries(_ctx: Context): string[] {
+  // mise PATH entries are directories. agents/hermes/pm already makes the
+  // executable wrapper at agents/hermes/pm/hermes discoverable; adding the
+  // wrapper file itself creates a false audit disagreement and an invalid PATH
+  // component on every rendered PM role.
+  return [...BASE_MISE_PATH_ENTRIES];
 }
 
 function upsertMisePath(text: string, required = BASE_MISE_PATH_ENTRIES): string {
@@ -6107,20 +6110,52 @@ return [
       }
       const probe = systemctlUser(["is-system-running"]);
       if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
-        return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "warn", summary: "systemd --user unavailable; unit state not auditable here", details: [], fixable: false };
+        const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
+        const details: string[] = [];
+        for (const role of requiredRoles) {
+          const gateway = role.serviceStateGateway || "active";
+          const heartbeat = role.serviceStateHeartbeat || "active";
+          for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
+            if (!existsSync(join(sysDir, unit))) details.push(`${unit} should be installed`);
+          }
+          if (heartbeat !== "installed") details.push(`${role.agentId} heartbeat should record installed while systemd --user is unavailable (got ${heartbeat})`);
+          if (gateway !== "installed" && gateway !== "deferred") details.push(`${role.agentId} gateway should record installed or deferred while systemd --user is unavailable (got ${gateway})`);
+        }
+        return {
+          id: "systemd.sentinel",
+          title: "Hermes systemd/sentinel units enabled + active",
+          status: details.length ? "warn" : "pass",
+          summary: details.length ? "systemd --user unavailable and installed-state metadata is incomplete" : "Hermes units are installed; activation is deferred because systemd --user is unavailable",
+          details,
+          fixable: false,
+        };
       }
       const details: string[] = [];
+      const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
       for (const role of requiredRoles) {
-        for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
-          const state = checkUnit(unit);
-          if (!state.enabled || !state.active) details.push(`${unit} should be enabled+active`);
+        const gatewayUnit = `hermes-${role.agentId}-gateway.service`;
+        const heartbeatUnit = `hermes-${role.agentId}-heartbeat.timer`;
+        const gatewayState = role.serviceStateGateway || "active";
+        const heartbeatState = role.serviceStateHeartbeat || "active";
+        for (const unit of [gatewayUnit, heartbeatUnit]) {
+          if (!existsSync(join(sysDir, unit))) details.push(`${unit} should be installed`);
+        }
+        const heartbeat = checkUnit(heartbeatUnit);
+        if (heartbeatState !== "active" || !heartbeat.enabled || !heartbeat.active) {
+          details.push(`${heartbeatUnit} should be enabled+active (manifest: ${heartbeatState || "missing"})`);
+        }
+        const gateway = checkUnit(gatewayUnit);
+        if (gatewayState === "deferred") {
+          if (gateway.enabled || gateway.active) details.push(`${gatewayUnit} is deferred and should be disabled+inactive`);
+        } else if (gatewayState !== "active" || !gateway.enabled || !gateway.active) {
+          details.push(`${gatewayUnit} should be enabled+active (manifest: ${gatewayState || "missing"})`);
         }
       }
       return {
         id: "systemd.sentinel",
         title: "Hermes systemd/sentinel units enabled + active",
         status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Hermes user units are enabled and active" : `${details.length} systemd parity issue(s) detected`,
+        summary: details.length === 0 ? "Hermes user units match each role's declared service state" : `${details.length} systemd parity issue(s) detected`,
         details,
         fixable: true,
       };
@@ -6148,14 +6183,21 @@ return [
           if (text === null) return true;
           return text.includes("/agents/hermes/") && !text.includes(role.roleDir);
         });
-        if (allUnitsPresent && !unitsStale) {
+        const manifestNeedsReconcile = [role.serviceStateGateway, role.serviceStateHeartbeat]
+          .some((state) => state === "pending" || state === "error");
+        if (allUnitsPresent && !unitsStale && !manifestNeedsReconcile) {
+          const gatewayUnit = units[0]!;
+          const heartbeatUnit = units[1]!;
+          const gatewayDeferred = role.serviceStateGateway === "deferred";
           if (ctx.dryRun) {
-            details.push(`would run: systemctl --user enable --now ${units.join(" ")}`);
+            details.push(`would run: systemctl --user enable --now ${heartbeatUnit}`);
+            details.push(`would run: systemctl --user ${gatewayDeferred ? "disable" : "enable"} --now ${gatewayUnit}`);
           } else {
             systemctlUser(["daemon-reload"]);
-            for (const unit of units) {
-              systemctlUser(["enable", "--now", unit]);
-            }
+            const heartbeat = systemctlUser(["enable", "--now", heartbeatUnit]);
+            const gateway = systemctlUser([gatewayDeferred ? "disable" : "enable", "--now", gatewayUnit]);
+            if (!heartbeat.ok) details.push(`script failed: could not enable ${heartbeatUnit}: ${heartbeat.stderr || heartbeat.stdout}`);
+            if (!gateway.ok) details.push(`script failed: could not ${gatewayDeferred ? "disable" : "enable"} ${gatewayUnit}: ${gateway.stderr || gateway.stdout}`);
           }
           continue;
         }

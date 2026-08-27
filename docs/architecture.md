@@ -134,15 +134,24 @@ Fresh init must create all six and no unsupported integration root. It preflight
 
 ### 4. Hermes agent provisioning (`src/commands/hermes/`)
 
-The `hermes-agent` recipe chains seven commands (each mutates a shared `HermesAgentContext`):
+The official non-interactive deploy command is `pj hermes-agent --yes`. It
+refuses an existing role unless the operator also supplies `--force`.
 
-1. `EnsureTemplateConfig` — bootstrap `~/.config/hermes-agent-template/config.toml` if missing
-2. `PromptForAgentConfig` — TUI (or `--yes` defaults)
-3. `RunCopierTemplate` — `copier copy` the Hermes template
-4. `UntrackHermesRuntimes` — untrack the runtime submodule + gitignore it
-5. `WireTelegram` — BotFather token capture (skippable)
-6. `WireEmail` — Cloudflare Email Routing rule (opt-in via `--email`)
-7. `PrintHermesSummary` — connection points + next commands
+The `hermes-agent` recipe runs seven ordered ingredients against a shared
+`HermesAgentContext`, then prints a summary only after postconditions pass:
+
+1. `PromptForAgentConfig` — TUI inputs or non-interactive defaults
+2. `ValidateHermesOptions` — effect-free overwrite and unsupported-option gates
+3. `EnsureTemplateConfig` — create or additively upgrade the pinned host schema
+4. `RunCopierTemplate` — `copier copy` the pinned vendored Hermes template
+5. `UntrackHermesRuntimes` — keep the local runtime untracked + gitignored
+6. `WireTelegram` — BotFather token capture (skippable)
+7. `WireEmail` — defense-in-depth rejection because the pinned template exposes no email provisioner
+
+`PrintHermesSummary` runs after lifecycle, project-manifest, mise-PATH, and
+service-state postconditions. It reports the role-local runtime and distinguishes
+verified active services from healthy deferred capabilities. `--email` is
+rejected before config, repository, or external mutation.
 
 Heavy/irreversible steps (runtime GH repo, ticket-board creation, Bloodbank consumer, systemd `--user` units) are **off by default under `--local`** (and systemd is auto-skipped on macOS) so a non-technical operator can't accidentally create cloud resources. Fleet-wide operations belong to the `agent-fleet-operations` skill, not this repo.
 
@@ -167,8 +176,8 @@ Heavy/irreversible steps (runtime GH repo, ticket-board creation, Bloodbank cons
 | `command|cmd list/describe/create` | Command metadata (`create` is a STORY-005 placeholder) |
 | `audit [repo]` | Deterministic parity audit (exit 1 if not ok) |
 | `migrate [rule-id] [repo]` | Idempotent migration; `--all`, or interactive rule selector TUI |
-| `hermes-agent` / `hermes` | Provision the PM agent for the current repo |
-| `config bootstrap` | Create the host `hermes-agent-template/config.toml` |
+| `hermes-agent` / `hermes` | Render and postcondition-verify the PM agent for the current repo |
+| `config bootstrap` | Create or additively upgrade the host `hermes-agent-template/config.toml` |
 | `describe` | Describe the current project (placeholder) |
 
 **Deprecated shims (still work, warn):** `pjangler init <subsystem>` → `pjangler add <subsystem>`; `pjangler project init` → `pjangler init`.

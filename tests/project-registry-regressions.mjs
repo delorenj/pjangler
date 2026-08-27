@@ -67,7 +67,7 @@ const path = require("node:path");
 
 const args = process.argv.slice(2);
 const callsFile = process.env.FAKE_HERMES_CALLS;
-const profileCreate = args.length === 5 && args[0] === "profile" && args[1] === "create" && args[2] && args[3] === "--clone" && args[4] === "--no-alias";
+const profileCreate = args.length === 4 && args[0] === "profile" && args[1] === "create" && args[2] && args[3] === "--no-alias";
 const configSet = args.length === 4 && args[0] === "config" && args[1] === "set" && process.env.HERMES_HOME;
 if (!callsFile || (!profileCreate && !configSet)) {
   process.stderr.write("fake hermes: unsupported invocation: " + JSON.stringify(args) + "\\n");
@@ -542,6 +542,18 @@ try {
   const { hermesBin: fakeHermesBin, hermesRepo: fakeHermesRepo, callsFile: fakeHermesCalls } = createFakeHermes(multiAgentHome);
   const fleetHome = join(multiAgentHome, ".hermes");
   const fleetRegistry = join(fleetHome, "agents-registry.yaml");
+  const canonicalSkills = join(multiAgentHome, "canonical-skills");
+  for (const skill of [
+    "delonet-conventions",
+    "delonet-dotenv",
+    "hermes-pm-template-maintenance",
+    "hindsight",
+    "33god-projects",
+    "subagent-driven-development",
+  ]) {
+    mkdirSync(join(canonicalSkills, skill), { recursive: true });
+    writeFileSync(join(canonicalSkills, skill, "SKILL.md"), `---\nname: ${skill}\n---\n# ${skill}\n`);
+  }
   // hermes.fleet-config audits the fleet base and is not auto-fixable, so a
   // sandbox that never writes one fails the postcondition on state the test
   // never configured.
@@ -564,8 +576,8 @@ try {
     REGISTRY_FILE: "",
     PJANGLER_HERMES_TEMPLATE: "",
     FAKE_HERMES_CALLS: fakeHermesCalls,
-    CANONICAL_SKILLS_DIR: join(multiAgentHome, "absent-canonical-skills"),
-    VOXXY_PLUGIN_DIR: join(multiAgentHome, "absent-voxxy-plugin"),
+    CANONICAL_SKILLS_DIR: canonicalSkills,
+    VOX_PLUGIN_DIR: join(multiAgentHome, "absent-vox-plugin"),
     PLANE_API_KEY: "",
     PLANE_33GOD_API_KEY: "",
     TELEGRAM_BOT_TOKEN: "",
@@ -585,7 +597,7 @@ try {
   const firstFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.bin, fakeHermesBin, "fleet registry must record the template-resolved Hermes binary");
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.repo, fakeHermesRepo, "fleet registry must record the matching Hermes checkout");
-  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].telegram.provisioning_status, "disabled");
+  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].telegram.provisioning_status, "deferred");
   assert.equal(firstFleetRegistry.agents["multi-agent-pm"].slack.provisioning_status, "deferred");
   assert.deepEqual(
     YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "pm", "role.yaml"), "utf8")).model,
@@ -605,13 +617,13 @@ try {
   const hermesCalls = readFakeHermesCalls(fakeHermesCalls);
   assert.deepEqual(hermesCalls, [
     {
-      args: ["profile", "create", "multi-agent-pm", "--clone", "--no-alias"],
+      args: ["profile", "create", "multi-agent-pm", "--no-alias"],
       bin: fakeHermesBin,
       hermes_home: fleetHome,
       home: multiAgentHome,
     },
     {
-      args: ["profile", "create", "multi-agent-director", "--clone", "--no-alias"],
+      args: ["profile", "create", "multi-agent-director", "--no-alias"],
       bin: fakeHermesBin,
       hermes_home: fleetHome,
       home: multiAgentHome,

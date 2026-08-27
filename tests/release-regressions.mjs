@@ -138,8 +138,18 @@ try {
   );
   assert.ok(
     indexOf("npm install --package-lock-only --ignore-scripts") <
-      indexOf('git -c core.hooksPath=/dev/null commit -m "release(PJAN-44): $NEW"'),
+      indexOf('git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"'),
     "lockfile regeneration must be inside the release commit",
+  );
+  assert.doesNotMatch(source, /release\(PJAN-44\)/, "release commits must not carry a stale hard-coded ticket");
+  assert.match(source, /RELEASE_TICKET:-/, "release should accept an explicit ticket override");
+  assert.match(source, /git branch --show-current/, "release should derive the ticket from its branch when possible");
+  assert.match(source, /git log -1 --pretty=%s/, "release should fall back to the HEAD subject after the branch");
+  assert.match(source, /\^PJAN-\[1-9\]\[0-9\]\*\$/, "release must validate the exact ticket format");
+  assert.ok(
+    indexOf('RELEASE_TICKET_ID="$(resolve_release_ticket)"') <
+      indexOf('git -c core.hooksPath=/dev/null commit -m "release($RELEASE_TICKET_ID): $NEW"'),
+    "the validated release ticket must be resolved before commit creation",
   );
   assert.ok(
     indexOf("inspect_tarball") < indexOf("git push --atomic"),
@@ -252,6 +262,35 @@ try {
   git(["config", "user.email", "release-regression@example.invalid"]);
   git(["add", "."]);
   git(["commit", "-qm", "fixture"]);
+  git(["checkout", "-qb", "test/PJAN-86-release-ticket"]);
+
+  const ticketHelpers = source.match(/extract_release_ticket\(\) \{[\s\S]*?\n\}\nresolve_release_ticket\(\) \{[\s\S]*?\n\}\n/)?.[0];
+  assert.ok(ticketHelpers, "release ticket helpers must remain independently testable");
+  const ticketHarness = join(temp, "resolve-release-ticket.sh");
+  writeFileSync(ticketHarness, `#!/usr/bin/env bash\nset -euo pipefail\ndie() { printf '%s\\n' "$1" >&2; exit 1; }\n${ticketHelpers}\nresolve_release_ticket\n`);
+  chmodSync(ticketHarness, 0o755);
+  const derivedTicket = spawnSync(ticketHarness, [], {
+    cwd: temp,
+    encoding: "utf8",
+    env: { ...process.env, RELEASE_TICKET: "" },
+  });
+  assert.equal(derivedTicket.status, 0, derivedTicket.stderr);
+  assert.equal(derivedTicket.stdout.trim(), "PJAN-86");
+  const explicitTicket = spawnSync(ticketHarness, [], {
+    cwd: temp,
+    encoding: "utf8",
+    env: { ...process.env, RELEASE_TICKET: "PJAN-99" },
+  });
+  assert.equal(explicitTicket.status, 0, explicitTicket.stderr);
+  assert.equal(explicitTicket.stdout.trim(), "PJAN-99");
+  const invalidTicket = spawnSync(ticketHarness, [], {
+    cwd: temp,
+    encoding: "utf8",
+    env: { ...process.env, RELEASE_TICKET: "pjan-86 extra" },
+  });
+  assert.notEqual(invalidTicket.status, 0);
+  assert.match(invalidTicket.stderr, /release ticket is missing or invalid/);
+
   writeFileSync(join(temp, "dirty.txt"), "must block release\n");
 
   const fakeBin = join(temp, "fake-bin");
