@@ -15,6 +15,7 @@ import { delimiter, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const temp = mkdtempSync(join(tmpdir(), "pjan-86-hermes-deploy-"));
+const EXPECTED_HERMES_GITLINK = "b35150d0be0be6d7b5e6d5d6c2347c8ff5123a50";
 
 function run(args, cwd, env = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
@@ -33,6 +34,11 @@ function committedHermesTemplate(path) {
   const match = tree.stdout.match(/^160000 commit ([0-9a-f]{40})\ttemplates\/hermes-agent\s*$/);
   assert.ok(match, `HEAD must commit an exact Hermes template gitlink, got: ${tree.stdout}`);
   const gitlink = match[1];
+  assert.equal(
+    gitlink,
+    EXPECTED_HERMES_GITLINK,
+    "PJAN-86 must test the final reviewed Hermes template commit, never an advanced mutable worktree",
+  );
   const show = spawnSync("git", ["-C", join(root, "templates", "hermes-agent"), "show", `${gitlink}:${path}`], {
     cwd: root,
     encoding: "utf8",
@@ -188,7 +194,37 @@ try {
   for (const [, key] of templateConfig.matchAll(/^([a-z][a-z0-9_]*)\s*=/gm)) {
     assert.match(upgraded, new RegExp(`^${key}\\s*=`, "m"), `parent bootstrap must cover pinned template key ${key}`);
   }
-  assert.doesNotMatch(upgraded, /^pm_external_skill_dirs\s*=|^\[bloodbank\]/m, "retired config schema must not be reintroduced");
+  assert.doesNotMatch(
+    upgraded,
+    /^pm_external_skill_dirs\s*=|^voxxy_plugin_dir\s*=|^\[bloodbank\]/m,
+    "retired config schema must not be reintroduced",
+  );
+
+  // Final template lifecycle contracts are read from the parent commit's
+  // gitlink object, never from templates/hermes-agent's mutable checkout.
+  const copierContract = committedHermesTemplate("copier.yml").content;
+  const roleContract = committedHermesTemplate("template/role.yaml.jinja").content;
+  const telegramContract = committedHermesTemplate("template/.scripts/30-telegram.sh").content;
+  const slackContract = committedHermesTemplate("template/.scripts/31-slack.sh").content;
+  const libraryContract = committedHermesTemplate("template/.scripts/_lib.sh").content;
+  assert.match(copierContract, /reconcile_enabled:\n[\s\S]*?default: true/);
+  assert.match(copierContract, /_skip_if_exists:[\s\S]*?\n\s+- role\.yaml/);
+  assert.match(roleContract, /telegram:\n\s+provisioning_status: "deferred"/);
+  assert.match(roleContract, /slack:\n\s+provisioning_status: "deferred"/);
+  assert.match(roleContract, /reconcile:[\s\S]*?explicit_opt_out:/);
+  assert.match(roleContract, /bloodbank:\n[\s\S]*?\n\s+enabled: false/);
+  assert.match(roleContract, /service_state:\n\s+gateway: "pending"\n\s+heartbeat: "pending"/);
+  assert.match(
+    telegramContract,
+    /if \[\[ "\$\{SKIP_TELEGRAM:-0\}" == "1" \]\]; then[\s\S]*?profile_channel_enabled_set "\$PROFILE_HOME" telegram false[\s\S]*?telegram_yaml_update provisioning_status deferred/,
+    "deferred Telegram must write platforms.telegram.enabled=false explicitly",
+  );
+  assert.match(
+    slackContract,
+    /if \[\[ "\$\{SKIP_SLACK:-0\}" == "1" \]\]; then[\s\S]*?profile_channel_enabled_set "\$PROFILE_HOME" slack false[\s\S]*?slack_yaml_update provisioning_status deferred/,
+    "deferred Slack must write platforms.slack.enabled=false explicitly",
+  );
+  assert.match(libraryContract, /elif mode == "channel-enabled":[\s\S]*?channel\["enabled"\] = value == "true"/);
 
   // Inline comments are part of a valid TOML table header. The merge must
   // recognize that exact owner instead of appending a duplicate [fleet].

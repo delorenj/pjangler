@@ -67,11 +67,6 @@ function hostSchema(): ConfigSchema {
         ["oauth_file", quote("~/.hermes/auth.json")],
         ["codex_home", quote("~/.codex")],
         ["canonical_skills_dir", quote(join(home, ".agents", "skills"))],
-        // Compatibility for the currently committed template gitlink. Newer
-        // templates consume vox_plugin_dir, while old clean checkouts still
-        // consume voxxy_plugin_dir; retaining both keeps config upgrades safe
-        // across the gitlink transition without replacing operator values.
-        ["voxxy_plugin_dir", quote(join(home, "code", "voxxy", "plugins", "tts", "voxxy"))],
         ["vox_plugin_name", quote("vox")],
         ["vox_plugin_dir", quote(join(home, "code", "voxxy", "plugins", "tts", "vox"))],
         ["vox_voice", quote("carlin")],
