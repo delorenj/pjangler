@@ -1,14 +1,17 @@
 import { homedir, platform } from "node:os";
 import {
+  chmodSync,
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -372,7 +375,7 @@ function assertValidTomlBytes(source: Buffer, label: string): void {
     const code = (validation.error as NodeJS.ErrnoException).code;
     if (code === "ETIMEDOUT") {
       throw new Error(
-        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms; Hermes template config was not changed`,
+        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms`,
       );
     }
     const missing = code === "ENOENT";
@@ -444,6 +447,7 @@ interface ConfigSnapshot {
   dev: number;
   ino: number;
   mode: number;
+  mtimeMs: number;
   hash: string;
 }
 
@@ -507,6 +511,7 @@ function readRegularConfigSnapshot(path: string, expected?: Stats): ConfigSnapsh
       dev: opened.dev,
       ino: opened.ino,
       mode: opened.mode & 0o777,
+      mtimeMs: opened.mtimeMs,
       hash: hashBytes(bytes),
     };
   } finally {
@@ -527,66 +532,377 @@ function assertConfigUnchanged(path: string, previous: ConfigSnapshot | undefine
   }
 }
 
+const CONFIG_TRANSACTION_PREFIX = ".pjangler-config-txn-";
+const TRANSACTION_CANDIDATE = "candidate.toml";
+const TRANSACTION_OPERATOR_FILE = "operator-config";
+const TRANSACTION_STATE = "state.json";
+const TRANSACTION_STATE_NEXT = "state-next.json";
+
+interface ConfigIdentity {
+  dev: number;
+  ino: number;
+  mode: number;
+  mtimeMs: number;
+  hash: string;
+}
+
+interface ConfigTransactionMarker {
+  version: 1;
+  ownerPid: number;
+  phase: "prepared" | "committed";
+  hadPrevious: boolean;
+  candidate: ConfigIdentity;
+  previous?: ConfigIdentity;
+}
+
+function snapshotIdentity(snapshot: ConfigSnapshot): ConfigIdentity {
+  return {
+    dev: snapshot.dev,
+    ino: snapshot.ino,
+    mode: snapshot.mode,
+    mtimeMs: snapshot.mtimeMs,
+    hash: snapshot.hash,
+  };
+}
+
+function sameIdentity(actual: ConfigSnapshot | Stats, expected: ConfigIdentity | ConfigSnapshot | Stats): boolean {
+  return actual.dev === expected.dev && actual.ino === expected.ino;
+}
+
+function assertSnapshotIdentity(actual: ConfigSnapshot, expected: ConfigIdentity | ConfigSnapshot, label: string): void {
+  if (
+    !sameIdentity(actual, expected) ||
+    actual.mode !== expected.mode ||
+    actual.mtimeMs !== expected.mtimeMs ||
+    actual.hash !== expected.hash
+  ) {
+    throw new Error(`${label} identity, mode, mtime, or bytes differ from the protected operator file`);
+  }
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function writeTransactionMarker(directory: string, marker: ConfigTransactionMarker): void {
+  const nextPath = join(directory, TRANSACTION_STATE_NEXT);
+  const statePath = join(directory, TRANSACTION_STATE);
+  writeFileSync(nextPath, `${JSON.stringify(marker)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(nextPath, statePath);
+}
+
+function readTransactionMarker(directory: string): ConfigTransactionMarker {
+  const parsed = JSON.parse(readFileSync(join(directory, TRANSACTION_STATE), "utf8")) as Partial<ConfigTransactionMarker>;
+  const identityValid = (identity: ConfigIdentity | undefined): identity is ConfigIdentity => Boolean(
+    identity &&
+    [identity.dev, identity.ino, identity.mode, identity.mtimeMs].every(Number.isFinite) &&
+    typeof identity.hash === "string" &&
+    /^[0-9a-f]{64}$/.test(identity.hash),
+  );
+  if (
+    parsed.version !== 1 ||
+    !Number.isInteger(parsed.ownerPid) ||
+    (parsed.phase !== "prepared" && parsed.phase !== "committed") ||
+    typeof parsed.hadPrevious !== "boolean" ||
+    !identityValid(parsed.candidate) ||
+    (parsed.hadPrevious && !identityValid(parsed.previous))
+  ) {
+    throw new Error("transaction state is missing or invalid");
+  }
+  return parsed as ConfigTransactionMarker;
+}
+
+function inspectTransactionFile(path: string, label: string): Stats | undefined {
+  let stats: Stats;
+  try {
+    stats = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular non-symlink file`);
+  }
+  return stats;
+}
+
+function processIsAlive(pid: number): boolean {
+  // Recovery runs before this process creates a transaction, so a matching PID
+  // can only be a stale PID reuse and must not block its own cleanup forever.
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 /**
- * Replace one config atomically and prove the exact installed bytes parse.
- * If the post-rename read unexpectedly disagrees, restore the prior bytes (or
- * remove a newly-created file) while preserving both primary and rollback
- * errors for the caller.
+ * Recover conservative rollback state left by process death. Transaction
+ * directories contain only a 0600 candidate, a hard link to the operator's
+ * existing inode, and non-secret identity metadata; all are same-filesystem.
+ */
+function recoverInterruptedConfigTransactions(path: string, allowMutation: boolean): void {
+  const directory = dirname(path);
+  if (!existsSync(directory)) return;
+  const entries = readdirSync(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.name.startsWith(CONFIG_TRANSACTION_PREFIX)) continue;
+    const match = entry.name.match(/^\.pjangler-config-txn-(\d+)-[A-Za-z0-9]+$/);
+    if (!match || !entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`unsafe or malformed Hermes config transaction artifact: ${entry.name}`);
+    }
+    const transactionDirectory = join(directory, entry.name);
+    const transactionStats = lstatSync(transactionDirectory);
+    if (
+      typeof process.getuid === "function" &&
+      transactionStats.uid !== process.getuid()
+    ) {
+      throw new Error(`Hermes config transaction artifact is owned by another user: ${entry.name}`);
+    }
+    const ownerPid = Number(match[1]);
+    if (processIsAlive(ownerPid)) {
+      throw new Error(`another Hermes config transaction is still active (pid ${ownerPid})`);
+    }
+    if (!allowMutation) {
+      throw new Error(`interrupted Hermes config transaction requires live recovery before dry-run: ${entry.name}`);
+    }
+
+    const allowed = new Set([
+      TRANSACTION_CANDIDATE,
+      TRANSACTION_OPERATOR_FILE,
+      TRANSACTION_STATE,
+      TRANSACTION_STATE_NEXT,
+    ]);
+    const unknown = readdirSync(transactionDirectory).filter((name) => !allowed.has(name));
+    if (unknown.length) {
+      throw new Error(`Hermes config transaction contains unexpected entries: ${unknown.join(", ")}`);
+    }
+
+    const candidatePath = join(transactionDirectory, TRANSACTION_CANDIDATE);
+    const operatorPath = join(transactionDirectory, TRANSACTION_OPERATOR_FILE);
+    const candidateStats = inspectTransactionFile(candidatePath, "Transaction candidate");
+    const operatorStats = inspectTransactionFile(operatorPath, "Protected operator config");
+    let marker: ConfigTransactionMarker | undefined;
+    let markerError: unknown;
+    try {
+      marker = readTransactionMarker(transactionDirectory);
+    } catch (error) {
+      markerError = error;
+    }
+
+    if (marker?.phase === "committed") {
+      const installed = readRegularConfigSnapshot(path);
+      assertSnapshotIdentity(installed, marker.candidate, "Committed Hermes config");
+      rmSync(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+
+    // A protected operator inode is authoritative even if the marker was torn.
+    // Restore it before parsing, hashing, validating, or removing anything else.
+    if (operatorStats) {
+      const currentStats = inspectConfigPath(path);
+      if (currentStats && sameIdentity(currentStats, operatorStats) && candidateStats) {
+        // The process died after linking the original but before installing the
+        // candidate. Removing the extra link preserves the already-live inode.
+        unlinkSync(operatorPath);
+      } else {
+        renameSync(operatorPath, path);
+      }
+      const restored = readRegularConfigSnapshot(path);
+      if (marker?.previous) assertSnapshotIdentity(restored, marker.previous, "Recovered Hermes config");
+      rmSync(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+
+    if (candidateStats) {
+      // Candidate still inside the transaction means no rename occurred.
+      rmSync(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+
+    if (!marker && readdirSync(transactionDirectory).length === 0) {
+      // A process can die between mkdtemp/chmod and the first candidate write.
+      // An empty, correctly named, same-user transaction contains no state to
+      // restore and is safe to remove. Non-empty malformed state remains a
+      // hard failure so recovery never guesses about a canonical config.
+      rmSync(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+
+    if (!marker) {
+      throw new Error(`cannot safely recover Hermes config transaction: ${errorDetail(markerError)}`);
+    }
+    if (marker.hadPrevious) {
+      const restored = readRegularConfigSnapshot(path);
+      assertSnapshotIdentity(restored, marker.previous!, "Previously restored Hermes config");
+      rmSync(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+
+    const installed = inspectConfigPath(path);
+    if (installed) {
+      const installedSnapshot = readRegularConfigSnapshot(path, installed);
+      assertSnapshotIdentity(installedSnapshot, marker.candidate, "Interrupted new Hermes config");
+      unlinkSync(path);
+    }
+    rmSync(transactionDirectory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Replace one config atomically and prove the exact installed bytes parse. An
+ * existing config is hard-linked into a protected 0700 transaction directory
+ * before the candidate rename. Any post-install failure first atomically puts
+ * that exact inode back; validator availability can never gate restoration.
  */
 function installValidatedConfig(path: string, next: string, previous: ConfigSnapshot | undefined): void {
   const nextBytes = Buffer.from(next, "utf8");
   assertValidTomlBytes(nextBytes, "Rendered Hermes template config");
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true });
-  const stagingDirectory = mkdtempSync(join(directory, ".pjangler-config-"));
-  const stagedPath = join(stagingDirectory, "config.toml");
+  const transactionDirectory = mkdtempSync(join(directory, `${CONFIG_TRANSACTION_PREFIX}${process.pid}-`));
+  chmodSync(transactionDirectory, 0o700);
+  const stagedPath = join(transactionDirectory, TRANSACTION_CANDIDATE);
+  const operatorPath = join(transactionDirectory, TRANSACTION_OPERATOR_FILE);
   let installed = false;
+  let operatorArtifactHoldsOriginal = false;
+  let retainTransactionForRecovery = false;
+  let failure: unknown;
   try {
     const mode = previous?.mode ?? 0o600;
     writeFileSync(stagedPath, nextBytes, { mode });
     const staged = readFileSync(stagedPath);
     if (!staged.equals(nextBytes)) throw new Error("Staged Hermes template config bytes changed before installation");
     assertValidTomlBytes(staged, "Staged Hermes template config");
+    const stagedSnapshot = readRegularConfigSnapshot(stagedPath);
+
+    const marker: ConfigTransactionMarker = {
+      version: 1,
+      ownerPid: process.pid,
+      phase: "prepared",
+      hadPrevious: previous !== undefined,
+      candidate: snapshotIdentity(stagedSnapshot),
+      previous: previous ? snapshotIdentity(previous) : undefined,
+    };
+    writeTransactionMarker(transactionDirectory, marker);
 
     assertConfigUnchanged(path, previous);
+
+    if (previous) {
+      linkSync(path, operatorPath);
+      operatorArtifactHoldsOriginal = true;
+      const protectedOriginal = readRegularConfigSnapshot(operatorPath);
+      assertSnapshotIdentity(protectedOriginal, previous, "Protected Hermes config");
+    }
 
     renameSync(stagedPath, path);
     installed = true;
     const written = readRegularConfigSnapshot(path);
     if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
     assertValidTomlBytes(written.bytes, "Installed Hermes template config");
+    assertSnapshotIdentity(written, marker.candidate, "Installed Hermes config");
+
+    // Commit metadata before releasing the original inode. A process death
+    // after this point keeps the validated candidate; recovery only cleans the
+    // remaining protected link/metadata.
+    writeTransactionMarker(transactionDirectory, { ...marker, phase: "committed" });
+    if (operatorArtifactHoldsOriginal) {
+      unlinkSync(operatorPath);
+      operatorArtifactHoldsOriginal = false;
+    }
   } catch (error) {
-    let rollbackError: unknown;
+    const primary = errorDetail(error);
+    let restorationError: unknown;
+    let verificationError: unknown;
+    let finalState: "unchanged" | "restored" | "removed" | "unknown" = installed ? "unknown" : "unchanged";
+
+    // Restoration/removal is deliberately the first post-failure operation.
+    // In particular, do not invoke the validator that just failed until the
+    // operator's original inode is already back at the canonical path.
     if (installed) {
       try {
-        if (previous === undefined) {
+        if (previous && operatorArtifactHoldsOriginal) {
+          renameSync(operatorPath, path);
+          operatorArtifactHoldsOriginal = false;
+          installed = false;
+          finalState = "restored";
+        } else if (previous === undefined) {
           unlinkSync(path);
+          installed = false;
+          finalState = "removed";
         } else {
-          const rollbackPath = join(stagingDirectory, "rollback.toml");
-          assertValidTomlBytes(previous.bytes, "Rollback Hermes template config");
-          writeFileSync(rollbackPath, previous.bytes, { mode: previous.mode });
-          const stagedRollback = readFileSync(rollbackPath);
-          if (!stagedRollback.equals(previous.bytes)) throw new Error("Rollback config bytes changed before installation");
-          assertValidTomlBytes(stagedRollback, "Staged rollback Hermes template config");
-          renameSync(rollbackPath, path);
-          const restored = readRegularConfigSnapshot(path);
-          if (!restored.bytes.equals(previous.bytes)) throw new Error("Restored Hermes template config bytes differ from the original");
-          assertValidTomlBytes(restored.bytes, "Restored Hermes template config");
+          throw new Error("protected operator inode is unavailable");
         }
-      } catch (rollbackFailure) {
-        rollbackError = rollbackFailure;
+      } catch (restoreFailure) {
+        restorationError = restoreFailure;
+      }
+    } else if (operatorArtifactHoldsOriginal) {
+      try {
+        // Candidate was never installed; remove only the extra hard link.
+        unlinkSync(operatorPath);
+        operatorArtifactHoldsOriginal = false;
+      } catch (cleanupFailure) {
+        restorationError = cleanupFailure;
       }
     }
-    if (rollbackError) {
-      const primary = error instanceof Error ? error.message : String(error);
-      const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      throw new Error(`${primary}; rollback also failed: ${rollback}`, {
-        cause: new AggregateError([error, rollbackError], "Hermes config installation and rollback both failed"),
-      });
+
+    if (!restorationError && finalState === "restored" && previous) {
+      try {
+        const restored = readRegularConfigSnapshot(path);
+        assertSnapshotIdentity(restored, previous, "Restored Hermes config");
+        // Best-effort consumer verification happens only after exact restoration.
+        assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config");
+      } catch (postRestoreFailure) {
+        verificationError = postRestoreFailure;
+      }
     }
-    throw error;
-  } finally {
-    rmSync(stagingDirectory, { recursive: true, force: true });
+
+    if (restorationError) {
+      retainTransactionForRecovery = true;
+      failure = new Error(
+        `${primary}; restoring the operator's original Hermes config failed: ${errorDetail(restorationError)}; protected transaction state was retained for automatic recovery`,
+        { cause: new AggregateError([error, restorationError], "Hermes config installation and restoration both failed") },
+      );
+    } else if (verificationError) {
+      failure = new Error(
+        `${primary}; the operator's original Hermes config was restored before post-restore verification failed: ${errorDetail(verificationError)}`,
+        { cause: new AggregateError([error, verificationError], "Hermes config installation and post-restore verification both failed") },
+      );
+    } else if (finalState === "restored") {
+      failure = new Error(`${primary}; the operator's original Hermes config was restored`, { cause: error });
+    } else if (finalState === "removed") {
+      failure = new Error(`${primary}; the unverified newly-created Hermes config was removed`, { cause: error });
+    } else {
+      failure = new Error(`${primary}; no Hermes config changes were applied`, { cause: error });
+    }
+  }
+
+  let cleanupError: unknown;
+  if (!operatorArtifactHoldsOriginal && !retainTransactionForRecovery) {
+    try {
+      rmSync(transactionDirectory, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (cleanupError) {
+    const base = failure
+      ? errorDetail(failure)
+      : "Hermes config was installed and validated";
+    throw new Error(
+      `${base}; transaction metadata cleanup failed and will be retried on the next invocation: ${errorDetail(cleanupError)}`,
+      {
+        cause: new AggregateError(
+          failure ? [failure, cleanupError] : [cleanupError],
+          "Hermes config transaction cleanup failed",
+        ),
+      },
+    );
+  }
+  if (failure) {
+    throw failure;
   }
 }
 
@@ -603,6 +919,15 @@ export class EnsureTemplateConfig extends Command {
     }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
+    try {
+      recoverInterruptedConfigTransactions(path, !ctx.dryRun);
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to recover interrupted Hermes config transaction for ${path}: ${errorDetail(error)}`,
+      };
+    }
     let pathStats: Stats | undefined;
     try {
       pathStats = inspectConfigPath(path);
@@ -627,7 +952,7 @@ export class EnsureTemplateConfig extends Command {
         assertValidToml(next, "Rendered Hermes template config");
       }
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to prepare ${path}: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, outcome: "failed", message: `Failed to prepare ${path}; no changes were applied: ${errorDetail(error)}` };
     }
     if (exists && next === current) {
       return { success: true, outcome: "unchanged", message: `Config schema already current: ${path}` };

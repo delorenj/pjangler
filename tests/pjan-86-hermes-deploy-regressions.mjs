@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -8,10 +9,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -27,7 +31,7 @@ function run(args, cwd, env = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    timeout: 10_000,
+    timeout: 20_000,
     env: { ...process.env, NO_COLOR: "1", ...env },
   });
 }
@@ -519,12 +523,146 @@ def loads(_source):
   });
   assert.notEqual(timedOut.status, 0);
   assert.notEqual(timedOut.error?.code, "ETIMEDOUT", "CLI must report its validator timeout before the outer process timeout");
-  assert.match(timedOut.stderr, /validation timed out after 5000ms; Hermes template config was not changed/);
+  assert.match(timedOut.stderr, /no changes were applied: Existing Hermes template config validation timed out after 5000ms/);
   assert.doesNotMatch(timedOut.stdout, /Updated|Bootstrapped/);
   assert.equal(readFileSync(timeoutPath).equals(timeoutSource), true);
   const timeoutAfter = statSync(timeoutPath);
   assert.equal(timeoutAfter.ino, timeoutBefore.ino);
   assert.equal(timeoutAfter.mtimeMs, timeoutBefore.mtimeMs);
+
+  // Calls 1-5 validate the existing, merged, rendered, and staged bytes. Call
+  // 6 observes then hangs on the installed candidate; call 7 observes then
+  // hangs during best-effort post-restore verification. The original inode is
+  // already canonical before call 7 and neither timeout can block restoration.
+  const rollbackPythonBin = join(temp, "rollback-python-bin");
+  const rollbackPython = join(rollbackPythonBin, "python3");
+  const rollbackCallCount = join(temp, "rollback-validator-call-count");
+  const candidateInodeSentinel = join(temp, "installed-candidate-inode");
+  const restoredInodeSentinel = join(temp, "post-restore-inode");
+  mkdirSync(rollbackPythonBin, { recursive: true });
+  writeFileSync(rollbackPython, `#!/bin/sh
+count=0
+if [ -f "$VALIDATOR_CALL_COUNT" ]; then
+  count=$(/bin/cat "$VALIDATOR_CALL_COUNT")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$VALIDATOR_CALL_COUNT"
+if [ "$count" -eq 6 ]; then
+  /usr/bin/stat -c '%i' "$VALIDATOR_CONFIG_PATH" > "$VALIDATOR_CANDIDATE_INODE"
+  exec /bin/sleep 30
+fi
+if [ "$count" -eq 7 ]; then
+  /usr/bin/stat -c '%i' "$VALIDATOR_CONFIG_PATH" > "$VALIDATOR_RESTORED_INODE"
+  exec /bin/sleep 30
+fi
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(rollbackPython, 0o755);
+  const rollbackHome = join(temp, "post-install-rollback-xdg");
+  const rollbackDirectory = join(rollbackHome, "hermes-agent-template");
+  const rollbackPath = join(rollbackDirectory, "config.toml");
+  const rollbackSource = Buffer.from("# exact operator bytes\n[fleet]\nhermes_bin = \"/operator/hermes\"\n", "utf8");
+  mkdirSync(rollbackDirectory, { recursive: true });
+  writeFileSync(rollbackPath, rollbackSource);
+  chmodSync(rollbackPath, 0o640);
+  const preservedMtime = new Date("2024-01-02T03:04:05.000Z");
+  utimesSync(rollbackPath, preservedMtime, preservedMtime);
+  const rollbackBefore = statSync(rollbackPath);
+  const postInstallFailure = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: `${rollbackPythonBin}${delimiter}${commandEnv.PATH}`,
+    VALIDATOR_CALL_COUNT: rollbackCallCount,
+    VALIDATOR_CONFIG_PATH: rollbackPath,
+    VALIDATOR_CANDIDATE_INODE: candidateInodeSentinel,
+    VALIDATOR_RESTORED_INODE: restoredInodeSentinel,
+    XDG_CONFIG_HOME: rollbackHome,
+  });
+  assert.notEqual(postInstallFailure.status, 0);
+  assert.notEqual(postInstallFailure.error?.code, "ETIMEDOUT", "both bounded validator failures must finish before the outer CLI timeout");
+  assert.match(postInstallFailure.stderr, /Installed Hermes template config validation timed out after 5000ms/);
+  assert.match(postInstallFailure.stderr, /original Hermes config was restored before post-restore verification failed: Post-restore Hermes template config validation timed out after 5000ms/);
+  assert.equal(readFileSync(rollbackCallCount, "utf8").trim(), "7");
+  const candidateInode = Number(readFileSync(candidateInodeSentinel, "utf8").trim());
+  const restoredObservedInode = Number(readFileSync(restoredInodeSentinel, "utf8").trim());
+  assert.notEqual(candidateInode, rollbackBefore.ino, "call 6 must observe the installed candidate inode");
+  assert.equal(restoredObservedInode, rollbackBefore.ino, "call 7 must run only after the original inode is restored");
+  assert.equal(readFileSync(rollbackPath).equals(rollbackSource), true);
+  const rollbackAfter = statSync(rollbackPath);
+  assert.equal(rollbackAfter.ino, rollbackBefore.ino);
+  assert.equal(rollbackAfter.mtimeMs, rollbackBefore.mtimeMs);
+  assert.equal(rollbackAfter.mode & 0o777, rollbackBefore.mode & 0o777);
+  assert.deepEqual(
+    readdirSync(rollbackDirectory).filter((name) => name.startsWith(".pjangler-config-txn-")),
+    [],
+    "restoration must remove the candidate and all transaction artifacts",
+  );
+
+  // Simulate process death after the candidate rename: the protected hard link
+  // and prepared non-secret marker survive in the same directory. The next
+  // invocation restores the original before validation, cleans the transaction,
+  // then truthfully fails because this fixture intentionally has no python3.
+  const staleHome = join(temp, "stale-transaction-xdg");
+  const staleDirectory = join(staleHome, "hermes-agent-template");
+  const stalePath = join(staleDirectory, "config.toml");
+  const staleSource = Buffer.from("# stale crash original\n[fleet]\nhermes_bin = \"/operator/stale\"\n", "utf8");
+  mkdirSync(staleDirectory, { recursive: true });
+  writeFileSync(stalePath, staleSource);
+  chmodSync(stalePath, 0o640);
+  utimesSync(stalePath, preservedMtime, preservedMtime);
+  const staleBefore = statSync(stalePath);
+  const staleTransaction = join(staleDirectory, ".pjangler-config-txn-99999999-dead01");
+  mkdirSync(staleTransaction, { mode: 0o700 });
+  linkSync(stalePath, join(staleTransaction, "operator-config"));
+  const staleCandidatePath = join(staleTransaction, "candidate.toml");
+  const staleCandidate = Buffer.from("[fleet]\nhermes_bin = \"/unverified/candidate\"\n", "utf8");
+  writeFileSync(staleCandidatePath, staleCandidate, { mode: 0o640 });
+  const staleCandidateStats = statSync(staleCandidatePath);
+  const identity = (stats, bytes) => ({
+    dev: stats.dev,
+    ino: stats.ino,
+    mode: stats.mode & 0o777,
+    mtimeMs: stats.mtimeMs,
+    hash: createHash("sha256").update(bytes).digest("hex"),
+  });
+  writeFileSync(join(staleTransaction, "state.json"), `${JSON.stringify({
+    version: 1,
+    ownerPid: 99999999,
+    phase: "prepared",
+    hadPrevious: true,
+    candidate: identity(staleCandidateStats, staleCandidate),
+    previous: identity(staleBefore, staleSource),
+  })}\n`, { mode: 0o600 });
+  renameSync(staleCandidatePath, stalePath);
+  assert.notEqual(statSync(stalePath).ino, staleBefore.ino, "crash fixture must expose the unverified candidate before recovery");
+  const staleRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: staleHome,
+  });
+  assert.notEqual(staleRecovery.status, 0);
+  assert.match(staleRecovery.stderr, /python3 with tomllib is required but was not found/);
+  assert.equal(readFileSync(stalePath).equals(staleSource), true);
+  const staleAfter = statSync(stalePath);
+  assert.equal(staleAfter.ino, staleBefore.ino);
+  assert.equal(staleAfter.mtimeMs, staleBefore.mtimeMs);
+  assert.equal(staleAfter.mode & 0o777, staleBefore.mode & 0o777);
+  assert.equal(existsSync(staleTransaction), false, "automatic crash recovery must remove the protected transaction artifact");
+
+  // Death immediately after mkdtemp/chmod leaves no candidate or marker. The
+  // uniquely named, same-user empty transaction is safe to reap; malformed
+  // non-empty state remains a hard failure rather than being guessed away.
+  const emptyStaleTransaction = join(staleDirectory, ".pjangler-config-txn-99999998-empty01");
+  mkdirSync(emptyStaleTransaction, { mode: 0o700 });
+  const emptyStaleRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: staleHome,
+  });
+  assert.notEqual(emptyStaleRecovery.status, 0);
+  assert.match(emptyStaleRecovery.stderr, /python3 with tomllib is required but was not found/);
+  assert.equal(existsSync(emptyStaleTransaction), false, "an empty transaction left before candidate staging must be reaped");
+  assert.equal(readFileSync(stalePath).equals(staleSource), true);
+  assert.equal(statSync(stalePath).ino, staleBefore.ino);
 
   // Forced config bootstrap is an additive schema upgrade. Operator values,
   // comments, unknown keys, and richer sections survive byte-for-byte.
@@ -540,6 +678,11 @@ def loads(_source):
   });
   assert.equal(config.status, 0, `${config.stdout}\n${config.stderr}`);
   assert.match(config.stdout, /Updated config without replacing existing values:/);
+  assert.deepEqual(
+    readdirSync(join(configHome, "hermes-agent-template")).filter((name) => name.startsWith(".pjangler-config-txn-")),
+    [],
+    "successful installation must remove every ephemeral transaction artifact",
+  );
   const upgraded = readFileSync(configPath, "utf8");
   assert.match(upgraded, /# precious operator comment/);
   assert.match(upgraded, /hermes_bin = "\/operator\/hermes"/);
@@ -843,7 +986,14 @@ exit 1
   assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
   assert.match(configBootstrap, /assertValidTomlBytes\(written\.bytes, "Installed Hermes template config"\)/);
   assert.match(configBootstrap, /current\.hash !== previous\.hash/);
-  assert.match(configBootstrap, /rollback also failed/);
+  assert.match(configBootstrap, /linkSync\(path, operatorPath\)/);
+  assert.match(configBootstrap, /renameSync\(operatorPath, path\)/);
+  assert.ok(
+    configBootstrap.indexOf("renameSync(operatorPath, path)") < configBootstrap.indexOf('assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config")'),
+    "the original inode must be restored before any post-restore validator call",
+  );
+  assert.doesNotMatch(configBootstrap, /assertValidTomlBytes\(previous\.bytes, "Rollback/);
+  assert.match(configBootstrap, /recoverInterruptedConfigTransactions\(path, !ctx\.dryRun\)/);
   assert.match(optionValidation, /const stats = lstatSync\(path\)/);
   assert.match(optionValidation, /!stats\.isFile\(\)/);
   assert.match(optionValidation, /stats\.nlink !== 1/);

@@ -193,7 +193,7 @@ var init_types = __esm({
 
 // src/utils/tree-diff.ts
 import { createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
+import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync4, readlinkSync as readlinkSync2 } from "node:fs";
 import { join as join6, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
   if (!existsSync4(current)) return snapshot;
@@ -206,7 +206,7 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
     snapshot.set(rel, `file:${createHash4("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
-    for (const name of readdirSync3(current)) snapshotTree(root, join6(current, name), snapshot);
+    for (const name of readdirSync4(current)) snapshotTree(root, join6(current, name), snapshot);
   } else {
     snapshot.set(rel, `other:${stat.mode}`);
   }
@@ -229,7 +229,7 @@ import {
   existsSync as existsSync5,
   lstatSync as lstatSync5,
   readFileSync as readFileSync6,
-  readdirSync as readdirSync4,
+  readdirSync as readdirSync5,
   realpathSync as realpathSync3,
   statSync
 } from "node:fs";
@@ -321,7 +321,7 @@ function defaultUvToolRoots(home) {
 function locateUvSitePackages(toolRoot) {
   const lib = join7(toolRoot, "lib");
   const candidates = [];
-  for (const entry of readdirSync4(lib, { withFileTypes: true })) {
+  for (const entry of readdirSync5(lib, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^python\d+(?:\.\d+)*$/.test(entry.name)) continue;
     const sitePackages = join7(lib, entry.name, "site-packages");
     if (existsSync5(sitePackages)) candidates.push(sitePackages);
@@ -374,7 +374,7 @@ function attestUvCopier(candidate, realCandidate, home) {
       return { ok: false, error: "UV tool receipt does not bind the copier entry point to the Copier package" };
     }
     const sitePackages = locateUvSitePackages(toolRoot);
-    const distInfos = readdirSync4(sitePackages, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^copier-[^-]+\.dist-info$/i.test(entry.name)).map((entry) => join7(sitePackages, entry.name));
+    const distInfos = readdirSync5(sitePackages, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^copier-[^-]+\.dist-info$/i.test(entry.name)).map((entry) => join7(sitePackages, entry.name));
     if (distInfos.length !== 1) {
       return { ok: false, error: `expected one installed Copier distribution, found ${distInfos.length}` };
     }
@@ -968,7 +968,7 @@ var init_RegistryStore = __esm({
 // src/project/index.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
-import { chmodSync as chmodSync2, closeSync as closeSync3, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync3, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync3, closeSync as closeSync3, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync3, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -1119,7 +1119,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
     closeSync3(fd);
     fd = void 0;
     renameSync3(temp, path);
-    chmodSync2(path, mode);
+    chmodSync3(path, mode);
     fsyncDirectory(dirname5(path));
   } catch (error) {
     if (fd !== void 0) try {
@@ -2639,7 +2639,7 @@ import {
   mkdirSync as mkdirSync6,
   openSync as openSync5,
   readSync,
-  readdirSync as readdirSync7,
+  readdirSync as readdirSync8,
   renameSync as renameSync5,
   unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync9
@@ -2763,7 +2763,7 @@ function fsyncDirectory2(path) {
 function readStateDirectory(path, root) {
   const fd = openPinnedDirectory(path, root, false);
   try {
-    return readdirSync7(`/proc/self/fd/${fd}`, { withFileTypes: true });
+    return readdirSync8(`/proc/self/fd/${fd}`, { withFileTypes: true });
   } finally {
     closeSync5(fd);
   }
@@ -10983,15 +10983,18 @@ var DockerRecipe = class extends Recipe {
 // src/commands/hermes/EnsureTemplateConfig.ts
 import { homedir as homedir3, platform } from "node:os";
 import {
+  chmodSync as chmodSync2,
   closeSync as closeSync2,
   constants as constants2,
   existsSync as existsSync3,
   fstatSync as fstatSync2,
+  linkSync,
   lstatSync as lstatSync3,
   mkdirSync as mkdirSync3,
   mkdtempSync as mkdtempSync2,
   openSync as openSync2,
   readFileSync as readFileSync3,
+  readdirSync as readdirSync3,
   realpathSync as realpathSync2,
   renameSync as renameSync2,
   rmSync as rmSync2,
@@ -11310,7 +11313,7 @@ function assertValidTomlBytes(source, label) {
     const code = validation.error.code;
     if (code === "ETIMEDOUT") {
       throw new Error(
-        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms; Hermes template config was not changed`
+        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms`
       );
     }
     const missing = code === "ENOENT";
@@ -11409,6 +11412,7 @@ function readRegularConfigSnapshot(path, expected) {
       dev: opened.dev,
       ino: opened.ino,
       mode: opened.mode & 511,
+      mtimeMs: opened.mtimeMs,
       hash: hashBytes(bytes)
     };
   } finally {
@@ -11427,58 +11431,284 @@ function assertConfigUnchanged(path, previous) {
     throw new Error(`Hermes template config changed concurrently; refusing to overwrite operator changes: ${path}`);
   }
 }
+var CONFIG_TRANSACTION_PREFIX = ".pjangler-config-txn-";
+var TRANSACTION_CANDIDATE = "candidate.toml";
+var TRANSACTION_OPERATOR_FILE = "operator-config";
+var TRANSACTION_STATE = "state.json";
+var TRANSACTION_STATE_NEXT = "state-next.json";
+function snapshotIdentity(snapshot) {
+  return {
+    dev: snapshot.dev,
+    ino: snapshot.ino,
+    mode: snapshot.mode,
+    mtimeMs: snapshot.mtimeMs,
+    hash: snapshot.hash
+  };
+}
+function sameIdentity(actual, expected) {
+  return actual.dev === expected.dev && actual.ino === expected.ino;
+}
+function assertSnapshotIdentity(actual, expected, label) {
+  if (!sameIdentity(actual, expected) || actual.mode !== expected.mode || actual.mtimeMs !== expected.mtimeMs || actual.hash !== expected.hash) {
+    throw new Error(`${label} identity, mode, mtime, or bytes differ from the protected operator file`);
+  }
+}
+function errorDetail(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function writeTransactionMarker(directory, marker) {
+  const nextPath = join4(directory, TRANSACTION_STATE_NEXT);
+  const statePath = join4(directory, TRANSACTION_STATE);
+  writeFileSync3(nextPath, `${JSON.stringify(marker)}
+`, { encoding: "utf8", mode: 384 });
+  renameSync2(nextPath, statePath);
+}
+function readTransactionMarker(directory) {
+  const parsed = JSON.parse(readFileSync3(join4(directory, TRANSACTION_STATE), "utf8"));
+  const identityValid = (identity) => Boolean(
+    identity && [identity.dev, identity.ino, identity.mode, identity.mtimeMs].every(Number.isFinite) && typeof identity.hash === "string" && /^[0-9a-f]{64}$/.test(identity.hash)
+  );
+  if (parsed.version !== 1 || !Number.isInteger(parsed.ownerPid) || parsed.phase !== "prepared" && parsed.phase !== "committed" || typeof parsed.hadPrevious !== "boolean" || !identityValid(parsed.candidate) || parsed.hadPrevious && !identityValid(parsed.previous)) {
+    throw new Error("transaction state is missing or invalid");
+  }
+  return parsed;
+}
+function inspectTransactionFile(path, label) {
+  let stats;
+  try {
+    stats = lstatSync3(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular non-symlink file`);
+  }
+  return stats;
+}
+function processIsAlive(pid) {
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+function recoverInterruptedConfigTransactions(path, allowMutation) {
+  const directory = dirname3(path);
+  if (!existsSync3(directory)) return;
+  const entries = readdirSync3(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.name.startsWith(CONFIG_TRANSACTION_PREFIX)) continue;
+    const match = entry.name.match(/^\.pjangler-config-txn-(\d+)-[A-Za-z0-9]+$/);
+    if (!match || !entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`unsafe or malformed Hermes config transaction artifact: ${entry.name}`);
+    }
+    const transactionDirectory = join4(directory, entry.name);
+    const transactionStats = lstatSync3(transactionDirectory);
+    if (typeof process.getuid === "function" && transactionStats.uid !== process.getuid()) {
+      throw new Error(`Hermes config transaction artifact is owned by another user: ${entry.name}`);
+    }
+    const ownerPid = Number(match[1]);
+    if (processIsAlive(ownerPid)) {
+      throw new Error(`another Hermes config transaction is still active (pid ${ownerPid})`);
+    }
+    if (!allowMutation) {
+      throw new Error(`interrupted Hermes config transaction requires live recovery before dry-run: ${entry.name}`);
+    }
+    const allowed = /* @__PURE__ */ new Set([
+      TRANSACTION_CANDIDATE,
+      TRANSACTION_OPERATOR_FILE,
+      TRANSACTION_STATE,
+      TRANSACTION_STATE_NEXT
+    ]);
+    const unknown = readdirSync3(transactionDirectory).filter((name) => !allowed.has(name));
+    if (unknown.length) {
+      throw new Error(`Hermes config transaction contains unexpected entries: ${unknown.join(", ")}`);
+    }
+    const candidatePath = join4(transactionDirectory, TRANSACTION_CANDIDATE);
+    const operatorPath = join4(transactionDirectory, TRANSACTION_OPERATOR_FILE);
+    const candidateStats = inspectTransactionFile(candidatePath, "Transaction candidate");
+    const operatorStats = inspectTransactionFile(operatorPath, "Protected operator config");
+    let marker;
+    let markerError;
+    try {
+      marker = readTransactionMarker(transactionDirectory);
+    } catch (error) {
+      markerError = error;
+    }
+    if (marker?.phase === "committed") {
+      const installed2 = readRegularConfigSnapshot(path);
+      assertSnapshotIdentity(installed2, marker.candidate, "Committed Hermes config");
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+    if (operatorStats) {
+      const currentStats = inspectConfigPath(path);
+      if (currentStats && sameIdentity(currentStats, operatorStats) && candidateStats) {
+        unlinkSync2(operatorPath);
+      } else {
+        renameSync2(operatorPath, path);
+      }
+      const restored = readRegularConfigSnapshot(path);
+      if (marker?.previous) assertSnapshotIdentity(restored, marker.previous, "Recovered Hermes config");
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+    if (candidateStats) {
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+    if (!marker && readdirSync3(transactionDirectory).length === 0) {
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+    if (!marker) {
+      throw new Error(`cannot safely recover Hermes config transaction: ${errorDetail(markerError)}`);
+    }
+    if (marker.hadPrevious) {
+      const restored = readRegularConfigSnapshot(path);
+      assertSnapshotIdentity(restored, marker.previous, "Previously restored Hermes config");
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+      continue;
+    }
+    const installed = inspectConfigPath(path);
+    if (installed) {
+      const installedSnapshot = readRegularConfigSnapshot(path, installed);
+      assertSnapshotIdentity(installedSnapshot, marker.candidate, "Interrupted new Hermes config");
+      unlinkSync2(path);
+    }
+    rmSync2(transactionDirectory, { recursive: true, force: true });
+  }
+}
 function installValidatedConfig(path, next, previous) {
   const nextBytes = Buffer.from(next, "utf8");
   assertValidTomlBytes(nextBytes, "Rendered Hermes template config");
   const directory = dirname3(path);
   mkdirSync3(directory, { recursive: true });
-  const stagingDirectory = mkdtempSync2(join4(directory, ".pjangler-config-"));
-  const stagedPath = join4(stagingDirectory, "config.toml");
+  const transactionDirectory = mkdtempSync2(join4(directory, `${CONFIG_TRANSACTION_PREFIX}${process.pid}-`));
+  chmodSync2(transactionDirectory, 448);
+  const stagedPath = join4(transactionDirectory, TRANSACTION_CANDIDATE);
+  const operatorPath = join4(transactionDirectory, TRANSACTION_OPERATOR_FILE);
   let installed = false;
+  let operatorArtifactHoldsOriginal = false;
+  let retainTransactionForRecovery = false;
+  let failure;
   try {
     const mode = previous?.mode ?? 384;
     writeFileSync3(stagedPath, nextBytes, { mode });
     const staged = readFileSync3(stagedPath);
     if (!staged.equals(nextBytes)) throw new Error("Staged Hermes template config bytes changed before installation");
     assertValidTomlBytes(staged, "Staged Hermes template config");
+    const stagedSnapshot = readRegularConfigSnapshot(stagedPath);
+    const marker = {
+      version: 1,
+      ownerPid: process.pid,
+      phase: "prepared",
+      hadPrevious: previous !== void 0,
+      candidate: snapshotIdentity(stagedSnapshot),
+      previous: previous ? snapshotIdentity(previous) : void 0
+    };
+    writeTransactionMarker(transactionDirectory, marker);
     assertConfigUnchanged(path, previous);
+    if (previous) {
+      linkSync(path, operatorPath);
+      operatorArtifactHoldsOriginal = true;
+      const protectedOriginal = readRegularConfigSnapshot(operatorPath);
+      assertSnapshotIdentity(protectedOriginal, previous, "Protected Hermes config");
+    }
     renameSync2(stagedPath, path);
     installed = true;
     const written = readRegularConfigSnapshot(path);
     if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
     assertValidTomlBytes(written.bytes, "Installed Hermes template config");
+    assertSnapshotIdentity(written, marker.candidate, "Installed Hermes config");
+    writeTransactionMarker(transactionDirectory, { ...marker, phase: "committed" });
+    if (operatorArtifactHoldsOriginal) {
+      unlinkSync2(operatorPath);
+      operatorArtifactHoldsOriginal = false;
+    }
   } catch (error) {
-    let rollbackError;
+    const primary = errorDetail(error);
+    let restorationError;
+    let verificationError;
+    let finalState = installed ? "unknown" : "unchanged";
     if (installed) {
       try {
-        if (previous === void 0) {
+        if (previous && operatorArtifactHoldsOriginal) {
+          renameSync2(operatorPath, path);
+          operatorArtifactHoldsOriginal = false;
+          installed = false;
+          finalState = "restored";
+        } else if (previous === void 0) {
           unlinkSync2(path);
+          installed = false;
+          finalState = "removed";
         } else {
-          const rollbackPath = join4(stagingDirectory, "rollback.toml");
-          assertValidTomlBytes(previous.bytes, "Rollback Hermes template config");
-          writeFileSync3(rollbackPath, previous.bytes, { mode: previous.mode });
-          const stagedRollback = readFileSync3(rollbackPath);
-          if (!stagedRollback.equals(previous.bytes)) throw new Error("Rollback config bytes changed before installation");
-          assertValidTomlBytes(stagedRollback, "Staged rollback Hermes template config");
-          renameSync2(rollbackPath, path);
-          const restored = readRegularConfigSnapshot(path);
-          if (!restored.bytes.equals(previous.bytes)) throw new Error("Restored Hermes template config bytes differ from the original");
-          assertValidTomlBytes(restored.bytes, "Restored Hermes template config");
+          throw new Error("protected operator inode is unavailable");
         }
-      } catch (rollbackFailure) {
-        rollbackError = rollbackFailure;
+      } catch (restoreFailure) {
+        restorationError = restoreFailure;
+      }
+    } else if (operatorArtifactHoldsOriginal) {
+      try {
+        unlinkSync2(operatorPath);
+        operatorArtifactHoldsOriginal = false;
+      } catch (cleanupFailure) {
+        restorationError = cleanupFailure;
       }
     }
-    if (rollbackError) {
-      const primary = error instanceof Error ? error.message : String(error);
-      const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      throw new Error(`${primary}; rollback also failed: ${rollback}`, {
-        cause: new AggregateError([error, rollbackError], "Hermes config installation and rollback both failed")
-      });
+    if (!restorationError && finalState === "restored" && previous) {
+      try {
+        const restored = readRegularConfigSnapshot(path);
+        assertSnapshotIdentity(restored, previous, "Restored Hermes config");
+        assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config");
+      } catch (postRestoreFailure) {
+        verificationError = postRestoreFailure;
+      }
     }
-    throw error;
-  } finally {
-    rmSync2(stagingDirectory, { recursive: true, force: true });
+    if (restorationError) {
+      retainTransactionForRecovery = true;
+      failure = new Error(
+        `${primary}; restoring the operator's original Hermes config failed: ${errorDetail(restorationError)}; protected transaction state was retained for automatic recovery`,
+        { cause: new AggregateError([error, restorationError], "Hermes config installation and restoration both failed") }
+      );
+    } else if (verificationError) {
+      failure = new Error(
+        `${primary}; the operator's original Hermes config was restored before post-restore verification failed: ${errorDetail(verificationError)}`,
+        { cause: new AggregateError([error, verificationError], "Hermes config installation and post-restore verification both failed") }
+      );
+    } else if (finalState === "restored") {
+      failure = new Error(`${primary}; the operator's original Hermes config was restored`, { cause: error });
+    } else if (finalState === "removed") {
+      failure = new Error(`${primary}; the unverified newly-created Hermes config was removed`, { cause: error });
+    } else {
+      failure = new Error(`${primary}; no Hermes config changes were applied`, { cause: error });
+    }
+  }
+  let cleanupError;
+  if (!operatorArtifactHoldsOriginal && !retainTransactionForRecovery) {
+    try {
+      rmSync2(transactionDirectory, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (cleanupError) {
+    const base = failure ? errorDetail(failure) : "Hermes config was installed and validated";
+    throw new Error(
+      `${base}; transaction metadata cleanup failed and will be retried on the next invocation: ${errorDetail(cleanupError)}`,
+      {
+        cause: new AggregateError(
+          failure ? [failure, cleanupError] : [cleanupError],
+          "Hermes config transaction cleanup failed"
+        )
+      }
+    );
+  }
+  if (failure) {
+    throw failure;
   }
 }
 var EnsureTemplateConfig = class extends Command {
@@ -11493,6 +11723,15 @@ var EnsureTemplateConfig = class extends Command {
     }
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
+    try {
+      recoverInterruptedConfigTransactions(path, !ctx.dryRun);
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to recover interrupted Hermes config transaction for ${path}: ${errorDetail(error)}`
+      };
+    }
     let pathStats;
     try {
       pathStats = inspectConfigPath(path);
@@ -11516,7 +11755,7 @@ var EnsureTemplateConfig = class extends Command {
         assertValidToml(next, "Rendered Hermes template config");
       }
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to prepare ${path}: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, outcome: "failed", message: `Failed to prepare ${path}; no changes were applied: ${errorDetail(error)}` };
     }
     if (exists && next === current) {
       return { success: true, outcome: "unchanged", message: `Config schema already current: ${path}` };
@@ -11626,7 +11865,7 @@ var PromptForAgentConfig = class extends Command {
 };
 
 // src/commands/hermes/ValidateHermesOptions.ts
-import { lstatSync as lstatSync7, readdirSync as readdirSync5 } from "node:fs";
+import { lstatSync as lstatSync7, readdirSync as readdirSync6 } from "node:fs";
 import { join as join9, relative as relative6 } from "node:path";
 init_project();
 var EMAIL_UNSUPPORTED_MESSAGE = "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
@@ -11642,7 +11881,7 @@ function existingRoleDirectoryBlockers(roleDir) {
   if (!root.isDirectory() || root.isSymbolicLink()) return ["<target is not a real directory>"];
   const blockers = [];
   const visit = (directory) => {
-    for (const entry of readdirSync5(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync6(directory, { withFileTypes: true })) {
       const path = join9(directory, entry.name);
       const stats = lstatSync7(path);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
@@ -11954,7 +12193,7 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync7 } from "fs";
 import { join as join11 } from "path";
 import { spawnSync as spawnSync5 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
@@ -11973,7 +12212,7 @@ var UntrackHermesRuntimes = class extends Command {
         message: "No Hermes agents found (no agents/hermes directory)."
       };
     }
-    const roles = readdirSync6(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const roles = readdirSync7(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     if (roles.length === 0) {
       return {
         success: true,
@@ -13242,7 +13481,7 @@ init_config();
 // src/notebook/hooks.ts
 import { spawn, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
-import { chmodSync as chmodSync4, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
+import { chmodSync as chmodSync5, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync9, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -13299,7 +13538,7 @@ function assertOwnedSkillTree(source) {
     if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a non-directory component");
     if (uid !== void 0 && directoryStat.uid !== uid) throw new NotebookError("CONFLICT", "Project Notebook skill source is not owned by the current user");
     if (directoryStat.mode & 3586) throw new NotebookError("CONFLICT", "Project Notebook skill source has unsafe directory mode bits");
-    for (const entry of readdirSync8(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync9(directory, { withFileTypes: true })) {
       const path = join22(directory, entry.name);
       const stat = lstatSync11(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a symlink");
@@ -13316,7 +13555,7 @@ function assertOwnedSkillTree(source) {
 function enumerateSkillPayload(source) {
   const result2 = [];
   const walk = (directory) => {
-    for (const entry of readdirSync8(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+    for (const entry of readdirSync9(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join22(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
@@ -13523,7 +13762,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   assertNoSymlinkComponents2(dataRoot);
   const dataStat = lstatSync11(dataRoot);
   if (!dataStat.isDirectory() || dataStat.isSymbolicLink() || typeof process.getuid === "function" && dataStat.uid !== process.getuid()) throw new NotebookError("CONFLICT", "Project Notebook skill data root is not a current-user directory");
-  chmodSync4(dataRoot, 448);
+  chmodSync5(dataRoot, 448);
   if (!existsSync17(payload)) {
     const staging = join22(dataRoot, `.staging-${randomUUID5()}`);
     mkdirSync7(staging, { recursive: false, mode: 448 });
@@ -13533,7 +13772,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
         mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
         copyFileSync3(join22(source, ...entry.path.split("/")), destination);
         const mode = entry.mode === "0755" ? 493 : 420;
-        chmodSync4(destination, mode);
+        chmodSync5(destination, mode);
         const fd = openSync7(destination, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
         try {
           const current = fstatSync5(fd);
@@ -13608,7 +13847,7 @@ function collectSupersededPayloads(dataRoot, keep) {
   const removed = [];
   let entries;
   try {
-    entries = readdirSync8(dataRoot);
+    entries = readdirSync9(dataRoot);
   } catch {
     return removed;
   }
@@ -13644,7 +13883,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
   assertOwnedSkillTree(source);
   const present = [];
   const walk = (directory) => {
-    for (const entry of readdirSync8(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync9(directory, { withFileTypes: true })) {
       const path = join22(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (entry.isDirectory()) {
@@ -13687,7 +13926,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
     const entry = expected.manifest.files.find((item) => item.path === rel);
     mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
     copyFileSync3(join22(expected.source, ...rel.split("/")), destination);
-    chmodSync4(destination, entry.mode === "0755" ? 493 : 420);
+    chmodSync5(destination, entry.mode === "0755" ? 493 : 420);
   }
   verifyProjectNotebookSkillExport(source);
   return {
@@ -15527,7 +15766,7 @@ if __name__ == "__main__":
 };
 
 // src/commands/AddMiseCodegraphScript.ts
-import { chmodSync as chmodSync5 } from "fs";
+import { chmodSync as chmodSync6 } from "fs";
 import { join as join26 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
@@ -15582,7 +15821,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync5(join26(this.context.targetDir, filePath), 493);
+      chmodSync6(join26(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -15788,7 +16027,7 @@ function getRecipeInfo(name) {
 }
 
 // src/describe/index.ts
-import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync10, statSync as statSync4 } from "node:fs";
 import { join as join29, resolve as resolve15 } from "node:path";
 init_project();
 
@@ -16062,7 +16301,7 @@ function describeType(repo) {
     }
   }
   try {
-    const dotnet = readdirSync9(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
+    const dotnet = readdirSync10(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
     if (dotnet && !languages.includes("dotnet")) {
       languages.push("dotnet");
       note("dotnet", dotnet);
