@@ -1052,8 +1052,10 @@ function recoverInterruptedConfigTransactions(path: string, allowMutation: boole
 /**
  * Replace one config atomically and prove the exact installed bytes parse. An
  * existing config is hard-linked into a protected 0700 transaction directory
- * before the candidate rename. Any post-install failure first atomically puts
- * that exact inode back; validator availability can never gate restoration.
+ * before the candidate rename. A post-install failure restores that inode only
+ * while the canonical path still owns this transaction's exact candidate; a
+ * concurrent replacement is preserved with protected state for manual recovery.
+ * Validator availability can never gate a safe restoration.
  */
 function installValidatedConfig(path: string, next: string, previous: ConfigSnapshot | undefined): void {
   const nextBytes = Buffer.from(next, "utf8");
