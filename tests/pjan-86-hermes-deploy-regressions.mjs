@@ -652,6 +652,175 @@ exec "${systemPython.stdout.trim()}" "$@"
     "restoration must remove the candidate and all transaction artifacts",
   );
 
+  // A pre-existing alias means the protected inode can be mutated through a
+  // pathname outside this transaction. Reject link count 2 before parsing,
+  // staging, linking, or changing either alias.
+  const aliasHome = join(temp, "hardlinked-config-xdg");
+  const aliasDirectory = join(aliasHome, "hermes-agent-template");
+  const aliasPath = join(aliasDirectory, "config.toml");
+  const aliasOtherPath = join(aliasDirectory, "operator-alias.toml");
+  const aliasPythonBin = join(temp, "hardlink-python-bin");
+  const aliasPython = join(aliasPythonBin, "python3");
+  const aliasPythonSentinel = join(temp, "hardlink-python-ran");
+  const aliasSource = Buffer.from("# multiply linked operator config\n[fleet]\nhermes_bin = \"/operator/alias\"\n", "utf8");
+  mkdirSync(aliasDirectory, { recursive: true });
+  mkdirSync(aliasPythonBin, { recursive: true });
+  writeFileSync(aliasPath, aliasSource);
+  chmodSync(aliasPath, 0o640);
+  utimesSync(aliasPath, preservedMtime, preservedMtime);
+  linkSync(aliasPath, aliasOtherPath);
+  writeFileSync(aliasPython, `#!/bin/sh
+: > "$ALIAS_PYTHON_SENTINEL"
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(aliasPython, 0o755);
+  const aliasBefore = statSync(aliasPath);
+  assert.equal(aliasBefore.nlink, 2);
+  const aliasRejected = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: `${aliasPythonBin}${delimiter}${commandEnv.PATH}`,
+    ALIAS_PYTHON_SENTINEL: aliasPythonSentinel,
+    XDG_CONFIG_HOME: aliasHome,
+  });
+  assert.notEqual(aliasRejected.status, 0);
+  assert.match(aliasRejected.stderr, /unsafe link count 2; expected exactly 1/);
+  assert.equal(existsSync(aliasPythonSentinel), false, "multiply linked config must fail before TOML validation");
+  for (const path of [aliasPath, aliasOtherPath]) {
+    assert.equal(readFileSync(path).equals(aliasSource), true);
+    const after = statSync(path);
+    assert.equal(after.ino, aliasBefore.ino);
+    assert.equal(after.mtimeMs, aliasBefore.mtimeMs);
+    assert.equal(after.mode & 0o777, aliasBefore.mode & 0o777);
+    assert.equal(after.nlink, 2);
+  }
+  assert.deepEqual(
+    readdirSync(aliasDirectory).filter((name) => name.startsWith(".pjangler-config-txn-")),
+    [],
+    "unsafe original topology must fail before transaction creation",
+  );
+
+  // A non-cooperating writer replaces the canonical leaf while installed TOML
+  // validation is paused. The failed installer must not rename the protected
+  // original over those newer bytes. Both valid and torn recovery markers must
+  // keep refusing automatic recovery without changing the replacement.
+  const casPythonBin = join(temp, "cas-python-bin");
+  const casPython = join(casPythonBin, "python3");
+  const casCallCount = join(temp, "cas-validator-call-count");
+  const casReady = join(temp, "cas-installed-validation-ready");
+  const casRelease = join(temp, "cas-installed-validation-release");
+  mkdirSync(casPythonBin, { recursive: true });
+  writeFileSync(casPython, `#!/bin/sh
+count=0
+if [ -f "$CAS_CALL_COUNT" ]; then
+  count=$(/bin/cat "$CAS_CALL_COUNT")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$CAS_CALL_COUNT"
+if [ "$count" -eq 6 ]; then
+  : > "$CAS_READY"
+  while [ ! -e "$CAS_RELEASE" ]; do
+    /bin/sleep 0.02
+  done
+  printf '%s\n' 'TOML_INVALID:forced installed validation failure' >&2
+  exit 1
+fi
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(casPython, 0o755);
+  const casHome = join(temp, "cas-conflict-xdg");
+  const casDirectory = join(casHome, "hermes-agent-template");
+  const casPath = join(casDirectory, "config.toml");
+  const casReplacementStage = join(casDirectory, "replacement.toml");
+  const casOriginal = Buffer.from("# original before CAS conflict\n[fleet]\nhermes_bin = \"/operator/original\"\n", "utf8");
+  const casReplacement = Buffer.from("# newer non-cooperating writer\n[fleet]\nhermes_bin = \"/operator/newer\"\n", "utf8");
+  mkdirSync(casDirectory, { recursive: true });
+  writeFileSync(casPath, casOriginal);
+  chmodSync(casPath, 0o640);
+  utimesSync(casPath, preservedMtime, preservedMtime);
+  const casOriginalStats = statSync(casPath);
+  const casWriter = runAsync(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: `${casPythonBin}${delimiter}${commandEnv.PATH}`,
+    CAS_CALL_COUNT: casCallCount,
+    CAS_READY: casReady,
+    CAS_RELEASE: casRelease,
+    XDG_CONFIG_HOME: casHome,
+  });
+  await waitForPath(casReady, "installed candidate validation pause");
+  const installedCandidateStats = statSync(casPath);
+  assert.notEqual(installedCandidateStats.ino, casOriginalStats.ino);
+  writeFileSync(casReplacementStage, casReplacement);
+  chmodSync(casReplacementStage, 0o600);
+  const replacementMtime = new Date("2025-02-03T04:05:06.000Z");
+  utimesSync(casReplacementStage, replacementMtime, replacementMtime);
+  const stagedReplacementStats = statSync(casReplacementStage);
+  renameSync(casReplacementStage, casPath);
+  writeFileSync(casRelease, "release\n");
+  const casFailure = await casWriter.done;
+  assert.notEqual(casFailure.status, 0);
+  assert.match(casFailure.stderr, /Installed Hermes template config is not valid TOML 1\.0/);
+  assert.match(casFailure.stderr, /canonical Hermes config changed after candidate installation/);
+  assert.match(casFailure.stderr, /canonical Hermes config was preserved/);
+  assert.match(casFailure.stderr, /retained for manual recovery/);
+  assert.equal(readFileSync(casCallCount, "utf8").trim(), "6", "conflict must skip post-restore validation");
+  const assertReplacementPreserved = () => {
+    assert.equal(readFileSync(casPath).equals(casReplacement), true);
+    const current = statSync(casPath);
+    assert.equal(current.dev, stagedReplacementStats.dev);
+    assert.equal(current.ino, stagedReplacementStats.ino);
+    assert.equal(current.mtimeMs, stagedReplacementStats.mtimeMs);
+    assert.equal(current.mode & 0o777, stagedReplacementStats.mode & 0o777);
+    assert.equal(current.nlink, 1);
+  };
+  assertReplacementPreserved();
+  const casTransactions = readdirSync(casDirectory).filter((name) => name.startsWith(".pjangler-config-txn-"));
+  assert.equal(casTransactions.length, 1, "CAS conflict must retain exactly one protected transaction");
+  const casTransaction = join(casDirectory, casTransactions[0]);
+  const casOperatorPath = join(casTransaction, "operator-config");
+  const casStatePath = join(casTransaction, "state.json");
+  assert.equal(readFileSync(casOperatorPath).equals(casOriginal), true);
+  const casProtectedStats = statSync(casOperatorPath);
+  assert.equal(casProtectedStats.ino, casOriginalStats.ino);
+  assert.equal(casProtectedStats.mtimeMs, casOriginalStats.mtimeMs);
+  assert.equal(casProtectedStats.nlink, 1);
+  const conflictMarker = JSON.parse(readFileSync(casStatePath, "utf8"));
+  assert.equal(conflictMarker.phase, "conflict");
+
+  const recordedConflictRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: casHome,
+  });
+  assert.notEqual(recordedConflictRecovery.status, 0);
+  assert.match(recordedConflictRecovery.stderr, /recorded a concurrent canonical-path conflict/);
+  assert.match(recordedConflictRecovery.stderr, /retained for manual recovery/);
+  assertReplacementPreserved();
+  assert.equal(existsSync(casTransaction), true);
+
+  writeFileSync(casStatePath, `${JSON.stringify({ ...conflictMarker, phase: "prepared" })}\n`, { mode: 0o600 });
+  const preparedCrashRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: casHome,
+  });
+  assert.notEqual(preparedCrashRecovery.status, 0);
+  assert.match(preparedCrashRecovery.stderr, /Canonical Hermes config changed after candidate installation/);
+  assert.match(preparedCrashRecovery.stderr, /retained for manual recovery/);
+  assertReplacementPreserved();
+  assert.equal(existsSync(casTransaction), true);
+
+  renameSync(casStatePath, join(casTransaction, "state-next.json"));
+  const tornCrashRecovery = run(["config", "bootstrap", "--force"], bootstrapRepo, {
+    ...commandEnv,
+    PATH: fakeBin,
+    XDG_CONFIG_HOME: casHome,
+  });
+  assert.notEqual(tornCrashRecovery.status, 0);
+  assert.match(tornCrashRecovery.stderr, /transaction metadata is torn or incomplete/);
+  assert.match(tornCrashRecovery.stderr, /retained for manual recovery/);
+  assertReplacementPreserved();
+  assert.equal(existsSync(casTransaction), true);
+
   // Simulate process death after the candidate rename: the protected hard link
   // and prepared non-secret marker survive in the same directory. The next
   // invocation restores the original before validation, cleans the transaction,
@@ -1206,9 +1375,18 @@ exit 1
   assert.ok(configBootstrap.indexOf("pathStats = inspectConfigPath(path)") < configBootstrap.indexOf("if (exists && !force)"));
   assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
   assert.match(configBootstrap, /assertValidTomlBytes\(written\.bytes, "Installed Hermes template config"\)/);
-  assert.match(configBootstrap, /current\.hash !== previous\.hash/);
+  assert.match(configBootstrap, /assertSnapshotIdentity\(current, previous/);
+  assert.match(configBootstrap, /assertLinkCount\(previous, 1, `Existing Hermes template config/);
   assert.match(configBootstrap, /linkSync\(path, operatorPath\)/);
+  assert.match(configBootstrap, /assertLinkCount\(linkedCanonical, 2/);
+  assert.match(configBootstrap, /assertLinkCount\(protectedOriginal, 2/);
   assert.match(configBootstrap, /renameSync\(operatorPath, path\)/);
+  assert.ok(
+    configBootstrap.indexOf("assertSnapshotIdentity(canonicalCandidate, marker.candidate") < configBootstrap.lastIndexOf("renameSync(operatorPath, path)"),
+    "live rollback must prove the canonical candidate identity before replacing it",
+  );
+  assert.match(configBootstrap, /phase: "conflict"/);
+  assert.match(configBootstrap, /retained for manual recovery/);
   assert.ok(
     configBootstrap.indexOf("renameSync(operatorPath, path)") < configBootstrap.indexOf('assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config")'),
     "the original inode must be restored before any post-restore validator call",
