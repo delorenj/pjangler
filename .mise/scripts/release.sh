@@ -80,6 +80,13 @@ resolve_release_ticket() {
     die "release ticket is missing or invalid; set RELEASE_TICKET=PJAN-<number> or release from a ticketed branch/commit"
   printf '%s\n' "$ticket"
 }
+verify_release_commit_subject() {
+  local expected actual
+  expected="release(${RELEASE_TICKET_ID}): v${NEW#v}"
+  actual="$(git log -1 --pretty=%s)"
+  [ "$actual" = "$expected" ] ||
+    die "release hook changed the commit subject; expected '$expected', got '$actual'; no tag or remote ref was created"
+}
 cleanup_pack_dir() {
   if [ -n "$PACK_DIR" ] && [ -d "$PACK_DIR" ]; then
     case "$PACK_DIR" in
@@ -405,6 +412,7 @@ npm run check:tracked-secrets
 # exact tarball after all pre/post-commit hooks have had their chance to act.
 RELEASE_BASE_HEAD="$(git rev-parse HEAD)"
 git commit -m "release($RELEASE_TICKET_ID): $NEW"
+verify_release_commit_subject
 [ "$(git rev-parse HEAD^)" = "$RELEASE_BASE_HEAD" ] ||
   die "release hook changed HEAD topology; no tag or remote ref was created"
 [ "$(git diff-tree --no-commit-id --name-only -r HEAD | sort)" = $'package-lock.json\npackage.json' ] ||

@@ -153,7 +153,13 @@ service-state postconditions. It reports the role-local runtime and distinguishe
 verified active services from healthy deferred capabilities. `--email` is
 rejected before config, repository, or external mutation.
 
-Heavy/irreversible steps (runtime GH repo, ticket-board creation, Bloodbank consumer, systemd `--user` units) are **off by default under `--local`** (and systemd is auto-skipped on macOS) so a non-technical operator can't accidentally create cloud resources. Fleet-wide operations belong to the `agent-fleet-operations` skill, not this repo.
+The only supported runtime is ignored role-local state under
+`agents/hermes/<role>/runtime`; deployment never creates a per-agent GitHub
+repository or runtime submodule. The legacy `--skip-runtime-repo` flag is a
+deprecated no-op. External ticket-board creation and systemd `--user` units are
+**off by default under `--local`** (and systemd is auto-skipped on macOS).
+Bloodbank ingress remains fleet-shared. Fleet-wide operations belong to the
+`agent-fleet-operations` skill, not this repo.
 
 ### 5. Utilities (`src/utils/`)
 

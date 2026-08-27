@@ -23,12 +23,11 @@ export interface HermesAgentContext extends CommandContext {
 
   // --- behavior toggles ---
   yes?: boolean;              // non-interactive; accept all defaults
-  local?: boolean;            // local-only: skip runtime repo / Plane / Bloodbank / systemd
+  local?: boolean;            // local-only: defer Plane/systemd; runtime remains role-local
   live?: boolean;             // explicit external-effect authority (still requires per-effect opt-ins)
   forceConfig?: boolean;      // add missing pinned-schema fields to the host config
   skipTelegram?: boolean;
   skipEmail?: boolean;
-  skipRuntimeRepo?: boolean;
   skipSystemd?: boolean;
   skipBloodbank?: boolean;
   skipPlane?: boolean;
@@ -38,7 +37,6 @@ export interface HermesAgentContext extends CommandContext {
   // that eligibility audit, then a read-only postcondition audit verifies the
   // result. CLI callers that omit this block retain their existing sequencing.
   deferredExternalEffects?: {
-    runtimeRepo: boolean;
     ticketBoard: boolean;
     systemd: boolean;
     owner: "hermes" | "project";

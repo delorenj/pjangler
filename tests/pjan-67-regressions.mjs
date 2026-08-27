@@ -142,6 +142,11 @@ try {
   for (const field of ["apply", "live", "provisionRuntimeRepo", "provisionTicketBoard", "enableSystemd"]) {
     assert.ok(deploy.inputSchema.properties[field], `Hermes discovery must expose ${field}`);
   }
+  for (const field of ["provisionRuntimeRepo", "skipRuntimeRepo"]) {
+    const compatibility = deploy.inputSchema.properties[field];
+    assert.equal(compatibility.deprecated, true, `${field} must be marked deprecated in MCP discovery`);
+    assert.match(compatibility.description, /Deprecated no-op.*role-local.*never provisions.*GitHub/i);
+  }
   assert.equal("dryRun" in deploy.inputSchema.properties, false, "Hermes must expose apply rather than a negative dry-run switch");
   assert.equal("quiet" in deploy.inputSchema.properties, false, "MCP callers cannot weaken the forced quiet contract");
   assert.equal("yes" in deploy.inputSchema.properties, false, "MCP Hermes never exposes an interactive confirmation path");
@@ -201,30 +206,31 @@ try {
     name: "pjangler_deploy_hermes_agent",
     arguments: { targetDir: hermesTarget, role: "director", local: false },
   }));
-  assert.equal(localFalsePreview.context.skipRuntimeRepo, true, "local=false alone must not arm a runtime repo");
+  assert.equal(localFalsePreview.runtimeMode, "role-local-ignored");
+  assert.equal("skipRuntimeRepo" in localFalsePreview.context, false, "responses must not advertise a retired runtime-repo effect");
   assert.equal(localFalsePreview.context.skipPlane, true, "local=false alone must not arm a ticket board");
   assert.equal(localFalsePreview.context.skipSystemd, true, "local=false alone must not arm systemd");
 
-  const externalPreview = payload(await client.callTool({
+  const runtimeCompatibilityPreview = payload(await client.callTool({
     name: "pjangler_deploy_hermes_agent",
     arguments: {
       targetDir: hermesTarget,
       role: "director",
-      local: false,
-      live: true,
       provisionRuntimeRepo: true,
+      skipRuntimeRepo: true,
     },
   }));
-  assert.equal(externalPreview.apply, false);
-  assert.equal(externalPreview.context.dryRun, true);
-  assert.equal(externalPreview.context.skipRuntimeRepo, false, "the exact positive opt-in should appear in the preview");
-  assert.equal(externalPreview.context.skipPlane, true, "unselected external effects stay off");
-  assert.equal(externalPreview.context.skipSystemd, true, "unselected external effects stay off");
+  assert.equal(runtimeCompatibilityPreview.apply, false);
+  assert.equal(runtimeCompatibilityPreview.context.dryRun, true);
+  assert.equal(runtimeCompatibilityPreview.runtimeMode, "role-local-ignored");
+  assert.equal("skipRuntimeRepo" in runtimeCompatibilityPreview.context, false);
+  assert.equal(runtimeCompatibilityPreview.context.skipPlane, true, "compatibility flags cannot arm external effects");
+  assert.equal(runtimeCompatibilityPreview.context.skipSystemd, true, "compatibility flags cannot arm external effects");
 
   for (const [label, arguments_] of [
-    ["live missing", { targetDir: hermesTarget, role: "pm", apply: true, local: false, provisionRuntimeRepo: true }],
-    ["local-only contradiction", { targetDir: hermesTarget, role: "pm", apply: true, live: true, local: true, provisionRuntimeRepo: true }],
-    ["positive and negative contradiction", { targetDir: hermesTarget, role: "pm", apply: true, live: true, local: false, provisionRuntimeRepo: true, skipRuntimeRepo: true }],
+    ["live missing", { targetDir: hermesTarget, role: "pm", apply: true, local: false, enableSystemd: true }],
+    ["local-only contradiction", { targetDir: hermesTarget, role: "pm", apply: true, live: true, local: true, enableSystemd: true }],
+    ["positive and negative contradiction", { targetDir: hermesTarget, role: "pm", apply: true, live: true, local: false, provisionTicketBoard: true, skipPlane: true }],
   ]) {
     const result = await client.callTool({ name: "pjangler_deploy_hermes_agent", arguments: arguments_ });
     assert.equal(result.isError, true, `${label}: insufficient/contradictory consent must be an MCP error`);
@@ -257,7 +263,7 @@ try {
       name: "Insufficient Project Consent",
       targetDir: projectConsentTarget,
       apply: true,
-      provisionRuntimeRepo: true,
+      enableSystemd: true,
     },
   });
   assert.equal(invalidProjectConsent.isError, true, "project init must reject external effects without live=true");
@@ -392,6 +398,18 @@ try {
 const rawFleet = join(temporary, "raw-fleet");
 const rawHermes = join(temporary, "raw-hermes");
 mkdirSync(rawFleet, { recursive: true });
+for (const skill of [
+  "33god-projects",
+  "delonet-conventions",
+  "delonet-dotenv",
+  "hermes-pm-template-maintenance",
+  "hindsight",
+  "subagent-driven-development",
+]) {
+  const skillDir = join(rawFleet, "skills", skill);
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${skill}\ndescription: PJAN-67 fixture\n---\n`);
+}
 executable(rawHermes, `#!/bin/sh
 printf '%s\n' 'PJAN67_CHILD_STDOUT_NOISE'
 printf '%s\n' 'PJAN67_CHILD_STDERR_NOISE' >&2
@@ -487,7 +505,11 @@ assert.ok(
     `(~/.local/share/uv/tools/copier with an interpreter under ~/.local/share/uv/python).\n` +
     `MCP response was: ${JSON.stringify(rawCall.result)}`,
 );
-assert.match(readFileSync(effectLog, "utf8"), /hermes-child:1:1:1/, "local apply must keep every unselected external effect disabled");
+assert.match(
+  readFileSync(effectLog, "utf8"),
+  /hermes-child:0:1:1/,
+  "local apply must converge required role-local runtime while keeping board/systemd external effects disabled",
+);
 assert.doesNotMatch(readFileSync(effectLog, "utf8"), /provider-credential-present/, "Copier must not inherit provider credentials without a positive board grant");
 assert.doesNotMatch(readFileSync(effectLog, "utf8"), /interactive-channel-authority-present/, "MCP Hermes children must not inherit unavailable interactive-channel authority");
 assert.equal(existsSync(providerLog), false, "raw local Hermes apply must not invoke the board provider");

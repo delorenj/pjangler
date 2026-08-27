@@ -231,7 +231,7 @@ import {
   readFileSync as readFileSync6,
   readdirSync as readdirSync4,
   realpathSync as realpathSync3,
-  statSync
+  statSync as statSync2
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename as basename4, delimiter, isAbsolute, join as join7, relative as relative4, resolve as resolve4 } from "node:path";
@@ -259,7 +259,7 @@ function sha2562(path) {
 function fingerprint(path) {
   const absolute = resolve4(path);
   const realPath = realpathSync3(absolute);
-  const stat = statSync(realPath);
+  const stat = statSync2(realPath);
   if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
   return {
     path: absolute,
@@ -406,7 +406,7 @@ function attestUvCopier(candidate, realCandidate, home) {
       const allowed = path === realCandidate || containedBy(sitePackages, path);
       if (!allowed) return { ok: false, error: `Copier RECORD path escapes the tool environment: ${entry.relativePath}` };
       const actualDigest = sha2562(path);
-      const actualSize = statSync(path).size;
+      const actualSize = statSync2(path).size;
       if (actualDigest !== entry.digest || actualSize !== entry.size) {
         return { ok: false, error: `Copier RECORD integrity mismatch: ${entry.relativePath}` };
       }
@@ -968,7 +968,7 @@ var init_RegistryStore = __esm({
 // src/project/index.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { isIP } from "node:net";
-import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, openSync as openSync2, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync2, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
 import { basename as basename5, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -1118,7 +1118,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
     fsyncSync(fd);
     closeSync2(fd);
     fd = void 0;
-    renameSync2(temp, path);
+    renameSync3(temp, path);
     chmodSync2(path, mode);
     fsyncDirectory(dirname5(path));
   } catch (error) {
@@ -1127,7 +1127,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
     } catch {
     }
     try {
-      unlinkSync2(temp);
+      unlinkSync3(temp);
     } catch {
     }
     throw error;
@@ -1375,7 +1375,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join8(tmpdir2(), "pjangler-tp-"));
+  const staging = mkdtempSync3(join8(tmpdir2(), "pjangler-tp-"));
   try {
     const providersDir = join8(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
@@ -1456,7 +1456,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
     };
   } finally {
-    rmSync2(staging, { recursive: true, force: true });
+    rmSync3(staging, { recursive: true, force: true });
   }
 }
 function defaultProjectAutomation() {
@@ -1622,14 +1622,12 @@ function planProjectInit(input) {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
-  const provisionRuntimeRepo = input.provisionRuntimeRepo ?? live;
   const provisionTicketBoard = input.provisionTicketBoard ?? live;
   const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
   const boardEnabled = live && provisionTicketBoard && !skipPlane;
-  const runtimeRepoEnabled = live && provisionRuntimeRepo;
   const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
-  const anyExternalAgentEffect = runtimeRepoEnabled || boardEnabled || systemdEnabled;
+  const anyExternalAgentEffect = boardEnabled || systemdEnabled;
   const actions = [
     { kind: "registry.upsert", registryPath: registryPath2, slug, project }
   ];
@@ -1675,7 +1673,6 @@ function planProjectInit(input) {
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipRuntimeRepo: !runtimeRepoEnabled,
         skipPlane: !boardEnabled,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
@@ -2040,7 +2037,7 @@ var init_project = __esm({
 // src/notebook/config.ts
 import { randomUUID } from "node:crypto";
 import { isIP as isIP2 } from "node:net";
-import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync7, openSync as openSync3, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync3, writeFileSync as writeFileSync8 } from "node:fs";
+import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync7, openSync as openSync3, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname7, resolve as resolve7 } from "node:path";
 function isRecord2(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -2312,7 +2309,7 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
     } finally {
       closeSync3(fd);
     }
-    renameSync3(temp, manifestPath);
+    renameSync4(temp, manifestPath);
     try {
       const directory = openSync3(dirname7(manifestPath), "r");
       try {
@@ -2643,8 +2640,8 @@ import {
   openSync as openSync4,
   readSync,
   readdirSync as readdirSync7,
-  renameSync as renameSync4,
-  unlinkSync as unlinkSync4,
+  renameSync as renameSync5,
+  unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync9
 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
@@ -2792,7 +2789,7 @@ function unlinkStateFile(path, root, allowMissing = false) {
       throw new NotebookError("CONFLICT", "Refusing to remove a suspect Notebook state entry; run pj notebook audit --json");
     }
     assertOwned(stat);
-    unlinkSync4(target);
+    unlinkSync5(target);
     fsyncSync3(parentFd);
     return true;
   } finally {
@@ -2817,7 +2814,7 @@ function renameStateFile(source, target, root) {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    renameSync4(sourcePath, targetPath);
+    renameSync5(sourcePath, targetPath);
     fsyncSync3(parentFd);
   } finally {
     if (sourceFd !== void 0) closeSync4(sourceFd);
@@ -2864,11 +2861,11 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
     } catch (error) {
       if (error.code !== "ENOENT" || existingIdentity) throw error;
     }
-    renameSync4(temp, target);
+    renameSync5(temp, target);
     fsyncSync3(parentFd);
   } catch (error) {
     try {
-      unlinkSync4(temp);
+      unlinkSync5(temp);
     } catch {
     }
     throw error;
@@ -4928,7 +4925,7 @@ var init_capture = __esm({
 });
 
 // src/mcp-server.ts
-import { existsSync as existsSync23, statSync as statSync5 } from "node:fs";
+import { existsSync as existsSync23, statSync as statSync6 } from "node:fs";
 import { basename as basename8, dirname as dirname14, join as join30, resolve as resolve16 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10985,8 +10982,20 @@ var DockerRecipe = class extends Recipe {
 
 // src/commands/hermes/EnsureTemplateConfig.ts
 import { homedir as homedir3, platform } from "node:os";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, realpathSync as realpathSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import {
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync3,
+  mkdtempSync as mkdtempSync2,
+  readFileSync as readFileSync3,
+  realpathSync as realpathSync2,
+  renameSync as renameSync2,
+  rmSync as rmSync2,
+  statSync,
+  unlinkSync as unlinkSync2,
+  writeFileSync as writeFileSync3
+} from "node:fs";
 import { join as join4, dirname as dirname3 } from "node:path";
+import { parse as parseToml } from "smol-toml";
 var HERMES_GIT_URL = "https://github.com/delorenj/hermes-agent.git";
 var HERMES_GIT_REF = "main";
 var HERMES_GIT_SHA = "0408fec7a153e6c32c064acd2b8053917f1525f1";
@@ -11261,7 +11270,16 @@ function ownedBareKeys(source, table) {
   }
   return keys;
 }
+function assertValidToml(source, label) {
+  try {
+    parseToml(source);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} is not valid TOML: ${detail}`);
+  }
+}
 function mergeHostConfig(existing) {
+  assertValidToml(existing, "Existing Hermes template config");
   let merged = existing;
   for (const { section: section2, values } of hostSchema()) {
     const tables = parseTomlTableHeaders(merged);
@@ -11289,7 +11307,42 @@ ${values.map(([key, value]) => `${key} = ${value}`).join("\n")}
 `;
     merged = `${merged.slice(0, table.bodyEnd)}${addition}${merged.slice(table.bodyEnd)}`;
   }
+  assertValidToml(merged, "Merged Hermes template config");
   return merged;
+}
+function installValidatedConfig(path, next, previous) {
+  assertValidToml(next, "Rendered Hermes template config");
+  const directory = dirname3(path);
+  mkdirSync3(directory, { recursive: true });
+  const stagingDirectory = mkdtempSync2(join4(directory, ".pjangler-config-"));
+  const stagedPath = join4(stagingDirectory, "config.toml");
+  let installed = false;
+  try {
+    const mode = previous === void 0 ? 384 : statSync(path).mode & 511;
+    writeFileSync3(stagedPath, next, { encoding: "utf8", mode });
+    const staged = readFileSync3(stagedPath, "utf8");
+    if (staged !== next) throw new Error("Staged Hermes template config bytes changed before installation");
+    assertValidToml(staged, "Staged Hermes template config");
+    renameSync2(stagedPath, path);
+    installed = true;
+    const written = readFileSync3(path, "utf8");
+    if (written !== next) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
+    assertValidToml(written, "Installed Hermes template config");
+  } catch (error) {
+    if (installed) {
+      if (previous === void 0) {
+        unlinkSync2(path);
+      } else {
+        const rollbackPath = join4(stagingDirectory, "rollback.toml");
+        writeFileSync3(rollbackPath, previous, { encoding: "utf8", mode: statSync(path).mode & 511 });
+        assertValidToml(readFileSync3(rollbackPath, "utf8"), "Rollback Hermes template config");
+        renameSync2(rollbackPath, path);
+      }
+    }
+    throw error;
+  } finally {
+    rmSync2(stagingDirectory, { recursive: true, force: true });
+  }
 }
 var EnsureTemplateConfig = class extends Command {
   async invoke() {
@@ -11313,9 +11366,11 @@ var EnsureTemplateConfig = class extends Command {
       if (exists) {
         current = readFileSync3(path, "utf8");
         next = mergeHostConfig(current);
+      } else {
+        assertValidToml(next, "Rendered Hermes template config");
       }
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, outcome: "failed", message: `Failed to prepare ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
     if (exists && next === current) {
       return { success: true, outcome: "unchanged", message: `Config schema already current: ${path}` };
@@ -11329,8 +11384,7 @@ var EnsureTemplateConfig = class extends Command {
       };
     }
     try {
-      mkdirSync3(dirname3(path), { recursive: true });
-      writeFileSync3(path, next);
+      installValidatedConfig(path, next, exists ? current : void 0);
     } catch (error) {
       return { success: false, outcome: "failed", message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -11444,7 +11498,9 @@ function existingRoleDirectoryBlockers(roleDir) {
   const visit = (directory) => {
     for (const entry of readdirSync5(directory, { withFileTypes: true })) {
       const path = join9(directory, entry.name);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      if (entry.isSymbolicLink()) {
+        blockers.push(relative6(roleDir, path));
+      } else if (entry.isDirectory()) {
         visit(path);
       } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name)) {
         blockers.push(relative6(roleDir, path));
@@ -11646,9 +11702,10 @@ var RunCopierTemplate = class extends Command {
       // renders repo-local files first and executes those scripts only after a
       // structural lifecycle gate has accepted the render.
       SKIP_HOST_STATE: ctx.deferredExternalEffects ? "1" : "0",
-      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
-      // per-profile file consumer, even when an older template still exposes it.
-      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : ctx.skipRuntimeRepo ? "1" : "0",
+      // The legacy script/env name now owns only ignored role-local runtime
+      // setup. Structured transactions defer it until rendered eligibility;
+      // ordinary CLI deploys always run it and no flag can create a remote repo.
+      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : "0",
       SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0"
@@ -11882,7 +11939,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
 import { join as join12 } from "node:path";
-import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
+import { existsSync as existsSync9, unlinkSync as unlinkSync4 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -11981,11 +12038,11 @@ var WireTelegram = class extends Command {
     if (!existsSync9(script)) {
       return {
         success: false,
-        message: `\u2717 ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`
+        message: `\u2717 ${script} not found. Did Copier finish rendering the Hermes role?`
       };
     }
     const marker = join12(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync9(marker)) unlinkSync3(marker);
+    if (existsSync9(marker)) unlinkSync4(marker);
     const spinner3 = p3.spinner();
     spinner3.start("Verifying token + wiring profile");
     const result2 = spawnSync5("bash", [script], {
@@ -12071,7 +12128,7 @@ var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
     const selected = ctx.deferredExternalEffects;
-    if (!selected || !selected.runtimeRepo && !selected.ticketBoard && !selected.systemd) {
+    if (!selected || !selected.ticketBoard && !selected.systemd) {
       return { success: true, outcome: "unchanged", message: "Hermes external effects not selected" };
     }
     if (!ctx.roleDir) {
@@ -12085,7 +12142,9 @@ var ApplyDeferredExternalEffects = class extends Command {
       SKIP_EMAIL: "1",
       SKIP_SLACK: "1",
       SKIP_BLOODBANK: "1",
-      SKIP_RUNTIME_REPO: selected.runtimeRepo ? "0" : "1",
+      // Role-local runtime is already converged by ApplyDeferredHostEffects.
+      // External consent can never dispatch the retired GitHub runtime model.
+      SKIP_RUNTIME_REPO: "1",
       SKIP_PLANE: selected.ticketBoard ? "0" : "1",
       SKIP_SYSTEMD: selected.systemd ? "0" : "1"
     };
@@ -12093,10 +12152,9 @@ var ApplyDeferredExternalEffects = class extends Command {
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
     const roleManifest = join14(ctx.roleDir, "role.yaml");
     const scripts = [
-      ...selected.runtimeRepo ? ["20-runtime-repo.sh"] : [],
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
       ...selected.systemd ? ["70-systemd.sh"] : [],
-      // Refresh fleet metadata after a board binding or runtime/systemd state
+      // Refresh fleet metadata after a board binding or systemd state
       // changes. 80-registry.sh is idempotent and performs no provider call.
       "80-registry.sh"
     ];
@@ -12167,13 +12225,15 @@ var ApplyDeferredHostEffects = class extends Command {
       SKIP_EMAIL: "1",
       SKIP_SLACK: "1",
       SKIP_BLOODBANK: "1",
-      SKIP_RUNTIME_REPO: "1",
+      // The legacy name controls role-local runtime/profile convergence only.
+      // It is a required host/local phase, never a GitHub repository effect.
+      SKIP_RUNTIME_REPO: "0",
       SKIP_PLANE: "1",
       SKIP_SYSTEMD: "1"
     };
     scrubTicketProviderCredentials(env2);
     scrubInteractiveChannelCredentials(env2);
-    const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
+    const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh"];
     const logs = [];
     for (const script of scripts) {
       const path = join15(ctx.roleDir, ".scripts", script);
@@ -12362,7 +12422,7 @@ var HermesAgentRecipe = class extends Recipe {
     const selected = hermesContext.deferredExternalEffects;
     if (selected?.owner === "project" || ctx.quiet && !selected) return localResult;
     let appliedResult = localResult;
-    if (selected?.owner === "hermes" && (selected.runtimeRepo || selected.ticketBoard || selected.systemd)) {
+    if (selected?.owner === "hermes" && (selected.ticketBoard || selected.systemd)) {
       const beforeExternal = snapshotTree(ctx.targetDir);
       const external = await new ApplyDeferredExternalEffects(ctx).invoke();
       const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
@@ -12595,7 +12655,7 @@ var NodeRecipe = class extends Recipe {
 // src/recipes/ProjectRecipe.ts
 init_project();
 import { spawnSync as spawnSync12 } from "node:child_process";
-import { existsSync as existsSync19, lstatSync as lstatSync11, readFileSync as readFileSync19, rmSync as rmSync4 } from "node:fs";
+import { existsSync as existsSync19, lstatSync as lstatSync11, readFileSync as readFileSync19, rmSync as rmSync5 } from "node:fs";
 import { dirname as dirname11, isAbsolute as isAbsolute5, join as join24, relative as relativePath, resolve as resolve13 } from "node:path";
 init_tree_diff();
 
@@ -13037,7 +13097,7 @@ init_config();
 // src/notebook/hooks.ts
 import { spawn, spawnSync as spawnSync10 } from "node:child_process";
 import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
-import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync10, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync5, rmSync as rmSync3, symlinkSync as symlinkSync2, unlinkSync as unlinkSync5, writeFileSync as writeFileSync10 } from "node:fs";
+import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync10, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -13343,9 +13403,9 @@ function installPackagedProjectNotebookSkill(input = {}) {
       writeFileSync10(join22(staging, "SHA256SUMS"), `${manifest.files.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n")}
 `, { mode: 420, flag: "wx" });
       verifyProjectNotebookSkillExport(staging);
-      renameSync5(staging, payload);
+      renameSync6(staging, payload);
     } finally {
-      if (existsSync17(staging)) rmSync3(staging, { recursive: true, force: true });
+      if (existsSync17(staging)) rmSync4(staging, { recursive: true, force: true });
     }
   } else {
     const stat = lstatSync10(payload);
@@ -13414,7 +13474,7 @@ function collectSupersededPayloads(dataRoot, keep) {
       const stat = lstatSync10(candidate);
       if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
       if (kept.has(realpathSync8(candidate))) continue;
-      rmSync3(candidate, { recursive: true, force: true });
+      rmSync4(candidate, { recursive: true, force: true });
       removed.push(candidate);
     } catch {
     }
@@ -13476,7 +13536,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
       changed_files: affected.map((rel) => join22(source, ...rel.split("/")))
     };
   }
-  for (const rel of stale) rmSync3(join22(source, ...rel.split("/")), { force: true });
+  for (const rel of stale) rmSync4(join22(source, ...rel.split("/")), { force: true });
   for (const rel of changed) {
     const destination = join22(source, ...rel.split("/"));
     const entry = expected.manifest.files.find((item) => item.path === rel);
@@ -13589,7 +13649,7 @@ function installProjectNotebookIntegration(input = {}) {
     if (skill.installed) {
       try {
         const stat = lstatSync10(skill.path);
-        if (stat.isSymbolicLink() && realpathSync8(skill.path) === source) unlinkSync5(skill.path);
+        if (stat.isSymbolicLink() && realpathSync8(skill.path) === source) unlinkSync6(skill.path);
       } catch {
       }
     }
@@ -14453,7 +14513,6 @@ var ProjectRecipe = class extends Recipe {
           force: Boolean(ctx.force),
           skipTelegram: true,
           skipEmail: true,
-          skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
           skipPlane: agentAction.context.skipPlane,
           skipBloodbank: agentAction.context.skipBloodbank,
           skipSystemd: agentAction.context.skipSystemd,
@@ -14621,7 +14680,7 @@ var ProjectRecipe = class extends Recipe {
         }
       }
       const deferred = provisionedAgentContext?.deferredExternalEffects;
-      if (errors.length === 0 && deferred?.owner === "project" && (deferred.runtimeRepo || deferred.ticketBoard || deferred.systemd)) {
+      if (errors.length === 0 && deferred?.owner === "project" && (deferred.ticketBoard || deferred.systemd)) {
         externalDispatchStarted = true;
         rollbackEligible = false;
         const beforeExternal = snapshotTree(targetDir);
@@ -14695,7 +14754,7 @@ var ProjectRecipe = class extends Recipe {
           message: errors.at(-1)
         });
       } else try {
-        rmSync4(targetDir, { recursive: true, force: true });
+        rmSync5(targetDir, { recursive: true, force: true });
         const insideTarget = (path) => {
           const relative12 = relativePath(resolve13(targetDir), resolve13(path));
           return relative12 === "" || !relative12.startsWith("..") && !isAbsolute5(relative12);
@@ -15584,13 +15643,13 @@ function getRecipeInfo(name) {
 }
 
 // src/describe/index.ts
-import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync4 } from "node:fs";
+import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync5 } from "node:fs";
 import { join as join29, resolve as resolve15 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
 import { spawn as spawn2, spawnSync as spawnSync13 } from "node:child_process";
-import { statSync as statSync3 } from "node:fs";
+import { statSync as statSync4 } from "node:fs";
 import { join as join28 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
@@ -15720,7 +15779,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync3(join28(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync4(join28(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -16117,7 +16176,7 @@ function describeNextSteps(description, findings) {
 function describeProject(input = {}) {
   const repo = resolve15(input.repoArg ?? process.cwd());
   if (!existsSync22(repo)) throw new Error(`Path does not exist: ${repo}`);
-  if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
+  if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath: registryPath2 }));
   const findings = report.rules;
@@ -16269,6 +16328,7 @@ var server = new McpServer({
 });
 var TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
 var BOARD_URL_COMPAT_SCHEMA = z.string().optional().describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.").meta({ deprecated: true });
+var RUNTIME_REPO_COMPAT_SCHEMA = z.boolean().optional().describe("Deprecated no-op. Hermes always converges ignored role-local runtime state and never provisions a per-agent GitHub repository.").meta({ deprecated: true });
 function safePathSegmentSchema(label) {
   return z.string().superRefine((value, context) => {
     try {
@@ -16289,19 +16349,15 @@ var GENERIC_RECIPE_NAMES = getRecipeNames().filter((name) => !INTERACTIVE_RECIPE
 if (GENERIC_RECIPE_NAMES.length === 0) throw new Error("No non-interactive recipes are registered for generic MCP execution");
 function validateExternalEffectConsent(input, options) {
   const selected = {
-    runtimeRepo: input.provisionRuntimeRepo === true,
     ticketBoard: input.provisionTicketBoard === true,
     systemd: input.enableSystemd === true
   };
-  const anySelected = selected.runtimeRepo || selected.ticketBoard || selected.systemd;
+  const anySelected = selected.ticketBoard || selected.systemd;
   if (anySelected && input.live !== true) {
     throw new Error("External Hermes effects require live=true in addition to explicit positive opt-ins");
   }
   if (anySelected && options.requireNonLocal && input.local !== false) {
     throw new Error("External Hermes effects require local=false in addition to live=true and explicit positive opt-ins");
-  }
-  if (selected.runtimeRepo && input.skipRuntimeRepo === true) {
-    throw new Error("provisionRuntimeRepo=true contradicts skipRuntimeRepo=true");
   }
   if (selected.ticketBoard && input.skipPlane === true) {
     throw new Error("provisionTicketBoard=true contradicts skipPlane=true");
@@ -16319,7 +16375,7 @@ function resolveTargetDir(targetDir) {
   if (!existsSync23(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
-  if (!statSync5(dir).isDirectory()) {
+  if (!statSync6(dir).isDirectory()) {
     throw new Error(`Target path is not a directory: ${dir}`);
   }
   return dir;
@@ -16348,7 +16404,6 @@ function publicProjectPlan(plan) {
       return {
         ...action,
         context: {
-          skipRuntimeRepo: action.context.skipRuntimeRepo,
           skipPlane: action.context.skipPlane,
           skipSystemd: action.context.skipSystemd
         }
@@ -16363,7 +16418,10 @@ function publicCompositeProjectResponse(payload, plan) {
   return {
     ...payload,
     ...hasNestedPlan ? { plan: projectedPlan } : {},
-    ...provisionsAgent ? { bloodbankMode: "fleet-shared" } : {}
+    ...provisionsAgent ? {
+      bloodbankMode: "fleet-shared",
+      runtimeMode: "role-local-ignored"
+    } : {}
   };
 }
 async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrides = {}, trustedCopier) {
@@ -16381,7 +16439,6 @@ async function executeRegisteredProjectPlan(plan, agentContext, lifecycleOverrid
       ...agentContext,
       trustedCopier,
       deferredExternalEffects: {
-        runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
         ticketBoard: !plannedAgent.context.skipPlane,
         systemd: !plannedAgent.context.skipSystemd,
         owner: "project"
@@ -16663,7 +16720,7 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; also requires live=true and local=false."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
       force: z.boolean().optional(),
@@ -16684,7 +16741,7 @@ server.registerTool(
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
       const explicitTargetDir = input.targetDir ? resolve16(input.targetDir) : void 0;
       const parentDir = resolve16(input.parentDir ?? (explicitTargetDir ? dirname14(explicitTargetDir) : process.cwd()));
-      if (!existsSync23(parentDir) || !statSync5(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
+      if (!existsSync23(parentDir) || !statSync6(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
         explicitTargetDir ?? join30(parentDir, projectSlug),
@@ -16711,7 +16768,6 @@ server.registerTool(
         agentRole: input.agentRole ?? "pm",
         apply: !dryRun,
         live: input.live ?? false,
-        provisionRuntimeRepo: externalEffects.runtimeRepo,
         provisionTicketBoard: externalEffects.ticketBoard,
         enableSystemd: externalEffects.systemd,
         skipPlane,
@@ -16748,7 +16804,6 @@ server.registerTool(
         force: overwrite,
         skipTelegram: true,
         skipEmail: true,
-        skipRuntimeRepo: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipRuntimeRepo : true,
         skipPlane: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipPlane : true,
         skipBloodbank: true,
         skipSystemd: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipSystemd : true
@@ -16795,7 +16850,7 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to Hermes runtime-repository provisioning; also requires live=true."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
       skipPlane: z.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
@@ -16822,7 +16877,6 @@ server.registerTool(
         agentRole: input.agentRole,
         apply: input.apply ?? false,
         live: input.live ?? false,
-        provisionRuntimeRepo: externalEffects.runtimeRepo,
         provisionTicketBoard: externalEffects.ticketBoard,
         enableSystemd: externalEffects.systemd,
         skipPlane: input.skipPlane ?? false,
@@ -17003,11 +17057,11 @@ server.registerTool(
       local: z.boolean().optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; requires live=true and local=false."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
       force: z.boolean().optional(),
-      skipRuntimeRepo: z.boolean().optional(),
+      skipRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       skipPlane: z.boolean().optional(),
       skipSystemd: z.boolean().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional()
@@ -17095,13 +17149,11 @@ server.registerTool(
         // unreachable and therefore cannot consume JSON-RPC stdin.
         skipTelegram: true,
         skipEmail: true,
-        skipRuntimeRepo: !externalEffects.runtimeRepo,
         skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
         trustedCopier,
         deferredExternalEffects: {
-          runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,
           systemd: externalEffects.systemd,
           owner: "hermes"
@@ -17117,6 +17169,7 @@ server.registerTool(
           apply,
           live,
           bloodbankMode: "fleet-shared",
+          runtimeMode: "role-local-ignored",
           guidance: parityGuidance(),
           context: {
             targetRepo: context.targetRepo,
@@ -17125,7 +17178,6 @@ server.registerTool(
             dryRun: context.dryRun,
             quiet: context.quiet,
             force: context.force,
-            skipRuntimeRepo: context.skipRuntimeRepo,
             skipPlane: context.skipPlane,
             skipSystemd: context.skipSystemd
           },

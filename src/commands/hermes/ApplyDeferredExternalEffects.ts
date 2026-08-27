@@ -15,7 +15,7 @@ export class ApplyDeferredExternalEffects extends Command {
   async invoke(): Promise<InvokeResult> {
     const ctx = this.context as HermesAgentContext;
     const selected = ctx.deferredExternalEffects;
-    if (!selected || (!selected.runtimeRepo && !selected.ticketBoard && !selected.systemd)) {
+    if (!selected || (!selected.ticketBoard && !selected.systemd)) {
       return { success: true, outcome: "unchanged", message: "Hermes external effects not selected" };
     }
     if (!ctx.roleDir) {
@@ -30,7 +30,9 @@ export class ApplyDeferredExternalEffects extends Command {
       SKIP_EMAIL: "1",
       SKIP_SLACK: "1",
       SKIP_BLOODBANK: "1",
-      SKIP_RUNTIME_REPO: selected.runtimeRepo ? "0" : "1",
+      // Role-local runtime is already converged by ApplyDeferredHostEffects.
+      // External consent can never dispatch the retired GitHub runtime model.
+      SKIP_RUNTIME_REPO: "1",
       SKIP_PLANE: selected.ticketBoard ? "0" : "1",
       SKIP_SYSTEMD: selected.systemd ? "0" : "1",
     };
@@ -39,10 +41,9 @@ export class ApplyDeferredExternalEffects extends Command {
 
     const roleManifest = join(ctx.roleDir, "role.yaml");
     const scripts = [
-      ...(selected.runtimeRepo ? ["20-runtime-repo.sh"] : []),
       ...(selected.ticketBoard ? ["42-ticket-provider.sh"] : []),
       ...(selected.systemd ? ["70-systemd.sh"] : []),
-      // Refresh fleet metadata after a board binding or runtime/systemd state
+      // Refresh fleet metadata after a board binding or systemd state
       // changes. 80-registry.sh is idempotent and performs no provider call.
       "80-registry.sh",
     ];

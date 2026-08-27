@@ -40,9 +40,8 @@ export class PromptForAgentConfig extends Command {
     const ctx = this.context as HermesAgentContext;
 
     // Default target_repo from the current working dir. Lowercase so the value
-    // is a valid hermes profile name, telegram handle prefix, and systemd unit
-    // slug — all of which reject uppercase. GitHub repo names are
-    // case-insensitive, so this is safe.
+    // is a valid Hermes profile name, Telegram handle prefix, and systemd unit
+    // slug — all of which reject uppercase.
     const defaultRepo = basename(ctx.targetDir).toLowerCase();
 
     // --- Defaults for everything (the PM-only, one-agent-per-repo model) ---

@@ -1,6 +1,18 @@
 import { homedir, platform } from "node:os";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
 
@@ -309,12 +321,22 @@ function ownedBareKeys(source: string, table: TomlTableHeader): Set<string> {
   return keys;
 }
 
+function assertValidToml(source: string, label: string): void {
+  try {
+    parseToml(source);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} is not valid TOML: ${detail}`);
+  }
+}
+
 /**
  * Add missing pinned-schema fields without replacing operator values, comments,
  * unknown keys, or richer sections. This is intentionally a small TOML-aware
  * merge rather than a parse/stringify round trip, which would erase comments.
  */
 export function mergeHostConfig(existing: string): string {
+  assertValidToml(existing, "Existing Hermes template config");
   let merged = existing;
   for (const { section, values } of hostSchema()) {
     const tables = parseTomlTableHeaders(merged);
@@ -339,7 +361,53 @@ export function mergeHostConfig(existing: string): string {
     const addition = `${body.length === 0 || body.endsWith("\n") ? "" : "\n"}${missing.map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
     merged = `${merged.slice(0, table.bodyEnd)}${addition}${merged.slice(table.bodyEnd)}`;
   }
+  // Text preservation is valuable only while the result remains real TOML.
+  // Dotted-key and inline-table ownership forms cannot always be extended by
+  // inserting a conventional table/key assignment. Fail before the caller
+  // touches disk rather than accepting a corrupt but superficially merged file.
+  assertValidToml(merged, "Merged Hermes template config");
   return merged;
+}
+
+/**
+ * Replace one config atomically and prove the exact installed bytes parse.
+ * If the post-rename read unexpectedly disagrees, restore the prior bytes (or
+ * remove a newly-created file) before reporting failure.
+ */
+function installValidatedConfig(path: string, next: string, previous: string | undefined): void {
+  assertValidToml(next, "Rendered Hermes template config");
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true });
+  const stagingDirectory = mkdtempSync(join(directory, ".pjangler-config-"));
+  const stagedPath = join(stagingDirectory, "config.toml");
+  let installed = false;
+  try {
+    const mode = previous === undefined ? 0o600 : statSync(path).mode & 0o777;
+    writeFileSync(stagedPath, next, { encoding: "utf8", mode });
+    const staged = readFileSync(stagedPath, "utf8");
+    if (staged !== next) throw new Error("Staged Hermes template config bytes changed before installation");
+    assertValidToml(staged, "Staged Hermes template config");
+
+    renameSync(stagedPath, path);
+    installed = true;
+    const written = readFileSync(path, "utf8");
+    if (written !== next) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
+    assertValidToml(written, "Installed Hermes template config");
+  } catch (error) {
+    if (installed) {
+      if (previous === undefined) {
+        unlinkSync(path);
+      } else {
+        const rollbackPath = join(stagingDirectory, "rollback.toml");
+        writeFileSync(rollbackPath, previous, { encoding: "utf8", mode: statSync(path).mode & 0o777 });
+        assertValidToml(readFileSync(rollbackPath, "utf8"), "Rollback Hermes template config");
+        renameSync(rollbackPath, path);
+      }
+    }
+    throw error;
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
 }
 
 /** Bootstrap or non-destructively upgrade the pinned Hermes template config. */
@@ -366,9 +434,11 @@ export class EnsureTemplateConfig extends Command {
       if (exists) {
         current = readFileSync(path, "utf8");
         next = mergeHostConfig(current);
+      } else {
+        assertValidToml(next, "Rendered Hermes template config");
       }
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+      return { success: false, outcome: "failed", message: `Failed to prepare ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }
     if (exists && next === current) {
       return { success: true, outcome: "unchanged", message: `Config schema already current: ${path}` };
@@ -383,8 +453,7 @@ export class EnsureTemplateConfig extends Command {
     }
 
     try {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, next);
+      installValidatedConfig(path, next, exists ? current : undefined);
     } catch (error) {
       return { success: false, outcome: "failed", message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}` };
     }

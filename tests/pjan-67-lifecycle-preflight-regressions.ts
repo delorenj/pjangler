@@ -199,7 +199,7 @@ try {
       dryRun: false,
       skipPlane: true,
       trustedCopier: hermesMutation.identity,
-      deferredExternalEffects: { runtimeRepo: false, ticketBoard: false, systemd: false, owner: "hermes" },
+      deferredExternalEffects: { ticketBoard: false, systemd: false, owner: "hermes" },
     };
     const result = await new RunCopierTemplate(context).invoke();
     assert.equal(result.success, false);

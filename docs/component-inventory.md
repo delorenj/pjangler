@@ -67,7 +67,7 @@ Server `pjangler-mcp`. All reads/plans are safe; writes require explicit `apply`
 | `pjangler_project_show` | Show one project by slug | read-only |
 | `pjangler_describe_recipe` | Recipe metadata | read-only |
 | `pjangler_run_recipe` | Run any recipe against a target dir | applies (honor `dryRun`) |
-| `pjangler_deploy_hermes_agent` | Provision a Hermes role (pm/dev/review/ops/qa) | `local: true` (skips runtime repo/Plane/Bloodbank/systemd) |
+| `pjangler_deploy_hermes_agent` | Provision a Hermes role (pm/dev/review/ops/qa) | `local: true` (ignored role-local runtime; defers Plane/systemd; Bloodbank is fleet-shared) |
 
 ## Data structures (key types)
 

@@ -28,7 +28,9 @@ export function existingRoleDirectoryBlockers(roleDir: string): string[] {
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      if (entry.isSymbolicLink()) {
+        blockers.push(relative(roleDir, path));
+      } else if (entry.isDirectory()) {
         visit(path);
       } else if (!HARMLESS_ROLE_PLACEHOLDERS.has(entry.name)) {
         blockers.push(relative(roleDir, path));

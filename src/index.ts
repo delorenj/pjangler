@@ -994,11 +994,11 @@ program
   .option("--model-key-env <name>", "Environment variable name holding the scoped model credential")
   .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
   .option("--email", "Unsupported by the pinned template; rejected before any mutation")
-  .option("--skip-runtime-repo", "Skip creating the per-agent runtime GH repo")
+  .option("--skip-runtime-repo", "Deprecated no-op; Hermes always uses ignored role-local runtime state")
   .option("--skip-plane", "Skip creating or linking the ticket board")
   .option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway")
   .option("--skip-systemd", "Skip installing systemd --user units")
-  .option("--local", "Local-only: skip runtime repo, ticket-board creation, Bloodbank, and systemd (safe for laptops/macOS/non-technical operators)")
+  .option("--local", "Local-only: defer ticket-board creation and systemd; runtime remains ignored and role-local")
   .option("--force-config", "Merge missing pinned-schema fields into the host config without replacing existing values")
   .option("--dry-run", "Preview what would run; don't execute copier")
   .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")
@@ -1024,12 +1024,9 @@ program
       skipTelegram: options.skipTelegram,
       // Email is opt-in only: `--email` wires it, otherwise it's never done.
       skipEmail: options.email ? false : undefined,
-      // --local (and macOS, for systemd) flip the heavy/irreversible steps off
-      // by default so a non-technical operator can't accidentally create cloud
-      // resources under the wrong account or hit systemd on a Mac. An explicit
-      // --skip-* still forces the skip; passing neither + not --local keeps the
-      // full provisioning behavior for the authoring machine.
-      skipRuntimeRepo: options.skipRuntimeRepo ?? local,
+      // --local (and macOS, for systemd) flip external steps off by default.
+      // --skip-runtime-repo is accepted above only as a deprecated no-op; the
+      // canonical ignored role-local runtime is always converged.
       skipPlane: options.skipPlane ?? local,
       skipBloodbank: options.skipBloodbank ?? local,
       skipSystemd: options.skipSystemd ?? (local || isDarwin),

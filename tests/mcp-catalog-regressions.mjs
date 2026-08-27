@@ -33,7 +33,7 @@ for (const required of [
   "runAudit",
   "runMigration",
   "local",
-  "skipRuntimeRepo",
+  "RUNTIME_REPO_COMPAT_SCHEMA",
   "skipPlane",
   "skipBloodbank",
   "skipSystemd",

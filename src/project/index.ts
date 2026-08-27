@@ -127,8 +127,9 @@ export interface ProjectInitInput {
   agentRole?: string;
   apply?: boolean;
   live?: boolean;
-  /** Explicit external-effect grants. MCP callers pass these as false unless positively opted in. */
+  /** Deprecated no-op retained for API compatibility; runtime is always role-local and ignored. */
   provisionRuntimeRepo?: boolean;
+  /** Explicit external-effect grants. MCP callers pass these as false unless positively opted in. */
   provisionTicketBoard?: boolean;
   enableSystemd?: boolean;
   /** Subtractive ticket-provider gate; always dominates live/positive consent. */
@@ -200,7 +201,6 @@ export type ProjectInitAction =
       targetRepo: string;
       role: string;
       context: {
-        skipRuntimeRepo: boolean;
         skipPlane: boolean;
         skipBloodbank: boolean;
         skipSystemd: boolean;
@@ -1077,16 +1077,15 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
-  // Preserve the existing CLI contract when these fields are absent. Structured
-  // callers (notably MCP) pass explicit booleans so `live` alone grants nothing.
-  const provisionRuntimeRepo = input.provisionRuntimeRepo ?? live;
+  // Structured callers (notably MCP) pass explicit booleans so `live` alone
+  // grants no remote effect. provisionRuntimeRepo is a deprecated no-op: the
+  // only supported runtime is ignored role-local state.
   const provisionTicketBoard = input.provisionTicketBoard ?? live;
   const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
   const boardEnabled = live && provisionTicketBoard && !skipPlane;
-  const runtimeRepoEnabled = live && provisionRuntimeRepo;
   const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
-  const anyExternalAgentEffect = runtimeRepoEnabled || boardEnabled || systemdEnabled;
+  const anyExternalAgentEffect = boardEnabled || systemdEnabled;
   const actions: ProjectInitAction[] = [
     { kind: "registry.upsert", registryPath, slug, project },
   ];
@@ -1140,7 +1139,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipRuntimeRepo: !runtimeRepoEnabled,
         skipPlane: !boardEnabled,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.

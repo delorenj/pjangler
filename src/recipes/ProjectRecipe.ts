@@ -348,7 +348,6 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           force: Boolean(ctx.force),
           skipTelegram: true,
           skipEmail: true,
-          skipRuntimeRepo: agentAction.context.skipRuntimeRepo,
           skipPlane: agentAction.context.skipPlane,
           skipBloodbank: agentAction.context.skipBloodbank,
           skipSystemd: agentAction.context.skipSystemd,
@@ -552,7 +551,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       }
 
       const deferred = provisionedAgentContext?.deferredExternalEffects;
-      if (errors.length === 0 && deferred?.owner === "project" && (deferred.runtimeRepo || deferred.ticketBoard || deferred.systemd)) {
+      if (errors.length === 0 && deferred?.owner === "project" && (deferred.ticketBoard || deferred.systemd)) {
         externalDispatchStarted = true;
         rollbackEligible = false;
         const beforeExternal = snapshotTree(targetDir);

@@ -95,6 +95,17 @@ case "$*" in
   *is-system-running*) printf '%s\n' running; exit 0 ;;
   *is-active*consumer.service*) printf '%s\n' inactive; exit 4 ;;
   *is-enabled*consumer.service*) printf '%s\n' not-found; exit 4 ;;
+  *is-active*gateway.service*) printf '%s\n' inactive; exit 3 ;;
+  *is-enabled*gateway.service*) printf '%s\n' disabled; exit 1 ;;
+  *show*heartbeat.timer*)
+    printf '%s\n' 'LoadState=loaded' 'ActiveState=active' 'SubState=waiting'; exit 0 ;;
+  *show*heartbeat.service*)
+    printf '%s\n' 'LoadState=loaded' 'ActiveState=inactive' 'SubState=dead' \
+      'Result=success' 'ExecMainStatus=0' 'NRestarts=0' \
+      'ExecMainStartTimestampMonotonic=100' 'ExecMainExitTimestampMonotonic=200'; exit 0 ;;
+  *show*gateway.service*)
+    printf '%s\n' 'LoadState=loaded' 'ActiveState=active' 'SubState=running' \
+      'Result=success' 'ExecMainStatus=0' 'NRestarts=0'; exit 0 ;;
   *is-active*) printf '%s\n' active; exit 0 ;;
   *is-enabled*) printf '%s\n' enabled; exit 0 ;;
 esac
@@ -119,8 +130,10 @@ if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
 case "$*" in
+  *'-X GET'*projects/trusted-positive-board/*)
+    printf '%s\n' '{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
   *'-X GET'*) printf '%s\n' '{"results":[]}' ;;
-  *'-X POST'*) printf '%s\n' '{"id":"trusted-positive-board"}' ;;
+  *'-X POST'*) printf '%s\n' '{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
   *) printf '%s\n' '{}' ;;
 esac
 `);
@@ -155,6 +168,18 @@ runtime_repo_owner = ""
 base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
+for (const skill of [
+  "33god-projects",
+  "delonet-conventions",
+  "delonet-dotenv",
+  "hermes-pm-template-maintenance",
+  "hindsight",
+  "subagent-driven-development",
+]) {
+  const skillDir = join(temporary, "skills", skill);
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${skill}\ndescription: PJAN-67 trusted fixture\n---\n`);
+}
 mkdirSync(fleetHome, { recursive: true });
 // See tests/helpers/fleet-base-config.mjs: the fleet base is operator-owned, so
 // a sandboxed HOME has none and hermes.fleet-config fails on it.
@@ -193,6 +218,9 @@ const serverEnv = {
   TRELLO_TOKEN: "trusted-positive-test-token",
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
+  SYSTEMD_STABILIZATION_ATTEMPTS: "3",
+  SYSTEMD_STABLE_SAMPLES: "3",
+  SYSTEMD_STABILIZATION_INTERVAL_SECONDS: "0",
 };
 
 function assertEnclosingProjectUntouched(label) {
@@ -346,6 +374,8 @@ try {
       apply: true,
       local: false,
       live: true,
+      // Deprecated compatibility input: deliberately true to prove it cannot
+      // arm a remote runtime effect; role-local convergence is unconditional.
       provisionRuntimeRepo: true,
       enableSystemd: true,
       skipPlane: true,
@@ -355,7 +385,7 @@ try {
   assert.notEqual(dedicatedNoBoardExternalResult.isError, true, JSON.stringify(dedicatedNoBoardExternal));
   assert.equal(dedicatedNoBoardExternal.success, true, JSON.stringify(dedicatedNoBoardExternal));
   const noBoardExternalEffects = readFileSync(effectLog, "utf8");
-  assert.match(noBoardExternalEffects, /runtime-migrate:/, "non-board runtime grant must reach its selected child");
+  assert.match(noBoardExternalEffects, /runtime-migrate:/, "required role-local runtime convergence must run before external dispatch");
   assert.match(noBoardExternalEffects, /systemctl:--user enable --now/, "non-board systemd grant must reach its selected child");
   assertNoUngrantAuthority("dedicated Hermes selected non-board external path");
   assertEnclosingProjectUntouched("dedicated Hermes selected non-board external path");
@@ -382,10 +412,13 @@ try {
   assert.equal(deployed.success, true, JSON.stringify(deployed.errors));
   const effectText = readFileSync(effectLog, "utf8");
   assert.equal((readFileSync(providerLog, "utf8").match(/-X POST/g) ?? []).length, 1, "the granted board provider must create exactly once");
-  assert.match(effectText, /runtime-migrate:/, "the granted runtime phase must execute");
+  assert.match(effectText, /runtime-migrate:/, "required role-local runtime convergence must execute");
   assert.match(effectText, /systemctl:--user enable --now/, "the granted systemd phase must execute");
+  const hostSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes host effects")) ?? "";
+  assert.equal((hostSummary.match(/20-runtime-repo\.sh/g) ?? []).length, 1, "role-local runtime must be a required host/local phase");
   const deferredSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
-  for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+  assert.doesNotMatch(deferredSummary, /20-runtime-repo\.sh/, "external consent must not dispatch the retired runtime-repo effect");
+  for (const script of ["42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     assert.equal((deferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `${script} must be dispatched exactly once`);
   }
   assert.ok(effectText.indexOf("local-hermes:") < effectText.indexOf("curl:-fsS"), "local rendering must precede the deferred provider effect");
@@ -432,8 +465,11 @@ try {
   );
   assert.ok(providerIndex < hermesIndex && hermesIndex < postconditionIndex, "project external phases must precede only the read-only postcondition audit");
   assert.equal((readFileSync(providerLog, "utf8").match(/create_board/g) ?? []).length, 1, "project-owned board grant must invoke its adapter exactly once");
+  const projectHostSummary = projectTail.logs.find((line) => line.includes("Applied deferred Hermes host effects")) ?? "";
+  assert.equal((projectHostSummary.match(/20-runtime-repo\.sh/g) ?? []).length, 1, "project-owned role-local runtime must be a required host/local phase");
   const projectDeferredSummary = projectTail.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
-  for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
+  assert.doesNotMatch(projectDeferredSummary, /20-runtime-repo\.sh/, "project external consent must not dispatch a runtime repository");
+  for (const script of ["42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     assert.equal((projectDeferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `project owner must dispatch ${script} exactly once`);
   }
   const projectRole = YAML.parse(readFileSync(join(projectTailTarget, "agents", "hermes", "director", "role.yaml"), "utf8"));

@@ -35,6 +35,10 @@ const BOARD_URL_COMPAT_SCHEMA = z.string()
   .optional()
   .describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.")
   .meta({ deprecated: true });
+const RUNTIME_REPO_COMPAT_SCHEMA = z.boolean()
+  .optional()
+  .describe("Deprecated no-op. Hermes always converges ignored role-local runtime state and never provisions a per-agent GitHub repository.")
+  .meta({ deprecated: true });
 
 function safePathSegmentSchema(label: string) {
   return z.string().superRefine((value, context) => {
@@ -63,16 +67,16 @@ if (GENERIC_RECIPE_NAMES.length === 0) throw new Error("No non-interactive recip
 interface ExternalEffectConsentInput {
   live?: boolean;
   local?: boolean;
+  /** Deprecated no-op compatibility fields; neither grants nor subtracts authority. */
   provisionRuntimeRepo?: boolean;
+  skipRuntimeRepo?: boolean;
   provisionTicketBoard?: boolean;
   enableSystemd?: boolean;
-  skipRuntimeRepo?: boolean;
   skipPlane?: boolean;
   skipSystemd?: boolean;
 }
 
 interface ExternalEffectSelection {
-  runtimeRepo: boolean;
   ticketBoard: boolean;
   systemd: boolean;
 }
@@ -87,19 +91,15 @@ function validateExternalEffectConsent(
   options: { requireNonLocal: boolean },
 ): ExternalEffectSelection {
   const selected: ExternalEffectSelection = {
-    runtimeRepo: input.provisionRuntimeRepo === true,
     ticketBoard: input.provisionTicketBoard === true,
     systemd: input.enableSystemd === true,
   };
-  const anySelected = selected.runtimeRepo || selected.ticketBoard || selected.systemd;
+  const anySelected = selected.ticketBoard || selected.systemd;
   if (anySelected && input.live !== true) {
     throw new Error("External Hermes effects require live=true in addition to explicit positive opt-ins");
   }
   if (anySelected && options.requireNonLocal && input.local !== false) {
     throw new Error("External Hermes effects require local=false in addition to live=true and explicit positive opt-ins");
-  }
-  if (selected.runtimeRepo && input.skipRuntimeRepo === true) {
-    throw new Error("provisionRuntimeRepo=true contradicts skipRuntimeRepo=true");
   }
   if (selected.ticketBoard && input.skipPlane === true) {
     throw new Error("provisionTicketBoard=true contradicts skipPlane=true");
@@ -151,7 +151,6 @@ function publicProjectPlan(plan: ReturnType<typeof planProjectInit>) {
       return {
         ...action,
         context: {
-          skipRuntimeRepo: action.context.skipRuntimeRepo,
           skipPlane: action.context.skipPlane,
           skipSystemd: action.context.skipSystemd,
         },
@@ -167,7 +166,10 @@ function publicCompositeProjectResponse<T extends object>(payload: T, plan: Retu
   return {
     ...payload,
     ...(hasNestedPlan ? { plan: projectedPlan } : {}),
-    ...(provisionsAgent ? { bloodbankMode: "fleet-shared" as const } : {}),
+    ...(provisionsAgent ? {
+      bloodbankMode: "fleet-shared" as const,
+      runtimeMode: "role-local-ignored" as const,
+    } : {}),
   };
 }
 
@@ -193,7 +195,6 @@ async function executeRegisteredProjectPlan(
           ...agentContext,
           trustedCopier,
           deferredExternalEffects: {
-            runtimeRepo: !plannedAgent.context.skipRuntimeRepo,
             ticketBoard: !plannedAgent.context.skipPlane,
             systemd: !plannedAgent.context.skipSystemd,
             owner: "project",
@@ -523,7 +524,7 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; also requires live=true and local=false."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
       force: z.boolean().optional(),
@@ -572,7 +573,6 @@ server.registerTool(
         agentRole: input.agentRole ?? "pm",
         apply: !dryRun,
         live: input.live ?? false,
-        provisionRuntimeRepo: externalEffects.runtimeRepo,
         provisionTicketBoard: externalEffects.ticketBoard,
         enableSystemd: externalEffects.systemd,
         skipPlane,
@@ -612,7 +612,6 @@ server.registerTool(
         force: overwrite,
         skipTelegram: true,
         skipEmail: true,
-        skipRuntimeRepo: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipRuntimeRepo : true,
         skipPlane: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipPlane : true,
         skipBloodbank: true,
         skipSystemd: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipSystemd : true,
@@ -663,7 +662,7 @@ server.registerTool(
       agentRole: AGENT_ROLE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to Hermes runtime-repository provisioning; also requires live=true."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
       skipPlane: z.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
@@ -690,7 +689,6 @@ server.registerTool(
         agentRole: input.agentRole,
         apply: input.apply ?? false,
         live: input.live ?? false,
-        provisionRuntimeRepo: externalEffects.runtimeRepo,
         provisionTicketBoard: externalEffects.ticketBoard,
         enableSystemd: externalEffects.systemd,
         skipPlane: input.skipPlane ?? false,
@@ -881,11 +879,11 @@ server.registerTool(
       local: z.boolean().optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      provisionRuntimeRepo: z.boolean().optional().describe("Explicitly opt in to runtime-repository provisioning; requires live=true and local=false."),
+      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
       enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
       force: z.boolean().optional(),
-      skipRuntimeRepo: z.boolean().optional(),
+      skipRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       skipPlane: z.boolean().optional(),
       skipSystemd: z.boolean().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
@@ -975,13 +973,11 @@ server.registerTool(
         // unreachable and therefore cannot consume JSON-RPC stdin.
         skipTelegram: true,
         skipEmail: true,
-        skipRuntimeRepo: !externalEffects.runtimeRepo,
         skipPlane: !externalEffects.ticketBoard,
         skipBloodbank: true,
         skipSystemd: !externalEffects.systemd || process.platform === "darwin",
         trustedCopier,
         deferredExternalEffects: {
-          runtimeRepo: externalEffects.runtimeRepo,
           ticketBoard: externalEffects.ticketBoard,
           systemd: externalEffects.systemd,
           owner: "hermes",
@@ -998,6 +994,7 @@ server.registerTool(
           apply,
           live,
           bloodbankMode: "fleet-shared",
+          runtimeMode: "role-local-ignored",
           guidance: parityGuidance(),
           context: {
             targetRepo: context.targetRepo,
@@ -1006,7 +1003,6 @@ server.registerTool(
             dryRun: context.dryRun,
             quiet: context.quiet,
             force: context.force,
-            skipRuntimeRepo: context.skipRuntimeRepo,
             skipPlane: context.skipPlane,
             skipSystemd: context.skipSystemd,
           },

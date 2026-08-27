@@ -3,10 +3,14 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,6 +81,11 @@ try {
   assert.equal(existsSync(join(temp, "xdg", "hermes-agent-template", "config.toml")), false, "dry-run must not create host config");
   assert.equal(existsSync(copierSentinel), false, "dry-run must not execute Copier");
 
+  const hermesHelp = run(["hermes-agent", "--help"], previewRepo, commandEnv);
+  assert.equal(hermesHelp.status, 0, hermesHelp.stderr);
+  assert.match(hermesHelp.stdout, /--skip-runtime-repo\s+Deprecated no-op; Hermes always uses ignored\s+role-local runtime state/);
+  assert.doesNotMatch(hermesHelp.stdout, /create.*runtime.*(?:GitHub|GH)|runtime.*repo.*creation/i);
+
   // --email has no pinned template interface and must fail before even config
   // bootstrap or Copier discovery/execution.
   const emailRepo = join(temp, "email-repo");
@@ -119,6 +128,32 @@ try {
   writeFileSync(join(placeholderRole, ".DS_Store"), "metadata");
   const placeholder = run(["hermes-agent", "--yes", "--dry-run"], placeholderRepo, commandEnv);
   assert.equal(placeholder.status, 0, `${placeholder.stdout}\n${placeholder.stderr}`);
+
+  // A placeholder name never makes a symlink harmless. Reject both dangling
+  // and live links before even host-config bootstrap or Copier execution.
+  for (const [label, placeholderName, target] of [
+    ["dangling", ".gitkeep", "missing-placeholder-target"],
+    ["live", ".DS_Store", join(temp, "live-placeholder-target")],
+  ]) {
+    const symlinkRepo = join(temp, `${label}-placeholder-symlink-repo`);
+    const symlinkRole = join(symlinkRepo, "agents", "hermes", "pm");
+    const symlinkPath = join(symlinkRole, placeholderName);
+    const symlinkConfig = join(temp, `${label}-placeholder-symlink-xdg`);
+    mkdirSync(symlinkRole, { recursive: true });
+    if (label === "live") writeFileSync(target, "outside role\n");
+    symlinkSync(target, symlinkPath);
+    const blocked = run(["hermes-agent", "--yes"], symlinkRepo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: symlinkConfig,
+    });
+    assert.notEqual(blocked.status, 0, `${label} placeholder symlink must be rejected`);
+    assert.match(`${blocked.stdout}\n${blocked.stderr}`, new RegExp(placeholderName.replace(".", "\\.")));
+    assert.equal(lstatSync(symlinkPath).isSymbolicLink(), true);
+    assert.equal(readlinkSync(symlinkPath), target);
+    assert.equal(existsSync(symlinkConfig), false, `${label} placeholder symlink refusal must precede config mutation`);
+    assert.equal(existsSync(copierSentinel), false, `${label} placeholder symlink refusal must precede Copier`);
+  }
+
   const runtimeRepo = join(temp, "runtime-only-repo");
   const runtimeState = join(runtimeRepo, "agents", "hermes", "pm", "runtime", "checkpoint.json");
   mkdirSync(join(runtimeRepo, "agents", "hermes", "pm", "runtime"), { recursive: true });
@@ -207,6 +242,7 @@ try {
   const telegramContract = committedHermesTemplate("template/.scripts/30-telegram.sh").content;
   const slackContract = committedHermesTemplate("template/.scripts/31-slack.sh").content;
   const libraryContract = committedHermesTemplate("template/.scripts/_lib.sh").content;
+  const runtimeContract = committedHermesTemplate("template/.scripts/20-runtime-repo.sh").content;
   assert.match(copierContract, /reconcile_enabled:\n[\s\S]*?default: true/);
   assert.match(copierContract, /_skip_if_exists:[\s\S]*?\n\s+- role\.yaml/);
   assert.match(roleContract, /telegram:\n\s+provisioning_status: "deferred"/);
@@ -225,6 +261,9 @@ try {
     "deferred Slack must write platforms.slack.enabled=false explicitly",
   );
   assert.match(libraryContract, /elif mode == "channel-enabled":[\s\S]*?channel\["enabled"\] = value == "true"/);
+  assert.match(runtimeContract, /pure-local Hermes runtime without creating a Git/);
+  assert.match(runtimeContract, /RUNTIME_LOCAL="\$ROLE_DIR\/runtime"/);
+  assert.doesNotMatch(runtimeContract, /gh\s+repo\s+create|git\s+init|git\s+push|git\s+submodule\s+add/);
 
   // Inline comments are part of a valid TOML table header. The merge must
   // recognize that exact owner instead of appending a duplicate [fleet].
@@ -276,6 +315,33 @@ try {
   assert.notEqual(incompatible.status, 0);
   assert.match(incompatible.stderr, /Cannot merge \[fleet\].*array table/);
   assert.equal(readFileSync(incompatiblePath, "utf8"), incompatibleSource);
+
+  // Valid TOML can express fleet ownership through root dotted keys, dotted
+  // keys inside [fleet], or an inline table. A preservation-safe additive
+  // upgrade cannot turn any of these into a scalar without redefining a table,
+  // so fail unchanged instead of writing invalid TOML and claiming success.
+  for (const [label, source] of [
+    ["root-dotted", `fleet.hermes_bin = "/operator/hermes" # keep dotted form\n`],
+    ["table-dotted", `[fleet] # keep owner\nhermes_bin.path = "/operator/hermes"\n`],
+    ["inline-table", `fleet = { hermes_bin = "/operator/hermes", custom = "keep" } # immutable inline table\n`],
+  ]) {
+    const unsafeHome = join(temp, `${label}-xdg`);
+    const unsafePath = join(unsafeHome, "hermes-agent-template", "config.toml");
+    mkdirSync(join(unsafeHome, "hermes-agent-template"), { recursive: true });
+    writeFileSync(unsafePath, source);
+    const before = statSync(unsafePath);
+    const unsafe = run(["config", "bootstrap", "--force"], configRepo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: unsafeHome,
+    });
+    assert.notEqual(unsafe.status, 0, `${label} must fail closed`);
+    assert.match(unsafe.stderr, /Merged Hermes template config is not valid TOML/);
+    assert.doesNotMatch(unsafe.stdout, /Updated|Bootstrapped/);
+    assert.equal(readFileSync(unsafePath, "utf8"), source, `${label} failure must preserve exact bytes`);
+    const after = statSync(unsafePath);
+    assert.equal(after.ino, before.ino, `${label} failure must not replace the file`);
+    assert.equal(after.mtimeMs, before.mtimeMs, `${label} failure must not write the file`);
+  }
 
   // Stateful systemctl fixture: action exit 0 is not enough; parity must probe
   // the resulting enabled/active leaves before recording durable state.
@@ -430,6 +496,9 @@ exit 1
   // is final-only and explicit --force is the sole overwrite path.
   const recipe = readFileSync(join(root, "src", "recipes", "HermesAgentRecipe.ts"), "utf8");
   const copier = readFileSync(join(root, "src", "commands", "hermes", "RunCopierTemplate.ts"), "utf8");
+  const configBootstrap = readFileSync(join(root, "src", "commands", "hermes", "EnsureTemplateConfig.ts"), "utf8");
+  const externalEffects = readFileSync(join(root, "src", "commands", "hermes", "ApplyDeferredExternalEffects.ts"), "utf8");
+  const mcpServer = readFileSync(join(root, "src", "mcp-server.ts"), "utf8");
   const summary = readFileSync(join(root, "src", "commands", "hermes", "PrintHermesSummary.ts"), "utf8");
   const ingredients = recipe.match(/const ingredients = \[([\s\S]*?)\] as const;/)?.[1] ?? "";
   assert.doesNotMatch(ingredients, /PrintHermesSummary/, "summary must not run before lifecycle postconditions");
@@ -437,6 +506,12 @@ exit 1
   assert.match(copier, /if \(ctx\.force\) args\.push\("--overwrite"\)/);
   assert.match(copier, /if \(ctx\.yes \|\| ctx\.quiet\) args\.push\("--defaults"\)/);
   assert.doesNotMatch(copier, /ctx\.yes\)\s*\{\s*ctx\.force\s*=\s*true/);
+  assert.match(configBootstrap, /parse as parseToml/);
+  assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
+  assert.match(configBootstrap, /assertValidToml\(written, "Installed Hermes template config"\)/);
+  assert.doesNotMatch(externalEffects, /20-runtime-repo\.sh|selected\.runtimeRepo/);
+  assert.match(mcpServer, /Deprecated no-op\. Hermes always converges ignored role-local runtime state/);
+  assert.doesNotMatch(mcpServer, /runtimeRepo:\s*externalEffects|externalEffects\.runtimeRepo/);
   assert.doesNotMatch(summary, /@clack\/prompts|Provisioned|\bDone\.|runtime\s+gh:/);
 } finally {
   rmSync(temp, { recursive: true, force: true });

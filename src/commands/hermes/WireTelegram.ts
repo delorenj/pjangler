@@ -124,7 +124,7 @@ export class WireTelegram extends Command {
     if (!existsSync(script)) {
       return {
         success: false,
-        message: `✗ ${script} not found.  Did copier finish?  Re-run with --skip-runtime-repo=0 if you skipped it.`,
+        message: `✗ ${script} not found. Did Copier finish rendering the Hermes role?`,
       };
     }
 

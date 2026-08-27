@@ -187,8 +187,8 @@ export class RunCopierTemplate extends Command {
       }
     }
 
-    // Always set these via env so the post-gen scripts in the copier template
-    // skip the bits we'll handle in our own commands.
+    // Set every lifecycle gate explicitly so template subprocess behavior is
+    // independent of inherited operator environment.
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       SKIP_TELEGRAM: "1",
@@ -202,9 +202,10 @@ export class RunCopierTemplate extends Command {
       // renders repo-local files first and executes those scripts only after a
       // structural lifecycle gate has accepted the render.
       SKIP_HOST_STATE: ctx.deferredExternalEffects ? "1" : "0",
-      // Bloodbank is a fleet-shared Hermes gateway. Never provision the legacy
-      // per-profile file consumer, even when an older template still exposes it.
-      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : ctx.skipRuntimeRepo ? "1" : "0",
+      // The legacy script/env name now owns only ignored role-local runtime
+      // setup. Structured transactions defer it until rendered eligibility;
+      // ordinary CLI deploys always run it and no flag can create a remote repo.
+      SKIP_RUNTIME_REPO: ctx.deferredExternalEffects ? "1" : "0",
       SKIP_PLANE: ctx.deferredExternalEffects ? "1" : ctx.skipPlane ? "1" : "0",
       SKIP_BLOODBANK: "1",
       SKIP_SYSTEMD: ctx.deferredExternalEffects ? "1" : ctx.skipSystemd ? "1" : "0",

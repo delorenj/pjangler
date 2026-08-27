@@ -38,7 +38,9 @@ export class ApplyDeferredHostEffects extends Command {
       SKIP_EMAIL: "1",
       SKIP_SLACK: "1",
       SKIP_BLOODBANK: "1",
-      SKIP_RUNTIME_REPO: "1",
+      // The legacy name controls role-local runtime/profile convergence only.
+      // It is a required host/local phase, never a GitHub repository effect.
+      SKIP_RUNTIME_REPO: "0",
       SKIP_PLANE: "1",
       SKIP_SYSTEMD: "1",
     };
@@ -48,7 +50,7 @@ export class ApplyDeferredHostEffects extends Command {
     scrubTicketProviderCredentials(env);
     scrubInteractiveChannelCredentials(env);
 
-    const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh"];
+    const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh"];
     const logs: string[] = [];
     for (const script of scripts) {
       const path = join(ctx.roleDir, ".scripts", script);

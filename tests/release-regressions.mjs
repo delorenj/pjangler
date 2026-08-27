@@ -240,8 +240,11 @@ try {
     "payload secret gate must precede the final commit",
   );
   const commitIndex = indexOf(releaseCommit);
+  const subjectVerificationIndex = source.indexOf("\nverify_release_commit_subject\n", commitIndex);
   const tagIndex = indexOf('git tag -a "$NEW" -m "$NEW" HEAD');
   assert.ok(indexOf('RELEASE_BASE_HEAD="$(git rev-parse HEAD)"') < commitIndex);
+  assert.ok(commitIndex < subjectVerificationIndex && subjectVerificationIndex < tagIndex, "the final hook-mutated subject must be verified before tagging");
+  assert.match(source, /expected="release\(\$\{RELEASE_TICKET_ID\}\): v\$\{NEW#v\}"/);
   assert.ok(indexOf('git rev-parse HEAD^') > commitIndex, "hook-safe transaction must verify the release parent");
   assert.ok(indexOf("git diff-tree --no-commit-id --name-only -r HEAD") > commitIndex, "hook-safe transaction must verify committed paths");
   assert.ok(source.lastIndexOf("require_clean_tree") > commitIndex, "post-commit hooks must leave a clean tree");
@@ -343,6 +346,49 @@ try {
   rmSync(commitHarness, { force: true });
   rmSync(hookSentinel, { force: true });
   assert.equal(existsSync(hookSentinel), false);
+
+  // A commit-msg hook may succeed after rewriting the requested subject. Run
+  // the exact release commit plus its exact post-hook verifier and prove the
+  // transaction stops before either the tag or push boundary.
+  const subjectVerifier = source.match(/verify_release_commit_subject\(\) \{[\s\S]*?\n\}\n/)?.[0];
+  assert.ok(subjectVerifier, "release subject verifier must remain independently testable");
+  const rewriteHarness = join(temp, "release-subject-harness.sh");
+  const tagBoundary = join(temp, "release-tag-boundary");
+  const pushBoundary = join(temp, "release-push-boundary");
+  mkdirSync(hookDir);
+  writeFileSync(
+    join(hookDir, "commit-msg"),
+    "#!/usr/bin/env sh\nprintf '%s\\n' 'release(PJAN-86): v1.0.1 rewritten-by-hook' > \"$1\"\nexit 0\n",
+  );
+  chmodSync(join(hookDir, "commit-msg"), 0o755);
+  git(["config", "core.hooksPath", ".githooks"]);
+  writeFileSync(join(temp, "package.json"), '{"name":"fixture","version":"1.0.1"}\n');
+  git(["add", "package.json"]);
+  writeFileSync(
+    rewriteHarness,
+    `#!/usr/bin/env bash\nset -euo pipefail\ndie() { printf '%s\\n' "$1" >&2; exit 1; }\n${subjectVerifier}\nRELEASE_TICKET_ID=PJAN-86\nNEW=v1.0.1\n${releaseCommit}\nverify_release_commit_subject\n: > "$PJAN86_TAG_BOUNDARY"\ngit tag -a "$NEW" -m "$NEW" HEAD\n: > "$PJAN86_PUSH_BOUNDARY"\ngit push origin HEAD\n`,
+  );
+  chmodSync(rewriteHarness, 0o755);
+  const beforeRewrittenCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim();
+  const rewrittenCommit = spawnSync(rewriteHarness, [], {
+    cwd: temp,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PJAN86_TAG_BOUNDARY: tagBoundary,
+      PJAN86_PUSH_BOUNDARY: pushBoundary,
+    },
+  });
+  assert.notEqual(rewrittenCommit.status, 0, "a successful subject-rewriting hook must still abort release");
+  assert.match(rewrittenCommit.stderr, /release hook changed the commit subject/);
+  assert.notEqual(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim(), beforeRewrittenCommit, "the hook-modified commit itself should succeed before verification rejects it");
+  assert.equal(spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: temp, encoding: "utf8" }).stdout.trim(), "release(PJAN-86): v1.0.1 rewritten-by-hook");
+  assert.equal(spawnSync("git", ["tag", "--list", "v1.0.1"], { cwd: temp, encoding: "utf8" }).stdout.trim(), "");
+  assert.equal(existsSync(tagBoundary), false, "subject mismatch must abort before tag creation");
+  assert.equal(existsSync(pushBoundary), false, "subject mismatch must abort before push");
+  git(["config", "--unset", "core.hooksPath"]);
+  rmSync(hookDir, { recursive: true, force: true });
+  rmSync(rewriteHarness, { force: true });
 
   writeFileSync(join(temp, "dirty.txt"), "must block release\n");
 

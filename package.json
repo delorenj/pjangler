@@ -54,6 +54,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
     "pg": "^8.16.0",
+    "smol-toml": "^1.8.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },

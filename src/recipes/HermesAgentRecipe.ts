@@ -228,7 +228,7 @@ export class HermesAgentRecipe extends Recipe {
     if (selected?.owner === "project" || (ctx.quiet && !selected)) return localResult;
 
     let appliedResult = localResult;
-    if (selected?.owner === "hermes" && (selected.runtimeRepo || selected.ticketBoard || selected.systemd)) {
+    if (selected?.owner === "hermes" && (selected.ticketBoard || selected.systemd)) {
       const beforeExternal = snapshotTree(ctx.targetDir);
       const external = await new ApplyDeferredExternalEffects(ctx).invoke();
       const externalChanges = changedTreePaths(ctx.targetDir, beforeExternal, snapshotTree(ctx.targetDir));
