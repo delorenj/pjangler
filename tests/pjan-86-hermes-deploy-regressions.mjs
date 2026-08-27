@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -34,6 +34,61 @@ function run(args, cwd, env = {}) {
     timeout: 20_000,
     env: { ...process.env, NO_COLOR: "1", ...env },
   });
+}
+
+function runAsync(args, cwd, env = {}) {
+  const child = spawn(process.execPath, [cli, ...args], {
+    cwd,
+    env: { ...process.env, NO_COLOR: "1", ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const done = new Promise((resolveDone, rejectDone) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectDone(new Error(`async CLI timed out: ${args.join(" ")}`));
+    }, 20_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectDone(error);
+    });
+    child.once("close", (status, signal) => {
+      clearTimeout(timeout);
+      resolveDone({ status, signal, stdout, stderr });
+    });
+  });
+  return { child, done };
+}
+
+async function waitForPath(path, label, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error(`timed out waiting for ${label}: ${path}`);
+}
+
+async function waitForChildCommand(parentPid, expected, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const children = readFileSync(`/proc/${parentPid}/task/${parentPid}/children`, "utf8").trim().split(/\s+/).filter(Boolean);
+      for (const pid of children) {
+        const command = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+        if (command === expected) return Number(pid);
+      }
+    } catch {
+      // The process tree is still settling; the outer timeout remains bounded.
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error(`timed out waiting for ${expected} child of pid ${parentPid}`);
 }
 
 function committedHermesTemplate(path) {
@@ -610,7 +665,12 @@ exec "${systemPython.stdout.trim()}" "$@"
   chmodSync(stalePath, 0o640);
   utimesSync(stalePath, preservedMtime, preservedMtime);
   const staleBefore = statSync(stalePath);
-  const staleTransaction = join(staleDirectory, ".pjangler-config-txn-99999999-dead01");
+  // The stale marker deliberately names this test runner's live parent PID.
+  // Kernel lock ownership proves the old transaction is inactive; numeric PID
+  // reuse must not make recovery wait on an unrelated process.
+  assert.doesNotThrow(() => process.kill(process.ppid, 0));
+  const staleOwnerPid = process.ppid;
+  const staleTransaction = join(staleDirectory, `.pjangler-config-txn-${staleOwnerPid}-dead01`);
   mkdirSync(staleTransaction, { mode: 0o700 });
   linkSync(stalePath, join(staleTransaction, "operator-config"));
   const staleCandidatePath = join(staleTransaction, "candidate.toml");
@@ -626,7 +686,7 @@ exec "${systemPython.stdout.trim()}" "$@"
   });
   writeFileSync(join(staleTransaction, "state.json"), `${JSON.stringify({
     version: 1,
-    ownerPid: 99999999,
+    ownerPid: staleOwnerPid,
     phase: "prepared",
     hadPrevious: true,
     candidate: identity(staleCandidateStats, staleCandidate),
@@ -692,6 +752,161 @@ exec "${systemPython.stdout.trim()}" "$@"
   for (const key of ["pjangler_bin", "hermes_git_url", "hermes_git_ref", "hermes_git_sha", "oauth_file", "codex_home", "vox_plugin_name", "vox_plugin_dir", "vox_voice", "vox_url", "onepassword_vault", "onepassword_item_prefix"]) {
     assert.match(upgraded, new RegExp(`^${key}\\s*=`, "m"), `config upgrade should add ${key}`);
   }
+
+  // Hold process A after its snapshot but before its first parse completes,
+  // then launch process B against the same config. B must not reach even its
+  // first validator until A releases the whole-window kernel lock. Afterwards
+  // B re-snapshots A's installed file and reports an already-current schema.
+  const lockPythonBin = join(temp, "lock-python-bin");
+  const lockPython = join(lockPythonBin, "python3");
+  const lockFirstOnce = join(temp, "lock-first-once");
+  const lockFirstReady = join(temp, "lock-first-ready");
+  const lockFirstRelease = join(temp, "lock-first-release");
+  const lockSecondValidator = join(temp, "lock-second-validator");
+  mkdirSync(lockPythonBin, { recursive: true });
+  writeFileSync(lockPython, `#!/bin/sh
+if [ "$LOCK_TEST_ROLE" = "first" ] && [ ! -e "$LOCK_TEST_FIRST_ONCE" ]; then
+  : > "$LOCK_TEST_FIRST_ONCE"
+  : > "$LOCK_TEST_FIRST_READY"
+  while [ ! -e "$LOCK_TEST_FIRST_RELEASE" ]; do
+    /bin/sleep 0.02
+  done
+fi
+if [ "$LOCK_TEST_ROLE" = "second" ]; then
+  : > "$LOCK_TEST_SECOND_VALIDATOR"
+fi
+exec "${systemPython.stdout.trim()}" "$@"
+`);
+  chmodSync(lockPython, 0o755);
+  const lockHome = join(temp, "concurrent-config-xdg");
+  const lockDirectory = join(lockHome, "hermes-agent-template");
+  const lockConfigPath = join(lockDirectory, "config.toml");
+  mkdirSync(lockDirectory, { recursive: true });
+  writeFileSync(lockConfigPath, "# concurrent operator config\n[fleet]\nhermes_bin = \"/operator/concurrent\"\n");
+  const lockEnv = {
+    ...commandEnv,
+    PATH: `${lockPythonBin}${delimiter}${commandEnv.PATH}`,
+    XDG_CONFIG_HOME: lockHome,
+    LOCK_TEST_FIRST_ONCE: lockFirstOnce,
+    LOCK_TEST_FIRST_READY: lockFirstReady,
+    LOCK_TEST_FIRST_RELEASE: lockFirstRelease,
+    LOCK_TEST_SECOND_VALIDATOR: lockSecondValidator,
+  };
+  const firstWriter = runAsync(["config", "bootstrap", "--force"], configRepo, {
+    ...lockEnv,
+    LOCK_TEST_ROLE: "first",
+  });
+  await waitForPath(lockFirstReady, "first writer validator pause");
+  const secondWriter = runAsync(["config", "bootstrap", "--force"], configRepo, {
+    ...lockEnv,
+    LOCK_TEST_ROLE: "second",
+  });
+  await new Promise((resolveWait) => setTimeout(resolveWait, 350));
+  assert.equal(secondWriter.child.exitCode, null, "second writer must remain blocked while the first owns the config lock");
+  assert.equal(existsSync(lockSecondValidator), false, "second writer must not validate or snapshot stale config while waiting");
+  writeFileSync(lockFirstRelease, "release\n");
+  const [firstWriterResult, secondWriterResult] = await Promise.all([firstWriter.done, secondWriter.done]);
+  assert.equal(firstWriterResult.status, 0, `${firstWriterResult.stdout}\n${firstWriterResult.stderr}`);
+  assert.equal(secondWriterResult.status, 0, `${secondWriterResult.stdout}\n${secondWriterResult.stderr}`);
+  assert.match(firstWriterResult.stdout, /Updated config without replacing existing values:/);
+  assert.match(secondWriterResult.stdout, /Config schema already current:/);
+  assert.equal(existsSync(lockSecondValidator), true, "second writer should proceed after acquiring the released lock");
+  const serializedConfig = readFileSync(lockConfigPath, "utf8");
+  assert.equal((serializedConfig.match(/^hermes_bin\s*=/gm) ?? []).length, 1);
+  assert.match(serializedConfig, /^pjangler_bin\s*=/m);
+  const durableLock = lstatSync(join(lockDirectory, ".pjangler-config.lock"));
+  assert.equal(durableLock.isFile(), true);
+  assert.equal(durableLock.nlink, 1);
+  assert.equal(durableLock.size, 0);
+  assert.equal(durableLock.mode & 0o077, 0);
+
+  // The lock leaf itself is never followed. Both live and dangling symlinks
+  // fail before config creation and cannot redirect flock to an attacker leaf.
+  for (const kind of ["live", "dangling"]) {
+    const unsafeLockHome = join(temp, `unsafe-${kind}-lock-xdg`);
+    const unsafeLockDirectory = join(unsafeLockHome, "hermes-agent-template");
+    const unsafeLockConfig = join(unsafeLockDirectory, "config.toml");
+    const unsafeLockTarget = join(temp, `unsafe-${kind}-lock-target`);
+    mkdirSync(unsafeLockDirectory, { recursive: true });
+    if (kind === "live") writeFileSync(unsafeLockTarget, "operator sentinel\n");
+    symlinkSync(unsafeLockTarget, join(unsafeLockDirectory, ".pjangler-config.lock"));
+    const unsafeLock = run(["config", "bootstrap", "--force"], configRepo, {
+      ...commandEnv,
+      XDG_CONFIG_HOME: unsafeLockHome,
+    });
+    assert.notEqual(unsafeLock.status, 0);
+    assert.match(unsafeLock.stderr, /Failed to acquire the whole-window Hermes config lock/);
+    assert.match(unsafeLock.stderr, /expected a regular non-symlink file/);
+    assert.equal(existsSync(unsafeLockConfig), false);
+    if (kind === "live") assert.equal(readFileSync(unsafeLockTarget, "utf8"), "operator sentinel\n");
+  }
+
+  // If the canonical lock pathname is replaced while this process waits, its
+  // inherited O_NOFOLLOW descriptor still references the old inode. Refuse
+  // before config mutation instead of silently splitting writers across two
+  // lock domains.
+  const swappedLockHome = join(temp, "swapped-lock-xdg");
+  const swappedLockDirectory = join(swappedLockHome, "hermes-agent-template");
+  const swappedLockPath = join(swappedLockDirectory, ".pjangler-config.lock");
+  const swappedConfigPath = join(swappedLockDirectory, "config.toml");
+  const displacedLockPath = join(swappedLockDirectory, ".displaced-pjangler-lock");
+  const blockerReady = join(temp, "swapped-lock-blocker-ready");
+  const blockerRelease = join(temp, "swapped-lock-blocker-release");
+  mkdirSync(swappedLockDirectory, { recursive: true });
+  writeFileSync(swappedLockPath, "", { mode: 0o600 });
+  const blocker = spawn(
+    "/usr/bin/flock",
+    [
+      "--exclusive",
+      swappedLockPath,
+      "/bin/sh",
+      "-c",
+      ': > "$LOCK_BLOCKER_READY"; while [ ! -e "$LOCK_BLOCKER_RELEASE" ]; do /bin/sleep 0.02; done',
+    ],
+    {
+      env: {
+        ...process.env,
+        LOCK_BLOCKER_READY: blockerReady,
+        LOCK_BLOCKER_RELEASE: blockerRelease,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let blockerStderr = "";
+  blocker.stderr.setEncoding("utf8");
+  blocker.stderr.on("data", (chunk) => { blockerStderr += chunk; });
+  const blockerDone = new Promise((resolveBlocker, rejectBlocker) => {
+    blocker.once("error", rejectBlocker);
+    blocker.once("close", (status, signal) => {
+      if (status === 0) resolveBlocker();
+      else rejectBlocker(new Error(`lock blocker failed (status=${status}, signal=${signal}): ${blockerStderr}`));
+    });
+  });
+  await waitForPath(blockerReady, "external lock blocker");
+  const swappedWriter = runAsync(["config", "bootstrap", "--force"], configRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: swappedLockHome,
+  });
+  await waitForChildCommand(swappedWriter.child.pid, "flock");
+  const openedLockInode = statSync(swappedLockPath).ino;
+  renameSync(swappedLockPath, displacedLockPath);
+  writeFileSync(swappedLockPath, "", { mode: 0o600 });
+  assert.notEqual(statSync(swappedLockPath).ino, openedLockInode);
+  writeFileSync(blockerRelease, "release\n");
+  await blockerDone;
+  const swappedWriterResult = await swappedWriter.done;
+  assert.notEqual(swappedWriterResult.status, 0);
+  assert.match(swappedWriterResult.stderr, /Failed to acquire the whole-window Hermes config lock/);
+  assert.match(swappedWriterResult.stderr, /changed identity or safety properties during acquisition/);
+  assert.equal(existsSync(swappedConfigPath), false, "a split-domain lock must fail before config creation");
+  const afterSwap = run(["config", "bootstrap", "--force"], configRepo, {
+    ...commandEnv,
+    XDG_CONFIG_HOME: swappedLockHome,
+  });
+  assert.equal(afterSwap.status, 0, `${afterSwap.stdout}\n${afterSwap.stderr}`);
+  assert.match(afterSwap.stdout, /Bootstrapped config without replacing existing values:/);
+  assert.equal(statSync(swappedLockPath).ino === openedLockInode, false);
+
   const committedTemplate = committedHermesTemplate("template/.scripts/config.example.toml");
   assert.match(committedTemplate.gitlink, /^[0-9a-f]{40}$/);
   const templateConfig = committedTemplate.content;
@@ -982,6 +1197,12 @@ exit 1
   assert.match(configBootstrap, /killSignal: "SIGKILL"/);
   assert.match(configBootstrap, /tomllib\.loads\(source\)/);
   assert.doesNotMatch(configBootstrap, /smol-toml|parse as parseToml/);
+  assert.match(configBootstrap, /constants\.O_NOFOLLOW/);
+  assert.match(configBootstrap, /"\/usr\/bin\/flock"/);
+  assert.match(configBootstrap, /"\/proc\/self\/fd\/3"/);
+  assert.match(configBootstrap, /current\.dev !== lock\.identity\.dev/);
+  assert.match(configBootstrap, /current\.ino !== lock\.identity\.ino/);
+  assert.doesNotMatch(configBootstrap, /processIsAlive|process\.kill\(pid, 0\)/);
   assert.ok(configBootstrap.indexOf("pathStats = inspectConfigPath(path)") < configBootstrap.indexOf("if (exists && !force)"));
   assert.match(configBootstrap, /renameSync\(stagedPath, path\)/);
   assert.match(configBootstrap, /assertValidTomlBytes\(written\.bytes, "Installed Hermes template config"\)/);

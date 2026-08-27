@@ -20,7 +20,7 @@ import {
   type Stats,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { join, dirname } from "node:path";
 import { Command, type InvokeResult } from "../Command";
 import type { HermesAgentContext } from "./types";
@@ -533,6 +533,9 @@ function assertConfigUnchanged(path: string, previous: ConfigSnapshot | undefine
 }
 
 const CONFIG_TRANSACTION_PREFIX = ".pjangler-config-txn-";
+const CONFIG_LOCK_NAME = ".pjangler-config.lock";
+const CONFIG_LOCK_WAIT_MS = 10_000;
+const CONFIG_LOCK_READY = "PJANGLER_CONFIG_LOCKED";
 const TRANSACTION_CANDIDATE = "candidate.toml";
 const TRANSACTION_OPERATOR_FILE = "operator-config";
 const TRANSACTION_STATE = "state.json";
@@ -584,6 +587,175 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface OpenConfigLock {
+  descriptor: number;
+  path: string;
+  identity: Stats;
+}
+
+function openConfigLock(path: string): OpenConfigLock {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true });
+  const lockPath = join(directory, CONFIG_LOCK_NAME);
+  let existing: Stats | undefined;
+  try {
+    existing = lstatSync(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+    throw new Error(`Unsafe Hermes config lock ${lockPath}: expected a regular non-symlink file`);
+  }
+
+  let descriptor: number;
+  try {
+    descriptor = openSync(
+      lockPath,
+      constants.O_CREAT |
+        constants.O_RDWR |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+      0o600,
+    );
+  } catch (error) {
+    throw new Error(`Cannot safely open Hermes config lock ${lockPath}: ${errorDetail(error)}`, { cause: error });
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    if (
+      !stats.isFile() ||
+      stats.nlink !== 1 ||
+      stats.size !== 0 ||
+      (stats.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && stats.uid !== process.getuid())
+    ) {
+      throw new Error(`Unsafe Hermes config lock ${lockPath}: expected an owned, empty, single-link regular file with private mode`);
+    }
+    return { descriptor, path: lockPath, identity: stats };
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+
+function assertConfigLockPath(lock: OpenConfigLock): void {
+  let current: Stats;
+  try {
+    current = lstatSync(lock.path);
+  } catch (error) {
+    throw new Error(`Hermes config lock path disappeared after acquisition: ${lock.path}`, { cause: error });
+  }
+  if (
+    !current.isFile() ||
+    current.isSymbolicLink() ||
+    current.dev !== lock.identity.dev ||
+    current.ino !== lock.identity.ino ||
+    current.nlink !== 1 ||
+    current.size !== 0 ||
+    (current.mode & 0o077) !== 0 ||
+    (typeof process.getuid === "function" && current.uid !== process.getuid())
+  ) {
+    throw new Error(`Hermes config lock path changed identity or safety properties during acquisition: ${lock.path}`);
+  }
+}
+
+function stopConfigLockHolder(holder: ChildProcessWithoutNullStreams): Promise<void> {
+  if (holder.exitCode !== null || holder.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const killTimer = setTimeout(() => holder.kill("SIGKILL"), 2_000);
+    const failureTimer = setTimeout(() => {
+      reject(new Error("Hermes config lock holder did not exit after SIGKILL"));
+    }, 4_000);
+    holder.once("exit", () => {
+      clearTimeout(killTimer);
+      clearTimeout(failureTimer);
+      resolve();
+    });
+    holder.stdin.end();
+  });
+}
+
+/**
+ * Hold the kernel lock on a descriptor opened by this process with O_NOFOLLOW.
+ * The trusted holder inherits that descriptor as fd 3 and lives only while its
+ * stdin pipe is open. Kernel ownership, rather than a PID marker, makes process
+ * death and PID reuse safe without deleting or replacing another writer's lock.
+ */
+async function acquireConfigLock(path: string): Promise<() => Promise<void>> {
+  const lock = openConfigLock(path);
+  let holder: ChildProcessWithoutNullStreams;
+  try {
+    holder = spawn(
+      "/usr/bin/flock",
+      [
+        "--exclusive",
+        "--wait",
+        String(CONFIG_LOCK_WAIT_MS / 1_000),
+        "/proc/self/fd/3",
+        process.execPath,
+        "-e",
+        `process.stdout.write(${JSON.stringify(`${CONFIG_LOCK_READY}\n`)}); process.stdin.resume();`,
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe", lock.descriptor],
+      },
+    ) as ChildProcessWithoutNullStreams;
+  } catch (error) {
+    closeSync(lock.descriptor);
+    throw new Error(`Failed to start the Hermes config lock holder: ${errorDetail(error)}`, { cause: error });
+  }
+  closeSync(lock.descriptor);
+
+  let stderr = "";
+  holder.stderr.on("data", (chunk: Buffer) => {
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4_096);
+  });
+  holder.stdin.on("error", () => {
+    // An early holder exit is reported by the exit listener below.
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let ready = false;
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      holder.kill("SIGKILL");
+      reject(new Error(`Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock`));
+    }, CONFIG_LOCK_WAIT_MS + 1_000);
+    holder.once("error", (error) => {
+      if (ready) return;
+      clearTimeout(timeout);
+      reject(new Error(`Hermes config lock holder failed to start: ${error.message}`, { cause: error }));
+    });
+    holder.once("exit", (code, signal) => {
+      if (ready) return;
+      clearTimeout(timeout);
+      const detail = stderr.trim();
+      reject(new Error(
+        code === 1
+          ? `Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock`
+          : `Hermes config lock holder exited before acquisition (code=${code ?? "none"}, signal=${signal ?? "none"})${detail ? `: ${detail}` : ""}`,
+      ));
+    });
+    holder.stdout.on("data", (chunk: Buffer) => {
+      if (ready) return;
+      stdout += chunk.toString("utf8");
+      if (!stdout.includes(`${CONFIG_LOCK_READY}\n`)) return;
+      ready = true;
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+
+  try {
+    assertConfigLockPath(lock);
+  } catch (error) {
+    await stopConfigLockHolder(holder);
+    throw error;
+  }
+
+  return () => stopConfigLockHolder(holder);
+}
+
 function writeTransactionMarker(directory: string, marker: ConfigTransactionMarker): void {
   const nextPath = join(directory, TRANSACTION_STATE_NEXT);
   const statePath = join(directory, TRANSACTION_STATE);
@@ -626,22 +798,12 @@ function inspectTransactionFile(path: string, label: string): Stats | undefined 
   return stats;
 }
 
-function processIsAlive(pid: number): boolean {
-  // Recovery runs before this process creates a transaction, so a matching PID
-  // can only be a stale PID reuse and must not block its own cleanup forever.
-  if (pid === process.pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 /**
  * Recover conservative rollback state left by process death. Transaction
  * directories contain only a 0600 candidate, a hard link to the operator's
  * existing inode, and non-secret identity metadata; all are same-filesystem.
+ * Live recovery is called only while holding CONFIG_LOCK_NAME, so every prior
+ * PID marker is stale even if that numeric PID has since been reused.
  */
 function recoverInterruptedConfigTransactions(path: string, allowMutation: boolean): void {
   const directory = dirname(path);
@@ -660,10 +822,6 @@ function recoverInterruptedConfigTransactions(path: string, allowMutation: boole
       transactionStats.uid !== process.getuid()
     ) {
       throw new Error(`Hermes config transaction artifact is owned by another user: ${entry.name}`);
-    }
-    const ownerPid = Number(match[1]);
-    if (processIsAlive(ownerPid)) {
-      throw new Error(`another Hermes config transaction is still active (pid ${ownerPid})`);
     }
     if (!allowMutation) {
       throw new Error(`interrupted Hermes config transaction requires live recovery before dry-run: ${entry.name}`);
@@ -917,8 +1075,48 @@ export class EnsureTemplateConfig extends Command {
         message: "Hermes host config deferred until rendered lifecycle eligibility passes",
       };
     }
-    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
+    if (ctx.dryRun) return this.invokeLocked(ctx, path);
+
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await acquireConfigLock(path);
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to acquire the whole-window Hermes config lock for ${path}: ${errorDetail(error)}`,
+      };
+    }
+    let result: InvokeResult;
+    try {
+      result = this.invokeLocked(ctx, path);
+    } catch (error) {
+      try {
+        await release();
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          `Hermes config operation threw and its kernel lock holder also failed to exit: ${errorDetail(error)}; ${errorDetail(releaseError)}`,
+        );
+      }
+      throw error;
+    }
+    try {
+      await release();
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        filePath: result.filePath,
+        message: `${result.message}; Hermes config lock release failed after the reported operation: ${errorDetail(error)}; no success is claimed`,
+      };
+    }
+    return result;
+  }
+
+  private invokeLocked(ctx: HermesAgentContext, path: string): InvokeResult {
+    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     try {
       recoverInterruptedConfigTransactions(path, !ctx.dryRun);
     } catch (error) {

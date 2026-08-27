@@ -5291,7 +5291,7 @@ import {
   writeFileSync as writeFileSync2
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join as join2, dirname as dirname2 } from "node:path";
 
 // src/commands/Command.ts
@@ -5759,6 +5759,9 @@ function assertConfigUnchanged(path, previous) {
   }
 }
 var CONFIG_TRANSACTION_PREFIX = ".pjangler-config-txn-";
+var CONFIG_LOCK_NAME = ".pjangler-config.lock";
+var CONFIG_LOCK_WAIT_MS = 1e4;
+var CONFIG_LOCK_READY = "PJANGLER_CONFIG_LOCKED";
 var TRANSACTION_CANDIDATE = "candidate.toml";
 var TRANSACTION_OPERATOR_FILE = "operator-config";
 var TRANSACTION_STATE = "state.json";
@@ -5782,6 +5785,135 @@ function assertSnapshotIdentity(actual, expected, label) {
 }
 function errorDetail(error) {
   return error instanceof Error ? error.message : String(error);
+}
+function openConfigLock(path) {
+  const directory = dirname2(path);
+  mkdirSync2(directory, { recursive: true });
+  const lockPath = join2(directory, CONFIG_LOCK_NAME);
+  let existing;
+  try {
+    existing = lstatSync(lockPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+    throw new Error(`Unsafe Hermes config lock ${lockPath}: expected a regular non-symlink file`);
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(
+      lockPath,
+      constants.O_CREAT | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      384
+    );
+  } catch (error) {
+    throw new Error(`Cannot safely open Hermes config lock ${lockPath}: ${errorDetail(error)}`, { cause: error });
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || stats.nlink !== 1 || stats.size !== 0 || (stats.mode & 63) !== 0 || typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+      throw new Error(`Unsafe Hermes config lock ${lockPath}: expected an owned, empty, single-link regular file with private mode`);
+    }
+    return { descriptor, path: lockPath, identity: stats };
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+}
+function assertConfigLockPath(lock) {
+  let current;
+  try {
+    current = lstatSync(lock.path);
+  } catch (error) {
+    throw new Error(`Hermes config lock path disappeared after acquisition: ${lock.path}`, { cause: error });
+  }
+  if (!current.isFile() || current.isSymbolicLink() || current.dev !== lock.identity.dev || current.ino !== lock.identity.ino || current.nlink !== 1 || current.size !== 0 || (current.mode & 63) !== 0 || typeof process.getuid === "function" && current.uid !== process.getuid()) {
+    throw new Error(`Hermes config lock path changed identity or safety properties during acquisition: ${lock.path}`);
+  }
+}
+function stopConfigLockHolder(holder) {
+  if (holder.exitCode !== null || holder.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve19, reject) => {
+    const killTimer = setTimeout(() => holder.kill("SIGKILL"), 2e3);
+    const failureTimer = setTimeout(() => {
+      reject(new Error("Hermes config lock holder did not exit after SIGKILL"));
+    }, 4e3);
+    holder.once("exit", () => {
+      clearTimeout(killTimer);
+      clearTimeout(failureTimer);
+      resolve19();
+    });
+    holder.stdin.end();
+  });
+}
+async function acquireConfigLock(path) {
+  const lock = openConfigLock(path);
+  let holder;
+  try {
+    holder = spawn(
+      "/usr/bin/flock",
+      [
+        "--exclusive",
+        "--wait",
+        String(CONFIG_LOCK_WAIT_MS / 1e3),
+        "/proc/self/fd/3",
+        process.execPath,
+        "-e",
+        `process.stdout.write(${JSON.stringify(`${CONFIG_LOCK_READY}
+`)}); process.stdin.resume();`
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe", lock.descriptor]
+      }
+    );
+  } catch (error) {
+    closeSync(lock.descriptor);
+    throw new Error(`Failed to start the Hermes config lock holder: ${errorDetail(error)}`, { cause: error });
+  }
+  closeSync(lock.descriptor);
+  let stderr = "";
+  holder.stderr.on("data", (chunk) => {
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4096);
+  });
+  holder.stdin.on("error", () => {
+  });
+  await new Promise((resolve19, reject) => {
+    let ready = false;
+    let stdout = "";
+    const timeout = setTimeout(() => {
+      holder.kill("SIGKILL");
+      reject(new Error(`Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock`));
+    }, CONFIG_LOCK_WAIT_MS + 1e3);
+    holder.once("error", (error) => {
+      if (ready) return;
+      clearTimeout(timeout);
+      reject(new Error(`Hermes config lock holder failed to start: ${error.message}`, { cause: error }));
+    });
+    holder.once("exit", (code, signal) => {
+      if (ready) return;
+      clearTimeout(timeout);
+      const detail = stderr.trim();
+      reject(new Error(
+        code === 1 ? `Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock` : `Hermes config lock holder exited before acquisition (code=${code ?? "none"}, signal=${signal ?? "none"})${detail ? `: ${detail}` : ""}`
+      ));
+    });
+    holder.stdout.on("data", (chunk) => {
+      if (ready) return;
+      stdout += chunk.toString("utf8");
+      if (!stdout.includes(`${CONFIG_LOCK_READY}
+`)) return;
+      ready = true;
+      clearTimeout(timeout);
+      resolve19();
+    });
+  });
+  try {
+    assertConfigLockPath(lock);
+  } catch (error) {
+    await stopConfigLockHolder(holder);
+    throw error;
+  }
+  return () => stopConfigLockHolder(holder);
 }
 function writeTransactionMarker(directory, marker) {
   const nextPath = join2(directory, TRANSACTION_STATE_NEXT);
@@ -5813,15 +5945,6 @@ function inspectTransactionFile(path, label) {
   }
   return stats;
 }
-function processIsAlive(pid) {
-  if (pid === process.pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
-  }
-}
 function recoverInterruptedConfigTransactions(path, allowMutation) {
   const directory = dirname2(path);
   if (!existsSync2(directory)) return;
@@ -5836,10 +5959,6 @@ function recoverInterruptedConfigTransactions(path, allowMutation) {
     const transactionStats = lstatSync(transactionDirectory);
     if (typeof process.getuid === "function" && transactionStats.uid !== process.getuid()) {
       throw new Error(`Hermes config transaction artifact is owned by another user: ${entry.name}`);
-    }
-    const ownerPid = Number(match[1]);
-    if (processIsAlive(ownerPid)) {
-      throw new Error(`another Hermes config transaction is still active (pid ${ownerPid})`);
     }
     if (!allowMutation) {
       throw new Error(`interrupted Hermes config transaction requires live recovery before dry-run: ${entry.name}`);
@@ -6048,8 +6167,46 @@ var EnsureTemplateConfig = class extends Command {
         message: "Hermes host config deferred until rendered lifecycle eligibility passes"
       };
     }
-    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     const path = resolveTemplateConfigPath();
+    if (ctx.dryRun) return this.invokeLocked(ctx, path);
+    let release;
+    try {
+      release = await acquireConfigLock(path);
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to acquire the whole-window Hermes config lock for ${path}: ${errorDetail(error)}`
+      };
+    }
+    let result2;
+    try {
+      result2 = this.invokeLocked(ctx, path);
+    } catch (error) {
+      try {
+        await release();
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          `Hermes config operation threw and its kernel lock holder also failed to exit: ${errorDetail(error)}; ${errorDetail(releaseError)}`
+        );
+      }
+      throw error;
+    }
+    try {
+      await release();
+    } catch (error) {
+      return {
+        success: false,
+        outcome: "failed",
+        filePath: result2.filePath,
+        message: `${result2.message}; Hermes config lock release failed after the reported operation: ${errorDetail(error)}; no success is claimed`
+      };
+    }
+    return result2;
+  }
+  invokeLocked(ctx, path) {
+    const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
     try {
       recoverInterruptedConfigTransactions(path, !ctx.dryRun);
     } catch (error) {
@@ -14237,7 +14394,7 @@ init_reconcile();
 init_config();
 
 // src/notebook/hooks.ts
-import { spawn, spawnSync as spawnSync11 } from "node:child_process";
+import { spawn as spawn2, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync5, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync9, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename7, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
@@ -14300,7 +14457,7 @@ var DEFAULT_RUNTIME = {
   spawnWorker(receiptId, projectSlug) {
     const entry = process.argv[1];
     if (!entry) return;
-    const child = spawn(process.execPath, [entry, "notebook", "worker", "capture", "--receipt-id", receiptId], {
+    const child = spawn2(process.execPath, [entry, "notebook", "worker", "capture", "--receipt-id", receiptId], {
       detached: true,
       stdio: "ignore",
       env: captureWorkerEnvironment(process.env, projectSlug)
@@ -17177,7 +17334,7 @@ function resolveBoardUrl(cwd, ref, env2 = process.env) {
 }
 
 // src/project/openUrl.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 function osc8(url, label = url) {
   return `\x1B]8;;${url}\x07${label}\x1B]8;;\x07`;
 }
@@ -17198,7 +17355,7 @@ function openUrl(url, env2 = process.env, platform2 = process.platform) {
     };
   }
   try {
-    spawn2(launcher(platform2), [url], { detached: true, stdio: "ignore" }).unref();
+    spawn3(launcher(platform2), [url], { detached: true, stdio: "ignore" }).unref();
     return { opened: true, display: osc8(url) };
   } catch (err) {
     return {
@@ -17215,7 +17372,7 @@ import { join as join30, resolve as resolve16 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
-import { spawn as spawn3, spawnSync as spawnSync14 } from "node:child_process";
+import { spawn as spawn4, spawnSync as spawnSync14 } from "node:child_process";
 import { statSync as statSync4 } from "node:fs";
 import { join as join29 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
@@ -17233,7 +17390,7 @@ function git3(repo, args) {
 }
 function gitAsync(repo, args) {
   return new Promise((resolve19) => {
-    const child = spawn3("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn4("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
     let settled = false;
