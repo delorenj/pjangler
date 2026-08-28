@@ -644,7 +644,7 @@ var init_RegistryStore = __esm({
       }
       async loadTicketProvider(client, projectId) {
         const { rows } = await client.query(
-          `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state
+          `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, board_confirmed_at, state
        FROM public.project_ticket_boards
        WHERE project_id = $1
        LIMIT 1`,
@@ -655,6 +655,7 @@ var init_RegistryStore = __esm({
         }
         const row = rows[0];
         const fetchedAt = row.identifier_fetched_at;
+        const confirmedAt = row.board_confirmed_at;
         return {
           type: row.provider_type,
           workspace: row.workspace ?? void 0,
@@ -664,6 +665,9 @@ var init_RegistryStore = __esm({
           identifier_source: row.identifier_source ?? void 0,
           identifier_fetched_at: fetchedAt ? fetchedAt instanceof Date ? fetchedAt.toISOString() : String(fetchedAt) : void 0,
           board_id: row.board_id ?? void 0,
+          // Board-binding provenance is its own column for the same reason
+          // identifier provenance is: dropping it demotes every honest link.
+          board_confirmed_at: confirmedAt ? confirmedAt instanceof Date ? confirmedAt.toISOString() : String(confirmedAt) : void 0,
           state: row.state ?? void 0
         };
       }
@@ -691,8 +695,8 @@ var init_RegistryStore = __esm({
         );
         await client.query(
           `INSERT INTO public.project_ticket_boards
-         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, board_confirmed_at, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
           [
             repoId,
             projectId,
@@ -702,6 +706,7 @@ var init_RegistryStore = __esm({
             tp.identifier_source ?? null,
             tp.identifier_fetched_at ?? null,
             tp.board_id ?? null,
+            tp.board_confirmed_at ?? null,
             tp.state ?? null
           ]
         );
@@ -719,6 +724,9 @@ import { homedir as homedir4, tmpdir } from "node:os";
 import { basename as basename6, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import YAML3 from "yaml";
+function providerAssignsIdentifiers(type) {
+  return IDENTIFIER_ASSIGNING_PROVIDERS.includes((type ?? "").trim());
+}
 function synchronizeCopierIdentity(manifestPath, manifest) {
   const answersPath = join8(dirname5(manifestPath), ".copier-answers.yml");
   if (!existsSync6(answersPath)) return [];
@@ -1003,14 +1011,18 @@ function buildTicketProviderBlock(input) {
   const type = normalizeTicketProvider(input.type);
   const boardId = input.boardId ?? "";
   const identifierSource = input.identifierSource ?? "proposed";
+  const fetchedAt = identifierSource === "provider" ? input.identifierFetchedAt : void 0;
+  const confirmedAt = input.boardConfirmedAt ?? (boardId ? fetchedAt : void 0);
+  const provenClaim = !providerAssignsIdentifiers(type) || identifierSource === "provider";
   return {
     type,
     workspace: input.workspace ?? (type === "trello" ? "" : "33god"),
     identifier: input.identifier,
     identifier_source: identifierSource,
-    ...input.identifierFetchedAt ? { identifier_fetched_at: input.identifierFetchedAt } : {},
+    ...fetchedAt ? { identifier_fetched_at: fetchedAt } : {},
     board_id: boardId,
-    state: boardId && identifierSource === "provider" ? "linked" : "planned"
+    ...confirmedAt ? { board_confirmed_at: confirmedAt } : {},
+    state: boardId && confirmedAt && provenClaim ? "linked" : "planned"
   };
 }
 function ticketProviderKeyVar(provider) {
@@ -1336,6 +1348,7 @@ function planProjectInit(input) {
     identifierSource: "provider",
     ...existing.ticket_provider.identifier_fetched_at ? { identifierFetchedAt: existing.ticket_provider.identifier_fetched_at } : {}
   } : void 0;
+  const inheritedBoardConfirmation = resolvedBoardId && (existing?.ticket_provider?.board_id || void 0) === resolvedBoardId && existing?.ticket_provider?.board_confirmed_at ? { boardConfirmedAt: existing.ticket_provider.board_confirmed_at } : void 0;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
   const agents = createSafeRecord(Object.entries(existing?.agents ?? {}));
@@ -1375,7 +1388,8 @@ function planProjectInit(input) {
       // Provenance survives a re-plan. Without this, re-running init on an
       // already-confirmed board would demote it back to "planned" because the
       // CLI has no way to re-derive where the identifier came from.
-      ...inheritedProvenance ?? {}
+      ...inheritedProvenance ?? {},
+      ...inheritedBoardConfirmation ?? {}
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
@@ -1479,7 +1493,12 @@ function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__
     type: block.type,
     workspace: block.workspace ?? "",
     identifier: block.identifier ?? "",
+    identifier_source: block.identifier_source ?? "proposed",
+    ...block.identifier_fetched_at ? { identifier_fetched_at: block.identifier_fetched_at } : {},
     board_id: block.board_id ?? "",
+    // The provider just handed this board back, and the manifest is where that
+    // confirmation lives for every later reader of the repo.
+    ...block.board_confirmed_at ? { board_confirmed_at: block.board_confirmed_at } : {},
     state: block.state ?? "linked"
   };
   plan.manifest.ticket_provider = manifestProvider;
@@ -1823,9 +1842,19 @@ function validateProjectRecord(project, key) {
   if (provider.identifier_source !== void 0 && !PROJECT_IDENTIFIER_SOURCES.includes(provider.identifier_source)) {
     throw new Error(`Project ${key} ticket_provider.identifier_source must be one of ${PROJECT_IDENTIFIER_SOURCES.join(" | ")}; got ${JSON.stringify(provider.identifier_source)}`);
   }
-  if (provider.state === "linked" && !(provider.board_id && provider.identifier && provider.identifier_source === "provider")) {
+  if (provider.state === "linked" && !(provider.board_id && provider.board_confirmed_at)) {
     throw new Error(
-      `Project ${key} ticket_provider.state is "linked" but its identity is not provider-confirmed (board_id=${JSON.stringify(provider.board_id ?? "")}, identifier=${JSON.stringify(provider.identifier ?? "")}, identifier_source=${JSON.stringify(provider.identifier_source ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+      `Project ${key} ticket_provider.state is "linked" but its board binding is not provider-confirmed (board_id=${JSON.stringify(provider.board_id ?? "")}, board_confirmed_at=${JSON.stringify(provider.board_confirmed_at ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
+  if (provider.identifier_source === "provider" && !(provider.identifier && provider.identifier_fetched_at)) {
+    throw new Error(
+      `Project ${key} ticket_provider.identifier_source is "provider" but no identifier was read back (identifier=${JSON.stringify(provider.identifier ?? "")}, identifier_fetched_at=${JSON.stringify(provider.identifier_fetched_at ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
+  if (provider.state === "linked" && providerAssignsIdentifiers(provider.type) && provider.identifier_source !== "provider") {
+    throw new Error(
+      `Project ${key} ticket_provider.state is "linked" on ${provider.type}, which assigns its own identifiers, but identifier_source=${JSON.stringify(provider.identifier_source ?? "")} (identifier=${JSON.stringify(provider.identifier ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
     );
   }
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
@@ -1855,7 +1884,7 @@ function expandHome(path) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, PROJECT_IDENTIFIER_SOURCES, TICKET_PROVIDER_STATES, IDENTIFIER_REPAIR_COMMAND, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
+var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, PROJECT_IDENTIFIER_SOURCES, IDENTIFIER_ASSIGNING_PROVIDERS, TICKET_PROVIDER_STATES, IDENTIFIER_REPAIR_COMMAND, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
 var init_project = __esm({
   "src/project/index.ts"() {
     "use strict";
@@ -1871,6 +1900,7 @@ var init_project = __esm({
     DEFAULT_NEW_PROJECT_STATUS = "active";
     BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
     PROJECT_IDENTIFIER_SOURCES = ["provider", "proposed"];
+    IDENTIFIER_ASSIGNING_PROVIDERS = ["plane", "linear"];
     TICKET_PROVIDER_STATES = ["planned", "linked", "skipped"];
     IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
     DEFAULT_SOURCE_SKILL_ROOTS = [
@@ -1894,7 +1924,7 @@ var init_project = __esm({
       "updated_at"
     ];
     PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"];
-    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_url", "state"];
+    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_confirmed_at", "board_url", "state"];
     GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"];
     GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"];
     GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"];
@@ -5680,19 +5710,34 @@ function validateTomlBytes(source, label) {
     timeout: TOMLLIB_VALIDATION_TIMEOUT_MS,
     killSignal: "SIGKILL"
   });
-  if (validation.error) return "unavailable";
-  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) return "unavailable";
+  if (validation.error) {
+    const code = validation.error.code;
+    if (code === "ETIMEDOUT") {
+      throw new Error(`${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms`);
+    }
+    throw new Error(
+      code === "ENOENT" ? `${label} cannot be validated: python3 with tomllib is required but was not found` : `${label} validation failed to start: ${validation.error.message}`
+    );
+  }
+  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) {
+    throw new Error(
+      `${label} cannot be validated: python3 with tomllib is required (${validation.stderr.replace(/^TOMLLIB_UNAVAILABLE:/, "")})`
+    );
+  }
   if (validation.status !== 0) {
     const detail = validation.stderr.replace(/^TOML_INVALID:/, "").trim() || `python3 exited ${validation.status ?? "without a status"}`;
     throw new Error(`${label} is not valid TOML 1.0 for Python tomllib: ${detail}`);
   }
-  return "validated";
 }
 function assertValidToml(source, label) {
   validateTomlBytes(Buffer.from(source, "utf8"), label);
 }
-function mergeHostConfig(existing) {
-  assertValidToml(existing, "Existing Hermes template config");
+function mergeHostConfig(existingBytes) {
+  validateTomlBytes(existingBytes, "Existing Hermes template config");
+  const existing = existingBytes.toString("utf8");
+  if (!Buffer.from(existing, "utf8").equals(existingBytes)) {
+    throw new Error("Existing Hermes template config is not valid UTF-8");
+  }
   let merged = existing;
   for (const { section: section2, values } of hostSchema()) {
     const tables = parseTomlTableHeaders(merged);
@@ -5791,8 +5836,9 @@ var EnsureTemplateConfig = class extends Command {
     let current = "";
     try {
       if (exists) {
-        current = readFileSync(path, "utf8");
-        next = mergeHostConfig(current);
+        const bytes = readFileSync(path);
+        next = mergeHostConfig(bytes);
+        current = bytes.toString("utf8");
       } else {
         assertValidToml(next, "Rendered Hermes template config");
       }
@@ -12919,6 +12965,10 @@ var WireTelegram = class extends Command {
       stdio: "inherit",
       env: {
         ...process.env,
+        // Interactive wiring is an explicit host-state operation: it writes the
+        // profile. Set the gate rather than inheriting whatever a deferred MCP
+        // render left in the environment, which would silently no-op this run.
+        SKIP_HOST_STATE: "0",
         SKIP_TELEGRAM: "0",
         TELEGRAM_BOT_TOKEN: token,
         TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim()
@@ -15466,18 +15516,23 @@ function refreshPlanFromCanonicalManifest(plan) {
   }
   const manifestIdentifier = String(manifestTicket.identifier ?? "");
   const manifestBoardId = String(manifestTicket.board_id ?? "");
+  const manifestType = String(manifestTicket.type ?? "");
   const recorded = plan.project.ticket_provider;
   const carriesProvenance = (recorded?.identifier ?? "") === manifestIdentifier && (recorded?.board_id ?? "") === manifestBoardId;
   const identifierSource = (carriesProvenance ? recorded?.identifier_source : void 0) ?? "proposed";
+  const manifestConfirmedAt = typeof manifestTicket.board_confirmed_at === "string" ? manifestTicket.board_confirmed_at.trim() : "";
+  const boardConfirmedAt = manifestConfirmedAt || ((recorded?.board_id ?? "") === manifestBoardId ? recorded?.board_confirmed_at ?? "" : "");
+  const keyIsProven = !providerAssignsIdentifiers(manifestType) || identifierSource === "provider";
   const manifestState = typeof manifestTicket.state === "string" ? manifestTicket.state : void 0;
   const ticketProvider = {
-    type: String(manifestTicket.type ?? ""),
+    type: manifestType,
     workspace: String(manifestTicket.workspace ?? ""),
     identifier: manifestIdentifier,
     identifier_source: identifierSource,
-    ...carriesProvenance && recorded?.identifier_fetched_at ? { identifier_fetched_at: recorded.identifier_fetched_at } : {},
+    ...carriesProvenance && identifierSource === "provider" && recorded?.identifier_fetched_at ? { identifier_fetched_at: recorded.identifier_fetched_at } : {},
     board_id: manifestBoardId,
-    state: manifestState === "skipped" ? "skipped" : manifestBoardId && identifierSource === "provider" ? "linked" : "planned"
+    ...boardConfirmedAt ? { board_confirmed_at: boardConfirmedAt } : {},
+    state: manifestState === "skipped" ? "skipped" : manifestBoardId && boardConfirmedAt && keyIsProven ? "linked" : "planned"
   };
   plan.manifest = manifest;
   plan.project.agents = agents;
@@ -17344,7 +17399,9 @@ function readManifestBoard(repoPath) {
   return {
     type: typeof provider.type === "string" ? provider.type : "",
     boardId: typeof provider.board_id === "string" ? provider.board_id.trim() : "",
-    workspace: typeof provider.workspace === "string" ? provider.workspace.trim() : ""
+    workspace: typeof provider.workspace === "string" ? provider.workspace.trim() : "",
+    identifier: typeof provider.identifier === "string" ? provider.identifier.trim() : "",
+    identifierSource: typeof provider.identifier_source === "string" ? provider.identifier_source.trim() : ""
   };
 }
 var PLAIN_SCALAR = /^[A-Za-z][A-Za-z0-9_-]*$|^[0-9]+[A-Za-z][A-Za-z0-9_-]*$/;
@@ -17434,6 +17491,36 @@ function liveKeyIndex(boards) {
   for (const board of boards.values()) index.set(board.identifier.toUpperCase(), board);
   return index;
 }
+function resolveBoardByHint(ctx, slug, project, provider) {
+  const matches = (predicate) => {
+    const found = [];
+    for (const boards of ctx.boardsByWorkspace.values()) {
+      for (const board of boards.values()) if (predicate(board)) found.push(board);
+    }
+    return found;
+  };
+  const describe = (boards) => boards.map((board) => `${board.workspace}/${board.identifier} "${board.name}"`).join(", ");
+  const manifest = project.repo_path ? readManifestBoard(project.repo_path) : void 0;
+  const claimedKey = manifest && manifest.identifierSource === "provider" && (!manifest.type || manifest.type === provider.type) ? manifest.identifier.toUpperCase() : "";
+  if (claimedKey) {
+    const byKey = matches((board) => board.identifier.toUpperCase() === claimedKey);
+    if (byKey.length === 1) return { board: byKey[0] };
+    if (byKey.length > 1) {
+      return { refusal: `.project.json identifier ${claimedKey} matches ${byKey.length} boards (${describe(byKey)})` };
+    }
+  }
+  const names = new Set(
+    [slug, project.name ?? ""].map((value) => value.trim().toLowerCase()).filter(Boolean)
+  );
+  if (!names.size) return {};
+  const byName = matches((board) => names.has(board.name.trim().toLowerCase()));
+  const unique = new Map(byName.map((board) => [`${board.workspace}\0${board.id}`, board]));
+  if (unique.size === 1) return { board: [...unique.values()][0] };
+  if (unique.size > 1) {
+    return { refusal: `board name matches ${unique.size} boards (${describe([...unique.values()])})` };
+  }
+  return {};
+}
 function noteChange(ctx, slug, field2, from, to) {
   const before = from === void 0 ? "" : String(from);
   const after = to === void 0 ? "" : String(to);
@@ -17454,6 +17541,7 @@ function demoteToPlanned(ctx, slug, provider, detail, status) {
   noteChange(ctx, slug, "identifier", provider.identifier, nextIdentifier);
   noteChange(ctx, slug, "identifier_source", provider.identifier_source, nextSource ?? "");
   noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, "");
+  noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, "");
   if (ctx.apply) {
     provider.board_id = nextBoardId;
     provider.state = nextState;
@@ -17461,6 +17549,7 @@ function demoteToPlanned(ctx, slug, provider, detail, status) {
     if (nextSource) provider.identifier_source = nextSource;
     else delete provider.identifier_source;
     delete provider.identifier_fetched_at;
+    delete provider.board_confirmed_at;
   }
   return {
     slug,
@@ -17473,8 +17562,8 @@ function demoteToPlanned(ctx, slug, provider, detail, status) {
     detail: collision ? `${detail}; identifier ${identifier} dropped \u2014 ${workspace}/${collision.identifier} belongs to "${collision.name}"` : detail
   };
 }
-function stampFor(provider, changed, now) {
-  return changed || !provider.identifier_fetched_at ? now : provider.identifier_fetched_at;
+function stampFor(existing, changed, now) {
+  return changed || !existing ? now : existing;
 }
 function preserve(slug, provider, detail) {
   return {
@@ -17501,11 +17590,24 @@ async function reconcileOneProject(ctx, slug, claimed) {
   if (type === "plane" && ctx.planeDegraded) {
     return preserve(slug, provider, "a Plane workspace could not be listed; nothing written");
   }
-  const candidates = candidateBoardIds(provider, project.repo_path ?? "", ctx.fleetBoards).filter((boardId2) => {
-    const owner = claimed.get(`${type}\0${boardId2}`);
+  const unclaimed = (candidate) => {
+    const owner = claimed.get(`${type}\0${candidate}`);
     return !owner || owner === slug;
-  });
-  const boardId = candidates[0];
+  };
+  const candidates = candidateBoardIds(provider, project.repo_path ?? "", ctx.fleetBoards).filter(unclaimed);
+  let boardId = candidates[0];
+  let recovered = "";
+  if (!boardId && type === "plane" && provider.state !== "skipped") {
+    const hint = resolveBoardByHint(ctx, slug, project, provider);
+    if (hint.refusal) {
+      ctx.errors.push(`${slug}: ${hint.refusal}; refusing to choose \u2014 record the board id in .project.json and re-run`);
+      return demoteToPlanned(ctx, slug, provider, `${hint.refusal}; refused rather than guessed`, "planned");
+    }
+    if (hint.board && unclaimed(hint.board.id)) {
+      boardId = hint.board.id;
+      recovered = ", recovered by an exact match on this record's own name";
+    }
+  }
   if (!boardId) {
     return demoteToPlanned(ctx, slug, provider, "no board binding in the record, its .project.json, or the fleet", "planned");
   }
@@ -17526,16 +17628,18 @@ async function reconcileOneProject(ctx, slug, claimed) {
     if (!identifier) {
       return demoteToPlanned(ctx, slug, provider, `Trello board "${board.name}" has no identifier on the record`, "planned");
     }
-    const bindingChanged = provider.board_id !== boardId || provider.identifier_source !== "provider" || provider.state !== "linked";
-    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    const bindingChanged = provider.board_id !== boardId || provider.state !== "linked";
+    const confirmedAt = stampFor(provider.board_confirmed_at, bindingChanged, ctx.fetchedAt);
     noteChange(ctx, slug, "board_id", provider.board_id, boardId);
-    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
+    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "proposed");
+    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, "");
+    noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, confirmedAt);
     noteChange(ctx, slug, "state", provider.state, "linked");
-    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
     if (ctx.apply) {
       provider.board_id = boardId;
-      provider.identifier_source = "provider";
-      provider.identifier_fetched_at = stamp;
+      provider.identifier_source = "proposed";
+      delete provider.identifier_fetched_at;
+      provider.board_confirmed_at = confirmedAt;
       provider.state = "linked";
     }
     return {
@@ -17544,9 +17648,9 @@ async function reconcileOneProject(ctx, slug, claimed) {
       workspace: (provider.workspace ?? "").trim(),
       boardId,
       identifier,
-      identifierSource: "provider",
+      identifierSource: "proposed",
       status: "linked",
-      detail: `Trello board "${board.name}" confirmed`
+      detail: `Trello board "${board.name}" confirmed; ${identifier} stays a local prefix \u2014 Trello assigns none`
     };
   }
   for (const [workspace, boards] of ctx.boardsByWorkspace) {
@@ -17554,12 +17658,14 @@ async function reconcileOneProject(ctx, slug, claimed) {
     if (!board) continue;
     claimed.set(`${type}\0${boardId}`, slug);
     const bindingChanged = provider.board_id !== boardId || provider.workspace !== workspace || provider.identifier !== board.identifier || provider.identifier_source !== "provider" || provider.state !== "linked";
-    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    const stamp = stampFor(provider.identifier_fetched_at, bindingChanged, ctx.fetchedAt);
+    const confirmedAt = stampFor(provider.board_confirmed_at, bindingChanged, ctx.fetchedAt);
     noteChange(ctx, slug, "board_id", provider.board_id, boardId);
     noteChange(ctx, slug, "workspace", provider.workspace, workspace);
     noteChange(ctx, slug, "identifier", provider.identifier, board.identifier);
     noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
     noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
+    noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, confirmedAt);
     noteChange(ctx, slug, "state", provider.state, "linked");
     if (ctx.apply) {
       provider.board_id = boardId;
@@ -17567,6 +17673,7 @@ async function reconcileOneProject(ctx, slug, claimed) {
       provider.identifier = board.identifier;
       provider.identifier_source = "provider";
       provider.identifier_fetched_at = stamp;
+      provider.board_confirmed_at = confirmedAt;
       provider.state = "linked";
     }
     return {
@@ -17577,7 +17684,7 @@ async function reconcileOneProject(ctx, slug, claimed) {
       identifier: board.identifier,
       identifierSource: "provider",
       status: "linked",
-      detail: `Plane board "${board.name}"`
+      detail: `Plane board "${board.name}"${recovered}`
     };
   }
   const searched = [...ctx.boardsByWorkspace.keys()].join(", ") || "no workspace";

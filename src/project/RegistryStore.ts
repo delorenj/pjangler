@@ -356,9 +356,10 @@ export class PgRegistryStore implements RegistryStore {
       identifier_source: string | null;
       identifier_fetched_at: Date | string | null;
       board_id: string | null;
+      board_confirmed_at: Date | string | null;
       state: string | null;
     }>(
-      `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state
+      `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, board_confirmed_at, state
        FROM public.project_ticket_boards
        WHERE project_id = $1
        LIMIT 1`,
@@ -369,6 +370,7 @@ export class PgRegistryStore implements RegistryStore {
     }
     const row = rows[0]!;
     const fetchedAt = row.identifier_fetched_at;
+    const confirmedAt = row.board_confirmed_at;
     return {
       type: row.provider_type,
       workspace: row.workspace ?? undefined,
@@ -380,6 +382,11 @@ export class PgRegistryStore implements RegistryStore {
         ? (fetchedAt instanceof Date ? fetchedAt.toISOString() : String(fetchedAt))
         : undefined,
       board_id: row.board_id ?? undefined,
+      // Board-binding provenance is its own column for the same reason
+      // identifier provenance is: dropping it demotes every honest link.
+      board_confirmed_at: confirmedAt
+        ? (confirmedAt instanceof Date ? confirmedAt.toISOString() : String(confirmedAt))
+        : undefined,
       state: (row.state as ProjectTicketProvider["state"]) ?? undefined,
     };
   }
@@ -424,8 +431,8 @@ export class PgRegistryStore implements RegistryStore {
     );
     await client.query(
       `INSERT INTO public.project_ticket_boards
-         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, board_confirmed_at, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         repoId,
         projectId,
@@ -435,6 +442,7 @@ export class PgRegistryStore implements RegistryStore {
         tp.identifier_source ?? null,
         tp.identifier_fetched_at ?? null,
         tp.board_id ?? null,
+        tp.board_confirmed_at ?? null,
         tp.state ?? null,
       ]
     );

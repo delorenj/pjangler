@@ -5,6 +5,7 @@ import {
   createSafeRecord,
   executeProjectInitPlan,
   normalizeAgentRole,
+  providerAssignsIdentifiers,
   type ProjectAgentRecord,
   type ProjectInitExecutionOptions,
   type ProjectInitExecutionResult,
@@ -181,29 +182,40 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
   }
   const manifestIdentifier = String(manifestTicket.identifier ?? "");
   const manifestBoardId = String(manifestTicket.board_id ?? "");
-  // `.project.json` is authoritative for the BINDING, but it carries no
-  // provenance. Keep what the registry already knows when the manifest agrees
-  // on the binding; a manifest naming a different identifier has been
-  // confirmed by nothing, so provenance degrades back to "proposed" and the
-  // board falls out of "linked" until `pj project identity` re-reads it.
+  const manifestType = String(manifestTicket.type ?? "");
+  // `.project.json` is authoritative for the BINDING, and the adapter that
+  // wrote it stamps `board_confirmed_at` at the instant the provider handed the
+  // board back — so board-binding provenance travels with the binding.
+  // IDENTIFIER provenance does not: the manifest cannot say where a key came
+  // from beyond what it was told, so keep what the registry already knows when
+  // the manifest agrees, and otherwise degrade to "proposed" until
+  // `pj project identity` re-reads the truth.
   const recorded = plan.project.ticket_provider;
   const carriesProvenance =
     (recorded?.identifier ?? "") === manifestIdentifier && (recorded?.board_id ?? "") === manifestBoardId;
   const identifierSource = (carriesProvenance ? recorded?.identifier_source : undefined) ?? "proposed";
+  const manifestConfirmedAt =
+    typeof manifestTicket.board_confirmed_at === "string" ? manifestTicket.board_confirmed_at.trim() : "";
+  const boardConfirmedAt =
+    manifestConfirmedAt || ((recorded?.board_id ?? "") === manifestBoardId ? recorded?.board_confirmed_at ?? "" : "");
+  // Plane names its own boards; Trello does not. A link needs a confirmed
+  // board from either, and a provider-sourced key only from the former.
+  const keyIsProven = !providerAssignsIdentifiers(manifestType) || identifierSource === "provider";
   const manifestState = typeof manifestTicket.state === "string" ? manifestTicket.state : undefined;
   const ticketProvider: ProjectTicketProvider = {
-    type: String(manifestTicket.type ?? ""),
+    type: manifestType,
     workspace: String(manifestTicket.workspace ?? ""),
     identifier: manifestIdentifier,
     identifier_source: identifierSource,
-    ...(carriesProvenance && recorded?.identifier_fetched_at
+    ...(carriesProvenance && identifierSource === "provider" && recorded?.identifier_fetched_at
       ? { identifier_fetched_at: recorded.identifier_fetched_at }
       : {}),
     board_id: manifestBoardId,
+    ...(boardConfirmedAt ? { board_confirmed_at: boardConfirmedAt } : {}),
     state:
       manifestState === "skipped"
         ? "skipped"
-        : manifestBoardId && identifierSource === "provider"
+        : manifestBoardId && boardConfirmedAt && keyIsProven
           ? "linked"
           : "planned",
   };

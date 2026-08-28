@@ -8,8 +8,10 @@
 //   1. the minters are gone, and what replaced them is labelled a PROPOSAL;
 //   2. `pj project identity` reads the truth back and repairs both stores
 //      without touching anything it was not asked to touch;
-//   3. the drifted shape — "linked" behind an identifier nobody confirmed — is
-//      no longer representable in the registry at all.
+//   3. the drifted shape — "linked" behind a board nobody confirmed — is no
+//      longer representable in the registry at all, and neither is the shape
+//      that replaced it: a provider that assigns no identifiers claiming it
+//      assigned one.
 //
 // No network: the Plane client is injected.
 import assert from "node:assert/strict";
@@ -87,6 +89,11 @@ const BOARD = {
   ssbnk: "ce150fc4-bfd9-4b6f-9f14-6468c18616e3",
   jimb: "a8a12be1-b3ab-44f4-ab24-abe8829aeb72",
   gone: "d7f7b5f6-78a7-49e7-928b-d5016783efd8",
+  momo: "94fb34d5-9b31-4437-8a42-54002c734de0",
+  agentboard: "eaa6316e-c8f8-4552-b1a8-bf4a61ce0063",
+  delodocs: "b0a93110-2801-4524-a491-927c5b125da8",
+  twin33god: "11111111-1111-4111-8111-111111111111",
+  twinAutomaticai: "22222222-2222-4222-8222-222222222222",
 };
 
 /**
@@ -189,10 +196,20 @@ function planeBoards(workspace) {
     return new Map([
       [BOARD.holocene, { id: BOARD.holocene, identifier: "HOLOC", name: "Holocene", workspace }],
       [BOARD.ssbnk, { id: BOARD.ssbnk, identifier: "SSBNK", name: "SSBNK", workspace }],
+      [BOARD.momo, { id: BOARD.momo, identifier: "MOMO", name: "Momo", workspace }],
+      [BOARD.agentboard, { id: BOARD.agentboard, identifier: "ABRD", name: "AgentBoard", workspace }],
+      // The trap: a real board whose key equals what a `slug.slice(0, 4)`
+      // minter would produce for a completely different project.
+      [BOARD.delodocs, { id: BOARD.delodocs, identifier: "DOCS", name: "DeloDocs", workspace }],
+      [BOARD.twin33god, { id: BOARD.twin33god, identifier: "TWN1", name: "Twin", workspace }],
     ]);
   }
   if (workspace === "automaticai") {
-    return new Map([[BOARD.jimb, { id: BOARD.jimb, identifier: "JIMB", name: "James Brennan", workspace }]]);
+    return new Map([
+      [BOARD.jimb, { id: BOARD.jimb, identifier: "JIMB", name: "James Brennan", workspace }],
+      // Two live boards genuinely share a name — "MarketJangler" does, today.
+      [BOARD.twinAutomaticai, { id: BOARD.twinAutomaticai, identifier: "TWN2", name: "Twin", workspace }],
+    ]);
   }
   return new Map();
 }
@@ -213,6 +230,9 @@ function baseRecord(overrides = {}) {
     ...overrides,
   };
 }
+
+/** An instant standing in for "the provider answered". */
+const CONFIRMED = "2026-08-28T00:00:00.000Z";
 
 function registryOf(...records) {
   const projects = {};
@@ -267,6 +287,31 @@ check("a provider-confirmed identifier links, and records when it was read", () 
   assert.equal(block.state, "linked");
   assert.equal(block.identifier_source, "provider");
   assert.equal(block.identifier_fetched_at, "2026-08-28T00:00:00.000Z");
+  // Reading a key back out of Plane FOR THIS BOARD confirmed the binding too,
+  // so the caller need not say the same thing twice.
+  assert.equal(block.board_confirmed_at, "2026-08-28T00:00:00.000Z");
+});
+
+check("a confirmed board links on Trello, whose key is a proposal forever", () => {
+  const block = buildTicketProviderBlock({
+    type: "trello",
+    identifier: "INT",
+    boardConfirmedAt: "2026-08-28T00:00:00.000Z",
+    boardId: "687535e9873b89478afef689",
+  });
+  assert.equal(block.state, "linked", "Trello confirmed the board, which is the whole basis of a link");
+  assert.equal(block.identifier_source, "proposed", "and never confirmed the key, because it has none to give");
+  assert.equal(block.identifier_fetched_at, undefined);
+  assert.equal(block.board_confirmed_at, "2026-08-28T00:00:00.000Z");
+});
+
+check("a confirmed board does NOT link on Plane behind a proposed key", () => {
+  const block = buildTicketProviderBlock({
+    identifier: "MOMO",
+    boardConfirmedAt: "2026-08-28T00:00:00.000Z",
+    boardId: BOARD.holocene,
+  });
+  assert.equal(block.state, "planned", "Plane names its own boards; a guess may not wear its authority");
 });
 
 console.log("");
@@ -284,32 +329,87 @@ check("R2 rejects an identifier_source outside provider|proposed", () => {
   rejects(() => validateProjectRegistry(registryOf(record)), /identifier_source must be one of provider \| proposed/, "R2");
 });
 
-check("R3 rejects linked-without-provider-confirmation, and names the repair", () => {
-  const noProvenance = baseRecord();
-  Object.assign(noProvenance.ticket_provider, { board_id: BOARD.holocene, state: "linked" });
+check("R3 rejects a link behind a board binding nobody confirmed", () => {
+  const unconfirmed = baseRecord();
+  Object.assign(unconfirmed.ticket_provider, { board_id: BOARD.holocene, state: "linked" });
   rejects(
-    () => validateProjectRegistry(registryOf(noProvenance)),
-    /is not provider-confirmed[\s\S]*pj project identity --all --apply/,
-    "R3 without provenance",
+    () => validateProjectRegistry(registryOf(unconfirmed)),
+    /board binding is not provider-confirmed[\s\S]*pj project identity --all --apply/,
+    "R3 without a confirmation",
   );
 
-  const proposed = baseRecord();
-  Object.assign(proposed.ticket_provider, { board_id: BOARD.holocene, identifier_source: "proposed", state: "linked" });
-  rejects(() => validateProjectRegistry(registryOf(proposed)), /is not provider-confirmed/, "R3 with a proposal");
-
   const noBoard = baseRecord();
-  Object.assign(noBoard.ticket_provider, { identifier_source: "provider", state: "linked" });
-  rejects(() => validateProjectRegistry(registryOf(noBoard)), /is not provider-confirmed/, "R3 without a board");
+  Object.assign(noBoard.ticket_provider, { board_confirmed_at: CONFIRMED, state: "linked" });
+  rejects(() => validateProjectRegistry(registryOf(noBoard)), /board binding is not provider-confirmed/, "R3 without a board");
 });
 
-check("R3 accepts a provider-confirmed link", () => {
+check("R3a rejects a provider-sourced identifier nothing was read back for", () => {
+  const noRead = baseRecord();
+  Object.assign(noRead.ticket_provider, { identifier: "HOLOC", identifier_source: "provider" });
+  rejects(
+    () => validateProjectRegistry(registryOf(noRead)),
+    /identifier_source is "provider" but no identifier was read back/,
+    "R3a without a read instant",
+  );
+
+  const noIdentifier = baseRecord();
+  Object.assign(noIdentifier.ticket_provider, {
+    identifier: "", identifier_source: "provider", identifier_fetched_at: CONFIRMED,
+  });
+  rejects(
+    () => validateProjectRegistry(registryOf(noIdentifier)),
+    /no identifier was read back/,
+    "R3a without an identifier",
+  );
+});
+
+check("R3b keeps a Plane link honest — its key is Plane's, or it is not linked", () => {
+  const guessed = baseRecord();
+  Object.assign(guessed.ticket_provider, {
+    board_id: BOARD.holocene, board_confirmed_at: CONFIRMED, identifier_source: "proposed", state: "linked",
+  });
+  rejects(
+    () => validateProjectRegistry(registryOf(guessed)),
+    /"linked" on plane, which assigns its own identifiers, but identifier_source="proposed"/,
+    "R3b with a proposal",
+  );
+
+  const unstamped = baseRecord();
+  Object.assign(unstamped.ticket_provider, {
+    board_id: BOARD.holocene, board_confirmed_at: CONFIRMED, state: "linked",
+  });
+  rejects(() => validateProjectRegistry(registryOf(unstamped)), /assigns its own identifiers/, "R3b unstamped");
+});
+
+check("R3 accepts a provider-confirmed Plane link", () => {
   const record = baseRecord();
   Object.assign(record.ticket_provider, {
     board_id: BOARD.holocene,
+    board_confirmed_at: CONFIRMED,
     identifier: "HOLOC",
     identifier_source: "provider",
-    identifier_fetched_at: "2026-08-28T00:00:00.000Z",
+    identifier_fetched_at: CONFIRMED,
     state: "linked",
+  });
+  validateProjectRegistry(registryOf(record));
+});
+
+check("R3 accepts an HONEST Trello link — confirmed board, admitted proposal", () => {
+  // The record this whole rule split exists for. `intelliforia` is genuinely
+  // bound to a live Trello board, and `INT` is genuinely a prefix we chose.
+  // Under the old single rule it had to lie about one to keep the other, and
+  // the live SSOT duly carried `identifier_source: provider` for a key Trello
+  // has no concept of.
+  const record = baseRecord({
+    ticket_provider: {
+      type: "trello",
+      workspace: "",
+      identifier: "INT",
+      identifier_source: "proposed",
+      board_id: "687535e9873b89478afef689",
+      board_confirmed_at: CONFIRMED,
+      state: "linked",
+    },
   });
   validateProjectRegistry(registryOf(record));
 });
@@ -320,7 +420,9 @@ check("R4 rejects two projects owning one board in one workspace", () => {
     Object.assign(record.ticket_provider, {
       identifier,
       board_id: BOARD.holocene,
+      board_confirmed_at: CONFIRMED,
       identifier_source: "provider",
+      identifier_fetched_at: CONFIRMED,
       state: "linked",
     });
     return record;
@@ -350,7 +452,9 @@ check("R4 is scoped: the same board id in another workspace is a different board
       workspace,
       identifier,
       board_id: BOARD.holocene,
+      board_confirmed_at: CONFIRMED,
       identifier_source: "provider",
+      identifier_fetched_at: CONFIRMED,
       state: "linked",
     });
     return record;
@@ -382,6 +486,7 @@ check("provenance survives a registry write — the owned-key trap", () => {
   Object.assign(record.ticket_provider, {
     identifier: "HOLOC",
     board_id: BOARD.holocene,
+    board_confirmed_at: "2026-08-28T00:00:00.000Z",
     identifier_source: "provider",
     identifier_fetched_at: "2026-08-28T00:00:00.000Z",
     state: "linked",
@@ -394,6 +499,7 @@ check("provenance survives a registry write — the owned-key trap", () => {
   const provider = loadProjectRegistry(path).projects.owned.ticket_provider;
   assert.equal(provider.identifier_source, "provider");
   assert.equal(provider.identifier_fetched_at, "2026-08-28T00:00:00.000Z");
+  assert.equal(provider.board_confirmed_at, "2026-08-28T00:00:00.000Z", "board provenance is owned too");
   assert.equal(provider.state, "linked");
 });
 
@@ -494,6 +600,7 @@ await checkAsync("--apply repairs both stores and touches nothing else", async (
   // recovering it is what turned 7 "(planned, provider)" records with no board
   // into real links.
   assert.equal(provider.board_id, BOARD.ssbnk, "the fleet's binding for this repo is recovered");
+  assert.equal(provider.board_confirmed_at, "2026-08-28T12:00:00.000Z");
   assert.equal(provider.state, "linked");
 });
 
@@ -610,7 +717,8 @@ function projectFixture() {
     // A link behind a board Plane no longer has.
     record("ghost", {
       type: "plane", workspace: "33god", identifier: "GHOS", board_id: BOARD.gone,
-      identifier_source: "provider", identifier_fetched_at: "2026-01-01T00:00:00.000Z", state: "linked",
+      identifier_source: "provider", identifier_fetched_at: "2026-01-01T00:00:00.000Z",
+      board_confirmed_at: "2026-01-01T00:00:00.000Z", state: "linked",
     }),
     // A second record pointing at a board another record already owns.
     record("thief", { type: "plane", workspace: "33god", identifier: "THIE", board_id: "", state: "planned" },
@@ -621,10 +729,28 @@ function projectFixture() {
     record("trello-live", { type: "trello", workspace: "", identifier: "TRL", board_id: TRELLO.live, state: "planned" }),
     record("trello-dead", {
       type: "trello", workspace: "", identifier: "DEAD", board_id: TRELLO.gone,
-      identifier_source: "provider", state: "linked",
+      identifier_source: "proposed", board_confirmed_at: "2026-01-01T00:00:00.000Z", state: "linked",
     }),
     // A provider this command does not speak.
     record("linear-record", { type: "linear", workspace: "", identifier: "LIN", board_id: "L1", state: "planned" }),
+    // Nothing recorded points at a board, but exactly one live board carries
+    // this record's own name. This is `momo`, whose identifier wave 2 blanked.
+    record("momo", { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" },
+      { type: "plane", workspace: "33god", identifier: "MOMO", board_id: "" }),
+    // Same, with a proposed key on the record that Plane will overwrite.
+    record("agentboard", { type: "plane", workspace: "33god", identifier: "AGEN", board_id: "", state: "planned",
+      identifier_source: "proposed" }),
+    // The trap. Its manifest says DOCS, and Plane's DOCS is DeloDocs. An
+    // unstamped manifest key is a `slug.slice(0, 4)` proposal, so it resolves
+    // nothing — this is the original bug, offered a second entrance.
+    record("docsidian", { type: "plane", workspace: "33god", identifier: "DOCS", board_id: "", state: "planned" },
+      { type: "plane", workspace: "33god", identifier: "DOCS", board_id: "" }),
+    // A manifest key the manifest itself certifies came from the provider.
+    record("keyed", { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" },
+      { type: "plane", workspace: "33god", identifier: "SSBNK", identifier_source: "provider", board_id: "" }),
+    // Its name matches two live boards. There is no right answer to pick.
+    record("twin", { type: "plane", workspace: "33god", identifier: "TWIN", board_id: "", state: "planned",
+      identifier_source: "proposed" }),
   );
   const registryPath = join(dir, "projects.yaml");
   saveProjectRegistry(registry, registryPath);
@@ -652,7 +778,7 @@ await checkAsync("every record is examined, agent or no agent", async () => {
   const fixture = projectFixture();
   const report = await runProjects(fixture);
   assert.equal(report.checked, 0, "this fleet has no agents at all");
-  assert.equal(report.projectsChecked, 10, "and every project record is still reconciled");
+  assert.equal(report.projectsChecked, 15, "and every project record is still reconciled");
 });
 
 await checkAsync("a board is recovered from the repo's own manifest, never guessed", async () => {
@@ -732,11 +858,64 @@ await checkAsync("Trello confirms the BOARD, which is all Trello has to confirm"
   const live = projects["trello-live"].ticket_provider;
   assert.equal(live.state, "linked");
   assert.equal(live.identifier, "TRL", "Trello assigns no identifier; the prefix on the record is all there is");
-  assert.equal(live.identifier_source, "provider");
-  assert.equal(live.identifier_fetched_at, "2026-08-28T12:00:00.000Z", "stamped when the binding was confirmed");
+  assert.equal(live.identifier_source, "proposed", "and a prefix Trello echoes back is not a prefix Trello chose");
+  assert.equal(live.identifier_fetched_at, undefined, "no key was read back, so no read instant may be claimed");
+  assert.equal(live.board_confirmed_at, "2026-08-28T12:00:00.000Z", "what WAS confirmed is the board");
   const dead = projects["trello-dead"].ticket_provider;
   assert.equal(dead.state, "planned", "a board Trello 404s cannot back a link");
   assert.equal(dead.board_id, "");
+});
+
+await checkAsync("a record whose name matches exactly one live board is recovered", async () => {
+  // Wave 2 BLANKED momo's identifier: the recovery path only followed recorded
+  // board ids, momo had none anywhere, and a live board called "Momo" sat
+  // three feet away the whole time.
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const projects = loadProjectRegistry(fixture.registryPath).projects;
+
+  const momo = projects.momo.ticket_provider;
+  assert.equal(momo.board_id, BOARD.momo);
+  assert.equal(momo.identifier, "MOMO", "and the key comes from Plane, not from the manifest that hinted at it");
+  assert.equal(momo.identifier_source, "provider");
+  assert.equal(momo.state, "linked");
+  assert.match(report.projects.find((entry) => entry.slug === "momo").detail, /recovered by an exact match/);
+
+  // agentboard's own proposal was AGEN. Plane calls it ABRD, and Plane wins.
+  const agentboard = projects.agentboard.ticket_provider;
+  assert.equal(agentboard.board_id, BOARD.agentboard);
+  assert.equal(agentboard.identifier, "ABRD", "AGEN was always a guess");
+  assert.equal(agentboard.state, "linked");
+});
+
+await checkAsync("a manifest key the provider never stamped resolves NOTHING", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.docsidian.ticket_provider;
+  assert.equal(provider.board_id, "", "DOCS is DeloDocs' board, and this record is not DeloDocs");
+  assert.equal(provider.identifier, "", "a proposal that shadows a live key is dropped, not honoured");
+  assert.equal(provider.state, "planned");
+});
+
+await checkAsync("a manifest key the provider DID stamp resolves its board", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.keyed.ticket_provider;
+  assert.equal(provider.board_id, BOARD.ssbnk, "identifier_source: provider is what makes a key evidence");
+  assert.equal(provider.identifier, "SSBNK");
+  assert.equal(provider.state, "linked");
+});
+
+await checkAsync("two live boards matching one record is refused out loud", async () => {
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.twin.ticket_provider;
+  assert.equal(provider.board_id, "", "there are 69 boards and 25 records; a coin flip is a wrong link");
+  assert.equal(provider.state, "planned");
+  const resolution = report.projects.find((entry) => entry.slug === "twin");
+  assert.match(resolution.detail, /matches 2 boards/);
+  assert.match(resolution.detail, /refused rather than guessed/);
+  assert.ok(report.errors.some((error) => error.startsWith("twin:") && /refusing to choose/.test(error)));
 });
 
 await checkAsync("a provider this command does not speak is left entirely alone", async () => {

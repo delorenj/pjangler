@@ -55,6 +55,22 @@ export type SupportedTicketProvider = "plane" | "trello";
 export const PROJECT_IDENTIFIER_SOURCES = ["provider", "proposed"] as const;
 export type ProjectIdentifierSource = (typeof PROJECT_IDENTIFIER_SOURCES)[number];
 
+/**
+ * Providers that ASSIGN the board identifier themselves.
+ *
+ * Plane mints a key for every board and hands it back, so a Plane record whose
+ * key is a local guess is a routing lie. Trello has no such concept at all: the
+ * short prefix on a Trello record is something we chose and Trello merely
+ * echoes, which is why a Trello identifier can never be `provider`-sourced —
+ * and why "is this board real?" has to be a separate question from "did the
+ * provider name it?".
+ */
+export const IDENTIFIER_ASSIGNING_PROVIDERS = ["plane", "linear"] as const;
+
+export function providerAssignsIdentifiers(type: string | undefined): boolean {
+  return (IDENTIFIER_ASSIGNING_PROVIDERS as readonly string[]).includes((type ?? "").trim());
+}
+
 /** Lifecycle states a board binding may occupy. */
 export const TICKET_PROVIDER_STATES = ["planned", "linked", "skipped"] as const;
 
@@ -75,6 +91,15 @@ export interface ProjectTicketProvider {
    */
   identifier_fetched_at?: string;
   board_id?: string;
+  /**
+   * ISO-8601 instant the provider confirmed `board_id` names a real board.
+   *
+   * This is BOARD-binding provenance, and it is a different question from
+   * `identifier_source`. Plane answers both at once — listing a board yields
+   * its key — but Trello can only ever answer the first, so conflating them is
+   * what let a Trello record claim Trello had assigned a key it never saw.
+   */
+  board_confirmed_at?: string;
   /** Legacy input only. New manifests derive board URLs from provider/workspace/board_id. */
   board_url?: string;
   state?: "planned" | "linked" | "skipped" | string;
@@ -134,7 +159,11 @@ export interface ProjectManifest {
     type: string;
     workspace: string;
     identifier: string;
+    identifier_source?: string;
+    identifier_fetched_at?: string;
     board_id: string;
+    /** Stamped by the provider adapter the moment the provider handed the board back. */
+    board_confirmed_at?: string;
     state?: string;
   };
   agents: Record<string, { role: string; role_dir?: string; provisioning_state?: string }>;
@@ -350,7 +379,7 @@ const PROJECT_REGISTRY_OWNED_KEYS = [
   "ticket_provider", "agents", "automation", "notebook", "created_at", "updated_at",
 ] as const;
 const PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"] as const;
-const TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_url", "state"] as const;
+const TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_confirmed_at", "board_url", "state"] as const;
 const GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"] as const;
 const GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"] as const;
 const GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"] as const;
@@ -615,19 +644,30 @@ export function buildTicketProviderBlock(input: {
   identifierSource?: ProjectIdentifierSource;
   identifierFetchedAt?: string;
   boardId?: string;
+  /**
+   * Instant the provider confirmed `boardId` is a real board. Omitted means
+   * nothing confirmed it, and an unconfirmed binding can never be "linked".
+   */
+  boardConfirmedAt?: string;
   workspace?: string;
 }): ProjectTicketProvider {
   const type = normalizeTicketProvider(input.type);
   const boardId = input.boardId ?? "";
   const identifierSource: ProjectIdentifierSource = input.identifierSource ?? "proposed";
+  const fetchedAt = identifierSource === "provider" ? input.identifierFetchedAt : undefined;
+  // Reading a key back out of the provider FOR THIS BOARD confirms the binding
+  // as a side effect, so a caller that supplies one need not supply both.
+  const confirmedAt = input.boardConfirmedAt ?? (boardId ? fetchedAt : undefined);
+  const provenClaim = !providerAssignsIdentifiers(type) || identifierSource === "provider";
   return {
     type,
     workspace: input.workspace ?? (type === "trello" ? "" : "33god"),
     identifier: input.identifier,
     identifier_source: identifierSource,
-    ...(input.identifierFetchedAt ? { identifier_fetched_at: input.identifierFetchedAt } : {}),
+    ...(fetchedAt ? { identifier_fetched_at: fetchedAt } : {}),
     board_id: boardId,
-    state: boardId && identifierSource === "provider" ? "linked" : "planned",
+    ...(confirmedAt ? { board_confirmed_at: confirmedAt } : {}),
+    state: boardId && confirmedAt && provenClaim ? "linked" : "planned",
   };
 }
 
@@ -1102,6 +1142,15 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
             : {}),
         }
       : undefined;
+  // Board-binding provenance is inherited on its own terms. A Trello board the
+  // provider already confirmed stays confirmed even though its key is — and
+  // always will be — a proposal.
+  const inheritedBoardConfirmation =
+    resolvedBoardId
+      && (existing?.ticket_provider?.board_id || undefined) === resolvedBoardId
+      && existing?.ticket_provider?.board_confirmed_at
+      ? { boardConfirmedAt: existing.ticket_provider.board_confirmed_at }
+      : undefined;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
   const agents = createSafeRecord<ProjectAgentRecord>(Object.entries(existing?.agents ?? {}));
@@ -1145,6 +1194,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       // already-confirmed board would demote it back to "planned" because the
       // CLI has no way to re-derive where the identifier came from.
       ...(inheritedProvenance ?? {}),
+      ...(inheritedBoardConfirmation ?? {}),
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
@@ -1279,7 +1329,12 @@ function linkTicketProviderBoard(
     type: block.type,
     workspace: block.workspace ?? "",
     identifier: block.identifier ?? "",
+    identifier_source: block.identifier_source ?? "proposed",
+    ...(block.identifier_fetched_at ? { identifier_fetched_at: block.identifier_fetched_at } : {}),
     board_id: block.board_id ?? "",
+    // The provider just handed this board back, and the manifest is where that
+    // confirmation lives for every later reader of the repo.
+    ...(block.board_confirmed_at ? { board_confirmed_at: block.board_confirmed_at } : {}),
     state: block.state ?? "linked",
   };
   plan.manifest.ticket_provider = manifestProvider;
@@ -1686,14 +1741,34 @@ function validateProjectRecord(project: ProjectRecord, key: string): void {
   if (provider.identifier_source !== undefined && !(PROJECT_IDENTIFIER_SOURCES as readonly string[]).includes(provider.identifier_source)) {
     throw new Error(`Project ${key} ticket_provider.identifier_source must be one of ${PROJECT_IDENTIFIER_SOURCES.join(" | ")}; got ${JSON.stringify(provider.identifier_source)}`);
   }
-  // R3 — the invariant this whole change exists to make unrepresentable. A
-  // linked board is one the PROVIDER named. An identifier sliced off a project
-  // name is a proposal, and a proposal can never back a link.
-  if (provider.state === "linked" && !(provider.board_id && provider.identifier && provider.identifier_source === "provider")) {
+  // R3 — BOARD-binding provenance. "linked" means the provider confirmed this
+  // board exists, and nothing else. That is a question every provider can
+  // answer, including one that assigns no identifiers at all.
+  if (provider.state === "linked" && !(provider.board_id && provider.board_confirmed_at)) {
     throw new Error(
-      `Project ${key} ticket_provider.state is "linked" but its identity is not provider-confirmed ` +
-      `(board_id=${JSON.stringify(provider.board_id ?? "")}, identifier=${JSON.stringify(provider.identifier ?? "")}, ` +
-      `identifier_source=${JSON.stringify(provider.identifier_source ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+      `Project ${key} ticket_provider.state is "linked" but its board binding is not provider-confirmed ` +
+      `(board_id=${JSON.stringify(provider.board_id ?? "")}, ` +
+      `board_confirmed_at=${JSON.stringify(provider.board_confirmed_at ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
+  // R3a — IDENTIFIER provenance, which is a separate claim. Saying the provider
+  // assigned this key requires a key and the instant it was read back.
+  if (provider.identifier_source === "provider" && !(provider.identifier && provider.identifier_fetched_at)) {
+    throw new Error(
+      `Project ${key} ticket_provider.identifier_source is "provider" but no identifier was read back ` +
+      `(identifier=${JSON.stringify(provider.identifier ?? "")}, ` +
+      `identifier_fetched_at=${JSON.stringify(provider.identifier_fetched_at ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
+  // R3b — and where the provider DOES assign identifiers, a link must carry the
+  // one it assigned. This is the original invariant, now scoped to the
+  // providers it is actually true of: a Plane board key routes live webhook
+  // traffic, so a guess wearing "linked" is the whole defect.
+  if (provider.state === "linked" && providerAssignsIdentifiers(provider.type) && provider.identifier_source !== "provider") {
+    throw new Error(
+      `Project ${key} ticket_provider.state is "linked" on ${provider.type}, which assigns its own identifiers, ` +
+      `but identifier_source=${JSON.stringify(provider.identifier_source ?? "")} ` +
+      `(identifier=${JSON.stringify(provider.identifier ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
     );
   }
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);

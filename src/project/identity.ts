@@ -349,6 +349,10 @@ export interface ManifestBoard {
   type: string;
   boardId: string;
   workspace: string;
+  /** The key the manifest claims, which may be a proposal nobody confirmed. */
+  identifier: string;
+  /** Provenance of that key. Absent on a legacy manifest, i.e. a proposal. */
+  identifierSource: string;
 }
 
 /**
@@ -375,6 +379,8 @@ export function readManifestBoard(repoPath: string): ManifestBoard | undefined {
     type: typeof provider.type === "string" ? provider.type : "",
     boardId: typeof provider.board_id === "string" ? provider.board_id.trim() : "",
     workspace: typeof provider.workspace === "string" ? provider.workspace.trim() : "",
+    identifier: typeof provider.identifier === "string" ? provider.identifier.trim() : "",
+    identifierSource: typeof provider.identifier_source === "string" ? provider.identifier_source.trim() : "",
   };
 }
 
@@ -515,6 +521,80 @@ function liveKeyIndex(boards: Map<string, PlaneBoardFacts>): Map<string, PlaneBo
   return index;
 }
 
+/** What a hint pass concluded. `board` and `refusal` are mutually exclusive. */
+interface HintMatch {
+  board?: PlaneBoardFacts;
+  /** Why an otherwise-plausible hint was NOT acted on. */
+  refusal?: string;
+}
+
+/**
+ * Recover a board for a record that carries no binding anywhere.
+ *
+ * `candidateBoardIds` only ever follows a RECORDED id. That is the right
+ * default and it is why 24 of these records are correct today, but it strands
+ * a record whose id was never written down even when the live board is
+ * unmistakable — `momo`'s board is called "Momo" and nothing else in Plane is.
+ *
+ * Two hints are honoured, and only two:
+ *
+ *   1. an identifier in the repo's `.project.json` that the manifest itself
+ *      stamps `identifier_source: provider`;
+ *   2. a live board NAME equal, case-insensitively and exactly, to the record's
+ *      slug or its name.
+ *
+ * An UNSTAMPED manifest identifier is deliberately not a hint. Those keys are
+ * overwhelmingly `slug.slice(0, 4).toUpperCase()` output, and taking them at
+ * face value is not a repair, it is the original bug with a new entry point:
+ * `docsidian`'s manifest says `DOCS`, and Plane's `DOCS` is DeloDocs.
+ *
+ * There are 69 boards and 25 records. A hint that matches more than one board
+ * is refused out loud rather than resolved by tie-break — under those odds a
+ * coin flip is a wrong link roughly half the time, and a wrong link routes
+ * someone else's tickets.
+ */
+function resolveBoardByHint(
+  ctx: ProjectPassContext,
+  slug: string,
+  project: { name?: string; repo_path?: string },
+  provider: ProjectTicketProvider,
+): HintMatch {
+  const matches = (predicate: (board: PlaneBoardFacts) => boolean): PlaneBoardFacts[] => {
+    const found: PlaneBoardFacts[] = [];
+    for (const boards of ctx.boardsByWorkspace.values()) {
+      for (const board of boards.values()) if (predicate(board)) found.push(board);
+    }
+    return found;
+  };
+  const describe = (boards: PlaneBoardFacts[]): string =>
+    boards.map((board) => `${board.workspace}/${board.identifier} "${board.name}"`).join(", ");
+
+  const manifest = project.repo_path ? readManifestBoard(project.repo_path) : undefined;
+  const claimedKey =
+    manifest && manifest.identifierSource === "provider" && (!manifest.type || manifest.type === provider.type)
+      ? manifest.identifier.toUpperCase()
+      : "";
+  if (claimedKey) {
+    const byKey = matches((board) => board.identifier.toUpperCase() === claimedKey);
+    if (byKey.length === 1) return { board: byKey[0] };
+    if (byKey.length > 1) {
+      return { refusal: `.project.json identifier ${claimedKey} matches ${byKey.length} boards (${describe(byKey)})` };
+    }
+  }
+
+  const names = new Set(
+    [slug, project.name ?? ""].map((value) => value.trim().toLowerCase()).filter(Boolean),
+  );
+  if (!names.size) return {};
+  const byName = matches((board) => names.has(board.name.trim().toLowerCase()));
+  const unique = new Map(byName.map((board) => [`${board.workspace} ${board.id}`, board]));
+  if (unique.size === 1) return { board: [...unique.values()][0] };
+  if (unique.size > 1) {
+    return { refusal: `board name matches ${unique.size} boards (${describe([...unique.values()])})` };
+  }
+  return {};
+}
+
 interface ProjectPassContext {
   registry: ProjectRegistry;
   boardsByWorkspace: Map<string, Map<string, PlaneBoardFacts>>;
@@ -566,6 +646,7 @@ function demoteToPlanned(
   noteChange(ctx, slug, "identifier", provider.identifier, nextIdentifier);
   noteChange(ctx, slug, "identifier_source", provider.identifier_source, nextSource ?? "");
   noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, "");
+  noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, "");
 
   if (ctx.apply) {
     provider.board_id = nextBoardId;
@@ -575,6 +656,8 @@ function demoteToPlanned(
     else delete provider.identifier_source;
     // Nothing was read back from a provider, so no read instant may be claimed.
     delete provider.identifier_fetched_at;
+    // …and there is no board left to have confirmed.
+    delete provider.board_confirmed_at;
   }
 
   return {
@@ -599,8 +682,8 @@ function demoteToPlanned(
  * run would make reconciliation rewrite the SSOT forever and leave it with no
  * fixed point, which is the opposite of what an idempotent repair is for.
  */
-function stampFor(provider: ProjectTicketProvider, changed: boolean, now: string): string {
-  return changed || !provider.identifier_fetched_at ? now : provider.identifier_fetched_at;
+function stampFor(existing: string | undefined, changed: boolean, now: string): string {
+  return changed || !existing ? now : existing;
 }
 
 /** Leave a record untouched and say why it could not be judged. */
@@ -637,11 +720,30 @@ async function reconcileOneProject(
     return preserve(slug, provider, "a Plane workspace could not be listed; nothing written");
   }
 
-  const candidates = candidateBoardIds(provider, project.repo_path ?? "", ctx.fleetBoards).filter((boardId) => {
-    const owner = claimed.get(`${type}\u0000${boardId}`);
+  const unclaimed = (candidate: string): boolean => {
+    const owner = claimed.get(`${type}\u0000${candidate}`);
     return !owner || owner === slug;
-  });
-  const boardId = candidates[0];
+  };
+  const candidates = candidateBoardIds(provider, project.repo_path ?? "", ctx.fleetBoards).filter(unclaimed);
+  let boardId = candidates[0];
+  let recovered = "";
+
+  // No id was ever written down for this record. Before declaring it unbound,
+  // ask whether the provider is holding a board this record unmistakably names
+  // — which is what `momo` (a live board called "Momo") and `agentboard`
+  // (ABRD, called "AgentBoard") needed, and what neither the record, nor its
+  // manifest, nor the fleet could supply.
+  if (!boardId && type === "plane" && provider.state !== "skipped") {
+    const hint = resolveBoardByHint(ctx, slug, project, provider);
+    if (hint.refusal) {
+      ctx.errors.push(`${slug}: ${hint.refusal}; refusing to choose — record the board id in .project.json and re-run`);
+      return demoteToPlanned(ctx, slug, provider, `${hint.refusal}; refused rather than guessed`, "planned");
+    }
+    if (hint.board && unclaimed(hint.board.id)) {
+      boardId = hint.board.id;
+      recovered = ", recovered by an exact match on this record's own name";
+    }
+  }
 
   if (!boardId) {
     return demoteToPlanned(ctx, slug, provider, "no board binding in the record, its .project.json, or the fleet", "planned");
@@ -661,24 +763,27 @@ async function reconcileOneProject(
     }
     claimed.set(`${type}\u0000${boardId}`, slug);
     // Trello assigns no identifier, so the prefix on the record is all there
-    // will ever be. What the provider DID confirm is the binding itself, and
-    // `identifier_fetched_at` stamps the instant of that confirmation rather
-    // than letting a link rest on an unchecked claim.
+    // will ever be — and it is OURS, not Trello's. The only thing this read
+    // confirms is that the BOARD is real, so that is the only thing stamped:
+    // `board_confirmed_at` carries the link, and the key stays a proposal. The
+    // previous code wrote `identifier_source: "provider"` here, which is how
+    // `intelliforia` came to assert that Trello had assigned it `INT`.
     const identifier = (provider.identifier ?? "").trim();
     if (!identifier) {
       return demoteToPlanned(ctx, slug, provider, `Trello board "${board.name}" has no identifier on the record`, "planned");
     }
-    const bindingChanged =
-      provider.board_id !== boardId || provider.identifier_source !== "provider" || provider.state !== "linked";
-    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    const bindingChanged = provider.board_id !== boardId || provider.state !== "linked";
+    const confirmedAt = stampFor(provider.board_confirmed_at, bindingChanged, ctx.fetchedAt);
     noteChange(ctx, slug, "board_id", provider.board_id, boardId);
-    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
+    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "proposed");
+    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, "");
+    noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, confirmedAt);
     noteChange(ctx, slug, "state", provider.state, "linked");
-    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
     if (ctx.apply) {
       provider.board_id = boardId;
-      provider.identifier_source = "provider";
-      provider.identifier_fetched_at = stamp;
+      provider.identifier_source = "proposed";
+      delete provider.identifier_fetched_at;
+      provider.board_confirmed_at = confirmedAt;
       provider.state = "linked";
     }
     return {
@@ -687,9 +792,9 @@ async function reconcileOneProject(
       workspace: (provider.workspace ?? "").trim(),
       boardId,
       identifier,
-      identifierSource: "provider",
+      identifierSource: "proposed",
       status: "linked",
-      detail: `Trello board "${board.name}" confirmed`,
+      detail: `Trello board "${board.name}" confirmed; ${identifier} stays a local prefix — Trello assigns none`,
     };
   }
 
@@ -707,12 +812,17 @@ async function reconcileOneProject(
       provider.identifier !== board.identifier ||
       provider.identifier_source !== "provider" ||
       provider.state !== "linked";
-    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    // Plane answers both questions in one read: listing the board proves the
+    // binding, and the key it hands back is the one Plane assigned. Two stamps,
+    // because they are two claims — and only Plane can make the second.
+    const stamp = stampFor(provider.identifier_fetched_at, bindingChanged, ctx.fetchedAt);
+    const confirmedAt = stampFor(provider.board_confirmed_at, bindingChanged, ctx.fetchedAt);
     noteChange(ctx, slug, "board_id", provider.board_id, boardId);
     noteChange(ctx, slug, "workspace", provider.workspace, workspace);
     noteChange(ctx, slug, "identifier", provider.identifier, board.identifier);
     noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
     noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
+    noteChange(ctx, slug, "board_confirmed_at", provider.board_confirmed_at, confirmedAt);
     noteChange(ctx, slug, "state", provider.state, "linked");
     if (ctx.apply) {
       provider.board_id = boardId;
@@ -720,6 +830,7 @@ async function reconcileOneProject(
       provider.identifier = board.identifier;
       provider.identifier_source = "provider";
       provider.identifier_fetched_at = stamp;
+      provider.board_confirmed_at = confirmedAt;
       provider.state = "linked";
     }
     return {
@@ -730,7 +841,7 @@ async function reconcileOneProject(
       identifier: board.identifier,
       identifierSource: "provider",
       status: "linked",
-      detail: `Plane board "${board.name}"`,
+      detail: `Plane board "${board.name}"${recovered}`,
     };
   }
 

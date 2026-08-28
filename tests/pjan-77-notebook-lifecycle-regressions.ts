@@ -230,7 +230,7 @@ projects:
     const project = {
       name: "Alpha", slug: "alpha", repo_path: repo, description: "transaction", status: "active", source_artifacts: [],
       template: { commonproject: { enabled: true, primary_language: "typescript" } },
-      ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", identifier_source: "provider", board_id: "board", state: "linked" }, agents: {},
+      ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", identifier_source: "provider", identifier_fetched_at: "2026-08-28T00:00:00.000Z", board_id: "board", board_confirmed_at: "2026-08-28T00:00:00.000Z", state: "linked" }, agents: {},
       notebook: { state: "planned", notebook_name: "Alpha" }, created_at: "2026-08-19T00:00:00.000Z", updated_at: "2026-08-19T00:00:00.000Z",
     } as const;
     const manifest = {
