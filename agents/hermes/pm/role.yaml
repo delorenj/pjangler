@@ -34,7 +34,7 @@ scrum_master:
 bloodbank:
   subscribe:
     - "bloodbank.evt.v1.repo.pjangler.>"
-    - "bloodbank.cmd.v1.agent.pjangler-pm.>"
+    - "bloodbank.cmd.agent.pjangler-pm.>"
   producer: "hermes-agent:pjangler-pm"
 
 # Pure-local HERMES_HOME. Legacy GitHub identity is metadata-only.
