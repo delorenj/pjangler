@@ -44,10 +44,31 @@ export interface SourceArtifact {
 
 export type SupportedTicketProvider = "plane" | "trello";
 
+/**
+ * Where a board identifier came from.
+ *
+ * "provider" — read back from the ticket provider's own API. The only source
+ *   a linked board may be backed by.
+ * "proposed" — pjangler minted a placeholder from the project name. Nothing has
+ *   confirmed it exists, so it may not be treated as a board key.
+ */
+export const PROJECT_IDENTIFIER_SOURCES = ["provider", "proposed"] as const;
+export type ProjectIdentifierSource = (typeof PROJECT_IDENTIFIER_SOURCES)[number];
+
+/** Lifecycle states a board binding may occupy. */
+export const TICKET_PROVIDER_STATES = ["planned", "linked", "skipped"] as const;
+
+/** The command that reads identifiers back from the provider and repairs drift. */
+export const IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
+
 export interface ProjectTicketProvider {
   type: SupportedTicketProvider | string;
   workspace?: string;
   identifier?: string;
+  /** Provenance of `identifier`. Absent on legacy records; treated as "proposed". */
+  identifier_source?: ProjectIdentifierSource | string;
+  /** ISO-8601 instant the provider identifier was last read back. */
+  identifier_fetched_at?: string;
   board_id?: string;
   /** Legacy input only. New manifests derive board URLs from provider/workspace/board_id. */
   board_url?: string;
@@ -324,7 +345,7 @@ const PROJECT_REGISTRY_OWNED_KEYS = [
   "ticket_provider", "agents", "automation", "notebook", "created_at", "updated_at",
 ] as const;
 const PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"] as const;
-const TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "board_id", "board_url", "state"] as const;
+const TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_url", "state"] as const;
 const GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"] as const;
 const GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"] as const;
 const GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"] as const;
@@ -452,6 +473,7 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
   const slugs = new Set<string>();
   const repoPaths = new Map<string, string>();
   const identifiers = new Map<string, string>();
+  const boardIds = new Map<string, string>();
   const notebookIds = new Map<string, string>();
   const overviewNoteIds = new Map<string, string>();
   for (const [slug, project] of Object.entries(registry.projects)) {
@@ -464,13 +486,26 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
     }
     repoPaths.set(repoKey, slug);
+    const scope = ticketProviderScope(project.ticket_provider);
+    // R4: two projects cannot own the same board. An EMPTY board_id is not a
+    // board, it is the absence of one, and 22 records legitimately share it.
+    const boardId = project.ticket_provider.board_id?.trim();
+    if (boardId) {
+      const boardKey = `${scope}\u0000${boardId}`;
+      const existingBoardSlug = boardIds.get(boardKey);
+      if (existingBoardSlug && existingBoardSlug !== slug) {
+        throw new Error(`Duplicate project board_id: ${boardId} in ${scope.replace("\u0000", "/")} used by ${existingBoardSlug} and ${slug}`);
+      }
+      boardIds.set(boardKey, slug);
+    }
     const identifier = project.ticket_provider.identifier?.toUpperCase();
     if (identifier) {
-      const existingIdentifierSlug = identifiers.get(identifier);
+      const identifierKey = `${scope}\u0000${identifier}`;
+      const existingIdentifierSlug = identifiers.get(identifierKey);
       if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
-        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+        throw new Error(`Duplicate project identifier: ${identifier} in ${scope.replace("\u0000", "/")} used by ${existingIdentifierSlug} and ${slug}`);
       }
-      identifiers.set(identifier, slug);
+      identifiers.set(identifierKey, slug);
     }
     const notebookId = project.notebook?.notebook_id;
     if (notebookId) {
@@ -485,6 +520,16 @@ export function validateProjectRegistry(registry: ProjectRegistry): void {
       overviewNoteIds.set(overviewNoteId, slug);
     }
   }
+}
+
+/**
+ * The uniqueness scope for a board binding: provider type plus workspace.
+ * Identifiers are unique WITHIN a workspace and nowhere else — Plane will
+ * happily assign `AAI` in automaticai and something else named `AAI` in a
+ * different workspace, and both are legitimate.
+ */
+function ticketProviderScope(provider: ProjectTicketProvider): string {
+  return `${provider.type ?? ""}\u0000${(provider.workspace ?? "").toLowerCase()}`;
 }
 
 function validateGlobalNotebookConfig(value: unknown): void {
@@ -558,27 +603,26 @@ export function normalizeTicketProvider(value?: string): SupportedTicketProvider
 export function buildTicketProviderBlock(input: {
   type?: string;
   identifier: string;
+  /**
+   * Omitted means pjangler proposed the identifier and nothing confirmed it.
+   * Only a provider-confirmed identifier may back a "linked" board.
+   */
+  identifierSource?: ProjectIdentifierSource;
+  identifierFetchedAt?: string;
   boardId?: string;
   workspace?: string;
 }): ProjectTicketProvider {
   const type = normalizeTicketProvider(input.type);
   const boardId = input.boardId ?? "";
-  if (type === "trello") {
-    return {
-      type,
-      workspace: input.workspace ?? "",
-      identifier: input.identifier,
-      board_id: boardId,
-      state: boardId ? "linked" : "planned",
-    };
-  }
-  const workspace = input.workspace ?? "33god";
+  const identifierSource: ProjectIdentifierSource = input.identifierSource ?? "proposed";
   return {
     type,
-    workspace,
+    workspace: input.workspace ?? (type === "trello" ? "" : "33god"),
     identifier: input.identifier,
+    identifier_source: identifierSource,
+    ...(input.identifierFetchedAt ? { identifier_fetched_at: input.identifierFetchedAt } : {}),
     board_id: boardId,
-    state: boardId ? "linked" : "planned",
+    state: boardId && identifierSource === "provider" ? "linked" : "planned",
   };
 }
 
@@ -713,6 +757,8 @@ export interface TicketProviderBoardResult {
   /** True when the action was intentionally not performed (e.g. no credentials). */
   skipped: boolean;
   boardId?: string;
+  /** The identifier the PROVIDER assigned, read off its own response. */
+  identifier?: string;
   boardUrl?: string;
   logs: string[];
   error?: string;
@@ -849,13 +895,25 @@ export function provisionTicketProviderBoard(
         error: `ticket-provider: ${provider} create_board returned no board_id`,
       };
     }
+    const identifier = isRecord(parsed) && typeof parsed.identifier === "string" ? parsed.identifier.trim() : "";
+    if (!identifier) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error:
+          `ticket-provider: ${provider} create_board returned no identifier. ` +
+          `The adapter must echo the identifier the provider assigned; pjangler no longer invents one.`,
+      };
+    }
     const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : undefined;
     return {
       ok: true,
       skipped: false,
       boardId,
+      identifier,
       boardUrl,
-      logs: [`ticket-provider: ${provider} board linked (${action.identifier} → ${boardId})`],
+      logs: [`ticket-provider: ${provider} board linked (${identifier} → ${boardId})`],
     };
   } finally {
     rmSync(staging, { recursive: true, force: true });
@@ -926,7 +984,16 @@ export function resolveContainedPath(parentDir: string, candidate: string, label
   return resolve(candidate);
 }
 
-export function deriveProjectIdentifier(value: string): string {
+/**
+ * PROPOSE an identifier from a project name.
+ *
+ * This is a placeholder, never a board key. The provider assigns the real
+ * identifier and `pj project identity` reads it back; anything this function
+ * returns lands with `identifier_source: "proposed"` and can never satisfy the
+ * linked-board invariant on its own. The registry drifted for months because
+ * four code paths treated a string slice as authoritative.
+ */
+export function proposeProjectIdentifier(value: string): string {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const identifier = compact.slice(0, 4) || "PROJ";
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
@@ -1013,8 +1080,23 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const registry = loadProjectRegistry(registryPath);
   const now = (input.now ?? new Date()).toISOString();
   const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
-  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const identifier = (input.projectIdentifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
+  // A board provisioned by an earlier run lives in the registry, not in the CLI
+  // flags — inherit it so re-running init re-links instead of minting a second
+  // board.
+  const resolvedBoardId = input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || undefined);
+  const inheritedProvenance =
+    existing?.ticket_provider?.identifier_source === "provider"
+      && existing.ticket_provider.identifier?.toUpperCase() === identifier
+      && (existing.ticket_provider.board_id || undefined) === resolvedBoardId
+      ? {
+          identifierSource: "provider" as const,
+          ...(existing.ticket_provider.identifier_fetched_at
+            ? { identifierFetchedAt: existing.ticket_provider.identifier_fetched_at }
+            : {}),
+        }
+      : undefined;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
   const agents = createSafeRecord<ProjectAgentRecord>(Object.entries(existing?.agents ?? {}));
@@ -1052,11 +1134,12 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
       identifier,
-      // A board provisioned by an earlier run lives in the registry, not in the
-      // CLI flags — inherit it so re-running init re-links instead of minting a
-      // second board.
-      boardId: input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || undefined),
+      boardId: resolvedBoardId,
       workspace: input.boardWorkspace ?? input.planeWorkspace,
+      // Provenance survives a re-plan. Without this, re-running init on an
+      // already-confirmed board would demote it back to "planned" because the
+      // CLI has no way to re-derive where the identifier came from.
+      ...(inheritedProvenance ?? {}),
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
@@ -1172,14 +1255,20 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
 function linkTicketProviderBoard(
   plan: ProjectInitPlan,
   action: Extract<ProjectInitAction, { kind: "ticket-provider.create-or-link" }>,
-  boardId: string
+  boardId: string,
+  identifier: string,
+  now: Date = new Date()
 ): string[] {
   const block = buildTicketProviderBlock({
     type: action.provider,
-    identifier: action.identifier,
+    // The PROVIDER's identifier, not the one we proposed on the way in.
+    identifier,
+    identifierSource: "provider",
+    identifierFetchedAt: now.toISOString(),
     boardId,
     workspace: action.workspace,
   });
+  action.identifier = identifier;
   plan.project.ticket_provider = block;
   const manifestProvider = {
     type: block.type,
@@ -1323,8 +1412,8 @@ export async function executeProjectInitPlan(
         logs.push(...outcome.logs);
         if (!outcome.ok) {
           errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
-        } else if (outcome.boardId) {
-          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId));
+        } else if (outcome.boardId && outcome.identifier) {
+          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId, outcome.identifier));
           pendingRegistryAction ??= {
             kind: "registry.upsert",
             registryPath: plan.registryPath,
@@ -1563,6 +1652,10 @@ function validateNoDuplicateProject(registry: ProjectRegistry, project: ProjectR
     if (resolve(existing.repo_path) === resolve(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
+    if (ticketProviderScope(existing.ticket_provider) !== ticketProviderScope(project.ticket_provider)) continue;
+    if (existing.ticket_provider.board_id?.trim() && existing.ticket_provider.board_id === project.ticket_provider.board_id) {
+      throw new Error(`Project board_id already registered by ${slug}: ${project.ticket_provider.board_id}`);
+    }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
       throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
     }
@@ -1579,6 +1672,25 @@ function validateProjectRecord(project: ProjectRecord, key: string): void {
   if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  const provider = project.ticket_provider as ProjectTicketProvider;
+  // R1
+  if (provider.state !== undefined && !(TICKET_PROVIDER_STATES as readonly string[]).includes(provider.state)) {
+    throw new Error(`Project ${key} ticket_provider.state must be one of ${TICKET_PROVIDER_STATES.join(" | ")}; got ${JSON.stringify(provider.state)}`);
+  }
+  // R2
+  if (provider.identifier_source !== undefined && !(PROJECT_IDENTIFIER_SOURCES as readonly string[]).includes(provider.identifier_source)) {
+    throw new Error(`Project ${key} ticket_provider.identifier_source must be one of ${PROJECT_IDENTIFIER_SOURCES.join(" | ")}; got ${JSON.stringify(provider.identifier_source)}`);
+  }
+  // R3 — the invariant this whole change exists to make unrepresentable. A
+  // linked board is one the PROVIDER named. An identifier sliced off a project
+  // name is a proposal, and a proposal can never back a link.
+  if (provider.state === "linked" && !(provider.board_id && provider.identifier && provider.identifier_source === "provider")) {
+    throw new Error(
+      `Project ${key} ticket_provider.state is "linked" but its identity is not provider-confirmed ` +
+      `(board_id=${JSON.stringify(provider.board_id ?? "")}, identifier=${JSON.stringify(provider.identifier ?? "")}, ` +
+      `identifier_source=${JSON.stringify(provider.identifier_source ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
   if (project.notebook !== undefined) {
     if (!isRecord(project.notebook)) throw new Error(`Project ${key} notebook must be a mapping`);

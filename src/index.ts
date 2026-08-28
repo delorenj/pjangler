@@ -28,6 +28,7 @@ import {
   projectRegistryPath,
 } from "./project/index";
 import { resolveBoardUrl } from "./project/boardUrl";
+import { formatIdentityReport, reconcileProjectIdentity } from "./project/identity";
 import {
   BoardError,
   fetchModules,
@@ -789,6 +790,33 @@ projectCmd
       }
     } catch (err) {
       console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("identity")
+  .argument("[slug]", "Project slug, agent id, or repo name")
+  .description("Read board identifiers back from the provider and repair the registries")
+  .option("--all", "Reconcile every agent in the Hermes fleet registry")
+  .option("--apply", "Write the repairs (default is a dry-run diff)")
+  .option("--json", "Output machine-parseable JSON")
+  .option("--hermes-registry <path>", "Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .action(async (slug: string | undefined, options) => {
+    try {
+      if (!slug && !options.all) throw new Error("pass a project slug, an agent id, or --all");
+      const report = await reconcileProjectIdentity({
+        target: slug,
+        all: Boolean(options.all),
+        apply: Boolean(options.apply),
+        hermesRegistryPath: options.hermesRegistry,
+        registryPath: options.registry,
+      });
+      console.log(options.json ? JSON.stringify(report, null, 2) : formatIdentityReport(report));
+      process.exit(report.ok ? 0 : 1);
+    } catch (err) {
+      console.error(`${xmark} project identity failed:`, err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });

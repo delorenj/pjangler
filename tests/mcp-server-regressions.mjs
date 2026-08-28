@@ -228,7 +228,11 @@ try {
   const trelloProjectPayload = JSON.parse(trelloProjectDryRun.content[0].text);
   assert.equal(trelloProjectPayload.project.ticket_provider.type, "trello");
   assert.equal("board_url" in trelloProjectPayload.project.ticket_provider, false);
-  assert.equal(trelloProjectPayload.project.ticket_provider.state, "linked");
+  // A boardId handed to MCP is an unconfirmed binding: the identifier is still
+  // a proposal, so the record stays "planned" until `pj project identity`
+  // reads the real identifier back from the provider.
+  assert.equal(trelloProjectPayload.project.ticket_provider.state, "planned");
+  assert.equal(trelloProjectPayload.project.ticket_provider.identifier_source, "proposed");
 
   const boardUrlProject = await client.callTool({
     name: "pjangler_project_init",

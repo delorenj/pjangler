@@ -16,7 +16,7 @@ function record(repo: string, binding: ProjectNotebookBindingV1): ProjectRecord 
   return {
     name: "Alpha", slug: "alpha", repo_path: repo, description: "CLI fixture", status: "active", source_artifacts: [],
     template: { commonproject: { enabled: true, primary_language: "typescript" } },
-    ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", board_id: "board", state: "linked" },
+    ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", identifier_source: "provider", board_id: "board", state: "linked" },
     agents: {}, notebook: binding, created_at: "2026-08-19T00:00:00.000Z", updated_at: "2026-08-19T00:00:00.000Z",
   };
 }
@@ -45,7 +45,7 @@ try {
   saveProjectRegistry(registry, registryPath);
   writeFileSync(join(repo, ".project.json"), `${JSON.stringify({
     project_name: "Alpha", project_description: "CLI fixture", project_slug: "alpha", repo_path: repo,
-    ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", board_id: "board", state: "linked" }, agents: {},
+    ticket_provider: { type: "plane", workspace: "33god", identifier: "ALPHA", identifier_source: "provider", board_id: "board", state: "linked" }, agents: {},
     notebook: { binding, policy: { enabled: true, session_start_enabled: false, session_capture_enabled: false, overview_references: [".project.json"] } },
   }, null, 2)}\n`);
 

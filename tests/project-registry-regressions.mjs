@@ -720,7 +720,11 @@ try {
   assert.equal(trelloPlan.project.ticket_provider.type, "trello");
   assert.equal(trelloPlan.project.ticket_provider.board_id, "687535e9873b89478afef689");
   assert.equal("board_url" in trelloPlan.project.ticket_provider, false, "board_url must be derived, not persisted");
-  assert.equal(trelloPlan.project.ticket_provider.state, "linked");
+  // A board id supplied on the command line is not a confirmed identity: the
+  // identifier is still a proposal, so the binding stays "planned" until
+  // `pj project identity` reads the real identifier back from the provider.
+  assert.equal(trelloPlan.project.ticket_provider.state, "planned");
+  assert.equal(trelloPlan.project.ticket_provider.identifier_source, "proposed");
   assert.equal(trelloPlan.project.ticket_provider.workspace, "", "trello workspace defaults blank (not the Plane 33god default)");
 
   // Regression: an explicit --board-url is accepted for old callers but not persisted
@@ -761,7 +765,8 @@ try {
   assert.equal(planePlan.project.ticket_provider.type, "plane");
   assert.equal(planePlan.project.ticket_provider.workspace, "33god");
   assert.equal("board_url" in planePlan.project.ticket_provider, false);
-  assert.equal(planePlan.project.ticket_provider.state, "linked");
+  assert.equal(planePlan.project.ticket_provider.state, "planned");
+  assert.equal(planePlan.project.ticket_provider.identifier_source, "proposed");
 
   console.log("project registry regressions passed");
 } finally {

@@ -17,6 +17,7 @@ import {
   normalizeAgentRole,
   planProjectInit,
   projectRegistryPath,
+  proposeProjectIdentifier,
   resolveContainedPath,
   type ProjectManifest,
   validateSafePathSegment,
@@ -577,7 +578,9 @@ server.registerTool(
         enableSystemd: externalEffects.systemd,
         skipPlane,
         registryPath: input.registryPath,
-        projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
+        // A PROPOSAL only. The provider assigns the real identifier and
+        // `pj project identity` reads it back; MCP never mints a board key.
+        projectIdentifier: input.projectIdentifier ?? proposeProjectIdentifier(projectSlug),
         ticketProvider,
         boardId,
         boardUrl: input.boardUrl,

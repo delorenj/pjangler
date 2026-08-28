@@ -644,7 +644,7 @@ var init_RegistryStore = __esm({
       }
       async loadTicketProvider(client, projectId) {
         const { rows } = await client.query(
-          `SELECT provider_type, workspace, identifier, board_id, state
+          `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state
        FROM public.project_ticket_boards
        WHERE project_id = $1
        LIMIT 1`,
@@ -654,10 +654,15 @@ var init_RegistryStore = __esm({
           return { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" };
         }
         const row = rows[0];
+        const fetchedAt = row.identifier_fetched_at;
         return {
           type: row.provider_type,
           workspace: row.workspace ?? void 0,
           identifier: row.identifier ?? void 0,
+          // Provenance is a column, not an extension blob: dropping it here would
+          // silently demote every provider-confirmed board back to a guess.
+          identifier_source: row.identifier_source ?? void 0,
+          identifier_fetched_at: fetchedAt ? fetchedAt instanceof Date ? fetchedAt.toISOString() : String(fetchedAt) : void 0,
           board_id: row.board_id ?? void 0,
           state: row.state ?? void 0
         };
@@ -686,14 +691,16 @@ var init_RegistryStore = __esm({
         );
         await client.query(
           `INSERT INTO public.project_ticket_boards
-         (repo_id, project_id, provider_type, workspace, identifier, board_id, state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             repoId,
             projectId,
             tp.type,
             tp.workspace ?? null,
             tp.identifier ?? null,
+            tp.identifier_source ?? null,
+            tp.identifier_fetched_at ?? null,
             tp.board_id ?? null,
             tp.state ?? null
           ]
@@ -881,6 +888,7 @@ function validateProjectRegistry(registry) {
   const slugs = /* @__PURE__ */ new Set();
   const repoPaths = /* @__PURE__ */ new Map();
   const identifiers = /* @__PURE__ */ new Map();
+  const boardIds = /* @__PURE__ */ new Map();
   const notebookIds = /* @__PURE__ */ new Map();
   const overviewNoteIds = /* @__PURE__ */ new Map();
   for (const [slug, project] of Object.entries(registry.projects)) {
@@ -893,13 +901,24 @@ function validateProjectRegistry(registry) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
     }
     repoPaths.set(repoKey, slug);
+    const scope = ticketProviderScope(project.ticket_provider);
+    const boardId = project.ticket_provider.board_id?.trim();
+    if (boardId) {
+      const boardKey = `${scope}\0${boardId}`;
+      const existingBoardSlug = boardIds.get(boardKey);
+      if (existingBoardSlug && existingBoardSlug !== slug) {
+        throw new Error(`Duplicate project board_id: ${boardId} in ${scope.replace("\0", "/")} used by ${existingBoardSlug} and ${slug}`);
+      }
+      boardIds.set(boardKey, slug);
+    }
     const identifier = project.ticket_provider.identifier?.toUpperCase();
     if (identifier) {
-      const existingIdentifierSlug = identifiers.get(identifier);
+      const identifierKey = `${scope}\0${identifier}`;
+      const existingIdentifierSlug = identifiers.get(identifierKey);
       if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
-        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+        throw new Error(`Duplicate project identifier: ${identifier} in ${scope.replace("\0", "/")} used by ${existingIdentifierSlug} and ${slug}`);
       }
-      identifiers.set(identifier, slug);
+      identifiers.set(identifierKey, slug);
     }
     const notebookId = project.notebook?.notebook_id;
     if (notebookId) {
@@ -914,6 +933,9 @@ function validateProjectRegistry(registry) {
       overviewNoteIds.set(overviewNoteId, slug);
     }
   }
+}
+function ticketProviderScope(provider) {
+  return `${provider.type ?? ""}\0${(provider.workspace ?? "").toLowerCase()}`;
 }
 function validateGlobalNotebookConfig(value) {
   if (value === void 0) return;
@@ -980,22 +1002,15 @@ function normalizeTicketProvider(value) {
 function buildTicketProviderBlock(input) {
   const type = normalizeTicketProvider(input.type);
   const boardId = input.boardId ?? "";
-  if (type === "trello") {
-    return {
-      type,
-      workspace: input.workspace ?? "",
-      identifier: input.identifier,
-      board_id: boardId,
-      state: boardId ? "linked" : "planned"
-    };
-  }
-  const workspace = input.workspace ?? "33god";
+  const identifierSource = input.identifierSource ?? "proposed";
   return {
     type,
-    workspace,
+    workspace: input.workspace ?? (type === "trello" ? "" : "33god"),
     identifier: input.identifier,
+    identifier_source: identifierSource,
+    ...input.identifierFetchedAt ? { identifier_fetched_at: input.identifierFetchedAt } : {},
     board_id: boardId,
-    state: boardId ? "linked" : "planned"
+    state: boardId && identifierSource === "provider" ? "linked" : "planned"
   };
 }
 function ticketProviderKeyVar(provider) {
@@ -1186,13 +1201,23 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
         error: `ticket-provider: ${provider} create_board returned no board_id`
       };
     }
+    const identifier = isRecord(parsed) && typeof parsed.identifier === "string" ? parsed.identifier.trim() : "";
+    if (!identifier) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned no identifier. The adapter must echo the identifier the provider assigned; pjangler no longer invents one.`
+      };
+    }
     const boardUrl2 = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
     return {
       ok: true,
       skipped: false,
       boardId,
+      identifier,
       boardUrl: boardUrl2,
-      logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
+      logs: [`ticket-provider: ${provider} board linked (${identifier} \u2192 ${boardId})`]
     };
   } finally {
     rmSync3(staging, { recursive: true, force: true });
@@ -1240,7 +1265,7 @@ function resolveContainedPath(parentDir, candidate, label) {
   }
   return resolve5(candidate);
 }
-function deriveProjectIdentifier(value) {
+function proposeProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const identifier = compact.slice(0, 4) || "PROJ";
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
@@ -1304,8 +1329,13 @@ function planProjectInit(input) {
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
   const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
-  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const identifier = (input.projectIdentifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
+  const resolvedBoardId = input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0);
+  const inheritedProvenance = existing?.ticket_provider?.identifier_source === "provider" && existing.ticket_provider.identifier?.toUpperCase() === identifier && (existing.ticket_provider.board_id || void 0) === resolvedBoardId ? {
+    identifierSource: "provider",
+    ...existing.ticket_provider.identifier_fetched_at ? { identifierFetchedAt: existing.ticket_provider.identifier_fetched_at } : {}
+  } : void 0;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
   const agents = createSafeRecord(Object.entries(existing?.agents ?? {}));
@@ -1340,11 +1370,12 @@ function planProjectInit(input) {
     ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
       identifier,
-      // A board provisioned by an earlier run lives in the registry, not in the
-      // CLI flags — inherit it so re-running init re-links instead of minting a
-      // second board.
-      boardId: input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0),
-      workspace: input.boardWorkspace ?? input.planeWorkspace
+      boardId: resolvedBoardId,
+      workspace: input.boardWorkspace ?? input.planeWorkspace,
+      // Provenance survives a re-plan. Without this, re-running init on an
+      // already-confirmed board would demote it back to "planned" because the
+      // CLI has no way to re-derive where the identifier came from.
+      ...inheritedProvenance ?? {}
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
@@ -1432,13 +1463,17 @@ function planProjectInit(input) {
     ...input.boardUrl !== void 0 ? { warnings: [BOARD_URL_DEPRECATION_WARNING] } : {}
   };
 }
-function linkTicketProviderBoard(plan, action, boardId) {
+function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__PURE__ */ new Date()) {
   const block = buildTicketProviderBlock({
     type: action.provider,
-    identifier: action.identifier,
+    // The PROVIDER's identifier, not the one we proposed on the way in.
+    identifier,
+    identifierSource: "provider",
+    identifierFetchedAt: now.toISOString(),
     boardId,
     workspace: action.workspace
   });
+  action.identifier = identifier;
   plan.project.ticket_provider = block;
   const manifestProvider = {
     type: block.type,
@@ -1574,8 +1609,8 @@ async function executeProjectInitPlan(plan, options = {}) {
         logs.push(...outcome.logs);
         if (!outcome.ok) {
           errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
-        } else if (outcome.boardId) {
-          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId));
+        } else if (outcome.boardId && outcome.identifier) {
+          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId, outcome.identifier));
           pendingRegistryAction ??= {
             kind: "registry.upsert",
             registryPath: plan.registryPath,
@@ -1762,6 +1797,10 @@ function validateNoDuplicateProject(registry, project, overwrite) {
     if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
+    if (ticketProviderScope(existing.ticket_provider) !== ticketProviderScope(project.ticket_provider)) continue;
+    if (existing.ticket_provider.board_id?.trim() && existing.ticket_provider.board_id === project.ticket_provider.board_id) {
+      throw new Error(`Project board_id already registered by ${slug}: ${project.ticket_provider.board_id}`);
+    }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
       throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
     }
@@ -1777,6 +1816,18 @@ function validateProjectRecord(project, key) {
   if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  const provider = project.ticket_provider;
+  if (provider.state !== void 0 && !TICKET_PROVIDER_STATES.includes(provider.state)) {
+    throw new Error(`Project ${key} ticket_provider.state must be one of ${TICKET_PROVIDER_STATES.join(" | ")}; got ${JSON.stringify(provider.state)}`);
+  }
+  if (provider.identifier_source !== void 0 && !PROJECT_IDENTIFIER_SOURCES.includes(provider.identifier_source)) {
+    throw new Error(`Project ${key} ticket_provider.identifier_source must be one of ${PROJECT_IDENTIFIER_SOURCES.join(" | ")}; got ${JSON.stringify(provider.identifier_source)}`);
+  }
+  if (provider.state === "linked" && !(provider.board_id && provider.identifier && provider.identifier_source === "provider")) {
+    throw new Error(
+      `Project ${key} ticket_provider.state is "linked" but its identity is not provider-confirmed (board_id=${JSON.stringify(provider.board_id ?? "")}, identifier=${JSON.stringify(provider.identifier ?? "")}, identifier_source=${JSON.stringify(provider.identifier_source ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
   if (project.notebook !== void 0) {
     if (!isRecord(project.notebook)) throw new Error(`Project ${key} notebook must be a mapping`);
@@ -1804,7 +1855,7 @@ function expandHome(path) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
+var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, PROJECT_IDENTIFIER_SOURCES, TICKET_PROVIDER_STATES, IDENTIFIER_REPAIR_COMMAND, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
 var init_project = __esm({
   "src/project/index.ts"() {
     "use strict";
@@ -1819,6 +1870,9 @@ var init_project = __esm({
     PROJECT_REGISTRY_SCHEMA_VERSION = 1;
     DEFAULT_NEW_PROJECT_STATUS = "active";
     BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
+    PROJECT_IDENTIFIER_SOURCES = ["provider", "proposed"];
+    TICKET_PROVIDER_STATES = ["planned", "linked", "skipped"];
+    IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
     DEFAULT_SOURCE_SKILL_ROOTS = [
       "/home/delorenj/code/skillex/all-skills",
       join8(homedir4(), ".agents", "skills"),
@@ -1840,7 +1894,7 @@ var init_project = __esm({
       "updated_at"
     ];
     PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"];
-    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "board_id", "board_url", "state"];
+    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_url", "state"];
     GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"];
     GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"];
     GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"];
@@ -5255,8 +5309,8 @@ var init_capture = __esm({
 
 // src/index.ts
 import { spawnSync as spawnSync16 } from "node:child_process";
-import { existsSync as existsSync25, readFileSync as readFileSync24, statSync as statSync6 } from "node:fs";
-import { basename as basename10, join as join32, resolve as resolve18 } from "node:path";
+import { existsSync as existsSync26, readFileSync as readFileSync25, statSync as statSync6 } from "node:fs";
+import { basename as basename10, join as join33, resolve as resolve19 } from "node:path";
 import { Command as Command3, CommanderError } from "commander";
 
 // src/commands/hermes/types.ts
@@ -15410,12 +15464,20 @@ function refreshPlanFromCanonicalManifest(plan) {
   if (!manifestTicket || typeof manifestTicket !== "object") {
     throw new Error(`${manifestPath} ticket_provider is missing`);
   }
+  const manifestIdentifier = String(manifestTicket.identifier ?? "");
+  const manifestBoardId = String(manifestTicket.board_id ?? "");
+  const recorded = plan.project.ticket_provider;
+  const carriesProvenance = (recorded?.identifier ?? "") === manifestIdentifier && (recorded?.board_id ?? "") === manifestBoardId;
+  const identifierSource = (carriesProvenance ? recorded?.identifier_source : void 0) ?? "proposed";
+  const manifestState = typeof manifestTicket.state === "string" ? manifestTicket.state : void 0;
   const ticketProvider = {
     type: String(manifestTicket.type ?? ""),
     workspace: String(manifestTicket.workspace ?? ""),
-    identifier: String(manifestTicket.identifier ?? ""),
-    board_id: String(manifestTicket.board_id ?? ""),
-    state: manifestTicket.state
+    identifier: manifestIdentifier,
+    identifier_source: identifierSource,
+    ...carriesProvenance && recorded?.identifier_fetched_at ? { identifier_fetched_at: recorded.identifier_fetched_at } : {},
+    board_id: manifestBoardId,
+    state: manifestState === "skipped" ? "skipped" : manifestBoardId && identifierSource === "provider" ? "linked" : "planned"
   };
   plan.manifest = manifest;
   plan.project.agents = agents;
@@ -16850,6 +16912,24 @@ function resolveBoardUrl(cwd, ref, env2 = process.env) {
   return boardUrl(provider, { ref, branch: currentBranch(root), env: env2 });
 }
 
+// src/project/identity.ts
+import {
+  closeSync as closeSync7,
+  existsSync as existsSync23,
+  fchmodSync as fchmodSync4,
+  fsyncSync as fsyncSync5,
+  lstatSync as lstatSync13,
+  mkdirSync as mkdirSync9,
+  openSync as openSync7,
+  readFileSync as readFileSync23,
+  renameSync as renameSync7,
+  unlinkSync as unlinkSync6,
+  writeFileSync as writeFileSync12
+} from "node:fs";
+import { homedir as homedir12 } from "node:os";
+import { dirname as dirname15, join as join30, resolve as resolve16 } from "node:path";
+import YAML8 from "yaml";
+
 // src/project/boardQuery.ts
 import { spawnSync as spawnSync14 } from "node:child_process";
 import { readFileSync as readFileSync22 } from "node:fs";
@@ -17123,10 +17203,305 @@ async function fetchModules(ctx) {
   })).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 }
 
+// src/project/identity.ts
+init_project();
+var DEAD_AGENT_IDS = ["coachingagentframework-pm", "tonnybox-pm"];
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hermesAgentsRegistryPath(env2 = process.env, home = homedir12()) {
+  const override = env2.HERMES_AGENTS_REGISTRY?.trim();
+  return override || join30(home, ".hermes", "agents-registry.yaml");
+}
+function planeApiKeyFor(workspace, env2, home) {
+  return resolvePlaneApiKey(workspace, env2, home) ?? resolvePlaneApiKey(DEFAULT_PLANE_WORKSPACE, env2, home);
+}
+var PAGE_SIZE = 100;
+var MAX_PAGES2 = 50;
+async function fetchPlaneBoards(workspace, env2 = process.env, home = homedir12()) {
+  const apiKey = planeApiKeyFor(workspace, env2, home);
+  if (!apiKey) {
+    throw new BoardError(
+      `no Plane API key for workspace "${workspace}": set PLANE_API_KEY, or add one to ${env2.HERMES_FLEET_ENV?.trim() || join30(home, ".hermes", "fleet.env")}`
+    );
+  }
+  const base = planeBase(env2, home);
+  const boards = /* @__PURE__ */ new Map();
+  let cursor;
+  for (let page = 0; page < MAX_PAGES2; page += 1) {
+    const url = new URL(`${base}/api/v1/workspaces/${encodeURIComponent(workspace)}/projects/`);
+    url.searchParams.set("per_page", String(PAGE_SIZE));
+    if (cursor) url.searchParams.set("cursor", cursor);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { "X-API-Key": apiKey, "User-Agent": `pjangler/${PJANGLER_VERSION}` },
+        signal: AbortSignal.timeout(2e4)
+      });
+    } catch (error) {
+      throw new BoardError(
+        `could not reach Plane at ${base} for workspace "${workspace}": ` + (error instanceof Error ? error.message : String(error))
+      );
+    }
+    if (!response.ok) {
+      throw new BoardError(`Plane returned ${response.status} listing workspace "${workspace}" projects`);
+    }
+    const body = await response.json();
+    const results = isRecord5(body) && Array.isArray(body.results) ? body.results : Array.isArray(body) ? body : [];
+    for (const entry of results) {
+      if (!isRecord5(entry)) continue;
+      const id = typeof entry.id === "string" ? entry.id : "";
+      const identifier = typeof entry.identifier === "string" ? entry.identifier.trim() : "";
+      if (!id || !identifier) continue;
+      boards.set(id, { id, identifier, name: typeof entry.name === "string" ? entry.name : "", workspace });
+    }
+    const more = isRecord5(body) && body.next_page_results === true;
+    cursor = isRecord5(body) && typeof body.next_cursor === "string" ? body.next_cursor : void 0;
+    if (!more || !cursor) return boards;
+  }
+  return boards;
+}
+function readHermesAgentBoards(path) {
+  const document = YAML8.parseDocument(readFileSync23(path, "utf8"));
+  if (document.errors.length) throw new Error(`Hermes agents registry YAML is invalid: ${path}`);
+  const parsed = document.toJS();
+  const agents = isRecord5(parsed) && isRecord5(parsed.agents) ? parsed.agents : {};
+  const boards = [];
+  for (const [agentId, agent] of Object.entries(agents)) {
+    if (!isRecord5(agent)) continue;
+    const plane = isRecord5(agent.plane) ? agent.plane : {};
+    boards.push({
+      agentId,
+      repo: typeof agent.repo === "string" ? agent.repo : "",
+      projectPath: typeof agent.project_path === "string" ? agent.project_path : "",
+      workspace: typeof plane.workspace === "string" ? plane.workspace : "",
+      boardId: typeof plane.project_id === "string" ? plane.project_id : "",
+      identifier: typeof plane.identifier === "string" ? plane.identifier : ""
+    });
+  }
+  return boards;
+}
+function matchRegistrySlug(agent, registry) {
+  if (agent.projectPath) {
+    const wanted = resolve16(agent.projectPath);
+    for (const [slug, project] of Object.entries(registry.projects)) {
+      if (project?.repo_path && resolve16(project.repo_path) === wanted) return slug;
+    }
+  }
+  if (agent.repo && Object.hasOwn(registry.projects, agent.repo)) return agent.repo;
+  return void 0;
+}
+var PLAIN_SCALAR = /^[A-Za-z][A-Za-z0-9_-]*$|^[0-9]+[A-Za-z][A-Za-z0-9_-]*$/;
+function yamlStyleOf(original) {
+  return { indentSeq: !/\n([ \t]*)[^\s#][^\n]*:[ \t]*\n\1- /.test(original), lineWidth: 0 };
+}
+function atomicWrite(path, text3) {
+  const mode = existsSync23(path) ? lstatSync13(path).mode & 511 : 384;
+  mkdirSync9(dirname15(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  let fd;
+  try {
+    fd = openSync7(temp, "wx", mode);
+    writeFileSync12(fd, text3, "utf8");
+    fchmodSync4(fd, mode);
+    fsyncSync5(fd);
+    closeSync7(fd);
+    fd = void 0;
+    renameSync7(temp, path);
+  } catch (error) {
+    if (fd !== void 0) try {
+      closeSync7(fd);
+    } catch {
+    }
+    try {
+      unlinkSync6(temp);
+    } catch {
+    }
+    throw error;
+  }
+}
+function applyHermesIdentifiers(path, identifiers, deletions) {
+  const original = readFileSync23(path, "utf8");
+  const document = YAML8.parseDocument(original);
+  if (document.errors.length) throw new Error(`Hermes agents registry YAML is invalid: ${path}`);
+  const before = document.toJS();
+  const beforeAgents = isRecord5(before.agents) ? before.agents : {};
+  const expectedCount = Object.keys(beforeAgents).length - deletions.filter((id) => Object.hasOwn(beforeAgents, id)).length;
+  for (const [agentId, identifier] of identifiers) {
+    const nodePath = ["agents", agentId, "plane", "identifier"];
+    const node = document.getIn(nodePath, true);
+    if (YAML8.isScalar(node)) {
+      node.value = identifier;
+      if (PLAIN_SCALAR.test(identifier)) node.type = void 0;
+    } else {
+      document.setIn(nodePath, identifier);
+    }
+  }
+  for (const agentId of deletions) document.deleteIn(["agents", agentId]);
+  const text3 = document.toString(yamlStyleOf(original));
+  const expected = structuredClone(before);
+  const expectedAgents = isRecord5(expected.agents) ? expected.agents : {};
+  for (const [agentId, identifier] of identifiers) {
+    const agent = expectedAgents[agentId];
+    if (isRecord5(agent) && isRecord5(agent.plane)) agent.plane.identifier = identifier;
+  }
+  for (const agentId of deletions) delete expectedAgents[agentId];
+  const after = YAML8.parse(text3);
+  const afterAgents = isRecord5(after.agents) ? after.agents : {};
+  if (Object.keys(afterAgents).length !== expectedCount) {
+    throw new Error(
+      `refusing to write ${path}: agent count changed from ${expectedCount} to ${Object.keys(afterAgents).length}`
+    );
+  }
+  if (JSON.stringify(after) !== JSON.stringify(expected)) {
+    throw new Error(`refusing to write ${path}: the edit changed more than the targeted identifiers`);
+  }
+  if (text3 === original) return { changed: false, agentCount: expectedCount };
+  atomicWrite(path, text3);
+  return { changed: true, agentCount: expectedCount };
+}
+function inScope(agent, slug, options) {
+  if (options.all || !options.target) return true;
+  const target = options.target;
+  return agent.agentId === target || agent.repo === target || slug === target;
+}
+async function reconcileProjectIdentity(options = {}) {
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir12();
+  const hermesRegistryPath = options.hermesRegistryPath ?? hermesAgentsRegistryPath(env2, home);
+  const registryPath2 = resolve16(options.registryPath ?? projectRegistryPath(env2));
+  const apply = options.apply ?? false;
+  const now = options.now ?? /* @__PURE__ */ new Date();
+  const fetchedAt = now.toISOString();
+  const errors = [];
+  const agents = readHermesAgentBoards(hermesRegistryPath);
+  const registry = loadProjectRegistry(registryPath2);
+  const scoped = agents.map((agent) => ({ agent, slug: matchRegistrySlug(agent, registry) })).filter(({ agent, slug }) => inScope(agent, slug, options));
+  const workspaces = [...new Set(scoped.map(({ agent }) => agent.workspace).filter(Boolean))];
+  const boardsByWorkspace = /* @__PURE__ */ new Map();
+  for (const workspace of workspaces) {
+    try {
+      const fetcher = options.fetchBoards ?? ((ws) => fetchPlaneBoards(ws, env2, home));
+      boardsByWorkspace.set(workspace, await fetcher(workspace));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  const resolutions = [];
+  const hermesIdentifiers = /* @__PURE__ */ new Map();
+  const hermesChanges = [];
+  const projectChanges = [];
+  const deletions = [];
+  for (const { agent, slug } of scoped) {
+    const base = {
+      agentId: agent.agentId,
+      workspace: agent.workspace,
+      boardId: agent.boardId,
+      currentIdentifier: agent.identifier,
+      ...slug ? { slug } : {}
+    };
+    if (DEAD_AGENT_IDS.includes(agent.agentId)) {
+      deletions.push(agent.agentId);
+      resolutions.push({ ...base, status: "dead", detail: "abandoned agent; entry removed from the fleet registry" });
+      continue;
+    }
+    if (!agent.boardId) {
+      resolutions.push({ ...base, status: "no-board", detail: "no plane.project_id recorded" });
+      continue;
+    }
+    const boards = boardsByWorkspace.get(agent.workspace);
+    if (!boards) {
+      resolutions.push({ ...base, status: "error", detail: `workspace "${agent.workspace}" could not be listed; value preserved` });
+      continue;
+    }
+    const board = boards.get(agent.boardId);
+    if (!board) {
+      resolutions.push({ ...base, status: "board-missing", detail: `board ${agent.boardId} not in workspace "${agent.workspace}"; value preserved` });
+      continue;
+    }
+    const live = board.identifier;
+    const drift = live !== agent.identifier;
+    resolutions.push({ ...base, liveIdentifier: live, boardName: board.name, status: drift ? "drift" : "ok" });
+    if (drift) {
+      hermesIdentifiers.set(agent.agentId, live);
+      hermesChanges.push({ agentId: agent.agentId, field: "plane.identifier", from: agent.identifier, to: live });
+    }
+    if (!slug) continue;
+    const project = registry.projects[slug];
+    const provider = project?.ticket_provider;
+    if (!provider || provider.type !== "plane") continue;
+    const recordWorkspace = (provider.workspace ?? "").trim();
+    if (recordWorkspace && recordWorkspace.toLowerCase() !== agent.workspace.toLowerCase()) {
+      errors.push(
+        `${slug}: registry workspace "${recordWorkspace}" disagrees with the fleet's "${agent.workspace}" for ${agent.agentId}; identifier ${live} not written`
+      );
+      continue;
+    }
+    if (provider.identifier !== live) {
+      projectChanges.push({ slug, field: "ticket_provider.identifier", from: provider.identifier ?? "", to: live });
+    }
+    if (provider.identifier_source !== "provider") {
+      projectChanges.push({ slug, field: "ticket_provider.identifier_source", from: provider.identifier_source ?? "", to: "provider" });
+    }
+    const nextState = provider.board_id ? "linked" : provider.state ?? "planned";
+    if (provider.state !== nextState) {
+      projectChanges.push({ slug, field: "ticket_provider.state", from: provider.state ?? "", to: nextState });
+    }
+    if (apply) {
+      provider.identifier = live;
+      provider.identifier_source = "provider";
+      provider.identifier_fetched_at = fetchedAt;
+      provider.state = nextState;
+    }
+  }
+  if (apply) {
+    if (hermesIdentifiers.size || deletions.length) {
+      applyHermesIdentifiers(hermesRegistryPath, hermesIdentifiers, deletions);
+    }
+    if (projectChanges.length) saveProjectRegistry(registry, registryPath2);
+  }
+  return {
+    ok: errors.length === 0,
+    apply,
+    hermesRegistryPath,
+    registryPath: registryPath2,
+    checked: scoped.length,
+    resolutions,
+    changes: { hermes: hermesChanges, hermesDeleted: deletions, projects: projectChanges },
+    errors
+  };
+}
+var STATUS_LABEL = {
+  ok: "ok",
+  drift: "DRIFT",
+  dead: "DEAD",
+  "no-board": "no board",
+  "board-missing": "404",
+  error: "error"
+};
+function formatIdentityReport(report) {
+  const lines = [""];
+  const width = Math.max(...report.resolutions.map((r) => r.agentId.length), 10);
+  for (const item of report.resolutions) {
+    const arrow = item.liveIdentifier && item.liveIdentifier !== item.currentIdentifier ? `${item.currentIdentifier || "''"} -> ${item.liveIdentifier}` : (item.liveIdentifier ?? item.currentIdentifier) || "''";
+    lines.push(
+      `  ${STATUS_LABEL[item.status].padEnd(9)} ${item.agentId.padEnd(width)}  ${arrow}` + (item.slug ? `  [${item.slug}]` : "") + (item.detail ? `  ${item.detail}` : "")
+    );
+  }
+  lines.push("");
+  const verb = report.apply ? "applied" : "pending";
+  lines.push(`  fleet registry: ${report.changes.hermes.length} identifier fix(es) ${verb}, ${report.changes.hermesDeleted.length} dead agent(s) removed`);
+  lines.push(`  project registry: ${report.changes.projects.length} field change(s) ${verb}`);
+  if (!report.apply) lines.push(`  dry run \u2014 re-run with --apply to write`);
+  for (const error of report.errors) lines.push(`  ! ${error}`);
+  lines.push("");
+  return lines.join("\n");
+}
+
 // src/describe/activity.ts
 import { spawn as spawn2, spawnSync as spawnSync15 } from "node:child_process";
 import { statSync as statSync4 } from "node:fs";
-import { join as join30 } from "node:path";
+import { join as join31 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
@@ -17141,7 +17516,7 @@ function git3(repo, args) {
   return result2.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve19) => {
+  return new Promise((resolve20) => {
     const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
@@ -17149,7 +17524,7 @@ function gitAsync(repo, args) {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve19(value);
+      resolve20(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -17291,7 +17666,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync4(join30(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync4(join31(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -17489,8 +17864,8 @@ function openUrl(url, env2 = process.env, platform2 = process.platform) {
 }
 
 // src/describe/index.ts
-import { existsSync as existsSync23, readFileSync as readFileSync23, readdirSync as readdirSync9, statSync as statSync5 } from "node:fs";
-import { join as join31, resolve as resolve16 } from "node:path";
+import { existsSync as existsSync24, readFileSync as readFileSync24, readdirSync as readdirSync9, statSync as statSync5 } from "node:fs";
+import { join as join32, resolve as resolve17 } from "node:path";
 init_project();
 init_config();
 init_state();
@@ -17546,7 +17921,7 @@ var CONFIG_FILES = [
 ];
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync23(path, "utf8"));
+    const parsed = JSON.parse(readFileSync24(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -17568,7 +17943,7 @@ function describeType(repo) {
   const evidence = [];
   const note = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync23(join31(repo, marker.file))) continue;
+    if (!existsSync24(join32(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note(marker.language, marker.file);
@@ -17582,9 +17957,9 @@ function describeType(repo) {
     }
   } catch {
   }
-  const pkg = readJson(join31(repo, "package.json"));
+  const pkg = readJson(join32(repo, "package.json"));
   if (pkg) {
-    if (existsSync23(join31(repo, "tsconfig.json"))) {
+    if (existsSync24(join32(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -17618,14 +17993,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync23(join31(repo, marker))) continue;
+    if (!existsSync24(join32(repo, marker))) continue;
     roles.push(role);
     note(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join31(repo, ".project.json");
+  const manifestPath = join32(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -17633,8 +18008,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve16(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve16(project.repo_path) === resolved);
+    const resolved = resolve17(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve17(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -17645,7 +18020,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve16(record.repo_path) !== resolve16(repo)) {
+  if (record && resolve17(record.repo_path) !== resolve17(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -17712,12 +18087,12 @@ function describeSubsystems(repo, findings) {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
     const evidence = metadata.id === "notebook" ? (() => {
       try {
-        const manifest = JSON.parse(readFileSync23(join31(repo, ".project.json"), "utf8"));
+        const manifest = JSON.parse(readFileSync24(join32(repo, ".project.json"), "utf8"));
         return manifest.notebook && typeof manifest.notebook === "object" ? [".project.json#notebook"] : [];
       } catch {
         return [];
       }
-    })() : markers.filter((marker) => existsSync23(join31(repo, marker)));
+    })() : markers.filter((marker) => existsSync24(join32(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding2) => ({
       id: finding2.id,
       title: finding2.title,
@@ -17735,8 +18110,8 @@ function describeSubsystems(repo, findings) {
 function describeNotebook(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
-    const project = Object.values(registry.projects).find((entry) => resolve16(entry.repo_path) === resolve16(repo));
-    const manifest = existsSync23(join31(repo, ".project.json")) ? JSON.parse(readFileSync23(join31(repo, ".project.json"), "utf8")) : void 0;
+    const project = Object.values(registry.projects).find((entry) => resolve17(entry.repo_path) === resolve17(repo));
+    const manifest = existsSync24(join32(repo, ".project.json")) ? JSON.parse(readFileSync24(join32(repo, ".project.json"), "utf8")) : void 0;
     const declared = Boolean(project?.notebook || manifest?.notebook && typeof manifest.notebook === "object");
     if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
     const config = loadEffectiveNotebookConfig(repo, registryPath2);
@@ -17754,7 +18129,7 @@ function describeNotebook(repo, registryPath2) {
   }
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync23(join31(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync24(join32(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -17832,8 +18207,8 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve16(input.repoArg ?? process.cwd());
-  if (!existsSync23(repo)) throw new Error(`Path does not exist: ${repo}`);
+  const repo = resolve17(input.repoArg ?? process.cwd());
+  if (!existsSync24(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync5(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
   const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath: registryPath2 }));
@@ -18058,7 +18433,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve19) => {
+  return new Promise((resolve20) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -18078,7 +18453,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve19({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve20({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -18095,7 +18470,7 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve19({ outcome: "cancel", selected: [] });
+      resolve20({ outcome: "cancel", selected: [] });
     });
   });
 }
@@ -18106,8 +18481,8 @@ init_style();
 // src/notebook/cli.ts
 init_project();
 init_capture();
-import { closeSync as closeSync7, constants as constants6, existsSync as existsSync24, fstatSync as fstatSync5, lstatSync as lstatSync13, openSync as openSync7, readSync as readSync4 } from "node:fs";
-import { resolve as resolve17 } from "node:path";
+import { closeSync as closeSync8, constants as constants6, existsSync as existsSync25, fstatSync as fstatSync5, lstatSync as lstatSync14, openSync as openSync8, readSync as readSync4 } from "node:fs";
+import { resolve as resolve18 } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 // src/notebook/migration.ts
@@ -18211,7 +18586,7 @@ function fallbackConfig(repo) {
   return {
     schema_version: 1,
     project_slug: "unknown",
-    repo_path: resolve17(repo),
+    repo_path: resolve18(repo),
     base_url: null,
     auth: { mode: "none" },
     policy: { enabled: false, session_start_enabled: false, session_capture_enabled: false, overview_max_chars: 4e3, documentation_globs: ["**/*.md", "**/*.mdx"] },
@@ -18247,12 +18622,12 @@ async function execute(input) {
   }
 }
 function readBoundedRegularFile(path, maxBytes) {
-  const absolute = resolve17(path);
-  if (!existsSync24(absolute)) throw new NotebookError("INVALID_INPUT", `File not found: ${absolute}`);
-  const before = lstatSync13(absolute);
+  const absolute = resolve18(path);
+  if (!existsSync25(absolute)) throw new NotebookError("INVALID_INPUT", `File not found: ${absolute}`);
+  const before = lstatSync14(absolute);
   if (!before.isFile() || before.isSymbolicLink()) throw new NotebookError("INVALID_INPUT", `File must be a regular non-symlink: ${absolute}`);
   if (before.size > maxBytes) throw new NotebookError("INVALID_INPUT", `File exceeds the configured ceiling: ${absolute}`);
-  const fd = openSync7(absolute, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
+  const fd = openSync8(absolute, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync5(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw new NotebookError("INVALID_INPUT", `File changed while opening: ${absolute}`);
@@ -18272,7 +18647,7 @@ function readBoundedRegularFile(path, maxBytes) {
       throw new NotebookError("INVALID_INPUT", `File must be valid UTF-8: ${absolute}`);
     }
   } finally {
-    closeSync7(fd);
+    closeSync8(fd);
   }
 }
 function textInput(options, maxBytes) {
@@ -18418,7 +18793,7 @@ function registerNotebookCli(program2, module = new NotebookModule()) {
       const registry = loadProjectRegistry(registryFile);
       const root = notebookStateRoot();
       const explicit = process.env.PJ_NOTEBOOK_WORKER_PROJECT_SLUG;
-      const slug = explicit && registry.projects[explicit] ? explicit : Object.keys(registry.projects).find((candidate) => existsSync24(statePathForReceipt(root, candidate, options.receiptId)));
+      const slug = explicit && registry.projects[explicit] ? explicit : Object.keys(registry.projects).find((candidate) => existsSync25(statePathForReceipt(root, candidate, options.receiptId)));
       if (!slug) throw new NotebookError("NOT_FOUND", "Receipt does not belong to a registered project");
       await runCaptureWorker(new NotebookModule({ registryPath: registryFile, stateRoot: root }), slug, options.receiptId);
     } catch (error) {
@@ -18492,9 +18867,9 @@ async function promptForRuleIds(rules) {
   return selected;
 }
 function readJson2(path) {
-  if (!existsSync25(path)) return void 0;
+  if (!existsSync26(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync24(path, "utf8"));
+    const parsed = JSON.parse(readFileSync25(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -18503,7 +18878,7 @@ function readJson2(path) {
 function findGitRoot(cwd) {
   const result2 = spawnSync16("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result2.status !== 0) return void 0;
-  return resolve18(result2.stdout.trim());
+  return resolve19(result2.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -18511,8 +18886,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join32(targetDir, ".project.json"));
-  const pkg = readJson2(join32(targetDir, "package.json"));
+  const manifest = readJson2(join33(targetDir, ".project.json"));
+  const pkg = readJson2(join33(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename10(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -18568,7 +18943,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync25(action.path) || readFileSync24(action.path, "utf8") !== next;
+    return !existsSync26(action.path) || readFileSync25(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -18616,27 +18991,27 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve18(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve19(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename10(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join32(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join33(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve18(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve19(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync25(targetDir);
+  const targetExists = existsSync26(targetDir);
   if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const alreadyScaffolded = targetExists && (existsSync25(join32(targetDir, ".project.json")) || existsSync25(join32(targetDir, ".copier-answers.yml")));
+  const alreadyScaffolded = targetExists && (existsSync26(join33(targetDir, ".project.json")) || existsSync26(join33(targetDir, ".copier-answers.yml")));
   const syncMode = Boolean(
-    targetGitRoot && resolve18(targetGitRoot) === resolve18(targetDir) || alreadyScaffolded
+    targetGitRoot && resolve19(targetGitRoot) === resolve19(targetDir) || alreadyScaffolded
   );
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename10(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
@@ -18951,6 +19326,23 @@ projectCmd.command("show").argument("<slug>", "Project slug").description("Show 
     }
   } catch (err) {
     console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+});
+projectCmd.command("identity").argument("[slug]", "Project slug, agent id, or repo name").description("Read board identifiers back from the provider and repair the registries").option("--all", "Reconcile every agent in the Hermes fleet registry").option("--apply", "Write the repairs (default is a dry-run diff)").option("--json", "Output machine-parseable JSON").option("--hermes-registry <path>", "Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).action(async (slug, options) => {
+  try {
+    if (!slug && !options.all) throw new Error("pass a project slug, an agent id, or --all");
+    const report = await reconcileProjectIdentity({
+      target: slug,
+      all: Boolean(options.all),
+      apply: Boolean(options.apply),
+      hermesRegistryPath: options.hermesRegistry,
+      registryPath: options.registry
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatIdentityReport(report));
+    process.exit(report.ok ? 0 : 1);
+  } catch (err) {
+    console.error(`${xmark} project identity failed:`, err instanceof Error ? err.message : err);
     process.exit(1);
   }
 });

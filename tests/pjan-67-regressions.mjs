@@ -57,12 +57,12 @@ exit 0
 
 executable(join(adapters, "plane.sh"), `#!/bin/sh
 printf 'provider:%s\n' "\$*" >> "\$PJAN67_PROVIDER_LOG"
-printf '%s\n' '{"board_id":"must-not-be-created"}'
+printf '%s\n' '{"board_id":"must-not-be-created","identifier":"MUST"}'
 `);
 
 executable(join(adapters, "trello.sh"), `#!/bin/sh
 printf 'provider:%s\n' "\$*" >> "\$PJAN67_PROVIDER_LOG"
-printf '%s\n' '{"board_id":"must-not-be-created"}'
+printf '%s\n' '{"board_id":"must-not-be-created","identifier":"MUST"}'
 `);
 
 const lifecycleBootstrapTarget = join(temporary, "pjan67-lifecycle-bootstrap");

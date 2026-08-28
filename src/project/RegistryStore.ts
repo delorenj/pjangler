@@ -353,10 +353,12 @@ export class PgRegistryStore implements RegistryStore {
       provider_type: string;
       workspace: string | null;
       identifier: string | null;
+      identifier_source: string | null;
+      identifier_fetched_at: Date | string | null;
       board_id: string | null;
       state: string | null;
     }>(
-      `SELECT provider_type, workspace, identifier, board_id, state
+      `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state
        FROM public.project_ticket_boards
        WHERE project_id = $1
        LIMIT 1`,
@@ -366,10 +368,17 @@ export class PgRegistryStore implements RegistryStore {
       return { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" };
     }
     const row = rows[0]!;
+    const fetchedAt = row.identifier_fetched_at;
     return {
       type: row.provider_type,
       workspace: row.workspace ?? undefined,
       identifier: row.identifier ?? undefined,
+      // Provenance is a column, not an extension blob: dropping it here would
+      // silently demote every provider-confirmed board back to a guess.
+      identifier_source: (row.identifier_source as ProjectTicketProvider["identifier_source"]) ?? undefined,
+      identifier_fetched_at: fetchedAt
+        ? (fetchedAt instanceof Date ? fetchedAt.toISOString() : String(fetchedAt))
+        : undefined,
       board_id: row.board_id ?? undefined,
       state: (row.state as ProjectTicketProvider["state"]) ?? undefined,
     };
@@ -415,14 +424,16 @@ export class PgRegistryStore implements RegistryStore {
     );
     await client.query(
       `INSERT INTO public.project_ticket_boards
-         (repo_id, project_id, provider_type, workspace, identifier, board_id, state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         repoId,
         projectId,
         tp.type,
         tp.workspace ?? null,
         tp.identifier ?? null,
+        tp.identifier_source ?? null,
+        tp.identifier_fetched_at ?? null,
         tp.board_id ?? null,
         tp.state ?? null,
       ]

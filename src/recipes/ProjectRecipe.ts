@@ -179,12 +179,33 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
   if (!manifestTicket || typeof manifestTicket !== "object") {
     throw new Error(`${manifestPath} ticket_provider is missing`);
   }
+  const manifestIdentifier = String(manifestTicket.identifier ?? "");
+  const manifestBoardId = String(manifestTicket.board_id ?? "");
+  // `.project.json` is authoritative for the BINDING, but it carries no
+  // provenance. Keep what the registry already knows when the manifest agrees
+  // on the binding; a manifest naming a different identifier has been
+  // confirmed by nothing, so provenance degrades back to "proposed" and the
+  // board falls out of "linked" until `pj project identity` re-reads it.
+  const recorded = plan.project.ticket_provider;
+  const carriesProvenance =
+    (recorded?.identifier ?? "") === manifestIdentifier && (recorded?.board_id ?? "") === manifestBoardId;
+  const identifierSource = (carriesProvenance ? recorded?.identifier_source : undefined) ?? "proposed";
+  const manifestState = typeof manifestTicket.state === "string" ? manifestTicket.state : undefined;
   const ticketProvider: ProjectTicketProvider = {
     type: String(manifestTicket.type ?? ""),
     workspace: String(manifestTicket.workspace ?? ""),
-    identifier: String(manifestTicket.identifier ?? ""),
-    board_id: String(manifestTicket.board_id ?? ""),
-    state: manifestTicket.state,
+    identifier: manifestIdentifier,
+    identifier_source: identifierSource,
+    ...(carriesProvenance && recorded?.identifier_fetched_at
+      ? { identifier_fetched_at: recorded.identifier_fetched_at }
+      : {}),
+    board_id: manifestBoardId,
+    state:
+      manifestState === "skipped"
+        ? "skipped"
+        : manifestBoardId && identifierSource === "provider"
+          ? "linked"
+          : "planned",
   };
 
   plan.manifest = manifest;

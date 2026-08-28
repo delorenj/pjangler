@@ -67,7 +67,7 @@ print(json.dumps({"op": os.environ["OP"], "args": [os.environ["A1"], os.environ[
                   "workspace": os.environ["WS"], "key": os.environ["KEYSTATE"]}))' >> "$PJAN30_RECORD"
 fi
 ${fail ? 'echo "plane: create_board failed: 403 forbidden" >&2\nexit 1\n' : ""}[ "$OP" = create_board ] || { echo "unexpected op: $OP" >&2; exit 2; }
-printf '{"board_id":"${BOARD_ID}","board_url":"https://plane.delo.sh/33god/projects/${BOARD_ID}/issues/"}\\n'
+printf '{"board_id":"${BOARD_ID}","identifier":"BRD","board_url":"https://plane.delo.sh/33god/projects/${BOARD_ID}/issues/"}\\n'
 `;
   const path = join(dir, "plane.sh");
   writeFileSync(path, script);

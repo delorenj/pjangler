@@ -159,7 +159,7 @@ printf 'provider:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
-printf '%s\n' '{"board_id":"trusted-positive-board"}'
+printf '%s\n' '{"board_id":"trusted-positive-board","identifier":"TRUST"}'
 `);
 copyFileSync(join(providerAdapters, "plane.sh"), join(providerAdapters, "trello.sh"));
 chmodSync(join(providerAdapters, "trello.sh"), 0o755);

@@ -25,7 +25,7 @@ function rec(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     status: "active",
     source_artifacts: [],
     template: { commonproject: { enabled: true, primary_language: "typescript" } },
-    ticket_provider: { type: "plane", workspace: "33god", identifier: "PGSC", board_id: "board-123", state: "linked" },
+    ticket_provider: { type: "plane", workspace: "33god", identifier: "PGSC", identifier_source: "provider", identifier_fetched_at: "2026-08-28T00:00:00.000Z", board_id: "board-123", state: "linked" },
     agents: { "pg-store-check-pm": { role: "pm", provisioning_state: "provisioned", role_dir: "agents/hermes/pm" } },
     automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
     created_at: "2026-07-13T00:00:00.000Z",
@@ -80,6 +80,11 @@ assert.ok(got, "record not found in PG after upsert");
 assert.equal(got.repo_path, "/tmp/pg-store-check");
 assert.equal(got.description, "updated", "idempotent upsert should reflect latest write");
 assert.equal(got.ticket_provider.board_id, "board-123");
+// PID-4: provenance is a first-class column. A Postgres round-trip that dropped
+// it would demote a provider-confirmed board back to a guess, and the "linked"
+// invariant would then reject the record it just wrote.
+assert.equal(got.ticket_provider.identifier_source, "provider");
+assert.equal(got.ticket_provider.identifier_fetched_at, "2026-08-28T00:00:00.000Z");
 assert.equal(got.agents["pg-store-check-pm"]?.role, "pm");
 assert.deepEqual(got.notebook?.x_binding, { preserve: true }, "project notebook unknown descendant round-trips semantically");
 assert.deepEqual(got.x_project_extension, { nested: "preserve" }, "project sibling extension round-trips semantically");
@@ -97,18 +102,18 @@ assert.equal((await check.query(`SELECT count(*)::int AS n FROM public.projects`
 await check.end();
 
 await assert.rejects(
-  () => store.upsert("duplicate-notebook", rec({ slug: "duplicate-notebook", repo_path: "/tmp/duplicate-notebook", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUPNB", board_id: "dup", state: "linked" }, notebook: { state: "linked", notebook_id: "nb-pg-store", notebook_name: "Duplicate", overview_note_id: "overview-duplicate" } })),
+  () => store.upsert("duplicate-notebook", rec({ slug: "duplicate-notebook", repo_path: "/tmp/duplicate-notebook", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUPNB", identifier_source: "provider", board_id: "dup", state: "linked" }, notebook: { state: "linked", notebook_id: "nb-pg-store", notebook_name: "Duplicate", overview_note_id: "overview-duplicate" } })),
   /projects_notebook_id_unique|duplicate key|unique/iu,
   "partial unique notebook identity rejects a second nonempty PJangler binding",
 );
 assert.equal((await store.load()).projects[r.slug]?.notebook?.notebook_id, "nb-pg-store", "failed duplicate transaction preserves the original binding");
 await assert.rejects(
-  () => store.upsert("duplicate-overview", rec({ slug: "duplicate-overview", repo_path: "/tmp/duplicate-overview", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUPOV", board_id: "dup-ov", state: "linked" }, notebook: { state: "linked", notebook_id: "nb-overview-duplicate", notebook_name: "Duplicate Overview", overview_note_id: "overview-pg-store" } })),
+  () => store.upsert("duplicate-overview", rec({ slug: "duplicate-overview", repo_path: "/tmp/duplicate-overview", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUPOV", identifier_source: "provider", board_id: "dup-ov", state: "linked" }, notebook: { state: "linked", notebook_id: "nb-overview-duplicate", notebook_name: "Duplicate Overview", overview_note_id: "overview-pg-store" } })),
   /projects_overview_note_id_unique|duplicate key|unique/iu,
   "partial unique Overview identity rejects a second nonempty PJangler binding",
 );
 
-const stale = rec({ slug: "stale-pg", repo_path: "/tmp/stale-pg", ticket_provider: { type: "plane", workspace: "33god", identifier: "STALEPG", board_id: "stale", state: "linked" } });
+const stale = rec({ slug: "stale-pg", repo_path: "/tmp/stale-pg", ticket_provider: { type: "plane", workspace: "33god", identifier: "STALEPG", identifier_source: "provider", board_id: "stale", state: "linked" } });
 await store.upsert(stale.slug, stale);
 assert.ok((await store.load()).projects[stale.slug]);
 await store.save(registryWithNotebook);
@@ -116,7 +121,7 @@ assert.equal((await store.load()).projects[stale.slug], undefined, "authoritativ
 
 // ---- 3) DualWriteRegistryStore: writes yaml + PG, reads yaml ----
 const dual = new DualWriteRegistryStore(new YamlRegistryStore(join(tmp, "dual.yaml")), new PgRegistryStore(cfg));
-await dual.upsert("dual-proj", rec({ slug: "dual-proj", repo_path: "/tmp/dual", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUAL", board_id: "b2", state: "linked" } }));
+await dual.upsert("dual-proj", rec({ slug: "dual-proj", repo_path: "/tmp/dual", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUAL", identifier_source: "provider", board_id: "b2", state: "linked" } }));
 const dread = await dual.load(); // reads yaml
 assert.ok(dread.projects["dual-proj"], "dual-write yaml read");
 const pgAfterDual = await store.load(); // PG should also have it

@@ -905,7 +905,7 @@ var init_RegistryStore = __esm({
       }
       async loadTicketProvider(client, projectId) {
         const { rows } = await client.query(
-          `SELECT provider_type, workspace, identifier, board_id, state
+          `SELECT provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state
        FROM public.project_ticket_boards
        WHERE project_id = $1
        LIMIT 1`,
@@ -915,10 +915,15 @@ var init_RegistryStore = __esm({
           return { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" };
         }
         const row = rows[0];
+        const fetchedAt = row.identifier_fetched_at;
         return {
           type: row.provider_type,
           workspace: row.workspace ?? void 0,
           identifier: row.identifier ?? void 0,
+          // Provenance is a column, not an extension blob: dropping it here would
+          // silently demote every provider-confirmed board back to a guess.
+          identifier_source: row.identifier_source ?? void 0,
+          identifier_fetched_at: fetchedAt ? fetchedAt instanceof Date ? fetchedAt.toISOString() : String(fetchedAt) : void 0,
           board_id: row.board_id ?? void 0,
           state: row.state ?? void 0
         };
@@ -947,14 +952,16 @@ var init_RegistryStore = __esm({
         );
         await client.query(
           `INSERT INTO public.project_ticket_boards
-         (repo_id, project_id, provider_type, workspace, identifier, board_id, state)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (repo_id, project_id, provider_type, workspace, identifier, identifier_source, identifier_fetched_at, board_id, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             repoId,
             projectId,
             tp.type,
             tp.workspace ?? null,
             tp.identifier ?? null,
+            tp.identifier_source ?? null,
+            tp.identifier_fetched_at ?? null,
             tp.board_id ?? null,
             tp.state ?? null
           ]
@@ -1142,6 +1149,7 @@ function validateProjectRegistry(registry) {
   const slugs = /* @__PURE__ */ new Set();
   const repoPaths = /* @__PURE__ */ new Map();
   const identifiers = /* @__PURE__ */ new Map();
+  const boardIds = /* @__PURE__ */ new Map();
   const notebookIds = /* @__PURE__ */ new Map();
   const overviewNoteIds = /* @__PURE__ */ new Map();
   for (const [slug, project] of Object.entries(registry.projects)) {
@@ -1154,13 +1162,24 @@ function validateProjectRegistry(registry) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
     }
     repoPaths.set(repoKey, slug);
+    const scope = ticketProviderScope(project.ticket_provider);
+    const boardId = project.ticket_provider.board_id?.trim();
+    if (boardId) {
+      const boardKey = `${scope}\0${boardId}`;
+      const existingBoardSlug = boardIds.get(boardKey);
+      if (existingBoardSlug && existingBoardSlug !== slug) {
+        throw new Error(`Duplicate project board_id: ${boardId} in ${scope.replace("\0", "/")} used by ${existingBoardSlug} and ${slug}`);
+      }
+      boardIds.set(boardKey, slug);
+    }
     const identifier = project.ticket_provider.identifier?.toUpperCase();
     if (identifier) {
-      const existingIdentifierSlug = identifiers.get(identifier);
+      const identifierKey = `${scope}\0${identifier}`;
+      const existingIdentifierSlug = identifiers.get(identifierKey);
       if (existingIdentifierSlug && existingIdentifierSlug !== slug) {
-        throw new Error(`Duplicate project identifier: ${identifier} used by ${existingIdentifierSlug} and ${slug}`);
+        throw new Error(`Duplicate project identifier: ${identifier} in ${scope.replace("\0", "/")} used by ${existingIdentifierSlug} and ${slug}`);
       }
-      identifiers.set(identifier, slug);
+      identifiers.set(identifierKey, slug);
     }
     const notebookId = project.notebook?.notebook_id;
     if (notebookId) {
@@ -1175,6 +1194,9 @@ function validateProjectRegistry(registry) {
       overviewNoteIds.set(overviewNoteId, slug);
     }
   }
+}
+function ticketProviderScope(provider) {
+  return `${provider.type ?? ""}\0${(provider.workspace ?? "").toLowerCase()}`;
 }
 function validateGlobalNotebookConfig(value) {
   if (value === void 0) return;
@@ -1241,22 +1263,15 @@ function normalizeTicketProvider(value) {
 function buildTicketProviderBlock(input) {
   const type = normalizeTicketProvider(input.type);
   const boardId = input.boardId ?? "";
-  if (type === "trello") {
-    return {
-      type,
-      workspace: input.workspace ?? "",
-      identifier: input.identifier,
-      board_id: boardId,
-      state: boardId ? "linked" : "planned"
-    };
-  }
-  const workspace = input.workspace ?? "33god";
+  const identifierSource = input.identifierSource ?? "proposed";
   return {
     type,
-    workspace,
+    workspace: input.workspace ?? (type === "trello" ? "" : "33god"),
     identifier: input.identifier,
+    identifier_source: identifierSource,
+    ...input.identifierFetchedAt ? { identifier_fetched_at: input.identifierFetchedAt } : {},
     board_id: boardId,
-    state: boardId ? "linked" : "planned"
+    state: boardId && identifierSource === "provider" ? "linked" : "planned"
   };
 }
 function ticketProviderKeyVar(provider) {
@@ -1447,13 +1462,23 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
         error: `ticket-provider: ${provider} create_board returned no board_id`
       };
     }
+    const identifier = isRecord(parsed) && typeof parsed.identifier === "string" ? parsed.identifier.trim() : "";
+    if (!identifier) {
+      return {
+        ok: false,
+        skipped: false,
+        logs: [],
+        error: `ticket-provider: ${provider} create_board returned no identifier. The adapter must echo the identifier the provider assigned; pjangler no longer invents one.`
+      };
+    }
     const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
     return {
       ok: true,
       skipped: false,
       boardId,
+      identifier,
       boardUrl,
-      logs: [`ticket-provider: ${provider} board linked (${action.identifier} \u2192 ${boardId})`]
+      logs: [`ticket-provider: ${provider} board linked (${identifier} \u2192 ${boardId})`]
     };
   } finally {
     rmSync3(staging, { recursive: true, force: true });
@@ -1501,7 +1526,7 @@ function resolveContainedPath(parentDir, candidate, label) {
   }
   return resolve5(candidate);
 }
-function deriveProjectIdentifier(value) {
+function proposeProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const identifier = compact.slice(0, 4) || "PROJ";
   return identifier.length >= 2 ? identifier : `${identifier}XX`.slice(0, 4);
@@ -1565,8 +1590,13 @@ function planProjectInit(input) {
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
   const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
-  const identifier = (input.projectIdentifier ?? deriveProjectIdentifier(input.name)).toUpperCase();
+  const identifier = (input.projectIdentifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
+  const resolvedBoardId = input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0);
+  const inheritedProvenance = existing?.ticket_provider?.identifier_source === "provider" && existing.ticket_provider.identifier?.toUpperCase() === identifier && (existing.ticket_provider.board_id || void 0) === resolvedBoardId ? {
+    identifierSource: "provider",
+    ...existing.ticket_provider.identifier_fetched_at ? { identifierFetchedAt: existing.ticket_provider.identifier_fetched_at } : {}
+  } : void 0;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
   const agents = createSafeRecord(Object.entries(existing?.agents ?? {}));
@@ -1601,11 +1631,12 @@ function planProjectInit(input) {
     ticket_provider: buildTicketProviderBlock({
       type: input.ticketProvider ?? "plane",
       identifier,
-      // A board provisioned by an earlier run lives in the registry, not in the
-      // CLI flags — inherit it so re-running init re-links instead of minting a
-      // second board.
-      boardId: input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0),
-      workspace: input.boardWorkspace ?? input.planeWorkspace
+      boardId: resolvedBoardId,
+      workspace: input.boardWorkspace ?? input.planeWorkspace,
+      // Provenance survives a re-plan. Without this, re-running init on an
+      // already-confirmed board would demote it back to "planned" because the
+      // CLI has no way to re-derive where the identifier came from.
+      ...inheritedProvenance ?? {}
     }),
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
@@ -1693,13 +1724,17 @@ function planProjectInit(input) {
     ...input.boardUrl !== void 0 ? { warnings: [BOARD_URL_DEPRECATION_WARNING] } : {}
   };
 }
-function linkTicketProviderBoard(plan, action, boardId) {
+function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__PURE__ */ new Date()) {
   const block = buildTicketProviderBlock({
     type: action.provider,
-    identifier: action.identifier,
+    // The PROVIDER's identifier, not the one we proposed on the way in.
+    identifier,
+    identifierSource: "provider",
+    identifierFetchedAt: now.toISOString(),
     boardId,
     workspace: action.workspace
   });
+  action.identifier = identifier;
   plan.project.ticket_provider = block;
   const manifestProvider = {
     type: block.type,
@@ -1835,8 +1870,8 @@ async function executeProjectInitPlan(plan, options = {}) {
         logs.push(...outcome.logs);
         if (!outcome.ok) {
           errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
-        } else if (outcome.boardId) {
-          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId));
+        } else if (outcome.boardId && outcome.identifier) {
+          changedFiles.push(...linkTicketProviderBoard(plan, action, outcome.boardId, outcome.identifier));
           pendingRegistryAction ??= {
             kind: "registry.upsert",
             registryPath: plan.registryPath,
@@ -1946,6 +1981,10 @@ function validateNoDuplicateProject(registry, project, overwrite) {
     if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
+    if (ticketProviderScope(existing.ticket_provider) !== ticketProviderScope(project.ticket_provider)) continue;
+    if (existing.ticket_provider.board_id?.trim() && existing.ticket_provider.board_id === project.ticket_provider.board_id) {
+      throw new Error(`Project board_id already registered by ${slug}: ${project.ticket_provider.board_id}`);
+    }
     if (existing.ticket_provider.identifier && existing.ticket_provider.identifier.toUpperCase() === project.ticket_provider.identifier?.toUpperCase()) {
       throw new Error(`Project identifier already registered by ${slug}: ${project.ticket_provider.identifier}`);
     }
@@ -1961,6 +2000,18 @@ function validateProjectRecord(project, key) {
   if (!project.repo_path) throw new Error(`Project ${key} missing repo_path`);
   if (!Array.isArray(project.source_artifacts)) throw new Error(`Project ${key} source_artifacts must be a list`);
   if (!isRecord(project.ticket_provider)) throw new Error(`Project ${key} ticket_provider must be a mapping`);
+  const provider = project.ticket_provider;
+  if (provider.state !== void 0 && !TICKET_PROVIDER_STATES.includes(provider.state)) {
+    throw new Error(`Project ${key} ticket_provider.state must be one of ${TICKET_PROVIDER_STATES.join(" | ")}; got ${JSON.stringify(provider.state)}`);
+  }
+  if (provider.identifier_source !== void 0 && !PROJECT_IDENTIFIER_SOURCES.includes(provider.identifier_source)) {
+    throw new Error(`Project ${key} ticket_provider.identifier_source must be one of ${PROJECT_IDENTIFIER_SOURCES.join(" | ")}; got ${JSON.stringify(provider.identifier_source)}`);
+  }
+  if (provider.state === "linked" && !(provider.board_id && provider.identifier && provider.identifier_source === "provider")) {
+    throw new Error(
+      `Project ${key} ticket_provider.state is "linked" but its identity is not provider-confirmed (board_id=${JSON.stringify(provider.board_id ?? "")}, identifier=${JSON.stringify(provider.identifier ?? "")}, identifier_source=${JSON.stringify(provider.identifier_source ?? "")}). Run \`${IDENTIFIER_REPAIR_COMMAND}\`.`
+    );
+  }
   if (!isRecord(project.agents)) throw new Error(`Project ${key} agents must be a mapping`);
   if (project.notebook !== void 0) {
     if (!isRecord(project.notebook)) throw new Error(`Project ${key} notebook must be a mapping`);
@@ -1988,7 +2039,7 @@ function expandHome(path) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
+var PROJECT_REGISTRY_ENV, PROJECT_SOURCE_SKILL_ROOTS_ENV, TICKET_PROVIDER_ADAPTERS_ENV, PROJECT_REGISTRY_SCHEMA_VERSION, DEFAULT_NEW_PROJECT_STATUS, BOARD_URL_DEPRECATION_WARNING, PROJECT_IDENTIFIER_SOURCES, TICKET_PROVIDER_STATES, IDENTIFIER_REPAIR_COMMAND, DEFAULT_SOURCE_SKILL_ROOTS, PROJECT_REGISTRY_OWNED_KEYS, PROJECT_NOTEBOOK_OWNED_KEYS, TICKET_PROVIDER_OWNED_KEYS, GLOBAL_NOTEBOOK_OWNED_KEYS, GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS, GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS, GLOBAL_NOTEBOOK_LIMITS_OWNED_KEYS, GLOBAL_NOTEBOOK_SUMMARIZER_OWNED_KEYS, SAFE_PATH_SEGMENT;
 var init_project = __esm({
   "src/project/index.ts"() {
     "use strict";
@@ -2003,6 +2054,9 @@ var init_project = __esm({
     PROJECT_REGISTRY_SCHEMA_VERSION = 1;
     DEFAULT_NEW_PROJECT_STATUS = "active";
     BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
+    PROJECT_IDENTIFIER_SOURCES = ["provider", "proposed"];
+    TICKET_PROVIDER_STATES = ["planned", "linked", "skipped"];
+    IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
     DEFAULT_SOURCE_SKILL_ROOTS = [
       "/home/delorenj/code/skillex/all-skills",
       join8(homedir4(), ".agents", "skills"),
@@ -2024,7 +2078,7 @@ var init_project = __esm({
       "updated_at"
     ];
     PROJECT_NOTEBOOK_OWNED_KEYS = ["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"];
-    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "board_id", "board_url", "state"];
+    TICKET_PROVIDER_OWNED_KEYS = ["type", "workspace", "identifier", "identifier_source", "identifier_fetched_at", "board_id", "board_url", "state"];
     GLOBAL_NOTEBOOK_OWNED_KEYS = ["base_url", "auth", "defaults", "limits", "summarizer"];
     GLOBAL_NOTEBOOK_AUTH_OWNED_KEYS = ["mode", "env_var"];
     GLOBAL_NOTEBOOK_DEFAULTS_OWNED_KEYS = ["enabled", "session_start_enabled", "session_capture_enabled", "overview_max_chars", "documentation_globs", "overview_references", "excluded_globs"];
@@ -14430,12 +14484,20 @@ function refreshPlanFromCanonicalManifest(plan) {
   if (!manifestTicket || typeof manifestTicket !== "object") {
     throw new Error(`${manifestPath} ticket_provider is missing`);
   }
+  const manifestIdentifier = String(manifestTicket.identifier ?? "");
+  const manifestBoardId = String(manifestTicket.board_id ?? "");
+  const recorded = plan.project.ticket_provider;
+  const carriesProvenance = (recorded?.identifier ?? "") === manifestIdentifier && (recorded?.board_id ?? "") === manifestBoardId;
+  const identifierSource = (carriesProvenance ? recorded?.identifier_source : void 0) ?? "proposed";
+  const manifestState = typeof manifestTicket.state === "string" ? manifestTicket.state : void 0;
   const ticketProvider = {
     type: String(manifestTicket.type ?? ""),
     workspace: String(manifestTicket.workspace ?? ""),
-    identifier: String(manifestTicket.identifier ?? ""),
-    board_id: String(manifestTicket.board_id ?? ""),
-    state: manifestTicket.state
+    identifier: manifestIdentifier,
+    identifier_source: identifierSource,
+    ...carriesProvenance && recorded?.identifier_fetched_at ? { identifier_fetched_at: recorded.identifier_fetched_at } : {},
+    board_id: manifestBoardId,
+    state: manifestState === "skipped" ? "skipped" : manifestBoardId && identifierSource === "provider" ? "linked" : "planned"
   };
   plan.manifest = manifest;
   plan.project.agents = agents;
@@ -16830,7 +16892,9 @@ server.registerTool(
         enableSystemd: externalEffects.systemd,
         skipPlane,
         registryPath: input.registryPath,
-        projectIdentifier: input.projectIdentifier ?? projectSlug.slice(0, 4).toUpperCase(),
+        // A PROPOSAL only. The provider assigns the real identifier and
+        // `pj project identity` reads it back; MCP never mints a board key.
+        projectIdentifier: input.projectIdentifier ?? proposeProjectIdentifier(projectSlug),
         ticketProvider,
         boardId,
         boardUrl: input.boardUrl,

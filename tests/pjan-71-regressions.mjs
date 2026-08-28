@@ -501,7 +501,9 @@ try {
         "      workspace: 33god",
         `      identifier: ${id}`,
         '      board_id: ""',
-        "      state: linked",
+        // A board id of "" is not a board: PJAN identity rules forbid calling
+        // that "linked", so the fixture states what it actually is.
+        "      state: planned",
         "    agents: {}",
         "    created_at: 2026-01-01T00:00:00.000Z",
         "    updated_at: 2026-01-01T00:00:00.000Z",
