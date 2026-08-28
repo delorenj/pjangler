@@ -66,9 +66,17 @@ function hashBlob(repo, content) {
 }
 
 const projectPackage = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-assert.match(
+// `npm test` delegates to scripts/run-tests.mjs, which owns the gate and suite
+// manifest. Check both halves: package.json must reach the runner, and the
+// runner must still run this gate.
+assert.equal(
   projectPackage.scripts.test,
-  /(?:^|&&\s*)npm run check:tracked-secrets(?:\s*&&|$)/,
+  "node scripts/run-tests.mjs",
+  "the standard test surface must be the non-short-circuiting runner",
+);
+assert.match(
+  readFileSync(join(root, "scripts", "run-tests.mjs"), "utf8"),
+  /^\s*\["check:tracked-secrets", "scripts\/check-tracked-secrets\.mjs"\],$/m,
   "the standard test surface must run the tracked-secret gate",
 );
 assert.equal(

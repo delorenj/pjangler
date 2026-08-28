@@ -441,6 +441,8 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
     "template/.scripts/05-fleet-env.sh",
     "template/.scripts/10-hermes-profile.sh",
     "template/.scripts/20-runtime-repo.sh",
+    "template/.scripts/30-telegram.sh",
+    "template/.scripts/31-slack.sh",
     "template/.scripts/42-ticket-provider.sh",
     "template/.scripts/70-systemd.sh",
     "template/.scripts/80-registry.sh",
@@ -461,7 +463,10 @@ export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.Proces
   if (guard < 0 || firstSource < 0 || guard > firstSource) {
     return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
   }
-  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "80-registry.sh"]) {
+  // 30/31 write into the profile root 10-hermes-profile.sh creates, so they
+  // must defer with it. Without the guard both died on "required profile root
+  // is unavailable" and took every deferred MCP render down with them.
+  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "30-telegram.sh", "31-slack.sh", "80-registry.sh"]) {
     const text = readFileSync(join(templateRoot, "template", ".scripts", script), "utf8");
     const hostGuard = text.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
     const source = text.search(/^source\s/m);

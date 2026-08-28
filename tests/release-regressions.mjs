@@ -18,6 +18,7 @@ const root = resolve(import.meta.dirname, "..");
 const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const testRunner = readFileSync(join(root, "scripts", "run-tests.mjs"), "utf8");
 const publishWorkflow = readFileSync(join(root, ".github", "workflows", "publish.yml"), "utf8");
 const gitmodules = readFileSync(join(root, ".gitmodules"), "utf8");
 const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
@@ -89,9 +90,17 @@ try {
     ].join("\n"),
     "publish transport bridge must be local, exact, and require checkout's persisted HTTPS credential",
   );
-  assert.match(
+  // `npm test` delegates to scripts/run-tests.mjs, so the suite manifest lives
+  // there. Both halves are checked: package.json must reach the runner, and the
+  // runner must still list this suite.
+  assert.equal(
     packageJson.scripts.test,
-    /node tests\/pjan-49-regressions\.mjs/,
+    "node scripts/run-tests.mjs",
+    "the standard test surface must be the non-short-circuiting runner",
+  );
+  assert.match(
+    testRunner,
+    /^\s*"tests\/pjan-49-regressions\.mjs",$/m,
     "the post-verification npm test gate must include the PJAN-49 tag-drift regression",
   );
   assert.notEqual(fetchSubmoduleTagsStep, -1, "publish workflow must fetch real recursive submodule tags");

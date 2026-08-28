@@ -547,6 +547,8 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
     "template/.scripts/05-fleet-env.sh",
     "template/.scripts/10-hermes-profile.sh",
     "template/.scripts/20-runtime-repo.sh",
+    "template/.scripts/30-telegram.sh",
+    "template/.scripts/31-slack.sh",
     "template/.scripts/42-ticket-provider.sh",
     "template/.scripts/70-systemd.sh",
     "template/.scripts/80-registry.sh"
@@ -566,7 +568,7 @@ function preflightHermesTemplate(pjanglerRoot, env2 = process.env) {
   if (guard < 0 || firstSource < 0 || guard > firstSource) {
     return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
   }
-  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "80-registry.sh"]) {
+  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "30-telegram.sh", "31-slack.sh", "80-registry.sh"]) {
     const text2 = readFileSync6(join7(templateRoot, "template", ".scripts", script), "utf8");
     const hostGuard = text2.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
     const source = text2.search(/^source\s/m);

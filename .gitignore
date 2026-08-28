@@ -70,6 +70,11 @@ _bmad/config.user.yaml
 # PJAN-75 test bundle (created and removed by tests/pjan-75-regressions.mjs)
 .pjan-75-cli.mjs
 
+# Suite scratch trees. Each is removed on a passing run; a failing run leaves
+# one behind, and a red suite should not also dirty the worktree.
+.pjan-67-trusted-lifecycle-*/
+.pjan-77-test-build-*/
+
 # Codex CLI runtime droppings swept in by early auto-checkpoint commits
 # (config/state written when a Codex session ran with the repo root as cwd).
 # Runtime state, never source.
