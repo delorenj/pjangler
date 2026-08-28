@@ -241,7 +241,7 @@ function planeBase(env = process.env, home = homedir()) {
   if (fromConfig) return fromConfig.replace(/\/+$/, "");
   return DEFAULT_PLANE_BASE;
 }
-function planeWorkspace(provider, env, home) {
+function planeWorkspace(provider, env = process.env, home = homedir()) {
   const fromManifest = provider.workspace?.trim();
   if (fromManifest) return fromManifest;
   const config = readTemplateConfig(env, home);

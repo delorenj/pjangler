@@ -1,16 +1,14 @@
 ---
-name: project-jangler
+name: pjangler
 description: |
-  Develop pjangler itself: author Commands (atomic file/dir operations), Recipes (composed subsystem bootstrappers), and register them in the CLI. Covers the Command/Recipe architecture, project registry implementation, CommonProject copier implementation, and pjangler dist/build/regression workflows. Use when creating a pjangler Command or Recipe, registering a recipe, adding subsystem bootstrapping, changing templates/commonproject or templates/hermes-agent, debugging pjangler tests, or changing the CLI/MCP server. Triggers: pjangler command, pjangler recipe, add subsystem, bootstrap, project scaffolding, CommonProject template, hermes-agent template, pjangler CLI, pjangler MCP. Do NOT use for: USING pjangler to create a 33god project (→ 33god-projects); generic agent-config fan-out engine mechanics (→ agent-config-fanout); versioning many files in parity (→ mise-versioning); event schema naming (→ bloodbank-integration).
-pipeline-status:
-  - new
+  Develop pjangler itself: author Commands (atomic file/dir operations), Recipes (composed subsystem bootstrappers), and register them in the CLI. Covers the Command/Recipe architecture, project registry implementation, CommonProject copier implementation, and pjangler dist/build/regression workflows. Use when creating a pjangler Command or Recipe, registering a recipe, adding subsystem bootstrapping, changing templates/commonproject or templates/hermes-agent, debugging pjangler tests, or changing the CLI/MCP server. Triggers: pjangler command, pjangler recipe, add subsystem, bootstrap, project scaffolding, CommonProject template, hermes-agent template, pjangler CLI, pjangler MCP. Do NOT use for: USING pjangler to create a new project (→ projects); generic agent-config fan-out engine mechanics (→ agent-config-fanout); versioning many files in parity (→ mise-versioning); event schema naming (→ bloodbank-integration).
 ---
 
 # Pjangler Development
 
 This skill covers **developing pjangler** — authoring Commands (atomic file/dir operations) and Recipes (composed subsystem bootstrappers) and registering them in the CLI.
 
-For *using* pjangler to create a 33god project — bootstrapping CommonProject, provisioning a Hermes PM or Ticket Sentinel, the `.project.json` source of truth, mise/bmad/hindsight/bloodbank wiring, and adopting the project-scoped per-dev agent-hooks layer — use the **`33god-projects`** skill instead.
+For _using_ pjangler to create a 33god project — bootstrapping CommonProject, provisioning a Hermes PM or Ticket Sentinel, the `.project.json` source of truth, mise/bmad/hindsight/bloodbank wiring, and adopting the project-scoped per-dev agent-hooks layer — use the **`33god-projects`** skill instead.
 
 For the generic SSOT config fan-out engine (master→multi-dialect propagation, lock files, generated-config drift) that pjangler recipes may consume, use the **`agent-config-fanout`** skill.
 
@@ -44,7 +42,7 @@ export class Add<Name> extends Command {
       return {
         success: false,
         message: "⚠️  <file> already exists",
-        filePath
+        filePath,
       };
     }
 
@@ -53,7 +51,7 @@ export class Add<Name> extends Command {
     return {
       success: true,
       message: "✅ Created <file>",
-      filePath
+      filePath,
     };
   }
 }
@@ -114,11 +112,11 @@ Full interface: [references/recipe-interface.md](references/recipe-interface.md)
 
 ## File Naming Conventions
 
-| Type | Pattern | Example |
-|---|---|---|
-| Command | `Add<Target>.ts` | `AddDockerfile.ts` |
-| Recipe | `<Subsystem>Recipe.ts` | `DockerRecipe.ts` |
-| Multi-command file | `<Domain>Commands.ts` | `NodeCommands.ts` |
+| Type               | Pattern                | Example            |
+| ------------------ | ---------------------- | ------------------ |
+| Command            | `Add<Target>.ts`       | `AddDockerfile.ts` |
+| Recipe             | `<Subsystem>Recipe.ts` | `DockerRecipe.ts`  |
+| Multi-command file | `<Domain>Commands.ts`  | `NodeCommands.ts`  |
 
 ## Testing Commands
 

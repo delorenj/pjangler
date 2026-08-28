@@ -28,6 +28,16 @@ import {
   projectRegistryPath,
 } from "./project/index";
 import { resolveBoardUrl } from "./project/boardUrl";
+import {
+  BoardError,
+  fetchModules,
+  fetchRecentTickets,
+  fetchStartedTickets,
+  resolveBoardContext,
+  resolveProject,
+  resolveProvider,
+} from "./project/boardQuery";
+import { formatModuleList, formatTicketTable } from "./project/boardRender";
 import { openUrl } from "./project/openUrl";
 import { describeProject, formatProjectDescription } from "./describe/index";
 import { computeRepoActivityBatch } from "./describe/activity";
@@ -440,10 +450,37 @@ program
   });
 
 // ============================================================================
-// BOARD (open this project's ticket board or one work item)
+// BOARD (open this project's ticket board, or read from it)
+//
+// `board` keeps its original behaviour — an optional work-item ref, opened in
+// a browser — and grows read subcommands underneath. Commander dispatches a
+// matching subcommand name before it reaches the parent action handler, so
+// `board provider` reads the board while `board 71` still opens PJAN-71.
+//
+// None of the subcommands take a project: they all walk up from the working
+// directory to the nearest `.project.json`. The board you can read is the one
+// you are standing in.
 // ============================================================================
 
-program
+/** Print a board failure the way it was written, and stop. */
+function boardFailure(error: unknown): never {
+  const message = error instanceof BoardError || error instanceof Error ? error.message : String(error);
+  console.error(`${xmark} ${message}`);
+  process.exit(1);
+}
+
+/** `board recent [count]` — reject junk rather than silently defaulting. */
+function parseTicketCount(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    console.error(`${xmark} count must be a positive integer, got "${raw}"`);
+    process.exit(1);
+  }
+  return value;
+}
+
+const boardCmd = program
   .command("board")
   .argument("[ref]", "Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board")
   .description("Open this project's ticket board — or one work item — in a browser")
@@ -464,6 +501,97 @@ program
     // thing you actually wanted.
     console.log(`  ${cyan(glyph.pointer)} ${outcome.display}`);
     if (outcome.reason) console.log(`  ${dim(outcome.reason)}`);
+  });
+
+boardCmd
+  .command("provider")
+  .description("Print this project's ticket provider (plane|trello|linear)")
+  .action(() => {
+    try {
+      console.log(resolveProvider(resolveProject(process.cwd())));
+    } catch (error) {
+      boardFailure(error);
+    }
+  });
+
+boardCmd
+  .command("slug")
+  .description("Print this project's slug")
+  .action(() => {
+    try {
+      console.log(resolveProject(process.cwd()).slug);
+    } catch (error) {
+      boardFailure(error);
+    }
+  });
+
+boardCmd
+  .command("status")
+  .description("List work items in a started state, most recently added or updated first")
+  .option("--json", "Emit the work items as JSON")
+  .option("--limit <count>", "Show at most this many work items")
+  .action(async (options: { json?: boolean; limit?: string }) => {
+    try {
+      const context = resolveBoardContext(process.cwd());
+      const limit = options.limit === undefined ? undefined : parseTicketCount(options.limit, 0);
+      const tickets = await fetchStartedTickets(context, limit);
+      if (options.json) {
+        console.log(JSON.stringify(tickets, null, 2));
+        return;
+      }
+      if (!tickets.length) {
+        console.log(`  ${dim(`Nothing started on ${context.slug}.`)}`);
+        return;
+      }
+      for (const line of formatTicketTable(tickets)) console.log(line);
+    } catch (error) {
+      boardFailure(error);
+    }
+  });
+
+boardCmd
+  .command("recent")
+  .argument("[count]", "How many work items to show", "5")
+  .description("List the most recently added or updated work items in any state")
+  .option("--json", "Emit the work items as JSON")
+  .action(async (count: string | undefined, options: { json?: boolean }) => {
+    try {
+      const context = resolveBoardContext(process.cwd());
+      const tickets = await fetchRecentTickets(context, parseTicketCount(count, 5));
+      if (options.json) {
+        console.log(JSON.stringify(tickets, null, 2));
+        return;
+      }
+      if (!tickets.length) {
+        console.log(`  ${dim(`No work items on ${context.slug}.`)}`);
+        return;
+      }
+      for (const line of formatTicketTable(tickets)) console.log(line);
+    } catch (error) {
+      boardFailure(error);
+    }
+  });
+
+boardCmd
+  .command("modules")
+  .description("List this project's modules")
+  .option("--json", "Emit the modules as JSON")
+  .action(async (options: { json?: boolean }) => {
+    try {
+      const context = resolveBoardContext(process.cwd());
+      const modules = await fetchModules(context);
+      if (options.json) {
+        console.log(JSON.stringify(modules, null, 2));
+        return;
+      }
+      if (!modules.length) {
+        console.log(`  ${dim(`No modules on ${context.slug}.`)}`);
+        return;
+      }
+      for (const line of formatModuleList(modules)) console.log(line);
+    } catch (error) {
+      boardFailure(error);
+    }
   });
 
 // ============================================================================

@@ -108,7 +108,15 @@ export function planeBase(env: NodeJS.ProcessEnv = process.env, home = homedir()
   return DEFAULT_PLANE_BASE;
 }
 
-function planeWorkspace(provider: TicketProviderFacts, env: NodeJS.ProcessEnv, home: string): string | undefined {
+/**
+ * Workspace slug for a board binding: manifest, then generated template
+ * config, then the fleet default.
+ *
+ * Exported for `boardQuery.ts`, which needs the identical chain to build API
+ * URLs. A second copy of this fallback order is exactly how the CLI and the PM
+ * agent would end up querying two different workspaces.
+ */
+export function planeWorkspace(provider: TicketProviderFacts, env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string | undefined {
   const fromManifest = provider.workspace?.trim();
   if (fromManifest) return fromManifest;
   const config = readTemplateConfig(env, home);

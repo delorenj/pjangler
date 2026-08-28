@@ -1,0 +1,43 @@
+{
+  "checks": {
+    "lint_passed": false,
+    "mutation_check_passed": true,
+    "tests_passed": false,
+    "type_check_passed": null
+  },
+  "diff_file": "_bmad-output/implementation-artifacts/diffs/PJAN-86.diff",
+  "evidence_file": "/tmp/pjan86-ssbnk-first-run.tXHBPLX7",
+  "findings": [],
+  "git": {
+    "base_sha": "6de67c35f0edeafaaa1a413402177890693854da",
+    "branch": "test/PJAN-86-ssbnk-hermes-deploy",
+    "head_sha": "6de67c35f0edeafaaa1a413402177890693854da"
+  },
+  "heartbeat": {
+    "last_seen_at": "2026-08-27T15:27:10.984634+00:00",
+    "started_at": "2026-08-27T15:12:16.109513+00:00",
+    "ttl_seconds": 300
+  },
+  "issue": "PJAN-86",
+  "meta": {},
+  "repo_slug": "",
+  "retries": {
+    "attempt": 1,
+    "backoff_seconds": 30,
+    "max_attempts": 3,
+    "policy": "fixed_backoff"
+  },
+  "schema_version": "1.0",
+  "status": "DONE_WITH_CONCERNS",
+  "summary": "First dry-run and official live Hermes PM deployment captured. Live command exited 0, but post-run audit exited 1: gateway restart loop from missing Telegram credential, missing mise PM launcher path, and noncanonical board_url; Bloodbank and reconcile remain disabled. Pre-existing ssbnk WIP and unrelated fleet state were preserved.",
+  "test_log": "",
+  "worker": {
+    "agent_id": "deploy_runner",
+    "agent_type": "",
+    "host": "big-chungus",
+    "model": "",
+    "pid": 3461960,
+    "provider": "",
+    "session_id": ""
+  }
+}

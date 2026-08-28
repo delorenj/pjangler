@@ -219,8 +219,8 @@ var init_types = __esm({
 });
 
 // src/utils/tree-diff.ts
-import { createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync4, readlinkSync as readlinkSync2 } from "node:fs";
+import { createHash as createHash3 } from "node:crypto";
+import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
 import { join as join6, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
   if (!existsSync4(current)) return snapshot;
@@ -230,10 +230,10 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
   if (stat.isSymbolicLink()) {
     snapshot.set(rel, `link:${readlinkSync2(current)}`);
   } else if (stat.isFile()) {
-    snapshot.set(rel, `file:${createHash4("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
+    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
-    for (const name of readdirSync4(current)) snapshotTree(root, join6(current, name), snapshot);
+    for (const name of readdirSync3(current)) snapshotTree(root, join6(current, name), snapshot);
   } else {
     snapshot.set(rel, `other:${stat.mode}`);
   }
@@ -249,14 +249,14 @@ var init_tree_diff = __esm({
 });
 
 // src/lifecycle/preflight.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import {
   accessSync,
-  constants as constants3,
+  constants as constants2,
   existsSync as existsSync5,
   lstatSync as lstatSync5,
   readFileSync as readFileSync6,
-  readdirSync as readdirSync5,
+  readdirSync as readdirSync4,
   realpathSync as realpathSync3,
   statSync
 } from "node:fs";
@@ -267,7 +267,7 @@ function containedBy(parent, candidate) {
   return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
 }
 function sha2562(path) {
-  return createHash5("sha256").update(readFileSync6(path)).digest("base64url");
+  return createHash4("sha256").update(readFileSync6(path)).digest("base64url");
 }
 function fingerprint(path) {
   const absolute = resolve4(path);
@@ -707,7 +707,7 @@ var init_RegistryStore = __esm({
 // src/project/index.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
-import { chmodSync as chmodSync3, closeSync as closeSync3, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync3, openSync as openSync3, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, openSync as openSync2, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir } from "node:os";
 import { basename as basename6, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -812,11 +812,11 @@ function mergeYamlMapping(document, path, desired, ownedKeys = []) {
 }
 function fsyncDirectory(path) {
   try {
-    const fd = openSync3(path, "r");
+    const fd = openSync2(path, "r");
     try {
       fsyncSync(fd);
     } finally {
-      closeSync3(fd);
+      closeSync2(fd);
     }
   } catch {
   }
@@ -851,22 +851,22 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
   let fd;
   try {
-    fd = openSync3(temp, "wx", mode);
+    fd = openSync2(temp, "wx", mode);
     writeFileSync4(fd, text3, "utf8");
     fchmodSync(fd, mode);
     fsyncSync(fd);
-    closeSync3(fd);
+    closeSync2(fd);
     fd = void 0;
     renameSync3(temp, path);
-    chmodSync3(path, mode);
+    chmodSync2(path, mode);
     fsyncDirectory(dirname5(path));
   } catch (error) {
     if (fd !== void 0) try {
-      closeSync3(fd);
+      closeSync2(fd);
     } catch {
     }
     try {
-      unlinkSync3(temp);
+      unlinkSync2(temp);
     } catch {
     }
     throw error;
@@ -1114,7 +1114,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text3) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text3);
-  const staging = mkdtempSync3(join8(tmpdir(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join8(tmpdir(), "pjangler-tp-"));
   try {
     const providersDir = join8(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
@@ -1680,8 +1680,8 @@ function formatProjectList(registry, activityByPath = /* @__PURE__ */ new Map())
     const slug = bold(project.slug.padEnd(slugWidth));
     const identifier = cyan(String(project.ticket_provider.identifier ?? "").padEnd(idWidth));
     const padded = relativeOf(project).padEnd(ageWidth);
-    const age = activity?.active ? green(padded) : activity?.updatedUnix ? yellow(padded) : dim(padded);
-    lines.push(`  ${slug}  ${identifier}  ${age}  ${dim(project.repo_path)}`);
+    const age2 = activity?.active ? green(padded) : activity?.updatedUnix ? yellow(padded) : dim(padded);
+    lines.push(`  ${slug}  ${identifier}  ${age2}  ${dim(project.repo_path)}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -1853,7 +1853,7 @@ var init_project = __esm({
 // src/notebook/config.ts
 import { randomUUID } from "node:crypto";
 import { isIP as isIP2 } from "node:net";
-import { closeSync as closeSync4, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync4, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
+import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync3, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname7, resolve as resolve7 } from "node:path";
 function isRecord2(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -2117,21 +2117,21 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
       mode = current2.mode & 511;
     }
     const temp = resolve7(dirname7(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
-    const fd = openSync4(temp, "wx", mode);
+    const fd = openSync3(temp, "wx", mode);
     try {
       writeFileSync8(fd, manifestText, "utf8");
       fchmodSync2(fd, mode);
       fsyncSync2(fd);
     } finally {
-      closeSync4(fd);
+      closeSync3(fd);
     }
     renameSync4(temp, manifestPath);
     try {
-      const directory = openSync4(dirname7(manifestPath), "r");
+      const directory = openSync3(dirname7(manifestPath), "r");
       try {
         fsyncSync2(directory);
       } finally {
-        closeSync4(directory);
+        closeSync3(directory);
       }
     } catch {
     }
@@ -2173,7 +2173,7 @@ var init_config = __esm({
 });
 
 // src/notebook/notes.ts
-import { createHash as createHash6, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
 function canonicalJson(value) {
   if (value === void 0 || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") throw new NotebookError("INVALID_INPUT", "Canonical JSON value is not JSON-compatible");
   if (value === null || typeof value !== "object") {
@@ -2186,7 +2186,7 @@ function canonicalJson(value) {
   return `{${Object.keys(record).filter((key) => record[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 function sha256Hex(value) {
-  return createHash6("sha256").update(value).digest("hex");
+  return createHash5("sha256").update(value).digest("hex");
 }
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -2728,21 +2728,21 @@ var init_remote_mutation_schema = __esm({
 });
 
 // src/notebook/state.ts
-import { createHash as createHash7, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
 import {
-  closeSync as closeSync5,
-  constants as constants4,
+  closeSync as closeSync4,
+  constants as constants3,
   existsSync as existsSync15,
   fchmodSync as fchmodSync3,
-  fstatSync as fstatSync3,
+  fstatSync as fstatSync2,
   fsyncSync as fsyncSync3,
   lstatSync as lstatSync9,
   mkdirSync as mkdirSync6,
-  openSync as openSync5,
+  openSync as openSync4,
   readSync,
-  readdirSync as readdirSync8,
+  readdirSync as readdirSync7,
   renameSync as renameSync5,
-  unlinkSync as unlinkSync5,
+  unlinkSync as unlinkSync4,
   writeFileSync as writeFileSync9
 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
@@ -2753,7 +2753,7 @@ function notebookStateRoot(env2 = process.env) {
 }
 function deriveSessionKey(projectSlug, client, clientSessionId) {
   if (!projectSlug || !client || !clientSessionId) throw new NotebookError("INVALID_INPUT", "project slug, client, and client session id are required");
-  return createHash7("sha256").update(`pjangler-session-v1\0${projectSlug}\0${client}\0${clientSessionId}`, "utf8").digest("hex");
+  return createHash6("sha256").update(`pjangler-session-v1\0${projectSlug}\0${client}\0${clientSessionId}`, "utf8").digest("hex");
 }
 function deriveReceiptId(sessionKey) {
   assertDigest(sessionKey, "session key");
@@ -2780,7 +2780,7 @@ function openPinnedDirectory(path, root, create) {
   assertContained(absoluteRoot, absolute);
   if (!existsSync15("/proc/self/fd")) throw new NotebookError("INTERNAL_ERROR", "Descriptor-pinned Notebook state requires procfs");
   const parsed = parse(absolute);
-  let fd = openSync5(parsed.root, DIRECTORY_OPEN_FLAGS);
+  let fd = openSync4(parsed.root, DIRECTORY_OPEN_FLAGS);
   let cursor = parsed.root;
   try {
     for (const part of absolute.slice(parsed.root.length).split(sep3).filter(Boolean)) {
@@ -2788,7 +2788,7 @@ function openPinnedDirectory(path, root, create) {
       cursor = join17(cursor, part);
       let childFd;
       try {
-        childFd = openSync5(child, DIRECTORY_OPEN_FLAGS);
+        childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
       } catch (error) {
         if (!create || error.code !== "ENOENT") throw error;
         try {
@@ -2796,17 +2796,17 @@ function openPinnedDirectory(path, root, create) {
         } catch (mkdirError) {
           if (mkdirError.code !== "EEXIST") throw mkdirError;
         }
-        childFd = openSync5(child, DIRECTORY_OPEN_FLAGS);
+        childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
       }
-      closeSync5(fd);
+      closeSync4(fd);
       fd = childFd;
-      const stat = fstatSync3(fd);
+      const stat = fstatSync2(fd);
       if (!stat.isDirectory()) throw new NotebookError("INTERNAL_ERROR", "Notebook state path component is not a directory");
       if (cursor === absoluteRoot || relative8(absoluteRoot, cursor).startsWith("..") === false) assertOwned(stat);
     }
     return fd;
   } catch (error) {
-    closeSync5(fd);
+    closeSync4(fd);
     if (error.code === "ELOOP" || error.code === "ENOTDIR") {
       throw new NotebookError("INTERNAL_ERROR", "Notebook state path contains a symlink component");
     }
@@ -2827,13 +2827,13 @@ function ensureDirectory(path, root) {
   assertContained(absoluteRoot, absolute);
   const fd = openPinnedDirectory(absolute, absoluteRoot, true);
   try {
-    const stat = fstatSync3(fd);
+    const stat = fstatSync2(fd);
     if (!stat.isDirectory()) throw new NotebookError("INTERNAL_ERROR", "Notebook state directory is not a real directory");
     assertOwned(stat);
     fchmodSync3(fd, 448);
     fsyncSync3(fd);
   } finally {
-    closeSync5(fd);
+    closeSync4(fd);
   }
 }
 function notebookStatePaths(root, projectSlug) {
@@ -2869,15 +2869,15 @@ function fsyncDirectory2(path) {
     fsyncSync3(fd);
   } catch {
   } finally {
-    if (fd !== void 0) closeSync5(fd);
+    if (fd !== void 0) closeSync4(fd);
   }
 }
 function readStateDirectory(path, root) {
   const fd = openPinnedDirectory(path, root, false);
   try {
-    return readdirSync8(`/proc/self/fd/${fd}`, { withFileTypes: true });
+    return readdirSync7(`/proc/self/fd/${fd}`, { withFileTypes: true });
   } finally {
-    closeSync5(fd);
+    closeSync4(fd);
   }
 }
 function readNotebookStateDirectory(path, root) {
@@ -2891,22 +2891,22 @@ function unlinkStateFile(path, root, allowMissing = false) {
   let fileFd;
   try {
     try {
-      fileFd = openSync5(target, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+      fileFd = openSync4(target, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
     } catch (error) {
       if (allowMissing && error.code === "ENOENT") return false;
       throw error;
     }
-    const stat = fstatSync3(fileFd);
+    const stat = fstatSync2(fileFd);
     if (!stat.isFile() || (stat.mode & 511) !== 384) {
       throw new NotebookError("CONFLICT", "Refusing to remove a suspect Notebook state entry; run pj notebook audit --json");
     }
     assertOwned(stat);
-    unlinkSync5(target);
+    unlinkSync4(target);
     fsyncSync3(parentFd);
     return true;
   } finally {
-    if (fileFd !== void 0) closeSync5(fileFd);
-    closeSync5(parentFd);
+    if (fileFd !== void 0) closeSync4(fileFd);
+    closeSync4(parentFd);
   }
 }
 function renameStateFile(source, target, root) {
@@ -2916,8 +2916,8 @@ function renameStateFile(source, target, root) {
   const targetPath = pinnedLeaf(parentFd, target);
   let sourceFd;
   try {
-    sourceFd = openSync5(sourcePath, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
-    const stat = fstatSync3(sourceFd);
+    sourceFd = openSync4(sourcePath, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+    const stat = fstatSync2(sourceFd);
     if (!stat.isFile() || (stat.mode & 511) !== 384) throw new NotebookError("CONFLICT", "Notebook state rename source has an integrity finding");
     assertOwned(stat);
     try {
@@ -2929,8 +2929,8 @@ function renameStateFile(source, target, root) {
     renameSync5(sourcePath, targetPath);
     fsyncSync3(parentFd);
   } finally {
-    if (sourceFd !== void 0) closeSync5(sourceFd);
-    closeSync5(parentFd);
+    if (sourceFd !== void 0) closeSync4(sourceFd);
+    closeSync4(parentFd);
   }
 }
 function atomicWriteJson(path, value, root, afterParentPinned) {
@@ -2945,25 +2945,25 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
   try {
     afterParentPinned?.();
     try {
-      const existingFd = openSync5(target, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+      const existingFd = openSync4(target, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
       try {
-        const existing = fstatSync3(existingFd);
+        const existing = fstatSync2(existingFd);
         if (!existing.isFile()) throw new NotebookError("INTERNAL_ERROR", "Refusing to replace a non-regular Notebook state file");
         assertOwned(existing);
         if ((existing.mode & 511) !== 384) throw new NotebookError("CONFLICT", "Refusing to replace a Notebook state file with unsafe permissions");
         existingIdentity = { dev: existing.dev, ino: existing.ino };
       } finally {
-        closeSync5(existingFd);
+        closeSync4(existingFd);
       }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    const fd = openSync5(temp, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | (constants4.O_NOFOLLOW ?? 0), 384);
+    const fd = openSync4(temp, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | (constants3.O_NOFOLLOW ?? 0), 384);
     try {
       writeFileSync9(fd, text3, "utf8");
       fsyncSync3(fd);
     } finally {
-      closeSync5(fd);
+      closeSync4(fd);
     }
     try {
       const current = lstatSync9(target);
@@ -2977,12 +2977,12 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
     fsyncSync3(parentFd);
   } catch (error) {
     try {
-      unlinkSync5(temp);
+      unlinkSync4(temp);
     } catch {
     }
     throw error;
   } finally {
-    closeSync5(parentFd);
+    closeSync4(parentFd);
   }
   return Buffer.byteLength(text3, "utf8");
 }
@@ -2992,9 +2992,9 @@ function exclusiveWrite(path, text3, root) {
   const target = pinnedLeaf(parentFd, path);
   let fd;
   try {
-    fd = openSync5(target, constants4.O_WRONLY | constants4.O_CREAT | constants4.O_EXCL | (constants4.O_NOFOLLOW ?? 0), 384);
+    fd = openSync4(target, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | (constants3.O_NOFOLLOW ?? 0), 384);
   } catch (error) {
-    closeSync5(parentFd);
+    closeSync4(parentFd);
     if (error.code === "EEXIST") return false;
     throw error;
   }
@@ -3002,12 +3002,12 @@ function exclusiveWrite(path, text3, root) {
     writeFileSync9(fd, text3, "utf8");
     fsyncSync3(fd);
   } finally {
-    closeSync5(fd);
+    closeSync4(fd);
   }
   try {
     fsyncSync3(parentFd);
   } finally {
-    closeSync5(parentFd);
+    closeSync4(parentFd);
   }
   return true;
 }
@@ -3151,13 +3151,13 @@ function safeReadJson(path, maxBytes) {
   }
   let fd;
   try {
-    fd = openSync5(pinnedLeaf(parentFd, path), constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+    fd = openSync4(pinnedLeaf(parentFd, path), constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
   } catch (error) {
-    closeSync5(parentFd);
+    closeSync4(parentFd);
     return { reason: error.code === "ELOOP" ? "non-regular" : "unreadable", bytes: 0 };
   }
   try {
-    const stat = fstatSync3(fd);
+    const stat = fstatSync2(fd);
     if (!stat.isFile()) return { reason: "non-regular", bytes: 0 };
     if ((stat.mode & 511) !== 384) return { reason: "unsafe-permissions", bytes: stat.size };
     try {
@@ -3177,14 +3177,14 @@ function safeReadJson(path, maxBytes) {
       if (total > maxBytes) return { reason: "oversize", bytes: total };
       chunks.push(chunk.subarray(0, count));
     }
-    const after = fstatSync3(fd);
+    const after = fstatSync2(fd);
     if (after.size !== stat.size || total !== stat.size) return { reason: "unreadable", bytes: total };
     return { value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total))), bytes: total };
   } catch (error) {
     return { reason: error instanceof SyntaxError || error instanceof TypeError ? "invalid-json" : "unreadable", bytes: 0 };
   } finally {
-    closeSync5(fd);
-    closeSync5(parentFd);
+    closeSync4(fd);
+    closeSync4(parentFd);
   }
 }
 function safeEntryId(kind, name) {
@@ -3975,7 +3975,7 @@ var init_state = __esm({
       "REMOTE_PROTOCOL_ERROR",
       "INTERNAL_ERROR"
     ]);
-    DIRECTORY_OPEN_FLAGS = constants4.O_RDONLY | (constants4.O_DIRECTORY ?? 0) | (constants4.O_NOFOLLOW ?? 0);
+    DIRECTORY_OPEN_FLAGS = constants3.O_RDONLY | (constants3.O_DIRECTORY ?? 0) | (constants3.O_NOFOLLOW ?? 0);
   }
 });
 
@@ -4243,7 +4243,7 @@ var init_open_notebook_client = __esm({
 
 // src/notebook/git-evidence.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
-import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync4, lstatSync as lstatSync10, openSync as openSync6, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
+import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync10, openSync as openSync5, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
 import { extname, join as join19, relative as relative9, resolve as resolve9, sep as sep4 } from "node:path";
 function git(repo, args, maxBuffer = 4 * 1024 * 1024, timeout = 5e3) {
   const result2 = spawnSync9("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
@@ -4336,12 +4336,12 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
   if (!safe || hasSymlinkComponent(safe.root, safe.candidate)) return { status: "excluded", reason: "unsafe-path" };
   let fd;
   try {
-    fd = openSync6(safe.candidate, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
+    fd = openSync5(safe.candidate, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   } catch {
     return { status: "excluded", reason: "not-regular" };
   }
   try {
-    const before = fstatSync4(fd);
+    const before = fstatSync3(fd);
     if (!before.isFile()) return { status: "excluded", reason: "not-regular" };
     if (before.size > maxBytes) return { status: "excluded", reason: "oversize" };
     let physical;
@@ -4362,7 +4362,7 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
       if (total > maxBytes) return { status: "excluded", reason: "oversize" };
       chunks.push(chunk.subarray(0, count));
     }
-    const after = fstatSync4(fd);
+    const after = fstatSync3(fd);
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || total !== before.size) return { status: "excluded", reason: "changed-during-read" };
     const bytes = Buffer.concat(chunks, total);
     if (bytes.includes(0)) return { status: "excluded", reason: "binary" };
@@ -4375,7 +4375,7 @@ function readSafeEvidenceText(repoPath, relativePath2, maxBytes) {
     if (looksSecret(relativePath2, content)) return { status: "excluded", reason: "secret-like" };
     return { status: "present", content, content_sha256: sha256Hex(bytes), bytes: total };
   } finally {
-    closeSync6(fd);
+    closeSync5(fd);
   }
 }
 function looksGenerated(path) {
@@ -5254,9 +5254,9 @@ var init_capture = __esm({
 });
 
 // src/index.ts
-import { spawnSync as spawnSync15 } from "node:child_process";
-import { existsSync as existsSync25, readFileSync as readFileSync23, statSync as statSync6 } from "node:fs";
-import { basename as basename9, join as join31, resolve as resolve18 } from "node:path";
+import { spawnSync as spawnSync16 } from "node:child_process";
+import { existsSync as existsSync25, readFileSync as readFileSync24, statSync as statSync6 } from "node:fs";
+import { basename as basename10, join as join32, resolve as resolve18 } from "node:path";
 import { Command as Command3, CommanderError } from "commander";
 
 // src/commands/hermes/types.ts
@@ -5272,26 +5272,16 @@ function deriveProfileName(repo, role) {
 // src/commands/hermes/EnsureTemplateConfig.ts
 import { homedir, platform } from "node:os";
 import {
-  chmodSync,
-  closeSync,
-  constants,
   existsSync as existsSync2,
-  fstatSync,
-  linkSync,
   lstatSync,
   mkdirSync as mkdirSync2,
-  mkdtempSync,
-  openSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
-  unlinkSync,
   writeFileSync as writeFileSync2
 } from "node:fs";
-import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { basename, join as join2, dirname as dirname2 } from "node:path";
 
 // src/commands/Command.ts
@@ -5627,7 +5617,7 @@ function isolatedPythonEnvironment() {
     Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("PYTHON"))
   );
 }
-function assertValidTomlBytes(source, label) {
+function validateTomlBytes(source, label) {
   const validation = spawnSync("python3", ["-I", "-S", "-c", TOMLLIB_VALIDATE], {
     input: source,
     encoding: "utf8",
@@ -5636,28 +5626,16 @@ function assertValidTomlBytes(source, label) {
     timeout: TOMLLIB_VALIDATION_TIMEOUT_MS,
     killSignal: "SIGKILL"
   });
-  if (validation.error) {
-    const code = validation.error.code;
-    if (code === "ETIMEDOUT") {
-      throw new Error(
-        `${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms`
-      );
-    }
-    const missing = code === "ENOENT";
-    throw new Error(
-      missing ? `${label} cannot be validated: python3 with tomllib is required but was not found` : `${label} validation failed to start: ${validation.error.message}`
-    );
-  }
-  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) {
-    throw new Error(`${label} cannot be validated: python3 with tomllib is required (${validation.stderr.replace(/^TOMLLIB_UNAVAILABLE:/, "")})`);
-  }
+  if (validation.error) return "unavailable";
+  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) return "unavailable";
   if (validation.status !== 0) {
     const detail = validation.stderr.replace(/^TOML_INVALID:/, "").trim() || `python3 exited ${validation.status ?? "without a status"}`;
     throw new Error(`${label} is not valid TOML 1.0 for Python tomllib: ${detail}`);
   }
+  return "validated";
 }
 function assertValidToml(source, label) {
-  assertValidTomlBytes(Buffer.from(source, "utf8"), label);
+  validateTomlBytes(Buffer.from(source, "utf8"), label);
 }
 function mergeHostConfig(existing) {
   assertValidToml(existing, "Existing Hermes template config");
@@ -5713,1271 +5691,19 @@ function inspectConfigPath(path) {
   }
   return stats;
 }
-function hashBytes(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-function readRegularConfigSnapshot(path, expected) {
-  const before = inspectConfigPath(path);
-  if (!before) throw new Error(`Hermes template config disappeared before it could be read: ${path}`);
-  if (expected && (before.dev !== expected.dev || before.ino !== expected.ino)) {
-    throw new Error(`Hermes template config changed concurrently before it could be read: ${path}`);
-  }
-  let descriptor;
+function installConfig(path, next, previous) {
+  const dir = dirname2(path);
+  mkdirSync2(dir, { recursive: true });
+  const tmp = join2(dir, `.${basename(path)}.pjangler-${process.pid}.tmp`);
   try {
-    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error(`Hermes template config changed type or identity while opening: ${path}`);
-    }
-    const bytes = readFileSync(descriptor);
-    const after = fstatSync(descriptor);
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
-      throw new Error(`Hermes template config changed while it was being read: ${path}`);
-    }
-    return {
-      bytes,
-      dev: opened.dev,
-      ino: opened.ino,
-      nlink: opened.nlink,
-      mode: opened.mode & 511,
-      mtimeMs: opened.mtimeMs,
-      hash: hashBytes(bytes)
-    };
-  } finally {
-    if (descriptor !== void 0) closeSync(descriptor);
-  }
-}
-function assertConfigUnchanged(path, previous) {
-  if (!previous) {
-    if (inspectConfigPath(path)) {
-      throw new Error(`Hermes template config appeared concurrently before installation: ${path}`);
-    }
-    return;
-  }
-  const current = readRegularConfigSnapshot(path);
-  assertSnapshotIdentity(current, previous, `Hermes template config changed concurrently at ${path}`);
-  assertLinkCount(current, 1, `Hermes template config at ${path}`);
-}
-var CONFIG_TRANSACTION_PREFIX = ".pjangler-config-txn-";
-var CONFIG_LOCK_NAME = ".pjangler-config.lock";
-var CONFIG_LOCK_WAIT_MS = 1e4;
-var CONFIG_LOCK_READY = "PJANGLER_CONFIG_LOCKED";
-var TRANSACTION_CANDIDATE = "candidate.toml";
-var TRANSACTION_OPERATOR_FILE = "operator-config";
-var TRANSACTION_STATE = "state.json";
-var TRANSACTION_STATE_NEXT = "state-next.json";
-var ATOMIC_RENAME_PYTHON = "/usr/bin/python3";
-var ATOMIC_RENAME_TIMEOUT_MS = 5e3;
-var RENAMEAT2_HELPER = String.raw`
-# PJANGLER_RENAMEAT2_HELPER
-import ctypes
-import os
-import sys
-
-RENAME_NOREPLACE = 1
-RENAME_EXCHANGE = 2
-
-if len(sys.argv) != 4 or sys.argv[1] not in ("exchange", "noreplace"):
-    sys.stderr.write("invalid renameat2 invocation")
-    raise SystemExit(2)
-
-mode, source, target = sys.argv[1:]
-for value in (source, target):
-    parts = value.split("/")
-    if not value or value.startswith("/") or any(part in ("", ".", "..") for part in parts) or "\\x00" in value:
-        sys.stderr.write("unsafe relative renameat2 path")
-        raise SystemExit(2)
-
-libc = ctypes.CDLL(None, use_errno=True)
-renameat2 = getattr(libc, "renameat2", None)
-if renameat2 is None:
-    sys.stderr.write("renameat2 unavailable")
-    raise SystemExit(3)
-renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-renameat2.restype = ctypes.c_int
-flags = RENAME_EXCHANGE if mode == "exchange" else RENAME_NOREPLACE
-result = renameat2(3, os.fsencode(source), 3, os.fsencode(target), flags)
-if result != 0:
-    error = ctypes.get_errno()
-    sys.stderr.write("renameat2 failed: " + os.strerror(error))
-    raise SystemExit(4)
-`;
-function snapshotIdentity(snapshot) {
-  return {
-    dev: snapshot.dev,
-    ino: snapshot.ino,
-    mode: snapshot.mode,
-    mtimeMs: snapshot.mtimeMs,
-    hash: snapshot.hash
-  };
-}
-function sameIdentity(actual, expected) {
-  return actual.dev === expected.dev && actual.ino === expected.ino;
-}
-function assertSnapshotIdentity(actual, expected, label) {
-  if (!sameIdentity(actual, expected) || actual.mode !== expected.mode || actual.mtimeMs !== expected.mtimeMs || actual.hash !== expected.hash) {
-    throw new Error(`${label}: identity, mode, mtime, or bytes differ from the expected snapshot`);
-  }
-}
-function assertLinkCount(actual, expected, label) {
-  if (actual.nlink !== expected) {
-    throw new Error(`${label} has unsafe link count ${actual.nlink}; expected exactly ${expected}`);
-  }
-}
-function openConfigDirectory(path) {
-  const directory = dirname2(path);
-  const before = lstatSync(directory);
-  if (!before.isDirectory() || before.isSymbolicLink()) {
-    throw new Error(`Unsafe Hermes config directory ${directory}: expected a non-symlink directory`);
-  }
-  const descriptor = openSync(
-    directory,
-    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
-  );
-  try {
-    const opened = fstatSync(descriptor);
-    if (!opened.isDirectory() || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error(`Hermes config directory changed identity while opening: ${directory}`);
-    }
-    return { descriptor, path: directory, identity: opened };
+    writeFileSync2(tmp, next, { mode: previous ? previous.mode & 511 : 384 });
+    renameSync(tmp, path);
   } catch (error) {
-    closeSync(descriptor);
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+    }
     throw error;
-  }
-}
-function assertConfigDirectoryPath(directory) {
-  const current = lstatSync(directory.path);
-  if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== directory.identity.dev || current.ino !== directory.identity.ino) {
-    throw new Error(`Hermes config directory changed identity during atomic installation: ${directory.path}`);
-  }
-}
-function trustedAtomicRenamePython() {
-  if (platform() !== "linux") {
-    throw new Error("Atomic Hermes config installation requires Linux renameat2 support");
-  }
-  let resolved;
-  try {
-    resolved = realpathSync(ATOMIC_RENAME_PYTHON);
-  } catch (error) {
-    throw new Error(`Atomic Hermes config installation requires ${ATOMIC_RENAME_PYTHON}`, { cause: error });
-  }
-  const stats = lstatSync(resolved);
-  if (!stats.isFile() || stats.isSymbolicLink() || typeof stats.uid === "number" && stats.uid !== 0 || (stats.mode & 18) !== 0) {
-    throw new Error(`Unsafe atomic rename helper interpreter: ${resolved}`);
-  }
-  return resolved;
-}
-function assertSafeRelativeRenamePath(path) {
-  if (path.length === 0 || path.startsWith("/") || path.includes("\0") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
-    throw new Error(`Unsafe relative path for atomic Hermes config rename: ${JSON.stringify(path)}`);
-  }
-}
-var AtomicRenameOutcomeUnknown = class extends Error {
-  constructor(message, cause) {
-    super(message, cause === void 0 ? void 0 : { cause });
-    this.name = "AtomicRenameOutcomeUnknown";
-  }
-};
-function atomicRenameAt2(configPath, source, target, mode) {
-  assertSafeRelativeRenamePath(source);
-  assertSafeRelativeRenamePath(target);
-  const directory = openConfigDirectory(configPath);
-  try {
-    assertConfigDirectoryPath(directory);
-    let helper;
-    try {
-      helper = spawnSync(
-        trustedAtomicRenamePython(),
-        ["-I", "-S", "-c", RENAMEAT2_HELPER, mode, source, target],
-        {
-          cwd: "/",
-          encoding: "utf8",
-          env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
-          maxBuffer: 64 * 1024,
-          timeout: ATOMIC_RENAME_TIMEOUT_MS,
-          killSignal: "SIGKILL",
-          stdio: ["ignore", "pipe", "pipe", directory.descriptor]
-        }
-      );
-    } catch (error) {
-      throw new Error(`Atomic Hermes config ${mode} helper failed before invocation: ${errorDetail(error)}`, { cause: error });
-    }
-    if (helper.error) {
-      const code = helper.error.code;
-      if (code === "ETIMEDOUT") {
-        throw new AtomicRenameOutcomeUnknown(
-          `Atomic Hermes config ${mode} timed out after ${ATOMIC_RENAME_TIMEOUT_MS}ms; syscall completion is unknown`,
-          helper.error
-        );
-      }
-      throw new Error(`Atomic Hermes config ${mode} helper failed to start: ${helper.error.message}`, { cause: helper.error });
-    }
-    if (helper.status !== 0) {
-      throw new Error(
-        `Atomic Hermes config ${mode} failed: ${String(helper.stderr).trim() || `helper exited ${helper.status ?? "without a status"}`}`
-      );
-    }
-    try {
-      assertConfigDirectoryPath(directory);
-    } catch (error) {
-      throw new AtomicRenameOutcomeUnknown(
-        `Atomic Hermes config ${mode} completed against an inherited directory whose canonical pathname then changed`,
-        error
-      );
-    }
-  } finally {
-    closeSync(directory.descriptor);
-  }
-}
-function errorDetail(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function openConfigLock(path) {
-  const directory = dirname2(path);
-  mkdirSync2(directory, { recursive: true });
-  const lockPath = join2(directory, CONFIG_LOCK_NAME);
-  let existing;
-  try {
-    existing = lstatSync(lockPath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
-    throw new Error(`Unsafe Hermes config lock ${lockPath}: expected a regular non-symlink file`);
-  }
-  let descriptor;
-  try {
-    descriptor = openSync(
-      lockPath,
-      constants.O_CREAT | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
-      384
-    );
-  } catch (error) {
-    throw new Error(`Cannot safely open Hermes config lock ${lockPath}: ${errorDetail(error)}`, { cause: error });
-  }
-  try {
-    const stats = fstatSync(descriptor);
-    if (!stats.isFile() || stats.nlink !== 1 || stats.size !== 0 || (stats.mode & 63) !== 0 || typeof process.getuid === "function" && stats.uid !== process.getuid()) {
-      throw new Error(`Unsafe Hermes config lock ${lockPath}: expected an owned, empty, single-link regular file with private mode`);
-    }
-    return { descriptor, path: lockPath, identity: stats };
-  } catch (error) {
-    closeSync(descriptor);
-    throw error;
-  }
-}
-function assertConfigLockPath(lock) {
-  let current;
-  try {
-    current = lstatSync(lock.path);
-  } catch (error) {
-    throw new Error(`Hermes config lock path disappeared after acquisition: ${lock.path}`, { cause: error });
-  }
-  if (!current.isFile() || current.isSymbolicLink() || current.dev !== lock.identity.dev || current.ino !== lock.identity.ino || current.nlink !== 1 || current.size !== 0 || (current.mode & 63) !== 0 || typeof process.getuid === "function" && current.uid !== process.getuid()) {
-    throw new Error(`Hermes config lock path changed identity or safety properties during acquisition: ${lock.path}`);
-  }
-}
-function stopConfigLockHolder(holder) {
-  if (holder.exitCode !== null || holder.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve19, reject) => {
-    const killTimer = setTimeout(() => holder.kill("SIGKILL"), 2e3);
-    const failureTimer = setTimeout(() => {
-      reject(new Error("Hermes config lock holder did not exit after SIGKILL"));
-    }, 4e3);
-    holder.once("exit", () => {
-      clearTimeout(killTimer);
-      clearTimeout(failureTimer);
-      resolve19();
-    });
-    holder.stdin.end();
-  });
-}
-async function acquireConfigLock(path) {
-  const lock = openConfigLock(path);
-  let holder;
-  try {
-    holder = spawn(
-      "/usr/bin/flock",
-      [
-        "--exclusive",
-        "--wait",
-        String(CONFIG_LOCK_WAIT_MS / 1e3),
-        "/proc/self/fd/3",
-        process.execPath,
-        "-e",
-        `process.stdout.write(${JSON.stringify(`${CONFIG_LOCK_READY}
-`)}); process.stdin.resume();`
-      ],
-      {
-        stdio: ["pipe", "pipe", "pipe", lock.descriptor]
-      }
-    );
-  } catch (error) {
-    closeSync(lock.descriptor);
-    throw new Error(`Failed to start the Hermes config lock holder: ${errorDetail(error)}`, { cause: error });
-  }
-  closeSync(lock.descriptor);
-  let stderr = "";
-  holder.stderr.on("data", (chunk) => {
-    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4096);
-  });
-  holder.stdin.on("error", () => {
-  });
-  await new Promise((resolve19, reject) => {
-    let ready = false;
-    let stdout = "";
-    const timeout = setTimeout(() => {
-      holder.kill("SIGKILL");
-      reject(new Error(`Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock`));
-    }, CONFIG_LOCK_WAIT_MS + 1e3);
-    holder.once("error", (error) => {
-      if (ready) return;
-      clearTimeout(timeout);
-      reject(new Error(`Hermes config lock holder failed to start: ${error.message}`, { cause: error }));
-    });
-    holder.once("exit", (code, signal) => {
-      if (ready) return;
-      clearTimeout(timeout);
-      const detail = stderr.trim();
-      reject(new Error(
-        code === 1 ? `Timed out waiting ${CONFIG_LOCK_WAIT_MS}ms for the Hermes config lock` : `Hermes config lock holder exited before acquisition (code=${code ?? "none"}, signal=${signal ?? "none"})${detail ? `: ${detail}` : ""}`
-      ));
-    });
-    holder.stdout.on("data", (chunk) => {
-      if (ready) return;
-      stdout += chunk.toString("utf8");
-      if (!stdout.includes(`${CONFIG_LOCK_READY}
-`)) return;
-      ready = true;
-      clearTimeout(timeout);
-      resolve19();
-    });
-  });
-  try {
-    assertConfigLockPath(lock);
-  } catch (error) {
-    await stopConfigLockHolder(holder);
-    throw error;
-  }
-  return () => stopConfigLockHolder(holder);
-}
-function writeTransactionMarker(directory, marker) {
-  const nextPath = join2(directory, TRANSACTION_STATE_NEXT);
-  const statePath = join2(directory, TRANSACTION_STATE);
-  writeFileSync2(nextPath, `${JSON.stringify(marker)}
-`, { encoding: "utf8", mode: 384 });
-  renameSync(nextPath, statePath);
-}
-function readTransactionMarker(directory) {
-  const parsed = JSON.parse(readFileSync(join2(directory, TRANSACTION_STATE), "utf8"));
-  const identityValid = (identity2) => Boolean(
-    identity2 && [identity2.dev, identity2.ino, identity2.mode, identity2.mtimeMs].every(Number.isFinite) && typeof identity2.hash === "string" && /^[0-9a-f]{64}$/.test(identity2.hash)
-  );
-  if (parsed.version !== 1 || !Number.isInteger(parsed.ownerPid) || ![
-    "prepared",
-    "install-exchange",
-    "installed",
-    "committed",
-    "rollback-exchange",
-    "rollback-capture",
-    "conflict"
-  ].includes(parsed.phase ?? "") || typeof parsed.hadPrevious !== "boolean" || !identityValid(parsed.candidate) || parsed.hadPrevious && !identityValid(parsed.previous)) {
-    throw new Error("transaction state is missing or invalid");
-  }
-  return parsed;
-}
-function manualRecoveryError(directory, detail, cause) {
-  return new Error(
-    `${detail}; the canonical Hermes config was preserved and protected transaction ${directory} was retained for manual recovery`,
-    cause === void 0 ? void 0 : { cause }
-  );
-}
-var AtomicConfigConflict = class extends Error {
-  canonicalPreserved;
-  constructor(message, canonicalPreserved, cause) {
-    super(message, cause === void 0 ? void 0 : { cause });
-    this.name = "AtomicConfigConflict";
-    this.canonicalPreserved = canonicalPreserved;
-  }
-};
-function markTransactionConflict(directory, marker) {
-  try {
-    writeTransactionMarker(directory, { ...marker, phase: "conflict" });
-    return void 0;
-  } catch (error) {
-    return error;
-  }
-}
-function inspectTransactionFile(path, label) {
-  let stats;
-  try {
-    stats = lstatSync(path);
-  } catch (error) {
-    if (error.code === "ENOENT") return void 0;
-    throw error;
-  }
-  if (!stats.isFile() || stats.isSymbolicLink()) {
-    throw new Error(`${label} must be a regular non-symlink file`);
-  }
-  return stats;
-}
-function recoverInterruptedConfigTransactions(path, allowMutation) {
-  const directory = dirname2(path);
-  if (!existsSync2(directory)) return;
-  const entries = readdirSync(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.name.startsWith(CONFIG_TRANSACTION_PREFIX)) continue;
-    const match = entry.name.match(/^\.pjangler-config-txn-(\d+)-[A-Za-z0-9]+$/);
-    if (!match || !entry.isDirectory() || entry.isSymbolicLink()) {
-      throw new Error(`unsafe or malformed Hermes config transaction artifact: ${entry.name}`);
-    }
-    const transactionDirectory = join2(directory, entry.name);
-    const transactionStats = lstatSync(transactionDirectory);
-    if (typeof process.getuid === "function" && transactionStats.uid !== process.getuid()) {
-      throw new Error(`Hermes config transaction artifact is owned by another user: ${entry.name}`);
-    }
-    if (!allowMutation) {
-      throw new Error(`interrupted Hermes config transaction requires live recovery before dry-run: ${entry.name}`);
-    }
-    const allowed = /* @__PURE__ */ new Set([
-      TRANSACTION_CANDIDATE,
-      TRANSACTION_OPERATOR_FILE,
-      TRANSACTION_STATE,
-      TRANSACTION_STATE_NEXT
-    ]);
-    const unknown = readdirSync(transactionDirectory).filter((name) => !allowed.has(name));
-    if (unknown.length) {
-      throw new Error(`Hermes config transaction contains unexpected entries: ${unknown.join(", ")}`);
-    }
-    const candidatePath = join2(transactionDirectory, TRANSACTION_CANDIDATE);
-    const operatorPath = join2(transactionDirectory, TRANSACTION_OPERATOR_FILE);
-    const candidateRelative = `${entry.name}/${TRANSACTION_CANDIDATE}`;
-    const operatorRelative = `${entry.name}/${TRANSACTION_OPERATOR_FILE}`;
-    const configRelative = basename(path);
-    const candidateStats = inspectTransactionFile(candidatePath, "Transaction candidate");
-    const operatorStats = inspectTransactionFile(operatorPath, "Protected operator config");
-    let marker;
-    let markerError;
-    try {
-      marker = readTransactionMarker(transactionDirectory);
-    } catch (error) {
-      markerError = error;
-    }
-    if (marker?.phase === "conflict") {
-      throw manualRecoveryError(
-        transactionDirectory,
-        "A prior Hermes config transaction recorded a concurrent canonical-path conflict"
-      );
-    }
-    if (marker?.phase === "committed") {
-      try {
-        const installed2 = readRegularConfigSnapshot(path);
-        assertSnapshotIdentity(installed2, marker.candidate, "Committed Hermes config");
-        assertLinkCount(installed2, 1, "Committed Hermes config");
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Committed Hermes config no longer owns the canonical path: ${errorDetail(error)}`,
-          error
-        );
-      }
-      rmSync(transactionDirectory, { recursive: true, force: true });
-      continue;
-    }
-    if (marker?.phase === "rollback-exchange" && operatorStats && marker.previous) {
-      let canonicalAfterRollback;
-      let capturedCandidate;
-      try {
-        canonicalAfterRollback = readRegularConfigSnapshot(path);
-        capturedCandidate = readRegularConfigSnapshot(operatorPath, operatorStats);
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Interrupted rollback exchange cannot be inspected safely: ${errorDetail(error)}`,
-          error
-        );
-      }
-      const exchangeCompleted = (() => {
-        try {
-          assertSnapshotIdentity(canonicalAfterRollback, marker.previous, "Canonical config after interrupted rollback exchange");
-          assertLinkCount(canonicalAfterRollback, 1, "Canonical config after interrupted rollback exchange");
-          assertSnapshotIdentity(capturedCandidate, marker.candidate, "Candidate captured by interrupted rollback exchange");
-          assertLinkCount(capturedCandidate, 1, "Candidate captured by interrupted rollback exchange");
-          return true;
-        } catch {
-          return false;
-        }
-      })();
-      if (exchangeCompleted) {
-        unlinkSync(operatorPath);
-        rmSync(transactionDirectory, { recursive: true, force: true });
-        continue;
-      }
-    }
-    if (operatorStats) {
-      if (!marker || !marker.hadPrevious || !marker.previous) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Protected operator config exists but transaction metadata is torn or incomplete: ${errorDetail(markerError)}`,
-          markerError
-        );
-      }
-      let protectedOriginal;
-      try {
-        protectedOriginal = readRegularConfigSnapshot(operatorPath, operatorStats);
-        assertSnapshotIdentity(protectedOriginal, marker.previous, "Protected operator config");
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Protected operator config cannot be proven unchanged: ${errorDetail(error)}`,
-          error
-        );
-      }
-      let canonical;
-      try {
-        canonical = readRegularConfigSnapshot(path);
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Canonical Hermes config cannot be safely inspected before recovery: ${errorDetail(error)}`,
-          error
-        );
-      }
-      if (candidateStats) {
-        const stagedEntry = readRegularConfigSnapshot(candidatePath, candidateStats);
-        const isCompletedInstallExchange = (() => {
-          if (marker.phase !== "install-exchange") return false;
-          try {
-            assertSnapshotIdentity(canonical, marker.candidate, "Canonical candidate after interrupted install exchange");
-            assertLinkCount(canonical, 1, "Canonical candidate after interrupted install exchange");
-            assertSnapshotIdentity(stagedEntry, marker.previous, "Displaced original after interrupted install exchange");
-            assertSnapshotIdentity(protectedOriginal, marker.previous, "Protected original after interrupted install exchange");
-            if (!sameIdentity(stagedEntry, protectedOriginal)) {
-              throw new Error("displaced and protected originals are different inodes");
-            }
-            assertLinkCount(stagedEntry, 2, "Displaced original after interrupted install exchange");
-            assertLinkCount(protectedOriginal, 2, "Protected original after interrupted install exchange");
-            return true;
-          } catch {
-            return false;
-          }
-        })();
-        if (isCompletedInstallExchange) {
-          let reverseExchanged = false;
-          let displacedCanonical2;
-          try {
-            atomicRenameAt2(path, candidateRelative, configRelative, "exchange");
-            reverseExchanged = true;
-            const restoredCanonical = readRegularConfigSnapshot(path);
-            displacedCanonical2 = readRegularConfigSnapshot(candidatePath);
-            const stillProtected = readRegularConfigSnapshot(operatorPath);
-            assertSnapshotIdentity(restoredCanonical, marker.previous, "Canonical original after interrupted install reversal");
-            assertSnapshotIdentity(stillProtected, marker.previous, "Protected original after interrupted install reversal");
-            if (!sameIdentity(restoredCanonical, stillProtected)) {
-              throw new Error("restored and protected originals are different inodes");
-            }
-            assertLinkCount(restoredCanonical, 2, "Canonical original after interrupted install reversal");
-            assertLinkCount(stillProtected, 2, "Protected original after interrupted install reversal");
-            assertSnapshotIdentity(displacedCanonical2, marker.candidate, "Candidate captured by interrupted install reversal");
-            assertLinkCount(displacedCanonical2, 1, "Candidate captured by interrupted install reversal");
-            unlinkSync(candidatePath);
-            unlinkSync(operatorPath);
-            reverseExchanged = false;
-            const released = readRegularConfigSnapshot(path);
-            assertSnapshotIdentity(released, marker.previous, "Recovered original after interrupted install reversal");
-            assertLinkCount(released, 1, "Recovered original after interrupted install reversal");
-            rmSync(transactionDirectory, { recursive: true, force: true });
-            continue;
-          } catch (error) {
-            if (reverseExchanged) {
-              let reverseError;
-              let reverseVerificationError;
-              try {
-                atomicRenameAt2(path, candidateRelative, configRelative, "exchange");
-                reverseExchanged = false;
-                if (displacedCanonical2) {
-                  const preservedCanonical = readRegularConfigSnapshot(path);
-                  const retainedDisplaced = readRegularConfigSnapshot(candidatePath);
-                  assertSnapshotIdentity(preservedCanonical, displacedCanonical2, "Canonical config after reversed recovery exchange");
-                  assertLinkCount(preservedCanonical, 1, "Canonical config after reversed recovery exchange");
-                  assertSnapshotIdentity(retainedDisplaced, marker.previous, "Displaced original after reversed recovery exchange");
-                }
-              } catch (reverseFailure) {
-                if (reverseExchanged) reverseError = reverseFailure;
-                else reverseVerificationError = reverseFailure;
-              }
-              const detail = `Interrupted install exchange could not be reversed safely: ${errorDetail(error)}${reverseError ? `; restoring the captured canonical entry failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; restored state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`;
-              if (!reverseExchanged && displacedCanonical2 && !reverseVerificationError) {
-                throw manualRecoveryError(transactionDirectory, detail, error);
-              }
-              throw new Error(
-                `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
-                { cause: error }
-              );
-            }
-            throw manualRecoveryError(
-              transactionDirectory,
-              `Interrupted install exchange could not be finalized safely: ${errorDetail(error)}`,
-              error
-            );
-          }
-        }
-        try {
-          assertSnapshotIdentity(stagedEntry, marker.candidate, "Staged transaction candidate");
-          assertLinkCount(stagedEntry, 1, "Staged transaction candidate");
-          if (!sameIdentity(canonical, protectedOriginal)) {
-            throw new Error("canonical path no longer references the protected operator inode");
-          }
-          assertSnapshotIdentity(canonical, marker.previous, "Canonical operator config before recovery cleanup");
-          assertLinkCount(canonical, 2, "Canonical operator config before recovery cleanup");
-          assertLinkCount(protectedOriginal, 2, "Protected operator config before recovery cleanup");
-          unlinkSync(operatorPath);
-          const released = readRegularConfigSnapshot(path);
-          assertSnapshotIdentity(released, marker.previous, "Recovered operator config");
-          assertLinkCount(released, 1, "Recovered operator config");
-        } catch (error) {
-          throw manualRecoveryError(
-            transactionDirectory,
-            `Pre-install Hermes transaction cannot be cleaned safely: ${errorDetail(error)}`,
-            error
-          );
-        }
-        rmSync(transactionDirectory, { recursive: true, force: true });
-        continue;
-      }
-      if (sameIdentity(canonical, protectedOriginal)) {
-        try {
-          assertSnapshotIdentity(canonical, marker.previous, "Previously restored Hermes config");
-          assertLinkCount(canonical, 2, "Previously restored Hermes config");
-          assertLinkCount(protectedOriginal, 2, "Protected operator config after prior restoration");
-          unlinkSync(operatorPath);
-          const released = readRegularConfigSnapshot(path);
-          assertSnapshotIdentity(released, marker.previous, "Recovered Hermes config");
-          assertLinkCount(released, 1, "Recovered Hermes config");
-        } catch (error) {
-          throw manualRecoveryError(
-            transactionDirectory,
-            `Previously restored Hermes config cannot be finalized safely: ${errorDetail(error)}`,
-            error
-          );
-        }
-        rmSync(transactionDirectory, { recursive: true, force: true });
-        continue;
-      }
-      let recoveryExchanged = false;
-      let displacedCanonical;
-      try {
-        assertSnapshotIdentity(canonical, marker.candidate, "Canonical Hermes config before recovery rollback intent");
-        assertLinkCount(canonical, 1, "Canonical Hermes config before recovery rollback intent");
-        assertSnapshotIdentity(protectedOriginal, marker.previous, "Protected operator config before recovery rollback intent");
-        assertLinkCount(protectedOriginal, 1, "Protected operator config before recovery rollback intent");
-        linkSync(operatorPath, candidatePath);
-        const rollbackOriginal = readRegularConfigSnapshot(operatorPath);
-        const rollbackAlias = readRegularConfigSnapshot(candidatePath);
-        if (!sameIdentity(rollbackOriginal, rollbackAlias)) {
-          throw new Error("recovery rollback protection links do not reference the same original inode");
-        }
-        assertLinkCount(rollbackOriginal, 2, "Protected original before recovery rollback exchange");
-        assertLinkCount(rollbackAlias, 2, "Protected rollback alias before recovery rollback exchange");
-        marker = { ...marker, phase: "rollback-exchange" };
-        writeTransactionMarker(transactionDirectory, marker);
-        atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
-        recoveryExchanged = true;
-        const restored = readRegularConfigSnapshot(path);
-        displacedCanonical = readRegularConfigSnapshot(operatorPath);
-        const retainedOriginal = readRegularConfigSnapshot(candidatePath);
-        assertSnapshotIdentity(restored, marker.previous, "Recovered Hermes config");
-        assertSnapshotIdentity(retainedOriginal, marker.previous, "Retained original during recovery rollback");
-        if (!sameIdentity(restored, retainedOriginal)) {
-          throw new Error("recovered and retained originals are different inodes");
-        }
-        assertLinkCount(restored, 2, "Recovered Hermes config");
-        assertLinkCount(retainedOriginal, 2, "Retained original during recovery rollback");
-        assertSnapshotIdentity(displacedCanonical, marker.candidate, "Candidate captured during recovery rollback");
-        assertLinkCount(displacedCanonical, 1, "Candidate captured during recovery rollback");
-        unlinkSync(operatorPath);
-        unlinkSync(candidatePath);
-        recoveryExchanged = false;
-      } catch (error) {
-        if (!recoveryExchanged) {
-          throw manualRecoveryError(
-            transactionDirectory,
-            `Atomic recovery rollback failed before it could be verified: ${errorDetail(error)}`,
-            error
-          );
-        }
-        try {
-          const liveCanonical = readRegularConfigSnapshot(path);
-          assertSnapshotIdentity(liveCanonical, marker.previous, "Canonical original before reversing failed recovery rollback");
-        } catch (concurrentReplacement) {
-          throw manualRecoveryError(
-            transactionDirectory,
-            `Canonical Hermes config changed after recovery rollback exchange and was left in place: ${errorDetail(concurrentReplacement)}`,
-            new AggregateError([error, concurrentReplacement], "Recovery rollback and canonical verification both failed")
-          );
-        }
-        let reverseError;
-        let reverseVerificationError;
-        try {
-          atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
-          recoveryExchanged = false;
-          if (displacedCanonical) {
-            const preservedCanonical = readRegularConfigSnapshot(path);
-            const retainedOriginal = readRegularConfigSnapshot(operatorPath);
-            const retainedOriginalAlias = readRegularConfigSnapshot(candidatePath);
-            assertSnapshotIdentity(preservedCanonical, displacedCanonical, "Canonical Hermes config after reversed recovery rollback");
-            assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed recovery rollback");
-            assertSnapshotIdentity(retainedOriginal, marker.previous, "Protected original after reversed recovery rollback");
-            assertSnapshotIdentity(retainedOriginalAlias, marker.previous, "Protected original alias after reversed recovery rollback");
-            if (!sameIdentity(retainedOriginal, retainedOriginalAlias)) {
-              throw new Error("protected recovery rollback links diverged after reverse exchange");
-            }
-            assertLinkCount(retainedOriginal, 2, "Protected original after reversed recovery rollback");
-            assertLinkCount(retainedOriginalAlias, 2, "Protected original alias after reversed recovery rollback");
-          }
-        } catch (reverseFailure) {
-          if (recoveryExchanged) reverseError = reverseFailure;
-          else reverseVerificationError = reverseFailure;
-        }
-        const detail = `Canonical Hermes config was not this transaction's candidate during atomic recovery: ${errorDetail(error)}${reverseError ? `; reversing the exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`;
-        if (!recoveryExchanged && displacedCanonical && !reverseVerificationError) {
-          throw manualRecoveryError(transactionDirectory, detail, error);
-        }
-        throw new Error(
-          `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
-          { cause: error }
-        );
-      }
-      rmSync(transactionDirectory, { recursive: true, force: true });
-      continue;
-    }
-    if (candidateStats) {
-      if (!marker) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Staged Hermes config exists but transaction metadata is torn or incomplete: ${errorDetail(markerError)}`,
-          markerError
-        );
-      }
-      let stagedCandidate;
-      try {
-        stagedCandidate = readRegularConfigSnapshot(candidatePath, candidateStats);
-        assertSnapshotIdentity(stagedCandidate, marker.candidate, "Staged transaction candidate before recovery cleanup");
-        assertLinkCount(stagedCandidate, 1, "Staged transaction candidate before recovery cleanup");
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Staged transaction entry is not this transaction's candidate and will not be removed: ${errorDetail(error)}`,
-          error
-        );
-      }
-      unlinkSync(candidatePath);
-      rmSync(transactionDirectory, { recursive: true, force: true });
-      continue;
-    }
-    if (!marker && readdirSync(transactionDirectory).length === 0) {
-      rmSync(transactionDirectory, { recursive: true, force: true });
-      continue;
-    }
-    if (!marker) {
-      throw new Error(`cannot safely recover Hermes config transaction: ${errorDetail(markerError)}`);
-    }
-    if (marker.hadPrevious) {
-      try {
-        const restored = readRegularConfigSnapshot(path);
-        assertSnapshotIdentity(restored, marker.previous, "Previously restored Hermes config");
-        assertLinkCount(restored, 1, "Previously restored Hermes config");
-      } catch (error) {
-        throw manualRecoveryError(
-          transactionDirectory,
-          `Protected original is unavailable and canonical state cannot be proven restored: ${errorDetail(error)}`,
-          error
-        );
-      }
-      rmSync(transactionDirectory, { recursive: true, force: true });
-      continue;
-    }
-    const installed = inspectConfigPath(path);
-    if (installed) {
-      let captured = false;
-      let capturedCanonical;
-      try {
-        const liveCandidate = readRegularConfigSnapshot(path, installed);
-        assertSnapshotIdentity(liveCandidate, marker.candidate, "Interrupted new Hermes config before recovery capture");
-        assertLinkCount(liveCandidate, 1, "Interrupted new Hermes config before recovery capture");
-        marker = { ...marker, phase: "rollback-capture" };
-        writeTransactionMarker(transactionDirectory, marker);
-        atomicRenameAt2(path, configRelative, candidateRelative, "noreplace");
-        captured = true;
-        capturedCanonical = readRegularConfigSnapshot(candidatePath);
-        assertSnapshotIdentity(capturedCanonical, marker.candidate, "Interrupted new Hermes config");
-        assertLinkCount(capturedCanonical, 1, "Interrupted new Hermes config");
-        unlinkSync(candidatePath);
-        captured = false;
-      } catch (error) {
-        let restoreError;
-        let restoreVerificationError;
-        if (captured) {
-          try {
-            atomicRenameAt2(path, candidateRelative, configRelative, "noreplace");
-            captured = false;
-            if (capturedCanonical) {
-              const preservedCanonical = readRegularConfigSnapshot(path);
-              assertSnapshotIdentity(preservedCanonical, capturedCanonical, "Canonical Hermes config after reversed creation recovery");
-              assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed creation recovery");
-            }
-          } catch (restoreFailure) {
-            if (captured) restoreError = restoreFailure;
-            else restoreVerificationError = restoreFailure;
-          }
-        }
-        const detail = `Atomic recovery of an interrupted new Hermes config failed: ${errorDetail(error)}${restoreError ? `; restoring the captured path failed: ${errorDetail(restoreError)}` : ""}${restoreVerificationError ? `; restored path could not be verified: ${errorDetail(restoreVerificationError)}` : ""}`;
-        if (!captured && (!capturedCanonical || !restoreVerificationError)) {
-          throw manualRecoveryError(transactionDirectory, detail, error);
-        }
-        throw new Error(
-          `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
-          { cause: error }
-        );
-      }
-    }
-    rmSync(transactionDirectory, { recursive: true, force: true });
-  }
-}
-function installValidatedConfig(path, next, previous) {
-  const nextBytes = Buffer.from(next, "utf8");
-  assertValidTomlBytes(nextBytes, "Rendered Hermes template config");
-  const directory = dirname2(path);
-  mkdirSync2(directory, { recursive: true });
-  const transactionDirectory = mkdtempSync(join2(directory, `${CONFIG_TRANSACTION_PREFIX}${process.pid}-`));
-  chmodSync(transactionDirectory, 448);
-  const stagedPath = join2(transactionDirectory, TRANSACTION_CANDIDATE);
-  const operatorPath = join2(transactionDirectory, TRANSACTION_OPERATOR_FILE);
-  const transactionName = basename(transactionDirectory);
-  const stagedRelative = `${transactionName}/${TRANSACTION_CANDIDATE}`;
-  const operatorRelative = `${transactionName}/${TRANSACTION_OPERATOR_FILE}`;
-  const configRelative = basename(path);
-  let installed = false;
-  let operatorArtifactHoldsOriginal = false;
-  let retainTransactionForRecovery = false;
-  let marker;
-  let failure;
-  try {
-    const mode = previous?.mode ?? 384;
-    writeFileSync2(stagedPath, nextBytes, { mode });
-    const staged = readFileSync(stagedPath);
-    if (!staged.equals(nextBytes)) throw new Error("Staged Hermes template config bytes changed before installation");
-    assertValidTomlBytes(staged, "Staged Hermes template config");
-    const stagedSnapshot = readRegularConfigSnapshot(stagedPath);
-    assertLinkCount(stagedSnapshot, 1, "Staged Hermes template config");
-    marker = {
-      version: 1,
-      ownerPid: process.pid,
-      phase: "prepared",
-      hadPrevious: previous !== void 0,
-      candidate: snapshotIdentity(stagedSnapshot),
-      previous: previous ? snapshotIdentity(previous) : void 0
-    };
-    writeTransactionMarker(transactionDirectory, marker);
-    assertConfigUnchanged(path, previous);
-    if (previous) {
-      assertLinkCount(previous, 1, "Original Hermes template config");
-      linkSync(path, operatorPath);
-      operatorArtifactHoldsOriginal = true;
-      const linkedCanonical = readRegularConfigSnapshot(path);
-      const protectedOriginal = readRegularConfigSnapshot(operatorPath);
-      assertSnapshotIdentity(linkedCanonical, previous, "Canonical Hermes config after protection link");
-      assertSnapshotIdentity(protectedOriginal, previous, "Protected Hermes config");
-      if (!sameIdentity(linkedCanonical, protectedOriginal)) {
-        throw new Error("Canonical and protected Hermes configs do not reference the same inode after linking");
-      }
-      assertLinkCount(linkedCanonical, 2, "Canonical Hermes config after protection link");
-      assertLinkCount(protectedOriginal, 2, "Protected Hermes config after protection link");
-      marker = { ...marker, phase: "install-exchange" };
-      writeTransactionMarker(transactionDirectory, marker);
-      try {
-        atomicRenameAt2(path, stagedRelative, configRelative, "exchange");
-      } catch (error) {
-        if (error instanceof AtomicRenameOutcomeUnknown) {
-          throw new AtomicConfigConflict(
-            `Atomic Hermes config install outcome is unknown: ${error.message}`,
-            false,
-            error
-          );
-        }
-        throw error;
-      }
-      installed = true;
-      let exchangedOut;
-      try {
-        const installedCandidate = readRegularConfigSnapshot(path);
-        exchangedOut = readRegularConfigSnapshot(stagedPath);
-        const stillProtected = readRegularConfigSnapshot(operatorPath);
-        assertSnapshotIdentity(installedCandidate, marker.candidate, "Atomically installed Hermes candidate");
-        assertLinkCount(installedCandidate, 1, "Atomically installed Hermes candidate");
-        assertSnapshotIdentity(exchangedOut, previous, "Hermes config captured by atomic install");
-        assertSnapshotIdentity(stillProtected, previous, "Protected Hermes config after atomic install");
-        if (!sameIdentity(exchangedOut, stillProtected)) {
-          throw new Error("Atomic install did not capture the protected operator inode");
-        }
-        assertLinkCount(exchangedOut, 2, "Hermes config captured by atomic install");
-        assertLinkCount(stillProtected, 2, "Protected Hermes config after atomic install");
-      } catch (exchangeMismatch) {
-        try {
-          const liveCandidate = readRegularConfigSnapshot(path);
-          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical candidate before reversing failed install exchange");
-          assertLinkCount(liveCandidate, 1, "Canonical candidate before reversing failed install exchange");
-        } catch (concurrentReplacement) {
-          throw new AtomicConfigConflict(
-            `Canonical Hermes config changed after the install exchange; it was left in place without a reverse exchange: ${errorDetail(concurrentReplacement)}`,
-            true,
-            new AggregateError(
-              [exchangeMismatch, concurrentReplacement],
-              "Hermes install exchange and canonical verification both failed"
-            )
-          );
-        }
-        let reverseError;
-        let reverseVerificationError;
-        try {
-          atomicRenameAt2(path, stagedRelative, configRelative, "exchange");
-          installed = false;
-          if (exchangedOut) {
-            const restoredCanonical = readRegularConfigSnapshot(path);
-            const restoredCandidate = readRegularConfigSnapshot(stagedPath);
-            const retainedOriginal = readRegularConfigSnapshot(operatorPath);
-            assertSnapshotIdentity(restoredCanonical, exchangedOut, "Canonical Hermes config after reversed install exchange");
-            assertLinkCount(restoredCanonical, 1, "Canonical Hermes config after reversed install exchange");
-            assertSnapshotIdentity(restoredCandidate, marker.candidate, "Candidate after reversed install exchange");
-            assertLinkCount(restoredCandidate, 1, "Candidate after reversed install exchange");
-            assertSnapshotIdentity(retainedOriginal, previous, "Protected original after reversed install exchange");
-            assertLinkCount(retainedOriginal, 1, "Protected original after reversed install exchange");
-          }
-        } catch (error) {
-          if (installed) reverseError = error;
-          else reverseVerificationError = error;
-        }
-        throw new AtomicConfigConflict(
-          `Atomic Hermes config install captured an unexpected canonical inode: ${errorDetail(exchangeMismatch)}${reverseError ? `; reversing the exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`,
-          installed === false && Boolean(exchangedOut) && !reverseVerificationError,
-          new AggregateError(
-            [exchangeMismatch, ...reverseError ? [reverseError] : [], ...reverseVerificationError ? [reverseVerificationError] : []],
-            "Hermes config atomic install CAS failed"
-          )
-        );
-      }
-      unlinkSync(stagedPath);
-      const singlyProtected = readRegularConfigSnapshot(operatorPath);
-      assertSnapshotIdentity(singlyProtected, previous, "Protected Hermes config after displaced-link cleanup");
-      assertLinkCount(singlyProtected, 1, "Protected Hermes config after displaced-link cleanup");
-    } else {
-      marker = { ...marker, phase: "install-exchange" };
-      writeTransactionMarker(transactionDirectory, marker);
-      try {
-        atomicRenameAt2(path, stagedRelative, configRelative, "noreplace");
-      } catch (error) {
-        if (error instanceof AtomicRenameOutcomeUnknown) {
-          throw new AtomicConfigConflict(
-            `Atomic Hermes config create outcome is unknown: ${error.message}`,
-            false,
-            error
-          );
-        }
-        throw error;
-      }
-      installed = true;
-    }
-    marker = { ...marker, phase: "installed" };
-    writeTransactionMarker(transactionDirectory, marker);
-    const written = readRegularConfigSnapshot(path);
-    if (!written.bytes.equals(nextBytes)) throw new Error("Installed Hermes template config bytes differ from the validated candidate");
-    assertValidTomlBytes(written.bytes, "Installed Hermes template config");
-    assertSnapshotIdentity(written, marker.candidate, "Installed Hermes config");
-    assertLinkCount(written, 1, "Installed Hermes config");
-    marker = { ...marker, phase: "committed" };
-    writeTransactionMarker(transactionDirectory, marker);
-    try {
-      const committable = readRegularConfigSnapshot(path);
-      assertSnapshotIdentity(committable, marker.candidate, "Canonical Hermes config before releasing protected state");
-      assertLinkCount(committable, 1, "Canonical Hermes config before releasing protected state");
-    } catch (error) {
-      throw new AtomicConfigConflict(
-        `Canonical Hermes config changed after successful candidate validation: ${errorDetail(error)}`,
-        true,
-        error
-      );
-    }
-    if (operatorArtifactHoldsOriginal) {
-      unlinkSync(operatorPath);
-      operatorArtifactHoldsOriginal = false;
-    }
-  } catch (error) {
-    const primary = errorDetail(error);
-    let restorationError;
-    let verificationError;
-    let conflictError;
-    let conflictMarkerError;
-    let finalState = installed ? "unknown" : "unchanged";
-    if (error instanceof AtomicConfigConflict) {
-      conflictError = error;
-      retainTransactionForRecovery = true;
-      if (marker) conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-    }
-    if (!conflictError && installed) {
-      if (!marker) {
-        restorationError = new Error("transaction candidate identity is unavailable");
-      } else if (previous && operatorArtifactHoldsOriginal) {
-        try {
-          const liveCandidate = readRegularConfigSnapshot(path);
-          const protectedOriginal = readRegularConfigSnapshot(operatorPath);
-          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical Hermes config before rollback intent");
-          assertLinkCount(liveCandidate, 1, "Canonical Hermes config before rollback intent");
-          assertSnapshotIdentity(protectedOriginal, previous, "Protected operator config before rollback intent");
-          assertLinkCount(protectedOriginal, 1, "Protected operator config before rollback intent");
-        } catch (preflightConflict) {
-          conflictError = new AtomicConfigConflict(
-            `Canonical Hermes config changed before rollback could begin: ${errorDetail(preflightConflict)}`,
-            true,
-            preflightConflict
-          );
-          retainTransactionForRecovery = true;
-          conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-        }
-        let rollbackExchanged = false;
-        let displacedCanonical;
-        if (!conflictError) try {
-          linkSync(operatorPath, stagedPath);
-          const protectedRollbackOriginal = readRegularConfigSnapshot(operatorPath);
-          const protectedRollbackAlias = readRegularConfigSnapshot(stagedPath);
-          assertSnapshotIdentity(protectedRollbackOriginal, previous, "Protected original before rollback exchange");
-          assertSnapshotIdentity(protectedRollbackAlias, previous, "Protected rollback alias before rollback exchange");
-          if (!sameIdentity(protectedRollbackOriginal, protectedRollbackAlias)) {
-            throw new Error("rollback protection links do not reference the same original inode");
-          }
-          assertLinkCount(protectedRollbackOriginal, 2, "Protected original before rollback exchange");
-          assertLinkCount(protectedRollbackAlias, 2, "Protected rollback alias before rollback exchange");
-          marker = { ...marker, phase: "rollback-exchange" };
-          writeTransactionMarker(transactionDirectory, marker);
-          atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
-          rollbackExchanged = true;
-          const restoredOriginal = readRegularConfigSnapshot(path);
-          displacedCanonical = readRegularConfigSnapshot(operatorPath);
-          const retainedRollbackOriginal = readRegularConfigSnapshot(stagedPath);
-          assertSnapshotIdentity(restoredOriginal, previous, "Restored Hermes config after rollback exchange");
-          assertSnapshotIdentity(retainedRollbackOriginal, previous, "Retained original after rollback exchange");
-          if (!sameIdentity(restoredOriginal, retainedRollbackOriginal)) {
-            throw new Error("restored and retained rollback originals are different inodes");
-          }
-          assertLinkCount(restoredOriginal, 2, "Restored Hermes config after rollback exchange");
-          assertLinkCount(retainedRollbackOriginal, 2, "Retained original after rollback exchange");
-          assertSnapshotIdentity(displacedCanonical, marker.candidate, "Hermes candidate captured by rollback exchange");
-          assertLinkCount(displacedCanonical, 1, "Hermes candidate captured by rollback exchange");
-          unlinkSync(operatorPath);
-          operatorArtifactHoldsOriginal = false;
-          unlinkSync(stagedPath);
-          installed = false;
-          finalState = "restored";
-        } catch (rollbackFailure) {
-          if (!rollbackExchanged) {
-            restorationError = rollbackFailure;
-          } else {
-            let canonicalStillRestored = false;
-            try {
-              const liveCanonical = readRegularConfigSnapshot(path);
-              assertSnapshotIdentity(liveCanonical, previous, "Canonical original before reversing failed rollback exchange");
-              canonicalStillRestored = true;
-            } catch (concurrentReplacement) {
-              conflictError = new AtomicConfigConflict(
-                `Canonical Hermes config changed after rollback exchange; it was left in place without a reverse exchange: ${errorDetail(concurrentReplacement)}`,
-                true,
-                new AggregateError(
-                  [rollbackFailure, concurrentReplacement],
-                  "Hermes rollback exchange and canonical verification both failed"
-                )
-              );
-              retainTransactionForRecovery = true;
-              conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-            }
-            if (!canonicalStillRestored) {
-            } else {
-              let reverseError;
-              let reverseVerificationError;
-              try {
-                atomicRenameAt2(path, operatorRelative, configRelative, "exchange");
-                rollbackExchanged = false;
-                installed = true;
-                if (displacedCanonical) {
-                  const preservedCanonical = readRegularConfigSnapshot(path);
-                  const retainedOriginal = readRegularConfigSnapshot(operatorPath);
-                  const retainedOriginalAlias = readRegularConfigSnapshot(stagedPath);
-                  assertSnapshotIdentity(preservedCanonical, displacedCanonical, "Canonical Hermes config after reversed rollback exchange");
-                  assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed rollback exchange");
-                  assertSnapshotIdentity(retainedOriginal, previous, "Protected original after reversed rollback exchange");
-                  assertSnapshotIdentity(retainedOriginalAlias, previous, "Protected original alias after reversed rollback exchange");
-                  if (!sameIdentity(retainedOriginal, retainedOriginalAlias)) {
-                    throw new Error("protected rollback links diverged after reverse exchange");
-                  }
-                  assertLinkCount(retainedOriginal, 2, "Protected original after reversed rollback exchange");
-                  assertLinkCount(retainedOriginalAlias, 2, "Protected original alias after reversed rollback exchange");
-                }
-              } catch (reverseFailure) {
-                if (rollbackExchanged) reverseError = reverseFailure;
-                else reverseVerificationError = reverseFailure;
-              }
-              conflictError = new AtomicConfigConflict(
-                `Atomic rollback captured a canonical inode other than this transaction's candidate: ${errorDetail(rollbackFailure)}${reverseError ? `; reversing the rollback exchange failed: ${errorDetail(reverseError)}` : ""}${reverseVerificationError ? `; reversed rollback state could not be verified: ${errorDetail(reverseVerificationError)}` : ""}`,
-                !rollbackExchanged && Boolean(displacedCanonical) && !reverseVerificationError,
-                new AggregateError(
-                  [rollbackFailure, ...reverseError ? [reverseError] : [], ...reverseVerificationError ? [reverseVerificationError] : []],
-                  "Hermes config atomic rollback CAS failed"
-                )
-              );
-              retainTransactionForRecovery = true;
-              conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-            }
-          }
-        }
-      } else if (previous === void 0) {
-        try {
-          const liveCandidate = readRegularConfigSnapshot(path);
-          assertSnapshotIdentity(liveCandidate, marker.candidate, "Canonical new Hermes config before rollback capture");
-          assertLinkCount(liveCandidate, 1, "Canonical new Hermes config before rollback capture");
-        } catch (preflightConflict) {
-          conflictError = new AtomicConfigConflict(
-            `Canonical Hermes config changed before new-config rollback could begin: ${errorDetail(preflightConflict)}`,
-            true,
-            preflightConflict
-          );
-          retainTransactionForRecovery = true;
-          conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-        }
-        let captured = false;
-        let capturedCanonical;
-        if (!conflictError) try {
-          marker = { ...marker, phase: "rollback-capture" };
-          writeTransactionMarker(transactionDirectory, marker);
-          atomicRenameAt2(path, configRelative, stagedRelative, "noreplace");
-          captured = true;
-          capturedCanonical = readRegularConfigSnapshot(stagedPath);
-          assertSnapshotIdentity(capturedCanonical, marker.candidate, "New Hermes candidate captured for rollback");
-          assertLinkCount(capturedCanonical, 1, "New Hermes candidate captured for rollback");
-          unlinkSync(stagedPath);
-          installed = false;
-          finalState = "removed";
-        } catch (rollbackFailure) {
-          if (!captured) {
-            restorationError = rollbackFailure;
-          } else {
-            let restoreError;
-            let restoreVerificationError;
-            try {
-              atomicRenameAt2(path, stagedRelative, configRelative, "noreplace");
-              captured = false;
-              installed = true;
-              if (capturedCanonical) {
-                const preservedCanonical = readRegularConfigSnapshot(path);
-                assertSnapshotIdentity(preservedCanonical, capturedCanonical, "Canonical Hermes config after reversed new-config rollback");
-                assertLinkCount(preservedCanonical, 1, "Canonical Hermes config after reversed new-config rollback");
-              }
-            } catch (restoreFailure) {
-              if (captured) restoreError = restoreFailure;
-              else restoreVerificationError = restoreFailure;
-            }
-            conflictError = new AtomicConfigConflict(
-              `Atomic new-config rollback captured unexpected operator state: ${errorDetail(rollbackFailure)}${restoreError ? `; restoring the captured path failed: ${errorDetail(restoreError)}` : ""}${restoreVerificationError ? `; restored path could not be verified: ${errorDetail(restoreVerificationError)}` : ""}`,
-              !captured && Boolean(capturedCanonical) && !restoreVerificationError,
-              new AggregateError(
-                [rollbackFailure, ...restoreError ? [restoreError] : [], ...restoreVerificationError ? [restoreVerificationError] : []],
-                "Hermes new-config atomic rollback CAS failed"
-              )
-            );
-            retainTransactionForRecovery = true;
-            conflictMarkerError = markTransactionConflict(transactionDirectory, marker);
-          }
-        }
-      } else {
-        restorationError = new Error("protected operator inode is unavailable");
-      }
-    } else if (!conflictError && operatorArtifactHoldsOriginal) {
-      try {
-        if (!previous || !marker) throw new Error("pre-install transaction identity is unavailable");
-        const canonicalOriginal = readRegularConfigSnapshot(path);
-        const protectedOriginal = readRegularConfigSnapshot(operatorPath);
-        assertSnapshotIdentity(canonicalOriginal, previous, "Canonical original before releasing unused protection");
-        assertSnapshotIdentity(protectedOriginal, previous, "Protected original before releasing unused protection");
-        if (!sameIdentity(canonicalOriginal, protectedOriginal)) {
-          throw new Error("canonical and protected originals diverged before unused protection could be released");
-        }
-        assertLinkCount(canonicalOriginal, 2, "Canonical original before releasing unused protection");
-        assertLinkCount(protectedOriginal, 2, "Protected original before releasing unused protection");
-        unlinkSync(operatorPath);
-        operatorArtifactHoldsOriginal = false;
-      } catch (cleanupFailure) {
-        restorationError = cleanupFailure;
-      }
-    }
-    if (!restorationError && finalState === "restored" && previous) {
-      try {
-        const restored = readRegularConfigSnapshot(path);
-        assertSnapshotIdentity(restored, previous, "Restored Hermes config");
-        assertLinkCount(restored, 1, "Restored Hermes config");
-        assertValidTomlBytes(restored.bytes, "Post-restore Hermes template config");
-      } catch (postRestoreFailure) {
-        verificationError = postRestoreFailure;
-      }
-    }
-    if (conflictError) {
-      const markerDetail = conflictMarkerError ? `; additionally failed to record conflict state: ${errorDetail(conflictMarkerError)}` : "";
-      const detail = error instanceof AtomicConfigConflict ? `${primary}${markerDetail}` : `${primary}; canonical Hermes config changed after candidate installation: ${errorDetail(conflictError)}${markerDetail}`;
-      const cause = new AggregateError(
-        [error, conflictError, ...conflictMarkerError ? [conflictMarkerError] : []],
-        "Hermes config installation failed after a concurrent canonical-path change"
-      );
-      failure = conflictError instanceof AtomicConfigConflict && !conflictError.canonicalPreserved ? new Error(
-        `${detail}; no captured config artifact was discarded and protected transaction ${transactionDirectory} was retained for manual recovery, but the canonical path could not be proven unchanged`,
-        { cause }
-      ) : manualRecoveryError(transactionDirectory, detail, cause);
-    } else if (restorationError) {
-      retainTransactionForRecovery = true;
-      failure = new Error(
-        `${primary}; restoring the operator's original Hermes config failed: ${errorDetail(restorationError)}; protected transaction state was retained for automatic recovery`,
-        { cause: new AggregateError([error, restorationError], "Hermes config installation and restoration both failed") }
-      );
-    } else if (verificationError) {
-      failure = new Error(
-        `${primary}; the operator's original Hermes config was restored before post-restore verification failed: ${errorDetail(verificationError)}`,
-        { cause: new AggregateError([error, verificationError], "Hermes config installation and post-restore verification both failed") }
-      );
-    } else if (finalState === "restored") {
-      failure = new Error(`${primary}; the operator's original Hermes config was restored`, { cause: error });
-    } else if (finalState === "removed") {
-      failure = new Error(`${primary}; the unverified newly-created Hermes config was removed`, { cause: error });
-    } else {
-      failure = new Error(`${primary}; no Hermes config changes were applied`, { cause: error });
-    }
-  }
-  let cleanupError;
-  if (!operatorArtifactHoldsOriginal && !retainTransactionForRecovery) {
-    try {
-      rmSync(transactionDirectory, { recursive: true, force: true });
-    } catch (error) {
-      cleanupError = error;
-    }
-  }
-  if (cleanupError) {
-    const base = failure ? errorDetail(failure) : "Hermes config was installed and validated";
-    throw new Error(
-      `${base}; transaction metadata cleanup failed and will be retried on the next invocation: ${errorDetail(cleanupError)}`,
-      {
-        cause: new AggregateError(
-          failure ? [failure, cleanupError] : [cleanupError],
-          "Hermes config transaction cleanup failed"
-        )
-      }
-    );
-  }
-  if (failure) {
-    throw failure;
   }
 }
 var EnsureTemplateConfig = class extends Command {
@@ -6990,85 +5716,44 @@ var EnsureTemplateConfig = class extends Command {
         message: "Hermes host config deferred until rendered lifecycle eligibility passes"
       };
     }
-    const path = resolveTemplateConfigPath();
-    if (ctx.dryRun) return this.invokeLocked(ctx, path);
-    let release;
-    try {
-      release = await acquireConfigLock(path);
-    } catch (error) {
-      return {
-        success: false,
-        outcome: "failed",
-        message: `Failed to acquire the whole-window Hermes config lock for ${path}: ${errorDetail(error)}`
-      };
-    }
-    let result2;
-    try {
-      result2 = this.invokeLocked(ctx, path);
-    } catch (error) {
-      try {
-        await release();
-      } catch (releaseError) {
-        throw new AggregateError(
-          [error, releaseError],
-          `Hermes config operation threw and its kernel lock holder also failed to exit: ${errorDetail(error)}; ${errorDetail(releaseError)}`
-        );
-      }
-      throw error;
-    }
-    try {
-      await release();
-    } catch (error) {
-      return {
-        success: false,
-        outcome: "failed",
-        filePath: result2.filePath,
-        message: `${result2.message}; Hermes config lock release failed after the reported operation: ${errorDetail(error)}; no success is claimed`
-      };
-    }
-    return result2;
-  }
-  invokeLocked(ctx, path) {
     const force = ctx.forceConfig === true || process.env.PJANGLER_FORCE_CONFIG === "1";
+    const path = resolveTemplateConfigPath();
+    let stats;
     try {
-      recoverInterruptedConfigTransactions(path, !ctx.dryRun);
+      stats = inspectConfigPath(path);
     } catch (error) {
       return {
         success: false,
         outcome: "failed",
-        message: `Failed to recover interrupted Hermes config transaction for ${path}: ${errorDetail(error)}`
+        message: `Failed to inspect ${path}: ${error instanceof Error ? error.message : String(error)}`
       };
     }
-    let pathStats;
-    try {
-      pathStats = inspectConfigPath(path);
-    } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to inspect ${path}: ${error instanceof Error ? error.message : String(error)}` };
-    }
-    const exists = pathStats !== void 0;
+    const exists = stats !== void 0;
     if (exists && !force) {
+      if (!ctx.quiet) console.log(`\u2713 Config present: ${path}`);
       return { success: true, outcome: "unchanged", message: `Config present: ${path}` };
     }
     let next = renderHostConfig();
     let current = "";
-    let previous;
     try {
       if (exists) {
-        previous = readRegularConfigSnapshot(path, pathStats);
-        assertLinkCount(previous, 1, `Existing Hermes template config ${path}`);
-        assertValidTomlBytes(previous.bytes, "Existing Hermes template config");
-        current = previous.bytes.toString("utf8");
+        current = readFileSync(path, "utf8");
         next = mergeHostConfig(current);
       } else {
         assertValidToml(next, "Rendered Hermes template config");
       }
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to prepare ${path}; no changes were applied: ${errorDetail(error)}` };
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to prepare ${path}; no changes were applied: ${error instanceof Error ? error.message : String(error)}`
+      };
     }
     if (exists && next === current) {
       return { success: true, outcome: "unchanged", message: `Config schema already current: ${path}` };
     }
     if (ctx.dryRun) {
+      if (!ctx.quiet) console.log(`[DRY RUN] Would ${exists ? "merge missing schema fields into" : "create"} config: ${path}`);
       return {
         success: true,
         outcome: "planned",
@@ -7077,9 +5762,17 @@ var EnsureTemplateConfig = class extends Command {
       };
     }
     try {
-      installValidatedConfig(path, next, previous);
+      installConfig(path, next, stats);
     } catch (error) {
-      return { success: false, outcome: "failed", message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}` };
+      return {
+        success: false,
+        outcome: "failed",
+        message: `Failed to write ${path}: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    if (!ctx.quiet) {
+      console.log(`\u2713 ${exists ? "Updated" : "Bootstrapped"} config: ${path}`);
+      if (!exists) console.log("  Review [github].runtime_repo_owner + [plane] + [bloodbank] before a cloud provision.");
     }
     return {
       success: true,
@@ -7251,11 +5944,11 @@ var Recipe = class {
 
 // src/parity/rules.ts
 init_style();
-import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, readlinkSync, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync2, rmdirSync, symlinkSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3, chmodSync as chmodSync2, copyFileSync, rmSync as rmSync2 } from "node:fs";
+import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, readlinkSync, readdirSync as readdirSync2, realpathSync as realpathSync2, renameSync as renameSync2, rmdirSync, symlinkSync, unlinkSync, writeFileSync as writeFileSync3, chmodSync, copyFileSync, rmSync as rmSync2 } from "node:fs";
 import { basename as basename3, dirname as dirname3, join as join4, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir as homedir3 } from "node:os";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { spawnSync as spawnSync2 } from "node:child_process";
 import YAML from "yaml";
 
@@ -7272,8 +5965,8 @@ var SUPPORTED_BMAD_TOOLS = SUPPORTED_CLIS.map((cli) => cli.bmadTool);
 var SUPPORTED_CLI_ROOTS = SUPPORTED_CLIS.map((cli) => cli.projectRoot);
 
 // src/parity/pack.ts
-import { closeSync as closeSync2, constants as constants2, fstatSync as fstatSync2, lstatSync as lstatSync2, openSync as openSync2, readFileSync as readFileSync2, readdirSync as readdirSync2 } from "node:fs";
-import { createHash as createHash2 } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync as lstatSync2, openSync, readFileSync as readFileSync2, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename as basename2, join as join3, relative, resolve as resolve2, sep } from "node:path";
 var PackUnavailableError = class extends Error {
   constructor(message) {
@@ -7283,15 +5976,15 @@ var PackUnavailableError = class extends Error {
 };
 var CANONICAL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 function sha256(content) {
-  return createHash2("sha256").update(content).digest("hex");
+  return createHash("sha256").update(content).digest("hex");
 }
 function readRegularFile(path) {
-  const fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    if (!fstatSync2(fd).isFile()) throw new Error(`Pack entry is not a regular file: ${path}`);
+    if (!fstatSync(fd).isFile()) throw new Error(`Pack entry is not a regular file: ${path}`);
     return readFileSync2(fd);
   } finally {
-    closeSync2(fd);
+    closeSync(fd);
   }
 }
 function hashRegularFile(path) {
@@ -7429,7 +6122,7 @@ function compareVersions(a, b) {
 }
 function selectPackVersion(packDir) {
   const versions = [];
-  for (const name of readdirSync2(packDir).sort()) {
+  for (const name of readdirSync(packDir).sort()) {
     if (name.startsWith(".")) continue;
     const stat = lstatSync2(join3(packDir, name));
     if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
@@ -7635,7 +6328,7 @@ function packContainerLeaves(containerDir) {
   const visit = (directory, prefix) => {
     let children;
     try {
-      children = readdirSync2(directory).sort();
+      children = readdirSync(directory).sort();
     } catch {
       return;
     }
@@ -7737,7 +6430,7 @@ function packDeclaredSkills(root, metadata, entry, flatten = false) {
     return declared2;
   }
   const declared = [];
-  for (const name of readdirSync2(root).sort()) {
+  for (const name of readdirSync(root).sort()) {
     if (name.startsWith(".") || name.startsWith("_")) continue;
     const stat = lstatSync2(join3(root, name));
     if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
@@ -7750,7 +6443,7 @@ function packDeclaredSkills(root, metadata, entry, flatten = false) {
 }
 function walkPackSubtree(root, relativeRoot, files, directories) {
   const visit = (directory) => {
-    for (const name of readdirSync2(directory).sort()) {
+    for (const name of readdirSync(directory).sort()) {
       const path = join3(directory, name);
       const key = relative(root, path).split(sep).join("/");
       const stat = lstatSync2(path);
@@ -8060,7 +6753,7 @@ function ensureSymlink(path, target, dryRun) {
       const current = readSymlinkTarget(path);
       if (current === target) return { changed: false };
       if (!dryRun) {
-        unlinkSync2(path);
+        unlinkSync(path);
         symlinkSync(target, path);
       }
       return { changed: true };
@@ -8126,7 +6819,7 @@ function yamlGet(text3, keyPath) {
 function discoverRoles(repoRoot) {
   const rolesDir = join4(repoRoot, "agents", "hermes");
   if (!existsSync3(rolesDir)) return [];
-  return readdirSync3(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
+  return readdirSync2(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
     const roleDir = join4(rolesDir, entry.name);
     const roleYamlPath = join4(roleDir, "role.yaml");
     if (!existsSync3(roleYamlPath)) return null;
@@ -8595,7 +7288,7 @@ function availableSkillsRegistryRoots(ctx) {
   );
 }
 function digestSkillEntry(root) {
-  const hash = createHash3("sha256");
+  const hash = createHash2("sha256");
   try {
     const stat = lstatSync3(root);
     if (stat.isSymbolicLink()) return null;
@@ -8607,7 +7300,7 @@ function digestSkillEntry(root) {
     }
     if (!stat.isDirectory()) return null;
     const walk = (dir, rel) => {
-      for (const name of readdirSync3(dir).sort()) {
+      for (const name of readdirSync2(dir).sort()) {
         const full = join4(dir, name);
         const entryRel = rel ? `${rel}/${name}` : name;
         const entryStat = lstatSync3(full);
@@ -8637,7 +7330,7 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
   const names = [];
   let entries;
   try {
-    entries = readdirSync3(skillsDir).sort();
+    entries = readdirSync2(skillsDir).sort();
   } catch {
     return [];
   }
@@ -8761,7 +7454,7 @@ function removeProjectEntry(path) {
     return;
   }
   try {
-    unlinkSync2(path);
+    unlinkSync(path);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
@@ -8783,11 +7476,11 @@ function normalizeExecutableTemplate(ctx, target, expected, changedFiles) {
   if (!beforeChmod?.isFile() || beforeChmod.isSymbolicLink()) {
     throw new Error(`Refusing changed managed executable target: ${target}`);
   }
-  chmodSync2(target, 493);
+  chmodSync(target, 493);
 }
 function atomicWriteBuffer(path, content, mode, temporary) {
   writeFileSync3(temporary, content, { flag: "wx" });
-  chmodSync2(temporary, mode);
+  chmodSync(temporary, mode);
   renameSync2(temporary, path);
 }
 function provisionDeclaredPacks(ctx, preservedManifest, hooks = {}) {
@@ -8857,7 +7550,7 @@ function provisionDeclaredPacks(ctx, preservedManifest, hooks = {}) {
   const staleManagedNames = /* @__PURE__ */ new Set();
   const originalCorrectLinks = /* @__PURE__ */ new Map();
   if (existsSync3(skillsDir)) {
-    for (const name of readdirSync3(skillsDir)) {
+    for (const name of readdirSync2(skillsDir)) {
       validateSkillName(name);
       if (dirname3(join4(resolvedSkillsDir, name)) !== resolvedSkillsDir) {
         return { ok: false, changedFiles: [], error: `BMAD skill path escapes project skills directory: ${name}` };
@@ -8911,7 +7604,7 @@ function provisionDeclaredPacks(ctx, preservedManifest, hooks = {}) {
       return { ok: false, changedFiles: [], error: error instanceof Error ? error.message : String(error) };
     }
   }
-  const transaction = mkdtempSync2(join4(safeDirs.agentsDir, ".bmad-transaction-"));
+  const transaction = mkdtempSync(join4(safeDirs.agentsDir, ".bmad-transaction-"));
   const backup = join4(transaction, "entries");
   mkdirSync3(backup);
   const moved = [];
@@ -8949,8 +7642,8 @@ function provisionDeclaredPacks(ctx, preservedManifest, hooks = {}) {
     }
     rmSync2(transaction, { recursive: true, force: true });
     try {
-      if (!skillsExisted && existsSync3(skillsDir) && readdirSync3(skillsDir).length === 0) rmdirSync(skillsDir);
-      if (!agentsExisted && existsSync3(safeDirs.agentsDir) && readdirSync3(safeDirs.agentsDir).length === 0) rmdirSync(safeDirs.agentsDir);
+      if (!skillsExisted && existsSync3(skillsDir) && readdirSync2(skillsDir).length === 0) rmdirSync(skillsDir);
+      if (!agentsExisted && existsSync3(safeDirs.agentsDir) && readdirSync2(safeDirs.agentsDir).length === 0) rmdirSync(safeDirs.agentsDir);
     } catch (error) {
       errors.push(`remove created directories: ${String(error)}`);
     }
@@ -9666,7 +8359,7 @@ function renderHermesWrapper(role, templateRoleDir) {
 function templateFiles(sourceDir, current = sourceDir) {
   if (!existsSync3(current)) return [];
   const files = [];
-  for (const entry of readdirSync3(current, { withFileTypes: true })) {
+  for (const entry of readdirSync2(current, { withFileTypes: true })) {
     if (entry.name === "__pycache__" || entry.name.endsWith(".pyc") || entry.name.endsWith(".pyo")) continue;
     const sourcePath = join4(current, entry.name);
     if (entry.isDirectory()) files.push(...templateFiles(sourceDir, sourcePath));
@@ -9720,7 +8413,7 @@ function renderSentinelPrompt(role, templateRoleDir) {
 function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
   if (!existsSync3(sourceDir)) return;
   mkdirSync3(targetDir, { recursive: true });
-  for (const entry of readdirSync3(sourceDir, { withFileTypes: true })) {
+  for (const entry of readdirSync2(sourceDir, { withFileTypes: true })) {
     const sourcePath = join4(sourceDir, entry.name);
     if (skip?.(sourcePath)) continue;
     const targetPath = join4(targetDir, entry.name);
@@ -9917,7 +8610,7 @@ function persistRoleServiceState(role, updates) {
     }
     const next = String(document);
     if (next === current) return { changed: false };
-    const transaction = mkdtempSync2(join4(dirname3(role.roleYamlPath), ".pjangler-role-state-"));
+    const transaction = mkdtempSync(join4(dirname3(role.roleYamlPath), ".pjangler-role-state-"));
     try {
       atomicWriteBuffer(
         role.roleYamlPath,
@@ -10068,7 +8761,7 @@ function bmadProjectNameIssues(repoRoot) {
     try {
       declared = selectedBmadModules(repoRoot);
     } catch {
-      declared = readdirSync3(bmadRoot);
+      declared = readdirSync2(bmadRoot);
     }
     for (const name of new Set(declared)) {
       const configPath = join4(bmadRoot, name, "config.yaml");
@@ -10099,7 +8792,7 @@ function evictLegacyBmadPackState(ctx, changedFiles) {
     if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
     let names;
     try {
-      names = readdirSync3(dir);
+      names = readdirSync2(dir);
     } catch {
       continue;
     }
@@ -10109,7 +8802,7 @@ function evictLegacyBmadPackState(ctx, changedFiles) {
       if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
       changedFiles.push(path);
       details.push(`removed retired BMAD pack symlink ${relative2(ctx.repoRoot, path)}`);
-      if (!ctx.dryRun) unlinkSync2(path);
+      if (!ctx.dryRun) unlinkSync(path);
     }
   }
   return details;
@@ -10522,7 +9215,7 @@ function discoverMomoProviderCandidates(repoRoot) {
   const roleDirs = [];
   const hermesDir = join4(repoRoot, "agents", "hermes");
   if (existsSync3(hermesDir)) {
-    for (const entry of readdirSync3(hermesDir, { withFileTypes: true })) {
+    for (const entry of readdirSync2(hermesDir, { withFileTypes: true })) {
       if (entry.isDirectory()) roleDirs.push(join4(hermesDir, entry.name));
     }
   }
@@ -10535,7 +9228,7 @@ function discoverMomoProviderCandidates(repoRoot) {
       }
     }
     if (existsSync3(roleDir)) {
-      for (const entry of readdirSync3(roleDir, { withFileTypes: true })) {
+      for (const entry of readdirSync2(roleDir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
         if (!entry.name.startsWith("momo")) continue;
         const path = join4(roleDir, entry.name);
@@ -10670,14 +9363,14 @@ function hasAnyLifecycleScript(repoRoot) {
       const [prefix, suffix] = pattern.split("*");
       const base = join4(repoRoot, prefix);
       if (!existsSync3(base)) continue;
-      for (const entry of readdirSync3(base, { withFileTypes: true })) {
+      for (const entry of readdirSync2(base, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const candidate = join4(base, entry.name, suffix);
         if (existsSync3(candidate)) return true;
         const parent = dirname3(candidate);
         const stem = basename3(candidate);
         if (!existsSync3(parent)) continue;
-        for (const sibling of readdirSync3(parent, { withFileTypes: true })) {
+        for (const sibling of readdirSync2(parent, { withFileTypes: true })) {
           if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
@@ -10687,7 +9380,7 @@ function hasAnyLifecycleScript(repoRoot) {
       const parent = dirname3(base);
       const prefix = basename3(base);
       if (existsSync3(parent)) {
-        for (const entry of readdirSync3(parent, { withFileTypes: true })) {
+        for (const entry of readdirSync2(parent, { withFileTypes: true })) {
           if (entry.name.startsWith(prefix)) return true;
         }
       }
@@ -10719,14 +9412,14 @@ function hasAnySentinelScript(repoRoot) {
       const [prefix, suffix] = pattern.split("*");
       const base = join4(repoRoot, prefix);
       if (!existsSync3(base)) continue;
-      for (const entry of readdirSync3(base, { withFileTypes: true })) {
+      for (const entry of readdirSync2(base, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const candidate = join4(base, entry.name, suffix);
         if (existsSync3(candidate)) return true;
         const parent = dirname3(candidate);
         const stem = basename3(candidate);
         if (!existsSync3(parent)) continue;
-        for (const sibling of readdirSync3(parent, { withFileTypes: true })) {
+        for (const sibling of readdirSync2(parent, { withFileTypes: true })) {
           if (sibling.isFile() && sibling.name.startsWith(stem)) return true;
         }
       }
@@ -10736,7 +9429,7 @@ function hasAnySentinelScript(repoRoot) {
       const parent = dirname3(base);
       const prefix = basename3(base);
       if (existsSync3(parent)) {
-        for (const entry of readdirSync3(parent, { withFileTypes: true })) {
+        for (const entry of readdirSync2(parent, { withFileTypes: true })) {
           if (entry.name.startsWith(prefix)) return true;
         }
       }
@@ -11037,7 +9730,7 @@ function inventoryFilesUnder(root, current = root) {
   if (stat.isFile()) return { files: [relative2(root, current)], unsafe: [] };
   if (!stat.isDirectory()) return { files: [], unsafe: [rel] };
   const result2 = { files: [], unsafe: [] };
-  for (const name of readdirSync3(current)) {
+  for (const name of readdirSync2(current)) {
     const child = inventoryFilesUnder(root, join4(current, name));
     result2.files.push(...child.files);
     result2.unsafe.push(...child.unsafe);
@@ -11060,7 +9753,7 @@ function unsupportedRootAttestation(repoRoot, rootName) {
   for (const rel of walked.files) {
     const expectedHash = inventory.files.get(rel);
     if (!expectedHash) return { safe: false, reason: `${rootName}/${rel} is outside the BMAD generated inventory` };
-    const actualHash = createHash3("sha256").update(readFileSync3(join4(root, rel))).digest("hex");
+    const actualHash = createHash2("sha256").update(readFileSync3(join4(root, rel))).digest("hex");
     if (actualHash !== expectedHash) return { safe: false, reason: `${rootName}/${rel} was locally modified after generation` };
   }
   return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
@@ -11090,7 +9783,7 @@ function refreshOptionalTemplateScripts(ctx) {
     changed.push(path);
     if (!ctx.dryRun) {
       writeText(path, expected);
-      chmodSync2(path, 493);
+      chmodSync(path, 493);
     }
   }
   return changed;
@@ -11157,7 +9850,7 @@ function createMiseChecks() {
           changedFiles.push(linkAgentfilesPath);
           if (!ctx.dryRun) {
             writeText(linkAgentfilesPath, expectedScript);
-            chmodSync2(linkAgentfilesPath, 493);
+            chmodSync(linkAgentfilesPath, 493);
           }
         }
         return {
@@ -11228,7 +9921,7 @@ function createMiseChecks() {
           changedFiles.push(versioningPath);
           if (!ctx.dryRun) {
             writeText(versioningPath, expectedScript);
-            chmodSync2(versioningPath, 493);
+            chmodSync(versioningPath, 493);
           }
         }
         const manifestPath = join4(ctx.repoRoot, ".mise", "version-files.conf");
@@ -11308,7 +10001,7 @@ function createAgentHooksChecks() {
         }
         const invalidBmadLinkNames = /* @__PURE__ */ new Set();
         if (existsSync3(legacyDir)) {
-          for (const name of readdirSync3(legacyDir)) {
+          for (const name of readdirSync2(legacyDir)) {
             const expected = expectedByName.get(name);
             const path = join4(legacyDir, name);
             let linkTargetsPack = false;
@@ -11488,7 +10181,7 @@ function createAgentHooksChecks() {
           const path = join4(ctx.repoRoot, rel);
           if (existsSync3(path)) {
             changedFiles.push(path);
-            if (!ctx.dryRun) unlinkSync2(path);
+            if (!ctx.dryRun) unlinkSync(path);
           }
         }
         const templateLocalExample = templateCommonProjectText(ctx, ".agents/local.example.json");
@@ -11506,7 +10199,7 @@ function createAgentHooksChecks() {
           } else {
             changedFiles.push(legacyProvisionScriptPath);
             details.push(`Removed the retired ${LEGACY_PROVISION_SCRIPT_REL}`);
-            if (!ctx.dryRun) unlinkSync2(legacyProvisionScriptPath);
+            if (!ctx.dryRun) unlinkSync(legacyProvisionScriptPath);
           }
         }
         let currentMise = safeReadText(misePath);
@@ -11791,7 +10484,7 @@ function createMiseOpInjectChecks() {
           changedFiles.push(materializePath);
           if (!ctx.dryRun) {
             writeText(materializePath, expectedMaterializer);
-            chmodSync2(materializePath, 493);
+            chmodSync(materializePath, 493);
           }
         }
         const uniqueChangedFiles = [...new Set(changedFiles)].sort();
@@ -11929,7 +10622,7 @@ function supportedCliProjectionIssues(repoRoot) {
       issues.push(`${rootName}/skills is not a directory`);
       continue;
     }
-    const hasGeneratedSkill = existsSync3(projectedSkills) && readdirSync3(projectedSkills).some((name) => {
+    const hasGeneratedSkill = existsSync3(projectedSkills) && readdirSync2(projectedSkills).some((name) => {
       const skillFile = join4(projectedSkills, name, "SKILL.md");
       return existsSync3(skillFile) && lstatSync3(skillFile).isFile();
     });
@@ -12689,7 +11382,7 @@ function createHermesChecks() {
           if (existsSync3(plan.profileDir) && lstatSync3(plan.profileDir).isSymbolicLink()) {
             details.push(`convert profile symlink to real dir: ${plan.profileDir}`);
             changedFiles.push(plan.profileDir);
-            if (!ctx.dryRun) unlinkSync2(plan.profileDir);
+            if (!ctx.dryRun) unlinkSync(plan.profileDir);
           }
           if (!existsSync3(plan.profileDir)) {
             details.push(`create profile dir: ${plan.profileDir}`);
@@ -12708,7 +11401,7 @@ function createHermesChecks() {
             if (existsSync3(link.path) || isDanglingLink(link.path)) {
               const lst = lstatSync3(link.path);
               if (lst.isSymbolicLink()) {
-                unlinkSync2(link.path);
+                unlinkSync(link.path);
               } else {
                 const parked = `${link.path}.pre-singleton`;
                 renameSync2(link.path, parked);
@@ -13221,7 +11914,7 @@ function writeIfDifferent(path, content, dryRun, changedFiles, mode) {
   changedFiles.push(path);
   if (!dryRun) {
     writeText(path, normalized);
-    if (mode) chmodSync2(path, mode);
+    if (mode) chmodSync(path, mode);
   }
 }
 function prettyTimestamp(iso) {
@@ -13604,7 +12297,7 @@ var PromptForAgentConfig = class extends Command {
 };
 
 // src/commands/hermes/ValidateHermesOptions.ts
-import { lstatSync as lstatSync7, readdirSync as readdirSync6 } from "node:fs";
+import { lstatSync as lstatSync7, readdirSync as readdirSync5 } from "node:fs";
 import { join as join9, relative as relative6 } from "node:path";
 init_project();
 var EMAIL_UNSUPPORTED_MESSAGE = "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
@@ -13620,7 +12313,7 @@ function existingRoleDirectoryBlockers(roleDir) {
   if (!root.isDirectory() || root.isSymbolicLink()) return ["<target is not a real directory>"];
   const blockers = [];
   const visit = (directory) => {
-    for (const entry of readdirSync6(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync5(directory, { withFileTypes: true })) {
       const path = join9(directory, entry.name);
       const stats = lstatSync7(path);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
@@ -13932,7 +12625,7 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync7 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
 import { join as join11 } from "path";
 import { spawnSync as spawnSync5 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
@@ -13951,7 +12644,7 @@ var UntrackHermesRuntimes = class extends Command {
         message: "No Hermes agents found (no agents/hermes directory)."
       };
     }
-    const roles = readdirSync7(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    const roles = readdirSync6(rolesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     if (roles.length === 0) {
       return {
         success: true,
@@ -14062,7 +12755,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
 import { join as join12 } from "node:path";
-import { existsSync as existsSync9, unlinkSync as unlinkSync4 } from "node:fs";
+import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
   async invoke() {
@@ -14165,7 +12858,7 @@ var WireTelegram = class extends Command {
       };
     }
     const marker = join12(roleDir, ".scripts", ".done-30-telegram");
-    if (existsSync9(marker)) unlinkSync4(marker);
+    if (existsSync9(marker)) unlinkSync3(marker);
     const spinner3 = p3.spinner();
     spinner3.start("Verifying token + wiring profile");
     const result2 = spawnSync6("bash", [script], {
@@ -15218,9 +13911,9 @@ init_reconcile();
 init_config();
 
 // src/notebook/hooks.ts
-import { spawn as spawn2, spawnSync as spawnSync11 } from "node:child_process";
-import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
-import { chmodSync as chmodSync5, closeSync as closeSync7, constants as constants6, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync5, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync7, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync9, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync6, writeFileSync as writeFileSync10 } from "node:fs";
+import { spawn, spawnSync as spawnSync11 } from "node:child_process";
+import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync5, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename8, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -15281,7 +13974,7 @@ var DEFAULT_RUNTIME = {
   spawnWorker(receiptId, projectSlug) {
     const entry = process.argv[1];
     if (!entry) return;
-    const child = spawn2(process.execPath, [entry, "notebook", "worker", "capture", "--receipt-id", receiptId], {
+    const child = spawn(process.execPath, [entry, "notebook", "worker", "capture", "--receipt-id", receiptId], {
       detached: true,
       stdio: "ignore",
       env: captureWorkerEnvironment(process.env, projectSlug)
@@ -15315,7 +14008,7 @@ function assertOwnedSkillTree(source) {
     if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a non-directory component");
     if (uid !== void 0 && directoryStat.uid !== uid) throw new NotebookError("CONFLICT", "Project Notebook skill source is not owned by the current user");
     if (directoryStat.mode & 3586) throw new NotebookError("CONFLICT", "Project Notebook skill source has unsafe directory mode bits");
-    for (const entry of readdirSync9(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync8(directory, { withFileTypes: true })) {
       const path = join22(directory, entry.name);
       const stat = lstatSync11(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a symlink");
@@ -15332,7 +14025,7 @@ function assertOwnedSkillTree(source) {
 function enumerateSkillPayload(source) {
   const result2 = [];
   const walk = (directory) => {
-    for (const entry of readdirSync9(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+    for (const entry of readdirSync8(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join22(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
@@ -15342,7 +14035,7 @@ function enumerateSkillPayload(source) {
       if (entry.isDirectory()) walk(path);
       else if (entry.isFile()) {
         const expectedMode = rel.endsWith(".sh") || rel.startsWith("scripts/") ? "0755" : "0644";
-        result2.push({ path: rel, sha256: createHash8("sha256").update(readFileSync17(path)).digest("hex"), mode: expectedMode });
+        result2.push({ path: rel, sha256: createHash7("sha256").update(readFileSync17(path)).digest("hex"), mode: expectedMode });
       } else throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
     }
   };
@@ -15364,7 +14057,7 @@ function parsePackedManifest(source) {
     const path = join22(source, ...entry.path.split("/"));
     const stat = lstatSync11(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
-    const actual = createHash8("sha256").update(readFileSync17(path)).digest("hex");
+    const actual = createHash7("sha256").update(readFileSync17(path)).digest("hex");
     if (actual !== entry.sha256) throw new NotebookError("CONFLICT", `Project Notebook skill digest mismatch: ${entry.path}`);
     const actualMode = stat.mode & 511;
     const executable = entry.mode === "0755";
@@ -15385,7 +14078,7 @@ function expectedPackedSkill() {
     assertOwnedSkillTree(candidate);
     const manifest = parsePackedManifest(candidate);
     if (!manifest) continue;
-    const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
+    const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
     return { source: candidate, manifest, digest };
   }
   throw new NotebookError("NOT_CONFIGURED", "PJ\xE1ngler package has no verified Project Notebook skill export");
@@ -15524,7 +14217,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const source = input.source ?? resolveProjectNotebookSkillSource(env2);
   if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable");
   const manifest = verifyProjectNotebookSkillExport(source);
-  const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
   if (!home || !resolve11(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
   const skillsRoot = join22(home, ".agents", "skills");
@@ -15539,7 +14232,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   assertNoSymlinkComponents2(dataRoot);
   const dataStat = lstatSync11(dataRoot);
   if (!dataStat.isDirectory() || dataStat.isSymbolicLink() || typeof process.getuid === "function" && dataStat.uid !== process.getuid()) throw new NotebookError("CONFLICT", "Project Notebook skill data root is not a current-user directory");
-  chmodSync5(dataRoot, 448);
+  chmodSync4(dataRoot, 448);
   if (!existsSync17(payload)) {
     const staging = join22(dataRoot, `.staging-${randomUUID5()}`);
     mkdirSync7(staging, { recursive: false, mode: 448 });
@@ -15549,14 +14242,14 @@ function installPackagedProjectNotebookSkill(input = {}) {
         mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
         copyFileSync3(join22(source, ...entry.path.split("/")), destination);
         const mode = entry.mode === "0755" ? 493 : 420;
-        chmodSync5(destination, mode);
-        const fd = openSync7(destination, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
+        chmodSync4(destination, mode);
+        const fd = openSync6(destination, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
         try {
-          const current = fstatSync5(fd);
+          const current = fstatSync4(fd);
           if (!current.isFile()) throw new NotebookError("CONFLICT", `Installed skill entry is not regular: ${entry.path}`);
           fsyncSync4(fd);
         } finally {
-          closeSync7(fd);
+          closeSync6(fd);
         }
       }
       writeFileSync10(join22(staging, "export-manifest.json"), `${JSON.stringify(manifest, null, 2)}
@@ -15624,7 +14317,7 @@ function collectSupersededPayloads(dataRoot, keep) {
   const removed = [];
   let entries;
   try {
-    entries = readdirSync9(dataRoot);
+    entries = readdirSync8(dataRoot);
   } catch {
     return removed;
   }
@@ -15660,7 +14353,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
   assertOwnedSkillTree(source);
   const present = [];
   const walk = (directory) => {
-    for (const entry of readdirSync9(directory, { withFileTypes: true })) {
+    for (const entry of readdirSync8(directory, { withFileTypes: true })) {
       const path = join22(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (entry.isDirectory()) {
@@ -15679,7 +14372,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
     if (!existsSync17(path)) return true;
     const stat = lstatSync11(path);
     if (!stat.isFile()) return true;
-    if (createHash8("sha256").update(readFileSync17(path)).digest("hex") !== entry.sha256) return true;
+    if (createHash7("sha256").update(readFileSync17(path)).digest("hex") !== entry.sha256) return true;
     const mode = stat.mode & 511;
     const executable = entry.mode === "0755";
     return executable && (mode & 64) === 0 || !executable && (mode & 73) !== 0;
@@ -15703,7 +14396,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
     const entry = expected.manifest.files.find((item) => item.path === rel);
     mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
     copyFileSync3(join22(expected.source, ...rel.split("/")), destination);
-    chmodSync5(destination, entry.mode === "0755" ? 493 : 420);
+    chmodSync4(destination, entry.mode === "0755" ? 493 : 420);
   }
   verifyProjectNotebookSkillExport(source);
   return {
@@ -15810,7 +14503,7 @@ function installProjectNotebookIntegration(input = {}) {
     if (skill.installed) {
       try {
         const stat = lstatSync11(skill.path);
-        if (stat.isSymbolicLink() && realpathSync8(skill.path) === source) unlinkSync6(skill.path);
+        if (stat.isSymbolicLink() && realpathSync8(skill.path) === source) unlinkSync5(skill.path);
       } catch {
       }
     }
@@ -15881,14 +14574,14 @@ function readHookPayload(input) {
   if (!before.isFile() || before.isSymbolicLink() || (before.mode & 511) !== 384 || before.nlink !== 1) throw new NotebookError("INVALID_INPUT", "Hook payload file must be a contained mode-0600 regular file");
   if (typeof process.getuid === "function" && before.uid !== process.getuid()) throw new NotebookError("INVALID_INPUT", "Hook payload file must be owned by the current user");
   if (before.size > input.maxBytes) throw new NotebookError("INVALID_INPUT", "Hook payload file exceeds its configured ceiling");
-  const fd = openSync7(path, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
+  const fd = openSync6(path, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
   try {
-    const opened = fstatSync5(fd);
+    const opened = fstatSync4(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw new NotebookError("INVALID_INPUT", "Hook payload file changed while opening");
     const value = readBoundedHookStdin(input.maxBytes, fd);
     return { payload: parsePayload(value, input.maxBytes), bytes: Buffer.byteLength(value, "utf8") };
   } finally {
-    closeSync7(fd);
+    closeSync6(fd);
   }
 }
 function identity(payload) {
@@ -17727,7 +16420,7 @@ if __name__ == "__main__":
 };
 
 // src/commands/AddMiseCodegraphScript.ts
-import { chmodSync as chmodSync6 } from "fs";
+import { chmodSync as chmodSync5 } from "fs";
 import { join as join26 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
@@ -17782,7 +16475,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync6(join26(this.context.targetDir, filePath), 493);
+      chmodSync5(join26(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -18057,7 +16750,7 @@ function planeBase(env2 = process.env, home = homedir10()) {
   if (fromConfig) return fromConfig.replace(/\/+$/, "");
   return DEFAULT_PLANE_BASE;
 }
-function planeWorkspace(provider, env2, home) {
+function planeWorkspace(provider, env2 = process.env, home = homedir10()) {
   const fromManifest = provider.workspace?.trim();
   if (fromManifest) return fromManifest;
   const config = readTemplateConfig(env2, home);
@@ -18157,54 +16850,289 @@ function resolveBoardUrl(cwd, ref, env2 = process.env) {
   return boardUrl(provider, { ref, branch: currentBranch(root), env: env2 });
 }
 
-// src/project/openUrl.ts
-import { spawn as spawn3 } from "node:child_process";
-function osc8(url, label = url) {
-  return `\x1B]8;;${url}\x07${label}\x1B]8;;\x07`;
+// src/project/boardQuery.ts
+import { spawnSync as spawnSync14 } from "node:child_process";
+import { readFileSync as readFileSync22 } from "node:fs";
+import { homedir as homedir11 } from "node:os";
+import { basename as basename9, join as join29 } from "node:path";
+var BOARD_PROVIDERS = ["plane", "trello", "linear"];
+var BoardError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "BoardError";
+  }
+};
+function readProjectSlug(root) {
+  try {
+    const manifest = JSON.parse(readFileSync22(join29(root, ".project.json"), "utf8"));
+    const slug = manifest.project_slug;
+    if (typeof slug === "string" && slug.trim()) return slug.trim();
+  } catch {
+  }
+  return basename9(root);
 }
-function isHeadless(env2 = process.env, platform2 = process.platform) {
-  if (env2.SSH_CONNECTION || env2.SSH_TTY) return true;
-  if (platform2 === "darwin") return false;
-  return !(env2.WAYLAND_DISPLAY || env2.DISPLAY);
+function resolveProject(cwd) {
+  const root = findProjectRoot(cwd);
+  if (!root) {
+    throw new BoardError(
+      `not inside a pjangler project: no .project.json in ${cwd} or any parent directory`
+    );
+  }
+  return { root, slug: readProjectSlug(root), facts: readTicketProvider(root) };
 }
-function launcher(platform2 = process.platform) {
-  return platform2 === "darwin" ? "open" : "xdg-open";
+function resolveProvider(handle) {
+  const type = handle.facts?.type?.trim().toLowerCase();
+  if (!type) {
+    throw new BoardError(
+      `no ticket board bound for ${handle.slug}: ${join29(handle.root, ".project.json")} has no ticket_provider.type`
+    );
+  }
+  if (!BOARD_PROVIDERS.includes(type)) {
+    throw new BoardError(
+      `unsupported ticket_provider.type "${type}" in ${join29(handle.root, ".project.json")} \u2014 expected one of ${BOARD_PROVIDERS.join(", ")}`
+    );
+  }
+  return type;
 }
-function openUrl(url, env2 = process.env, platform2 = process.platform) {
-  if (isHeadless(env2, platform2)) {
-    return {
-      opened: false,
-      display: osc8(url),
-      reason: "no display; printed a link instead"
-    };
+function resolveBoardContext(cwd, env2 = process.env, home = homedir11()) {
+  const handle = resolveProject(cwd);
+  const provider = resolveProvider(handle);
+  return { root: handle.root, slug: handle.slug, provider, facts: handle.facts ?? {}, env: env2, home };
+}
+function workspaceEnvKey(workspace) {
+  const key = (workspace ?? "default").toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  return `PLANE_${key || "DEFAULT"}_API_KEY`;
+}
+function dotenvValue(path, key) {
+  let text3;
+  try {
+    text3 = readFileSync22(path, "utf8");
+  } catch {
+    return void 0;
+  }
+  for (const raw of text3.split("\n")) {
+    let line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice(7).trimStart();
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    let value = line.slice(eq + 1).trim();
+    const first = value[0];
+    if (value.length >= 2 && first && (first === '"' || first === "'") && value.endsWith(first)) {
+      value = value.slice(1, -1);
+    }
+    return value || void 0;
+  }
+  return void 0;
+}
+function resolveSecretValue(value) {
+  if (!value.startsWith("op://")) return value;
+  const result2 = spawnSync14("op", ["read", value], { encoding: "utf8" });
+  if (result2.error || result2.status !== 0) {
+    const detail = (result2.stderr || result2.error?.message || "op read failed").trim();
+    throw new BoardError(`could not resolve the Plane credential ${value} from 1Password: ${detail}`);
+  }
+  const resolved = result2.stdout.trim();
+  if (!resolved) throw new BoardError(`1Password returned an empty value for ${value}`);
+  return resolved;
+}
+function planeApiKeyNames(workspace) {
+  return ["PLANE_API_KEY", workspaceEnvKey(workspace)];
+}
+function resolvePlaneApiKey(workspace, env2 = process.env, home = homedir11()) {
+  const fleetEnv = env2.HERMES_FLEET_ENV?.trim() || join29(home, ".hermes", "fleet.env");
+  const scoped = workspaceEnvKey(workspace);
+  const candidates = [
+    env2.PLANE_API_KEY,
+    env2[scoped],
+    dotenvValue(fleetEnv, scoped),
+    dotenvValue(fleetEnv, "PLANE_API_KEY")
+  ];
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (value) return resolveSecretValue(value);
+  }
+  return void 0;
+}
+var DEFAULT_TIMEOUT_MS = 15e3;
+var DEFAULT_PAGE_SIZE = 100;
+var MAX_PAGES = 200;
+function positiveInt(raw, fallback2) {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback2;
+}
+function planeClient(ctx) {
+  const board = ctx.facts.board_id?.trim();
+  if (!board) {
+    throw new BoardError(
+      `no board linked for ${ctx.slug}: ${join29(ctx.root, ".project.json")} has an empty ticket_provider.board_id`
+    );
+  }
+  const workspace = planeWorkspace(ctx.facts, ctx.env, ctx.home);
+  if (!workspace) {
+    throw new BoardError(`no Plane workspace resolved for ${ctx.slug} (ticket_provider.workspace is empty)`);
+  }
+  const apiKey = resolvePlaneApiKey(workspace, ctx.env, ctx.home);
+  if (!apiKey) {
+    throw new BoardError(
+      `no Plane API key for workspace "${workspace}": set ${planeApiKeyNames(workspace).join(" or ")}, or add one to ${ctx.env.HERMES_FLEET_ENV?.trim() || join29(ctx.home, ".hermes", "fleet.env")}`
+    );
+  }
+  return {
+    base: planeBase(ctx.env, ctx.home),
+    workspace,
+    board,
+    apiKey,
+    timeoutMs: positiveInt(ctx.env.PJANGLER_BOARD_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+    pageSize: positiveInt(ctx.env.PJANGLER_BOARD_PAGE_SIZE, DEFAULT_PAGE_SIZE)
+  };
+}
+async function planeGet(client, path, params = {}) {
+  const url = new URL(
+    `${client.base}/api/v1/workspaces/${encodeURIComponent(client.workspace)}/projects/${encodeURIComponent(client.board)}/${path}`
+  );
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { "X-API-Key": client.apiKey, "User-Agent": `pjangler/${PJANGLER_VERSION}` },
+      signal: AbortSignal.timeout(client.timeoutMs)
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new BoardError(`could not reach Plane at ${client.base} (${path}): ${detail}`);
+  }
+  if (!response.ok) {
+    const credentials = response.status === 401 || response.status === 403;
+    throw new BoardError(
+      `Plane returned ${response.status} for ${path}` + (credentials ? ` \u2014 the API key was rejected; check ${planeApiKeyNames(client.workspace).join(" / ")}` : response.status === 404 ? ` \u2014 no such board in workspace "${client.workspace}"; check ticket_provider.board_id` : "")
+    );
   }
   try {
-    spawn3(launcher(platform2), [url], { detached: true, stdio: "ignore" }).unref();
-    return { opened: true, display: osc8(url) };
-  } catch (err) {
-    return {
-      opened: false,
-      display: osc8(url),
-      reason: `could not launch ${launcher(platform2)}: ${err.message}`
-    };
+    return await response.json();
+  } catch {
+    throw new BoardError(`Plane returned a non-JSON body for ${path}`);
   }
 }
-
-// src/describe/index.ts
-import { existsSync as existsSync23, readFileSync as readFileSync22, readdirSync as readdirSync10, statSync as statSync5 } from "node:fs";
-import { join as join30, resolve as resolve16 } from "node:path";
-init_project();
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+async function planeGetAll(client, path, params = {}) {
+  const rows = [];
+  let cursor;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const query = { per_page: client.pageSize, ...params, ...cursor ? { cursor } : {} };
+    const body = await planeGet(client, path, query);
+    if (Array.isArray(body)) {
+      rows.push(...body.filter(isRecord4));
+      return rows;
+    }
+    if (!isRecord4(body)) return rows;
+    const envelope = body;
+    if (Array.isArray(envelope.results)) rows.push(...envelope.results.filter(isRecord4));
+    if (!envelope.next_page_results || !envelope.next_cursor) return rows;
+    cursor = envelope.next_cursor;
+  }
+  throw new BoardError(
+    `Plane pagination did not terminate after ${MAX_PAGES} pages of ${path} \u2014 refusing to report a truncated list`
+  );
+}
+function str(value) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+function num(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+async function planeStates(client) {
+  const rows = await planeGetAll(client, "states/");
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const id = str(row.id);
+    if (id) map.set(id, { name: str(row.name), group: str(row.group) });
+  }
+  return map;
+}
+function touched(createdAt, updatedAt) {
+  if (!createdAt) return updatedAt;
+  if (!updatedAt) return createdAt;
+  return Date.parse(updatedAt) >= Date.parse(createdAt) ? updatedAt : createdAt;
+}
+function toTicket(row, states, ctx) {
+  const identifier = ctx.facts.identifier?.trim().toUpperCase();
+  const sequence = str(row.sequence_id);
+  const key = identifier && sequence ? `${identifier}-${sequence}` : sequence || str(row.id);
+  const state = states.get(str(row.state));
+  const createdAt = str(row.created_at);
+  const updatedAt = str(row.updated_at);
+  return {
+    key,
+    id: str(row.id),
+    title: str(row.name),
+    state: state?.name ?? "",
+    stateGroup: state?.group ?? "",
+    createdAt,
+    updatedAt,
+    touchedAt: touched(createdAt, updatedAt),
+    // Reuse the one URL derivation rather than assembling a second one.
+    url: boardUrl(ctx.facts, { ref: key, env: ctx.env, home: ctx.home })
+  };
+}
+function byTouchedDesc(a, b) {
+  return Date.parse(b.touchedAt) - Date.parse(a.touchedAt);
+}
+function requirePlane(ctx, verb) {
+  if (ctx.provider !== "plane") {
+    throw new BoardError(
+      `board ${verb} is not wired for ${ctx.provider} yet \u2014 only plane boards can be read. "pj board provider" and "pj board slug" work for every provider.`
+    );
+  }
+  return planeClient(ctx);
+}
+async function fetchStartedTickets(ctx, limit) {
+  const client = requirePlane(ctx, "status");
+  const [states, rows] = await Promise.all([
+    planeStates(client),
+    planeGetAll(client, "issues/", { order_by: "-updated_at" })
+  ]);
+  const started = rows.map((row) => toTicket(row, states, ctx)).filter((ticket) => ticket.stateGroup === "started").sort(byTouchedDesc);
+  return typeof limit === "number" && limit > 0 ? started.slice(0, limit) : started;
+}
+async function fetchRecentTickets(ctx, limit) {
+  const client = requirePlane(ctx, "recent");
+  const [states, rows] = await Promise.all([
+    planeStates(client),
+    planeGetAll(client, "issues/", { order_by: "-updated_at" })
+  ]);
+  return rows.map((row) => toTicket(row, states, ctx)).sort(byTouchedDesc).slice(0, Math.max(0, limit));
+}
+async function fetchModules(ctx) {
+  const client = requirePlane(ctx, "modules");
+  const rows = await planeGetAll(client, "modules/");
+  const base = planeBase(ctx.env, ctx.home);
+  return rows.map((row) => ({
+    id: str(row.id),
+    name: str(row.name),
+    description: str(row.description),
+    status: str(row.status),
+    totalIssues: num(row.total_issues),
+    completedIssues: num(row.completed_issues),
+    startedIssues: num(row.started_issues),
+    updatedAt: touched(str(row.created_at), str(row.updated_at)),
+    url: str(row.id) ? `${base}/${client.workspace}/projects/${client.board}/modules/${str(row.id)}` : void 0
+  })).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
 
 // src/describe/activity.ts
-import { spawn as spawn4, spawnSync as spawnSync14 } from "node:child_process";
+import { spawn as spawn2, spawnSync as spawnSync15 } from "node:child_process";
 import { statSync as statSync4 } from "node:fs";
-import { join as join29 } from "node:path";
+import { join as join30 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
 var GIT_MAX_BUFFER = 16 * 1024 * 1024;
 function git3(repo, args) {
-  const result2 = spawnSync14("git", ["-C", repo, ...args], {
+  const result2 = spawnSync15("git", ["-C", repo, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER
@@ -18214,7 +17142,7 @@ function git3(repo, args) {
 }
 function gitAsync(repo, args) {
   return new Promise((resolve19) => {
-    const child = spawn4("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
     let settled = false;
@@ -18363,7 +17291,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync4(join29(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync4(join30(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -18453,7 +17381,117 @@ async function computeRepoActivityBatch(repos, options = {}) {
   return results;
 }
 
+// src/project/boardRender.ts
+init_style();
+var MAX_STATE_WIDTH = 18;
+function stateColor(group) {
+  switch (group) {
+    case "started":
+      return yellow;
+    case "completed":
+      return green;
+    case "cancelled":
+      return red;
+    case "backlog":
+    case "unstarted":
+      return dim;
+    default:
+      return (value) => String(value);
+  }
+}
+function age(stamp, now) {
+  const parsed = Date.parse(stamp);
+  if (!Number.isFinite(parsed)) return "\u2014";
+  return formatCompactAge((now.getTime() - parsed) / 1e3);
+}
+function formatTicketTable(tickets, options = {}) {
+  if (!tickets.length) return [];
+  const now = options.now ?? /* @__PURE__ */ new Date();
+  const width = options.width ?? terminalWidth();
+  const ages = tickets.map((ticket) => age(ticket.touchedAt, now));
+  const keyWidth = Math.max(...tickets.map((ticket) => ticket.key.length));
+  const ageWidth = Math.max(...ages.map((value) => value.length));
+  const stateWidth = Math.min(MAX_STATE_WIDTH, Math.max(...tickets.map((ticket) => ticket.state.length)));
+  const titleWidth = Math.max(12, width - (2 + keyWidth + 1 + ageWidth + 1 + stateWidth + 1));
+  return tickets.map((ticket, index) => {
+    const key = cyan(ticket.key.padEnd(keyWidth));
+    const stamp = dim((ages[index] ?? "").padStart(ageWidth));
+    const state = stateColor(ticket.stateGroup)(truncateVisible(ticket.state, stateWidth).padEnd(stateWidth));
+    const title = truncateVisible(ticket.title, titleWidth);
+    return `  ${key} ${stamp} ${state} ${title}`;
+  });
+}
+function formatModuleList(modules, options = {}) {
+  if (!modules.length) return [];
+  const now = options.now ?? /* @__PURE__ */ new Date();
+  const width = options.width ?? terminalWidth();
+  const progress = modules.map((module) => `${module.completedIssues}/${module.totalIssues}`);
+  const ages = modules.map((module) => age(module.updatedAt, now));
+  const progressWidth = Math.max(...progress.map((value) => value.length));
+  const ageWidth = Math.max(...ages.map((value) => value.length));
+  const statusWidth = Math.max(...modules.map((module) => module.status.length));
+  const available = Math.max(12, width - (2 + progressWidth + 1 + statusWidth + 1 + ageWidth + 1));
+  const nameWidth = Math.min(available, Math.max(...modules.map((module) => module.name.length)));
+  return modules.map((module, index) => {
+    const name = padVisible(truncateVisible(module.name, nameWidth), nameWidth);
+    const done = dim((progress[index] ?? "").padStart(progressWidth));
+    const status = statusColor(module.status)((module.status || "").padEnd(statusWidth));
+    const stamp = dim((ages[index] ?? "").padStart(ageWidth));
+    return `  ${name} ${done} ${status} ${stamp}`;
+  });
+}
+function statusColor(status) {
+  switch (status) {
+    case "in-progress":
+      return yellow;
+    case "completed":
+      return green;
+    case "cancelled":
+      return red;
+    case "paused":
+      return gray;
+    default:
+      return dim;
+  }
+}
+
+// src/project/openUrl.ts
+import { spawn as spawn3 } from "node:child_process";
+function osc8(url, label = url) {
+  return `\x1B]8;;${url}\x07${label}\x1B]8;;\x07`;
+}
+function isHeadless(env2 = process.env, platform2 = process.platform) {
+  if (env2.SSH_CONNECTION || env2.SSH_TTY) return true;
+  if (platform2 === "darwin") return false;
+  return !(env2.WAYLAND_DISPLAY || env2.DISPLAY);
+}
+function launcher(platform2 = process.platform) {
+  return platform2 === "darwin" ? "open" : "xdg-open";
+}
+function openUrl(url, env2 = process.env, platform2 = process.platform) {
+  if (isHeadless(env2, platform2)) {
+    return {
+      opened: false,
+      display: osc8(url),
+      reason: "no display; printed a link instead"
+    };
+  }
+  try {
+    spawn3(launcher(platform2), [url], { detached: true, stdio: "ignore" }).unref();
+    return { opened: true, display: osc8(url) };
+  } catch (err) {
+    return {
+      opened: false,
+      display: osc8(url),
+      reason: `could not launch ${launcher(platform2)}: ${err.message}`
+    };
+  }
+}
+
 // src/describe/index.ts
+import { existsSync as existsSync23, readFileSync as readFileSync23, readdirSync as readdirSync9, statSync as statSync5 } from "node:fs";
+import { join as join31, resolve as resolve16 } from "node:path";
+init_project();
 init_config();
 init_state();
 init_style();
@@ -18508,7 +17546,7 @@ var CONFIG_FILES = [
 ];
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync22(path, "utf8"));
+    const parsed = JSON.parse(readFileSync23(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -18530,23 +17568,23 @@ function describeType(repo) {
   const evidence = [];
   const note = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync23(join30(repo, marker.file))) continue;
+    if (!existsSync23(join31(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note(marker.language, marker.file);
     }
   }
   try {
-    const dotnet = readdirSync10(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
+    const dotnet = readdirSync9(repo).find((entry) => entry.endsWith(".csproj") || entry.endsWith(".sln"));
     if (dotnet && !languages.includes("dotnet")) {
       languages.push("dotnet");
       note("dotnet", dotnet);
     }
   } catch {
   }
-  const pkg = readJson(join30(repo, "package.json"));
+  const pkg = readJson(join31(repo, "package.json"));
   if (pkg) {
-    if (existsSync23(join30(repo, "tsconfig.json"))) {
+    if (existsSync23(join31(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -18580,14 +17618,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync23(join30(repo, marker))) continue;
+    if (!existsSync23(join31(repo, marker))) continue;
     roles.push(role);
     note(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join30(repo, ".project.json");
+  const manifestPath = join31(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -18674,12 +17712,12 @@ function describeSubsystems(repo, findings) {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
     const evidence = metadata.id === "notebook" ? (() => {
       try {
-        const manifest = JSON.parse(readFileSync22(join30(repo, ".project.json"), "utf8"));
+        const manifest = JSON.parse(readFileSync23(join31(repo, ".project.json"), "utf8"));
         return manifest.notebook && typeof manifest.notebook === "object" ? [".project.json#notebook"] : [];
       } catch {
         return [];
       }
-    })() : markers.filter((marker) => existsSync23(join30(repo, marker)));
+    })() : markers.filter((marker) => existsSync23(join31(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding2) => ({
       id: finding2.id,
       title: finding2.title,
@@ -18698,7 +17736,7 @@ function describeNotebook(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const project = Object.values(registry.projects).find((entry) => resolve16(entry.repo_path) === resolve16(repo));
-    const manifest = existsSync23(join30(repo, ".project.json")) ? JSON.parse(readFileSync22(join30(repo, ".project.json"), "utf8")) : void 0;
+    const manifest = existsSync23(join31(repo, ".project.json")) ? JSON.parse(readFileSync23(join31(repo, ".project.json"), "utf8")) : void 0;
     const declared = Boolean(project?.notebook || manifest?.notebook && typeof manifest.notebook === "object");
     if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
     const config = loadEffectiveNotebookConfig(repo, registryPath2);
@@ -18716,7 +17754,7 @@ function describeNotebook(repo, registryPath2) {
   }
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync23(join30(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync23(join31(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -19068,7 +18106,7 @@ init_style();
 // src/notebook/cli.ts
 init_project();
 init_capture();
-import { closeSync as closeSync8, constants as constants7, existsSync as existsSync24, fstatSync as fstatSync6, lstatSync as lstatSync13, openSync as openSync8, readSync as readSync4 } from "node:fs";
+import { closeSync as closeSync7, constants as constants6, existsSync as existsSync24, fstatSync as fstatSync5, lstatSync as lstatSync13, openSync as openSync7, readSync as readSync4 } from "node:fs";
 import { resolve as resolve17 } from "node:path";
 import { createInterface } from "node:readline/promises";
 
@@ -19214,9 +18252,9 @@ function readBoundedRegularFile(path, maxBytes) {
   const before = lstatSync13(absolute);
   if (!before.isFile() || before.isSymbolicLink()) throw new NotebookError("INVALID_INPUT", `File must be a regular non-symlink: ${absolute}`);
   if (before.size > maxBytes) throw new NotebookError("INVALID_INPUT", `File exceeds the configured ceiling: ${absolute}`);
-  const fd = openSync8(absolute, constants7.O_RDONLY | (constants7.O_NOFOLLOW ?? 0));
+  const fd = openSync7(absolute, constants6.O_RDONLY | (constants6.O_NOFOLLOW ?? 0));
   try {
-    const opened = fstatSync6(fd);
+    const opened = fstatSync5(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw new NotebookError("INVALID_INPUT", `File changed while opening: ${absolute}`);
     const chunks = [];
     let total = 0;
@@ -19234,7 +18272,7 @@ function readBoundedRegularFile(path, maxBytes) {
       throw new NotebookError("INVALID_INPUT", `File must be valid UTF-8: ${absolute}`);
     }
   } finally {
-    closeSync8(fd);
+    closeSync7(fd);
   }
 }
 function textInput(options, maxBytes) {
@@ -19456,14 +18494,14 @@ async function promptForRuleIds(rules) {
 function readJson2(path) {
   if (!existsSync25(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync23(path, "utf8"));
+    const parsed = JSON.parse(readFileSync24(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
   }
 }
 function findGitRoot(cwd) {
-  const result2 = spawnSync15("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  const result2 = spawnSync16("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result2.status !== 0) return void 0;
   return resolve18(result2.stdout.trim());
 }
@@ -19473,9 +18511,9 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join31(targetDir, ".project.json"));
-  const pkg = readJson2(join31(targetDir, "package.json"));
-  const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename9(targetDir)) || "Project";
+  const manifest = readJson2(join32(targetDir, ".project.json"));
+  const pkg = readJson2(join32(targetDir, "package.json"));
+  const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename10(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
     name,
@@ -19530,7 +18568,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync25(action.path) || readFileSync23(action.path, "utf8") !== next;
+    return !existsSync25(action.path) || readFileSync24(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -19583,9 +18621,9 @@ async function resolveProjectInitTarget(name, options) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
-    const defaultName = name ?? basename9(cwd);
+    const defaultName = name ?? basename10(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join31(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join32(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
@@ -19596,11 +18634,11 @@ async function resolveProjectInitTarget(name, options) {
   const targetExists = existsSync25(targetDir);
   if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const alreadyScaffolded = targetExists && (existsSync25(join31(targetDir, ".project.json")) || existsSync25(join31(targetDir, ".copier-answers.yml")));
+  const alreadyScaffolded = targetExists && (existsSync25(join32(targetDir, ".project.json")) || existsSync25(join32(targetDir, ".copier-answers.yml")));
   const syncMode = Boolean(
     targetGitRoot && resolve18(targetGitRoot) === resolve18(targetDir) || alreadyScaffolded
   );
-  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename9(targetDir)) ?? "Project", description: "" };
+  const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename10(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
     name = await promptTextValue("Project name", defaults.name);
   }
@@ -19676,7 +18714,21 @@ program.command("list").description("List available subsystems").action(() => {
   }
   console.log("");
 });
-program.command("board").argument("[ref]", "Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board").description("Open this project's ticket board \u2014 or one work item \u2014 in a browser").option("--print", "Print the resolved URL instead of opening it").action((ref, options) => {
+function boardFailure(error) {
+  const message = error instanceof BoardError || error instanceof Error ? error.message : String(error);
+  console.error(`${xmark} ${message}`);
+  process.exit(1);
+}
+function parseTicketCount(raw, fallback2) {
+  if (raw === void 0) return fallback2;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    console.error(`${xmark} count must be a positive integer, got "${raw}"`);
+    process.exit(1);
+  }
+  return value;
+}
+var boardCmd = program.command("board").argument("[ref]", "Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board").description("Open this project's ticket board \u2014 or one work item \u2014 in a browser").option("--print", "Print the resolved URL instead of opening it").action((ref, options) => {
   const url = resolveBoardUrl(process.cwd(), ref);
   if (!url) {
     console.error(`${xmark} No ticket board here: need a .project.json with ticket_provider.board_id`);
@@ -19689,6 +18741,72 @@ program.command("board").argument("[ref]", "Work item to open (71, PJAN-71); def
   const outcome = openUrl(url);
   console.log(`  ${cyan(glyph.pointer)} ${outcome.display}`);
   if (outcome.reason) console.log(`  ${dim(outcome.reason)}`);
+});
+boardCmd.command("provider").description("Print this project's ticket provider (plane|trello|linear)").action(() => {
+  try {
+    console.log(resolveProvider(resolveProject(process.cwd())));
+  } catch (error) {
+    boardFailure(error);
+  }
+});
+boardCmd.command("slug").description("Print this project's slug").action(() => {
+  try {
+    console.log(resolveProject(process.cwd()).slug);
+  } catch (error) {
+    boardFailure(error);
+  }
+});
+boardCmd.command("status").description("List work items in a started state, most recently added or updated first").option("--json", "Emit the work items as JSON").option("--limit <count>", "Show at most this many work items").action(async (options) => {
+  try {
+    const context = resolveBoardContext(process.cwd());
+    const limit = options.limit === void 0 ? void 0 : parseTicketCount(options.limit, 0);
+    const tickets = await fetchStartedTickets(context, limit);
+    if (options.json) {
+      console.log(JSON.stringify(tickets, null, 2));
+      return;
+    }
+    if (!tickets.length) {
+      console.log(`  ${dim(`Nothing started on ${context.slug}.`)}`);
+      return;
+    }
+    for (const line of formatTicketTable(tickets)) console.log(line);
+  } catch (error) {
+    boardFailure(error);
+  }
+});
+boardCmd.command("recent").argument("[count]", "How many work items to show", "5").description("List the most recently added or updated work items in any state").option("--json", "Emit the work items as JSON").action(async (count, options) => {
+  try {
+    const context = resolveBoardContext(process.cwd());
+    const tickets = await fetchRecentTickets(context, parseTicketCount(count, 5));
+    if (options.json) {
+      console.log(JSON.stringify(tickets, null, 2));
+      return;
+    }
+    if (!tickets.length) {
+      console.log(`  ${dim(`No work items on ${context.slug}.`)}`);
+      return;
+    }
+    for (const line of formatTicketTable(tickets)) console.log(line);
+  } catch (error) {
+    boardFailure(error);
+  }
+});
+boardCmd.command("modules").description("List this project's modules").option("--json", "Emit the modules as JSON").action(async (options) => {
+  try {
+    const context = resolveBoardContext(process.cwd());
+    const modules = await fetchModules(context);
+    if (options.json) {
+      console.log(JSON.stringify(modules, null, 2));
+      return;
+    }
+    if (!modules.length) {
+      console.log(`  ${dim(`No modules on ${context.slug}.`)}`);
+      return;
+    }
+    for (const line of formatModuleList(modules)) console.log(line);
+  } catch (error) {
+    boardFailure(error);
+  }
 });
 var projectCmd = program.command("project").description("Manage the pjangler project registry");
 projectCmd.command("init").argument("[name]", "Project display name").description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow live/network/cloud provisioning actions").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane").option("--board-id <id>", "Board id (Plane project UUID or Trello board id)").option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id").option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action((name, options) => {
