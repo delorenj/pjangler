@@ -489,7 +489,12 @@ await checkAsync("--apply repairs both stores and touches nothing else", async (
   assert.equal(provider.identifier, "SSBNK");
   assert.equal(provider.identifier_source, "provider");
   assert.equal(provider.identifier_fetched_at, "2026-08-28T12:00:00.000Z");
-  assert.equal(provider.state, "planned", "no board_id means no link, however confirmed the identifier is");
+  // The record carried no board_id; the fleet agent for this repo did. That
+  // join is a recorded binding, not a guess, so the link is legitimate — and
+  // recovering it is what turned 7 "(planned, provider)" records with no board
+  // into real links.
+  assert.equal(provider.board_id, BOARD.ssbnk, "the fleet's binding for this repo is recovered");
+  assert.equal(provider.state, "linked");
 });
 
 await checkAsync("a failed fetch PRESERVES the recorded identifier", async () => {
@@ -567,6 +572,223 @@ check("the surgical writer refuses an edit that would change anything else", () 
 
 check("the abandoned agents are named, not modelled as triage", () => {
   assert.deepEqual([...DEAD_AGENT_IDS], ["coachingagentframework-pm", "tonnybox-pm"]);
+});
+
+console.log("");
+console.log("PID-5: the project registry is reconciled record by record");
+
+// Two thirds of the real registry has no Hermes agent at all, so an
+// agent-driven pass could never see it — which is why 15 records still carried
+// an identifier nobody had ever confirmed. These fixtures walk the records.
+
+const TRELLO = { live: "687535e9873b89478afef689", gone: "000000000000000000000000" };
+
+function projectFixture() {
+  const dir = makeDir("projects");
+  const repo = (slug, manifestProvider) => {
+    const path = join(dir, slug);
+    mkdirSync(path, { recursive: true });
+    if (manifestProvider) {
+      writeFileSync(join(path, ".project.json"), `${JSON.stringify({ ticket_provider: manifestProvider }, null, 2)}\n`, "utf8");
+    }
+    return path;
+  };
+  const record = (slug, provider, manifestProvider) =>
+    baseRecord({ slug, name: slug, repo_path: repo(slug, manifestProvider), ticket_provider: provider });
+
+  const registry = registryOf(
+    // Board recovered from the repo's own manifest.
+    record("recovered", { type: "plane", workspace: "33god", identifier: "RECO", board_id: "", state: "planned" },
+      { type: "plane", workspace: "33god", board_id: BOARD.holocene }),
+    // The board lives in a workspace the record names wrongly.
+    record("relocated", { type: "plane", workspace: "33god", identifier: "JAME", board_id: "", state: "planned" },
+      { type: "plane", workspace: "automaticai", board_id: BOARD.jimb }),
+    // Unbound, and squatting on a live board key that belongs to someone else.
+    record("shadow", { type: "plane", workspace: "33god", identifier: "HOLOC", board_id: "", state: "planned" }),
+    // Unbound, harmless identifier.
+    record("proposal", { type: "plane", workspace: "33god", identifier: "PROP", board_id: "", state: "planned" }),
+    // A link behind a board Plane no longer has.
+    record("ghost", {
+      type: "plane", workspace: "33god", identifier: "GHOS", board_id: BOARD.gone,
+      identifier_source: "provider", identifier_fetched_at: "2026-01-01T00:00:00.000Z", state: "linked",
+    }),
+    // A second record pointing at a board another record already owns.
+    record("thief", { type: "plane", workspace: "33god", identifier: "THIE", board_id: "", state: "planned" },
+      { type: "plane", workspace: "33god", board_id: BOARD.holocene }),
+    // An operator's explicit decision.
+    record("skipped-record", { type: "plane", workspace: "33god", identifier: "SKIP", board_id: "", state: "skipped" }),
+    // Trello: the board is the only thing the provider can confirm.
+    record("trello-live", { type: "trello", workspace: "", identifier: "TRL", board_id: TRELLO.live, state: "planned" }),
+    record("trello-dead", {
+      type: "trello", workspace: "", identifier: "DEAD", board_id: TRELLO.gone,
+      identifier_source: "provider", state: "linked",
+    }),
+    // A provider this command does not speak.
+    record("linear-record", { type: "linear", workspace: "", identifier: "LIN", board_id: "L1", state: "planned" }),
+  );
+  const registryPath = join(dir, "projects.yaml");
+  saveProjectRegistry(registry, registryPath);
+  const hermesRegistryPath = join(dir, "agents-registry.yaml");
+  writeFileSync(hermesRegistryPath, "schema_version: 1\nagents: {}\n", "utf8");
+  return { dir, registryPath, hermesRegistryPath };
+}
+
+const trelloSeam = async (boardId) =>
+  boardId === TRELLO.live ? { id: boardId, name: "Intelforia", closed: false } : null;
+
+async function runProjects(fixture, overrides = {}) {
+  return reconcileProjectIdentity({
+    hermesRegistryPath: fixture.hermesRegistryPath,
+    registryPath: fixture.registryPath,
+    all: true,
+    now: new Date("2026-08-28T12:00:00.000Z"),
+    fetchBoards: async (workspace) => planeBoards(workspace),
+    fetchTrelloBoard: trelloSeam,
+    ...overrides,
+  });
+}
+
+await checkAsync("every record is examined, agent or no agent", async () => {
+  const fixture = projectFixture();
+  const report = await runProjects(fixture);
+  assert.equal(report.checked, 0, "this fleet has no agents at all");
+  assert.equal(report.projectsChecked, 10, "and every project record is still reconciled");
+});
+
+await checkAsync("a board is recovered from the repo's own manifest, never guessed", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.recovered.ticket_provider;
+  assert.equal(provider.board_id, BOARD.holocene);
+  assert.equal(provider.identifier, "HOLOC", "the identifier comes from Plane, not from the manifest");
+  assert.equal(provider.identifier_source, "provider");
+  assert.equal(provider.state, "linked");
+});
+
+await checkAsync("the workspace follows the board, so a wrong one is corrected", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.relocated.ticket_provider;
+  assert.equal(provider.workspace, "automaticai", "the board lives where Plane says it does");
+  assert.equal(provider.identifier, "JIMB");
+  assert.equal(provider.state, "linked");
+});
+
+await checkAsync("an unconfirmed identifier that shadows a live board key is dropped", async () => {
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.shadow.ticket_provider;
+  assert.equal(provider.identifier, "", "HOLOC belongs to Holocene, and nothing bound this record to it");
+  assert.equal(provider.identifier_source, undefined);
+  assert.equal(provider.state, "planned");
+  const resolution = report.projects.find((entry) => entry.slug === "shadow");
+  assert.match(resolution.detail, /belongs to "Holocene"/, "the report must name the board it collided with");
+});
+
+await checkAsync("an unbound identifier that shadows nothing survives as a labelled proposal", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.proposal.ticket_provider;
+  assert.equal(provider.identifier, "PROP");
+  assert.equal(provider.identifier_source, "proposed", "the R3 latent trap: never a bare unstamped value");
+  assert.equal(provider.identifier_fetched_at, undefined, "nothing was read, so no read instant may be claimed");
+});
+
+await checkAsync("a Plane board nobody could find is reported, never cleared", async () => {
+  // Plane's v1 API cannot enumerate the workspaces a token can see, so "not in
+  // the workspaces we searched" is never proof of deletion — and the recorded
+  // board id is the only thing that could ever find it again.
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.ghost.ticket_provider;
+  assert.equal(provider.board_id, BOARD.gone, "the id survives");
+  assert.equal(provider.state, "linked");
+  assert.equal(report.projects.find((entry) => entry.slug === "ghost").status, "preserved");
+  assert.equal(report.ok, false, "and the exit code carries the unresolved binding");
+  assert.ok(report.errors.some((error) => error.startsWith("ghost:") && /binding preserved/.test(error)));
+});
+
+await checkAsync("a board another record already owns is never stolen", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const projects = loadProjectRegistry(fixture.registryPath).projects;
+  assert.equal(projects.recovered.ticket_provider.board_id, BOARD.holocene);
+  assert.equal(projects.thief.ticket_provider.board_id, "", "R4 must never be reachable through recovery");
+  assert.equal(projects.thief.ticket_provider.state, "planned");
+});
+
+await checkAsync("an operator's explicit skip is a decision, not drift", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects["skipped-record"].ticket_provider;
+  assert.equal(provider.state, "skipped");
+  assert.equal(provider.identifier_source, "proposed");
+});
+
+await checkAsync("Trello confirms the BOARD, which is all Trello has to confirm", async () => {
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const projects = loadProjectRegistry(fixture.registryPath).projects;
+  const live = projects["trello-live"].ticket_provider;
+  assert.equal(live.state, "linked");
+  assert.equal(live.identifier, "TRL", "Trello assigns no identifier; the prefix on the record is all there is");
+  assert.equal(live.identifier_source, "provider");
+  assert.equal(live.identifier_fetched_at, "2026-08-28T12:00:00.000Z", "stamped when the binding was confirmed");
+  const dead = projects["trello-dead"].ticket_provider;
+  assert.equal(dead.state, "planned", "a board Trello 404s cannot back a link");
+  assert.equal(dead.board_id, "");
+});
+
+await checkAsync("a provider this command does not speak is left entirely alone", async () => {
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects["linear-record"].ticket_provider;
+  assert.equal(provider.board_id, "L1");
+  assert.equal(provider.identifier, "LIN");
+  assert.equal(provider.identifier_source, undefined);
+  assert.equal(report.projects.find((entry) => entry.slug === "linear-record").status, "preserved");
+});
+
+await checkAsync("a second --apply changes nothing", async () => {
+  const fixture = projectFixture();
+  const first = await runProjects(fixture, { apply: true });
+  assert.ok(first.changes.projects.length > 0, "the first pass must have work to do");
+  const settled = readFileSync(fixture.registryPath, "utf8");
+  // A later instant must not re-stamp an identity nothing changed about,
+  // otherwise the SSOT is rewritten on every run and never reaches a fixed point.
+  const second = await runProjects(fixture, { apply: true, now: new Date("2026-09-01T00:00:00.000Z") });
+  assert.deepEqual(second.changes.projects, [], "reconciliation must be idempotent");
+  assert.equal(readFileSync(fixture.registryPath, "utf8"), settled, "and must not touch the file");
+});
+
+await checkAsync("a Plane outage parks every Plane record", async () => {
+  const fixture = projectFixture();
+  const before = loadProjectRegistry(fixture.registryPath).projects;
+  const report = await runProjects(fixture, {
+    apply: true,
+    fetchBoards: async () => { throw new Error("plane.delo.sh unreachable"); },
+  });
+  assert.equal(report.ok, false);
+  assert.equal(
+    report.projects.filter((entry) => entry.type === "plane").every((entry) => entry.status === "preserved"),
+    true,
+    "a half-repaired registry with no record of which half is worse than an unrepaired one",
+  );
+  const after = loadProjectRegistry(fixture.registryPath).projects;
+  for (const slug of Object.keys(before)) {
+    if (before[slug].ticket_provider.type !== "plane") continue;
+    assert.deepEqual(after[slug].ticket_provider, before[slug].ticket_provider, slug);
+  }
+  // Trello is a different provider; a Plane outage says nothing about it.
+  assert.equal(after["trello-live"].ticket_provider.state, "linked");
+});
+
+await checkAsync("the repo's .project.json is read and never written", async () => {
+  const fixture = projectFixture();
+  const manifest = join(fixture.dir, "recovered", ".project.json");
+  const before = readFileSync(manifest, "utf8");
+  await runProjects(fixture, { apply: true });
+  assert.equal(readFileSync(manifest, "utf8"), before, "25 rewritten manifests is the blast radius that caused this");
 });
 
 console.log("");

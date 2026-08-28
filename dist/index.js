@@ -17011,7 +17011,7 @@ function resolveSecretValue(value) {
   const result2 = spawnSync14("op", ["read", value], { encoding: "utf8" });
   if (result2.error || result2.status !== 0) {
     const detail = (result2.stderr || result2.error?.message || "op read failed").trim();
-    throw new BoardError(`could not resolve the Plane credential ${value} from 1Password: ${detail}`);
+    throw new BoardError(`could not resolve the credential ${value} from 1Password: ${detail}`);
   }
   const resolved = result2.stdout.trim();
   if (!resolved) throw new BoardError(`1Password returned an empty value for ${value}`);
@@ -17261,6 +17261,44 @@ async function fetchPlaneBoards(workspace, env2 = process.env, home = homedir12(
   }
   return boards;
 }
+function trelloCredential(name, env2, home) {
+  const fleetEnv = env2.HERMES_FLEET_ENV?.trim() || join30(home, ".hermes", "fleet.env");
+  const raw = env2[name]?.trim() || dotenvValue(fleetEnv, name)?.trim();
+  return raw ? resolveSecretValue(raw) : void 0;
+}
+async function fetchTrelloBoard(boardId, env2 = process.env, home = homedir12()) {
+  const key = trelloCredential("TRELLO_API_KEY", env2, home);
+  const token = trelloCredential("TRELLO_TOKEN", env2, home);
+  if (!key || !token) {
+    throw new BoardError("no Trello credentials: set TRELLO_API_KEY and TRELLO_TOKEN (env or ~/.hermes/fleet.env)");
+  }
+  const url = new URL(`https://api.trello.com/1/boards/${encodeURIComponent(boardId)}`);
+  url.searchParams.set("fields", "id,name,closed");
+  url.searchParams.set("key", key);
+  url.searchParams.set("token", token);
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { "User-Agent": `pjangler/${PJANGLER_VERSION}` },
+      signal: AbortSignal.timeout(2e4)
+    });
+  } catch (error) {
+    throw new BoardError(
+      `could not reach Trello for board ${boardId}: ` + (error instanceof Error ? error.message : String(error))
+    );
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) throw new BoardError(`Trello returned ${response.status} for board ${boardId}`);
+  const body = await response.json();
+  if (!isRecord5(body) || typeof body.id !== "string") {
+    throw new BoardError(`Trello returned an unreadable board payload for ${boardId}`);
+  }
+  return {
+    id: body.id,
+    name: typeof body.name === "string" ? body.name : "",
+    closed: body.closed === true
+  };
+}
 function readHermesAgentBoards(path) {
   const document = YAML8.parseDocument(readFileSync23(path, "utf8"));
   if (document.errors.length) throw new Error(`Hermes agents registry YAML is invalid: ${path}`);
@@ -17290,6 +17328,24 @@ function matchRegistrySlug(agent, registry) {
   }
   if (agent.repo && Object.hasOwn(registry.projects, agent.repo)) return agent.repo;
   return void 0;
+}
+function readManifestBoard(repoPath) {
+  if (!repoPath) return void 0;
+  const path = join30(repoPath, ".project.json");
+  if (!existsSync23(path)) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync23(path, "utf8"));
+  } catch {
+    return void 0;
+  }
+  if (!isRecord5(parsed) || !isRecord5(parsed.ticket_provider)) return void 0;
+  const provider = parsed.ticket_provider;
+  return {
+    type: typeof provider.type === "string" ? provider.type : "",
+    boardId: typeof provider.board_id === "string" ? provider.board_id.trim() : "",
+    workspace: typeof provider.workspace === "string" ? provider.workspace.trim() : ""
+  };
 }
 var PLAIN_SCALAR = /^[A-Za-z][A-Za-z0-9_-]*$|^[0-9]+[A-Za-z][A-Za-z0-9_-]*$/;
 function yamlStyleOf(original) {
@@ -17360,6 +17416,175 @@ function applyHermesIdentifiers(path, identifiers, deletions) {
   atomicWrite(path, text3);
   return { changed: true, agentCount: expectedCount };
 }
+function candidateBoardIds(provider, repoPath, fleetBoards) {
+  const type = (provider.type ?? "").trim();
+  const candidates = [];
+  const push = (value) => {
+    const trimmed2 = value?.trim();
+    if (trimmed2 && !candidates.includes(trimmed2)) candidates.push(trimmed2);
+  };
+  push(provider.board_id);
+  const manifest = repoPath ? readManifestBoard(repoPath) : void 0;
+  if (manifest && (!manifest.type || manifest.type === type)) push(manifest.boardId);
+  if (type === "plane" && repoPath) push(fleetBoards.get(resolve16(repoPath)));
+  return candidates;
+}
+function liveKeyIndex(boards) {
+  const index = /* @__PURE__ */ new Map();
+  for (const board of boards.values()) index.set(board.identifier.toUpperCase(), board);
+  return index;
+}
+function noteChange(ctx, slug, field2, from, to) {
+  const before = from === void 0 ? "" : String(from);
+  const after = to === void 0 ? "" : String(to);
+  if (before === after) return;
+  ctx.changes.push({ slug, field: `ticket_provider.${field2}`, from: before, to: after });
+}
+function demoteToPlanned(ctx, slug, provider, detail, status) {
+  const workspace = (provider.workspace ?? "").trim();
+  const identifier = (provider.identifier ?? "").trim();
+  const live = ctx.boardsByWorkspace.get(workspace);
+  const collision = identifier && live ? liveKeyIndex(live).get(identifier.toUpperCase()) : void 0;
+  const nextBoardId = "";
+  const nextState = provider.state === "skipped" ? "skipped" : "planned";
+  const nextIdentifier = collision ? "" : identifier;
+  const nextSource = nextIdentifier ? "proposed" : void 0;
+  noteChange(ctx, slug, "board_id", provider.board_id, nextBoardId);
+  noteChange(ctx, slug, "state", provider.state, nextState);
+  noteChange(ctx, slug, "identifier", provider.identifier, nextIdentifier);
+  noteChange(ctx, slug, "identifier_source", provider.identifier_source, nextSource ?? "");
+  noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, "");
+  if (ctx.apply) {
+    provider.board_id = nextBoardId;
+    provider.state = nextState;
+    provider.identifier = nextIdentifier;
+    if (nextSource) provider.identifier_source = nextSource;
+    else delete provider.identifier_source;
+    delete provider.identifier_fetched_at;
+  }
+  return {
+    slug,
+    type: provider.type ?? "",
+    workspace,
+    boardId: "",
+    identifier: nextIdentifier,
+    identifierSource: nextSource ?? "",
+    status,
+    detail: collision ? `${detail}; identifier ${identifier} dropped \u2014 ${workspace}/${collision.identifier} belongs to "${collision.name}"` : detail
+  };
+}
+function stampFor(provider, changed, now) {
+  return changed || !provider.identifier_fetched_at ? now : provider.identifier_fetched_at;
+}
+function preserve(slug, provider, detail) {
+  return {
+    slug,
+    type: provider.type ?? "",
+    workspace: (provider.workspace ?? "").trim(),
+    boardId: (provider.board_id ?? "").trim(),
+    identifier: (provider.identifier ?? "").trim(),
+    identifierSource: provider.identifier_source ?? "",
+    status: "preserved",
+    detail
+  };
+}
+async function reconcileOneProject(ctx, slug, claimed) {
+  const project = ctx.registry.projects[slug];
+  const provider = project?.ticket_provider;
+  if (!provider || typeof provider !== "object") {
+    return { slug, type: "", workspace: "", boardId: "", identifier: "", identifierSource: "", status: "skipped", detail: "no ticket_provider block" };
+  }
+  const type = (provider.type ?? "").trim();
+  if (type !== "plane" && type !== "trello") {
+    return preserve(slug, provider, `ticket provider "${type || "(none)"}" is not reconciled by this command`);
+  }
+  if (type === "plane" && ctx.planeDegraded) {
+    return preserve(slug, provider, "a Plane workspace could not be listed; nothing written");
+  }
+  const candidates = candidateBoardIds(provider, project.repo_path ?? "", ctx.fleetBoards).filter((boardId2) => {
+    const owner = claimed.get(`${type}\0${boardId2}`);
+    return !owner || owner === slug;
+  });
+  const boardId = candidates[0];
+  if (!boardId) {
+    return demoteToPlanned(ctx, slug, provider, "no board binding in the record, its .project.json, or the fleet", "planned");
+  }
+  if (type === "trello") {
+    let board;
+    try {
+      board = await ctx.fetchTrello(boardId);
+    } catch (error) {
+      const detail2 = error instanceof Error ? error.message : String(error);
+      ctx.errors.push(`${slug}: ${detail2}`);
+      return preserve(slug, provider, `${detail2}; nothing written`);
+    }
+    if (!board || board.closed) {
+      return demoteToPlanned(ctx, slug, provider, `Trello board ${boardId} is ${board ? "closed" : "gone"}`, "unlinked");
+    }
+    claimed.set(`${type}\0${boardId}`, slug);
+    const identifier = (provider.identifier ?? "").trim();
+    if (!identifier) {
+      return demoteToPlanned(ctx, slug, provider, `Trello board "${board.name}" has no identifier on the record`, "planned");
+    }
+    const bindingChanged = provider.board_id !== boardId || provider.identifier_source !== "provider" || provider.state !== "linked";
+    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    noteChange(ctx, slug, "board_id", provider.board_id, boardId);
+    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
+    noteChange(ctx, slug, "state", provider.state, "linked");
+    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
+    if (ctx.apply) {
+      provider.board_id = boardId;
+      provider.identifier_source = "provider";
+      provider.identifier_fetched_at = stamp;
+      provider.state = "linked";
+    }
+    return {
+      slug,
+      type,
+      workspace: (provider.workspace ?? "").trim(),
+      boardId,
+      identifier,
+      identifierSource: "provider",
+      status: "linked",
+      detail: `Trello board "${board.name}" confirmed`
+    };
+  }
+  for (const [workspace, boards] of ctx.boardsByWorkspace) {
+    const board = boards.get(boardId);
+    if (!board) continue;
+    claimed.set(`${type}\0${boardId}`, slug);
+    const bindingChanged = provider.board_id !== boardId || provider.workspace !== workspace || provider.identifier !== board.identifier || provider.identifier_source !== "provider" || provider.state !== "linked";
+    const stamp = stampFor(provider, bindingChanged, ctx.fetchedAt);
+    noteChange(ctx, slug, "board_id", provider.board_id, boardId);
+    noteChange(ctx, slug, "workspace", provider.workspace, workspace);
+    noteChange(ctx, slug, "identifier", provider.identifier, board.identifier);
+    noteChange(ctx, slug, "identifier_source", provider.identifier_source, "provider");
+    noteChange(ctx, slug, "identifier_fetched_at", provider.identifier_fetched_at, stamp);
+    noteChange(ctx, slug, "state", provider.state, "linked");
+    if (ctx.apply) {
+      provider.board_id = boardId;
+      provider.workspace = workspace;
+      provider.identifier = board.identifier;
+      provider.identifier_source = "provider";
+      provider.identifier_fetched_at = stamp;
+      provider.state = "linked";
+    }
+    return {
+      slug,
+      type,
+      workspace,
+      boardId,
+      identifier: board.identifier,
+      identifierSource: "provider",
+      status: "linked",
+      detail: `Plane board "${board.name}"`
+    };
+  }
+  const searched = [...ctx.boardsByWorkspace.keys()].join(", ") || "no workspace";
+  const detail = `board ${boardId} is in none of ${searched}`;
+  ctx.errors.push(`${slug}: ${detail}; binding preserved \u2014 confirm the board and re-run, or unlink it deliberately`);
+  return preserve(slug, provider, detail);
+}
 function inScope(agent, slug, options) {
   if (options.all || !options.target) return true;
   const target = options.target;
@@ -17377,13 +17602,30 @@ async function reconcileProjectIdentity(options = {}) {
   const agents = readHermesAgentBoards(hermesRegistryPath);
   const registry = loadProjectRegistry(registryPath2);
   const scoped = agents.map((agent) => ({ agent, slug: matchRegistrySlug(agent, registry) })).filter(({ agent, slug }) => inScope(agent, slug, options));
-  const workspaces = [...new Set(scoped.map(({ agent }) => agent.workspace).filter(Boolean))];
+  const projectSlugs = Object.keys(registry.projects).filter((slug) => options.all || !options.target || slug === options.target).sort();
+  const workspaces = [
+    ...new Set(
+      [
+        ...scoped.map(({ agent }) => agent.workspace),
+        ...projectSlugs.flatMap((slug) => {
+          const project = registry.projects[slug];
+          return [
+            project?.ticket_provider?.workspace ?? "",
+            readManifestBoard(project?.repo_path ?? "")?.workspace ?? ""
+          ];
+        }),
+        DEFAULT_PLANE_WORKSPACE
+      ].map((workspace) => workspace.trim()).filter(Boolean)
+    )
+  ].sort();
   const boardsByWorkspace = /* @__PURE__ */ new Map();
+  let workspacesFailed = 0;
   for (const workspace of workspaces) {
     try {
       const fetcher = options.fetchBoards ?? ((ws) => fetchPlaneBoards(ws, env2, home));
       boardsByWorkspace.set(workspace, await fetcher(workspace));
     } catch (error) {
+      workspacesFailed += 1;
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
@@ -17426,33 +17668,31 @@ async function reconcileProjectIdentity(options = {}) {
       hermesIdentifiers.set(agent.agentId, live);
       hermesChanges.push({ agentId: agent.agentId, field: "plane.identifier", from: agent.identifier, to: live });
     }
-    if (!slug) continue;
-    const project = registry.projects[slug];
+  }
+  const fleetBoards = /* @__PURE__ */ new Map();
+  for (const agent of agents) {
+    if (agent.projectPath && agent.boardId) fleetBoards.set(resolve16(agent.projectPath), agent.boardId);
+  }
+  const projectContext = {
+    registry,
+    boardsByWorkspace,
+    planeDegraded: workspacesFailed > 0,
+    fleetBoards,
+    fetchTrello: options.fetchTrelloBoard ?? ((boardId) => fetchTrelloBoard(boardId, env2, home)),
+    fetchedAt,
+    apply,
+    changes: projectChanges,
+    errors
+  };
+  const claimed = /* @__PURE__ */ new Map();
+  for (const [slug, project] of Object.entries(registry.projects)) {
     const provider = project?.ticket_provider;
-    if (!provider || provider.type !== "plane") continue;
-    const recordWorkspace = (provider.workspace ?? "").trim();
-    if (recordWorkspace && recordWorkspace.toLowerCase() !== agent.workspace.toLowerCase()) {
-      errors.push(
-        `${slug}: registry workspace "${recordWorkspace}" disagrees with the fleet's "${agent.workspace}" for ${agent.agentId}; identifier ${live} not written`
-      );
-      continue;
-    }
-    if (provider.identifier !== live) {
-      projectChanges.push({ slug, field: "ticket_provider.identifier", from: provider.identifier ?? "", to: live });
-    }
-    if (provider.identifier_source !== "provider") {
-      projectChanges.push({ slug, field: "ticket_provider.identifier_source", from: provider.identifier_source ?? "", to: "provider" });
-    }
-    const nextState = provider.board_id ? "linked" : provider.state ?? "planned";
-    if (provider.state !== nextState) {
-      projectChanges.push({ slug, field: "ticket_provider.state", from: provider.state ?? "", to: nextState });
-    }
-    if (apply) {
-      provider.identifier = live;
-      provider.identifier_source = "provider";
-      provider.identifier_fetched_at = fetchedAt;
-      provider.state = nextState;
-    }
+    const boardId = provider?.board_id?.trim();
+    if (boardId) claimed.set(`${provider.type ?? ""}\0${boardId}`, slug);
+  }
+  const projects = [];
+  for (const slug of projectSlugs) {
+    projects.push(await reconcileOneProject(projectContext, slug, claimed));
   }
   if (apply) {
     if (hermesIdentifiers.size || deletions.length) {
@@ -17466,7 +17706,9 @@ async function reconcileProjectIdentity(options = {}) {
     hermesRegistryPath,
     registryPath: registryPath2,
     checked: scoped.length,
+    projectsChecked: projects.length,
     resolutions,
+    projects,
     changes: { hermes: hermesChanges, hermesDeleted: deletions, projects: projectChanges },
     errors
   };
@@ -17479,14 +17721,33 @@ var STATUS_LABEL = {
   "board-missing": "404",
   error: "error"
 };
+var PROJECT_STATUS_LABEL = {
+  linked: "LINKED",
+  planned: "planned",
+  unlinked: "UNLINKED",
+  preserved: "preserved",
+  skipped: "skipped"
+};
 function formatIdentityReport(report) {
   const lines = [""];
+  if (report.resolutions.length) lines.push("  fleet agents");
   const width = Math.max(...report.resolutions.map((r) => r.agentId.length), 10);
   for (const item of report.resolutions) {
     const arrow = item.liveIdentifier && item.liveIdentifier !== item.currentIdentifier ? `${item.currentIdentifier || "''"} -> ${item.liveIdentifier}` : (item.liveIdentifier ?? item.currentIdentifier) || "''";
     lines.push(
       `  ${STATUS_LABEL[item.status].padEnd(9)} ${item.agentId.padEnd(width)}  ${arrow}` + (item.slug ? `  [${item.slug}]` : "") + (item.detail ? `  ${item.detail}` : "")
     );
+  }
+  if (report.projects.length) {
+    lines.push("");
+    lines.push("  project records");
+    const slugWidth = Math.max(...report.projects.map((p4) => p4.slug.length), 10);
+    for (const item of report.projects) {
+      const key = item.identifier ? `${item.workspace || "-"}/${item.identifier}${item.identifierSource ? ` (${item.identifierSource})` : ""}` : "(no identifier)";
+      lines.push(
+        `  ${PROJECT_STATUS_LABEL[item.status].padEnd(9)} ${item.slug.padEnd(slugWidth)}  ${key}` + (item.detail ? `  \u2014 ${item.detail}` : "")
+      );
+    }
   }
   lines.push("");
   const verb = report.apply ? "applied" : "pending";

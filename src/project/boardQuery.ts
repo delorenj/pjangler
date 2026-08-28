@@ -214,12 +214,12 @@ export function dotenvValue(path: string, key: string): string | undefined {
  * Deferred to the last possible moment and never written anywhere: the
  * resolved secret exists only in this process, for the length of one request.
  */
-function resolveSecretValue(value: string): string {
+export function resolveSecretValue(value: string): string {
   if (!value.startsWith("op://")) return value;
   const result = spawnSync("op", ["read", value], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     const detail = (result.stderr || result.error?.message || "op read failed").trim();
-    throw new BoardError(`could not resolve the Plane credential ${value} from 1Password: ${detail}`);
+    throw new BoardError(`could not resolve the credential ${value} from 1Password: ${detail}`);
   }
   const resolved = result.stdout.trim();
   if (!resolved) throw new BoardError(`1Password returned an empty value for ${value}`);

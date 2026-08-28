@@ -67,7 +67,12 @@ export interface ProjectTicketProvider {
   identifier?: string;
   /** Provenance of `identifier`. Absent on legacy records; treated as "proposed". */
   identifier_source?: ProjectIdentifierSource | string;
-  /** ISO-8601 instant the provider identifier was last read back. */
+  /**
+   * ISO-8601 instant this identity was ESTABLISHED by a provider read.
+   *
+   * Not a poll timestamp: re-confirming the same value leaves it alone, so a
+   * reconciliation run that changes nothing writes nothing.
+   */
   identifier_fetched_at?: string;
   board_id?: string;
   /** Legacy input only. New manifests derive board URLs from provider/workspace/board_id. */
