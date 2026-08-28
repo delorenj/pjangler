@@ -29,6 +29,7 @@ const CONTRACT_OPS = [
   "comment",
   "create_board",
   "create_issue",
+  "describe_board",
   "get_issue",
   "list_issues",
   "resolve",
