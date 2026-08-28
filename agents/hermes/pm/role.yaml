@@ -11,7 +11,7 @@ purpose: "pm agent for pjangler"
 # Inference target (empty = inherit from global ~/.hermes/config.yaml)
 model:
   provider: ""
-  name: "plane"
+  name: ""
 # Hermes profile name. Profile dir is symlinked into ./runtime/.
 profile: pjangler-pm
 
