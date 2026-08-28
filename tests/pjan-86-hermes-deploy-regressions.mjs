@@ -26,7 +26,12 @@ import { delimiter, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const temp = mkdtempSync(join(tmpdir(), "pjan-86-hermes-deploy-"));
-const EXPECTED_HERMES_GITLINK = "b35150d0be0be6d7b5e6d5d6c2347c8ff5123a50";
+// The reviewed templates/hermes-agent commit. Advancing the gitlink without
+// advancing this line is the failure this pin exists to catch, so update it in
+// the SAME commit that bumps the submodule, having read the template diff. It
+// went ten commits stale once already: a pin nobody updates stops being a
+// review gate and becomes a suite that is simply red.
+const EXPECTED_HERMES_GITLINK = "c2b2e301f66f90dfbfbbd5781eff809214c360fd";
 
 function run(args, cwd, env = {}) {
   return spawnSync(process.execPath, [cli, ...args], {

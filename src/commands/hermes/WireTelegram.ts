@@ -137,6 +137,10 @@ export class WireTelegram extends Command {
       stdio: "inherit",
       env: {
         ...process.env,
+        // Interactive wiring is an explicit host-state operation: it writes the
+        // profile. Set the gate rather than inheriting whatever a deferred MCP
+        // render left in the environment, which would silently no-op this run.
+        SKIP_HOST_STATE: "0",
         SKIP_TELEGRAM: "0",
         TELEGRAM_BOT_TOKEN: token,
         TELEGRAM_ALLOWED_USERS: String(allowedAnswer).trim(),

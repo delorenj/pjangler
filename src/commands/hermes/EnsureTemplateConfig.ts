@@ -355,13 +355,18 @@ function isolatedPythonEnvironment(): NodeJS.ProcessEnv {
 /**
  * Validate the exact bytes with the Python tomllib consumer used by Hermes.
  *
- * Validation is BEST EFFORT: a host without python3, or with a python3 older
- * than 3.11 (no tomllib), simply skips the check instead of failing the
- * bootstrap. Refusing to write a config because an optional validator is
- * absent would make this command less portable than the plain writeFileSync
- * it replaced. A validator that runs and reports invalid TOML is still fatal.
+ * Validation is REQUIRED, not best effort. This command exists only to write a
+ * file whose sole consumer is `tomllib.load()` inside the template's shell
+ * library, and that consumer swallows every parse failure and silently returns
+ * the caller's default (_lib.sh `config_get`). A config we could not validate
+ * is therefore not a small risk: it degrades every later lookup -- hermes_bin,
+ * plane workspace, item prefixes -- to a default, with no error anywhere.
+ *
+ * Requiring python3 costs no portability either. Every provisioning script in
+ * the template drives python3 heredocs, and the config is unreadable without
+ * tomllib, so a host that cannot run the validator cannot run Hermes at all.
  */
-function validateTomlBytes(source: Buffer, label: string): "validated" | "unavailable" {
+function validateTomlBytes(source: Buffer, label: string): void {
   const validation = spawnSync("python3", ["-I", "-S", "-c", TOMLLIB_VALIDATE], {
     input: source,
     encoding: "utf8",
@@ -370,14 +375,26 @@ function validateTomlBytes(source: Buffer, label: string): "validated" | "unavai
     timeout: TOMLLIB_VALIDATION_TIMEOUT_MS,
     killSignal: "SIGKILL",
   });
-  // python3 missing, unrunnable, or wedged -> we cannot validate, so we don't.
-  if (validation.error) return "unavailable";
-  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) return "unavailable";
+  if (validation.error) {
+    const code = (validation.error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") {
+      throw new Error(`${label} validation timed out after ${TOMLLIB_VALIDATION_TIMEOUT_MS}ms`);
+    }
+    throw new Error(
+      code === "ENOENT"
+        ? `${label} cannot be validated: python3 with tomllib is required but was not found`
+        : `${label} validation failed to start: ${validation.error.message}`,
+    );
+  }
+  if (validation.status === 2 || validation.stderr.startsWith("TOMLLIB_UNAVAILABLE:")) {
+    throw new Error(
+      `${label} cannot be validated: python3 with tomllib is required (${validation.stderr.replace(/^TOMLLIB_UNAVAILABLE:/, "")})`,
+    );
+  }
   if (validation.status !== 0) {
     const detail = validation.stderr.replace(/^TOML_INVALID:/, "").trim() || `python3 exited ${validation.status ?? "without a status"}`;
     throw new Error(`${label} is not valid TOML 1.0 for Python tomllib: ${detail}`);
   }
-  return "validated";
 }
 
 function assertValidToml(source: string, label: string): void {
@@ -388,9 +405,25 @@ function assertValidToml(source: string, label: string): void {
  * Add missing pinned-schema fields without replacing operator values, comments,
  * unknown keys, or richer sections. This is intentionally a small TOML-aware
  * merge rather than a parse/stringify round trip, which would erase comments.
+ *
+ * The input is BYTES, deliberately, and the parameter type is the enforcement.
+ * `readFileSync(path, "utf8")` replaces an invalid UTF-8 sequence with U+FFFD,
+ * which is a perfectly valid TOML string character -- so a config the deployed
+ * Python `tomllib` consumer cannot even decode would validate here and then be
+ * rewritten with those replacement characters, silently destroying operator
+ * bytes that Hermes itself would have refused to read. Validation runs on the
+ * exact bytes, and the decode that follows is proved lossless before merging.
  */
-export function mergeHostConfig(existing: string): string {
-  assertValidToml(existing, "Existing Hermes template config");
+export function mergeHostConfig(existingBytes: Buffer): string {
+  validateTomlBytes(existingBytes, "Existing Hermes template config");
+  const existing = existingBytes.toString("utf8");
+  if (!Buffer.from(existing, "utf8").equals(existingBytes)) {
+    // Defense in depth. The validator above decodes with errors="strict", so
+    // non-UTF-8 bytes never reach this line today; keeping the check makes the
+    // lossless-decode invariant local and provable at the point that depends
+    // on it, instead of an assumption about another function's Python.
+    throw new Error("Existing Hermes template config is not valid UTF-8");
+  }
   let merged = existing;
   for (const { section, values } of hostSchema()) {
     const tables = parseTomlTableHeaders(merged);
@@ -518,8 +551,12 @@ export class EnsureTemplateConfig extends Command {
     let current = "";
     try {
       if (exists) {
-        current = readFileSync(path, "utf8");
-        next = mergeHostConfig(current);
+        // Bytes, not a lossy "utf8" decode: mergeHostConfig validates the
+        // exact file the Python consumer would read and proves the decode is
+        // lossless before this command is allowed to rewrite anything.
+        const bytes = readFileSync(path);
+        next = mergeHostConfig(bytes);
+        current = bytes.toString("utf8");
       } else {
         assertValidToml(next, "Rendered Hermes template config");
       }
