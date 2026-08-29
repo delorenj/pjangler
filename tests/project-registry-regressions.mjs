@@ -551,6 +551,20 @@ try {
   const multiAgentHome = join(tmp, "multi-agent-home");
   mkdirSync(multiAgentHome, { recursive: true });
   const { hermesBin: fakeHermesBin, hermesRepo: fakeHermesRepo, callsFile: fakeHermesCalls } = createFakeHermes(multiAgentHome);
+  // `.scripts/20-runtime-repo.sh` shells the hermes.runtime-singleton migration
+  // out to the PJángler CLI, resolving it as `PJANGLER_BIN` -> template config
+  // `fleet.pjangler_bin` -> bare `pj` on PATH. A developer box has a `pj`
+  // symlink in ~/.local/bin; a clean runner has none, so the whole provisioning
+  // chain died at copier task 6 with "PJángler CLI not found". Bind the
+  // product's own escape hatch to the bundle this suite already exercises, so
+  // the real migration still runs and nothing here depends on a host install.
+  // A wrapper rather than `cli` directly: it pins the interpreter to the node
+  // running this suite instead of the shebang's `env node`, and it does not
+  // depend on dist/index.js carrying its executable bit through a rebuild.
+  const pjanglerBin = join(multiAgentHome, "bin", "pj");
+  mkdirSync(dirname(pjanglerBin), { recursive: true });
+  writeFileSync(pjanglerBin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} "$@"\n`, "utf8");
+  chmodSync(pjanglerBin, 0o755);
   const fleetHome = join(multiAgentHome, ".hermes");
   const fleetRegistry = join(fleetHome, "agents-registry.yaml");
   const canonicalSkills = join(multiAgentHome, "canonical-skills");
@@ -586,6 +600,7 @@ try {
     CODEX_HOME: "",
     REGISTRY_FILE: "",
     PJANGLER_HERMES_TEMPLATE: "",
+    PJANGLER_BIN: pjanglerBin,
     FAKE_HERMES_CALLS: fakeHermesCalls,
     CANONICAL_SKILLS_DIR: canonicalSkills,
     VOX_PLUGIN_DIR: join(multiAgentHome, "absent-vox-plugin"),
