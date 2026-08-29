@@ -10,6 +10,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -30,6 +31,49 @@ function run(args, cwd, env = {}) {
     timeout: 20_000,
     env: { ...process.env, NO_COLOR: "1", ...env },
   });
+}
+
+/**
+ * Git answers about a scratch tree must come from a repo this suite owns.
+ *
+ * Repository discovery is ambient: with no ceiling, `git ls-files` run inside
+ * a scratch tree walks up until it finds any `.git`, so whatever checkout
+ * happens to contain TMPDIR silently answers for the fixture. That is exactly
+ * how this suite became host-coupled -- on the developer box TMPDIR sits under
+ * ~/.claude, itself a checkout, so UntrackHermesRuntimes' `git ls-files`
+ * succeeded (empty, "not tracked") and the deploy chain went green. On a clean
+ * runner with TMPDIR=/tmp there is no ancestor repo, the same call exits
+ * non-zero, and the command fails closed with "Failed to inspect runtime index
+ * ... fatal: not a git repository", taking `hermes-agent --dry-run` down with
+ * it. Ceiling discovery at the scratch root so no ancestor can ever stand in,
+ * and drop host git config so identity, hooksPath, and templateDir cannot
+ * change the answer either.
+ */
+const gitIsolation = {
+  GIT_CEILING_DIRECTORIES: realpathSync(temp),
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+};
+
+/**
+ * Build a scratch project repo the way pjangler builds a real one.
+ *
+ * `pj` runs inside a Git project -- ProjectRecipe bootstraps every project
+ * with `git init --initial-branch=main` -- and hermes steps shell out to Git
+ * against the target dir. With discovery ceilinged above, supplying that repo
+ * is the fixture's job, so each scratch tree gets its own empty one and every
+ * host reaches the same verdict for the same reason.
+ */
+function makeRepo(path) {
+  mkdirSync(path, { recursive: true });
+  const init = spawnSync("git", ["init", "--quiet", "--initial-branch=main", "--template=", path], {
+    encoding: "utf8",
+    env: { ...process.env, ...gitIsolation },
+  });
+  assert.equal(init.status, 0, `scratch repo init failed for ${path}: ${init.stderr}`);
+  return path;
 }
 
 /**
@@ -75,12 +119,12 @@ try {
     PATH: `${fakeBin}${delimiter}${process.env.PATH}`,
     COLUMNS: "0",
     PJANGLER_HERMES_TEMPLATE: "",
+    ...gitIsolation,
   };
 
   // Command-level dry-run: a zero-width terminal must still get readable,
   // mode-aware output and absolutely no repo/host mutation.
-  const previewRepo = join(temp, "preview-repo");
-  mkdirSync(previewRepo, { recursive: true });
+  const previewRepo = makeRepo(join(temp, "preview-repo"));
   const preview = run(["hermes-agent", "--yes", "--dry-run"], previewRepo, commandEnv);
   assert.equal(preview.status, 0, `${preview.stdout}\n${preview.stderr}`);
   const previewOutput = `${preview.stdout}\n${preview.stderr}`;
@@ -99,8 +143,7 @@ try {
 
   // --email has no pinned template interface and must fail before even config
   // bootstrap or Copier discovery/execution.
-  const emailRepo = join(temp, "email-repo");
-  mkdirSync(emailRepo, { recursive: true });
+  const emailRepo = makeRepo(join(temp, "email-repo"));
   const emailConfig = join(temp, "email-xdg");
   const email = run(["hermes-agent", "--yes", "--email"], emailRepo, {
     ...commandEnv,
@@ -114,7 +157,7 @@ try {
 
   // Any meaningful partial render is existing user state. --yes must refuse it
   // before config bootstrap or Copier, even when role.yaml does not exist yet.
-  const partialRepo = join(temp, "partial-repo");
+  const partialRepo = makeRepo(join(temp, "partial-repo"));
   const partialRoleDir = join(partialRepo, "agents", "hermes", "pm");
   const partialSoul = join(partialRoleDir, "SOUL.md");
   mkdirSync(partialRoleDir, { recursive: true });
@@ -132,7 +175,7 @@ try {
 
   // Empty directory structure and inert placeholder/OS metadata are the only
   // harmless existing entries. Ignored runtime state remains a blocker.
-  const placeholderRepo = join(temp, "placeholder-repo");
+  const placeholderRepo = makeRepo(join(temp, "placeholder-repo"));
   const placeholderRole = join(placeholderRepo, "agents", "hermes", "pm");
   mkdirSync(join(placeholderRole, "empty-child"), { recursive: true });
   writeFileSync(join(placeholderRole, ".gitkeep"), "");
@@ -146,7 +189,7 @@ try {
     ["dangling", ".gitkeep", "missing-placeholder-target"],
     ["live", ".DS_Store", join(temp, "live-placeholder-target")],
   ]) {
-    const symlinkRepo = join(temp, `${label}-placeholder-symlink-repo`);
+    const symlinkRepo = makeRepo(join(temp, `${label}-placeholder-symlink-repo`));
     const symlinkRole = join(symlinkRepo, "agents", "hermes", "pm");
     const symlinkPath = join(symlinkRole, placeholderName);
     const symlinkConfig = join(temp, `${label}-placeholder-symlink-xdg`);
@@ -170,7 +213,7 @@ try {
   // must be rejected without opening the entry or starting any later phase.
   const specialPlaceholders = [];
 
-  const fifoRepo = join(temp, "fifo-placeholder-repo");
+  const fifoRepo = makeRepo(join(temp, "fifo-placeholder-repo"));
   const fifoRole = join(fifoRepo, "agents", "hermes", "pm");
   const fifoPath = join(fifoRole, ".gitkeep");
   mkdirSync(fifoRole, { recursive: true });
@@ -178,7 +221,7 @@ try {
   assert.equal(madeFifo.status, 0, madeFifo.stderr);
   specialPlaceholders.push(["FIFO", fifoRepo, fifoPath, (stats) => stats.isFIFO()]);
 
-  const socketRepo = join(temp, "socket-placeholder-repo");
+  const socketRepo = makeRepo(join(temp, "socket-placeholder-repo"));
   const socketRole = join(socketRepo, "agents", "hermes", "pm");
   const socketPath = join(socketRole, ".DS_Store");
   mkdirSync(socketRole, { recursive: true });
@@ -190,7 +233,7 @@ try {
   });
   specialPlaceholders.push(["socket", socketRepo, socketPath, (stats) => stats.isSocket()]);
 
-  const hardlinkRepo = join(temp, "hardlink-placeholder-repo");
+  const hardlinkRepo = makeRepo(join(temp, "hardlink-placeholder-repo"));
   const hardlinkRole = join(hardlinkRepo, "agents", "hermes", "pm");
   const hardlinkSource = join(temp, "hardlink-placeholder-source");
   const hardlinkPath = join(hardlinkRole, "Thumbs.db");
@@ -202,7 +245,7 @@ try {
   // Device nodes require CAP_MKNOD and are unavailable in ordinary CI/user
   // namespaces. Exercise one when permitted; the source-level isFile tripwire
   // below deterministically covers the same classifier everywhere else.
-  const deviceRepo = join(temp, "device-placeholder-repo");
+  const deviceRepo = makeRepo(join(temp, "device-placeholder-repo"));
   const deviceRole = join(deviceRepo, "agents", "hermes", "pm");
   const devicePath = join(deviceRole, ".gitkeep");
   mkdirSync(deviceRole, { recursive: true });
@@ -234,7 +277,7 @@ try {
   openSocketServer = undefined;
   assert.equal(readFileSync(hardlinkSource, "utf8"), "operator-owned hardlink bytes\n");
 
-  const runtimeRepo = join(temp, "runtime-only-repo");
+  const runtimeRepo = makeRepo(join(temp, "runtime-only-repo"));
   const runtimeState = join(runtimeRepo, "agents", "hermes", "pm", "runtime", "checkpoint.json");
   mkdirSync(join(runtimeRepo, "agents", "hermes", "pm", "runtime"), { recursive: true });
   writeFileSync(runtimeState, "{}\n");
@@ -243,7 +286,7 @@ try {
   assert.match(`${runtimeOnly.stdout}\n${runtimeOnly.stderr}`, /runtime\/checkpoint\.json/);
 
   // --yes means defaults, not implicit destructive overwrite consent.
-  const existingRepo = join(temp, "existing-repo");
+  const existingRepo = makeRepo(join(temp, "existing-repo"));
   const existingRole = join(existingRepo, "agents", "hermes", "pm", "role.yaml");
   mkdirSync(join(existingRepo, "agents", "hermes", "pm"), { recursive: true });
   const preciousRole = "repo: existing-repo\nrole: pm\nagent_id: existing-repo-pm\n# precious\n";
@@ -261,10 +304,9 @@ try {
 
   // Standalone bootstrap reports successful plans and changes to process
   // callers; silence here previously made a real write look like a no-op.
-  const bootstrapRepo = join(temp, "bootstrap-repo");
+  const bootstrapRepo = makeRepo(join(temp, "bootstrap-repo"));
   const bootstrapHome = join(temp, "bootstrap-xdg");
   const bootstrapPath = join(bootstrapHome, "hermes-agent-template", "config.toml");
-  mkdirSync(bootstrapRepo, { recursive: true });
   const bootstrapPlan = run(["config", "bootstrap", "--dry-run"], bootstrapRepo, {
     ...commandEnv,
     XDG_CONFIG_HOME: bootstrapHome,
@@ -480,10 +522,9 @@ def loads(_source):
 
   // Repeat from a cwd without the local module so the PYTHONPATH poison is an
   // independently reachable import candidate under a non-isolated invocation.
-  const pathPoisonRepo = join(temp, "pythonpath-poison-repo");
+  const pathPoisonRepo = makeRepo(join(temp, "pythonpath-poison-repo"));
   const pathPoisonHome = join(temp, "pythonpath-validator-xdg");
   const pathPoisonConfig = join(pathPoisonHome, "hermes-agent-template", "config.toml");
-  mkdirSync(pathPoisonRepo, { recursive: true });
   mkdirSync(join(pathPoisonHome, "hermes-agent-template"), { recursive: true });
   writeFileSync(pathPoisonConfig, isolatedInvalidSource);
   const pathPoisonBefore = statSync(pathPoisonConfig);
@@ -551,11 +592,10 @@ def loads(_source):
 
   // Forced config bootstrap is an additive schema upgrade. Operator values,
   // comments, unknown keys, and richer sections survive byte-for-byte.
-  const configRepo = join(temp, "config-repo");
+  const configRepo = makeRepo(join(temp, "config-repo"));
   const configHome = join(temp, "config-xdg");
   const configPath = join(configHome, "hermes-agent-template", "config.toml");
   mkdirSync(join(configHome, "hermes-agent-template"), { recursive: true });
-  mkdirSync(configRepo, { recursive: true });
   writeFileSync(configPath, `# precious operator comment\n[fleet]\nhermes_bin = "/operator/hermes"\ncustom_key = "keep"\n\n[operator]\nmode = "richer"\n`);
   const config = run(["config", "bootstrap", "--force"], configRepo, {
     ...commandEnv,
@@ -771,7 +811,7 @@ exit 1
   // systemd parity evaluates heartbeat and gateway independently: an active
   // heartbeat plus deferred gateway is healthy only while the gateway is
   // disabled and inactive.
-  const parityRepo = join(temp, "parity-repo");
+  const parityRepo = makeRepo(join(temp, "parity-repo"));
   const parityHome = join(temp, "parity-home");
   const parityRole = join(parityRepo, "agents", "hermes", "pm");
   const systemdDir = join(parityHome, ".config", "systemd", "user");
@@ -813,7 +853,7 @@ exit 1
 
   // installed -> active becomes durable only after enable + active probes.
   // The deferred gateway remains deferred, and the immediate post-audit passes.
-  const migrateRepo = join(temp, "migrate-repo");
+  const migrateRepo = makeRepo(join(temp, "migrate-repo"));
   const migrateHome = join(temp, "migrate-home");
   const migrateRole = join(migrateRepo, "agents", "hermes", "pm");
   const migrateSystemd = join(migrateHome, ".config", "systemd", "user");
@@ -850,7 +890,7 @@ exit 1
 
   // A successful disable command followed by a still-active deferred gateway
   // is a failed postcondition. role.yaml must remain byte-identical.
-  const failureRepo = join(temp, "failure-repo");
+  const failureRepo = makeRepo(join(temp, "failure-repo"));
   const failureHome = join(temp, "failure-home");
   const failureRole = join(failureRepo, "agents", "hermes", "pm");
   const failureSystemd = join(failureHome, ".config", "systemd", "user");
