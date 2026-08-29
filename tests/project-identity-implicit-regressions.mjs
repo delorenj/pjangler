@@ -89,6 +89,13 @@ writeFileSync(
   )}\n`,
 );
 
+// The reconciler reads a FLEET registry too, and without an explicit path it
+// falls back to ~/.hermes/agents-registry.yaml. On a dev machine that exists,
+// so this suite passed locally and died with ENOENT on a clean runner. A test
+// that reads $HOME is not hermetic no matter what its header claims.
+const hermesRegistry = join(makeDir("hermes"), "agents-registry.yaml");
+writeFileSync(hermesRegistry, "schema_version: 1\nagents: {}\n");
+
 const registry = join(makeDir("registry"), "projects.yaml");
 writeFileSync(
   registry,
@@ -120,7 +127,7 @@ writeFileSync(
   ].join("\n"),
 );
 
-const base = ["project", "identity", "--json", "--registry", registry];
+const base = ["project", "identity", "--json", "--registry", registry, "--hermes-registry", hermesRegistry];
 
 test("no argument, at the project root, resolves this project", () => {
   const run = cli(base, projectRoot);
