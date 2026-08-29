@@ -19,7 +19,7 @@ const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const testRunner = readFileSync(join(root, "scripts", "run-tests.mjs"), "utf8");
-const publishWorkflow = readFileSync(join(root, ".github", "workflows", "publish.yml"), "utf8");
+const publishWorkflow = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 const gitmodules = readFileSync(join(root, ".gitmodules"), "utf8");
 const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "pjangler-release-regression-"));
@@ -52,10 +52,10 @@ try {
   const miseSetupStep = publishWorkflow.indexOf(miseAction[0]);
   const miseVersion = publishWorkflow.indexOf("version: '2026.7.5'", miseSetupStep);
   const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
-  const npmTestStep = publishWorkflow.indexOf("npm test");
+  const npmTestStep = publishWorkflow.indexOf("npm run test:coverage");
   const npmPublishStep = publishWorkflow.indexOf("npm publish --provenance");
   const workflow = YAML.parse(publishWorkflow);
-  const publishSteps = workflow.jobs.publish.steps;
+  const publishSteps = workflow.jobs.ci.steps;
   const checkoutStep = publishSteps.find((step) => step.uses === "actions/checkout@v4");
   assert.ok(checkoutStep, "publish workflow must check out the release commit");
   assert.deepEqual(
@@ -72,7 +72,7 @@ try {
   const verifyTemplateTagsStep = publishSteps.findIndex(
     (step) => step.name === "Verify CommonProject tag history",
   );
-  const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm test");
+  const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm run test:coverage");
   const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish --provenance");
   assert.match(
     gitmodules,
@@ -130,7 +130,11 @@ try {
     miseSetupStep < miseVerificationStep && miseVerificationStep < npmTestStep,
     "publish workflow must set up and explicitly verify mise before npm test",
   );
-  assert.match(publishWorkflow, /permissions:\n\s+id-token: write\n\s+contents: read/);
+  // contents was `read` while publishing only happened on a tag. Main-push
+  // publishing needs the workflow to push its own release commit and tag,
+  // so it is `write` now. That is a real loosening — asserted, not assumed,
+  // so widening it further has to be a deliberate edit here.
+  assert.match(publishWorkflow, /permissions:\n\s+id-token: write[^\n]*\n\s+contents: write/);
   assert.ok(npmTestStep < npmPublishStep, "OIDC publication must remain behind the complete npm test gate");
   assert.match(
     publishWorkflow.slice(npmPublishStep),
@@ -140,7 +144,7 @@ try {
   const contractStep = publishWorkflow.indexOf("npm run test:bmad-installer-contract");
   assert.notEqual(contractStep, -1, "publish workflow must run the actual pinned BMAD installer contract");
   assert.ok(
-    publishWorkflow.indexOf("npm ci") < contractStep && contractStep < publishWorkflow.indexOf("npm test"),
+    publishWorkflow.indexOf("npm ci") < contractStep && contractStep < publishWorkflow.indexOf("npm run test:coverage"),
     "publish workflow must install dependencies, run the real BMAD contract, then run hermetic npm test",
   );
   assert.ok(

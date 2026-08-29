@@ -63,6 +63,7 @@ const SUITES = [
   "tests/bmad-version-surface-regressions.mjs",
   "tests/bmad-transaction-regressions.mjs",
   "tests/bmad-authority-regressions.mjs",
+  "tests/coverage-ratchet-regressions.mjs",
   "tests/parity-migrate-regressions.mjs",
   "tests/hermes-profile-inheritance-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",

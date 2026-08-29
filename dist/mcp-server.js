@@ -17410,3 +17410,4 @@ server.registerTool(
 );
 var transport = new StdioServerTransport();
 await server.connect(transport);
+//# sourceMappingURL=mcp-server.js.map

@@ -139,3 +139,8 @@ _bmad/config.user.yaml
 .copilot/skills
 .opencode/skills
 .kimi-code/skills
+
+# esbuild sourcemaps: needed for coverage, rebuilt every time, published from CI
+dist/*.js.map
+# c8 output
+coverage/

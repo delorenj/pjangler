@@ -1,0 +1,170 @@
+name: CI
+
+# One workflow, not two. The environment setup below (a uv-managed Copier that
+# passes pjangler's own attestation, PyYAML for the profile renderer) is what
+# the TESTS need, not just the publish. Splitting it across two files would
+# mean two copies of that setup, and they would drift.
+#
+# Publishing is deliberately optimistic: green on main ships, immediately. The
+# fleet running from main trunk should have the latest features; a bug reaching
+# them is cheaper than every agent running weeks-old code. There is exactly one
+# user, and he would rather find the bug than be protected from it.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Never let two main runs publish at once. Do not cancel in progress: a
+  # half-finished publish is worse than a queued one.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC trusted publishing to npm
+      contents: write # the release commit + tag on main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Bridge canonical SSH submodule URLs to checkout HTTPS credentials
+        run: |
+          test -n "$(git config --local --get http.https://github.com/.extraheader)"
+          git config --local url."https://github.com/".insteadOf "git@github.com:"
+          test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"
+
+      - name: Fetch recursive submodule history and tags
+        run: >-
+          git submodule foreach --recursive
+          'if test "$(git rev-parse --is-shallow-repository)" = true;
+          then git fetch --unshallow --tags --force origin;
+          else git fetch --tags --force origin; fi'
+
+      - name: Verify CommonProject tag history
+        run: |
+          test -n "$(git -C templates/commonproject tag --list)"
+          git -C templates/commonproject describe --tags --abbrev=0 HEAD
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up mise
+        uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: '2026.7.5'
+          install: false
+          cache: false
+          env: false
+
+      - name: Verify mise installation
+        run: mise --version
+
+      # pjangler only trusts a Copier installed as a uv tool: it attests the
+      # wheel against its RECORD digests under ~/.local/share/uv/tools/copier
+      # and refuses anything else on PATH as untrusted (src/lifecycle/preflight.ts).
+      # A pip install lands in the Python toolcache instead, so the lifecycle
+      # tests could never exercise a trusted Copier here.
+      # hermes-profile-config.py — the base+delta profile renderer pjangler
+      # shells out to during Hermes provisioning — is the one script it invokes
+      # with a third-party dependency. Without PyYAML it exits non-zero and
+      # hermes.runtime-singleton blocks the whole lifecycle.
+      - run: python -m pip install 'pyyaml==6.0.2' 'uv==0.11.14'
+      # The attestation also requires the tool's INTERPRETER to resolve inside
+      # ~/.local/share/uv/python, so uv has to manage the Python too — a tool
+      # installed against the runner's setup-python is rejected.
+      - run: uv python install 3.12
+      - run: uv tool install --python 3.12 'copier==9.14.0'
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify Copier is trusted where pjangler looks for it
+        run: |
+          test -x "$HOME/.local/share/uv/tools/copier/bin/copier"
+          interpreter="$(sed -n '1s/^#!//p' "$HOME/.local/share/uv/tools/copier/bin/copier")"
+          echo "copier interpreter: $interpreter"
+          readlink -f "$interpreter" | grep -q "^$HOME/.local/share/uv/python/" \
+            || { echo "interpreter is not uv-managed; pjangler will refuse it" >&2; exit 1; }
+          copier --version
+
+      - run: npm ci
+      - run: npm run typecheck
+      # Build before the contract test, matching the order publish.yml used:
+      # it exercises the built installer, not the sources.
+      - run: npm run build
+      - run: npm run test:bmad-installer-contract
+
+      # test:coverage builds (with sourcemaps) and runs the whole suite under
+      # c8. 37 of the suites spawn dist/index.js rather than importing src, so
+      # the sourcemaps are what makes the numbers describe src/*.ts instead of
+      # the bundle. A failing suite fails here, exactly as `npm test` would.
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      # On a PR the ratchet only reports. On main it raises the floor, and the
+      # raise rides along in the release commit below.
+      - name: Coverage ratchet
+        run: ${{ github.ref == 'refs/heads/main' && 'npm run coverage:apply' || 'npm run coverage:check' }}
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # ---- everything below only runs for a green main ----
+
+      # Publishing on every main push needs a version npm has not seen. Bump
+      # from whatever is actually on the registry, not from package.json, so a
+      # hand-edited or reverted version cannot collide.
+      - name: Bump version from the published one
+        if: github.ref == 'refs/heads/main'
+        id: bump
+        run: |
+          set -euo pipefail
+          published="$(npm view "$(node -p "require('./package.json').name")" version 2>/dev/null || echo "0.0.0")"
+          local_v="$(node -p "require('./package.json').version")"
+          echo "published=$published  local=$local_v"
+          # Take whichever is ahead, then add one patch.
+          base="$(printf '%s\n%s\n' "$published" "$local_v" | sort -V | tail -1)"
+          next="$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$base")"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          npm version "$next" --no-git-tag-version
+          echo "bumped to $next"
+
+      - name: Commit the release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json .coverage-floor.json
+          # [skip ci] keeps this push from retriggering the workflow.
+          git commit -m "chore(release): v${{ steps.bump.outputs.next }} [skip ci]" || {
+            echo "nothing to commit"; exit 0; }
+          git tag "v${{ steps.bump.outputs.next }}"
+          git push origin HEAD:main --follow-tags
+
+      - name: Publish to npm
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ""
