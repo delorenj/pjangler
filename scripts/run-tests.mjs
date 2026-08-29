@@ -103,6 +103,7 @@ const SUITES = [
   "tests/project-registry-regressions.mjs",
   "tests/init-board-ingress-regressions.mjs",
   "tests/project-identity-regressions.mjs",
+  "tests/project-identity-implicit-regressions.mjs",
   "tests/pg-registry-regressions.mjs",
   "tests/momo-lifecycle-plane-regressions.mjs",
   // PJAN-77 notebook suites. `npm run test:pjan-77` still runs these on their

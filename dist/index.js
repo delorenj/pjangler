@@ -19952,9 +19952,18 @@ projectCmd.command("link").argument("<slug>", "Project slug").argument("<board-i
 });
 projectCmd.command("identity").argument("[slug]", "Project slug, agent id, or repo name").description("Read board identifiers back from the provider and repair the registries").option("--all", "Reconcile every agent in the Hermes fleet registry").option("--apply", "Write the repairs (default is a dry-run diff)").option("--json", "Output machine-parseable JSON").option("--hermes-registry <path>", "Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).action(async (slug, options) => {
   try {
-    if (!slug && !options.all) throw new Error("pass a project slug, an agent id, or --all");
+    let target = slug;
+    if (!target && !options.all) {
+      try {
+        target = resolveProject(process.cwd()).slug;
+      } catch {
+        throw new Error(
+          "not inside a pjangler project \u2014 pass a project slug, an agent id, or --all"
+        );
+      }
+    }
     const report = await reconcileProjectIdentity({
-      target: slug,
+      target,
       all: Boolean(options.all),
       apply: Boolean(options.apply),
       hermesRegistryPath: options.hermesRegistry,

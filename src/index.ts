@@ -943,9 +943,21 @@ projectCmd
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .action(async (slug: string | undefined, options) => {
     try {
-      if (!slug && !options.all) throw new Error("pass a project slug, an agent id, or --all");
+      // No argument means "this project" — the same implicit resolution `pj board`
+      // and `pj describe` use. Only when cwd is not inside a project does the
+      // operator have to say which one they meant.
+      let target = slug;
+      if (!target && !options.all) {
+        try {
+          target = resolveProject(process.cwd()).slug;
+        } catch {
+          throw new Error(
+            "not inside a pjangler project — pass a project slug, an agent id, or --all",
+          );
+        }
+      }
       const report = await reconcileProjectIdentity({
-        target: slug,
+        target,
         all: Boolean(options.all),
         apply: Boolean(options.apply),
         hermesRegistryPath: options.hermesRegistry,

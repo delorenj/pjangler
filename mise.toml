@@ -18,8 +18,6 @@ script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'"
 [[hooks.enter]]
 script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py' --root '{{config_root}}'"
 [[hooks.enter]]
-script = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project --root '{{config_root}}'"
-[[hooks.enter]]
 script = "'{{config_root}}/.mise/scripts/materialize-env.sh'"
 
 [tasks."link:bins"]
