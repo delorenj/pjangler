@@ -86,7 +86,7 @@ systemctl --user try-restart 'hermes-fleet-bloodbank-gateway.service'
 
 Interactive `hermes` commands pick up the new code on their next launch.
 
-## Update shared inherited config
+## Update shared base config
 
 For shared non-secret settings, edit only the fleet default profile:
 
@@ -94,18 +94,23 @@ For shared non-secret settings, edit only the fleet default profile:
 HERMES_HOME="$HOME/.hermes" hermes config set model.default gpt-5.4
 ```
 
-Inherited PM profiles pick this up automatically through
-`runtime/profile.yaml`:
+Hermes has no native profile inheritance. After changing the base, regenerate
+the real named profiles from their override-only deltas and check drift:
 
-```yaml
-config:
-  inherit_from: default
-  save_mode: delta
+```bash
+python3 ~/code/33GOD/hermes-agent-template/scripts/hermes-profile-config.py render --all
+python3 ~/code/33GOD/hermes-agent-template/scripts/hermes-profile-config.py check
 ```
 
-Do not patch every `agents/hermes/<role>/runtime/config.yaml` for shared
-defaults. Runtime configs must stay override-only, usually just local settings
-such as `terminal.cwd`.
+Do not patch repo-local runtime config or hand-edit a named profile's generated
+`config.yaml`. Local overrides belong in each real
+`~/.hermes/profiles/<name>/config.delta.yaml`.
+
+All seed, render, absorb, voice, channel, recovery, and backfill writers share
+one per-profile transaction lock. The lock must be held before reading state
+that will later be written back; channel work orders registry before profile.
+Use [config-mutation-safety.md](config-mutation-safety.md) when changing any of
+these paths, including their real-caller concurrency regressions.
 
 ## Update future-agent provisioning
 
@@ -130,25 +135,28 @@ you run a backfill.
 ## Backfill existing agents
 
 Use backfill only when the runtime/profile contract changed or old agents are
-missing inherited-profile wiring. Preferred repair targets:
+missing generated-profile wiring. Preferred repair targets:
 
-- `agents/hermes/<role>/runtime/profile.yaml` contains
-  `config.inherit_from: default` and `config.save_mode: delta`.
-- `~/.hermes/profiles/<repo>-<role>` points at
-  `agents/hermes/<role>/runtime/`.
+- `~/.hermes/profiles/<repo>-<role>/` is a real directory with identity-only
+  `profile.yaml`, a real `config.delta.yaml`, generated `config.yaml`, and an
+  explicit Hindsight bank pin.
+- `agents/hermes/<role>/runtime/` is ignored/untracked local state, not a
+  profile symlink target, submodule, or nested repository.
 - `role.yaml` has `profile: <repo>-<role>`.
 - systemd user units set `HERMES_HOME` to the named profile path, not the raw
   runtime path.
-- `runtime/config.yaml` contains only local overrides.
 
-If the Hermes checkout has `scripts/migrate-repo-agents-inherited-config.py`,
-prefer it for conventional PM migrations. Otherwise, patch the
-items above manually and restart the affected user services.
+Use the canonical profile renderer and PJangler migration/parity surfaces for
+repairs. Do not recreate the old symlink/native-inheritance layout manually.
 
 For fleet-bloodbank-standard drift (missing registry `bloodbank:` block, legacy
 `consumer_unit`/`checkpoint_timer` keys, leftover consumer unit files), run
 `pj audit` / `pj migrate hermes.registry-parity` in the repo instead of hand
 patching — the parity rule converges all three.
+
+An unchanged rerun must leave `agents-registry.yaml` byte-identical. Preserve
+the original `provisioned_at` and all extension/unknown metadata; merge the
+owned fields instead of rebuilding a registry row.
 
 ## Update Bloodbank hook fan-out
 
@@ -176,10 +184,7 @@ source ~/.hermes/fleet.env
 test -x "$HERMES_FLEET_BIN"
 HERMES_HOME="$HOME/.hermes" hermes config get model.default
 hermes -p <repo>-pm config get model.default
-hermes profile create inherited-test --inherit-config --no-alias
-hermes profile show inherited-test
-hermes -p inherited-test config get model.default
-hermes profile delete inherited-test -y
+python3 ~/code/33GOD/hermes-agent-template/scripts/hermes-profile-config.py check
 ```
 
 For daemon-backed agents, also check:
@@ -190,6 +195,10 @@ systemctl --user status hermes-<repo>-pm-heartbeat.timer
 systemctl --user status hermes-fleet-bloodbank-gateway.service
 journalctl --user -u hermes-<repo>-pm-heartbeat.service -n 80 --no-pager
 ```
+
+Use a bounded stabilization window rather than one `is-active` sample. Check
+systemd `Result`, `ExecMainStatus`, and `NRestarts` repeatedly through the
+deadline, and require the latest heartbeat service result to succeed.
 
 Heartbeats are one-minute oneshot services. A `try-restart` can
 surface an existing provider/quota failure as a transient failed service even
@@ -212,14 +221,32 @@ scripts/run_tests.sh tests/hermes_cli/test_config.py tests/hermes_cli/test_profi
 ## Pitfalls
 
 - Do not copy `.env`, `auth.json`, sessions, memories, or gateway state between
-  profiles. Only `config.yaml` participates in inheritance.
-- Do not treat inherited config as a security boundary.
+  profiles. Generated base-plus-delta config is not a security boundary.
+- Do not store literal credentials in `~/.hermes/.env`; nonsecret toggles may
+  remain. Import credentials to DeLoSecrets, map their environment names with
+  `secrets.onepassword.env` `op://` references, render/check, and verify the
+  actual process without exposing values. Treat that migration as a separate
+  approval-gated operation.
+- Secret values may enter validation only through a pipe, anonymous FD, or the
+  validating process's memory, never curl argv or unrelated child
+  environments. A transient 1Password validation failure preserves the last
+  valid reference and marker so a healthy rerun can recover.
+- A clean tip is not secret-eradication proof. Use
+  [secret-migration.md](secret-migration.md) for current files/databases/caches,
+  index and local-object coverage, pushed-history proof, and the separate
+  authorization gates around rotation and private-remote rewriting.
+- Normal Git and release transactions must execute repository and global hooks;
+  never use `--no-verify`, `GIT_GUARD_OFF`, or an equivalent bypass.
+- For tracked backups, match `*.bak`, `*.bak-*`, `*.orig`, `*~`, and
+  `*-backup.*`; add the proper ignore patterns, untrack indexed files with
+  scoped `git rm --cached`, commit/push, and verify the remote tree. Preserve
+  unrelated dirty runtime state throughout.
 - Do not run template backfills for a simple shared default model change.
 - Do not patch Hermes runtime hooks by hand when the Bloodbank fan-out source can generate them.
-- Do not drop an update stash until the inherited-config tests and live smoke
+- Do not drop an update stash until the generated-config tests and live smoke
   checks pass.
 - Do not assume `scripts/check-windows-footguns.py` is executable; use
   `.venv/bin/python scripts/check-windows-footguns.py` if direct execution gets
   `permission denied`.
-- Do not trust stale docs over `~/.hermes/fleet.env`, live `role.yaml`, systemd
-  units, and the actual runtime/profile symlinks.
+- Do not trust stale docs or success summaries over `~/.hermes/fleet.env`, live
+  `.project.json`/registry/profile files, systemd state, and renderer checks.

@@ -2,121 +2,161 @@
 pipeline-status:
   - new
 ---
-# Project Creation via pjangler
+# Project creation via PJangler
 
-The deployer is **pjangler** (`~/code/pjangler`, installed as `pjangler` on PATH; engine at
-`~/.local/libexec/pjangler-engine`). It vendors both templates as submodules under
-`~/code/pjangler/templates/` and version-locks against them.
+PJangler owns project identity and Hermes PM deployment. Use its installed `pj`
+entry point rather than invoking Copier, template scripts, or systemd directly.
 
-## 1. Bootstrap the repo from CommonProject
+## 1. Bootstrap the repository
 
-CommonProject is a copier template with an interactive wizard. From a CommonProject checkout
-(or the vendored `~/code/pjangler/templates/commonproject`):
+CommonProject establishes the repository skeleton, its one ticket board, and
+the canonical repo-root `.project.json`. From the supported project bootstrap
+surface:
 
 ```bash
-mise run init-project              # interactive: name, description, identifier, provider
-# or non-interactive:
-mise run init-project-non-interactive
+mise run init-project
+# or the repository's supported non-interactive init task
 ```
 
-`init-project.sh` does, in order:
-1. Gathers project name/description/identifier/workspace (+ ticket provider, default `plane`).
-2. Creates the ONE repo ticket board via `create-plane-project.sh` — named after the
-   **project name with no role suffix**, identifier = `slug[:4]` uppercased. On 400/409 it
-   resolves the existing board by identifier instead of failing.
-3. Runs `copier copy gh:delorenj/CommonProject` with all answers, rendering the skeleton.
-4. Installs BMAD (see [bmad-init.md](bmad-init.md)).
+The resulting `.project.json` owns:
 
-**Result — `.project.json` (the SOT):**
-```json
-{
-  "project_name": "Drumjangler", "project_description": "...", "project_slug": "drumjangler",
-  "repo_path": "/home/delorenj/code/drumjangler",
-  "ticket_provider": { "type": "plane", "workspace": "33god", "identifier": "DRUM",
-    "board_id": "<uuid>", "board_url": "https://plane.delo.sh/33god/projects/<uuid>/issues/" },
-  "agents": {}
-}
-```
-There is **no** `.plane.json` — board binding lives only in `.project.json.ticket_provider`.
-`repo_path` is stamped by a post-gen task; `agents` is filled as agents are provisioned.
+- `project_name`, `project_slug`, description, and absolute `repo_path`;
+- the single `ticket_provider` binding (provider, workspace, identifier,
+  board id, and state);
+- the `agents` map populated by later provisioning.
 
-## 2. Provision a Hermes Project Manager (PM)
+There is no separate `.plane.json`, no role-suffixed PM board, and no board
+identity inferred from a summary line. A valid Plane binding has `state:
+linked` and a live-resolved identifier/board id. Never persist
+`ticket_provider.board_url`; construct a URL transiently when presenting it.
+
+Read and parse the raw manifest before mutation. Malformed JSON aborts with the
+manifest and all other state byte-unchanged. Hold one project lock across
+read/validation, the live Plane check-or-create, and atomic manifest
+replacement so concurrent deploys cannot create or publish split identity.
+
+## 2. Deploy the unified PM
+
+The official non-interactive deployment is:
 
 ```bash
 cd <repo>
-pjangler hermes-agent          # interactive TUI
+pj hermes-agent --yes
 ```
 
-The recipe (`HermesAgentRecipe`) chain:
-`EnsureTemplateConfig → PromptForAgentConfig → RunCopierTemplate → WireTelegram → WireEmail → PrintHermesSummary`.
+The PM is the only supported role for the standard project deployment. The
+retired scrum-master's ticket-sentinel duties run inside the PM heartbeat, so
+there is no paired agent or second provisioning prompt.
 
-`PromptForAgentConfig` asks:
-- **Role** (select): *Project Manager (pm)* / *Scrum Master (Ticket Sentinel)* / dev / review / ops / qa.
-- **Ticket board provider** (select): defaults to the repo's existing `.project.json` provider.
-- **Also provision the paired Scrum Master?** (confirm, **pm only**) — provisions the
-  companion sentinel in the same run (see §3).
-- purpose, soul tone, model overrides, Telegram/email wiring.
+Before running it, seal the target repository (including nested repositories),
+`.project.json`, matching registry/profile state, target systemd units, and the
+fleet-shared gateway. Preserve dirty work exactly; do not reset, clean, stash,
+rewrite, or convert repo-local runtime into a tracked submodule. The detailed
+before/after and rerun contract is in **agent-fleet-operations**
+`references/pm-deployment.md`.
 
-It renders `agents/hermes/pm/` (role.yaml, SOUL.md, `hermes` wrapper, `.scripts/`, runtime
-submodule). `42-ticket-provider.sh` **binds the PM to the board already in `.project.json`**
-— it does not create a `"<Repo> PM"` board. If the repo has no board yet, it bootstraps one
-repo-named board and writes it back to `.project.json`. The agent is added to
-`.project.json.agents` and the binding mirrored into `role.yaml` for back-compat.
+The seal always includes content hashes for every dirty and untracked path and
+HEAD/index/status plus dirty/untracked hashes for every nested Git repository;
+it is not optional just because a working tree was already known to be dirty.
 
-Non-interactive: `pjangler hermes-agent --yes` (accepts defaults, provider inherited from
-`.project.json`, skips Telegram/email).
+PJangler renders `agents/hermes/pm/`, binds it to the board already recorded in
+`.project.json`, adds one agent entry to `.project.json`, and reconciles the
+matching fleet registry record. It must not create a second board or duplicate
+an existing agent entry. The linked Plane identifier and board id are checked
+live before the atomic manifest write.
 
-### Inherited profile config
+## 3. Profile and local runtime contract
 
-New 33god Hermes agents use opt-in inherited config instead of cloned
-standalone config. pjangler creates a named profile such as
-`~/.hermes/profiles/drumjangler-pm`, points it at
-`agents/hermes/pm/runtime/`, and writes this metadata into
-`runtime/profile.yaml`:
+The deployment creates a real named profile such as
+`~/.hermes/profiles/<repo>-pm/`. It is not a symlink to repo-local runtime.
+If that path is a legacy symlink, abort before any write; migration is a
+separate explicitly scoped action.
 
-```yaml
-config:
-  inherit_from: default
-  save_mode: delta
+- `<profile>/config.yaml` is generated from the fleet base
+  `~/.hermes/config.yaml` plus `<profile>/config.delta.yaml`.
+- `config.delta.yaml` is the small, real, hand-edited override source (usually
+  just the project working directory). Hermes does not natively interpret
+  `config.inherit_from` metadata.
+- `profile.yaml` describes identity/role; it does not implement config
+  inheritance.
+- `hindsight/config.json` explicitly pins the profile's identity-memory bank.
+- `agents/hermes/pm/runtime/` is ignored, untracked local state. It is not a
+  profile, submodule, or nested repository; only explicit owned-state links may
+  connect it to the named profile.
+
+Prove both halves of runtime exclusion:
+
+```bash
+git check-ignore -q -- agents/hermes/pm/runtime/
+git ls-files -- agents/hermes/pm/runtime/  # stdout must be empty
 ```
 
-This keeps the common, non-secret settings in the fleet default
-`~/.hermes/config.yaml`. A practical example: when the operator changes the
-default model from one OpenAI model to another, the PM and Ticket Sentinel pick
-up the new model automatically. If a repo agent only needs a local working
-directory, its `runtime/config.yaml` can stay as small as:
+Never hand-edit generated `config.yaml`. Change the delta and use the canonical
+profile renderer. Never place literal credentials in shared or profile `.env`;
+use the fleet's `secrets.onepassword.env` mappings to `op://DeLoSecrets/...`
+references. Secret migration is a separate approval-gated operation.
 
-```yaml
-terminal:
-  cwd: /home/delorenj/code/drumjangler
-```
+## 4. Services and reconciliation
 
-Only `config.yaml` inherits. API keys, Telegram tokens, SOUL, memories,
-sessions, skills, gateway state, cron, and runtime files remain profile-local
-inside the runtime repo. Treat inherited config as maintenance convenience, not
-as a security boundary.
+The standard per-agent service surfaces are:
 
-## 3. The Ticket Sentinel (folded into the PM heartbeat)
+1. `hermes-<agent-id>-gateway.service` for chat ingress;
+2. `hermes-<agent-id>-heartbeat.timer` and its oneshot service for sentinel and
+   reconciliation work.
 
-There is **no separate scrum-master role** — it was retired in the unified
-single-PM model (June 2026). The sentinel duties (board reconciliation,
-evidence checks, worker-state supervision through the provider-agnostic
-adapter `lib/ticket-provider.sh` + `providers/{plane,linear,trello}.sh`) run
-**inside the PM's heartbeat**: `hermes-<agent_id>-heartbeat.timer` fires
-`.scripts/heartbeat.sh` (~1-min cadence), which runs the sentinel pass
-out-of-band when `role.yaml` `reconcile.enabled: true` and otherwise ticks
-checkpoint-only. Provisioning the PM installs everything; there is nothing
-extra to provision.
+They have separate health semantics. If a channel credential was supplied, the
+gateway should be enabled and active without restart churn. If no channel
+credential was supplied, chat ingress must be explicitly deferred and the
+gateway left disabled and inactive; missing credentials must never create a
+crash loop. The heartbeat timer remains independently enabled/healthy, while
+its oneshot service can be inactive between successful ticks.
 
-Per-agent systemd units are ONLY the gateway service and the heartbeat timer.
-Bloodbank command ingress is the single fleet-shared
-`hermes-fleet-bloodbank-gateway.service` — never a per-agent consumer. Drift is
-converged with `pj migrate hermes.registry-parity`.
+Deferred means the profile delta explicitly sets
+`platforms.telegram.enabled: false` and `platforms.slack.enabled: false`, even
+when the fleet base enables a channel. Only verified ownership of the PM's
+dedicated channel credential may set its platform true.
 
-## Where the templates live
+Bloodbank command ingress belongs to the existing fleet-shared
+`hermes-fleet-bloodbank-gateway.service`. A repo deploy must leave that shared
+unit/config/state untouched. It creates no per-agent consumer, checkpoint
+timer, or filesystem inbox.
 
-- pjangler resolution order for the hermes template: `PJANGLER_HERMES_TEMPLATE` env →
-  vendored `templates/hermes-agent` → `~/code/33GOD/hermes-agent-template` → `gh:delorenj/hermes-agent-template`.
-- For live template development, point `PJANGLER_HERMES_TEMPLATE=~/code/33GOD/hermes-agent-template`;
-  otherwise the vendored submodule (version-locked) is used. After pushing template changes,
-  bump the submodule pointer: `git -C ~/code/33GOD/pjangler submodule update --remote`.
+## 5. Verify direct state and rerun
+
+Do not accept the deployer's summary or a green aggregate audit as complete
+proof. Directly compare:
+
+- `.project.json` and the one matching `~/.hermes/agents-registry.yaml` row;
+- the real profile directory, generated config, real delta, metadata, and
+  Hindsight pin;
+- exact unit-file/enabled/active/failed/restart state for gateway and heartbeat;
+- pre/post target and nested-repository status;
+- pre/post shared gateway identity and state.
+
+Observe services through a bounded stabilization window. Check `Result`,
+`ExecMainStatus`, restart-count stability, and the latest heartbeat service
+result; a single `is-active` sample cannot establish success.
+
+Run the relevant read-only `pj audit` and profile-renderer `check`, then rerun
+`pj hermes-agent --yes`. The rerun must be convergent: no duplicate identity,
+new tracked runtime, retired units, credential-less crash loop, shared-gateway
+change, or unexplained stable-file drift.
+
+The registry itself must be byte-identical on an unchanged rerun, preserving
+the original `provisioned_at` and extension/unknown metadata rather than
+reconstructing the row.
+
+The immutable required core is `33god-projects`, `delonet-conventions`,
+`delonet-dotenv`, `hermes-pm-template-maintenance`, `hindsight`, and
+`subagent-driven-development`. Each must resolve to a regular
+`~/.agents/skills/<canonical-name>/SKILL.md` before deployment is marked
+complete. Configuration may add optional skills but never subtract the core.
+Repair Skillex projection when one is absent; never create a placeholder merely
+to silence validation.
+
+## Template resolution
+
+PJangler normally uses its vendored, version-locked Hermes template. The
+`PJANGLER_HERMES_TEMPLATE` override is for explicitly scoped template
+development only. Template source changes, submodule bumps, and fleet backfills
+belong to their respective repositories and boards, not the target project.

@@ -33,10 +33,12 @@ The Hermes runtime scaffold seeds `runtime/memories/{MEMORY.md,USER.md}` as the 
 memory surface. For the full API, bank-routing architecture, and reflection, use the
 `hindsight` skill — this hub only states that agents are memory-wired by default.
 
-The runtime is also the target of the named Hermes profile symlink
-`~/.hermes/profiles/<repo>-<role>`. Hooks and memories remain profile-local in
-that runtime repo even though `config.yaml` inherits shared non-secret defaults
-from the fleet default profile.
+The named Hermes profile `~/.hermes/profiles/<repo>-<role>/` is a real
+directory. Its `config.yaml` is generated from the shared fleet base plus the
+profile's real `config.delta.yaml`; its Hindsight config explicitly pins the
+agent's identity-memory bank. Repo-local runtime is ignored local state and may
+receive explicit owned-state links, but it is not the profile directory or a
+nested Git repository.
 
 ## Bloodbank events (emit + consume)
 
@@ -57,14 +59,17 @@ trees. Legacy `claude/publish.py`, `codex/publish.py`, `copilot/publish.py`, and
 ```yaml
 bloodbank:
   subscribe:
-    - "bloodbank.evt.v1.repo.<repo>.>"          # all events for this repo
-    - "bloodbank.cmd.v1.agent.invocation.start" # one command contract; target is in data
+    # Non-functional: the repo name sits in the grammar's entity slot, which
+    # real repo events fill with task/board/decision/intake/maintenance. Left
+    # as-is pending the optional scope-tail phase; do not improvise a scope.
+    - "bloodbank.evt.repo.<repo>.>"
+    - "bloodbank.cmd.agent.invocation.start"    # one command contract; target is in data
   producer: "hermes-agent:<agent_id>"
 ```
 
 **Consume:** there is intentionally **no per-agent consumer**. Command ingress
 is the single fleet-shared `hermes-fleet-bloodbank-gateway.service`, which
-subscribes once to `bloodbank.cmd.v1.agent.invocation.start` and routes
+subscribes once to `bloodbank.cmd.agent.invocation.start` and routes
 `data.target_agent_id` → the agent's Hermes profile via the fleet registry.
 `60-bloodbank.sh` is a compatibility checkpoint only — it installs no files or
 services. A `bloodbank-consumer.py` or `hermes-<agent>-consumer.service`
@@ -75,8 +80,10 @@ emits via `.scripts/sentinel/bin/emit-event.py`; producer identity is
 `hermes-agent:<agent_id>`.
 
 **Subject scheme:**
-- `bloodbank.evt.v1.repo.<repo>.>` — repo-scoped events.
-- `bloodbank.cmd.v1.agent.invocation.start` — the single command subject; the
+- `bloodbank.evt.repo.>` — repo-domain events (`task`, `board`, `decision`,
+  `intake`, `maintenance`, `skill` fill the entity slot; the repo identity
+  travels in `data`, not the subject).
+- `bloodbank.cmd.agent.invocation.start` — the single command subject; the
   target agent travels in `data.target_agent_id`, never in the subject.
 
 ### Plane facts use a separate ingress boundary
@@ -85,7 +92,7 @@ Agent hooks do not publish Plane ticket lifecycle facts. Plane sends signed
 webhooks for both self-hosted workspaces to the one active n8n workflow at
 `https://n8n.delo.sh/webhook/plane`. That workflow verifies raw-body HMAC,
 normalizes the provider action, resolves `board_id` through the shared fleet
-registry, and publishes `bloodbank.evt.v1.repo.task.*`.
+registry, and publishes `bloodbank.evt.repo.task.*`.
 
 PJangler owns the identity dependency in that journey: repo-root
 `.project.json.ticket_provider` is reconciled into
@@ -101,7 +108,9 @@ Skipping (e.g. local-only provisioning): `SKIP_BLOODBANK=1` makes `60-bloodbank.
 ## Wiring checklist when adding/repairing an agent
 
 1. Repo-root `.project.json` has the canonical `project_slug`,
-   `ticket_provider.{type,workspace,identifier,board_id,state}`, and agent entry.
+   `ticket_provider.{type,workspace,identifier,board_id,state}`, and agent entry;
+   state is `linked`, identifier/board id resolve against live Plane, and no
+   `ticket_provider.board_url` is persisted.
 2. The shared fleet registry record has the correct `profile_name` and explicit
    `bloodbank.{enabled,gateway_scope,target_agent_id}`. There is no per-agent
    consumer file or service.

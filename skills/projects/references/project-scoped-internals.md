@@ -120,7 +120,7 @@ skill system (`~/.agents/skills.json`) and a teammate doesn't, the project manif
 the option to inherit the global loadout seamlessly. If the dev has a global manifest, those
 skills are resolved from their local cache alongside the project-specific ones. This removes
 the need for `defer_to_global` flags or complicated bash deduplication scripts. Local project
-skills with the same name automatically shadow/override the global ones, safely mixing global 
+skills with the same name automatically shadow/override the global ones, safely mixing global
 context with project-scoped requirements.
 
 ## Adding a new agent CLI to this variant

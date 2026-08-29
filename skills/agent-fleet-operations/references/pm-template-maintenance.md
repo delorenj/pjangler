@@ -38,7 +38,7 @@ Trigger examples:
 - "understand the intended architecture first, then explain drift"
 
 Required outputs:
-1. baseline architecture from `.project.json`, inherited profiles, shared `~/.hermes/config.yaml`, and template/SSOT references
+1. baseline architecture from `.project.json`, generated base-plus-delta profiles, shared `~/.hermes/config.yaml`, and template/SSOT references
 2. live reproduction (`hermes mcp list`, role wrappers, systemd status, runtime logs)
 3. server-by-server ownership split (repo-local vs shared fleet/template vs external service)
 4. ordered remediation plan
@@ -46,6 +46,8 @@ Required outputs:
 
 Detailed checklist and acceptance criteria:
 - `references/fleet-self-check.md`
+- Any deploy/backfill transaction: `references/pm-deployment.md` and its
+  machine-readable `references/pm-deployment-contract.json`
 
 ## Defaults
 
@@ -58,8 +60,11 @@ Detailed checklist and acceptance criteria:
 - Provisioning/board model (how agents bind to the repo's one board via `.project.json`): see the `33god-projects` skill
 - Shared Hermes install: `~/.hermes/hermes-agent`, reached by generated agents
   through `~/.hermes/fleet.env`
-- Shared inherited config: `~/.hermes/config.yaml`; PM runtime
-  `config.yaml` files must stay override-only
+- Shared config base: `~/.hermes/config.yaml`; each real named profile owns an
+  override-only `config.delta.yaml` and a generated `config.yaml`
+- Immutable PM skill core: `33god-projects`, `delonet-conventions`,
+  `delonet-dotenv`, `hermes-pm-template-maintenance`, `hindsight`, and
+  `subagent-driven-development`; template options may only add skills
 
 ## Procedure
 
@@ -67,7 +72,7 @@ Detailed checklist and acceptance criteria:
 - Hermes core update only: update `~/.hermes/hermes-agent`, restart long-running
   services, and stop here
 - shared config/default model only: write `HERMES_HOME="$HOME/.hermes" hermes
-  config set ...`, verify inherited profiles, and stop here
+  config set ...`, render/check named profiles, and stop here
 - rule/behavior prompt change
 - script/bootstrap behavior
 - reusable skill content
@@ -83,23 +88,35 @@ Detailed checklist and acceptance criteria:
 3. Backfill existing PM agents
 - Do this only when existing agents must converge immediately or the runtime
   contract changed; do not backfill for a simple shared model/default update.
-- Update each PM runtime config only for local overrides:
-  - `skills.external_dirs.0 = /home/delorenj/.agents/skills`
-- Confirm inherited profile metadata:
-  - `runtime/profile.yaml` has `config.inherit_from: default`
-  - `runtime/profile.yaml` has `config.save_mode: delta`
+- Update each real named profile's `config.delta.yaml` only for local overrides,
+  then render its generated `config.yaml`.
+- Confirm profile state:
+  - a legacy profile symlink aborts the transaction before mutation
+  - `~/.hermes/profiles/<repo>-pm/` is a real directory
+  - `config.delta.yaml` is a real override-only file and `config.yaml` passes
+    renderer drift checks
+  - `profile.yaml` contains identity metadata only and
+    `hindsight/config.json` explicitly pins the agent bank
 - Sync local fallback skill copy (if applicable):
   - `runtime/skills/software-development/subagent-driven-development/SKILL.md`
 - Confirm launch/runtime integration:
-  - `~/.hermes/profiles/<repo>-pm` points at `agents/hermes/pm/runtime/`
+  - repo-local runtime is ignored/untracked local state, not the profile or a
+    nested repository
+  - `git check-ignore` succeeds for runtime and `git ls-files` returns no
+    runtime paths
   - systemd units set `HERMES_HOME` to the named profile path
 
 4. Verify
 - Confirm target lines exist in template files
-- Confirm runtime config contains only intentional local overrides
+- Confirm profile delta contains only intentional local overrides and generated
+  config matches base-plus-delta
 - Confirm `hermes -p <repo>-pm config get model.default` resolves from the
   shared default when no local override exists
 - Confirm skill content includes requested `<X>` behavior
+- Observe `Result`, `ExecMainStatus`, `NRestarts`, and the latest heartbeat
+  service result through a bounded stabilization window
+- Confirm unchanged registry reruns are byte-identical and preserve
+  `provisioned_at` plus extension metadata
 
 5. Report
 - What changed
@@ -111,25 +128,36 @@ Detailed checklist and acceptance criteria:
 
 - Never invent event naming contracts; follow repo specs.
 - Keep one canonical source for each workflow/skill to prevent drift.
+- Run repository and global Git hooks for normal commits, releases, and pushes;
+  never bypass them.
 - If existing agent scripts differ, patch them to template parity.
 - Do not copy `.env`, `auth.json`, sessions, memories, gateway state, or other
-  runtime-local state between profiles. Only `config.yaml` participates in
-  inherited config.
+  runtime-local state between profiles. Generated base-plus-delta config is
+  maintenance machinery, not a reason to share local state.
 - Do not run plain `uv sync` during Hermes core updates unless you have checked
   dependency changes and preserved any installed optional extras.
-- For presence/work-state streams, use Bloodbank v1 event names (e.g. `bloodbank.v1.system.heartbeat.received`, `bloodbank.v1.agent.invocation.started|completed|failed`) rather than legacy short names.
+- For presence/work-state streams, use canonical 4-token Bloodbank event types (e.g. `bloodbank.system.heartbeat.received`, `bloodbank.agent.invocation.started|completed|failed`) rather than legacy short names. Their NATS subjects add the kind marker: `bloodbank.evt.system.heartbeat.received`. No version token belongs in either.
+- Pass secret values only by pipe, anonymous FD, or process memory. Never put
+  them in curl argv or unrelated child environments; a failed transient
+  1Password validation preserves the last valid reference/marker for recovery.
+- Tracked backup cleanup needs correct globs, scoped untracking, a committed and
+  pushed removal verified against the remote tree, and preservation of
+  unrelated dirty runtime state. See `references/pm-deployment.md` for details.
 
 ## Experiential findings (important)
 
-- Existing PM agent `.scripts/10-hermes-profile.sh` files can diverge from template and may be missing canonical-skill sync blocks; do not assume old_string patch matches — inspect file first, then inject block after `terminal.cwd` config.
-- Use `/home/delorenj/.agents/skills` as canonical root (not `/home/delorenj/code/skillex/all-skills`) for deployed PM fleet inheritance.
-- Backfill must update both:
-  1) runtime `config.yaml` (`skills.external_dirs.0`)
-  2) local fallback skill copy under runtime skills path.
+- Existing PM agent `.scripts/10-hermes-profile.sh` files can diverge from the
+  template and may be missing canonical-skill sync blocks; inspect before
+  changing and converge through the current generator rather than patching old
+  symlink/native-inheritance assumptions.
+- Use `/home/delorenj/.agents/skills` as the deployed global activation root;
+  writable source definitions live once in Skillex `all-skills/`.
+- Backfill must validate canonical skill projections and the profile delta/
+  generated config pair; it must not create placeholder skills or silently mark
+  a missing projection complete.
 - Runtime `SOUL.md` may need direct backfill if you want behavior immediately without reprovisioning.
-- Under inherited profile config, do not backfill shared model/provider defaults
-  into runtime `config.yaml`; update `~/.hermes/config.yaml` once and verify
-  inherited profiles resolve it.
+- Under generated profile config, do not backfill shared model/provider defaults
+  into deltas; update `~/.hermes/config.yaml` once, render, and verify profiles.
 
 ## Meta-agent scaffold pattern
 
