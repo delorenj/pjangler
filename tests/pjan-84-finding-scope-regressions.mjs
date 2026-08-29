@@ -61,7 +61,7 @@ try {
   const hostEnv = { HOME: home, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state") };
 
   check("a broken HOST does not stop a project being created", () => {
-    const created = cli(["init", "scoped", "--target-dir", target, "--registry", registry, "--apply", "-y", "--no-tui"], hostEnv);
+    const created = cli(["init", "scoped", "--target-dir", target, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"], hostEnv);
     assert.equal(created.status, 0, `init must succeed despite host state: ${created.stdout}${created.stderr}`);
     assert.match(created.stdout, /Project synchronized/);
   });

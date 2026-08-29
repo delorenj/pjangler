@@ -979,21 +979,69 @@ var init_RegistryStore = __esm({
   }
 });
 
+// src/project/boardUrl.ts
+var init_boardUrl = __esm({
+  "src/project/boardUrl.ts"() {
+    "use strict";
+  }
+});
+
+// src/utils/version.ts
+import { readFileSync as readFileSync7 } from "node:fs";
+import { dirname as dirname5, join as join8 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var PJANGLER_VERSION;
+var init_version = __esm({
+  "src/utils/version.ts"() {
+    "use strict";
+    PJANGLER_VERSION = (() => {
+      try {
+        let dir = dirname5(fileURLToPath2(import.meta.url));
+        for (let i = 0; i < 4; i++) {
+          try {
+            const raw = readFileSync7(join8(dir, "package.json"), "utf8");
+            return JSON.parse(raw).version ?? "0.0.0";
+          } catch {
+            const parent = dirname5(dir);
+            if (parent === dir) break;
+            dir = parent;
+          }
+        }
+      } catch {
+      }
+      return "0.0.0";
+    })();
+  }
+});
+
+// src/project/boardQuery.ts
+function workspaceEnvKey(workspace) {
+  const key = (workspace ?? "default").toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  return `PLANE_${key || "DEFAULT"}_API_KEY`;
+}
+var init_boardQuery = __esm({
+  "src/project/boardQuery.ts"() {
+    "use strict";
+    init_boardUrl();
+    init_version();
+  }
+});
+
 // src/project/index.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
-import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, openSync as openSync2, readFileSync as readFileSync7, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, openSync as openSync2, readFileSync as readFileSync8, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, delimiter as delimiter2, dirname as dirname5, isAbsolute as isAbsolute2, join as join8, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { basename as basename6, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute2, join as join9, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 import YAML3 from "yaml";
 function providerAssignsIdentifiers(type) {
   return IDENTIFIER_ASSIGNING_PROVIDERS.includes((type ?? "").trim());
 }
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join8(dirname5(manifestPath), ".copier-answers.yml");
+  const answersPath = join9(dirname6(manifestPath), ".copier-answers.yml");
   if (!existsSync6(answersPath)) return [];
-  const current = readFileSync7(answersPath, "utf8");
+  const current = readFileSync8(answersPath, "utf8");
   const document = YAML3.parseDocument(current);
   if (document.errors.length) return [];
   const name = String(document.get("project_name") ?? "");
@@ -1007,7 +1055,7 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
   return [answersPath];
 }
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join8(homedir4(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join9(homedir4(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -1022,7 +1070,7 @@ function emptyProjectRegistry() {
 }
 function loadProjectRegistry(path = projectRegistryPath()) {
   if (!existsSync6(path)) return emptyProjectRegistry();
-  const raw = YAML3.parse(readFileSync7(path, "utf8"));
+  const raw = YAML3.parse(readFileSync8(path, "utf8"));
   if (raw == null) return emptyProjectRegistry();
   if (!isRecord(raw)) throw new Error(`Project registry must be a mapping: ${path}`);
   const registry = raw;
@@ -1101,14 +1149,14 @@ function fsyncDirectory(path) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname5(path), { recursive: true });
+  mkdirSync4(dirname6(path), { recursive: true });
   let text2;
   let mode = 420;
   if (existsSync6(path)) {
     const stat = lstatSync6(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Project registry must be a regular file: ${path}`);
     mode = stat.mode & 511;
-    const current = readFileSync7(path, "utf8");
+    const current = readFileSync8(path, "utf8");
     const document = YAML3.parseDocument(current);
     if (document.errors.length) throw new Error(`Project registry YAML is invalid: ${path}`);
     setYamlLeaf(document, ["schema_version"], registry.schema_version);
@@ -1137,7 +1185,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
     fd = void 0;
     renameSync3(temp, path);
     chmodSync2(path, mode);
-    fsyncDirectory(dirname5(path));
+    fsyncDirectory(dirname6(path));
   } catch (error) {
     if (fd !== void 0) try {
       closeSync2(fd);
@@ -1288,22 +1336,26 @@ function buildTicketProviderBlock(input) {
     state: boardId && confirmedAt && provenClaim ? "linked" : "planned"
   };
 }
-function ticketProviderKeyVar(provider) {
-  return provider === "trello" ? "TRELLO_KEY" : "PLANE_API_KEY";
+function ticketProviderKeyGroups(provider, workspace) {
+  if (provider === "trello") return [["TRELLO_KEY"], ["TRELLO_TOKEN"]];
+  return [[.../* @__PURE__ */ new Set(["PLANE_API_KEY", workspaceEnvKey(workspace)])]];
 }
-function ticketProviderKeyVars(provider) {
-  return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
+function ticketProviderKeyVars(provider, workspace) {
+  return ticketProviderKeyGroups(provider, workspace).flat();
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join8(env2.HOME || homedir4(), ".config");
-  return join8(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join9(env2.HOME || homedir4(), ".config");
+  return join9(base, "zshyzsh", "secrets.zsh");
+}
+function ticketProviderFleetEnvPath(env2 = process.env) {
+  return env2.HERMES_FLEET_ENV?.trim() || join9(env2.HOME || homedir4(), ".hermes", "fleet.env");
 }
 function readShellAssignments(path, keys) {
   const found = {};
   if (!existsSync6(path)) return found;
   let text2;
   try {
-    text2 = readFileSync7(path, "utf8");
+    text2 = readFileSync8(path, "utf8");
   } catch {
     return found;
   }
@@ -1339,16 +1391,16 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push({ path: join8(input.repoPath, ".env"), label: join8(input.repoPath, ".env") });
-  const secrets = ticketProviderSecretsPath(env2);
-  candidates.push({ path: secrets, label: secrets });
+  if (input.repoPath) candidates.push(join9(input.repoPath, ".env"));
+  candidates.push(ticketProviderFleetEnvPath(env2));
+  candidates.push(ticketProviderSecretsPath(env2));
   for (const candidate of candidates) {
     const outstanding = missing();
     if (!outstanding.length) break;
-    const assignments = readShellAssignments(candidate.path, outstanding);
+    const assignments = readShellAssignments(candidate, outstanding);
     for (const [key, value] of Object.entries(assignments)) {
       values[key] = value;
-      sources[key] = candidate.label;
+      sources[key] = candidate;
     }
   }
   return { values, sources };
@@ -1357,40 +1409,42 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join8(override, file));
+  if (override) candidates.push(join9(override, file));
   const relativeRoots = [
-    join8("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join8("agents", "hermes", "pm", ".scripts", "providers")
+    join9("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join9("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname5(fileURLToPath2(import.meta.url));
+    let dir = dirname6(fileURLToPath3(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join8(dir, relativeRoot, file));
-      const parent = dirname5(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join9(dir, relativeRoot, file));
+      const parent = dirname6(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join8(homedir4(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join9(homedir4(), "code", "pjangler", relativeRoot, file));
   }
   return candidates.find((candidate) => existsSync6(candidate));
 }
 function provisionTicketProviderBoard(action, env2 = process.env) {
   const provider = action.provider;
-  const keyVar = ticketProviderKeyVar(provider);
+  const groups = ticketProviderKeyGroups(provider, action.workspace);
   const { values } = resolveTicketProviderCredentials({
-    keys: ticketProviderKeyVars(provider),
+    keys: ticketProviderKeyVars(provider, action.workspace),
     repoPath: action.repoPath,
     env: env2
   });
-  if (!values[keyVar]) {
+  const unsatisfied = groups.filter((group) => !group.some((key) => values[key]));
+  if (unsatisfied.length) {
+    const names = unsatisfied.map((group) => group.join(" or ")).join(" and ");
     return {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join8(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env2)}, then re-run with --live \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${names} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join9(action.repoPath, ".env")}, ${ticketProviderFleetEnvPath(env2)}, or ${ticketProviderSecretsPath(env2)} \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -1404,12 +1458,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join8(tmpdir2(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join9(tmpdir2(), "pjangler-tp-"));
   try {
-    const providersDir = join8(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join9(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
     writeFileSync4(
-      join8(staging, ".project.json"),
+      join9(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -1428,7 +1482,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join8(providersDir, `${provider}.sh`);
+    const staged = join9(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
@@ -1485,13 +1539,13 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
         error: `ticket-provider: ${provider} create_board returned no identifier. The adapter must echo the identifier the provider assigned; pjangler no longer invents one.`
       };
     }
-    const boardUrl = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
+    const boardUrl2 = isRecord(parsed) && typeof parsed.board_url === "string" ? parsed.board_url : void 0;
     return {
       ok: true,
       skipped: false,
       boardId,
       identifier,
-      boardUrl,
+      boardUrl: boardUrl2,
       logs: [`ticket-provider: ${provider} board linked (${identifier} \u2192 ${boardId})`]
     };
   } finally {
@@ -1524,7 +1578,7 @@ function prospectiveRealPath(path) {
   let cursor = resolve5(path);
   const suffix = [];
   while (!existsSync6(cursor)) {
-    const parent = dirname5(cursor);
+    const parent = dirname6(cursor);
     if (parent === cursor) return resolve5(path);
     suffix.unshift(basename6(cursor));
     cursor = parent;
@@ -1553,7 +1607,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync6(join8(homedir4(), ".agents", "hooks"));
+  return !existsSync6(join9(homedir4(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -1567,7 +1621,7 @@ function projectRecordEquivalent(a, b) {
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
-  return resolve5(dirname5(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
+  return resolve5(dirname6(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
   const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter2).map((root) => root.trim()).filter(Boolean);
@@ -1589,7 +1643,7 @@ function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   const name = basename6(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join8(root, name);
+    const candidate = join9(root, name);
     if (existsSync6(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
@@ -1669,12 +1723,13 @@ function planProjectInit(input) {
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
-  const provisionTicketBoard = input.provisionTicketBoard ?? live;
+  const provisionTicketBoard = input.provisionTicketBoard ?? true;
   const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
-  const boardEnabled = live && provisionTicketBoard && !skipPlane;
+  const boardEnabled = provisionTicketBoard && !skipPlane;
   const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
-  const anyExternalAgentEffect = boardEnabled || systemdEnabled;
+  const agentBoardEffect = live && boardEnabled;
+  const anyExternalAgentEffect = agentBoardEffect || systemdEnabled;
   const actions = [
     { kind: "registry.upsert", registryPath: registryPath2, slug, project }
   ];
@@ -1697,7 +1752,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join8(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -1710,7 +1765,7 @@ function planProjectInit(input) {
       description: project.description || `Ticket board for ${project.slug}`,
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
-      reason: skipPlane ? "ticket-provider action disabled by skipPlane=true" : project.ticket_provider.board_id ? "board already linked; no provider call" : !live ? "network/cloud actions require --live" : !provisionTicketBoard ? "ticket-provider action requires explicit provisionTicketBoard=true" : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
+      reason: skipPlane ? "ticket-provider action disabled by skipPlane=true (--skip-board)" : project.ticket_provider.board_id ? "board already linked; no provider call" : !provisionTicketBoard ? "ticket-provider action requires explicit provisionTicketBoard=true" : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`
     },
     {
       kind: "hermes.provision-agent",
@@ -1720,7 +1775,7 @@ function planProjectInit(input) {
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipPlane: !boardEnabled,
+        skipPlane: !agentBoardEffect,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
         skipBloodbank: true,
@@ -1767,12 +1822,12 @@ function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join8(action.repoPath, ".project.json");
+  const manifestPath = join9(action.repoPath, ".project.json");
   let next;
   if (existsSync6(manifestPath)) {
     let existing = {};
     try {
-      const parsed = JSON.parse(readFileSync7(manifestPath, "utf8"));
+      const parsed = JSON.parse(readFileSync8(manifestPath, "utf8"));
       if (isRecord(parsed)) existing = parsed;
     } catch {
       existing = {};
@@ -1780,12 +1835,12 @@ function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname5(manifestPath), { recursive: true });
+    mkdirSync4(dirname6(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text2 = `${JSON.stringify(next, null, 2)}
 `;
-  if (!existsSync6(manifestPath) || readFileSync7(manifestPath, "utf8") !== text2) {
+  if (!existsSync6(manifestPath) || readFileSync8(manifestPath, "utf8") !== text2) {
     writeFileSync4(manifestPath, text2, "utf8");
     return [manifestPath];
   }
@@ -1814,7 +1869,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname5(action.targetDir), { recursive: true });
+      mkdirSync4(dirname6(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
       const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
@@ -1845,11 +1900,11 @@ async function executeProjectInitPlan(plan, options = {}) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname5(action.path), { recursive: true });
+      mkdirSync4(dirname6(action.path), { recursive: true });
       let value = action.manifest;
       if (existsSync6(action.path)) {
         try {
-          const currentValue = JSON.parse(readFileSync7(action.path, "utf8"));
+          const currentValue = JSON.parse(readFileSync8(action.path, "utf8"));
           if (isRecord(currentValue)) {
             const currentNotebook = isRecord(currentValue.notebook) ? currentValue.notebook : {};
             const desiredNotebook = isRecord(value.notebook) ? value.notebook : {};
@@ -1873,7 +1928,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       }
       const next = `${JSON.stringify(value, null, 2)}
 `;
-      const current = existsSync6(action.path) ? readFileSync7(action.path, "utf8") : void 0;
+      const current = existsSync6(action.path) ? readFileSync8(action.path, "utf8") : void 0;
       if (current !== next) {
         writeFileSync4(action.path, next, "utf8");
         changedFiles.push(action.path);
@@ -1958,7 +2013,7 @@ function getProject(registry, slug) {
   return project;
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join8(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -1985,10 +2040,10 @@ function buildCommonProjectCopierAction(input) {
   };
 }
 function resolvePjanglerRoot() {
-  let dir = dirname5(fileURLToPath2(import.meta.url));
-  while (dir !== dirname5(dir)) {
-    if (existsSync6(join8(dir, "package.json")) && existsSync6(join8(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname5(dir);
+  let dir = dirname6(fileURLToPath3(import.meta.url));
+  while (dir !== dirname6(dir)) {
+    if (existsSync6(join9(dir, "package.json")) && existsSync6(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname6(dir);
   }
   return resolve5(process.cwd());
 }
@@ -2064,7 +2119,7 @@ function validateProjectRecord(project, key) {
 }
 function expandHome(path) {
   if (path === "~") return homedir4();
-  if (path.startsWith("~/")) return join8(homedir4(), path.slice(2));
+  if (path.startsWith("~/")) return join9(homedir4(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -2079,6 +2134,7 @@ var init_project = __esm({
     init_tree_diff();
     init_preflight();
     init_RegistryStore();
+    init_boardQuery();
     PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
     PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
     TICKET_PROVIDER_ADAPTERS_ENV = "PJ_TICKET_PROVIDER_ADAPTERS";
@@ -2091,8 +2147,8 @@ var init_project = __esm({
     IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
     DEFAULT_SOURCE_SKILL_ROOTS = [
       "/home/delorenj/code/skillex/all-skills",
-      join8(homedir4(), ".agents", "skills"),
-      join8(homedir4(), ".codex", "skills")
+      join9(homedir4(), ".agents", "skills"),
+      join9(homedir4(), ".codex", "skills")
     ];
     PROJECT_REGISTRY_OWNED_KEYS = [
       "name",
@@ -2123,8 +2179,8 @@ var init_project = __esm({
 // src/notebook/config.ts
 import { randomUUID } from "node:crypto";
 import { isIP as isIP2 } from "node:net";
-import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync3, readFileSync as readFileSync13, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
-import { dirname as dirname7, resolve as resolve7 } from "node:path";
+import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync3, readFileSync as readFileSync14, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
+import { dirname as dirname8, resolve as resolve7 } from "node:path";
 function isRecord2(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -2137,7 +2193,7 @@ function readManifest(repoPath) {
   if (!existsSync14(path)) return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync13(path, "utf8"));
+    parsed = JSON.parse(readFileSync14(path, "utf8"));
   } catch {
     throw new NotebookError("INVALID_INPUT", `${path} is not valid JSON`);
   }
@@ -2362,7 +2418,7 @@ function requireRemoteNotebookConfig(config) {
 function persistProjectNotebookBinding(resolved, binding, policy) {
   const changed = [];
   const manifestPath = resolve7(resolved.project.repo_path, ".project.json");
-  const manifestRaw = existsSync14(manifestPath) ? JSON.parse(readFileSync13(manifestPath, "utf8")) : {};
+  const manifestRaw = existsSync14(manifestPath) ? JSON.parse(readFileSync14(manifestPath, "utf8")) : {};
   if (!isRecord2(manifestRaw)) throw new NotebookError("INVALID_INPUT", `${manifestPath} must contain a JSON object`);
   validateManifestNotebookSurface(manifestRaw.notebook);
   const manifestNotebook2 = isRecord2(manifestRaw.notebook) ? manifestRaw.notebook : {};
@@ -2379,14 +2435,14 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
   };
   const manifestText = `${JSON.stringify(manifestNext, null, 2)}
 `;
-  if (!existsSync14(manifestPath) || readFileSync13(manifestPath, "utf8") !== manifestText) {
+  if (!existsSync14(manifestPath) || readFileSync14(manifestPath, "utf8") !== manifestText) {
     let mode = 420;
     if (existsSync14(manifestPath)) {
       const current2 = lstatSync8(manifestPath);
       if (!current2.isFile() || current2.isSymbolicLink()) throw new NotebookError("CONFLICT", `${manifestPath} must be a regular non-symlink file`);
       mode = current2.mode & 511;
     }
-    const temp = resolve7(dirname7(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
+    const temp = resolve7(dirname8(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
     const fd = openSync3(temp, "wx", mode);
     try {
       writeFileSync8(fd, manifestText, "utf8");
@@ -2397,7 +2453,7 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
     }
     renameSync4(temp, manifestPath);
     try {
-      const directory = openSync3(dirname7(manifestPath), "r");
+      const directory = openSync3(dirname8(manifestPath), "r");
       try {
         fsyncSync2(directory);
       } finally {
@@ -2409,9 +2465,9 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
   }
   const current = resolved.project.notebook;
   resolved.project.notebook = { ...isRecord2(current) ? current : { state: "planned" }, ...binding };
-  const registryBefore = existsSync14(resolved.registry_path) ? readFileSync13(resolved.registry_path, "utf8") : null;
+  const registryBefore = existsSync14(resolved.registry_path) ? readFileSync14(resolved.registry_path, "utf8") : null;
   saveProjectRegistry(resolved.registry, resolved.registry_path);
-  const registryAfter = existsSync14(resolved.registry_path) ? readFileSync13(resolved.registry_path, "utf8") : null;
+  const registryAfter = existsSync14(resolved.registry_path) ? readFileSync14(resolved.registry_path, "utf8") : null;
   if (registryBefore !== registryAfter) changed.push(resolved.registry_path);
   return changed;
 }
@@ -2731,9 +2787,9 @@ import {
   writeFileSync as writeFileSync9
 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
-import { basename as basename7, dirname as dirname8, join as join17, parse, relative as relative8, resolve as resolve8, sep as sep3 } from "node:path";
+import { basename as basename7, dirname as dirname9, join as join18, parse, relative as relative8, resolve as resolve8, sep as sep3 } from "node:path";
 function notebookStateRoot(env2 = process.env) {
-  const base = env2.XDG_STATE_HOME || join17(env2.HOME || homedir6(), ".local", "state");
+  const base = env2.XDG_STATE_HOME || join18(env2.HOME || homedir6(), ".local", "state");
   return resolve8(base, "pjangler", "notebook", NOTEBOOK_STATE_VERSION);
 }
 function assertDigest(value, label) {
@@ -2741,7 +2797,7 @@ function assertDigest(value, label) {
 }
 function projectStateDir(root, projectSlug) {
   if (!/^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(projectSlug)) throw new NotebookError("INVALID_INPUT", "Invalid project slug for Notebook state");
-  return join17(resolve8(root), "projects", sha256Hex(`pjangler-project-state-v1\0${projectSlug}`));
+  return join18(resolve8(root), "projects", sha256Hex(`pjangler-project-state-v1\0${projectSlug}`));
 }
 function assertContained(root, candidate) {
   const rel = relative8(resolve8(root), resolve8(candidate));
@@ -2759,7 +2815,7 @@ function openPinnedDirectory(path, root, create) {
   try {
     for (const part of absolute.slice(parsed.root.length).split(sep3).filter(Boolean)) {
       const child = `/proc/self/fd/${fd}/${part}`;
-      cursor = join17(cursor, part);
+      cursor = join18(cursor, part);
       let childFd;
       try {
         childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
@@ -2816,18 +2872,18 @@ function notebookStatePaths(root, projectSlug) {
   return {
     root: absoluteRoot,
     project,
-    baselines: join17(project, "baselines"),
-    claims: join17(project, "claims"),
-    receipts: join17(project, "receipts"),
-    refusals: join17(project, "refusals"),
-    journals: join17(project, "journals"),
-    locks: join17(project, "locks")
+    baselines: join18(project, "baselines"),
+    claims: join18(project, "claims"),
+    receipts: join18(project, "receipts"),
+    refusals: join18(project, "refusals"),
+    journals: join18(project, "journals"),
+    locks: join18(project, "locks")
   };
 }
 function ensureNotebookState(root, projectSlug) {
   const paths = notebookStatePaths(root, projectSlug);
   const { root: absoluteRoot, project } = paths;
-  for (const path of [absoluteRoot, join17(absoluteRoot, "projects"), project, paths.baselines, paths.claims, paths.receipts, paths.refusals, paths.journals, paths.locks]) {
+  for (const path of [absoluteRoot, join18(absoluteRoot, "projects"), project, paths.baselines, paths.claims, paths.receipts, paths.refusals, paths.journals, paths.locks]) {
     ensureDirectory(path, absoluteRoot);
   }
   return paths;
@@ -2860,7 +2916,7 @@ function readNotebookStateDirectory(path, root) {
 }
 function unlinkStateFile(path, root, allowMissing = false) {
   assertContained(root, path);
-  const parentFd = openPinnedDirectory(dirname8(path), root, false);
+  const parentFd = openPinnedDirectory(dirname9(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   let fileFd;
   try {
@@ -2884,8 +2940,8 @@ function unlinkStateFile(path, root, allowMissing = false) {
   }
 }
 function renameStateFile(source, target, root) {
-  if (dirname8(source) !== dirname8(target)) throw new NotebookError("INTERNAL_ERROR", "Notebook state rename crossed directories");
-  const parentFd = openPinnedDirectory(dirname8(source), root, false);
+  if (dirname9(source) !== dirname9(target)) throw new NotebookError("INTERNAL_ERROR", "Notebook state rename crossed directories");
+  const parentFd = openPinnedDirectory(dirname9(source), root, false);
   const sourcePath = pinnedLeaf(parentFd, source);
   const targetPath = pinnedLeaf(parentFd, target);
   let sourceFd;
@@ -2909,9 +2965,9 @@ function renameStateFile(source, target, root) {
 }
 function atomicWriteJson(path, value, root, afterParentPinned) {
   assertContained(root, path);
-  ensureDirectory(dirname8(path), root);
+  ensureDirectory(dirname9(path), root);
   const text2 = jsonLine(value);
-  const parentFd = openPinnedDirectory(dirname8(path), root, false);
+  const parentFd = openPinnedDirectory(dirname9(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   const tempName = `.${basename7(path)}.${process.pid}.${randomUUID3()}.tmp`;
   const temp = `/proc/self/fd/${parentFd}/${tempName}`;
@@ -2962,7 +3018,7 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
 }
 function exclusiveWrite(path, text2, root) {
   assertContained(root, path);
-  const parentFd = openPinnedDirectory(dirname8(path), root, false);
+  const parentFd = openPinnedDirectory(dirname9(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   let fd;
   try {
@@ -3119,7 +3175,7 @@ function parseRefusal(value) {
 function safeReadJson(path, maxBytes) {
   let parentFd;
   try {
-    parentFd = openPinnedDirectory(dirname8(path), dirname8(path), false);
+    parentFd = openPinnedDirectory(dirname9(path), dirname9(path), false);
   } catch {
     return { reason: "non-regular", bytes: 0 };
   }
@@ -3175,10 +3231,10 @@ function baselineReceiptByteCeiling(limits) {
 function readSessionBaseline(root, projectSlug, sessionKey, limits) {
   assertDigest(sessionKey, "session key");
   const paths = ensureNotebookState(root, projectSlug);
-  return readBaseline(join17(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
+  return readBaseline(join18(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
 }
 function acquireLock(paths, maxWaitMs) {
-  const lock = join17(paths.locks, "admission.lock");
+  const lock = join18(paths.locks, "admission.lock");
   const deadline = Date.now() + Math.max(1, maxWaitMs);
   const token = randomUUID3();
   const record = () => ({
@@ -3208,7 +3264,7 @@ function acquireLock(paths, maxWaitMs) {
       throw new NotebookError("CONFLICT", "Notebook state lock has an integrity finding; preserve it and run pj notebook audit --json");
     }
     if (Date.now() >= expiresAt) {
-      const recovery = join17(paths.locks, `recovery-${heldToken}.lock`);
+      const recovery = join18(paths.locks, `recovery-${heldToken}.lock`);
       const recoveryRecord = jsonLine({ schema_version: NOTEBOOK_SCHEMA_VERSION, stale_token: heldToken, recovery_token: token, expires_at: new Date(Date.now() + 5e3).toISOString() });
       if (exclusiveWrite(recovery, recoveryRecord, paths.root)) {
         try {
@@ -3216,7 +3272,7 @@ function acquireLock(paths, maxWaitMs) {
           const currentToken = verify.value && typeof verify.value === "object" && !Array.isArray(verify.value) ? verify.value.token : null;
           const currentExpiry = verify.value && typeof verify.value === "object" && !Array.isArray(verify.value) ? Date.parse(String(verify.value.expires_at ?? "")) : Number.NaN;
           if (currentToken === heldToken && Number.isFinite(currentExpiry) && Date.now() >= currentExpiry) {
-            const recovered = join17(paths.locks, `.recovered-${heldToken}-${randomUUID3()}.json`);
+            const recovered = join18(paths.locks, `.recovered-${heldToken}-${randomUUID3()}.json`);
             renameStateFile(lock, recovered, paths.root);
             unlinkStateFile(recovered, paths.root);
           }
@@ -3296,7 +3352,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join17(specification.dir, entry.name), specification.maxBytes);
+      const read = safeReadJson(join18(specification.dir, entry.name), specification.maxBytes);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3321,7 +3377,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join17(paths.journals, entry.name), limits.receipt_max_bytes);
+      const read = safeReadJson(join18(paths.journals, entry.name), limits.receipt_max_bytes);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3350,7 +3406,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join17(paths.locks, entry.name), 8192);
+      const read = safeReadJson(join18(paths.locks, entry.name), 8192);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3389,7 +3445,7 @@ function scanReceipts(paths, limits) {
   }
   for (const entry of entries) {
     const entryId = safeEntryId("receipts", entry.name);
-    const path = join17(paths.receipts, entry.name);
+    const path = join18(paths.receipts, entry.name);
     if (!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9]{64}\.json$/u.test(entry.name)) {
       addIntegrity({ entry_id: entryId, reason: "non-regular" });
       continue;
@@ -3419,7 +3475,7 @@ function scanBaselines(paths, nowMs, limits, referenced) {
   if (!existsSync15(paths.baselines)) return { current, stale };
   for (const entry of readStateDirectory(paths.baselines, paths.root)) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const baseline = readBaseline(join17(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
+    const baseline = readBaseline(join18(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
     if (!baseline || referenced.has(baseline.session_key)) continue;
     const expires = Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3;
     if (nowMs >= expires) stale += 1;
@@ -3433,7 +3489,7 @@ function scanRefusals(paths, nowMs, limits, scan) {
   const entries = readStateDirectory(paths.refusals, paths.root).sort((a, b) => a.name.localeCompare(b.name, "en")).slice(0, limits.refusal_max_entries);
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const read = safeReadJson(join17(paths.refusals, entry.name), limits.receipt_max_bytes);
+    const read = safeReadJson(join18(paths.refusals, entry.name), limits.receipt_max_bytes);
     const marker = read.value === void 0 ? null : parseRefusal(read.value);
     if (!marker || `${marker.session_key}.json` !== entry.name) continue;
     if (nowMs >= Date.parse(marker.baseline_created_at) + limits.receiptless_session_retention_seconds * 1e3) continue;
@@ -3516,7 +3572,7 @@ function listCaptureReceipts(root, projectSlug, limits, state) {
 function readCaptureReceipt(root, projectSlug, receiptId, limits) {
   if (!RECEIPT_ID_RE.test(receiptId)) throw new NotebookError("INVALID_INPUT", "Invalid receipt ID");
   const paths = notebookStatePaths(root, projectSlug);
-  const path = join17(paths.receipts, `${receiptId}.json`);
+  const path = join18(paths.receipts, `${receiptId}.json`);
   if (!existsSync15(path)) throw new NotebookError("NOT_FOUND", `Capture receipt not found: ${receiptId}`);
   const read = safeReadJson(path, limits.receipt_max_bytes);
   const receipt = read.value === void 0 ? null : parseReceipt(read.value);
@@ -3529,7 +3585,7 @@ function writeReceipt(paths, receipt, limit) {
     const bytes = Buffer.byteLength(text2, "utf8");
     if (bytes > limit) throw new NotebookError("CONFLICT", "Receipt transition exceeds its per-receipt ceiling");
     if (receipt.serialized_bytes === bytes) {
-      atomicWriteJson(join17(paths.receipts, `${receipt.receipt_id}.json`), receipt, paths.root);
+      atomicWriteJson(join18(paths.receipts, `${receipt.receipt_id}.json`), receipt, paths.root);
       return receipt;
     }
     receipt.serialized_bytes = bytes;
@@ -3668,7 +3724,7 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
     const successCutoff = now.getTime() - limits.receipt_succeeded_retention_days * 864e5;
     for (const receipt of scan.receipts) {
       if (receipt.state !== "succeeded" || Date.parse(receipt.updated_at) > successCutoff) continue;
-      const path = join17(paths.receipts, `${receipt.receipt_id}.json`);
+      const path = join18(paths.receipts, `${receipt.receipt_id}.json`);
       unlinkStateFile(path, paths.root);
       removed.push(safeEntryId("receipts", basename7(path)));
     }
@@ -3677,15 +3733,15 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
     const referenced = /* @__PURE__ */ new Set([...remaining.referencedSessions, ...remainingAuxiliary.referencedSessions]);
     for (const entry of readStateDirectory(paths.baselines, paths.root)) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const path = join17(paths.baselines, entry.name);
+      const path = join18(paths.baselines, entry.name);
       const baseline = readBaseline(path, baselineReceiptByteCeiling(limits));
       if (!baseline || referenced.has(baseline.session_key)) continue;
       if (now.getTime() < Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3) continue;
       unlinkStateFile(path, paths.root);
       removed.push(safeEntryId("baselines", entry.name));
-      const claim = join17(paths.claims, `${baseline.session_key}.overview`);
+      const claim = join18(paths.claims, `${baseline.session_key}.overview`);
       if (unlinkStateFile(claim, paths.root, true)) removed.push(safeEntryId("claims", basename7(claim)));
-      const refusal = join17(paths.refusals, `${baseline.session_key}.json`);
+      const refusal = join18(paths.refusals, `${baseline.session_key}.json`);
       if (unlinkStateFile(refusal, paths.root, true)) removed.push(safeEntryId("refusals", basename7(refusal)));
     }
     fsyncDirectory2(paths.project);
@@ -4001,7 +4057,7 @@ var init_open_notebook_client = __esm({
 // src/notebook/git-evidence.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
 import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync10, openSync as openSync5, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
-import { extname, join as join19, relative as relative9, resolve as resolve9, sep as sep4 } from "node:path";
+import { extname, join as join20, relative as relative9, resolve as resolve9, sep as sep4 } from "node:path";
 function git(repo, args, maxBuffer = 4 * 1024 * 1024, timeout = 5e3) {
   const result2 = spawnSync9("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
   return { ok: result2.status === 0, stdout: result2.stdout ?? "" };
@@ -4079,7 +4135,7 @@ function hasSymlinkComponent(root, candidate) {
   const rel = relative9(root, candidate);
   let cursor = root;
   for (const part of rel.split(sep4).filter(Boolean)) {
-    cursor = join19(cursor, part);
+    cursor = join20(cursor, part);
     try {
       if (lstatSync10(cursor).isSymbolicLink()) return true;
     } catch {
@@ -4222,10 +4278,10 @@ var init_git_evidence = __esm({
 
 // src/notebook/remote-mutation-journal.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { join as join20 } from "node:path";
+import { join as join21 } from "node:path";
 function journalPath(root, projectSlug, operationId) {
   if (!/^[a-f0-9-]{16,64}$/iu.test(operationId)) throw new NotebookError("INVALID_INPUT", "Invalid remote mutation operation ID");
-  return join20(ensureNotebookState(root, projectSlug).journals, `${operationId}.json`);
+  return join21(ensureNotebookState(root, projectSlug).journals, `${operationId}.json`);
 }
 function remoteMutationJournalPath(root, projectSlug, operationId) {
   return journalPath(root, projectSlug, operationId);
@@ -4245,7 +4301,7 @@ function listRemoteMutationJournals(root, projectSlug) {
     if (!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9-]{16,64}\.json$/iu.test(entry.name)) {
       throw new NotebookError("CONFLICT", `Remote mutation journal state-integrity finding: journals/${entry.name}`);
     }
-    const read = readNotebookStateJson(join20(paths.journals, entry.name), paths.root, 65536);
+    const read = readNotebookStateJson(join21(paths.journals, entry.name), paths.root, 65536);
     const journal = read.value === void 0 ? null : parseRemoteMutationJournal(read.value);
     if (!journal || `${journal.operation_id}.json` !== entry.name) {
       throw new NotebookError("CONFLICT", `Remote mutation journal state-integrity finding: journals/${entry.name}`);
@@ -11642,7 +11698,7 @@ var PromptForAgentConfig = class extends Command {
 
 // src/commands/hermes/ValidateHermesOptions.ts
 import { lstatSync as lstatSync7, readdirSync as readdirSync5 } from "node:fs";
-import { join as join9, relative as relative6 } from "node:path";
+import { join as join10, relative as relative6 } from "node:path";
 init_project();
 var EMAIL_UNSUPPORTED_MESSAGE = "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
 var HARMLESS_ROLE_PLACEHOLDERS = /* @__PURE__ */ new Set([".gitkeep", ".DS_Store", "Thumbs.db"]);
@@ -11658,7 +11714,7 @@ function existingRoleDirectoryBlockers(roleDir) {
   const blockers = [];
   const visit = (directory) => {
     for (const entry of readdirSync5(directory, { withFileTypes: true })) {
-      const path = join9(directory, entry.name);
+      const path = join10(directory, entry.name);
       const stats = lstatSync7(path);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
         visit(path);
@@ -11686,7 +11742,7 @@ var ValidateHermesOptions = class extends Command {
     const role = normalizeAgentRole(ctx.role ?? "pm");
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join9(ctx.targetDir, "agents", "hermes", role),
+      join10(ctx.targetDir, "agents", "hermes", role),
       "Hermes role directory"
     );
     const refusal = (ctx.yes || ctx.quiet) && !ctx.force ? existingRoleRefusal(roleDir) : void 0;
@@ -11704,9 +11760,9 @@ var ValidateHermesOptions = class extends Command {
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { homedir as homedir5 } from "node:os";
-import { join as join10, dirname as dirname6, relative as relative7 } from "node:path";
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { join as join11, dirname as dirname7, relative as relative7 } from "node:path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync9, writeFileSync as writeFileSync5 } from "node:fs";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 import * as p2 from "@clack/prompts";
 import YAML4 from "yaml";
 init_project();
@@ -11736,9 +11792,9 @@ function scrubInteractiveChannelCredentials(env2) {
   delete env2.WIRE_SLACK;
 }
 function registerRenderedAgent(ctx, roleDir, role) {
-  const manifestPath = join10(ctx.targetDir, ".project.json");
+  const manifestPath = join11(ctx.targetDir, ".project.json");
   if (!existsSync7(manifestPath) || !ctx.targetRepo) return;
-  const current = readFileSync8(manifestPath, "utf8");
+  const current = readFileSync9(manifestPath, "utf8");
   const parsed = JSON.parse(current);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
@@ -11768,14 +11824,14 @@ function registerRenderedAgent(ctx, roleDir, role) {
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname6(fileURLToPath3(import.meta.url));
+    dir = dirname7(fileURLToPath4(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join10(dir, "templates", name);
-    if (existsSync7(join10(candidate, "copier.yml"))) return candidate;
-    const parent = dirname6(dir);
+    const candidate = join11(dir, "templates", name);
+    if (existsSync7(join11(candidate, "copier.yml"))) return candidate;
+    const parent = dirname7(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -11807,7 +11863,7 @@ var RunCopierTemplate = class extends Command {
     ctx.role = safeRole;
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join10(ctx.targetDir, "agents", "hermes", safeRole),
+      join11(ctx.targetDir, "agents", "hermes", safeRole),
       "Hermes role directory"
     );
     ctx.roleDir = roleDir;
@@ -11833,7 +11889,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    if (existsSync7(join10(roleDir, "role.yaml")) && !ctx.force) {
+    if (existsSync7(join11(roleDir, "role.yaml")) && !ctx.force) {
       if (!ctx.yes && !ctx.quiet) {
         const proceed = await p2.confirm({
           message: `${safeRole}/role.yaml already exists \u2014 re-render with --overwrite?`,
@@ -11878,9 +11934,9 @@ var RunCopierTemplate = class extends Command {
       env2.PYTHONNOUSERSITE = "1";
       env2.PYTHONSAFEPATH = "1";
     }
-    const LOCAL_TEMPLATE = join10(homedir5(), "code", "hermes-agent-template");
+    const LOCAL_TEMPLATE = join11(homedir5(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join10(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join11(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -11930,7 +11986,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    mkdirSync5(join10(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    mkdirSync5(join11(ctx.targetDir, "agents", "hermes"), { recursive: true });
     const spinner3 = ctx.quiet ? void 0 : p2.spinner();
     spinner3?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
@@ -11943,9 +11999,9 @@ var RunCopierTemplate = class extends Command {
         message: `copier exited with status ${result2.status}.${ctx.quiet && String(result2.stderr ?? "").trim() ? ` ${String(result2.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
       };
     }
-    const roleManifest = join10(roleDir, "role.yaml");
+    const roleManifest = join11(roleDir, "role.yaml");
     try {
-      const current = readFileSync8(roleManifest, "utf8");
+      const current = readFileSync9(roleManifest, "utf8");
       const document = YAML4.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], ctx.deferredExternalEffects ? true : Boolean(ctx.local));
@@ -11969,8 +12025,8 @@ var RunCopierTemplate = class extends Command {
 };
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
-import { join as join11 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync10, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
+import { join as join12 } from "path";
 import { spawnSync as spawnSync5 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -11981,7 +12037,7 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join11(targetDir, "agents", "hermes");
+    const rolesDir = join12(targetDir, "agents", "hermes");
     if (!existsSync8(rolesDir)) {
       return {
         success: true,
@@ -11998,10 +12054,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join11("agents", "hermes", role);
-      const runtimePath = join11(roleDir, "runtime");
-      const gitignorePath = join11(roleDir, ".gitignore");
-      const gitmodulesPath = join11(targetDir, ".gitmodules");
+      const roleDir = join12("agents", "hermes", role);
+      const runtimePath = join12(roleDir, "runtime");
+      const gitignorePath = join12(roleDir, ".gitignore");
+      const gitmodulesPath = join12(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync5("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -12019,14 +12075,14 @@ var UntrackHermesRuntimes = class extends Command {
       let hasStaleMapping = false;
       let gitmodulesContent = "";
       if (existsSync8(gitmodulesPath)) {
-        gitmodulesContent = readFileSync9(gitmodulesPath, "utf8");
+        gitmodulesContent = readFileSync10(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
         hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join11(targetDir, gitignorePath);
+      const fullGitignorePath = join12(targetDir, gitignorePath);
       if (existsSync8(fullGitignorePath)) {
-        const content = readFileSync9(fullGitignorePath, "utf8");
+        const content = readFileSync10(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
         isIgnored = lines.includes("runtime/") || lines.includes("runtime");
       }
@@ -12070,7 +12126,7 @@ var UntrackHermesRuntimes = class extends Command {
           if (!this.context.dryRun) {
             let content = "";
             if (existsSync8(fullGitignorePath)) {
-              content = readFileSync9(fullGitignorePath, "utf8");
+              content = readFileSync10(fullGitignorePath, "utf8");
             }
             if (content && !content.endsWith("\n")) {
               content += "\n";
@@ -12098,7 +12154,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
@@ -12194,14 +12250,14 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join12(roleDir, ".scripts", "30-telegram.sh");
+    const script = join13(roleDir, ".scripts", "30-telegram.sh");
     if (!existsSync9(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found. Did Copier finish rendering the Hermes role?`
       };
     }
-    const marker = join12(roleDir, ".scripts", ".done-30-telegram");
+    const marker = join13(roleDir, ".scripts", ".done-30-telegram");
     if (existsSync9(marker)) unlinkSync3(marker);
     const spinner3 = p3.spinner();
     spinner3.start("Verifying token + wiring profile");
@@ -12243,13 +12299,13 @@ var WireEmail = class extends Command {
 };
 
 // src/commands/hermes/PrintHermesSummary.ts
-import { existsSync as existsSync10, readFileSync as readFileSync10 } from "node:fs";
-import { join as join13 } from "node:path";
+import { existsSync as existsSync10, readFileSync as readFileSync11 } from "node:fs";
+import { join as join14 } from "node:path";
 import YAML5 from "yaml";
 function readServiceState(roleDir) {
-  if (!roleDir || !existsSync10(join13(roleDir, "role.yaml"))) return { gateway: "planned", heartbeat: "planned" };
+  if (!roleDir || !existsSync10(join14(roleDir, "role.yaml"))) return { gateway: "planned", heartbeat: "planned" };
   try {
-    const role = YAML5.parse(readFileSync10(join13(roleDir, "role.yaml"), "utf8"));
+    const role = YAML5.parse(readFileSync11(join14(roleDir, "role.yaml"), "utf8"));
     return {
       gateway: typeof role?.service_state?.gateway === "string" ? role.service_state.gateway : "unknown",
       heartbeat: typeof role?.service_state?.heartbeat === "string" ? role.service_state.heartbeat : "unknown"
@@ -12266,8 +12322,8 @@ function renderHermesSummary(ctx) {
   const lines = [
     title,
     `agent_id: ${ctx.agentId ?? "planned"}`,
-    `role_dir: ${ctx.roleDir ?? join13(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm")}`,
-    `runtime: local role runtime (${join13(ctx.roleDir ?? join13(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm"), "runtime")})`,
+    `role_dir: ${ctx.roleDir ?? join14(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm")}`,
+    `runtime: local role runtime (${join14(ctx.roleDir ?? join14(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm"), "runtime")})`,
     `heartbeat: ${service.heartbeat}`,
     `gateway: ${service.gateway}`
   ];
@@ -12285,8 +12341,8 @@ var PrintHermesSummary = class extends Command {
 
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import { existsSync as existsSync11, readFileSync as readFileSync11, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join14 } from "node:path";
+import { existsSync as existsSync11, readFileSync as readFileSync12, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join15 } from "node:path";
 import YAML6 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
@@ -12314,7 +12370,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     };
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
-    const roleManifest = join14(ctx.roleDir, "role.yaml");
+    const roleManifest = join15(ctx.roleDir, "role.yaml");
     const scripts = [
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
       ...selected.systemd ? ["70-systemd.sh"] : [],
@@ -12324,7 +12380,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     ];
     const logs = [];
     for (const script of scripts) {
-      const path = join14(ctx.roleDir, ".scripts", script);
+      const path = join15(ctx.roleDir, ".scripts", script);
       if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
@@ -12337,7 +12393,7 @@ var ApplyDeferredExternalEffects = class extends Command {
       }
     }
     try {
-      const current = readFileSync11(roleManifest, "utf8");
+      const current = readFileSync12(roleManifest, "utf8");
       const document = YAML6.parseDocument(current);
       if (document.errors.length) throw document.errors[0];
       document.setIn(["deployment", "local_only"], Boolean(ctx.local));
@@ -12363,7 +12419,7 @@ ${logs.join("\n")}` : ""}`
 // src/commands/hermes/ApplyDeferredHostEffects.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
 import { existsSync as existsSync12 } from "node:fs";
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -12400,7 +12456,7 @@ var ApplyDeferredHostEffects = class extends Command {
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh"];
     const logs = [];
     for (const script of scripts) {
-      const path = join15(ctx.roleDir, ".scripts", script);
+      const path = join16(ctx.roleDir, ".scripts", script);
       if (!existsSync12(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
@@ -12424,27 +12480,27 @@ ${logs.join("\n")}` : ""}`
 // src/recipes/HermesAgentRecipe.ts
 init_tree_diff();
 init_preflight();
-import { existsSync as existsSync13, readFileSync as readFileSync12 } from "node:fs";
-import { join as join16, resolve as resolve6 } from "node:path";
+import { existsSync as existsSync13, readFileSync as readFileSync13 } from "node:fs";
+import { join as join17, resolve as resolve6 } from "node:path";
 import YAML7 from "yaml";
 function deploymentDeferrals(ctx) {
   const deferred = [];
   if (ctx.local || ctx.skipPlane) deferred.push("ticket-board provisioning");
   if (ctx.local || ctx.skipSystemd) deferred.push("systemd service activation");
-  const projectManifest = join16(ctx.targetDir, ".project.json");
+  const projectManifest = join17(ctx.targetDir, ".project.json");
   if (!ctx.skipPlane && existsSync13(projectManifest)) {
     try {
-      const project = JSON.parse(readFileSync12(projectManifest, "utf8"));
+      const project = JSON.parse(readFileSync13(projectManifest, "utf8"));
       const state = project.ticket_provider?.state;
       if (typeof state === "string" && state !== "linked") deferred.push(`ticket board (${state})`);
     } catch {
       deferred.push("ticket board state unreadable");
     }
   }
-  const rolePath = ctx.roleDir ? join16(ctx.roleDir, "role.yaml") : "";
+  const rolePath = ctx.roleDir ? join17(ctx.roleDir, "role.yaml") : "";
   if (rolePath && existsSync13(rolePath)) {
     try {
-      const role = YAML7.parse(readFileSync12(rolePath, "utf8"));
+      const role = YAML7.parse(readFileSync13(rolePath, "utf8"));
       const gateway = role?.service_state?.gateway;
       const heartbeat = role?.service_state?.heartbeat;
       if (typeof gateway === "string" && gateway !== "active") deferred.push(`gateway (${gateway})`);
@@ -12833,8 +12889,8 @@ init_config();
 init_notes();
 init_output();
 init_state();
-import { existsSync as existsSync16, readFileSync as readFileSync15 } from "node:fs";
-import { join as join18 } from "node:path";
+import { existsSync as existsSync16, readFileSync as readFileSync16 } from "node:fs";
+import { join as join19 } from "node:path";
 var NOTEBOOK_RULE_IDS = [
   "notebook.configuration",
   "notebook.binding",
@@ -12851,10 +12907,10 @@ function result(check, status, summary, changedFiles = [], details = []) {
   return { id: check.id, title: check.title, status, summary, changedFiles, details };
 }
 function manifestNotebook(repo) {
-  const path = join18(repo, ".project.json");
+  const path = join19(repo, ".project.json");
   if (!existsSync16(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync15(path, "utf8"));
+    const parsed = JSON.parse(readFileSync16(path, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const notebook = parsed.notebook;
     return notebook && typeof notebook === "object" && !Array.isArray(notebook) ? notebook : null;
@@ -13259,39 +13315,16 @@ init_reconcile();
 init_config();
 
 // src/notebook/hooks.ts
+init_version();
+init_git_evidence();
+init_notes();
+init_state();
+init_types();
 import { spawn, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync5, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename8, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
-
-// src/utils/version.ts
-import { readFileSync as readFileSync16 } from "node:fs";
-import { dirname as dirname9, join as join21 } from "node:path";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
-var PJANGLER_VERSION = (() => {
-  try {
-    let dir = dirname9(fileURLToPath4(import.meta.url));
-    for (let i = 0; i < 4; i++) {
-      try {
-        const raw = readFileSync16(join21(dir, "package.json"), "utf8");
-        return JSON.parse(raw).version ?? "0.0.0";
-      } catch {
-        const parent = dirname9(dir);
-        if (parent === dir) break;
-        dir = parent;
-      }
-    }
-  } catch {
-  }
-  return "0.0.0";
-})();
-
-// src/notebook/hooks.ts
-init_git_evidence();
-init_notes();
-init_state();
-init_types();
 function bundledSkillCandidates() {
   const candidates = [];
   let cursor = dirname10(fileURLToPath5(import.meta.url));
@@ -15818,6 +15851,9 @@ function getRecipeNames() {
 function getRecipeInfo(name) {
   return RECIPE_REGISTRY[name] || null;
 }
+
+// src/mcp-server.ts
+init_version();
 
 // src/describe/index.ts
 import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync4 } from "node:fs";

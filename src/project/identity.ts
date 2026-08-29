@@ -37,6 +37,8 @@ import YAML from "yaml";
 import { planeBase, DEFAULT_PLANE_WORKSPACE } from "./boardUrl";
 import { BoardError, dotenvValue, resolvePlaneApiKey, resolveSecretValue } from "./boardQuery";
 import {
+  buildTicketProviderBlock,
+  getProject,
   loadProjectRegistry,
   projectRegistryPath,
   saveProjectRegistry,
@@ -1074,4 +1076,180 @@ export function formatIdentityReport(report: IdentityReport): string {
   for (const error of report.errors) lines.push(`  ! ${error}`);
   lines.push("");
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Explicit single-project board binding (`pj project link`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bind ONE named record to a board that already exists.
+ *
+ * The bulk reconciler above refuses to write `.project.json` because rewriting
+ * 25 manifests is the blast radius that created the drift it repairs. This is
+ * the opposite case: one slug, one board id, both typed by the operator. The
+ * repo's manifest is what the `tp` adapters actually read, so leaving it stale
+ * here would produce a "linked" registry row bound to a board the repo cannot
+ * see — the exact split-brain the registry contract exists to prevent.
+ *
+ * Provenance follows the contract exactly, and the two halves are independent:
+ *   board_confirmed_at   stamped whenever ANY provider confirms the board is
+ *                        real. A link rests on this.
+ *   identifier_source    "provider" only where the provider ASSIGNS keys
+ *                        (Plane, Linear). Trello assigns none, so its key stays
+ *                        a proposal forever and that is not a defect.
+ */
+export interface ProjectLinkResult {
+  ok: boolean;
+  apply: boolean;
+  slug: string;
+  registryPath: string;
+  provider: string;
+  workspace: string;
+  boardId: string;
+  boardName: string;
+  identifier: string;
+  identifierSource: string;
+  boardConfirmedAt: string;
+  state: string;
+  before: { boardId: string; identifier: string; identifierSource: string; state: string };
+  manifestPath?: string;
+  changedFiles: string[];
+}
+
+function writeManifestTicketProvider(repoPath: string, provider: ProjectTicketProvider): string | undefined {
+  const path = join(repoPath, ".project.json");
+  if (!existsSync(path)) return undefined;
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (isRecord(parsed)) existing = parsed;
+  } catch {
+    throw new BoardError(`${path} is not readable JSON; fix it before linking a board`);
+  }
+  const currentProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
+  const next = {
+    ...existing,
+    ticket_provider: {
+      ...currentProvider,
+      type: provider.type,
+      workspace: provider.workspace ?? "",
+      identifier: provider.identifier ?? "",
+      identifier_source: provider.identifier_source ?? "proposed",
+      ...(provider.identifier_fetched_at ? { identifier_fetched_at: provider.identifier_fetched_at } : {}),
+      board_id: provider.board_id ?? "",
+      ...(provider.board_confirmed_at ? { board_confirmed_at: provider.board_confirmed_at } : {}),
+      state: provider.state ?? "linked",
+    },
+  };
+  const text = `${JSON.stringify(next, null, 2)}\n`;
+  if (readFileSync(path, "utf8") === text) return undefined;
+  atomicWrite(path, text);
+  return path;
+}
+
+export async function linkProjectBoard(options: {
+  slug: string;
+  boardId: string;
+  workspace?: string;
+  apply?: boolean;
+  registryPath?: string;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  now?: Date;
+}): Promise<ProjectLinkResult> {
+  const env = options.env ?? process.env;
+  const home = options.home ?? homedir();
+  const registryPath = resolve(options.registryPath ?? projectRegistryPath(env));
+  const registry = loadProjectRegistry(registryPath);
+  // Throws "Project not found in registry: <slug>" — the refusal an unknown
+  // slug is owed, before any network call.
+  const project = getProject(registry, options.slug);
+  const boardId = options.boardId.trim();
+  if (!boardId) throw new BoardError("a board id is required");
+
+  const current = project.ticket_provider;
+  const type = (current.type || "plane").trim().toLowerCase();
+  const workspace = (options.workspace ?? current.workspace ?? DEFAULT_PLANE_WORKSPACE).trim();
+  const now = (options.now ?? new Date()).toISOString();
+
+  let identifier = current.identifier ?? "";
+  let identifierSource: "provider" | "proposed" = "proposed";
+  let identifierFetchedAt: string | undefined;
+  let boardName = "";
+
+  if (type === "plane") {
+    const boards = await fetchPlaneBoards(workspace, env, home);
+    const facts = boards.get(boardId);
+    if (!facts) {
+      throw new BoardError(
+        `Plane workspace "${workspace}" has no board ${boardId}. ` +
+          `Pass --workspace if the board lives in another workspace; pjangler never invents a binding.`,
+      );
+    }
+    identifier = facts.identifier;
+    identifierSource = "provider";
+    identifierFetchedAt = now;
+    boardName = facts.name;
+  } else if (type === "trello") {
+    const facts = await fetchTrelloBoard(boardId, env, home);
+    if (!facts) throw new BoardError(`Trello has no visible board ${boardId}`);
+    if (facts.closed) throw new BoardError(`Trello board ${boardId} ("${facts.name}") is archived; unarchive it or pick another`);
+    boardName = facts.name;
+    // Trello assigns no key, so the record's own proposal stands and the
+    // binding rests entirely on board_confirmed_at.
+    identifierSource = "proposed";
+  } else {
+    throw new BoardError(`pj project link cannot read board identity from provider "${type}" (supported: plane, trello)`);
+  }
+
+  const block = buildTicketProviderBlock({
+    type,
+    identifier,
+    identifierSource,
+    ...(identifierFetchedAt ? { identifierFetchedAt } : {}),
+    boardId,
+    boardConfirmedAt: now,
+    workspace,
+  });
+
+  const before = {
+    boardId: current.board_id ?? "",
+    identifier: current.identifier ?? "",
+    identifierSource: current.identifier_source ?? "proposed",
+    state: current.state ?? "planned",
+  };
+
+  const apply = options.apply ?? false;
+  const changedFiles: string[] = [];
+  let manifestPath: string | undefined;
+  if (apply) {
+    registry.projects[options.slug] = { ...project, ticket_provider: block, updated_at: now };
+    saveProjectRegistry(registry, registryPath);
+    changedFiles.push(registryPath);
+    manifestPath = writeManifestTicketProvider(project.repo_path, block);
+    if (manifestPath) changedFiles.push(manifestPath);
+  } else {
+    manifestPath = existsSync(join(project.repo_path, ".project.json"))
+      ? join(project.repo_path, ".project.json")
+      : undefined;
+  }
+
+  return {
+    ok: true,
+    apply,
+    slug: options.slug,
+    registryPath,
+    provider: type,
+    workspace,
+    boardId,
+    boardName,
+    identifier: block.identifier ?? "",
+    identifierSource: block.identifier_source ?? "proposed",
+    boardConfirmedAt: block.board_confirmed_at ?? "",
+    state: block.state ?? "planned",
+    before,
+    ...(manifestPath ? { manifestPath } : {}),
+    changedFiles,
+  };
 }

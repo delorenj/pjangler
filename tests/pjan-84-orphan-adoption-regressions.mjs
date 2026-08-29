@@ -95,16 +95,19 @@ try {
     assert.ok(plan.proposedOperations.includes("copier.copy.commonproject"));
   });
 
+  // --skip-board throughout: adoption is the subject here, and board
+  // provisioning is on by default now — an init that ends with no board fails
+  // the ingress gate, and one that succeeds would hit a real provider.
   check("adopting an orphan converges, and a second run is a no-op", () => {
     const dir = orphan(root, "converges");
-    const applied = cli(["init", "--target-dir", dir, "--registry", registry, "--apply", "-y", "--no-tui"]);
+    const applied = cli(["init", "--target-dir", dir, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"]);
     assert.equal(applied.status, 0, `adoption must succeed: ${applied.stdout}${applied.stderr}`);
     assert.match(applied.stdout, /Project synchronized/);
 
     const audited = JSON.parse(cli(["audit", dir, "--registry", registry, "--json"]).stdout);
     assert.equal(audited.ok, true, `an adopted orphan must reach parity: ${JSON.stringify(audited.rules.filter((r) => r.status === "fail"))}`);
 
-    const again = cli(["init", "--target-dir", dir, "--registry", registry, "--apply", "-y", "--no-tui"]);
+    const again = cli(["init", "--target-dir", dir, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"]);
     assert.equal(again.status, 0);
     assert.match(again.stdout, /Already in parity/, "the second run must have nothing to do");
   });
@@ -113,7 +116,7 @@ try {
     const dir = orphan(root, "preserves");
     writeFileSync(join(dir, "README.md"), "# hand-written, must survive\n");
     writeFileSync(join(dir, ".gitignore"), "# my own ignore rules\nsecret-local/\n");
-    const applied = cli(["init", "--target-dir", dir, "--registry", registry, "--apply", "-y", "--no-tui"]);
+    const applied = cli(["init", "--target-dir", dir, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"]);
     assert.equal(applied.status, 0, applied.stdout + applied.stderr);
     assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "# hand-written, must survive\n");
     assert.match(

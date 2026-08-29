@@ -219,6 +219,9 @@ try {
       registryPath: prototypeRegistry,
       scaffold: false,
       apply: true,
+      // Board provisioning is on by default now; this case is about
+      // prototype-safe dictionary keys and must not reach a provider.
+      skipPlane: true,
       pjanglerRoot: root,
     });
     assert.equal(Object.getPrototypeOf(specialPlan.project.agents), null, "planned agent maps must have no inherited keys");
@@ -348,6 +351,10 @@ try {
   assert.ok(nonGitPlan.actions.some((action) => action.kind === "copier.copy.commonproject"));
   assert.equal(existsSync(nonGitTarget), false, "non-git dry-run must not create the target directory");
 
+  // Board provisioning is on by default now (a `pj init` that ends with no
+  // board fails the ingress gate), and these fixtures are about the scaffold,
+  // the registry, and the manifest. They say --skip-board rather than reaching
+  // a provider.
   const applied = JSON.parse(run([
     "project",
     "init",
@@ -358,6 +365,7 @@ try {
     targetDir,
     "--source-skill",
     sourceSkill,
+    "--skip-board",
     "--apply",
     "--json",
   ], env));
@@ -426,6 +434,7 @@ try {
     "project",
     "init",
     "--yes",
+    "--skip-board",
     "--apply",
     "--json",
   ], legacyEnv, legacyRepo));
@@ -448,6 +457,7 @@ try {
     "project",
     "init",
     "--yes",
+    "--skip-board",
     "--apply",
     "--json",
   ], legacyEnv, legacyRepo));
@@ -472,6 +482,7 @@ try {
     sourceSkill,
     "--registry",
     failedRegistryPath,
+    "--skip-board",
     "--apply",
     "--json",
   ], { PATH: emptyBin }).stdout);
@@ -515,14 +526,14 @@ try {
   const syncUpdateRegistry = join(tmp, "sync-update-projects.yaml");
   const syncUpdateEnv = { PJ_PROJECT_REGISTRY: syncUpdateRegistry };
   const syncUpdateFirst = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--json",
   ], syncUpdateEnv, syncUpdateRepo));
   assert.equal(syncUpdateFirst.ok, true, JSON.stringify(syncUpdateFirst.errors));
   const firstSyncManifest = JSON.parse(readFileSync(join(syncUpdateRepo, ".project.json"), "utf8"));
   assert.equal(firstSyncManifest.project_description, "Original description");
 
   const syncUpdateSecond = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--description", "Updated description", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--description", "Updated description", "--json",
   ], syncUpdateEnv, syncUpdateRepo));
   assert.equal(syncUpdateSecond.ok, true, JSON.stringify(syncUpdateSecond.errors));
   assert.ok(syncUpdateSecond.selectedOperations.includes("project.write-manifest"), "sync must select .project.json write when manifest differs");
@@ -589,7 +600,7 @@ try {
     ENABLE_SLACK: "0",
   };
   const multiAgentFirst = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "pm", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "pm", "--json",
   ], multiAgentEnv, multiAgentRepo));
   assert.equal(multiAgentFirst.ok, true, JSON.stringify(multiAgentFirst.errors));
   const firstMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
@@ -611,7 +622,7 @@ try {
   );
 
   const multiAgentSecond = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "director", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "director", "--json",
   ], multiAgentEnv, multiAgentRepo));
   assert.equal(multiAgentSecond.ok, true, JSON.stringify(multiAgentSecond.errors));
   const hermesCalls = readFakeHermesCalls(fakeHermesCalls);
@@ -659,7 +670,7 @@ try {
   writeFileSync(join(constructorAgentRepo, "package.json"), JSON.stringify({ name: "constructor-agent", description: "Prototype-key agent test" }, null, 2), "utf8");
   const constructorAgentRegistry = join(tmp, "constructor-agent-projects.yaml");
   const constructorAgentResult = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--provision-agent", "--agent-role", "constructor", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "constructor", "--json",
   ], { ...multiAgentEnv, PJ_PROJECT_REGISTRY: constructorAgentRegistry }, constructorAgentRepo));
   assert.equal(constructorAgentResult.ok, true, JSON.stringify(constructorAgentResult.errors));
   const constructorAgentRegistryData = YAML.parse(readFileSync(constructorAgentRegistry, "utf8"));
@@ -678,7 +689,7 @@ try {
   const legacyStatusRegistry = join(tmp, "legacy-status-projects.yaml");
   const legacyStatusEnv = { PJ_PROJECT_REGISTRY: legacyStatusRegistry };
   const legacyStatusFirst = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--json",
   ], legacyStatusEnv, legacyStatusRepo));
   assert.equal(legacyStatusFirst.ok, true, JSON.stringify(legacyStatusFirst.errors));
   assert.equal(YAML.parse(readFileSync(legacyStatusRegistry, "utf8")).projects["legacy-status"].status, "active");
@@ -694,7 +705,7 @@ try {
 
   // An unrelated update (new description) must not flip it either.
   const legacyStatusUpdate = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--description", "Updated description", "--json",
+    "project", "init", "--yes", "--apply", "--skip-board", "--description", "Updated description", "--json",
   ], legacyStatusEnv, legacyStatusRepo));
   assert.equal(legacyStatusUpdate.ok, true, JSON.stringify(legacyStatusUpdate.errors));
   assert.equal(legacyStatusUpdate.plan.project.status, "planned", "an unrelated update must preserve the existing planned status");

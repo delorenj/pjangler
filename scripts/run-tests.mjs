@@ -20,7 +20,7 @@
 //   node scripts/run-tests.mjs --no-typecheck  # skip the gate (debugging only)
 
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -100,6 +100,7 @@ const SUITES = [
   "tests/mcp-catalog-regressions.mjs",
   "tests/mcp-server-regressions.mjs",
   "tests/project-registry-regressions.mjs",
+  "tests/init-board-ingress-regressions.mjs",
   "tests/project-identity-regressions.mjs",
   "tests/pg-registry-regressions.mjs",
   "tests/momo-lifecycle-plane-regressions.mjs",
@@ -160,6 +161,38 @@ if (!skipTypecheck) {
   console.log(`ok (${duration(Date.now() - started)})`);
 }
 
+/**
+ * A regression suite must never carry the operator's production credentials.
+ *
+ * Board provisioning stopped being gated on `--live` (a plain `pj init` is the
+ * designated ingress and has to deliver a board), which made the suite's
+ * inherited `PLANE_33GOD_API_KEY` live ammunition: one run created seven real
+ * boards in the 33god workspace before anyone noticed. Blanking the credentials
+ * here makes the whole suite hermetic by construction — the adapter is
+ * unreachable, so `pj init` takes its no-credential path.
+ *
+ * Suites that WANT a provider (tests/pjan-30-regressions.mjs) inject their own
+ * stub adapter and fake key, which override these.
+ *
+ * This is the second line of defence, not the first: the legacy
+ * `~/.config/zshyzsh/secrets.zsh` fallback is a FILE, and redirecting
+ * XDG_CONFIG_HOME here would change what the Hermes template suites read. The
+ * first line is `--skip-board` on every fixture bootstrap, which states the
+ * intent where the intent lives.
+ */
+const HERMETIC_ENV = {
+  PLANE_API_KEY: "",
+  PLANE_DEFAULT_API_KEY: "",
+  PLANE_33GOD_API_KEY: "",
+  PLANE_AUTOMATICAI_API_KEY: "",
+  PLANE_INTELLIFORIA_API_KEY: "",
+  PLANE_LASERTOAST_API_KEY: "",
+  TRELLO_KEY: "",
+  TRELLO_API_KEY: "",
+  TRELLO_TOKEN: "",
+  HERMES_FLEET_ENV: join(root, "scripts", "no-such-fleet.env"),
+};
+
 const results = [];
 for (const [index, step] of steps.entries()) {
   const label = `[${String(index + 1).padStart(2)}/${steps.length}] ${step.name}`;
@@ -168,6 +201,7 @@ for (const [index, step] of steps.entries()) {
   const run = spawnSync(process.execPath, [step.script], {
     cwd: root,
     encoding: "utf8",
+    env: { ...process.env, ...HERMETIC_ENV },
     timeout: SUITE_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024,
   });

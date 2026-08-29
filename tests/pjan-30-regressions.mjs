@@ -94,8 +94,17 @@ async function withEnvironment(home, adapters, extra, callback) {
   const updates = {
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
+    // The fleet dotenv is a real credential source now, so it has to be
+    // redirected into the temp home or the host's own would leak into a test
+    // that is asserting there is no credential at all.
+    HERMES_FLEET_ENV: join(home, ".hermes", "fleet.env"),
     PJ_TICKET_PROVIDER_ADAPTERS: adapters,
     PLANE_API_KEY: "",
+    // Workspace-scoped names are accepted too, so every one this suite can
+    // derive must be blanked for the same reason.
+    PLANE_DEFAULT_API_KEY: "",
+    PLANE_33GOD_API_KEY: "",
+    PLANE_PJAN30WS_API_KEY: "",
     TRELLO_KEY: "",
     TRELLO_TOKEN: "",
     ...extra,
@@ -112,7 +121,7 @@ async function withEnvironment(home, adapters, extra, callback) {
   }
 }
 
-function makePlan({ name, description, repo, registry, identifier, workspace = "33god", apply = true, live = true }) {
+function makePlan({ name, description, repo, registry, identifier, workspace = "33god", apply = true, live = true, skipPlane = false }) {
   return planProjectInit({
     name,
     description,
@@ -122,6 +131,7 @@ function makePlan({ name, description, repo, registry, identifier, workspace = "
     planeWorkspace: workspace,
     apply,
     live,
+    skipPlane,
     scaffold: false,
     provisionAgent: false,
     pjanglerRoot: root,
@@ -200,7 +210,10 @@ try {
       const result = await executeProjectInitPlan(plan);
       assert.equal(result.ok, true, JSON.stringify(result.errors));
       assert.equal(readRecord(record).length, 0);
-      assert.ok(result.logs.some((line) => /PLANE_API_KEY not set.*skipping plane board creation.*--live/.test(line)));
+      assert.ok(
+        result.logs.some((line) => /PLANE_API_KEY or PLANE_33GOD_API_KEY not set.*skipping plane board creation.*--board-id/.test(line)),
+        JSON.stringify(result.logs),
+      );
       assert.equal(manifestProvider(repo).board_id, "");
       assert.equal(manifestProvider(repo).state, "planned");
     });
@@ -252,6 +265,10 @@ try {
   }
 
   {
+    // The board is NOT gated on --live any more. `pj init` is the designated
+    // ingress and a record with board_id "" fails the registry's own contract,
+    // so `live: false` must still reach the adapter. This assertion used to say
+    // the opposite, and that is exactly how 11 of 24 records were born.
     const home = makeDir("nolive-home");
     const adapters = makeStubAdapter();
     const record = join(home, "invocations.jsonl");
@@ -261,12 +278,57 @@ try {
     await withEnvironment(home, adapters, { PLANE_API_KEY: SECRET, PJAN30_RECORD: record }, async () => {
       const plan = makePlan({ name: "No Live Proj", description: "no live", repo, registry, identifier: "NOLI", live: false });
       const action = ticketAction(plan);
-      assert.equal(action.enabled, false);
-      assert.match(action.reason, /require --live/);
+      assert.equal(action.enabled, true, "board provisioning must not require --live");
+      assert.match(action.reason, /create or link the plane board/);
       const result = await executeProjectInitPlan(plan);
       assert.equal(result.ok, true, JSON.stringify(result.errors));
-      assert.equal(readRecord(record).length, 0);
+      assert.equal(readRecord(record).length, 1, "the adapter must run without --live");
+      assert.equal(manifestProvider(repo).state, "linked");
+      assert.equal(manifestProvider(repo).board_id, BOARD_ID);
+    });
+  }
+
+  {
+    // The single subtractive gate. Nothing else may suppress the board.
+    const home = makeDir("skipboard-home");
+    const adapters = makeStubAdapter();
+    const record = join(home, "invocations.jsonl");
+    const repo = join(home, "work", "SkipBoardProj");
+    const registry = join(home, "projects.yaml");
+
+    await withEnvironment(home, adapters, { PLANE_API_KEY: SECRET, PJAN30_RECORD: record }, async () => {
+      const plan = makePlan({ name: "Skip Board Proj", description: "skip", repo, registry, identifier: "SKIP", skipPlane: true });
+      const action = ticketAction(plan);
+      assert.equal(action.enabled, false, "--skip-board must dominate");
+      assert.match(action.reason, /skip-board|skipPlane/i);
+      const result = await executeProjectInitPlan(plan);
+      assert.equal(result.ok, true, JSON.stringify(result.errors));
+      assert.equal(readRecord(record).length, 0, "a suppressed board must never reach the adapter");
       assert.equal(manifestProvider(repo).state, "planned");
+      assert.equal(manifestProvider(repo).board_id, "");
+    });
+  }
+
+  {
+    // The adapter accepts PLANE_<WORKSPACE>_API_KEY and reads ~/.hermes/fleet.env.
+    // pjangler's precondition check asked only for PLANE_API_KEY, so on a host
+    // whose only credential is workspace-scoped it declared "no credentials"
+    // and skipped a board creation that would have succeeded.
+    const home = makeDir("wsscoped-home");
+    const adapters = makeStubAdapter();
+    const record = join(home, "invocations.jsonl");
+    const repo = join(home, "work", "WsScopedProj");
+    const registry = join(home, "projects.yaml");
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "fleet.env"), `# fleet\nexport PLANE_PJAN30WS_API_KEY="${SECRET}"\n`);
+
+    await withEnvironment(home, adapters, { PJAN30_RECORD: record, HERMES_FLEET_ENV: join(home, ".hermes", "fleet.env") }, async () => {
+      const plan = makePlan({ name: "Ws Scoped Proj", description: "workspace-scoped credential", repo, registry, identifier: "WSSC", workspace: "pjan30ws" });
+      const result = await executeProjectInitPlan(plan);
+      assert.equal(result.ok, true, JSON.stringify(result.errors));
+      assert.equal(readRecord(record).length, 1, "a workspace-scoped fleet.env credential must reach the adapter");
+      assert.equal(manifestProvider(repo).board_id, BOARD_ID);
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(SECRET));
     });
   }
 

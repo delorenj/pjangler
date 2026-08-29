@@ -264,6 +264,7 @@ function initWith(cli, label, homeDir) {
       projectDir,
       "--registry",
       registry,
+      "--skip-board",
       "--apply",
       "--json",
     ],

@@ -83,6 +83,8 @@ try {
     targetDir,
     "--registry",
     join(tmp, "projects.yaml"),
+    // Rendered-workflow coverage; no board is wanted or reachable here.
+    "--skip-board",
     "--apply",
     "--json",
   ]));

@@ -53,7 +53,9 @@ function project(name) {
   temporary.push(root);
   const registry = join(root, "registry.yaml");
   const target = join(root, name);
-  const created = cli(["init", name, "--target-dir", target, "--registry", registry, "--apply", "-y", "--no-tui"]);
+  // --skip-board: this fixture is about registry flags, not board provisioning,
+  // which is on by default and would otherwise fail the ingress gate here.
+  const created = cli(["init", name, "--target-dir", target, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"]);
   assert.equal(created.status, 0, `init must succeed: ${created.stdout}${created.stderr}`);
   assert.equal(existsSync(registry), true, "init must write the scratch registry");
   return { root, registry, target };

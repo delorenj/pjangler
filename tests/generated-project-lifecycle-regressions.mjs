@@ -64,6 +64,10 @@ function initArgs(name, targetDir, registryPath) {
     "--description", "Packed lifecycle acceptance",
     "--target-dir", targetDir,
     "--registry", registryPath,
+    // This fixture is about scaffold/registry behaviour, not boards. Board
+    // provisioning is on by default now, so say so rather than reaching a
+    // provider (and failing the ingress gate when none answers).
+    "--skip-board",
     "--apply", "--yes", "--no-tui", "--json",
   ];
 }
@@ -209,6 +213,7 @@ try {
 
   const reinit = runPackedJson([
     "init", "--target-dir", target, "--registry", registry,
+    "--skip-board",
     "--apply", "--yes", "--no-tui", "--json",
   ], retryEnv, target);
   assert.equal(reinit.ok, true, JSON.stringify(reinit.errors));

@@ -19,6 +19,7 @@ import {
   type RegistryStore,
   type DualWriteRegistryStore,
 } from "./RegistryStore";
+import { dotenvValue, workspaceEnvKey } from "./boardQuery";
 
 export { isPgRegistryEnabled, pgRegistryConfigFromEnv, PgRegistryStore, type RegistryStore, type DualWriteRegistryStore };
 
@@ -672,22 +673,43 @@ export function buildTicketProviderBlock(input: {
 }
 
 /**
+ * Credentials a provider adapter needs, as groups of ALTERNATIVES: every group
+ * must be satisfied by at least one of its names.
+ *
+ * This must not be narrower than what the adapter itself accepts. It was:
+ * pjangler asked only for `PLANE_API_KEY` while `providers/plane.sh` falls back
+ * to `PLANE_<WORKSPACE>_API_KEY` (env or `~/.hermes/fleet.env`, `op://` refs
+ * included). On a host whose only Plane credential is `PLANE_33GOD_API_KEY` —
+ * which is every host here — pjangler declared "no credentials", skipped the
+ * board, and left the record `planned` while the adapter would have succeeded.
+ */
+function ticketProviderKeyGroups(provider: string, workspace?: string): string[][] {
+  if (provider === "trello") return [["TRELLO_KEY"], ["TRELLO_TOKEN"]];
+  return [[...new Set(["PLANE_API_KEY", workspaceEnvKey(workspace)])]];
+}
+
+/**
  * Env var a provider adapter reads its credential from. Mirrors the KEYVAR
  * switch in agents/hermes/pm/.scripts/42-ticket-provider.sh.
  */
-export function ticketProviderKeyVar(provider: string): string {
-  return provider === "trello" ? "TRELLO_KEY" : "PLANE_API_KEY";
+export function ticketProviderKeyVar(provider: string, workspace?: string): string {
+  return ticketProviderKeyGroups(provider, workspace)[0]!.join(" or ");
 }
 
-/** Every credential a provider adapter needs, most significant (the gate) first. */
-function ticketProviderKeyVars(provider: string): string[] {
-  return provider === "trello" ? ["TRELLO_KEY", "TRELLO_TOKEN"] : ["PLANE_API_KEY"];
+/** Every credential name a provider adapter may read, in precedence order. */
+function ticketProviderKeyVars(provider: string, workspace?: string): string[] {
+  return ticketProviderKeyGroups(provider, workspace).flat();
 }
 
 /** Repo convention: exported secrets live in `<config>/zshyzsh/secrets.zsh`. */
 export function ticketProviderSecretsPath(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config");
   return join(base, "zshyzsh", "secrets.zsh");
+}
+
+/** The fleet dotenv the Hermes adapters read, honouring HERMES_FLEET_ENV. */
+export function ticketProviderFleetEnvPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HERMES_FLEET_ENV?.trim() || join(env.HOME || homedir(), ".hermes", "fleet.env");
 }
 
 /** Pull `KEY=value` / `export KEY=value` assignments for the requested keys only. */
@@ -722,8 +744,13 @@ function readShellAssignments(path: string, keys: string[]): Record<string, stri
 
 /**
  * Resolve ticket-provider credentials the way the rest of the repo does:
- * process env -> repo `.env` -> the exported zshyzsh secrets file. Never
- * prompts, and callers must never log `values` — `source` is the loggable part.
+ * process env -> repo `.env` -> `~/.hermes/fleet.env` -> the exported zshyzsh
+ * secrets file. Never prompts, and callers must never log `values` — `source`
+ * is the loggable part.
+ *
+ * Values are returned exactly as found, `op://` references included: the
+ * adapters resolve those themselves at the last moment, so a reference never
+ * has to be dereferenced here.
  */
 export function resolveTicketProviderCredentials(input: {
   keys: string[];
@@ -743,18 +770,18 @@ export function resolveTicketProviderCredentials(input: {
     }
   }
 
-  const candidates: Array<{ path: string; label: string }> = [];
-  if (input.repoPath) candidates.push({ path: join(input.repoPath, ".env"), label: join(input.repoPath, ".env") });
-  const secrets = ticketProviderSecretsPath(env);
-  candidates.push({ path: secrets, label: secrets });
+  const candidates: string[] = [];
+  if (input.repoPath) candidates.push(join(input.repoPath, ".env"));
+  candidates.push(ticketProviderFleetEnvPath(env));
+  candidates.push(ticketProviderSecretsPath(env));
 
   for (const candidate of candidates) {
     const outstanding = missing();
     if (!outstanding.length) break;
-    const assignments = readShellAssignments(candidate.path, outstanding);
+    const assignments = readShellAssignments(candidate, outstanding);
     for (const [key, value] of Object.entries(assignments)) {
       values[key] = value;
-      sources[key] = candidate.label;
+      sources[key] = candidate;
     }
   }
 
@@ -823,21 +850,23 @@ export function provisionTicketProviderBoard(
   env: NodeJS.ProcessEnv = process.env
 ): TicketProviderBoardResult {
   const provider = action.provider;
-  const keyVar = ticketProviderKeyVar(provider);
+  const groups = ticketProviderKeyGroups(provider, action.workspace);
   const { values } = resolveTicketProviderCredentials({
-    keys: ticketProviderKeyVars(provider),
+    keys: ticketProviderKeyVars(provider, action.workspace),
     repoPath: action.repoPath,
     env,
   });
 
-  if (!values[keyVar]) {
+  const unsatisfied = groups.filter((group) => !group.some((key) => values[key]));
+  if (unsatisfied.length) {
+    const names = unsatisfied.map((group) => group.join(" or ")).join(" and ");
     return {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${keyVar} not set; skipping ${provider} board creation (state stays "planned"). ` +
-          `Set it in the environment, ${join(action.repoPath, ".env")}, or ${ticketProviderSecretsPath(env)}, ` +
-          `then re-run with --live — or pass --board-id to link an existing board.`,
+        `ticket-provider: ${names} not set; skipping ${provider} board creation (state stays "planned"). ` +
+          `Set it in the environment, ${join(action.repoPath, ".env")}, ${ticketProviderFleetEnvPath(env)}, ` +
+          `or ${ticketProviderSecretsPath(env)} — or pass --board-id to link an existing board.`,
       ],
     };
   }
@@ -1218,12 +1247,28 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   // Structured callers (notably MCP) pass explicit booleans so `live` alone
   // grants no remote effect. provisionRuntimeRepo is a deprecated no-op: the
   // only supported runtime is ignored role-local state.
-  const provisionTicketBoard = input.provisionTicketBoard ?? live;
+  //
+  // The board is NOT an optional garnish behind `--live`. It used to be, and
+  // that is exactly how 11 of 24 registry records ended up carrying
+  // `board_id: ""`: `pj init` is the designated ingress, it registered the
+  // project, silently dropped the board action from the plan, printed nothing
+  // about it, and exited 0. A record with no board fails the registry's own
+  // contract — `board_confirmed_at` and `identifier_source` exist to say a
+  // provider confirmed this board, and there is nothing for them to describe.
+  //
+  // So board provisioning defaults ON, and the only way out is the subtractive
+  // `skipPlane` gate (CLI `--skip-board`), which the operator must ask for.
+  // `--live` keeps its meaning for effects that change the HOST rather than the
+  // project's own identity: systemd units, the notebook endpoint, and the
+  // Hermes agent's own external tail.
+  const provisionTicketBoard = input.provisionTicketBoard ?? true;
   const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
-  const boardEnabled = live && provisionTicketBoard && !skipPlane;
+  const boardEnabled = provisionTicketBoard && !skipPlane;
   const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
-  const anyExternalAgentEffect = boardEnabled || systemdEnabled;
+  // The AGENT's external tail is a host effect and stays behind `--live`.
+  const agentBoardEffect = live && boardEnabled;
+  const anyExternalAgentEffect = agentBoardEffect || systemdEnabled;
   const actions: ProjectInitAction[] = [
     { kind: "registry.upsert", registryPath, slug, project },
   ];
@@ -1260,14 +1305,12 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
       reason: skipPlane
-        ? "ticket-provider action disabled by skipPlane=true"
+        ? "ticket-provider action disabled by skipPlane=true (--skip-board)"
         : project.ticket_provider.board_id
           ? "board already linked; no provider call"
-          : !live
-            ? "network/cloud actions require --live"
-            : !provisionTicketBoard
-              ? "ticket-provider action requires explicit provisionTicketBoard=true"
-              : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`,
+          : !provisionTicketBoard
+            ? "ticket-provider action requires explicit provisionTicketBoard=true"
+            : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`,
     },
     {
       kind: "hermes.provision-agent",
@@ -1277,7 +1320,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       targetRepo: slug,
       role: agentRole,
       context: {
-        skipPlane: !boardEnabled,
+        skipPlane: !agentBoardEffect,
         // Per-agent Bloodbank consumers are retired. Agent ingress always
         // stays on the fleet-shared gateway, regardless of live/local mode.
         skipBloodbank: true,
@@ -1607,6 +1650,79 @@ export function formatProjectList(
   }
   lines.push("");
   return lines.join("\n");
+}
+
+/**
+ * Did a provider actually confirm this board?
+ *
+ * The registry's three-field contract answers this and nothing else does:
+ * `board_id` is a claim, `board_confirmed_at` is the provider's answer, and
+ * `state: "linked"` is the two agreeing. A record missing any of them is a
+ * project whose board does not exist as far as anything downstream can tell.
+ */
+export function isBoardConfirmed(provider: ProjectTicketProvider | undefined): boolean {
+  return Boolean(provider?.board_id && provider.board_confirmed_at && provider.state === "linked");
+}
+
+/** What `pj init` promised about the board, and what it actually delivered. */
+export interface BoardDelivery {
+  /** The plan meant to reach a board (not suppressed by --skip-board). */
+  intended: boolean;
+  confirmed: boolean;
+  provider: string;
+  workspace: string;
+  identifier: string;
+  boardId: string;
+  state: string;
+  /** Why the board action did not run, when it did not. */
+  reason?: string;
+}
+
+export function boardDelivery(plan: ProjectInitPlan): BoardDelivery {
+  const action = plan.actions.find((entry) => entry.kind === "ticket-provider.create-or-link");
+  const provider = plan.project.ticket_provider;
+  return {
+    intended: action?.kind === "ticket-provider.create-or-link" ? action.enabled : false,
+    confirmed: isBoardConfirmed(provider),
+    provider: provider.type,
+    workspace: provider.workspace ?? "",
+    identifier: provider.identifier ?? "",
+    boardId: provider.board_id ?? "",
+    state: provider.state ?? "planned",
+    ...(action?.kind === "ticket-provider.create-or-link" && action.reason ? { reason: action.reason } : {}),
+  };
+}
+
+/**
+ * Drop one project from the registry. The repo on disk and the provider board
+ * are deliberately left alone — this removes a REGISTRY RECORD, nothing else.
+ */
+export interface ProjectRemovalResult {
+  ok: boolean;
+  apply: boolean;
+  registryPath: string;
+  slug: string;
+  removed: ProjectRecord;
+}
+
+export function removeProjectRecord(input: {
+  slug: string;
+  apply?: boolean;
+  registryPath?: string;
+}): ProjectRemovalResult {
+  const registryPath = resolve(
+    projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }),
+  );
+  const registry = loadProjectRegistry(registryPath);
+  // getProject throws "Project not found in registry: <slug>" for an unknown
+  // slug, which is the refusal this command owes the caller.
+  const removed = getProject(registry, input.slug);
+  const apply = input.apply ?? false;
+  if (apply) {
+    delete registry.projects[input.slug];
+    saveProjectRegistry(registry, registryPath);
+  }
+  return { ok: true, apply, registryPath, slug: input.slug, removed };
 }
 
 export function getProject(registry: ProjectRegistry, slug: string): ProjectRecord {

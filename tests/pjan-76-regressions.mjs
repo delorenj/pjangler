@@ -122,7 +122,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
 
   const result = spawnSync(
     process.execPath,
-    [join(root, "dist", "index.js"), "project", "init", "--yes", "--apply", "--target-dir", target, "--json"],
+    [join(root, "dist", "index.js"), "project", "init", "--yes", "--apply", "--skip-board", "--target-dir", target, "--json"],
     {
       cwd: workspace,
       encoding: "utf8",

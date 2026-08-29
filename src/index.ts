@@ -19,6 +19,7 @@ import {
 import { cancel, multiselect, text, isCancel } from "@clack/prompts";
 import { recipeRegistry, lifecycleContext, runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, formatRulePicker, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
 import {
+  boardDelivery,
   doctorProjectRegistry,
   formatProjectInitPlan,
   formatProjectList,
@@ -26,9 +27,11 @@ import {
   loadProjectRegistry,
   planProjectInit,
   projectRegistryPath,
+  removeProjectRecord,
+  type BoardDelivery,
 } from "./project/index";
 import { resolveBoardUrl } from "./project/boardUrl";
-import { formatIdentityReport, reconcileProjectIdentity } from "./project/identity";
+import { formatIdentityReport, linkProjectBoard, reconcileProjectIdentity } from "./project/identity";
 import {
   BoardError,
   fetchModules,
@@ -71,6 +74,7 @@ interface ProjectInitCliOptions {
   ticketProvider?: string;
   boardId?: string;
   boardUrl?: string;
+  skipBoard?: boolean;
   workspace?: string;
   registry?: string;
   force?: boolean;
@@ -176,6 +180,47 @@ async function promptTextValue(message: string, initialValue?: string): Promise<
     process.exit(1);
   }
   return value.trim();
+}
+
+/**
+ * Say — unmissably — whether this init ended with a board the provider
+ * confirmed.
+ *
+ * The reported defect was an ingress that "seemed to work without incident"
+ * while silently doing less than the operator believed: no board, `board_id`
+ * left "", exit 0, and not one line of output about any of it. Eleven of
+ * twenty-four registry records were built that way.
+ *
+ * So the rule is now: `pj init` claims success only when the board is
+ * confirmed. `--skip-board` is the one path that is allowed to end unlinked,
+ * because the operator asked for it — it still prints a warning block, it just
+ * does not fail. Everything else is a failed ingress and exits non-zero, with
+ * the two commands that actually fix it.
+ *
+ * Returns true when the ingress delivered what it promised.
+ */
+function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: boolean): boolean {
+  if (board.confirmed) {
+    console.log(`  ${green(glyph.pass)} ${bold("Board linked")}  ${dim(glyph.dot)}  ${cyan(`${board.provider}/${board.workspace}/${board.identifier}`)}  ${dim(board.boardId)}`);
+    return true;
+  }
+  const mark = skipRequested ? `${yellow(glyph.warn)}` : xmark;
+  const title = skipRequested ? "No ticket board (--skip-board)" : "No ticket board";
+  const log = skipRequested ? console.log : console.error;
+  log("");
+  log(`  ${mark} ${bold(title)}  ${dim(glyph.dot)}  ${cyan(slug)}`);
+  log(`     ${dim(`the ${board.provider} board was not confirmed; the record stays state=${board.state} with board_id ""`)}`);
+  // Only a SUPPRESSED action needs its plan reason repeated. When the action
+  // ran and came back empty, the adapter's own log line above already said why,
+  // and echoing the intent underneath it reads like a contradiction.
+  if (!board.intended && board.reason) log(`     ${dim(`why: ${board.reason}`)}`);
+  if (!skipRequested) {
+    log(`     ${dim("fix:")} ${cyan(`pj project link ${slug} <board-id> --apply`)} ${dim("to bind an existing board")}`);
+    log(`     ${dim("  or")} ${cyan(`pj init --target-dir <repo>`)} ${dim("again once the provider credential resolves")}`);
+    log(`     ${dim("  or")} ${cyan("--skip-board")} ${dim("if this project is meant to have none")}`);
+  }
+  log("");
+  return skipRequested;
 }
 
 function projectInitActionLabel(kind: string): string {
@@ -388,12 +433,13 @@ program
   .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
   .option("--apply", "Write the registry and render the repo scaffold")
   .option("--dry-run", "Preview changes without writing files (default)")
-  .option("--live", "Allow live/network/cloud provisioning actions")
+  .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
   .option("--slug <slug>", "Project registry slug override")
   .option("--identifier <identifier>", "Ticket identifier override")
   .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
   .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
   .option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id")
+  .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
@@ -615,12 +661,13 @@ projectCmd
   .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
   .option("--apply", "Write the registry and render the repo scaffold")
   .option("--dry-run", "Preview changes without writing files (default)")
-  .option("--live", "Allow live/network/cloud provisioning actions")
+  .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
   .option("--slug <slug>", "Project registry slug override")
   .option("--identifier <identifier>", "Ticket identifier override")
   .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
   .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
   .option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id")
+  .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
@@ -653,6 +700,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         ticketProvider: options.ticketProvider,
         boardId: options.boardId,
         boardUrl: options.boardUrl,
+        skipPlane: options.skipBoard ?? false,
         boardWorkspace: options.workspace,
         registryPath: options.registry,
         force: options.force ?? false,
@@ -681,6 +729,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
           ...plan,
           mode: target.syncMode ? "sync" : "create",
           audit: preAudit,
+          board: boardDelivery(plan),
           notebookPlan,
           proposedOperations: [
             ...plan.actions
@@ -725,17 +774,29 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         }),
         projectInput,
       ) as ProjectRecipeResult;
+      // The board is read off the plan the transaction actually finished with
+      // (ProjectRecipe refreshes it from the canonical manifest), never off the
+      // plan we hoped for on the way in.
+      // Actions the operator did not select are filtered out of `selectedPlan`
+      // — including a suppressed board action. Read the OUTCOME off the plan
+      // the transaction finished with, but the INTENT off the full plan, or a
+      // `--skip-board` run loses the very reason it has no board. That
+      // filtering is what made the original defect invisible.
+      const board = boardDelivery({ ...result.plan, actions: plan.actions });
+      const skipRequested = Boolean(options.skipBoard);
+      const boardDelivered = board.confirmed || skipRequested;
       if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify({ ...result, ok: result.ok && boardDelivered, board }, null, 2));
       } else {
         console.log(formatProjectInitPlan(selectedPlan));
         for (const line of result.logs) console.log(line);
         for (const line of result.errors) console.error(`  ${xmark} ${line}`);
         if (result.migrationReport) console.log(formatMigrationReport(result.migrationReport));
-        if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
-        if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}\n`);
+        if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
+        if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
+        reportBoardDelivery(board, plan.project.slug, skipRequested);
       }
-      process.exitCode = result.ok ? 0 : 1;
+      process.exitCode = result.ok && boardDelivered ? 0 : 1;
     } catch (err) {
       if (options.json) {
         console.log(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
@@ -790,6 +851,83 @@ projectCmd
       }
     } catch (err) {
       console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("remove")
+  .alias("rm")
+  .argument("<slug>", "Project slug to drop from the registry")
+  .description("Remove a project from the pjangler registry (the repo and its board are left alone)")
+  .option("--apply", "Write the removal (default is a dry run)")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((slug: string, options) => {
+    try {
+      const result = removeProjectRecord({ slug, apply: Boolean(options.apply), registryPath: options.registry });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const provider = result.removed.ticket_provider;
+      const binding = provider.board_id
+        ? `${provider.type}/${provider.workspace ?? ""}/${provider.identifier ?? ""} ${dim(provider.board_id)}`
+        : dim("no board");
+      console.log("");
+      console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Removed" : "Would remove")}  ${dim(glyph.dot)}  ${cyan(result.slug)} ${dim(`(${result.removed.name})`)}`);
+      console.log(`  ${dim("registry".padEnd(8))} ${dim(result.registryPath)}`);
+      console.log(`  ${dim("repo".padEnd(8))} ${dim(result.removed.repo_path)} ${dim("(left on disk)")}`);
+      console.log(`  ${dim("board".padEnd(8))} ${binding} ${dim("(left with the provider)")}`);
+      if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
+      console.log("");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+      else console.error(`${xmark} project remove failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+projectCmd
+  .command("link")
+  .argument("<slug>", "Project slug")
+  .argument("<board-id>", "Board id the provider already owns (Plane project UUID, Trello board id)")
+  .description("Bind a registry record to an existing board, reading its identity back from the provider")
+  .option("--apply", "Write the binding (default is a dry run)")
+  .option("--workspace <name>", "Workspace to look the board up in (default: the record's workspace)")
+  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action(async (slug: string, boardId: string, options) => {
+    try {
+      const result = await linkProjectBoard({
+        slug,
+        boardId,
+        apply: Boolean(options.apply),
+        workspace: options.workspace,
+        registryPath: options.registry,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log("");
+      console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Linked" : "Would link")}  ${dim(glyph.dot)}  ${cyan(slug)} ${dim(glyph.pointer)} ${cyan(result.boardId)}${result.boardName ? dim(` (${result.boardName})`) : ""}`);
+      console.log(`  ${dim("provider".padEnd(18))} ${result.provider}${result.workspace ? dim(`/${result.workspace}`) : ""}`);
+      console.log(`  ${dim("identifier".padEnd(18))} ${cyan(result.identifier || dim("(none)"))}${result.before.identifier && result.before.identifier !== result.identifier ? dim(`  was ${result.before.identifier}`) : ""}`);
+      // The two provenance halves are separate facts and are printed as such:
+      // any provider can confirm a board exists; only Plane and Linear assign
+      // the key, so Trello's stays a proposal by contract, not by failure.
+      console.log(`  ${dim("identifier_source".padEnd(18))} ${result.identifierSource}${result.identifierSource === "proposed" ? dim(`  (${result.provider} assigns no key)`) : ""}`);
+      console.log(`  ${dim("board_confirmed_at".padEnd(18))} ${result.boardConfirmedAt}`);
+      console.log(`  ${dim("state".padEnd(18))} ${result.state === "linked" ? green(result.state) : yellow(result.state)}${result.before.state !== result.state ? dim(`  was ${result.before.state}`) : ""}`);
+      if (result.manifestPath) console.log(`  ${dim("manifest".padEnd(18))} ${dim(result.manifestPath)}${result.apply ? "" : dim(" (would be updated)")}`);
+      if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
+      console.log("");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+      else console.error(`${xmark} project link failed: ${message}`);
       process.exit(1);
     }
   });
