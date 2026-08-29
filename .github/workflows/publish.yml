@@ -1,5 +1,12 @@
 name: CI
 
+# The FILENAME is load-bearing: npm's trusted publisher for @delorenj/pjangler
+# names this workflow file, and the OIDC token is only honoured when it matches.
+# Renaming this to ci.yml made `npm publish` fail with ENEEDAUTH — npm never
+# even attempted OIDC — while every test passed. Rename it only after updating
+# the trusted publisher on npmjs.com, or the pipeline goes green and ships
+# nothing.
+#
 # One workflow, not two. The environment setup below (a uv-managed Copier that
 # passes pjangler's own attestation, PyYAML for the profile renderer) is what
 # the TESTS need, not just the publish. Splitting it across two files would
@@ -146,15 +153,23 @@ jobs:
         id: bump
         run: |
           set -euo pipefail
-          published="$(npm view "$(node -p "require('./package.json').name")" version 2>/dev/null || echo "0.0.0")"
+          name="$(node -p "require('./package.json').name")"
           local_v="$(node -p "require('./package.json').version")"
-          echo "published=$published  local=$local_v"
-          # Take whichever is ahead, then add one patch.
-          base="$(printf '%s\n%s\n' "$published" "$local_v" | sort -V | tail -1)"
-          next="$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$base")"
+          # Every version npm already has, so a failed publish does not burn one.
+          # A previous run can leave package.json ahead of the registry (release
+          # commit lands, publish fails); republishing that same version is
+          # correct, not a collision.
+          if npm view "$name@$local_v" version >/dev/null 2>&1; then
+            published="$(npm view "$name" version 2>/dev/null || echo "0.0.0")"
+            base="$(printf '%s\n%s\n' "$published" "$local_v" | sort -V | tail -1)"
+            next="$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$base")"
+            npm version "$next" --no-git-tag-version
+            echo "$local_v is taken; bumped to $next"
+          else
+            next="$local_v"
+            echo "$local_v is unpublished; shipping it as-is"
+          fi
           echo "next=$next" >> "$GITHUB_OUTPUT"
-          npm version "$next" --no-git-tag-version
-          echo "bumped to $next"
 
       - name: Commit the release
         if: github.ref == 'refs/heads/main'
