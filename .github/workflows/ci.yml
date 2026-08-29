@@ -25,6 +25,12 @@ concurrency:
 
 jobs:
   ci:
+    # Belt and braces against a publish loop. The release commit below carries a
+    # skip marker, but that marker is matched anywhere in the commit MESSAGE —
+    # body included — so any commit that merely writes about it skips itself.
+    # That is not hypothetical: the commit introducing this file did exactly
+    # that and never ran. This actor guard is the half that prose cannot break.
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     environment: release
     permissions:
