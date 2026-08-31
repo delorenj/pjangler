@@ -42,6 +42,22 @@ const HERMES_GITLINK = materializeCommittedSubmodule(
   "templates/hermes-agent",
   committedTemplate,
 );
+
+function committedTemplateMode(path) {
+  const result = spawnSync(
+    "git",
+    ["ls-tree", HERMES_GITLINK, "--", `template/.scripts/${path}`],
+    {
+      cwd: join(root, "templates", "hermes-agent"),
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const mode = result.stdout.trim().split(/\s+/, 1)[0];
+  assert.ok(mode, `missing committed mode for ${path}`);
+  return mode;
+}
+
 const COPIES = {
   "canonical-template": join(committedTemplate, "template", ".scripts"),
   "deployed-pm": join(root, "agents", "hermes", "pm", ".scripts"),
@@ -220,9 +236,9 @@ try {
       `${path} must be refreshed byte-for-byte from the canonical template`,
     );
     assert.equal(
-      statSync(join(COPIES["deployed-pm"], path)).mode & 0o777,
-      statSync(join(COPIES["canonical-template"], path)).mode & 0o777,
-      `${path} mode must match the canonical template`,
+      statSync(join(COPIES["deployed-pm"], path)).mode & 0o111,
+      statSync(join(COPIES["canonical-template"], path)).mode & 0o111,
+      `${path} executable bits must match the canonical template`,
     );
   }
 
@@ -231,9 +247,9 @@ try {
     "sentinel/bin/issue-close-gate.sh",
   ]) {
     assert.equal(
-      statSync(join(COPIES["canonical-template"], path)).mode & 0o777,
-      0o755,
-      `${path} must ship executable for direct orchestration`,
+      committedTemplateMode(path),
+      "100755",
+      `${path} must have executable Git mode for direct orchestration`,
     );
   }
 
@@ -260,8 +276,8 @@ try {
     "legacy autonomous review may differ from canonical only in legacy path/config names",
   );
   assert.equal(
-    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-autonomous-review.sh")).mode & 0o777,
-    0o755,
+    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-autonomous-review.sh")).mode & 0o111,
+    0o111,
     "legacy autonomous review must remain directly executable",
   );
   assert.equal(
@@ -273,8 +289,8 @@ try {
     "legacy close gate must be refreshed byte-for-byte from the canonical template",
   );
   assert.equal(
-    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh")).mode & 0o777,
-    0o755,
+    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh")).mode & 0o111,
+    0o111,
     "legacy close gate must remain directly executable",
   );
 
