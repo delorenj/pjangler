@@ -23,6 +23,7 @@ telegram:
 # Repo-owned board identity lives in repo-root .project.json, not in this role.
 ticket_provider:
   name: plane
+  timezone: "America/New_York"
 
 # Scrum Master sentinel knobs (only meaningful for role: scrum-master).
 scrum_master:

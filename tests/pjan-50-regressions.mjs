@@ -228,11 +228,12 @@ try {
     const responses = [
       response("GET", `projects/${BOARD}/states/`, { results: states }),
       response("PATCH", `projects/${BOARD}/issues/${ISSUE}/`, { sequence_id: 50 }),
+      response("GET", `projects/${BOARD}/issues/${ISSUE}/`, issue),
     ];
     const run = runBoth(["transition", ISSUE, "cancelled"], responses);
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.stdout.trim(), "ok 50");
-    assert.equal(run.requests.length, 2);
+    assert.equal(run.requests.length, 3);
     assert.deepEqual(JSON.parse(run.requests[1].body), { state: "state-cancelled" });
     assert.notEqual(JSON.parse(run.requests[1].body).state, "state-done");
   }
