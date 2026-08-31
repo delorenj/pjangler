@@ -43,29 +43,84 @@ cd "$ROOT"
 CLOSE_GATE="$BIN_DIR/issue-close-gate.sh"
 EVIDENCE="_bmad-output/implementation-artifacts/issue-evidence/$ISSUE.md"
 
-yget() { sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" "$ROLE_YAML" 2>/dev/null | head -n1 | tr -d '"' | tr -d '\r'; }
-ticket_provider_name() {
-  python3 - "$ROLE_YAML" <<'PY'
+role_mapping_value() {
+  python3 - "$ROLE_YAML" "$1" "$2" <<'PY'
 import pathlib
 import re
 import sys
 
 path = pathlib.Path(sys.argv[1])
+section = sys.argv[2]
+key = sys.argv[3]
 text = path.read_text(encoding="utf-8") if path.is_file() else ""
-match = re.search(r"(?ms)^ticket_provider:\s*$(.*?)(?=^\S|\Z)", text)
-block = match.group(1) if match else ""
-name = re.search(r'(?m)^\s+name:\s*"?([^"\n]*)"?\s*$', block)
-print(name.group(1).strip() if name else "")
+lines = text.splitlines()
+headers = [
+    index
+    for index, line in enumerate(lines)
+    if re.fullmatch(rf"{re.escape(section)}:\s*(?:#.*)?", line)
+]
+if not headers:
+    print("")
+    raise SystemExit(0)
+if len(headers) != 1:
+    raise SystemExit(f"role config has duplicate top-level {section!r} mappings")
+block = []
+for line in lines[headers[0] + 1 :]:
+    if line.strip() and not line[0].isspace() and not line.lstrip().startswith("#"):
+        break
+    block.append(line)
+content = [
+    line
+    for line in block
+    if line.strip() and not line.lstrip().startswith("#") and line[0].isspace()
+]
+if not content:
+    print("")
+    raise SystemExit(0)
+direct_indent = min(len(line) - len(line.lstrip()) for line in content)
+matches = []
+for line in content:
+    if len(line) - len(line.lstrip()) != direct_indent:
+        continue
+    match = re.fullmatch(rf"\s{{{direct_indent}}}{re.escape(key)}:\s*(.*?)\s*", line)
+    if match:
+        matches.append(match.group(1))
+if len(matches) > 1:
+    raise SystemExit(f"role config has duplicate {section}.{key} values")
+value = matches[0] if matches else ""
+value = re.sub(r"\s+#.*$", "", value).strip()
+if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+    value = value[1:-1]
+print(value.strip())
 PY
 }
 # Informational only: recorded in the ticket comment, never a blocking wait.
 # Default 0 (no grace); an operator may set grace_hours>0 to reintroduce one.
-GRACE_HOURS="${DRUMJANGLER_AUTO_REVIEW_GRACE_HOURS:-$(yget grace_hours)}"; GRACE_HOURS="${GRACE_HOURS:-0}"
-AUTO="$(yget auto_review)"; AUTO="${AUTO:-true}"
+ROLE_GRACE_HOURS="$(role_mapping_value reconcile grace_hours)"
+GRACE_HOURS="${DRUMJANGLER_AUTO_REVIEW_GRACE_HOURS:-$ROLE_GRACE_HOURS}"
+GRACE_HOURS="$(printf '%s' "${GRACE_HOURS:-0}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+case "$GRACE_HOURS" in
+  ''|*[!0-9]*)
+    printf "AUTONOMOUS REVIEW: CONFIG INVALID - reconcile.grace_hours must be a nonnegative integer (got '%s').\n" "$GRACE_HOURS" >&2
+    exit 3
+    ;;
+esac
+GRACE_HOURS="$(python3 -c 'import sys; print(int(sys.argv[1]))' "$GRACE_HOURS")"
 
-if [[ "${SCRUM_MASTER_AUTO_REVIEW:-$AUTO}" == "false" || "${SCRUM_MASTER_AUTO_REVIEW:-}" == "off" ]]; then
-  printf 'Autonomous review is disabled (scrum_master.auto_review=false).\n' >&2; exit 3
-fi
+ROLE_AUTO="$(role_mapping_value reconcile auto_review)"
+AUTO="${SCRUM_MASTER_AUTO_REVIEW:-$ROLE_AUTO}"
+AUTO="$(printf '%s' "${AUTO:-true}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+case "$AUTO" in
+  true|on) : ;;
+  false|off)
+    printf 'Autonomous review is disabled (scrum_master.auto_review=%s).\n' "$AUTO" >&2
+    exit 3
+    ;;
+  *)
+    printf "AUTONOMOUS REVIEW: CONFIG INVALID - scrum_master.auto_review must be true|on|false|off (got '%s').\n" "$AUTO" >&2
+    exit 3
+    ;;
+esac
 [[ -f "$REPORT" ]]   || { printf 'Missing review report file: %s\n' "$REPORT" >&2; exit 2; }
 [[ -f "$EVIDENCE" ]] || { printf 'Missing issue evidence file: %s\n' "$EVIDENCE" >&2; exit 2; }
 
@@ -101,7 +156,7 @@ if [[ "$DECISION" == "held" ]]; then
   exit 3
 fi
 
-PROV="$(ticket_provider_name)"; PROV="${PROV:-}"
+PROV="$(role_mapping_value ticket_provider name)"; PROV="${PROV:-}"
 if [[ "$CLOSE" -eq 1 ]]; then
   # Optional operator QA sweep: close through the ticket-provider adapter.
   if ! TICKET_PROVIDER="$PROV" bash -c '. "$1"; tp transition "$2" completed' _ "$SCRIPTS_DIR/lib/ticket-provider.sh" "$ISSUE" \
@@ -110,9 +165,14 @@ if [[ "$CLOSE" -eq 1 ]]; then
     exit 1
   fi
 
-  if ! TICKET_PROVIDER="$PROV" bash -c '. "$1"; tp comment "$2" "$3"' _ "$SCRIPTS_DIR/lib/ticket-provider.sh" "$ISSUE" \
-    "Autonomously accepted by $REVIEWER under the independent adversarial-review protocol (drift: $DRIFT, gate: $GATE, grace ${GRACE_HOURS}h informational). Treated as done; review report: $REPORT." >/dev/null 2>&1; then
+  COMMENT_ID=""
+  if ! COMMENT_ID="$(TICKET_PROVIDER="$PROV" bash -c '. "$1"; tp comment "$2" "$3"' _ "$SCRIPTS_DIR/lib/ticket-provider.sh" "$ISSUE" \
+    "Autonomously accepted by $REVIEWER under the independent adversarial-review protocol (drift: $DRIFT, gate: $GATE, grace ${GRACE_HOURS}h informational). Treated as done; review report: $REPORT." 2>/dev/null)"; then
     printf 'AUTONOMOUS REVIEW: CLOSE INCOMPLETE for %s - transition succeeded, but acceptance comment failed; issue may already be completed.\n' "$ISSUE" >&2
+    exit 1
+  fi
+  if [[ ! "$COMMENT_ID" =~ [^[:space:]] ]]; then
+    printf 'AUTONOMOUS REVIEW: CLOSE INCOMPLETE for %s - transition succeeded, but acceptance comment returned no id; comment write unproven and issue may already be completed.\n' "$ISSUE" >&2
     exit 1
   fi
 
@@ -125,9 +185,14 @@ else
   # Accepted: the loop autonomously treats the ticket as done and leaves it in
   # the review lane (deferred-QA queue). Record the autonomous acceptance via the
   # adapter -- no approval request, no "waiting on the operator".
-  if ! TICKET_PROVIDER="$PROV" bash -c '. "$1"; tp comment "$2" "$3"' _ "$SCRIPTS_DIR/lib/ticket-provider.sh" "$ISSUE" \
-    "Autonomously accepted by $REVIEWER under the independent adversarial-review protocol (drift: $DRIFT, gate: $GATE, grace ${GRACE_HOURS}h informational). Treated as done; stays in the review lane (deferred-QA queue). Review report: $REPORT." >/dev/null 2>&1; then
+  COMMENT_ID=""
+  if ! COMMENT_ID="$(TICKET_PROVIDER="$PROV" bash -c '. "$1"; tp comment "$2" "$3"' _ "$SCRIPTS_DIR/lib/ticket-provider.sh" "$ISSUE" \
+    "Autonomously accepted by $REVIEWER under the independent adversarial-review protocol (drift: $DRIFT, gate: $GATE, grace ${GRACE_HOURS}h informational). Treated as done; stays in the review lane (deferred-QA queue). Review report: $REPORT." 2>/dev/null)"; then
     printf 'AUTONOMOUS REVIEW: COMMENT FAILED for %s - acceptance comment was not recorded; issue left in review.\n' "$ISSUE" >&2
+    exit 1
+  fi
+  if [[ ! "$COMMENT_ID" =~ [^[:space:]] ]]; then
+    printf 'AUTONOMOUS REVIEW: COMMENT UNPROVEN for %s - acceptance comment returned no id; issue left in review.\n' "$ISSUE" >&2
     exit 1
   fi
   printf 'AUTONOMOUS REVIEW: ACCEPTED - treat as done (no human wait) for %s (reviewer: %s | drift: %s | gate: %s)\n' \
