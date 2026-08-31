@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -218,6 +219,22 @@ try {
       readFileSync(join(COPIES["canonical-template"], path), "utf8"),
       `${path} must be refreshed byte-for-byte from the canonical template`,
     );
+    assert.equal(
+      statSync(join(COPIES["deployed-pm"], path)).mode & 0o777,
+      statSync(join(COPIES["canonical-template"], path)).mode & 0o777,
+      `${path} mode must match the canonical template`,
+    );
+  }
+
+  for (const path of [
+    "sentinel/bin/issue-autonomous-review.sh",
+    "sentinel/bin/issue-close-gate.sh",
+  ]) {
+    assert.equal(
+      statSync(join(COPIES["canonical-template"], path)).mode & 0o777,
+      0o755,
+      `${path} must ship executable for direct orchestration`,
+    );
   }
 
   // The retired scrum-master projection still serves existing installations.
@@ -243,12 +260,22 @@ try {
     "legacy autonomous review may differ from canonical only in legacy path/config names",
   );
   assert.equal(
+    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-autonomous-review.sh")).mode & 0o777,
+    0o755,
+    "legacy autonomous review must remain directly executable",
+  );
+  assert.equal(
     readFileSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh"), "utf8"),
     readFileSync(
       join(COPIES["canonical-template"], "sentinel", "bin", "issue-close-gate.sh"),
       "utf8",
     ),
     "legacy close gate must be refreshed byte-for-byte from the canonical template",
+  );
+  assert.equal(
+    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh")).mode & 0o777,
+    0o755,
+    "legacy close gate must remain directly executable",
   );
 
   // `cancelled` is a first-class normalized state in the shared contract.
