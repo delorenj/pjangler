@@ -76,13 +76,16 @@ function makeCurlStub() {
 import json, os, sys
 
 args=sys.argv[1:]
-method="GET"; url=""; body=""; headers=[]
+method="GET"; url=""; body=""; headers=[]; outfile=""; headerfile=""; writeout=""
 i=0
 while i < len(args):
     arg=args[i]
     if arg == "-X": method=args[i+1]; i += 2
     elif arg == "-H": headers.append(args[i+1]); i += 2
     elif arg == "-d": body=args[i+1]; i += 2
+    elif arg == "-o": outfile=args[i+1]; i += 2
+    elif arg == "-D": headerfile=args[i+1]; i += 2
+    elif arg == "-w": writeout=args[i+1]; i += 2
     elif arg.startswith("-"): i += 1
     else: url=arg; i += 1
 
@@ -91,7 +94,14 @@ with open(os.environ["PJAN50_LOG"], "a") as fh:
 
 for row in json.load(open(os.environ["PJAN50_RESPONSES"])):
     if row["method"] == method and row["url"] == url:
-        sys.stdout.write(row["body"])
+        if outfile:
+            with open(outfile, "w") as fh: fh.write(row["body"])
+        else:
+            sys.stdout.write(row["body"])
+        if headerfile:
+            with open(headerfile, "w") as fh: fh.write("HTTP/1.1 200 OK\\r\\n")
+        if writeout:
+            sys.stdout.write(writeout.replace("%{http_code}", "200"))
         sys.exit(0)
 sys.stderr.write("no fixture for %s %s\\n" % (method,url))
 sys.exit(22)
