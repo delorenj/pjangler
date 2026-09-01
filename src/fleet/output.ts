@@ -8,7 +8,7 @@
 // themselves -- bounded strings, capped details, ok <=> error === null, one
 // complete document -- are reproduced here deliberately.
 //
-// ONE CONSTRAINT, AND IT IS LOAD-BEARING: this module and `src/fleet/output.ts`
+// ONE CONSTRAINT, AND IT IS LOAD-BEARING: this module and `src/fleet/health.ts`
 // import each other. `output.ts` needs `compareStatusFindings` and the two sort
 // keys to rank a report the same way the machine path ranks it, and this module
 // needs `bounded`/`redactHome` so a string it builds is bounded on the same
