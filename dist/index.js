@@ -727,13 +727,13 @@ function resolveTemplateConfigPath2(env2 = process.env, home = homedir4()) {
   const base = xdg && xdg.length ? xdg : join8(home, ".config");
   return join8(base, "hermes-agent-template", "config.toml");
 }
-function readTomlScalar(text3, section2, key) {
+function readTomlScalar(text3, section3, key) {
   let inSection = false;
   for (const raw of text3.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     if (line.startsWith("[")) {
-      inSection = line === `[${section2}]`;
+      inSection = line === `[${section3}]`;
       continue;
     }
     if (!inSection) continue;
@@ -3032,7 +3032,7 @@ function validateNotebookEnvelope(value) {
   const integer = (candidate, reason) => {
     if (!Number.isSafeInteger(candidate) || Number(candidate) < 0) invalid(reason);
   };
-  const stringList2 = (candidate, reason, maxItems = 1e3) => {
+  const stringList3 = (candidate, reason, maxItems = 1e3) => {
     if (!Array.isArray(candidate) || candidate.length > maxItems) invalid(reason);
     for (const item of candidate) string(item, reason, 4096);
   };
@@ -3067,7 +3067,7 @@ function validateNotebookEnvelope(value) {
   if (!(/* @__PURE__ */ new Set([null, "unconfigured", "healthy", "drifted", "unavailable", "blocked"])).has(notebook.health)) invalid("health is invalid");
   nullableString(notebook.id, "notebook id is invalid", 512);
   nullableString(notebook.name, "notebook name is invalid", 512);
-  stringList2(root.next_actions, "next_actions is invalid", 20);
+  stringList3(root.next_actions, "next_actions is invalid", 20);
   if (root.ok === (root.error !== null) || (root.ok ? root.data === null : root.data !== null)) invalid("success/error invariant failed");
   if (!root.ok) {
     const error = record(root.error, "error must be an object");
@@ -3100,15 +3100,15 @@ function validateNotebookEnvelope(value) {
     if (item.summary_mode !== null && item.summary_mode !== "configured" && item.summary_mode !== "deterministic-fallback") invalid("receipt summary mode is invalid");
     const exclusions = record(item.exclusion_counts, "receipt exclusions must be an object");
     if (Object.entries(exclusions).some(([key, count]) => !key || !Number.isSafeInteger(count) || Number(count) < 0)) invalid("receipt exclusions are invalid");
-    stringList2(item.note_logical_ids, "receipt logical IDs are invalid");
-    stringList2(item.remote_note_ids, "receipt remote IDs are invalid");
+    stringList3(item.note_logical_ids, "receipt logical IDs are invalid");
+    stringList3(item.remote_note_ids, "receipt remote IDs are invalid");
   };
   const finding2 = (candidate) => {
     const item = record(candidate, "finding must be an object");
     exact(item, ["id", "title", "status", "summary", "details", "fixable"], "finding fields differ from v1");
     for (const key of ["id", "title", "summary"]) string(item[key], `finding ${key} is invalid`, 4096);
     if (!(/* @__PURE__ */ new Set(["pass", "fail", "warn", "skip"])).has(String(item.status)) || typeof item.fixable !== "boolean") invalid("finding status/fixable is invalid");
-    stringList2(item.details, "finding details are invalid", 100);
+    stringList3(item.details, "finding details are invalid", 100);
   };
   const admission2 = (candidate) => {
     const item = record(candidate, "capture admission must be an object");
@@ -3132,7 +3132,7 @@ function validateNotebookEnvelope(value) {
       if (refusal.outcome !== "capture-refused-history") invalid("retention refusal outcome is invalid");
       for (const key of ["session_key", "refused_at", "reason"]) string(refusal[key], `retention refusal ${key} is invalid`);
       for (const key of ["current_count", "current_bytes", "candidate_bytes", "max_count", "max_bytes"]) integer(refusal[key], `retention refusal ${key} is invalid`);
-      stringList2(refusal.next_actions, "retention refusal actions are invalid", 10);
+      stringList3(refusal.next_actions, "retention refusal actions are invalid", 10);
     }
   };
   const data = record(root.data, "data must be an object");
@@ -3153,7 +3153,7 @@ function validateNotebookEnvelope(value) {
       exact(data, ["items", "next_cursor", "query_tokens"], "search fields differ from v1");
       if (!Array.isArray(data.items) || data.next_cursor !== null) invalid("search list/cursor is invalid");
       data.items.forEach((item) => noteSummary2(item, false));
-      stringList2(data.query_tokens, "query tokens are invalid", 100);
+      stringList3(data.query_tokens, "query tokens are invalid", 100);
       break;
     case "notebook.notes.add":
     case "notebook.notes.get":
@@ -3217,14 +3217,14 @@ function validateNotebookEnvelope(value) {
       if (!(/* @__PURE__ */ new Set(["clean", "planned", "repaired", "blocked"])).has(String(data.status))) invalid("skill projection status is invalid");
       string(data.summary, "skill projection summary is invalid", 4096);
       nullableString(data.source, "skill projection source is invalid", 4096);
-      stringList2(data.drift, "skill projection drift is invalid", 20);
-      stringList2(data.changed_files, "skill projection changed files are invalid", 1e3);
+      stringList3(data.drift, "skill projection drift is invalid", 20);
+      stringList3(data.changed_files, "skill projection changed files are invalid", 1e3);
       break;
     case "notebook.migrate":
       exact(data, ["dry_run", "selected_rules", "results", "changed_files"], "migration fields differ from v1");
       if (typeof data.dry_run !== "boolean" || !Array.isArray(data.results)) invalid("migration plan is invalid");
-      stringList2(data.selected_rules, "migration selected rules are invalid", 20);
-      stringList2(data.changed_files, "migration changed files are invalid", 1e3);
+      stringList3(data.selected_rules, "migration selected rules are invalid", 20);
+      stringList3(data.changed_files, "migration changed files are invalid", 1e3);
       for (const resultValue of data.results) {
         const result2 = record(resultValue, "migration result is invalid");
         exact(result2, ["id", "status", "summary"], "migration result fields differ from v1");
@@ -5842,8 +5842,8 @@ var init_capture = __esm({
 
 // src/index.ts
 import { spawnSync as spawnSync16 } from "node:child_process";
-import { existsSync as existsSync26, readFileSync as readFileSync25, statSync as statSync6 } from "node:fs";
-import { basename as basename10, join as join33, resolve as resolve19 } from "node:path";
+import { existsSync as existsSync27, readFileSync as readFileSync26, statSync as statSync7 } from "node:fs";
+import { basename as basename10, join as join34, resolve as resolve20 } from "node:path";
 import { Command as Command3, CommanderError } from "commander";
 
 // src/commands/hermes/types.ts
@@ -5990,7 +5990,7 @@ function hostSchema() {
   ];
 }
 function renderHostConfig() {
-  const sections = hostSchema().map(({ section: section2, values }) => `[${section2}]
+  const sections = hostSchema().map(({ section: section3, values }) => `[${section3}]
 ${values.map(([key, value]) => `${key} = ${value}`).join("\n")}`).join("\n\n");
   return `# hermes-agent-template \u2014 host configuration
 # Bootstrapped by \`pj config bootstrap\` for $HOME=${homedir()} (platform=${platform()}).
@@ -6242,20 +6242,20 @@ function mergeHostConfig(existingBytes) {
     throw new Error("Existing Hermes template config is not valid UTF-8");
   }
   let merged = existing;
-  for (const { section: section2, values } of hostSchema()) {
+  for (const { section: section3, values } of hostSchema()) {
     const tables = parseTomlTableHeaders(merged);
-    const matching = tables.filter((table2) => table2.kind === "table" && table2.path.length === 1 && table2.path[0] === section2);
+    const matching = tables.filter((table2) => table2.kind === "table" && table2.path.length === 1 && table2.path[0] === section3);
     if (matching.length > 1) {
-      throw new Error(`Cannot merge [${section2}]: config contains duplicate table headers`);
+      throw new Error(`Cannot merge [${section3}]: config contains duplicate table headers`);
     }
     const table = matching[0];
     if (!table) {
-      const incompatible = tables.find((candidate) => candidate.path[0] === section2);
+      const incompatible = tables.find((candidate) => candidate.path[0] === section3);
       if (incompatible) {
-        throw new Error(`Cannot merge [${section2}]: config defines ${incompatible.kind === "array-table" ? "an array table" : "a child table"} at [${incompatible.path.join(".")}] without an owning [${section2}] table`);
+        throw new Error(`Cannot merge [${section3}]: config defines ${incompatible.kind === "array-table" ? "an array table" : "a child table"} at [${incompatible.path.join(".")}] without an owning [${section3}] table`);
       }
       const prefix = merged.length === 0 ? "" : merged.endsWith("\n") ? "\n" : "\n\n";
-      merged += `${prefix}[${section2}]
+      merged += `${prefix}[${section3}]
 ${values.map(([key, value]) => `${key} = ${value}`).join("\n")}
 `;
       continue;
@@ -8348,11 +8348,11 @@ ${render(required)}
 ${text3.replace(/^\s+/, "")}`;
   }
   const prefix = text3.slice(0, envMatch.index + envMatch[1].length);
-  const section2 = envMatch[2];
-  const suffix = text3.slice(envMatch.index + envMatch[1].length + section2.length);
-  const pathLine = section2.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
+  const section3 = envMatch[2];
+  const suffix = text3.slice(envMatch.index + envMatch[1].length + section3.length);
+  const pathLine = section3.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
   if (!pathLine) {
-    return `${prefix}${section2.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
+    return `${prefix}${section3.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
   }
   const current = [...pathLine[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   const merged = [...current];
@@ -8361,7 +8361,7 @@ ${text3.replace(/^\s+/, "")}`;
   }
   const nextLine = render(merged);
   if (pathLine[0] === nextLine) return text3;
-  return `${prefix}${section2.replace(pathLine[0], nextLine)}${suffix}`;
+  return `${prefix}${section3.replace(pathLine[0], nextLine)}${suffix}`;
 }
 function removeTomlSection(text3, headerPattern, marker, options) {
   const lines = text3.split("\n");
@@ -9037,15 +9037,15 @@ function runtimeSubmodulePath(repoRoot, role) {
   if (!/^agents\/hermes\/[^/]+$/.test(rolePath)) return null;
   return `${rolePath}/runtime`;
 }
-function submoduleSectionHasPath(section2, targetPath) {
-  return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+function submoduleSectionHasPath(section3, targetPath) {
+  return section3.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
 function hasRuntimeSubmoduleMapping(repoRoot, role) {
   const gitmodulesPath = join4(repoRoot, ".gitmodules");
   const current = safeReadText(gitmodulesPath) ?? "";
   const sections = current.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
   const targetPath = runtimeSubmodulePath(repoRoot, role);
-  return Boolean(targetPath && sections.some((section2) => submoduleSectionHasPath(section2, targetPath)));
+  return Boolean(targetPath && sections.some((section3) => submoduleSectionHasPath(section3, targetPath)));
 }
 function removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun) {
   const gitmodulesPath = join4(repoRoot, ".gitmodules");
@@ -9053,7 +9053,7 @@ function removeRuntimeSubmoduleMapping(repoRoot, role, changedFiles, dryRun) {
   if (!hasRuntimeSubmoduleMapping(repoRoot, role)) return [];
   const targetPath = runtimeSubmodulePath(repoRoot, role);
   if (!targetPath) return [];
-  const next = current.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section2) => submoduleSectionHasPath(section2, targetPath) ? "" : section2).replace(/\n{3,}/g, "\n\n").trim();
+  const next = current.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section3) => submoduleSectionHasPath(section3, targetPath) ? "" : section3).replace(/\n{3,}/g, "\n\n").trim();
   changedFiles.push(gitmodulesPath);
   if (!dryRun) writeText(gitmodulesPath, next ? `${next}
 ` : "");
@@ -9894,8 +9894,8 @@ function attemptNestedAdapterSmoke(repoRoot, candidate) {
   }
   return { ok: true };
 }
-function momoLifecycleFinding(section2, status, summary, details = []) {
-  return { section: section2, status, summary, details };
+function momoLifecycleFinding(section3, status, summary, details = []) {
+  return { section: section3, status, summary, details };
 }
 function auditManifestRoleConsistency(repoRoot) {
   const details = [];
@@ -13231,11 +13231,11 @@ var RunCopierTemplate = class extends Command {
 import { existsSync as existsSync9, readFileSync as readFileSync12, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
 import { join as join14 } from "path";
 import { spawnSync as spawnSync6 } from "node:child_process";
-function sectionHasPath(section2, targetPath) {
-  return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
+function sectionHasPath(section3, targetPath) {
+  return section3.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
 }
 function removeSubmodulePath(content, targetPath) {
-  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section2) => sectionHasPath(section2, targetPath) ? "" : section2).replace(/\n{3,}/g, "\n\n").trim();
+  return content.replace(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm, (section3) => sectionHasPath(section3, targetPath) ? "" : section3).replace(/\n{3,}/g, "\n\n").trim();
 }
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
@@ -13280,7 +13280,7 @@ var UntrackHermesRuntimes = class extends Command {
       if (existsSync9(gitmodulesPath)) {
         gitmodulesContent = readFileSync12(gitmodulesPath, "utf8");
         const sections = gitmodulesContent.match(/^\[submodule "[^"\n]+"\][\s\S]*?(?=^\[submodule "|(?![\s\S]))/gm) ?? [];
-        hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
+        hasStaleMapping = sections.some((section3) => sectionHasPath(section3, runtimePath));
       }
       let isIgnored = false;
       const fullGitignorePath = join14(targetDir, gitignorePath);
@@ -15229,9 +15229,9 @@ ${overview.data.drift.map((item) => `${item.path}: ${item.reason}`).join("\n")}
 
 [Stored Overview is stale]
 ` : "";
-      const bounded3 = truncateCodePoints(overview.data.note.content, ctx.config.policy.overview_max_chars);
+      const bounded4 = truncateCodePoints(overview.data.note.content, ctx.config.policy.overview_max_chars);
       const content = `PROJECT NOTEBOOK
-${warning}${bounded3.text}${bounded3.truncated ? "\n[Project Notebook Overview truncated]" : ""}
+${warning}${bounded4.text}${bounded4.truncated ? "\n[Project Notebook Overview truncated]" : ""}
 `;
       const claim = createOverviewClaim(module.stateRoot, {
         session_key: sessionKey,
@@ -18059,7 +18059,7 @@ function git3(repo, args) {
   return result2.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve20) => {
+  return new Promise((resolve21) => {
     const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
@@ -18067,7 +18067,7 @@ function gitAsync(repo, args) {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve20(value);
+      resolve21(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -18976,7 +18976,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve20) => {
+  return new Promise((resolve21) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -18996,7 +18996,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve20({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve21({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -19013,7 +19013,7 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve20({ outcome: "cancel", selected: [] });
+      resolve21({ outcome: "cancel", selected: [] });
     });
   });
 }
@@ -19383,6 +19383,891 @@ function notebookParserFailureEnvelope(args, module = new NotebookModule()) {
   return failureEnvelope(parserCommand(args), config, new NotebookError("INVALID_INPUT", "Invalid notebook command arguments"));
 }
 
+// src/fleet/contract.ts
+import { existsSync as existsSync26, readFileSync as readFileSync25, statSync as statSync6 } from "node:fs";
+import { dirname as dirname16, join as join33, resolve as resolve19 } from "node:path";
+import { fileURLToPath as fileURLToPath8 } from "node:url";
+import YAML9 from "yaml";
+
+// src/fleet/types.ts
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 1 };
+var FLEET_SCHEMA_VERSION = 1;
+var FLEET_CONTRACT_ROOT_KEYS = [
+  "schema_version",
+  "contract_version",
+  "compatibility",
+  "authorities",
+  "projections",
+  "classifications",
+  "service_model",
+  "activation",
+  "retired"
+];
+var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
+var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
+var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
+var FLEET_CLASSIFICATION_KEYS = ["required_fields", "entries", "notes"];
+var FLEET_RETIRED_KEYS = ["id", "reason", "superseded_by", "detect"];
+var FLEET_CLASSIFICATION_IDS = [
+  "managed_agent",
+  "managed_shared_service",
+  "intentionally_unmanaged",
+  "retired",
+  "unclassified"
+];
+var FLEET_CLASSIFICATION_REQUIRED_FIELDS = [
+  "id",
+  "kind",
+  "owner",
+  "source",
+  "lifecycle_state",
+  "rationale",
+  "policy_domains"
+];
+var FLEET_ACTIVATION_STATES = [
+  "discovered",
+  "installed",
+  "healthy",
+  "routing_ready",
+  "activated"
+];
+var FLEET_RETIRED_IDS = [
+  "per-agent-bloodbank-consumer",
+  "per-agent-checkpoint-timer",
+  "n8n-owned-truth",
+  "activation-by-discovery",
+  "hard-coded-hermes-checkout-path"
+];
+var FLEET_HEALTHY_SECTIONS = ["service_model", "activation", "classifications"];
+var FLEET_EXTENSION_PREFIX = "x-";
+var FLEET_ERROR_CODES = [
+  "INVALID_INPUT",
+  "NOT_FOUND",
+  "AUTHORITY_CONFLICT",
+  "INVALID_CLASSIFICATION",
+  "RETIRED_MODE",
+  "UNSUPPORTED_SCHEMA_VERSION",
+  "INTERNAL_ERROR"
+];
+var FleetError = class extends Error {
+  constructor(code, message, retryable = false, details = {}, options) {
+    super(message, options);
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
+  }
+  name = "FleetError";
+};
+function fleetExitCode(code) {
+  switch (code) {
+    case "INVALID_INPUT":
+      return 2;
+    case "NOT_FOUND":
+      return 3;
+    case "AUTHORITY_CONFLICT":
+    case "INVALID_CLASSIFICATION":
+    case "RETIRED_MODE":
+      return 4;
+    case "UNSUPPORTED_SCHEMA_VERSION":
+      return 5;
+    case "INTERNAL_ERROR":
+      return 6;
+  }
+}
+
+// src/fleet/contract.ts
+var FLEET_CONTRACT_RELATIVE_PATH = join33("contracts", "fleet-contract.yaml");
+var FLEET_CONTRACT_MAX_BYTES = 1048576;
+var DOCUMENT_PATH = "contract";
+var SEMVER = /^\d+\.\d+\.\d+$/u;
+var OWNER_NAME = /^[a-z][a-z0-9-]*$/u;
+var ENV_KEY = /^[A-Z][A-Z0-9_]*$/u;
+var DIRECTION = /^[a-z0-9_]+_to_[a-z0-9_]+$/u;
+var FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
+var HOST_PATH = /\/(?:home|Users)\/[A-Za-z0-9._-]+\//u;
+var SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringList2(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function resolveFleetContractPath(override) {
+  if (override !== void 0 && override.trim() !== "") return resolve19(override);
+  let dir = dirname16(fileURLToPath8(import.meta.url));
+  while (dir !== dirname16(dir)) {
+    if (existsSync26(join33(dir, "package.json")) && existsSync26(join33(dir, FLEET_CONTRACT_RELATIVE_PATH))) {
+      return join33(dir, FLEET_CONTRACT_RELATIVE_PATH);
+    }
+    dir = dirname16(dir);
+  }
+  return resolve19(process.cwd(), FLEET_CONTRACT_RELATIVE_PATH);
+}
+function loadFleetContract(path) {
+  if (!existsSync26(path)) throw new FleetError("NOT_FOUND", "Fleet contract not found", false, {});
+  const stat = statSync6(path);
+  if (!stat.isFile()) throw new FleetError("INVALID_INPUT", "Fleet contract is not a regular file", false, {});
+  if (stat.size > FLEET_CONTRACT_MAX_BYTES) {
+    throw new FleetError("INVALID_INPUT", `Fleet contract exceeds ${FLEET_CONTRACT_MAX_BYTES} bytes`, false, {});
+  }
+  const text3 = readFileSync25(path, "utf8");
+  return { path, text: text3, document: YAML9.parseDocument(text3) };
+}
+function serializeFleetContract(document) {
+  return String(document);
+}
+function collectFleetExtensions(value) {
+  const extensions = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) return node.map((item, index) => walk(item, `${path}[${index}]`));
+    if (!isRecord6(node)) return node;
+    const result2 = {};
+    for (const [key, item] of Object.entries(node)) {
+      const child = path ? `${path}.${key}` : key;
+      if (key.startsWith(FLEET_EXTENSION_PREFIX)) extensions.push({ path: child, value: item });
+      else result2[key] = walk(item, child);
+    }
+    return result2;
+  };
+  const policy = walk(value, "");
+  extensions.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return { policy, extensions };
+}
+function scalars(node, path, out) {
+  if (Array.isArray(node)) {
+    node.forEach((item, index) => scalars(item, `${path}[${index}]`, out));
+    return;
+  }
+  if (isRecord6(node)) {
+    for (const [key, item] of Object.entries(node)) {
+      const child = path ? `${path}.${key}` : key;
+      out.push({ path: child, text: key });
+      scalars(item, child, out);
+    }
+    return;
+  }
+  if (node !== null && node !== void 0) out.push({ path, text: String(node) });
+}
+function sortDiagnostics(items) {
+  return [...items].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.message < b.message ? -1 : a.message > b.message ? 1 : 0);
+}
+function validateFleetContract(document) {
+  const parseErrors = document.errors.slice(0, 20).map((error) => {
+    const at = error.linePos?.[0];
+    const where = at ? ` at line ${at.line} column ${at.col}` : "";
+    return { code: "INVALID_INPUT", path: DOCUMENT_PATH, message: `YAML parse failed (${error.code})${where}` };
+  });
+  if (parseErrors.length) return { diagnostics: parseErrors, contract: null, extensions: [] };
+  const { policy, extensions } = collectFleetExtensions(document.toJS());
+  if (!isRecord6(policy)) {
+    return { diagnostics: [{ code: "INVALID_INPUT", path: DOCUMENT_PATH, message: "contract must be a mapping" }], contract: null, extensions };
+  }
+  const stages = [
+    () => validateVersion(policy),
+    () => sortDiagnostics(validateStructure(policy)),
+    () => validateAuthorityConflicts(policy),
+    () => sortDiagnostics(validateClassifications(policy)),
+    () => sortDiagnostics(validateRetiredModes(policy))
+  ];
+  for (const stage of stages) {
+    const findings = stage();
+    if (findings.length) return { diagnostics: findings, contract: null, extensions };
+  }
+  return { diagnostics: [], contract: policy, extensions };
+}
+function validateVersion(policy) {
+  const declared = policy.schema_version;
+  if (!Number.isSafeInteger(declared)) {
+    return [{ code: "INVALID_INPUT", path: "schema_version", message: "schema_version must be an integer" }];
+  }
+  const version = Number(declared);
+  const { min, max } = FLEET_SUPPORTED_SCHEMA_VERSIONS;
+  if (version < min || version > max) {
+    return [{
+      code: "UNSUPPORTED_SCHEMA_VERSION",
+      path: "schema_version",
+      message: `contract schema_version ${version} is outside the supported range ${min}..${max}`
+    }];
+  }
+  const compatibility = policy.compatibility;
+  if (!isRecord6(compatibility)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility must be a mapping" }];
+  }
+  const lower = compatibility.min_schema_version;
+  const upper = compatibility.max_schema_version;
+  if (!Number.isSafeInteger(lower) || !Number.isSafeInteger(upper)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility bounds must be integers" }];
+  }
+  if (Number(lower) > Number(upper)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility min_schema_version exceeds max_schema_version" }];
+  }
+  if (version < Number(lower) || version > Number(upper)) {
+    return [{
+      code: "UNSUPPORTED_SCHEMA_VERSION",
+      path: "compatibility",
+      message: `schema_version ${version} is outside the contract's own declared range ${String(lower)}..${String(upper)}`
+    }];
+  }
+  return [];
+}
+function validateStructure(policy) {
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  for (const key of Object.keys(policy)) {
+    if (!FLEET_CONTRACT_ROOT_KEYS.includes(key)) fail(key, "unknown top-level key");
+  }
+  for (const key of FLEET_CONTRACT_ROOT_KEYS) {
+    if (policy[key] === void 0) fail(key, "required top-level key is missing");
+  }
+  const compatibility = policy.compatibility;
+  if (isRecord6(compatibility)) {
+    for (const key of Object.keys(compatibility)) {
+      if (!FLEET_COMPATIBILITY_KEYS.includes(key)) fail(`compatibility.${key}`, "unknown compatibility key");
+    }
+  }
+  if (typeof policy.contract_version !== "string" || !SEMVER.test(policy.contract_version)) {
+    fail("contract_version", "contract_version must be a semantic version");
+  }
+  if (findings.length) return findings;
+  const leaves = [];
+  for (const [key, value] of Object.entries(policy)) {
+    if (key === "retired") continue;
+    scalars(value, key, leaves);
+  }
+  for (const leaf of leaves) {
+    if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
+    if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+  }
+  const owners = /* @__PURE__ */ new Set();
+  const authorities = policy.authorities;
+  if (!isRecord6(authorities) || Object.keys(authorities).length === 0) {
+    fail("authorities", "authorities must be a non-empty mapping");
+  } else {
+    for (const [id, entry] of Object.entries(authorities)) {
+      const at = `authorities.${id}`;
+      if (!isRecord6(entry)) {
+        fail(at, "authority must be a mapping");
+        continue;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_AUTHORITY_KEYS.includes(key)) fail(`${at}.${key}`, "unknown authority key");
+      }
+      const owner = entry.owner;
+      if (typeof owner !== "string" || !OWNER_NAME.test(owner)) fail(`${at}.owner`, "owner must be a lower-kebab identifier");
+      else owners.add(owner);
+      if (typeof entry.store !== "string" || entry.store.length === 0) fail(`${at}.store`, "store must be a non-empty name");
+      const storeEnv = entry.store_env;
+      if (!stringList2(storeEnv) || storeEnv.length === 0) fail(`${at}.store_env`, "store_env must be a non-empty list of environment keys");
+      else storeEnv.forEach((key, index) => {
+        if (!ENV_KEY.test(key)) fail(`${at}.store_env[${index}]`, `not an environment key: ${key}`);
+      });
+      const readOnly = entry.read_only;
+      if (readOnly !== void 0 && typeof readOnly !== "boolean") fail(`${at}.read_only`, "read_only must be a boolean");
+      if (entry.notes !== void 0 && !stringList2(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
+      const fields = entry.writable_fields;
+      if (!Array.isArray(fields)) {
+        fail(`${at}.writable_fields`, "writable_fields must be a list");
+        continue;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      fields.forEach((field2, index) => {
+        const where = `${at}.writable_fields[${index}]`;
+        if (typeof field2 !== "string" || !FIELD_PATH.test(field2)) {
+          fail(where, "not a dotted field path");
+          return;
+        }
+        if (seen.has(field2)) fail(where, `duplicate field path: ${field2}`);
+        seen.add(field2);
+      });
+      if (readOnly === true && fields.length > 0) {
+        fail(`${at}.writable_fields`, "a read-only authority may not declare writable fields");
+      }
+    }
+  }
+  const projections = policy.projections;
+  if (!Array.isArray(projections)) fail("projections", "projections must be a list");
+  else {
+    projections.forEach((entry, index) => {
+      const at = `projections[${index}]`;
+      if (!isRecord6(entry)) {
+        fail(at, "projection must be a mapping");
+        return;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_PROJECTION_KEYS.includes(key)) fail(`${at}.${key}`, "unknown projection key");
+      }
+      for (const key of ["field", "source", "target"]) {
+        const value = entry[key];
+        if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        else if (key !== "field" && !FIELD_PATH.test(value)) fail(`${at}.${key}`, "not a dotted field path");
+      }
+      const direction = entry.direction;
+      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
+        fail(`${at}.direction`, "direction must name exactly one source and one target, as <source>_to_<target>");
+      }
+      const writableBy = entry.writable_by;
+      if (typeof writableBy !== "string" || !owners.has(writableBy)) {
+        fail(`${at}.writable_by`, "writable_by must name exactly one declared authority owner");
+      }
+    });
+  }
+  const classifications = policy.classifications;
+  if (!isRecord6(classifications)) fail("classifications", "classifications must be a mapping");
+  else {
+    for (const key of Object.keys(classifications)) {
+      if (!FLEET_CLASSIFICATION_IDS.includes(key)) fail(`classifications.${key}`, "unknown lifecycle class");
+    }
+    for (const id of FLEET_CLASSIFICATION_IDS) {
+      const at = `classifications.${id}`;
+      const entry = classifications[id];
+      if (!isRecord6(entry)) {
+        fail(at, "lifecycle class is missing or is not a mapping");
+        continue;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_CLASSIFICATION_KEYS.includes(key)) fail(`${at}.${key}`, "unknown lifecycle class key");
+      }
+      const required = entry.required_fields;
+      if (!stringList2(required) || required.length === 0) fail(`${at}.required_fields`, "required_fields must be a non-empty list of names");
+      const entries = entry.entries;
+      if (!Array.isArray(entries)) fail(`${at}.entries`, "entries must be a list");
+      else entries.forEach((item, index) => {
+        if (!isRecord6(item)) fail(`${at}.entries[${index}]`, "entry must be a mapping");
+      });
+      if (entry.notes !== void 0 && !stringList2(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
+    }
+  }
+  const service = policy.service_model;
+  if (!isRecord6(service)) fail("service_model", "service_model must be a mapping");
+  else {
+    for (const key of ["per_agent", "fleet_shared", "profile_layout"]) {
+      if (!isRecord6(service[key])) fail(`service_model.${key}`, `${key} must be a mapping`);
+    }
+    const perAgent = isRecord6(service.per_agent) ? service.per_agent : {};
+    for (const key of ["gateway_unit", "heartbeat_service", "heartbeat_timer"]) {
+      const value = perAgent[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.per_agent.${key}`, `${key} must be a unit name pattern`);
+      else if (!value.includes("{agent_id}")) fail(`service_model.per_agent.${key}`, "a per-agent unit pattern must carry the {agent_id} placeholder");
+    }
+    const shared = isRecord6(service.fleet_shared) ? service.fleet_shared : {};
+    for (const key of ["bloodbank_gateway_unit", "bloodbank_gateway_profile", "command_subject", "target_field"]) {
+      const value = shared[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.fleet_shared.${key}`, `${key} must be a non-empty string`);
+    }
+    const layout = isRecord6(service.profile_layout) ? service.profile_layout : {};
+    if (typeof layout.root !== "string" || layout.root.length === 0) fail("service_model.profile_layout.root", "root must be a non-empty path pattern");
+    if (layout.symlink_allowed !== false) fail("service_model.profile_layout.symlink_allowed", "symlink_allowed must be declared false");
+    for (const key of ["identity_file", "override_file", "generated_file"]) {
+      const value = layout[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.profile_layout.${key}`, `${key} must be a non-empty file name`);
+    }
+  }
+  const activation = policy.activation;
+  if (!isRecord6(activation)) fail("activation", "activation must be a mapping");
+  else {
+    const states = activation.states;
+    if (!stringList2(states) || states.length !== FLEET_ACTIVATION_STATES.length || states.some((state, index) => state !== FLEET_ACTIVATION_STATES[index])) {
+      fail("activation.states", `states must be exactly [${FLEET_ACTIVATION_STATES.join(", ")}]`);
+    }
+    const authority = activation.execution_authority;
+    if (!isRecord6(authority)) fail("activation.execution_authority", "execution_authority must be a mapping");
+    else {
+      const field2 = authority.field;
+      if (typeof field2 !== "string" || !FIELD_PATH.test(field2)) fail("activation.execution_authority.field", "field must be a dotted field path");
+      if (typeof authority.strict !== "boolean") fail("activation.execution_authority.strict", "strict must be a boolean");
+      if (typeof authority.default !== "string" || authority.default.length === 0) fail("activation.execution_authority.default", "default must be a non-empty decision");
+      const owner = authority.owner;
+      if (typeof owner !== "string" || !owners.has(owner)) fail("activation.execution_authority.owner", "owner must name a declared authority owner");
+      else if (typeof field2 === "string" && isRecord6(authorities)) {
+        const owned = Object.values(authorities).some((entry) => isRecord6(entry) && entry.owner === owner && Array.isArray(entry.writable_fields) && entry.writable_fields.includes(field2));
+        if (!owned) fail("activation.execution_authority.field", `${field2} is not declared writable by ${owner}`);
+      }
+    }
+  }
+  const retired = policy.retired;
+  if (!Array.isArray(retired)) fail("retired", "retired must be a list");
+  else {
+    const ids = /* @__PURE__ */ new Set();
+    retired.forEach((entry, index) => {
+      const at = `retired[${index}]`;
+      if (!isRecord6(entry)) {
+        fail(at, "retired mode must be a mapping");
+        return;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_RETIRED_KEYS.includes(key)) fail(`${at}.${key}`, "unknown retired-mode key");
+      }
+      for (const key of ["id", "reason", "superseded_by"]) {
+        const value = entry[key];
+        if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+      }
+      if (typeof entry.id === "string") ids.add(entry.id);
+      const detect = entry.detect;
+      if (!stringList2(detect) || detect.length === 0) {
+        fail(`${at}.detect`, "detect must be a non-empty list of patterns");
+        return;
+      }
+      detect.forEach((pattern, patternIndex) => {
+        try {
+          new RegExp(pattern, "iu");
+        } catch {
+          fail(`${at}.detect[${patternIndex}]`, "detect pattern is not a valid regular expression");
+        }
+      });
+    });
+    for (const id of FLEET_RETIRED_IDS) {
+      if (!ids.has(id)) fail("retired", `retired must declare the superseded mode ${id}`);
+    }
+  }
+  return findings;
+}
+function validateAuthorityConflicts(contract) {
+  const claims = /* @__PURE__ */ new Map();
+  const claim = (field2, owner) => {
+    const existing = claims.get(field2);
+    if (existing) existing.add(owner);
+    else claims.set(field2, /* @__PURE__ */ new Set([owner]));
+  };
+  for (const authority of Object.values(contract.authorities)) {
+    for (const field2 of authority.writable_fields) claim(field2, authority.owner);
+  }
+  for (const projection of contract.projections) claim(projection.target, projection.writable_by);
+  const findings = [];
+  for (const field2 of [...claims.keys()].sort()) {
+    const owners = [...claims.get(field2) ?? []].sort();
+    if (owners.length > 1) {
+      findings.push({
+        code: "AUTHORITY_CONFLICT",
+        path: `authorities.writable_fields.${field2}`,
+        message: `${field2} claimed writable by: ${owners.join(", ")}`
+      });
+    }
+  }
+  return findings;
+}
+function validateClassifications(contract) {
+  const findings = [];
+  for (const id of FLEET_CLASSIFICATION_IDS) {
+    const classification = contract.classifications[id];
+    if (!classification) continue;
+    const declared = new Set(classification.required_fields);
+    if (id !== "managed_agent") {
+      for (const field2 of FLEET_CLASSIFICATION_REQUIRED_FIELDS) {
+        if (!declared.has(field2)) {
+          findings.push({
+            code: "INVALID_CLASSIFICATION",
+            path: `classifications.${id}.required_fields`,
+            message: `${id} must require ${field2}`
+          });
+        }
+      }
+    }
+    classification.entries.forEach((entry, index) => {
+      const name = typeof entry.id === "string" && entry.id.length > 0 ? entry.id : `#${index}`;
+      for (const field2 of classification.required_fields) {
+        const value = entry[field2];
+        const missing = value === void 0 || value === null || typeof value === "string" && value.trim() === "" || Array.isArray(value) && value.length === 0;
+        if (missing) {
+          findings.push({
+            code: "INVALID_CLASSIFICATION",
+            path: `classifications.${id}.entries[${index}].${field2}`,
+            message: `${id} entry ${name} is missing required field ${field2}`
+          });
+        }
+      }
+    });
+  }
+  return findings;
+}
+function validateRetiredModes(contract) {
+  const findings = [];
+  const authority = contract.activation.execution_authority;
+  if (authority.default !== "deny") {
+    findings.push({
+      code: "RETIRED_MODE",
+      path: "activation.execution_authority.default",
+      message: `activation-by-discovery: execution authority defaults to "${authority.default}" instead of deny`
+    });
+  }
+  if (authority.strict !== true) {
+    findings.push({
+      code: "RETIRED_MODE",
+      path: "activation.execution_authority.strict",
+      message: "activation-by-discovery: execution authority must be strict, so an absent or coercible flag never grants dispatch"
+    });
+  }
+  const leaves = [];
+  for (const section3 of FLEET_HEALTHY_SECTIONS) {
+    scalars(contract[section3], section3, leaves);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const mode of contract.retired) {
+    for (const pattern of mode.detect) {
+      let expression;
+      try {
+        expression = new RegExp(pattern, "iu");
+      } catch {
+        continue;
+      }
+      for (const leaf of leaves) {
+        if (!expression.test(leaf.text)) continue;
+        const key = `${leaf.path}\0${mode.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        findings.push({
+          code: "RETIRED_MODE",
+          path: leaf.path,
+          message: `declares the retired mode ${mode.id} as healthy; superseded by ${mode.superseded_by}`
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+// src/fleet/output.ts
+import { homedir as homedir13, userInfo } from "node:os";
+init_style();
+var FLEET_COMMANDS = ["fleet.contract.validate"];
+var MAX_STRING = 512;
+var MAX_DETAILS = 20;
+var MAX_NEXT_ACTIONS = 20;
+function bounded3(value, max = MAX_STRING) {
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "").slice(0, max);
+}
+function homeCandidates() {
+  const candidates = /* @__PURE__ */ new Set();
+  try {
+    if (homedir13()) candidates.add(homedir13());
+  } catch {
+  }
+  try {
+    if (userInfo().homedir) candidates.add(userInfo().homedir);
+  } catch {
+  }
+  return [...candidates].sort((a, b) => b.length - a.length);
+}
+function redactHome(path, homes = homeCandidates()) {
+  for (const home of homes) {
+    if (!home) continue;
+    if (path === home) return "~";
+    if (path.startsWith(`${home}/`)) return `~${path.slice(home.length)}`;
+  }
+  return path.replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>");
+}
+function boundedValue(value, depth = 0) {
+  if (depth > 6) return null;
+  if (typeof value === "string") return bounded3(value);
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => boundedValue(item, depth + 1));
+  if (typeof value === "object") {
+    const result2 = {};
+    for (const [key, item] of Object.entries(value).slice(0, 50)) {
+      result2[bounded3(key, 128)] = boundedValue(item, depth + 1);
+    }
+    return result2;
+  }
+  return null;
+}
+function normalizeFleetError(error) {
+  if (error instanceof FleetError) return error;
+  return new FleetError("INTERNAL_ERROR", "Fleet command encountered an unexpected internal error", false, {}, { cause: error });
+}
+function fleetSuccessEnvelope(command, data, nextActions = []) {
+  return {
+    schema_version: FLEET_SCHEMA_VERSION,
+    ok: true,
+    command,
+    data,
+    error: null,
+    next_actions: nextActions.slice(0, MAX_NEXT_ACTIONS).map((item) => bounded3(item))
+  };
+}
+function fleetFailureEnvelope(command, error, nextActions = []) {
+  const normalized = normalizeFleetError(error);
+  return {
+    schema_version: FLEET_SCHEMA_VERSION,
+    ok: false,
+    command,
+    data: null,
+    error: {
+      code: normalized.code,
+      message: bounded3(normalized.message),
+      retryable: normalized.retryable,
+      details: sanitizeDetails2(normalized.details)
+    },
+    next_actions: nextActions.slice(0, MAX_NEXT_ACTIONS).map((item) => bounded3(item))
+  };
+}
+function sanitizeDetails2(details) {
+  const result2 = {};
+  for (const [key, value] of Object.entries(details).slice(0, MAX_DETAILS)) {
+    if (!key) continue;
+    if (typeof value === "string") result2[bounded3(key, 128)] = bounded3(value);
+    else if (typeof value === "number" || typeof value === "boolean" || value === null) result2[bounded3(key, 128)] = value;
+  }
+  return result2;
+}
+function diagnosticDetails(diagnostics, extra = {}) {
+  const details = { ...extra, diagnostic_count: diagnostics.length };
+  const room = MAX_DETAILS - Object.keys(details).length;
+  diagnostics.slice(0, Math.max(0, room)).forEach((diagnostic, index) => {
+    details[`${index}:${diagnostic.path}`] = `${diagnostic.code}: ${diagnostic.message}`;
+  });
+  return details;
+}
+function renderFleetJson(envelope) {
+  validateFleetEnvelope(envelope);
+  return `${JSON.stringify(envelope, null, 2)}
+`;
+}
+function fleetEnvelopeExitCode(envelope) {
+  return envelope.ok || !envelope.error ? 0 : fleetExitCode(envelope.error.code);
+}
+function validateFleetEnvelope(envelope) {
+  const invalid = (reason) => {
+    throw new FleetError("INTERNAL_ERROR", `Fleet command produced an invalid JSON v1 envelope: ${reason}`);
+  };
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) invalid("root must be an object");
+  const keys = Object.keys(envelope).sort();
+  const expected = ["command", "data", "error", "next_actions", "ok", "schema_version"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) invalid("root fields differ from v1");
+  if (envelope.schema_version !== FLEET_SCHEMA_VERSION) invalid("schema version is invalid");
+  if (typeof envelope.ok !== "boolean") invalid("ok is invalid");
+  if (!FLEET_COMMANDS.includes(envelope.command)) invalid("command is invalid");
+  if (!Array.isArray(envelope.next_actions) || envelope.next_actions.length > MAX_NEXT_ACTIONS) invalid("next_actions is invalid");
+  for (const action of envelope.next_actions) if (typeof action !== "string" || action.length === 0) invalid("next_actions entry is invalid");
+  if (envelope.ok === (envelope.error !== null) || (envelope.ok ? envelope.data === null : envelope.data !== null)) invalid("success/error invariant failed");
+  if (envelope.ok) {
+    const data = envelope.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) invalid("data must be an object");
+    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "diagnostics"]) {
+      if (data[key] === void 0) invalid(`data.${key} is missing`);
+    }
+    return;
+  }
+  const error = envelope.error;
+  if (!error || typeof error !== "object") invalid("error must be an object");
+  const errorKeys = Object.keys(error).sort();
+  const expectedError = ["code", "details", "message", "retryable"];
+  if (errorKeys.length !== expectedError.length || errorKeys.some((key, index) => key !== expectedError[index])) invalid("error fields differ from v1");
+  if (!FLEET_ERROR_CODES.includes(error.code)) invalid("error code is invalid");
+  if (typeof error.message !== "string" || error.message.length === 0 || error.message.length > MAX_STRING) invalid("error message is invalid");
+  if (typeof error.retryable !== "boolean") invalid("error retryable is invalid");
+  const details = error.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) invalid("error details must be an object");
+  const entries = Object.entries(details);
+  if (entries.length > MAX_DETAILS) invalid("error details are too large");
+  for (const [key, value] of entries) {
+    if (!key || !(["string", "number", "boolean"].includes(typeof value) || value === null)) invalid("error details are invalid");
+  }
+}
+function section2(lines, title) {
+  lines.push("");
+  lines.push(`  ${bold(cyan(glyph.chevron))} ${bold(title)}`);
+}
+function formatFleetContractReport(inspection) {
+  const ok = inspection.diagnostics.length === 0;
+  const lines = [""];
+  const headline = ok ? `${green(glyph.pass)} ${bold("Fleet contract valid")}` : `${red(glyph.fail)} ${bold("Fleet contract invalid")}`;
+  const tally = ok ? [green(`${inspection.authorities.length} authorities`), green(`${inspection.classifications.length} lifecycle classes`)] : [red(`${inspection.diagnostics.length} finding${inspection.diagnostics.length === 1 ? "" : "s"}`)];
+  lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot(tally)}`);
+  const facts = [dim(inspection.contract_path)];
+  if (inspection.contract_version) facts.push(dim(`contract ${inspection.contract_version}`));
+  if (inspection.schema_version !== null) facts.push(dim(`schema ${inspection.schema_version}`));
+  if (inspection.compatibility) {
+    facts.push(dim(`compatible ${inspection.compatibility.min_schema_version}..${inspection.compatibility.max_schema_version}`));
+  }
+  facts.push(dim(`supported ${inspection.supported_schema_versions.min}..${inspection.supported_schema_versions.max}`));
+  if (ok) facts.push(dim(inspection.byte_stable ? "byte-stable round trip" : "round trip NOT byte-stable"));
+  lines.push(`  ${joinDot(facts)}`);
+  if (!ok) {
+    section2(lines, "Findings");
+    const width = inspection.diagnostics.reduce((max, item) => Math.max(max, item.code.length), 0);
+    for (const diagnostic of inspection.diagnostics) {
+      lines.push(`    ${red(glyph.fail)}  ${red(diagnostic.code.padEnd(width))}  ${diagnostic.path}`);
+      lines.push(`       ${dim(glyph.arrow)} ${dim(diagnostic.message)}`);
+    }
+    lines.push("");
+    return lines.join("\n");
+  }
+  section2(lines, "Authority owners");
+  const authorityWidth = inspection.authorities.reduce((max, item) => Math.max(max, item.id.length), 0);
+  const ownerWidth = inspection.authorities.reduce((max, item) => Math.max(max, item.owner.length), 0);
+  for (const authority of inspection.authorities) {
+    const style = statusStyle(authority.read_only ? "skip" : "pass");
+    const count = authority.read_only ? "read-only" : `${authority.writable_fields.length} writable field${authority.writable_fields.length === 1 ? "" : "s"}`;
+    lines.push(`    ${style.color(style.glyph)}  ${authority.id.padEnd(authorityWidth)}  ${cyan(authority.owner.padEnd(ownerWidth))}  ${dim(count)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${authority.store} via ${authority.store_env.join(", ")}`)}`);
+  }
+  section2(lines, "Projections");
+  const projectionWidth = inspection.projections.reduce((max, item) => Math.max(max, item.field.length), 0);
+  for (const projection of inspection.projections) {
+    lines.push(`    ${green(glyph.pass)}  ${projection.field.padEnd(projectionWidth)}  ${cyan(projection.writable_by)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${projection.source} -> ${projection.target}`)}`);
+  }
+  section2(lines, "Lifecycle classes");
+  const classWidth = inspection.classifications.reduce((max, item) => Math.max(max, item.id.length), 0);
+  for (const classification of inspection.classifications) {
+    lines.push(`    ${green(glyph.pass)}  ${classification.id.padEnd(classWidth)}  ${dim(`${classification.entry_count} declared entr${classification.entry_count === 1 ? "y" : "ies"}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`requires ${classification.required_fields.join(", ")}`)}`);
+  }
+  section2(lines, "Canonical service model");
+  for (const line of describeTree(inspection.service_model)) lines.push(`    ${dim(glyph.bullet)} ${line}`);
+  section2(lines, "Activation");
+  for (const line of describeTree(inspection.activation)) lines.push(`    ${dim(glyph.bullet)} ${line}`);
+  section2(lines, "Superseded modes");
+  const retiredWidth = inspection.retired.reduce((max, item) => Math.max(max, item.id.length), 0);
+  for (const mode of inspection.retired) {
+    lines.push(`    ${gray(glyph.skip)}  ${gray(mode.id.padEnd(retiredWidth))}  ${dim(mode.reason)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`superseded by ${mode.superseded_by}`)}`);
+  }
+  section2(lines, "Extensions (recorded, never policy)");
+  if (inspection.extensions.length === 0) lines.push(`    ${dim("none")}`);
+  else for (const extension of inspection.extensions) lines.push(`    ${dim(glyph.dot)} ${yellow(extension.path)}`);
+  lines.push("");
+  return lines.join("\n");
+}
+function describeTree(node, prefix = "") {
+  if (node === null || node === void 0) return [dim("not declared")];
+  const flat = [];
+  const walk = (value, path) => {
+    if (Array.isArray(value)) {
+      if (value.every((item) => typeof item !== "object" || item === null)) {
+        flat.push([path, value.map((item) => String(item)).join(" -> ")]);
+        return;
+      }
+      value.forEach((item, index) => walk(item, `${path}[${index}]`));
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) walk(item, path ? `${path}.${key}` : key);
+      return;
+    }
+    flat.push([path, String(value)]);
+  };
+  walk(node, prefix);
+  const width = flat.reduce((max, [path]) => Math.max(max, path.length), 0);
+  return flat.map(([path, value]) => `${padVisible(path, width)}  ${cyan(value)}`);
+}
+
+// src/fleet/cli.ts
+var VALIDATE_COMMAND = "fleet.contract.validate";
+function emptyInspection(contractPath, diagnostics) {
+  return {
+    contract_path: contractPath,
+    byte_stable: false,
+    schema_version: null,
+    contract_version: null,
+    compatibility: null,
+    supported_schema_versions: { ...FLEET_SUPPORTED_SCHEMA_VERSIONS },
+    authorities: [],
+    projections: [],
+    classifications: [],
+    service_model: null,
+    activation: null,
+    retired: [],
+    extensions: [],
+    diagnostics
+  };
+}
+function inspectFleetContract(override) {
+  const path = resolveFleetContractPath(override);
+  const shown = redactHome(path);
+  const loaded = loadFleetContract(path);
+  const { diagnostics, contract, extensions } = validateFleetContract(loaded.document);
+  if (!contract) return { ...emptyInspection(shown, diagnostics), extensions };
+  return {
+    contract_path: shown,
+    // The tracked file is the canonical artifact, so the serializer must be
+    // able to reproduce it exactly; a drifting round trip means the file can no
+    // longer be edited by tooling without a spurious diff.
+    byte_stable: serializeFleetContract(loaded.document) === loaded.text,
+    schema_version: contract.schema_version,
+    contract_version: contract.contract_version,
+    compatibility: { ...contract.compatibility },
+    supported_schema_versions: { ...FLEET_SUPPORTED_SCHEMA_VERSIONS },
+    authorities: Object.entries(contract.authorities).map(([id, authority]) => ({
+      id,
+      owner: authority.owner,
+      store: authority.store,
+      store_env: [...authority.store_env],
+      read_only: authority.read_only === true,
+      writable_fields: [...authority.writable_fields],
+      notes: (authority.notes ?? []).slice(0, 10).map((note) => bounded3(note))
+    })),
+    projections: contract.projections.map((projection) => ({
+      field: projection.field,
+      source: projection.source,
+      target: projection.target,
+      direction: projection.direction,
+      writable_by: projection.writable_by
+    })),
+    classifications: Object.entries(contract.classifications).map(([id, classification]) => ({
+      id,
+      required_fields: [...classification.required_fields],
+      entry_count: classification.entries.length,
+      entries: classification.entries.map((entry) => boundedValue(entry))
+    })),
+    service_model: boundedValue(contract.service_model),
+    activation: boundedValue(contract.activation),
+    retired: contract.retired.map((mode) => ({
+      id: mode.id,
+      reason: bounded3(mode.reason),
+      superseded_by: mode.superseded_by,
+      detect: [...mode.detect]
+    })),
+    extensions: extensions.map((extension) => ({ path: extension.path, value: boundedValue(extension.value) })),
+    diagnostics
+  };
+}
+function validateEnvelope(inspection) {
+  const first = inspection.diagnostics[0];
+  if (!first) {
+    return fleetSuccessEnvelope(VALIDATE_COMMAND, inspection, [
+      "pj fleet contract validate --json  # machine-readable authority map"
+    ]);
+  }
+  const error = new FleetError(
+    first.code,
+    `${first.path}: ${first.message}`,
+    false,
+    diagnosticDetails(inspection.diagnostics, { contract_path: inspection.contract_path })
+  );
+  return fleetFailureEnvelope(VALIDATE_COMMAND, error, [
+    `Edit ${FLEET_CONTRACT_RELATIVE_PATH} at the reported field paths, then re-run this command`
+  ]);
+}
+function registerFleetCli(program2) {
+  const fleet = program2.command("fleet").description("Inspect the 33GOD fleet contract");
+  const contract = fleet.command("contract").description("Work with the fleet authority and managed-state contract");
+  contract.command("validate").description("Validate the fleet contract and report authorities, classes, service model, and retired modes").option("--contract <path>", "Validate this contract instead of the tracked one").option("--json", "Emit the fleet JSON v1 envelope").action((options) => {
+    const json = Boolean(options.json);
+    let envelope;
+    let inspection = null;
+    try {
+      inspection = inspectFleetContract(options.contract);
+      envelope = validateEnvelope(inspection);
+    } catch (error) {
+      const normalized = normalizeFleetError(error);
+      const shown = redactHome(resolveFleetContractPath(options.contract));
+      envelope = fleetFailureEnvelope(VALIDATE_COMMAND, new FleetError(
+        normalized.code,
+        normalized.message,
+        normalized.retryable,
+        { ...normalized.details, contract_path: shown }
+      ));
+      inspection = emptyInspection(shown, [{ code: normalized.code, path: "contract", message: normalized.message }]);
+    }
+    if (json) process.stdout.write(renderFleetJson(envelope));
+    else process.stdout.write(`${formatFleetContractReport(inspection)}
+`);
+    process.exitCode = fleetEnvelopeExitCode(envelope);
+  });
+}
+
 // src/index.ts
 init_output();
 var xmark = `${red(glyph.fail)}`;
@@ -19411,9 +20296,9 @@ async function promptForRuleIds(rules) {
   return selected;
 }
 function readJson2(path) {
-  if (!existsSync26(path)) return void 0;
+  if (!existsSync27(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync25(path, "utf8"));
+    const parsed = JSON.parse(readFileSync26(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -19422,7 +20307,7 @@ function readJson2(path) {
 function findGitRoot(cwd) {
   const result2 = spawnSync16("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result2.status !== 0) return void 0;
-  return resolve19(result2.stdout.trim());
+  return resolve20(result2.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -19430,8 +20315,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join33(targetDir, ".project.json"));
-  const pkg = readJson2(join33(targetDir, "package.json"));
+  const manifest = readJson2(join34(targetDir, ".project.json"));
+  const pkg = readJson2(join34(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename10(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -19507,7 +20392,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync26(action.path) || readFileSync25(action.path, "utf8") !== next;
+    return !existsSync27(action.path) || readFileSync26(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -19555,27 +20440,27 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve19(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve20(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename10(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join33(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join34(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve19(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve20(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
-  const targetExists = existsSync26(targetDir);
-  if (targetExists && !statSync6(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
+  const targetExists = existsSync27(targetDir);
+  if (targetExists && !statSync7(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const alreadyScaffolded = targetExists && (existsSync26(join33(targetDir, ".project.json")) || existsSync26(join33(targetDir, ".copier-answers.yml")));
+  const alreadyScaffolded = targetExists && (existsSync27(join34(targetDir, ".project.json")) || existsSync27(join34(targetDir, ".copier-answers.yml")));
   const syncMode = Boolean(
-    targetGitRoot && resolve19(targetGitRoot) === resolve19(targetDir) || alreadyScaffolded
+    targetGitRoot && resolve20(targetGitRoot) === resolve20(targetDir) || alreadyScaffolded
   );
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename10(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
@@ -19624,6 +20509,7 @@ program.configureOutput({
   }
 });
 registerNotebookCli(program);
+registerFleetCli(program);
 program.name("pjangler").description("Project subsystem bootstrapper CLI").version(PJANGLER_VERSION);
 program.command("init").argument("[name]", "Project name to bootstrap (omit inside an existing git repo)").description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json").option("--description <text>", "Project description").option("--target-dir <path>", "Target repo path").option("--source-skill <path>", "Source skill/template provenance path").option("--primary-language <language>", "Primary language for CommonProject rendering", "python").option("--provision-agent", "Plan local Hermes PM agent provisioning").option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm").option("--apply", "Write the registry and render the repo scaffold").option("--dry-run", "Preview changes without writing files (default)").option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.").option("--slug <slug>", "Project registry slug override").option("--identifier <identifier>", "Ticket identifier override").option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane").option("--board-id <id>", "Board id (Plane project UUID or Trello board id)").option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id").option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)").option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("-f, --force", "Allow replacing an existing registry entry and re-rendering files").option("-y, --yes", "Apply every proposed operation without prompting").option("--no-tui", "Disable interactive prompts").option("--json", "Output machine-parseable JSON").action(async (name, options) => {
   if (name && getRecipeNames().includes(name)) {

@@ -52,6 +52,7 @@ import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
+import { registerFleetCli } from "./fleet/cli";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 
 /** Red ✖ prefix for user-facing error lines. */
@@ -411,6 +412,7 @@ program.configureOutput({
   writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text); },
 });
 registerNotebookCli(program);
+registerFleetCli(program);
 
 program
   .name("pjangler")

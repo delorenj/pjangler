@@ -12,6 +12,7 @@
   },
   "files": [
     "dist",
+    "contracts",
     "templates/commonproject/copier.yml",
     "templates/commonproject/template",
     "templates/hermes-agent/copier.yml",
