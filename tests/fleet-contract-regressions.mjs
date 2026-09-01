@@ -810,9 +810,12 @@ try {
 
   check("a closed stdout is not an error", () => {
     // `... --json | head -1` closes the pipe mid-write.
+    // bash, not sh: `pipefail` is not POSIX, and CI's /bin/sh is a dash that
+    // rejects it with "Illegal option -o pipefail" and exits 2. This box's dash
+    // accepts it silently, so the suite was green here and red in CI.
     // `set -o pipefail` matters: without it the pipeline reports HEAD's status,
     // which is 0 however the CLI died, so the assertion below could not fail.
-    const piped = spawnSync("sh", ["-c", `set -o pipefail; ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet contract validate --json | head -1`], {
+    const piped = spawnSync("bash", ["-c", `set -o pipefail; ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet contract validate --json | head -1`], {
       cwd: temp, encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, ...isolation },
     });

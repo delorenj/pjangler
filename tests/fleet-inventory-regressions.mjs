@@ -885,7 +885,7 @@ try {
   });
 
   check("a closed stdout is not an error", () => {
-    const piped = spawnSync("sh", ["-c", `set -o pipefail; ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet inventory --json | head -1`], {
+    const piped = spawnSync("bash", ["-c", `set -o pipefail; ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet inventory --json | head -1`], {
       cwd: temp, encoding: "utf8", timeout: 60_000, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, ...isolation },
     });
