@@ -144,3 +144,8 @@ _bmad/config.user.yaml
 dist/*.js.map
 # c8 output
 coverage/
+# NOTE: `bmad-loop init` re-adds `.bmad-loop/policy.toml` here on every run.
+# We deliberately do NOT ignore it: this repo's copy carries tuned loop limits
+# (stall grace, nudge budgets, retention) that every agent and machine must
+# share, and it holds no credentials. Re-delete the line if init puts it back.
+_bmad/render/
