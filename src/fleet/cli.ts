@@ -7,6 +7,8 @@ import {
   validateFleetContract,
 } from "./contract";
 import { collectFleetInventory } from "./inventory";
+import { collectFleetProvenance } from "./provenance";
+import { createRunContext, type FleetRunContext } from "./runtime";
 import {
   boundedContext,
   boundedNotes,
@@ -20,6 +22,7 @@ import {
   formatFleetContractReport,
   formatFleetErrorReport,
   formatFleetInventoryReport,
+  formatFleetProvenanceReport,
   ignoreBrokenPipe,
   normalizeFleetError,
   redactHome,
@@ -27,10 +30,11 @@ import {
   type FleetContractInspection,
   type FleetEnvelopeV1,
 } from "./output";
-import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, fleetExitCode, type FleetDiagnostic, type FleetInventory } from "./types";
+import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, fleetExitCode, type FleetDiagnostic, type FleetInventory, type FleetProvenance } from "./types";
 
 const VALIDATE_COMMAND = "fleet.contract.validate";
 const INVENTORY_COMMAND = "fleet.inventory";
+const PROVENANCE_COMMAND = "fleet.provenance";
 
 interface ValidateOptions {
   contract?: string;
@@ -41,8 +45,12 @@ interface InventoryOptions {
   agent?: string;
   projectRegistry?: string;
   agentRegistry?: string;
+  contract?: string;
+  deadlineMs?: string;
   json?: boolean;
 }
+
+type ProvenanceOptions = InventoryOptions;
 
 /** An inspection with nothing learned yet, so a failure still renders a report. */
 function emptyInspection(contractPath: string, diagnostics: FleetDiagnostic[]): FleetContractInspection {
@@ -191,6 +199,86 @@ function inventoryEnvelope(inventory: FleetInventory, json: boolean): FleetEnvel
   return fleetSuccessEnvelope(INVENTORY_COMMAND, inventory, nextActions);
 }
 
+/**
+ * The provenance success envelope. A drifted fleet is still `ok: true`.
+ *
+ * Same rule the inventory documents and for the same reason: `data` is nulled on
+ * `ok: false`, so reporting drift as a failure would blank the report on exactly
+ * the runs that matter. Only a command failure -- an unreadable source, an
+ * unknown `--agent`, a bad flag, a blown deadline, a cancellation -- is
+ * `ok: false`.
+ */
+function provenanceEnvelope(provenance: FleetProvenance, json: boolean): FleetEnvelopeV1 {
+  const nextActions = provenance.health.healthy && provenance.health.complete
+    ? ["Consume data.facts as the fleet's proven provenance; every fact names the source of both sides"]
+    : [
+      provenance.health.mismatched
+        ? "Repoint each mismatched agent at the configured pin, or move the pin -- data.facts names both sides and the authority that owns the field"
+        : provenance.health.missing
+          ? "Record the missing values on the owning side; an absent pin is never a match"
+          : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it",
+      "Re-run with --json for the complete fact set",
+    ];
+  // A caller who already passed --json is reading this string IN the JSON.
+  if (json && nextActions.length > 1) nextActions.pop();
+  return fleetSuccessEnvelope(PROVENANCE_COMMAND, provenance, nextActions);
+}
+
+/**
+ * Parse `--deadline-ms` into the positive whole number the run context needs.
+ *
+ * Rejected here rather than in `createRunContext` so a typo is INVALID_INPUT
+ * with the flag named, not an internal error from three layers down. `Number()`
+ * rather than `parseInt`: `parseInt("5x")` is 5, which would silently accept a
+ * deadline the caller did not write.
+ */
+function parseDeadlineMs(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw.trim());
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new FleetError("INVALID_INPUT", "--deadline-ms must be a positive whole number of milliseconds");
+  }
+  return value;
+}
+
+/**
+ * Validate the shared flag surface once, for both commands.
+ *
+ * The CLI is one of two equal adapters, so it owns no policy beyond argument
+ * shaping: everything below is a guard on what Commander bound, and nothing here
+ * decides what a fleet answer is.
+ */
+function fleetRunInputs(options: InventoryOptions): { deadlineMs: number | undefined } {
+  requireValue(options.agent, "--agent");
+  requireValue(options.projectRegistry, "--project-registry");
+  requireValue(options.agentRegistry, "--agent-registry");
+  requireValue(options.contract, "--contract");
+  requireValue(options.deadlineMs, "--deadline-ms");
+  return { deadlineMs: parseDeadlineMs(options.deadlineMs) };
+}
+
+/**
+ * Run `body` with a context that a SIGINT or SIGTERM aborts.
+ *
+ * The listener is removed in `finally`, always. Left installed, a long-lived
+ * process embedding this CLI would accumulate one listener per invocation and
+ * Node would eventually warn about a leak -- and worse, an abort meant for a
+ * later run would cancel an earlier context that is still in scope.
+ */
+async function withSignals<T>(deadlineMs: number | undefined, body: (ctx: FleetRunContext) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const ctx = createRunContext({ signal: controller.signal, deadlineMs });
+  const abort = (): void => controller.abort();
+  process.on("SIGINT", abort);
+  process.on("SIGTERM", abort);
+  try {
+    return await body(ctx);
+  } finally {
+    process.off("SIGINT", abort);
+    process.off("SIGTERM", abort);
+  }
+}
+
 /** Whether these argv words are a fleet invocation that promised JSON. */
 export function isFleetJsonInvocation(args: readonly string[]): boolean {
   return args[0] === "fleet" && args.includes("--json");
@@ -212,7 +300,11 @@ export function fleetParserFailureEnvelope(args: readonly string[]): FleetEnvelo
   // one. Commander has already rejected these arguments, so the words are
   // untrusted -- this only picks a label, never a code path.
   const words = args.filter((arg) => !arg.startsWith("-"));
-  const command = words[1] === "inventory" ? INVENTORY_COMMAND : VALIDATE_COMMAND;
+  // Positional-only, and a MAP rather than a chain of ternaries: an option VALUE
+  // may legally be `provenance` (`--agent provenance` is an unlucky but valid
+  // id), so scanning the whole argv would mislabel a validate failure.
+  const positional: Record<string, string> = { inventory: INVENTORY_COMMAND, provenance: PROVENANCE_COMMAND };
+  const command = (words[1] !== undefined ? positional[words[1]] : undefined) ?? VALIDATE_COMMAND;
   return fleetFailureEnvelope(command, new FleetError("INVALID_INPUT", "Invalid fleet command arguments"));
 }
 
@@ -251,19 +343,23 @@ export function registerFleetCli(program: Command): void {
     .option("--agent <id>", "Report only this agent; totals still describe the whole fleet")
     .option("--project-registry <path>", "Inspect this project registry instead of the configured one")
     .option("--agent-registry <path>", "Inspect this agent registry instead of the configured one")
+    .option("--contract <path>", "Validate and read this contract instead of the tracked one")
+    .option("--deadline-ms <ms>", "Fail with TIMEOUT if the whole run has not finished within this budget")
     .option("--json", "Emit the fleet JSON v1 envelope")
-    .action((options: InventoryOptions) => {
+    // Async because the two fleet observation commands share one option surface
+    // and one run context. `src/index.ts` already awaits `program.parseAsync()`.
+    .action(async (options: InventoryOptions) => {
       ignoreBrokenPipe();
       const json = Boolean(options.json);
       try {
-        requireValue(options.agent, "--agent");
-        requireValue(options.projectRegistry, "--project-registry");
-        requireValue(options.agentRegistry, "--agent-registry");
-        const inventory = collectFleetInventory({
+        const { deadlineMs } = fleetRunInputs(options);
+        const inventory = await withSignals(deadlineMs, async (runContext) => collectFleetInventory({
           agentId: options.agent,
           projectRegistry: options.projectRegistry,
           agentRegistry: options.agentRegistry,
-        });
+          contract: options.contract,
+          runContext,
+        }));
         write(inventoryEnvelope(inventory, json), json, () => formatFleetInventoryReport(inventory));
       } catch (error) {
         const normalized = normalizeFleetError(error);
@@ -277,6 +373,46 @@ export function registerFleetCli(program: Command): void {
         ]);
         try { write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized)); }
         catch { emitLastResort(INVENTORY_COMMAND); }
+      }
+    });
+
+  // Hangs off `fleet` beside `inventory`, and takes the SAME option surface: the
+  // two commands are one core with two adapters, and an option that exists on
+  // one and not the other is how the MCP tool and the CLI stop being equal.
+  fleet.command("provenance")
+    .description("Report which build every registered agent actually runs, against the configured pin (read-only)")
+    .option("--agent <id>", "Report only this agent; totals and the verdict still describe the whole fleet")
+    .option("--project-registry <path>", "Inspect this project registry instead of the configured one")
+    .option("--agent-registry <path>", "Inspect this agent registry instead of the configured one")
+    .option("--contract <path>", "Validate and read this contract instead of the tracked one")
+    .option("--deadline-ms <ms>", "Fail with TIMEOUT if the whole run has not finished within this budget")
+    .option("--json", "Emit the fleet JSON v1 envelope")
+    .action(async (options: ProvenanceOptions) => {
+      ignoreBrokenPipe();
+      const json = Boolean(options.json);
+      try {
+        const { deadlineMs } = fleetRunInputs(options);
+        const provenance = await withSignals(deadlineMs, async (runContext) => collectFleetProvenance({
+          agentId: options.agent,
+          projectRegistry: options.projectRegistry,
+          agentRegistry: options.agentRegistry,
+          contract: options.contract,
+          runContext,
+        }));
+        write(provenanceEnvelope(provenance, json), json, () => formatFleetProvenanceReport(provenance));
+      } catch (error) {
+        const normalized = normalizeFleetError(error);
+        const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
+        const budgetFault = normalized.code === "TIMEOUT" || normalized.code === "CANCELLED";
+        const envelope = fleetFailureEnvelope(PROVENANCE_COMMAND, normalized, [
+          contractFault
+            ? "Run `pjangler fleet contract validate` -- the fault is in contracts/fleet-contract.yaml, not in a source"
+            : budgetFault
+              ? "Re-run with a larger --deadline-ms; no partial provenance is reported, because a partial one must never be mistaken for a complete one"
+              : "Re-run without --json for the full report, or fix the reported source path",
+        ]);
+        try { write(envelope, json, () => formatFleetErrorReport("Fleet provenance failed", normalized)); }
+        catch { emitLastResort(PROVENANCE_COMMAND); }
       }
     });
 

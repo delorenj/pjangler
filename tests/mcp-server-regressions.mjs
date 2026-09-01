@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
@@ -413,6 +413,190 @@ try {
     assert.deepEqual(migratePayload.selectedRules, ["sot.agent-symlinks"]);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // PJAN Epic 1 / Story 1.3: the fleet tools and the CLI are one core.
+  //
+  // Schema equivalence is the acceptance criterion, and only a real subprocess
+  // PAIR can prove it: the tool result must parse to an envelope whose
+  // `command`, `data` and `error` deep-equal the CLI `--json` envelope's, under
+  // identical env and cwd, and `isError` must equal `!ok`. Each case runs its
+  // own short-lived stdio server, because the shim cases need their own PATH and
+  // the session above deliberately starts with no project registry on disk.
+  // -------------------------------------------------------------------------
+  const fleetHome = (() => { try { return userInfo().homedir; } catch { return homedir(); } })();
+  const fleetSources = {
+    agents: process.env.HERMES_AGENTS_REGISTRY?.trim() || join(fleetHome, ".hermes", "agents-registry.yaml"),
+    projects: process.env.PJ_PROJECT_REGISTRY?.trim() || join(fleetHome, ".config", "pjangler", "projects.yaml"),
+    config: process.env.HERMES_TEMPLATE_CONFIG?.trim() || join(fleetHome, ".config", "hermes-agent-template", "config.toml"),
+  };
+  const fleetMissing = Object.entries(fleetSources).find(([, path]) => !existsSync(path));
+  if (fleetMissing) {
+    // Loud, never silent: an unguarded copy of the operator's live sources turns
+    // a portable skip into a FAIL on any other host.
+    console.log(`  SKIP fleet MCP parity: ${fleetMissing[0]} is not on this host (${fleetMissing[1].replace(fleetHome, "~")})`);
+  } else {
+    const fleetTmp = mkdtempSync(join(tmpdir(), "pjangler-mcp-fleet-"));
+    try {
+      const scratch = join(fleetTmp, "home");
+      mkdirSync(join(scratch, ".hermes", "profiles"), { recursive: true });
+      mkdirSync(join(scratch, ".config", "pjangler"), { recursive: true });
+      mkdirSync(join(scratch, ".config", "hermes-agent-template"), { recursive: true });
+      copyFileSync(fleetSources.agents, join(scratch, ".hermes", "agents-registry.yaml"));
+      copyFileSync(fleetSources.projects, join(scratch, ".config", "pjangler", "projects.yaml"));
+      copyFileSync(fleetSources.config, join(scratch, ".config", "hermes-agent-template", "config.toml"));
+      // CONSTRUCTED, never copied. `scripts/run-tests.mjs` points
+      // HERMES_FLEET_ENV at a file that does not exist so an inherited
+      // PLANE_33GOD_API_KEY can never be live ammunition again; copying the real
+      // file would either defeat that or make this whole block skip under
+      // `npm test`. The fleet paths come from the real template config, which is
+      // the same source the provisioner reads.
+      const fleetConfigText = readFileSync(fleetSources.config, "utf8");
+      const fleetSection = fleetConfigText.slice(fleetConfigText.indexOf("[fleet]"));
+      const fleetBody = fleetSection.slice(0, fleetSection.indexOf("\n[", 1) === -1 ? fleetSection.length : fleetSection.indexOf("\n[", 1));
+      const fleetScalar = (key) => (new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m").exec(fleetBody) ?? [])[1] ?? "";
+      writeFileSync(join(scratch, ".hermes", "fleet.env"), [
+        `HERMES_FLEET_HOME=${join(scratch, ".hermes")}`,
+        `HERMES_FLEET_BIN=${fleetScalar("hermes_bin")}`,
+        `HERMES_FLEET_REPO=${fleetScalar("hermes_repo")}`,
+        "HERMES_FLEET_REGISTRY_FILE=$HERMES_FLEET_HOME/agents-registry.yaml",
+        "PLANE_33GOD_API_KEY=not-a-real-credential",
+        "",
+      ].join("\n"), "utf8");
+
+      const fleetEnvFor = (extra = {}) => ({
+        ...process.env,
+        HOME: scratch,
+        XDG_CONFIG_HOME: join(scratch, ".config"),
+        HERMES_FLEET_HOME: join(scratch, ".hermes"),
+        HERMES_AGENTS_REGISTRY: join(scratch, ".hermes", "agents-registry.yaml"),
+        HERMES_FLEET_REGISTRY_FILE: join(scratch, ".hermes", "agents-registry.yaml"),
+        HERMES_FLEET_ENV: join(scratch, ".hermes", "fleet.env"),
+        HERMES_TEMPLATE_CONFIG: join(scratch, ".config", "hermes-agent-template", "config.toml"),
+        PJ_PROJECT_REGISTRY: join(scratch, ".config", "pjangler", "projects.yaml"),
+        NO_COLOR: "1",
+        ...extra,
+      });
+
+      const gitShim = (name, body) => {
+        const dir = join(fleetTmp, `shim-${name}`);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "git"), body, "utf8");
+        chmodSync(join(dir, "git"), 0o755);
+        return dir;
+      };
+
+      /** The same case, through the built CLI, under byte-identical env and cwd. */
+      const cliEnvelope = (args, env) => {
+        const result = spawnSync(process.execPath, [resolve(root, "dist", "index.js"), ...args, "--json"], {
+          cwd: root, encoding: "utf8", timeout: 180_000, maxBuffer: 32 * 1024 * 1024, env,
+        });
+        assert.notEqual(result.stdout, "", `pj ${args.join(" ")} wrote nothing`);
+        return JSON.parse(result.stdout);
+      };
+
+      const withFleetClient = async (env, body) => {
+        const fleetTransport = new StdioClientTransport({ command: "node", args: [serverPath], cwd: root, env });
+        const fleetClient = new Client({ name: "pjangler-mcp-fleet", version: "1.0.0" });
+        await fleetClient.connect(fleetTransport);
+        try { return await body(fleetClient); } finally { await fleetClient.close(); }
+      };
+
+      /** Tool result -> envelope, with the `isError <=> !ok` invariant checked. */
+      const toolEnvelope = (result) => {
+        const text = result.content.map((entry) => entry.type === "text" ? entry.text : "").join("");
+        const parsed = JSON.parse(text);
+        assert.equal(result.isError ?? false, !parsed.ok, "isError must equal !ok");
+        return parsed;
+      };
+
+      const cleanEnv = fleetEnvFor();
+      await withFleetClient(cleanEnv, async (fleetClient) => {
+        const listed = await fleetClient.listTools();
+        for (const name of ["pjangler_fleet_inventory", "pjangler_fleet_provenance"]) {
+          const tool = listed.tools.find((entry) => entry.name === name);
+          assert.ok(tool, `${name} should be exposed by the MCP server`);
+          assert.equal(tool.inputSchema.additionalProperties, false, `${name} must reject unknown top-level arguments`);
+          assert.deepEqual(
+            Object.keys(tool.inputSchema.properties ?? {}).sort(),
+            ["agent", "agentRegistry", "contract", "deadlineMs", "projectRegistry"],
+            `${name} must expose the CLI's option surface one-for-one`,
+          );
+        }
+        await expectInvalidParams("pjangler_fleet_provenance", { deadline_ms: 5 }, "a misspelled deadline_ms must not be silently dropped into an unbounded run");
+
+        for (const [tool, command, argv, args] of [
+          ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance"], {}],
+          ["pjangler_fleet_inventory", "fleet.inventory", ["fleet", "inventory"], {}],
+          ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--agent", "definitely-not-registered"], { agent: "definitely-not-registered" }],
+          ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--agent-registry", join(fleetTmp, "not-a-registry.yaml")], { agentRegistry: join(fleetTmp, "not-a-registry.yaml") }],
+          ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--deadline-ms", "1"], { deadlineMs: 1 }],
+        ]) {
+          const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
+          const cli = cliEnvelope(argv, cleanEnv);
+          assert.equal(mcp.command, command, `${tool} must report ${command}`);
+          assert.equal(mcp.command, cli.command, `${tool}: command must match the CLI's`);
+          assert.deepEqual(mcp.data, cli.data, `${tool} ${JSON.stringify(args)}: data must deep-equal the CLI envelope's`);
+          assert.deepEqual(mcp.error, cli.error, `${tool} ${JSON.stringify(args)}: error must deep-equal the CLI envelope's`);
+        }
+      });
+
+      // A partial probe: one broken `git` on PATH, both adapters. The run still
+      // succeeds and both sides report the same downgraded facts.
+      const brokenGitEnv = fleetEnvFor({ PATH: `${gitShim("fail", "#!/bin/sh\nexit 3\n")}:${process.env.PATH}` });
+      await withFleetClient(brokenGitEnv, async (fleetClient) => {
+        const mcp = toolEnvelope(await fleetClient.callTool({ name: "pjangler_fleet_provenance", arguments: {} }));
+        const cli = cliEnvelope(["fleet", "provenance"], brokenGitEnv);
+        assert.equal(mcp.ok, true, "a failed probe is not a command failure");
+        assert.equal(mcp.data.health.complete, false, "and the run must say it could not observe everything");
+        assert.deepEqual(mcp.data, cli.data, "a partial probe must produce the same data on both adapters");
+      });
+
+      // Cancellation: an aborted MCP request must report CANCELLED in the same
+      // shape a CLI SIGINT does, and neither may leave a probe child behind.
+      const hangPids = join(fleetTmp, "hang-pids");
+      const hangingGitEnv = fleetEnvFor({ PATH: `${gitShim("hang", `#!/bin/sh\necho $$ >> ${JSON.stringify(hangPids)}\nsleep 120\n`)}:${process.env.PATH}` });
+      const cliCancel = await new Promise((settle) => {
+        const child = spawn(process.execPath, [resolve(root, "dist", "index.js"), "fleet", "provenance", "--json"], {
+          cwd: root, env: hangingGitEnv, stdio: ["ignore", "pipe", "ignore"],
+        });
+        let out = "";
+        child.stdout.on("data", (chunk) => { out += chunk; });
+        const killer = setTimeout(() => child.kill("SIGINT"), 1500);
+        const guard = setTimeout(() => child.kill("SIGKILL"), 60_000);
+        child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, envelope: JSON.parse(out) }); });
+      });
+      assert.equal(cliCancel.code, 8, "a cancelled CLI run must exit 8");
+      assert.equal(cliCancel.envelope.error?.code, "CANCELLED");
+
+      await withFleetClient(hangingGitEnv, async (fleetClient) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 1500);
+        let mcp;
+        try {
+          mcp = toolEnvelope(await fleetClient.callTool({ name: "pjangler_fleet_provenance", arguments: {} }, undefined, { signal: controller.signal, timeout: 60_000 }));
+        } catch (error) {
+          // Some SDK versions surface an aborted request as a client-side
+          // rejection rather than a tool result. Either is an honest report of
+          // the same thing; what must NOT happen is a successful envelope.
+          assert.match(String(error?.message ?? error), /abort|cancel/i, `an aborted request must not resolve successfully: ${error}`);
+          mcp = null;
+        }
+        if (mcp) {
+          assert.equal(mcp.ok, false, "an aborted request must not report success");
+          assert.equal(mcp.command, cliCancel.envelope.command);
+          assert.deepEqual(mcp.error, cliCancel.envelope.error, "the MCP cancellation must be the same shape the CLI reports");
+          assert.equal(mcp.data, null);
+        }
+      });
+      await new Promise((wake) => setTimeout(wake, 2000));
+      const survivors = (existsSync(hangPids) ? readFileSync(hangPids, "utf8").trim().split("\n").filter(Boolean) : [])
+        .filter((pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } });
+      assert.deepEqual(survivors, [], "no probe child may survive a cancellation on either adapter");
+    } finally {
+      rmSync(fleetTmp, { recursive: true, force: true });
+    }
   }
 } finally {
   await client.close();

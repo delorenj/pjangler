@@ -138,11 +138,13 @@ status: open
 
 ### DW-18: The store env keys and both registry path resolvers are re-derived, not read.
 origin: spec-deferred ee567c48ce60
-location: src/fleet/inventory.ts (resolveInventoryStores)
+location: src/fleet/inventory.ts (resolveInventoryStores) / src/fleet/provenance.ts (expandHome, isRecord, nonEmptyString)
 source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
 severity: low
 reason: `envKeys` is the literal ["HERMES_AGENTS_REGISTRY","HERMES_FLEET_REGISTRY_FILE"] / ["PJ_PROJECT_REGISTRY"], duplicating `authorities.*.store_env`, which the contract already declares and `fleet contract validate` already projects. `resolveInventoryStores` likewise reimplements the exported `hermesAgentsRegistryPath` and `projectRegistryPath`, and diverges from both (it adds the fleet-key fallback and applies expandHome). Same class as the re-hardcoding the story's Always list forbids for unit patterns, one step outside the three surfaces that list names.
-status: open
+status: open, NEITHER reduced nor closed by `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`; net slightly extended
+addressed: Story 1.3 reused every resolver the spec named rather than re-deriving one: `resolveTemplateConfigPath` and `readTomlScalar` from `src/project/boardUrl.ts`, `ticketProviderFleetEnvPath` and `resolvePjanglerRoot` from `src/project/index.ts`, `resolveFleetContractPath`/`loadFleetContract`/`validateFleetContract` from `src/fleet/contract.ts`, and `resolveInventoryStores`/`readAgentRegistryRaw`/`buildAuthorityIndex`/`classifyPath` from `src/fleet/inventory.ts`. It also EXPORTED two things rather than copying them: `readShellAssignments` (`src/project/index.ts`), because a second copy of the credential allowlist would be a second copy of the risk, and `resolveProfileLayout` (`src/fleet/inventory.ts`), because a row's `profile_path` is home-redacted for display and cannot be opened.
+remaining: The specific re-derivations DW-18 names are untouched -- `envKeys`, `hermesAgentsRegistryPath`, `projectRegistryPath` -- because story 1.3 calls `resolveInventoryStores` rather than replacing it. And the ledger should record that the class GREW by three: `src/fleet/provenance.ts` carries its own `expandHome`, `isRecord` and `nonEmptyString`, each a third copy of a helper that is private to `src/project/index.ts` and `src/fleet/inventory.ts`. Exporting the trio from one place is the fix; it was out of scope here because the story's Never list forbids reworking story 1.2's module beyond the threading it names.
 
 ### DW-19: A duplicate-key conflict group names one participant, itself.
 origin: spec-deferred 114ba23d42b0
@@ -382,4 +384,44 @@ location: n/a
 source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260901-004935-c48b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-49: Provenance facts about host artifacts have no declared authority owner.
+origin: spec-deferred story-1.3
+location: contracts/fleet-contract.yaml (authorities.*.writable_fields) / src/fleet/provenance.ts (ownerFor)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: medium
+reason: Three fleet-scoped facts -- `fleet.hermes_bin`, `fleet.hermes_repo`, `fleet.registry_file` -- compare `~/.config/hermes-agent-template/config.toml` against `~/.hermes/fleet.env`. Neither file is a store the contract declares, so no `writable_fields` entry covers those field paths and `ownerFor` reports `owner: null` plus one deduplicated `authority-owner-undeclared` finding. That is the honest answer and the story's Block If forbids inventing one, but it means the host's own pin -- the value every agent fact is compared against -- is the one value with no declared authority. Declaring a `hermes_host_configuration` authority (store `hermes-template-config`, store_env `HERMES_TEMPLATE_CONFIG`/`HERMES_FLEET_ENV`) is Story 1.1's surface.
+status: open
+
+### DW-50: Template and scaffold facts are attributed by namespace walk-up, not by a declared leaf.
+origin: spec-deferred story-1.3
+location: src/fleet/provenance.ts (ownerFor) / contracts/fleet-contract.yaml (authorities.tracked_role_scaffold)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: `template.gitlink`, `template.remote_url`, `template.worktree_clean` and `scaffold.template_ref` carry field path `scaffold`, which the contract declares no leaf for. `ownerFor` walks up and `buildAuthorityIndex`'s modal-namespace fallback answers `hermes-agent-template` -- correct today, because all eight declared `scaffold.*` paths are that owner's and the answer is unanimous rather than merely modal. It is still derived rather than declared, and a contract that moved enough `scaffold.*` paths elsewhere would flip it silently. Same class as the `agents.{agent_id}` gap story 1.2 recorded.
+status: open
+
+### DW-51: Provenance inherits the inventory's project-registry hard dependency.
+origin: spec-deferred story-1.3
+location: src/fleet/provenance.ts (collectFleetProvenance) / src/fleet/inventory.ts (readProjectRegistryRaw)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: medium
+reason: `collectFleetProvenance` calls `collectFleetInventory` -- deliberately, because the story's Never list forbids rebuilding registry or identity policy here, and because `--project-registry` must mean something on both commands. But `readProjectRegistryRaw` throws NOT_FOUND before any row is built (DW-15), so a host with a Hermes registry and no `~/.config/pjangler/projects.yaml` gets exit 3 and NO provenance -- even though provenance reads nothing out of the project registry. Provenance is strictly more fragile than the question it answers requires. Fixing DW-15 fixes this; degrading the project store to a finding is the same one-line change for both.
+status: open
+
+### DW-52: A remote spelled ssh and a pin spelled https are reported as drift.
+origin: spec-deferred story-1.3
+location: src/fleet/provenance.ts (addCheckoutFacts, hermes.checkout_identity)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The configured pin declares `https://github.com/delorenj/hermes-agent.git`; the pinned release checkout on this host has `git@github.com:delorenj/hermes-agent.git`. Same repository, two transports, and `hermes.checkout_identity` reports `mismatch` for all six correctly-pinned agents. Normalizing the two spellings would be this command inventing an equivalence it cannot verify (the two URLs are not required to resolve to one repository), so it reports what it sees -- but an operator reading 15 identity mismatches cannot tell the six transport spellings from the nine that really are NousResearch. A `remote_equivalence` declaration in the contract, or a separate `transport` sub-fact, is the fix.
+status: open
+
+### DW-53: `--project-registry` is accepted by `fleet provenance` and changes nothing it reports.
+origin: spec-deferred story-1.3
+location: src/fleet/cli.ts (fleet provenance) / src/fleet/mcp.ts (FLEET_TOOL_INPUT)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The spec requires the flag on both commands so the two adapters share one option surface, and it is honoured -- it is threaded into `collectFleetInventory`, which provenance calls. But no provenance FACT reads the project registry, so the only observable effect of the flag is which file a NOT_FOUND names. An operator could reasonably expect it to change the answer. Either provenance grows a project-correlated fact (story 1.6 territory), or the flag's no-op nature is documented at the flag rather than only here.
 status: open

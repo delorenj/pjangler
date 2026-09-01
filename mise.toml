@@ -44,6 +44,18 @@ description = "Inventory every registered Hermes agent and report identity confl
 depends = ["build"]
 run = "node {{config_root}}/dist/index.js fleet inventory"
 
+# Reports which build every registered agent actually runs, against the pin the
+# host config declares. Strictly read-only: every git probe passes
+# --no-optional-locks, the observed hermes binary is classified by path and never
+# executed, and nothing touches the network. A drifted fleet still exits 0 --
+# only a command failure, a blown deadline, or a cancellation is nonzero.
+[tasks."fleet:provenance"]
+description = "Report Hermes fleet provenance: recorded pins against live builds (read-only)"
+# `depends` matters: without a build this task's failure mode on a fresh clone is
+# ERR_MODULE_NOT_FOUND, not the provenance report it exists to give.
+depends = ["build"]
+run = "node {{config_root}}/dist/index.js fleet provenance"
+
 [tasks."fleet:check"]
 description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"

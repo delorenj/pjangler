@@ -980,6 +980,36 @@ var init_RegistryStore = __esm({
 });
 
 // src/project/boardUrl.ts
+import { homedir as homedir4 } from "node:os";
+import { dirname as dirname5, isAbsolute as isAbsolute2, join as join8, resolve as resolve5 } from "node:path";
+function resolveTemplateConfigPath2(env2 = process.env, home = homedir4()) {
+  const fromEnv = env2.HERMES_TEMPLATE_CONFIG;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const xdg = env2.XDG_CONFIG_HOME?.trim();
+  const base = xdg && xdg.length ? xdg : join8(home, ".config");
+  return join8(base, "hermes-agent-template", "config.toml");
+}
+function readTomlScalar(text2, section2, key) {
+  let inSection = false;
+  for (const raw of text2.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      inSection = line === `[${section2}]`;
+      continue;
+    }
+    if (!inSection) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    const value = line.slice(eq + 1).trim();
+    const quoted = /^"([^"]*)"|^'([^']*)'/.exec(value);
+    if (quoted) return quoted[1] ?? quoted[2];
+    const bare = (value.split("#")[0] ?? "").trim();
+    return bare || void 0;
+  }
+  return void 0;
+}
 var init_boardUrl = __esm({
   "src/project/boardUrl.ts"() {
     "use strict";
@@ -988,7 +1018,7 @@ var init_boardUrl = __esm({
 
 // src/utils/version.ts
 import { readFileSync as readFileSync7 } from "node:fs";
-import { dirname as dirname5, join as join8 } from "node:path";
+import { dirname as dirname6, join as join9 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var PJANGLER_VERSION;
 var init_version = __esm({
@@ -996,13 +1026,13 @@ var init_version = __esm({
     "use strict";
     PJANGLER_VERSION = (() => {
       try {
-        let dir = dirname5(fileURLToPath2(import.meta.url));
+        let dir = dirname6(fileURLToPath2(import.meta.url));
         for (let i = 0; i < 4; i++) {
           try {
-            const raw = readFileSync7(join8(dir, "package.json"), "utf8");
+            const raw = readFileSync7(join9(dir, "package.json"), "utf8");
             return JSON.parse(raw).version ?? "0.0.0";
           } catch {
-            const parent = dirname5(dir);
+            const parent = dirname6(dir);
             if (parent === dir) break;
             dir = parent;
           }
@@ -1031,15 +1061,15 @@ var init_boardQuery = __esm({
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { isIP } from "node:net";
 import { chmodSync as chmodSync2, closeSync as closeSync2, copyFileSync as copyFileSync2, existsSync as existsSync6, fchmodSync, fsyncSync, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, openSync as openSync2, readFileSync as readFileSync8, realpathSync as realpathSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync4 } from "node:fs";
-import { homedir as homedir4, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename6, delimiter as delimiter2, dirname as dirname6, isAbsolute as isAbsolute2, join as join9, relative as relative5, resolve as resolve5, sep as sep2, win32 } from "node:path";
+import { homedir as homedir5, tmpdir as tmpdir2 } from "node:os";
+import { basename as basename6, delimiter as delimiter2, dirname as dirname7, isAbsolute as isAbsolute3, join as join10, relative as relative5, resolve as resolve6, sep as sep2, win32 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import YAML3 from "yaml";
 function providerAssignsIdentifiers(type) {
   return IDENTIFIER_ASSIGNING_PROVIDERS.includes((type ?? "").trim());
 }
 function synchronizeCopierIdentity(manifestPath, manifest) {
-  const answersPath = join9(dirname6(manifestPath), ".copier-answers.yml");
+  const answersPath = join10(dirname7(manifestPath), ".copier-answers.yml");
   if (!existsSync6(answersPath)) return [];
   const current = readFileSync8(answersPath, "utf8");
   const document = YAML3.parseDocument(current);
@@ -1055,7 +1085,7 @@ function synchronizeCopierIdentity(manifestPath, manifest) {
   return [answersPath];
 }
 function projectRegistryPath(env2 = process.env) {
-  return expandHome(env2[PROJECT_REGISTRY_ENV] || join9(homedir4(), ".config", "pjangler", "projects.yaml"));
+  return expandHome(env2[PROJECT_REGISTRY_ENV] || join10(homedir5(), ".config", "pjangler", "projects.yaml"));
 }
 function createSafeRecord(entries = []) {
   const record = /* @__PURE__ */ Object.create(null);
@@ -1149,7 +1179,7 @@ function fsyncDirectory(path) {
 }
 function saveProjectRegistry(registry, path = projectRegistryPath()) {
   validateProjectRegistry(registry);
-  mkdirSync4(dirname6(path), { recursive: true });
+  mkdirSync4(dirname7(path), { recursive: true });
   let text2;
   let mode = 420;
   if (existsSync6(path)) {
@@ -1185,7 +1215,7 @@ function saveProjectRegistry(registry, path = projectRegistryPath()) {
     fd = void 0;
     renameSync3(temp, path);
     chmodSync2(path, mode);
-    fsyncDirectory(dirname6(path));
+    fsyncDirectory(dirname7(path));
   } catch (error) {
     if (fd !== void 0) try {
       closeSync2(fd);
@@ -1214,7 +1244,7 @@ function validateProjectRegistry(registry) {
     validateProjectRecord(project, slug);
     if (slugs.has(project.slug)) throw new Error(`Duplicate project slug: ${project.slug}`);
     slugs.add(project.slug);
-    const repoKey = resolve5(project.repo_path);
+    const repoKey = resolve6(project.repo_path);
     const existingRepoSlug = repoPaths.get(repoKey);
     if (existingRepoSlug && existingRepoSlug !== slug) {
       throw new Error(`Duplicate project repo_path: ${project.repo_path} used by ${existingRepoSlug} and ${slug}`);
@@ -1309,7 +1339,7 @@ function validateGlobalNotebookConfig(value) {
   if (limits.lease_seconds * 1e3 <= limits.overall_timeout_ms) throw new Error("Project registry notebook lease_seconds must exceed one request timeout");
   if (isRecord(value.defaults) && value.defaults.overview_max_chars !== void 0 && Number(value.defaults.overview_max_chars) > limits.note_max_bytes) throw new Error("Project registry notebook overview_max_chars exceeds note_max_bytes");
   if (value.summarizer !== void 0) {
-    if (!isRecord(value.summarizer) || typeof value.summarizer.executable !== "string" || !isAbsolute2(value.summarizer.executable) || value.summarizer.executable.includes("\0") || Buffer.byteLength(value.summarizer.executable, "utf8") > 1024) throw new Error("Project registry notebook.summarizer executable must be a bounded absolute path");
+    if (!isRecord(value.summarizer) || typeof value.summarizer.executable !== "string" || !isAbsolute3(value.summarizer.executable) || value.summarizer.executable.includes("\0") || Buffer.byteLength(value.summarizer.executable, "utf8") > 1024) throw new Error("Project registry notebook.summarizer executable must be a bounded absolute path");
     if (value.summarizer.args !== void 0 && (!Array.isArray(value.summarizer.args) || value.summarizer.args.length > 32 || value.summarizer.args.some((entry) => typeof entry !== "string" || entry.includes("\0") || Buffer.byteLength(entry, "utf8") > 1024))) throw new Error("Project registry notebook.summarizer args must be bounded strings");
   }
 }
@@ -1344,11 +1374,11 @@ function ticketProviderKeyVars(provider, workspace) {
   return ticketProviderKeyGroups(provider, workspace).flat();
 }
 function ticketProviderSecretsPath(env2 = process.env) {
-  const base = env2.XDG_CONFIG_HOME || join9(env2.HOME || homedir4(), ".config");
-  return join9(base, "zshyzsh", "secrets.zsh");
+  const base = env2.XDG_CONFIG_HOME || join10(env2.HOME || homedir5(), ".config");
+  return join10(base, "zshyzsh", "secrets.zsh");
 }
 function ticketProviderFleetEnvPath(env2 = process.env) {
-  return env2.HERMES_FLEET_ENV?.trim() || join9(env2.HOME || homedir4(), ".hermes", "fleet.env");
+  return env2.HERMES_FLEET_ENV?.trim() || join10(env2.HOME || homedir5(), ".hermes", "fleet.env");
 }
 function readShellAssignments(path, keys) {
   const found = {};
@@ -1391,7 +1421,7 @@ function resolveTicketProviderCredentials(input) {
     }
   }
   const candidates = [];
-  if (input.repoPath) candidates.push(join9(input.repoPath, ".env"));
+  if (input.repoPath) candidates.push(join10(input.repoPath, ".env"));
   candidates.push(ticketProviderFleetEnvPath(env2));
   candidates.push(ticketProviderSecretsPath(env2));
   for (const candidate of candidates) {
@@ -1409,23 +1439,23 @@ function resolveTicketProviderAdapter(provider, env2 = process.env) {
   const file = `${provider}.sh`;
   const candidates = [];
   const override = env2[TICKET_PROVIDER_ADAPTERS_ENV];
-  if (override) candidates.push(join9(override, file));
+  if (override) candidates.push(join10(override, file));
   const relativeRoots = [
-    join9("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join9("agents", "hermes", "pm", ".scripts", "providers")
+    join10("templates", "hermes-agent", "template", ".scripts", "providers"),
+    join10("agents", "hermes", "pm", ".scripts", "providers")
   ];
   try {
-    let dir = dirname6(fileURLToPath3(import.meta.url));
+    let dir = dirname7(fileURLToPath3(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join9(dir, relativeRoot, file));
-      const parent = dirname6(dir);
+      for (const relativeRoot of relativeRoots) candidates.push(join10(dir, relativeRoot, file));
+      const parent = dirname7(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
   for (const relativeRoot of relativeRoots) {
-    candidates.push(join9(homedir4(), "code", "pjangler", relativeRoot, file));
+    candidates.push(join10(homedir5(), "code", "pjangler", relativeRoot, file));
   }
   return candidates.find((candidate) => existsSync6(candidate));
 }
@@ -1444,7 +1474,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
       ok: true,
       skipped: true,
       logs: [
-        `ticket-provider: ${names} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join9(action.repoPath, ".env")}, ${ticketProviderFleetEnvPath(env2)}, or ${ticketProviderSecretsPath(env2)} \u2014 or pass --board-id to link an existing board.`
+        `ticket-provider: ${names} not set; skipping ${provider} board creation (state stays "planned"). Set it in the environment, ${join10(action.repoPath, ".env")}, ${ticketProviderFleetEnvPath(env2)}, or ${ticketProviderSecretsPath(env2)} \u2014 or pass --board-id to link an existing board.`
       ]
     };
   }
@@ -1458,12 +1488,12 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
     };
   }
   const redact = (text2) => Object.values(values).reduce((acc, secret) => secret ? acc.split(secret).join("***") : acc, text2);
-  const staging = mkdtempSync2(join9(tmpdir2(), "pjangler-tp-"));
+  const staging = mkdtempSync2(join10(tmpdir2(), "pjangler-tp-"));
   try {
-    const providersDir = join9(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join10(staging, "agents", "hermes", "pm", ".scripts", "providers");
     mkdirSync4(providersDir, { recursive: true });
     writeFileSync4(
-      join9(staging, ".project.json"),
+      join10(staging, ".project.json"),
       `${JSON.stringify(
         {
           project_name: action.boardName,
@@ -1482,7 +1512,7 @@ function provisionTicketProviderBoard(action, env2 = process.env) {
 `,
       "utf8"
     );
-    const staged = join9(providersDir, `${provider}.sh`);
+    const staged = join10(providersDir, `${provider}.sh`);
     copyFileSync2(adapter, staged);
     const childEnv = { ...env2, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
@@ -1566,7 +1596,7 @@ function slugifyProjectName(value) {
 }
 function validateSafePathSegment(value, label) {
   const normalized = value.trim();
-  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute2(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
+  const unsafe = !normalized || normalized !== value || normalized === "." || normalized === ".." || isAbsolute3(normalized) || win32.isAbsolute(normalized) || normalized.includes("/") || normalized.includes("\\") || !SAFE_PATH_SEGMENT.test(normalized);
   if (unsafe) {
     throw new Error(
       `${label} must be a non-empty safe single path segment using letters, numbers, dots, underscores, or hyphens (no dot segments, absolute paths, separators, or traversal)`
@@ -1575,24 +1605,24 @@ function validateSafePathSegment(value, label) {
   return normalized;
 }
 function prospectiveRealPath(path) {
-  let cursor = resolve5(path);
+  let cursor = resolve6(path);
   const suffix = [];
   while (!existsSync6(cursor)) {
-    const parent = dirname6(cursor);
-    if (parent === cursor) return resolve5(path);
+    const parent = dirname7(cursor);
+    if (parent === cursor) return resolve6(path);
     suffix.unshift(basename6(cursor));
     cursor = parent;
   }
-  return resolve5(realpathSync4(cursor), ...suffix);
+  return resolve6(realpathSync4(cursor), ...suffix);
 }
 function resolveContainedPath(parentDir, candidate, label) {
   const physicalParent = prospectiveRealPath(parentDir);
   const physicalCandidate = prospectiveRealPath(candidate);
   const fromParent = relative5(physicalParent, physicalCandidate);
-  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute2(fromParent)) {
-    throw new Error(`${label} must remain contained beneath parent directory ${resolve5(parentDir)}`);
+  if (!fromParent || fromParent === ".." || fromParent.startsWith(`..${sep2}`) || isAbsolute3(fromParent)) {
+    throw new Error(`${label} must remain contained beneath parent directory ${resolve6(parentDir)}`);
   }
-  return resolve5(candidate);
+  return resolve6(candidate);
 }
 function proposeProjectIdentifier(value) {
   const compact = value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -1607,7 +1637,7 @@ function resolveAgentHooksLayer2(input, env2 = process.env) {
   const override = env2.PJ_AGENT_HOOKS_LAYER;
   if (override === "0" || override === "false") return false;
   if (override === "1" || override === "true") return true;
-  return !existsSync6(join9(homedir4(), ".agents", "hooks"));
+  return !existsSync6(join10(homedir5(), ".agents", "hooks"));
 }
 function jsonStable(value) {
   return JSON.stringify(value);
@@ -1621,14 +1651,14 @@ function projectRecordEquivalent(a, b) {
 function defaultProjectTargetDir(name, cwd = process.cwd()) {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
-  return resolve5(dirname6(resolve5(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
+  return resolve6(dirname7(resolve6(cwd)), validateSafePathSegment(safeName, "Generated project directory"));
 }
 function sourceSkillRoots(env2 = process.env) {
   const configuredRoots = (env2[PROJECT_SOURCE_SKILL_ROOTS_ENV] || "").split(delimiter2).map((root) => root.trim()).filter(Boolean);
   const seen = /* @__PURE__ */ new Set();
   const roots = [];
   for (const root of [...DEFAULT_SOURCE_SKILL_ROOTS, ...configuredRoots]) {
-    const normalized = resolve5(expandHome(root));
+    const normalized = resolve6(expandHome(root));
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     roots.push(normalized);
@@ -1638,12 +1668,12 @@ function sourceSkillRoots(env2 = process.env) {
 function resolveSourceSkillPath(sourceSkill, env2 = process.env) {
   if (!sourceSkill) return void 0;
   const expanded = expandHome(sourceSkill);
-  const direct = resolve5(expanded);
+  const direct = resolve6(expanded);
   if (existsSync6(direct)) return direct;
   const name = basename6(sourceSkill);
   const roots = sourceSkillRoots(env2);
   for (const root of roots) {
-    const candidate = join9(root, name);
+    const candidate = join10(root, name);
     if (existsSync6(candidate)) return candidate;
   }
   const searched = roots.length ? ` Searched roots: ${roots.join(", ")}.` : "";
@@ -1654,10 +1684,10 @@ function planProjectInit(input) {
   if (!input.name.trim()) throw new Error("Project name is required");
   const slug = input.projectSlug === void 0 ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug") : validateSafePathSegment(input.projectSlug, "Project slug");
   const agentRole = normalizeAgentRole(input.agentRole);
-  const registryPath2 = resolve5(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath2 = resolve6(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
   const registry = loadProjectRegistry(registryPath2);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
-  const targetDir = resolve5(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const targetDir = resolve6(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const identifier = (input.projectIdentifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   const existing = getOwnRecordValue(registry.projects, slug);
   const resolvedBoardId = input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || void 0);
@@ -1719,7 +1749,7 @@ function planProjectInit(input) {
     updated_at: projectRecordEquivalent(existing, candidateProject) ? existing.updated_at : now
   };
   validateNoDuplicateProject(registry, project, overwrite);
-  const pjanglerRoot = resolve5(input.pjanglerRoot ?? resolvePjanglerRoot());
+  const pjanglerRoot = resolve6(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
@@ -1752,7 +1782,7 @@ function planProjectInit(input) {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join9(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join10(targetDir, ".project.json"), manifest },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -1822,7 +1852,7 @@ function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__
   plan.manifest.ticket_provider = manifestProvider;
   action.boardId = boardId;
   action.state = manifestProvider.state;
-  const manifestPath = join9(action.repoPath, ".project.json");
+  const manifestPath = join10(action.repoPath, ".project.json");
   let next;
   if (existsSync6(manifestPath)) {
     let existing = {};
@@ -1835,7 +1865,7 @@ function linkTicketProviderBoard(plan, action, boardId, identifier, now = /* @__
     const existingProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
     next = { ...existing, ticket_provider: { ...existingProvider, ...manifestProvider } };
   } else {
-    mkdirSync4(dirname6(manifestPath), { recursive: true });
+    mkdirSync4(dirname7(manifestPath), { recursive: true });
     next = plan.manifest;
   }
   const text2 = `${JSON.stringify(next, null, 2)}
@@ -1869,7 +1899,7 @@ async function executeProjectInitPlan(plan, options = {}) {
       logs.push(
         action.data.agent_hooks_layer === "false" ? "commonproject: agent-hooks layer skipped (global ~/.agents/hooks detected \u2014 no per-user CLI injection)" : "commonproject: agent-hooks layer included"
       );
-      mkdirSync4(dirname6(action.targetDir), { recursive: true });
+      mkdirSync4(dirname7(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0];
       const copierEnv = options.trustedCopier ? { ...process.env } : void 0;
@@ -1900,7 +1930,7 @@ async function executeProjectInitPlan(plan, options = {}) {
         break;
       }
     } else if (action.kind === "project.write-manifest") {
-      mkdirSync4(dirname6(action.path), { recursive: true });
+      mkdirSync4(dirname7(action.path), { recursive: true });
       let value = action.manifest;
       if (existsSync6(action.path)) {
         try {
@@ -2013,7 +2043,7 @@ function getProject(registry, slug) {
   return project;
 }
 function buildCommonProjectCopierAction(input) {
-  const templateDir = join9(input.pjanglerRoot, "templates", "commonproject");
+  const templateDir = join10(input.pjanglerRoot, "templates", "commonproject");
   const data = {
     project_name: input.projectName,
     project_description: input.projectDescription ?? "",
@@ -2040,21 +2070,21 @@ function buildCommonProjectCopierAction(input) {
   };
 }
 function resolvePjanglerRoot() {
-  let dir = dirname6(fileURLToPath3(import.meta.url));
-  while (dir !== dirname6(dir)) {
-    if (existsSync6(join9(dir, "package.json")) && existsSync6(join9(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname6(dir);
+  let dir = dirname7(fileURLToPath3(import.meta.url));
+  while (dir !== dirname7(dir)) {
+    if (existsSync6(join10(dir, "package.json")) && existsSync6(join10(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname7(dir);
   }
-  return resolve5(process.cwd());
+  return resolve6(process.cwd());
 }
 function validateNoDuplicateProject(registry, project, overwrite) {
   const existingSameSlug = getOwnRecordValue(registry.projects, project.slug);
-  if (existingSameSlug && !overwrite && resolve5(existingSameSlug.repo_path) !== resolve5(project.repo_path)) {
+  if (existingSameSlug && !overwrite && resolve6(existingSameSlug.repo_path) !== resolve6(project.repo_path)) {
     throw new Error(`Project slug already exists in registry: ${project.slug}`);
   }
   for (const [slug, existing] of Object.entries(registry.projects)) {
     if (slug === project.slug) continue;
-    if (resolve5(existing.repo_path) === resolve5(project.repo_path)) {
+    if (resolve6(existing.repo_path) === resolve6(project.repo_path)) {
       throw new Error(`Project repo_path already registered by ${slug}: ${project.repo_path}`);
     }
     if (ticketProviderScope(existing.ticket_provider) !== ticketProviderScope(project.ticket_provider)) continue;
@@ -2105,9 +2135,9 @@ function validateProjectRecord(project, key) {
     if (credentialPath) throw new Error(`Project ${key} Notebook binding contains forbidden credential material at ${credentialPath}`);
     if (project.notebook.state !== "disabled" && project.notebook.state !== "planned" && project.notebook.state !== "linked") throw new Error(`Project ${key} notebook state is invalid`);
     if (project.notebook.state === "linked" && (!project.notebook.notebook_id || !project.notebook.overview_note_id)) throw new Error(`Project ${key} linked notebook is missing stable IDs`);
-    for (const field2 of ["notebook_id", "notebook_name", "overview_note_id", "blocked_reason"]) {
-      const value = project.notebook[field2];
-      if (value !== void 0 && (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\u0000-\u001f\u007f]/u.test(value))) throw new Error(`Project ${key} notebook.${field2} is invalid`);
+    for (const field3 of ["notebook_id", "notebook_name", "overview_note_id", "blocked_reason"]) {
+      const value = project.notebook[field3];
+      if (value !== void 0 && (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 512 || /[\u0000-\u001f\u007f]/u.test(value))) throw new Error(`Project ${key} notebook.${field3} is invalid`);
     }
   }
   for (const [agentKey, agent] of Object.entries(project.agents)) {
@@ -2118,8 +2148,8 @@ function validateProjectRecord(project, key) {
   }
 }
 function expandHome(path) {
-  if (path === "~") return homedir4();
-  if (path.startsWith("~/")) return join9(homedir4(), path.slice(2));
+  if (path === "~") return homedir5();
+  if (path.startsWith("~/")) return join10(homedir5(), path.slice(2));
   return path;
 }
 function isRecord(value) {
@@ -2147,8 +2177,8 @@ var init_project = __esm({
     IDENTIFIER_REPAIR_COMMAND = "pj project identity --all --apply";
     DEFAULT_SOURCE_SKILL_ROOTS = [
       "/home/delorenj/code/skillex/all-skills",
-      join9(homedir4(), ".agents", "skills"),
-      join9(homedir4(), ".codex", "skills")
+      join10(homedir5(), ".agents", "skills"),
+      join10(homedir5(), ".codex", "skills")
     ];
     PROJECT_REGISTRY_OWNED_KEYS = [
       "name",
@@ -2180,16 +2210,16 @@ var init_project = __esm({
 import { randomUUID } from "node:crypto";
 import { isIP as isIP2 } from "node:net";
 import { closeSync as closeSync3, existsSync as existsSync14, fchmodSync as fchmodSync2, fsyncSync as fsyncSync2, lstatSync as lstatSync8, openSync as openSync3, readFileSync as readFileSync14, realpathSync as realpathSync5, renameSync as renameSync4, writeFileSync as writeFileSync8 } from "node:fs";
-import { dirname as dirname8, resolve as resolve7 } from "node:path";
+import { dirname as dirname9, resolve as resolve8 } from "node:path";
 function isRecord2(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 function realOrResolved(path) {
-  const absolute = resolve7(path);
+  const absolute = resolve8(path);
   return existsSync14(absolute) ? realpathSync5(absolute) : absolute;
 }
 function readManifest(repoPath) {
-  const path = resolve7(repoPath, ".project.json");
+  const path = resolve8(repoPath, ".project.json");
   if (!existsSync14(path)) return null;
   let parsed;
   try {
@@ -2417,7 +2447,7 @@ function requireRemoteNotebookConfig(config) {
 }
 function persistProjectNotebookBinding(resolved, binding, policy) {
   const changed = [];
-  const manifestPath = resolve7(resolved.project.repo_path, ".project.json");
+  const manifestPath = resolve8(resolved.project.repo_path, ".project.json");
   const manifestRaw = existsSync14(manifestPath) ? JSON.parse(readFileSync14(manifestPath, "utf8")) : {};
   if (!isRecord2(manifestRaw)) throw new NotebookError("INVALID_INPUT", `${manifestPath} must contain a JSON object`);
   validateManifestNotebookSurface(manifestRaw.notebook);
@@ -2442,7 +2472,7 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
       if (!current2.isFile() || current2.isSymbolicLink()) throw new NotebookError("CONFLICT", `${manifestPath} must be a regular non-symlink file`);
       mode = current2.mode & 511;
     }
-    const temp = resolve7(dirname8(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
+    const temp = resolve8(dirname9(manifestPath), `.${process.pid}.${randomUUID()}.project.json.tmp`);
     const fd = openSync3(temp, "wx", mode);
     try {
       writeFileSync8(fd, manifestText, "utf8");
@@ -2453,7 +2483,7 @@ function persistProjectNotebookBinding(resolved, binding, policy) {
     }
     renameSync4(temp, manifestPath);
     try {
-      const directory = openSync3(dirname8(manifestPath), "r");
+      const directory = openSync3(dirname9(manifestPath), "r");
       try {
         fsyncSync2(directory);
       } finally {
@@ -2786,27 +2816,27 @@ import {
   unlinkSync as unlinkSync4,
   writeFileSync as writeFileSync9
 } from "node:fs";
-import { homedir as homedir6 } from "node:os";
-import { basename as basename7, dirname as dirname9, join as join18, parse, relative as relative8, resolve as resolve8, sep as sep3 } from "node:path";
+import { homedir as homedir7 } from "node:os";
+import { basename as basename7, dirname as dirname10, join as join19, parse, relative as relative8, resolve as resolve9, sep as sep3 } from "node:path";
 function notebookStateRoot(env2 = process.env) {
-  const base = env2.XDG_STATE_HOME || join18(env2.HOME || homedir6(), ".local", "state");
-  return resolve8(base, "pjangler", "notebook", NOTEBOOK_STATE_VERSION);
+  const base = env2.XDG_STATE_HOME || join19(env2.HOME || homedir7(), ".local", "state");
+  return resolve9(base, "pjangler", "notebook", NOTEBOOK_STATE_VERSION);
 }
 function assertDigest(value, label) {
   if (!SESSION_KEY_RE.test(value)) throw new NotebookError("INVALID_INPUT", `Invalid ${label}`);
 }
 function projectStateDir(root, projectSlug) {
   if (!/^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(projectSlug)) throw new NotebookError("INVALID_INPUT", "Invalid project slug for Notebook state");
-  return join18(resolve8(root), "projects", sha256Hex(`pjangler-project-state-v1\0${projectSlug}`));
+  return join19(resolve9(root), "projects", sha256Hex(`pjangler-project-state-v1\0${projectSlug}`));
 }
 function assertContained(root, candidate) {
-  const rel = relative8(resolve8(root), resolve8(candidate));
+  const rel = relative8(resolve9(root), resolve9(candidate));
   if (!rel || !rel.startsWith(`..${sep3}`) && rel !== ".." && !rel.startsWith(sep3)) return;
   throw new NotebookError("INTERNAL_ERROR", "Notebook state path escaped its root");
 }
 function openPinnedDirectory(path, root, create) {
-  const absolute = resolve8(path);
-  const absoluteRoot = resolve8(root);
+  const absolute = resolve9(path);
+  const absoluteRoot = resolve9(root);
   assertContained(absoluteRoot, absolute);
   if (!existsSync15("/proc/self/fd")) throw new NotebookError("INTERNAL_ERROR", "Descriptor-pinned Notebook state requires procfs");
   const parsed = parse(absolute);
@@ -2815,7 +2845,7 @@ function openPinnedDirectory(path, root, create) {
   try {
     for (const part of absolute.slice(parsed.root.length).split(sep3).filter(Boolean)) {
       const child = `/proc/self/fd/${fd}/${part}`;
-      cursor = join18(cursor, part);
+      cursor = join19(cursor, part);
       let childFd;
       try {
         childFd = openSync4(child, DIRECTORY_OPEN_FLAGS);
@@ -2852,8 +2882,8 @@ function assertOwned(stat) {
   }
 }
 function ensureDirectory(path, root) {
-  const absoluteRoot = resolve8(root);
-  const absolute = resolve8(path);
+  const absoluteRoot = resolve9(root);
+  const absolute = resolve9(path);
   assertContained(absoluteRoot, absolute);
   const fd = openPinnedDirectory(absolute, absoluteRoot, true);
   try {
@@ -2867,23 +2897,23 @@ function ensureDirectory(path, root) {
   }
 }
 function notebookStatePaths(root, projectSlug) {
-  const absoluteRoot = resolve8(root);
+  const absoluteRoot = resolve9(root);
   const project = projectStateDir(absoluteRoot, projectSlug);
   return {
     root: absoluteRoot,
     project,
-    baselines: join18(project, "baselines"),
-    claims: join18(project, "claims"),
-    receipts: join18(project, "receipts"),
-    refusals: join18(project, "refusals"),
-    journals: join18(project, "journals"),
-    locks: join18(project, "locks")
+    baselines: join19(project, "baselines"),
+    claims: join19(project, "claims"),
+    receipts: join19(project, "receipts"),
+    refusals: join19(project, "refusals"),
+    journals: join19(project, "journals"),
+    locks: join19(project, "locks")
   };
 }
 function ensureNotebookState(root, projectSlug) {
   const paths = notebookStatePaths(root, projectSlug);
   const { root: absoluteRoot, project } = paths;
-  for (const path of [absoluteRoot, join18(absoluteRoot, "projects"), project, paths.baselines, paths.claims, paths.receipts, paths.refusals, paths.journals, paths.locks]) {
+  for (const path of [absoluteRoot, join19(absoluteRoot, "projects"), project, paths.baselines, paths.claims, paths.receipts, paths.refusals, paths.journals, paths.locks]) {
     ensureDirectory(path, absoluteRoot);
   }
   return paths;
@@ -2916,7 +2946,7 @@ function readNotebookStateDirectory(path, root) {
 }
 function unlinkStateFile(path, root, allowMissing = false) {
   assertContained(root, path);
-  const parentFd = openPinnedDirectory(dirname9(path), root, false);
+  const parentFd = openPinnedDirectory(dirname10(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   let fileFd;
   try {
@@ -2940,8 +2970,8 @@ function unlinkStateFile(path, root, allowMissing = false) {
   }
 }
 function renameStateFile(source, target, root) {
-  if (dirname9(source) !== dirname9(target)) throw new NotebookError("INTERNAL_ERROR", "Notebook state rename crossed directories");
-  const parentFd = openPinnedDirectory(dirname9(source), root, false);
+  if (dirname10(source) !== dirname10(target)) throw new NotebookError("INTERNAL_ERROR", "Notebook state rename crossed directories");
+  const parentFd = openPinnedDirectory(dirname10(source), root, false);
   const sourcePath = pinnedLeaf(parentFd, source);
   const targetPath = pinnedLeaf(parentFd, target);
   let sourceFd;
@@ -2965,9 +2995,9 @@ function renameStateFile(source, target, root) {
 }
 function atomicWriteJson(path, value, root, afterParentPinned) {
   assertContained(root, path);
-  ensureDirectory(dirname9(path), root);
+  ensureDirectory(dirname10(path), root);
   const text2 = jsonLine(value);
-  const parentFd = openPinnedDirectory(dirname9(path), root, false);
+  const parentFd = openPinnedDirectory(dirname10(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   const tempName = `.${basename7(path)}.${process.pid}.${randomUUID3()}.tmp`;
   const temp = `/proc/self/fd/${parentFd}/${tempName}`;
@@ -3018,7 +3048,7 @@ function atomicWriteJson(path, value, root, afterParentPinned) {
 }
 function exclusiveWrite(path, text2, root) {
   assertContained(root, path);
-  const parentFd = openPinnedDirectory(dirname9(path), root, false);
+  const parentFd = openPinnedDirectory(dirname10(path), root, false);
   const target = pinnedLeaf(parentFd, path);
   let fd;
   try {
@@ -3175,7 +3205,7 @@ function parseRefusal(value) {
 function safeReadJson(path, maxBytes) {
   let parentFd;
   try {
-    parentFd = openPinnedDirectory(dirname9(path), dirname9(path), false);
+    parentFd = openPinnedDirectory(dirname10(path), dirname10(path), false);
   } catch {
     return { reason: "non-regular", bytes: 0 };
   }
@@ -3231,10 +3261,10 @@ function baselineReceiptByteCeiling(limits) {
 function readSessionBaseline(root, projectSlug, sessionKey, limits) {
   assertDigest(sessionKey, "session key");
   const paths = ensureNotebookState(root, projectSlug);
-  return readBaseline(join18(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
+  return readBaseline(join19(paths.baselines, `${sessionKey}.json`), baselineReceiptByteCeiling(limits));
 }
 function acquireLock(paths, maxWaitMs) {
-  const lock = join18(paths.locks, "admission.lock");
+  const lock = join19(paths.locks, "admission.lock");
   const deadline = Date.now() + Math.max(1, maxWaitMs);
   const token = randomUUID3();
   const record = () => ({
@@ -3264,7 +3294,7 @@ function acquireLock(paths, maxWaitMs) {
       throw new NotebookError("CONFLICT", "Notebook state lock has an integrity finding; preserve it and run pj notebook audit --json");
     }
     if (Date.now() >= expiresAt) {
-      const recovery = join18(paths.locks, `recovery-${heldToken}.lock`);
+      const recovery = join19(paths.locks, `recovery-${heldToken}.lock`);
       const recoveryRecord = jsonLine({ schema_version: NOTEBOOK_SCHEMA_VERSION, stale_token: heldToken, recovery_token: token, expires_at: new Date(Date.now() + 5e3).toISOString() });
       if (exclusiveWrite(recovery, recoveryRecord, paths.root)) {
         try {
@@ -3272,7 +3302,7 @@ function acquireLock(paths, maxWaitMs) {
           const currentToken = verify.value && typeof verify.value === "object" && !Array.isArray(verify.value) ? verify.value.token : null;
           const currentExpiry = verify.value && typeof verify.value === "object" && !Array.isArray(verify.value) ? Date.parse(String(verify.value.expires_at ?? "")) : Number.NaN;
           if (currentToken === heldToken && Number.isFinite(currentExpiry) && Date.now() >= currentExpiry) {
-            const recovered = join18(paths.locks, `.recovered-${heldToken}-${randomUUID3()}.json`);
+            const recovered = join19(paths.locks, `.recovered-${heldToken}-${randomUUID3()}.json`);
             renameStateFile(lock, recovered, paths.root);
             unlinkStateFile(recovered, paths.root);
           }
@@ -3313,11 +3343,11 @@ function addBoundedIntegrity(target, limits, entry, knownBytes = 0) {
 function journalReference(value) {
   const item = parseRemoteMutationJournal(value);
   if (!item) return null;
-  const unresolved = item.state !== "committed";
+  const unresolved2 = item.state !== "committed";
   return {
     ...item.session_key ? { sessionKey: item.session_key } : {},
-    unresolved,
-    ...unresolved ? { summary: {
+    unresolved: unresolved2,
+    ...unresolved2 ? { summary: {
       operation_id: item.operation_id,
       kind: item.kind,
       logical_marker: item.logical_marker,
@@ -3352,7 +3382,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join18(specification.dir, entry.name), specification.maxBytes);
+      const read = safeReadJson(join19(specification.dir, entry.name), specification.maxBytes);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3377,7 +3407,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join18(paths.journals, entry.name), limits.receipt_max_bytes);
+      const read = safeReadJson(join19(paths.journals, entry.name), limits.receipt_max_bytes);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3406,7 +3436,7 @@ function scanAuxiliaryState(paths, limits) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: "non-regular" });
         continue;
       }
-      const read = safeReadJson(join18(paths.locks, entry.name), 8192);
+      const read = safeReadJson(join19(paths.locks, entry.name), 8192);
       if (read.reason || read.value === void 0) {
         addBoundedIntegrity(scan, limits, { entry_id: entryId, reason: read.reason ?? "invalid-json" }, read.bytes);
         continue;
@@ -3445,7 +3475,7 @@ function scanReceipts(paths, limits) {
   }
   for (const entry of entries) {
     const entryId = safeEntryId("receipts", entry.name);
-    const path = join18(paths.receipts, entry.name);
+    const path = join19(paths.receipts, entry.name);
     if (!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9]{64}\.json$/u.test(entry.name)) {
       addIntegrity({ entry_id: entryId, reason: "non-regular" });
       continue;
@@ -3475,7 +3505,7 @@ function scanBaselines(paths, nowMs, limits, referenced) {
   if (!existsSync15(paths.baselines)) return { current, stale };
   for (const entry of readStateDirectory(paths.baselines, paths.root)) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const baseline = readBaseline(join18(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
+    const baseline = readBaseline(join19(paths.baselines, entry.name), baselineReceiptByteCeiling(limits));
     if (!baseline || referenced.has(baseline.session_key)) continue;
     const expires = Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3;
     if (nowMs >= expires) stale += 1;
@@ -3489,7 +3519,7 @@ function scanRefusals(paths, nowMs, limits, scan) {
   const entries = readStateDirectory(paths.refusals, paths.root).sort((a, b) => a.name.localeCompare(b.name, "en")).slice(0, limits.refusal_max_entries);
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const read = safeReadJson(join18(paths.refusals, entry.name), limits.receipt_max_bytes);
+    const read = safeReadJson(join19(paths.refusals, entry.name), limits.receipt_max_bytes);
     const marker = read.value === void 0 ? null : parseRefusal(read.value);
     if (!marker || `${marker.session_key}.json` !== entry.name) continue;
     if (nowMs >= Date.parse(marker.baseline_created_at) + limits.receiptless_session_retention_seconds * 1e3) continue;
@@ -3572,7 +3602,7 @@ function listCaptureReceipts(root, projectSlug, limits, state) {
 function readCaptureReceipt(root, projectSlug, receiptId, limits) {
   if (!RECEIPT_ID_RE.test(receiptId)) throw new NotebookError("INVALID_INPUT", "Invalid receipt ID");
   const paths = notebookStatePaths(root, projectSlug);
-  const path = join18(paths.receipts, `${receiptId}.json`);
+  const path = join19(paths.receipts, `${receiptId}.json`);
   if (!existsSync15(path)) throw new NotebookError("NOT_FOUND", `Capture receipt not found: ${receiptId}`);
   const read = safeReadJson(path, limits.receipt_max_bytes);
   const receipt = read.value === void 0 ? null : parseReceipt(read.value);
@@ -3585,7 +3615,7 @@ function writeReceipt(paths, receipt, limit) {
     const bytes = Buffer.byteLength(text2, "utf8");
     if (bytes > limit) throw new NotebookError("CONFLICT", "Receipt transition exceeds its per-receipt ceiling");
     if (receipt.serialized_bytes === bytes) {
-      atomicWriteJson(join18(paths.receipts, `${receipt.receipt_id}.json`), receipt, paths.root);
+      atomicWriteJson(join19(paths.receipts, `${receipt.receipt_id}.json`), receipt, paths.root);
       return receipt;
     }
     receipt.serialized_bytes = bytes;
@@ -3724,7 +3754,7 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
     const successCutoff = now.getTime() - limits.receipt_succeeded_retention_days * 864e5;
     for (const receipt of scan.receipts) {
       if (receipt.state !== "succeeded" || Date.parse(receipt.updated_at) > successCutoff) continue;
-      const path = join18(paths.receipts, `${receipt.receipt_id}.json`);
+      const path = join19(paths.receipts, `${receipt.receipt_id}.json`);
       unlinkStateFile(path, paths.root);
       removed.push(safeEntryId("receipts", basename7(path)));
     }
@@ -3733,15 +3763,15 @@ function pruneNotebookState(root, projectSlug, limits, now = /* @__PURE__ */ new
     const referenced = /* @__PURE__ */ new Set([...remaining.referencedSessions, ...remainingAuxiliary.referencedSessions]);
     for (const entry of readStateDirectory(paths.baselines, paths.root)) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const path = join18(paths.baselines, entry.name);
+      const path = join19(paths.baselines, entry.name);
       const baseline = readBaseline(path, baselineReceiptByteCeiling(limits));
       if (!baseline || referenced.has(baseline.session_key)) continue;
       if (now.getTime() < Date.parse(baseline.created_at) + limits.receiptless_session_retention_seconds * 1e3) continue;
       unlinkStateFile(path, paths.root);
       removed.push(safeEntryId("baselines", entry.name));
-      const claim = join18(paths.claims, `${baseline.session_key}.overview`);
+      const claim = join19(paths.claims, `${baseline.session_key}.overview`);
       if (unlinkStateFile(claim, paths.root, true)) removed.push(safeEntryId("claims", basename7(claim)));
-      const refusal = join18(paths.refusals, `${baseline.session_key}.json`);
+      const refusal = join19(paths.refusals, `${baseline.session_key}.json`);
       if (unlinkStateFile(refusal, paths.root, true)) removed.push(safeEntryId("refusals", basename7(refusal)));
     }
     fsyncDirectory2(paths.project);
@@ -4057,7 +4087,7 @@ var init_open_notebook_client = __esm({
 // src/notebook/git-evidence.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
 import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync10, openSync as openSync5, readSync as readSync2, realpathSync as realpathSync6 } from "node:fs";
-import { extname, join as join20, relative as relative9, resolve as resolve9, sep as sep4 } from "node:path";
+import { extname, join as join21, relative as relative9, resolve as resolve10, sep as sep4 } from "node:path";
 function git(repo, args, maxBuffer = 4 * 1024 * 1024, timeout = 5e3) {
   const result2 = spawnSync9("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
   return { ok: result2.status === 0, stdout: result2.stdout ?? "" };
@@ -4126,7 +4156,7 @@ function validateCommittedGitRef(repoPath, gitRef) {
 function safeRelative(repoPath, relativePath2) {
   if (!relativePath2 || relativePath2.includes("\0") || relativePath2.startsWith("/") || relativePath2.split(/[\\/]/u).includes("..")) return null;
   const root = realpathSync6(repoPath);
-  const candidate = resolve9(root, relativePath2);
+  const candidate = resolve10(root, relativePath2);
   const rel = relative9(root, candidate);
   if (rel === ".." || rel.startsWith(`..${sep4}`) || rel.startsWith(sep4)) return null;
   return { root, candidate };
@@ -4135,7 +4165,7 @@ function hasSymlinkComponent(root, candidate) {
   const rel = relative9(root, candidate);
   let cursor = root;
   for (const part of rel.split(sep4).filter(Boolean)) {
-    cursor = join20(cursor, part);
+    cursor = join21(cursor, part);
     try {
       if (lstatSync10(cursor).isSymbolicLink()) return true;
     } catch {
@@ -4278,10 +4308,10 @@ var init_git_evidence = __esm({
 
 // src/notebook/remote-mutation-journal.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { join as join21 } from "node:path";
+import { join as join22 } from "node:path";
 function journalPath(root, projectSlug, operationId) {
   if (!/^[a-f0-9-]{16,64}$/iu.test(operationId)) throw new NotebookError("INVALID_INPUT", "Invalid remote mutation operation ID");
-  return join21(ensureNotebookState(root, projectSlug).journals, `${operationId}.json`);
+  return join22(ensureNotebookState(root, projectSlug).journals, `${operationId}.json`);
 }
 function remoteMutationJournalPath(root, projectSlug, operationId) {
   return journalPath(root, projectSlug, operationId);
@@ -4301,7 +4331,7 @@ function listRemoteMutationJournals(root, projectSlug) {
     if (!entry.isFile() || entry.isSymbolicLink() || !/^[a-f0-9-]{16,64}\.json$/iu.test(entry.name)) {
       throw new NotebookError("CONFLICT", `Remote mutation journal state-integrity finding: journals/${entry.name}`);
     }
-    const read = readNotebookStateJson(join21(paths.journals, entry.name), paths.root, 65536);
+    const read = readNotebookStateJson(join22(paths.journals, entry.name), paths.root, 65536);
     const journal = read.value === void 0 ? null : parseRemoteMutationJournal(read.value);
     if (!journal || `${journal.operation_id}.json` !== entry.name) {
       throw new NotebookError("CONFLICT", `Remote mutation journal state-integrity finding: journals/${entry.name}`);
@@ -4655,7 +4685,7 @@ var init_reconcile = __esm({
 
 // src/notebook/summarizer.ts
 import { spawnSync as spawnSync12 } from "node:child_process";
-import { isAbsolute as isAbsolute4 } from "node:path";
+import { isAbsolute as isAbsolute5 } from "node:path";
 function evidenceItems(evidence) {
   const items = [];
   const eligible = new Set(evidence.documents.map((item) => item.path));
@@ -4705,7 +4735,7 @@ function fallback(evidence, maxBytes) {
     evidence.endRevision ? `- End commit: ${evidence.endRevision}` : "- End commit: unavailable",
     evidence.endStatusDigest ? `- End status digest: ${evidence.endStatusDigest}` : "- End status digest: unavailable"
   ].join("\n");
-  const unresolved = Object.keys(evidence.exclusions).length ? Object.entries(evidence.exclusions).sort(([a], [b]) => a.localeCompare(b, "en")).map(([reason, count]) => `- ${reason}: ${count}`).join("\n") : "- None recorded.";
+  const unresolved2 = Object.keys(evidence.exclusions).length ? Object.entries(evidence.exclusions).sort(([a], [b]) => a.localeCompare(b, "en")).map(([reason, count]) => `- ${reason}: ${count}`).join("\n") : "- None recorded.";
   return truncateUtf82([
     "## Changed eligible documents",
     documents,
@@ -4717,7 +4747,7 @@ function fallback(evidence, maxBytes) {
     verification,
     "",
     "## Unresolved or uncommitted work",
-    unresolved,
+    unresolved2,
     "",
     "## Insufficient evidence",
     "No deployment, runtime-health, or external-success conclusion is supported by this repository-only capture."
@@ -4771,7 +4801,7 @@ function summarizeCapture(config, evidence) {
   }
 }
 function assertSummarizerConfig(config) {
-  if (config.summarizer && (!isAbsolute4(config.summarizer.executable) || config.summarizer.executable.includes("\0") || config.summarizer.args.length > 32 || config.summarizer.args.some((arg) => arg.includes("\0") || Buffer.byteLength(arg, "utf8") > 1024))) {
+  if (config.summarizer && (!isAbsolute5(config.summarizer.executable) || config.summarizer.executable.includes("\0") || config.summarizer.args.length > 32 || config.summarizer.args.some((arg) => arg.includes("\0") || Buffer.byteLength(arg, "utf8") > 1024))) {
     throw new NotebookError("NOT_CONFIGURED", "Configured Notebook summarizer command is invalid");
   }
 }
@@ -5067,12 +5097,12 @@ var init_capture = __esm({
 });
 
 // src/mcp-server.ts
-import { existsSync as existsSync23, statSync as statSync5 } from "node:fs";
-import { basename as basename9, dirname as dirname14, join as join30, resolve as resolve16 } from "node:path";
-import { fileURLToPath as fileURLToPath8 } from "node:url";
+import { existsSync as existsSync26, statSync as statSync8 } from "node:fs";
+import { basename as basename9, dirname as dirname17, join as join34, resolve as resolve20 } from "node:path";
+import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { z as z2 } from "zod";
 
 // src/recipes/Recipe.ts
 import { homedir } from "node:os";
@@ -7377,11 +7407,11 @@ function retiredTaskNameIssues(text2) {
   const issues = [];
   for (const [oldName, newName] of RETIRED_TASK_RENAMES) {
     const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const present = new RegExp(
+    const present2 = new RegExp(
       `^\\[tasks\\.(?:"${esc}"|${esc})\\]|^\\s*task\\s*=\\s*"${esc}"|^\\s*depends\\s*=\\s*\\[[^\\]]*"${esc}"`,
       "m"
     ).test(text2);
-    if (present) issues.push(`mise.toml still uses the retired task name "${oldName}" (renamed to "${newName}")`);
+    if (present2) issues.push(`mise.toml still uses the retired task name "${oldName}" (renamed to "${newName}")`);
   }
   return issues;
 }
@@ -7790,15 +7820,15 @@ function retireRuntimeSubmodule(repoRoot, role, changedFiles, dryRun) {
   if (!runtimePath) {
     return { ok: false, details: [], error: `refusing unsafe runtime path for ${role.roleDir}` };
   }
-  const probe = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
+  const probe2 = spawnSync("git", ["ls-files", "--stage", "--", runtimePath], {
     cwd: repoRoot,
     encoding: "utf8"
   });
-  if (probe.status !== 0) {
-    return { ok: false, details: [], error: `failed to inspect runtime index at ${runtimePath}: ${probe.stderr.trim() || `exit ${probe.status}`}` };
+  if (probe2.status !== 0) {
+    return { ok: false, details: [], error: `failed to inspect runtime index at ${runtimePath}: ${probe2.stderr.trim() || `exit ${probe2.status}`}` };
   }
   const details = [];
-  if (probe.stdout.trim()) {
+  if (probe2.stdout.trim()) {
     details.push(`untrack ${runtimePath}`);
     if (dryRun) {
       changedFiles.push(runtimePath);
@@ -8165,19 +8195,19 @@ function bmadInstallDisplay(repoRoot, modules = selectedBmadModules(repoRoot), v
 }
 function preflightBmadLifecycle(_ctx) {
   const invocation = bmadInstallerInvocation();
-  const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
+  const probe2 = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
     encoding: "utf8",
     timeout: 3e4
   });
-  if (probe.status !== 0) {
-    const detail = String(probe.stderr || probe.stdout || probe.error?.message || "installer probe failed").trim();
+  if (probe2.status !== 0) {
+    const detail = String(probe2.stderr || probe2.stdout || probe2.error?.message || "installer probe failed").trim();
     return {
       ok: false,
       error: `Pinned BMAD installer ${BMAD_NPM_PACKAGE}@${BMAD_INSTALLER_VERSION} is unavailable: ${detail}`
     };
   }
-  const versionOutput = `${probe.stdout ?? ""}
-${probe.stderr ?? ""}`;
+  const versionOutput = `${probe2.stdout ?? ""}
+${probe2.stderr ?? ""}`;
   const reportedVersions = versionOutput.match(/\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b/g) ?? [];
   if (!reportedVersions.includes(BMAD_INSTALLER_VERSION)) {
     return {
@@ -8626,35 +8656,35 @@ var UNSUPPORTED_BMAD_ROOTS = {
 function parseCsvRows(text2) {
   const rows = [];
   let row = [];
-  let field2 = "";
+  let field3 = "";
   let quoted = false;
   for (let index = 0; index < text2.length; index++) {
     const char = text2[index];
     if (quoted) {
       if (char === '"' && text2[index + 1] === '"') {
-        field2 += '"';
+        field3 += '"';
         index++;
       } else if (char === '"') {
         quoted = false;
       } else {
-        field2 += char;
+        field3 += char;
       }
     } else if (char === '"') {
       quoted = true;
     } else if (char === ",") {
-      row.push(field2);
-      field2 = "";
+      row.push(field3);
+      field3 = "";
     } else if (char === "\n") {
-      row.push(field2.replace(/\r$/, ""));
+      row.push(field3.replace(/\r$/, ""));
       rows.push(row);
       row = [];
-      field2 = "";
+      field3 = "";
     } else {
-      field2 += char;
+      field3 += char;
     }
   }
-  if (field2 || row.length) {
-    row.push(field2.replace(/\r$/, ""));
+  if (field3 || row.length) {
+    row.push(field3.replace(/\r$/, ""));
     rows.push(row);
   }
   return rows;
@@ -9922,8 +9952,8 @@ function createBmadChecks() {
       title: "Supported BMAD CLI projection roots",
       audit: (ctx) => {
         const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS);
-        const present = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
-        const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
+        const present2 = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
+        const attestations = present2.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
         const supportedIssues = supportedCliProjectionIssues(ctx.repoRoot);
         const details = [
           ...supportedIssues,
@@ -9934,15 +9964,15 @@ function createBmadChecks() {
           id: "bmad.cli-roots",
           title: "Supported BMAD CLI projection roots",
           status: details.length ? "fail" : "pass",
-          summary: details.length ? `${supportedIssues.length} supported projection issue(s); ${present.length} unsupported root(s)` : "All six supported CLI projections are configured and no unsupported roots are present",
+          summary: details.length ? `${supportedIssues.length} supported projection issue(s); ${present2.length} unsupported root(s)` : "All six supported CLI projections are configured and no unsupported roots are present",
           details,
           fixable: attestations.every((entry) => entry.safe)
         };
       },
       migrate: (ctx, finding2) => {
         const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS);
-        const present = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
-        const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
+        const present2 = unsupportedNames.filter((name) => existsSync2(join3(ctx.repoRoot, name)));
+        const attestations = present2.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
         const blocked = attestations.filter((entry) => !entry.safe);
         if (blocked.length) {
           return {
@@ -10184,8 +10214,8 @@ function createHermesChecks() {
         if (!requiredRoles.length) {
           return { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "pass", summary: "systemd is intentionally deferred for every local-only Hermes role", details: [], fixable: false };
         }
-        const probe = systemctlUser(["is-system-running"]);
-        if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+        const probe2 = systemctlUser(["is-system-running"]);
+        if (!probe2.ok && !/running|degraded|starting|maintenance/.test(`${probe2.stdout} ${probe2.stderr}`)) {
           const sysDir2 = join3(ctx.homeDir, ".config", "systemd", "user");
           const details2 = [];
           for (const role of requiredRoles) {
@@ -10243,8 +10273,8 @@ function createHermesChecks() {
         if (!roles.length) {
           return { id: finding2.id, title: finding2.title, status: "skipped", summary: "systemd is intentionally deferred for local-only Hermes roles", changedFiles, details };
         }
-        const probe = systemctlUser(["is-system-running"]);
-        if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
+        const probe2 = systemctlUser(["is-system-running"]);
+        if (!probe2.ok && !/running|degraded|starting|maintenance/.test(`${probe2.stdout} ${probe2.stderr}`)) {
           return { id: finding2.id, title: finding2.title, status: "blocked", summary: "systemd --user unavailable on this host", changedFiles, details };
         }
         for (const role of roles) {
@@ -11698,7 +11728,7 @@ var PromptForAgentConfig = class extends Command {
 
 // src/commands/hermes/ValidateHermesOptions.ts
 import { lstatSync as lstatSync7, readdirSync as readdirSync5 } from "node:fs";
-import { join as join10, relative as relative6 } from "node:path";
+import { join as join11, relative as relative6 } from "node:path";
 init_project();
 var EMAIL_UNSUPPORTED_MESSAGE = "Email provisioning is unavailable: the pinned Hermes template has no supported email provisioner. Omit --email; no files or external state were changed.";
 var HARMLESS_ROLE_PLACEHOLDERS = /* @__PURE__ */ new Set([".gitkeep", ".DS_Store", "Thumbs.db"]);
@@ -11714,7 +11744,7 @@ function existingRoleDirectoryBlockers(roleDir) {
   const blockers = [];
   const visit = (directory) => {
     for (const entry of readdirSync5(directory, { withFileTypes: true })) {
-      const path = join10(directory, entry.name);
+      const path = join11(directory, entry.name);
       const stats = lstatSync7(path);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
         visit(path);
@@ -11742,7 +11772,7 @@ var ValidateHermesOptions = class extends Command {
     const role = normalizeAgentRole(ctx.role ?? "pm");
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join10(ctx.targetDir, "agents", "hermes", role),
+      join11(ctx.targetDir, "agents", "hermes", role),
       "Hermes role directory"
     );
     const refusal = (ctx.yes || ctx.quiet) && !ctx.force ? existingRoleRefusal(roleDir) : void 0;
@@ -11759,8 +11789,8 @@ var ValidateHermesOptions = class extends Command {
 
 // src/commands/hermes/RunCopierTemplate.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { homedir as homedir5 } from "node:os";
-import { join as join11, dirname as dirname7, relative as relative7 } from "node:path";
+import { homedir as homedir6 } from "node:os";
+import { join as join12, dirname as dirname8, relative as relative7 } from "node:path";
 import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync9, writeFileSync as writeFileSync5 } from "node:fs";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 import * as p2 from "@clack/prompts";
@@ -11792,7 +11822,7 @@ function scrubInteractiveChannelCredentials(env2) {
   delete env2.WIRE_SLACK;
 }
 function registerRenderedAgent(ctx, roleDir, role) {
-  const manifestPath = join11(ctx.targetDir, ".project.json");
+  const manifestPath = join12(ctx.targetDir, ".project.json");
   if (!existsSync7(manifestPath) || !ctx.targetRepo) return;
   const current = readFileSync9(manifestPath, "utf8");
   const parsed = JSON.parse(current);
@@ -11824,14 +11854,14 @@ function registerRenderedAgent(ctx, roleDir, role) {
 function resolveVendoredTemplate(name) {
   let dir;
   try {
-    dir = dirname7(fileURLToPath4(import.meta.url));
+    dir = dirname8(fileURLToPath4(import.meta.url));
   } catch {
     return void 0;
   }
   for (let i = 0; i < 8; i++) {
-    const candidate = join11(dir, "templates", name);
-    if (existsSync7(join11(candidate, "copier.yml"))) return candidate;
-    const parent = dirname7(dir);
+    const candidate = join12(dir, "templates", name);
+    if (existsSync7(join12(candidate, "copier.yml"))) return candidate;
+    const parent = dirname8(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -11863,7 +11893,7 @@ var RunCopierTemplate = class extends Command {
     ctx.role = safeRole;
     const roleDir = resolveContainedPath(
       ctx.targetDir,
-      join11(ctx.targetDir, "agents", "hermes", safeRole),
+      join12(ctx.targetDir, "agents", "hermes", safeRole),
       "Hermes role directory"
     );
     ctx.roleDir = roleDir;
@@ -11889,7 +11919,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    if (existsSync7(join11(roleDir, "role.yaml")) && !ctx.force) {
+    if (existsSync7(join12(roleDir, "role.yaml")) && !ctx.force) {
       if (!ctx.yes && !ctx.quiet) {
         const proceed = await p2.confirm({
           message: `${safeRole}/role.yaml already exists \u2014 re-render with --overwrite?`,
@@ -11934,9 +11964,9 @@ var RunCopierTemplate = class extends Command {
       env2.PYTHONNOUSERSITE = "1";
       env2.PYTHONSAFEPATH = "1";
     }
-    const LOCAL_TEMPLATE = join11(homedir5(), "code", "hermes-agent-template");
+    const LOCAL_TEMPLATE = join12(homedir6(), "code", "hermes-agent-template");
     const vendored = resolveVendoredTemplate("hermes-agent");
-    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join11(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
+    const templateSrc = process.env.PJANGLER_HERMES_TEMPLATE || vendored || (existsSync7(join12(LOCAL_TEMPLATE, "copier.yml")) ? LOCAL_TEMPLATE : HERMES_AGENT_TEMPLATE);
     const args = [
       "copy",
       templateSrc,
@@ -11986,7 +12016,7 @@ var RunCopierTemplate = class extends Command {
         };
       }
     }
-    mkdirSync5(join11(ctx.targetDir, "agents", "hermes"), { recursive: true });
+    mkdirSync5(join12(ctx.targetDir, "agents", "hermes"), { recursive: true });
     const spinner3 = ctx.quiet ? void 0 : p2.spinner();
     spinner3?.start(`Running copier copy  (target: agents/hermes/${safeRole})`);
     const copierExecutable = ctx.trustedCopier?.executable ?? "copier";
@@ -11999,7 +12029,7 @@ var RunCopierTemplate = class extends Command {
         message: `copier exited with status ${result2.status}.${ctx.quiet && String(result2.stderr ?? "").trim() ? ` ${String(result2.stderr).trim()}` : " Check the output above; re-run with the same flags after fixing."}`
       };
     }
-    const roleManifest = join11(roleDir, "role.yaml");
+    const roleManifest = join12(roleDir, "role.yaml");
     try {
       const current = readFileSync9(roleManifest, "utf8");
       const document = YAML4.parseDocument(current);
@@ -12026,7 +12056,7 @@ var RunCopierTemplate = class extends Command {
 
 // src/commands/hermes/UntrackHermesRuntimes.ts
 import { existsSync as existsSync8, readFileSync as readFileSync10, writeFileSync as writeFileSync6, readdirSync as readdirSync6 } from "fs";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 import { spawnSync as spawnSync5 } from "node:child_process";
 function sectionHasPath(section2, targetPath) {
   return section2.split(/\r?\n/).some((line) => /^\s*path\s*=/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === targetPath);
@@ -12037,7 +12067,7 @@ function removeSubmodulePath(content, targetPath) {
 var UntrackHermesRuntimes = class extends Command {
   async invoke() {
     const targetDir = this.context.targetDir;
-    const rolesDir = join12(targetDir, "agents", "hermes");
+    const rolesDir = join13(targetDir, "agents", "hermes");
     if (!existsSync8(rolesDir)) {
       return {
         success: true,
@@ -12054,10 +12084,10 @@ var UntrackHermesRuntimes = class extends Command {
     let modifiedAny = false;
     const details = [];
     for (const role of roles) {
-      const roleDir = join12("agents", "hermes", role);
-      const runtimePath = join12(roleDir, "runtime");
-      const gitignorePath = join12(roleDir, ".gitignore");
-      const gitmodulesPath = join12(targetDir, ".gitmodules");
+      const roleDir = join13("agents", "hermes", role);
+      const runtimePath = join13(roleDir, "runtime");
+      const gitignorePath = join13(roleDir, ".gitignore");
+      const gitmodulesPath = join13(targetDir, ".gitmodules");
       let isTracked = false;
       const lsResult = spawnSync5("git", ["ls-files", "--stage", "--", runtimePath], {
         cwd: targetDir,
@@ -12080,7 +12110,7 @@ var UntrackHermesRuntimes = class extends Command {
         hasStaleMapping = sections.some((section2) => sectionHasPath(section2, runtimePath));
       }
       let isIgnored = false;
-      const fullGitignorePath = join12(targetDir, gitignorePath);
+      const fullGitignorePath = join13(targetDir, gitignorePath);
       if (existsSync8(fullGitignorePath)) {
         const content = readFileSync10(fullGitignorePath, "utf8");
         const lines = content.split(/\r?\n/).map((line) => line.trim());
@@ -12154,7 +12184,7 @@ ${details.map((d) => `  - ${d}`).join("\n")}`
 
 // src/commands/hermes/WireTelegram.ts
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 import { existsSync as existsSync9, unlinkSync as unlinkSync3 } from "node:fs";
 import * as p3 from "@clack/prompts";
 var WireTelegram = class extends Command {
@@ -12250,14 +12280,14 @@ var WireTelegram = class extends Command {
     if (p3.isCancel(allowedAnswer)) {
       return { success: false, message: "\u2717 Aborted; Telegram step deferred." };
     }
-    const script = join13(roleDir, ".scripts", "30-telegram.sh");
+    const script = join14(roleDir, ".scripts", "30-telegram.sh");
     if (!existsSync9(script)) {
       return {
         success: false,
         message: `\u2717 ${script} not found. Did Copier finish rendering the Hermes role?`
       };
     }
-    const marker = join13(roleDir, ".scripts", ".done-30-telegram");
+    const marker = join14(roleDir, ".scripts", ".done-30-telegram");
     if (existsSync9(marker)) unlinkSync3(marker);
     const spinner3 = p3.spinner();
     spinner3.start("Verifying token + wiring profile");
@@ -12300,12 +12330,12 @@ var WireEmail = class extends Command {
 
 // src/commands/hermes/PrintHermesSummary.ts
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "node:fs";
-import { join as join14 } from "node:path";
+import { join as join15 } from "node:path";
 import YAML5 from "yaml";
 function readServiceState(roleDir) {
-  if (!roleDir || !existsSync10(join14(roleDir, "role.yaml"))) return { gateway: "planned", heartbeat: "planned" };
+  if (!roleDir || !existsSync10(join15(roleDir, "role.yaml"))) return { gateway: "planned", heartbeat: "planned" };
   try {
-    const role = YAML5.parse(readFileSync11(join14(roleDir, "role.yaml"), "utf8"));
+    const role = YAML5.parse(readFileSync11(join15(roleDir, "role.yaml"), "utf8"));
     return {
       gateway: typeof role?.service_state?.gateway === "string" ? role.service_state.gateway : "unknown",
       heartbeat: typeof role?.service_state?.heartbeat === "string" ? role.service_state.heartbeat : "unknown"
@@ -12322,8 +12352,8 @@ function renderHermesSummary(ctx) {
   const lines = [
     title,
     `agent_id: ${ctx.agentId ?? "planned"}`,
-    `role_dir: ${ctx.roleDir ?? join14(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm")}`,
-    `runtime: local role runtime (${join14(ctx.roleDir ?? join14(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm"), "runtime")})`,
+    `role_dir: ${ctx.roleDir ?? join15(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm")}`,
+    `runtime: local role runtime (${join15(ctx.roleDir ?? join15(ctx.targetDir, "agents", "hermes", ctx.role ?? "pm"), "runtime")})`,
     `heartbeat: ${service.heartbeat}`,
     `gateway: ${service.gateway}`
   ];
@@ -12342,7 +12372,7 @@ var PrintHermesSummary = class extends Command {
 // src/commands/hermes/ApplyDeferredExternalEffects.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
 import { existsSync as existsSync11, readFileSync as readFileSync12, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 import YAML6 from "yaml";
 var ApplyDeferredExternalEffects = class extends Command {
   async invoke() {
@@ -12370,7 +12400,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     };
     scrubInteractiveChannelCredentials(env2);
     if (!selected.ticketBoard) scrubTicketProviderCredentials(env2);
-    const roleManifest = join15(ctx.roleDir, "role.yaml");
+    const roleManifest = join16(ctx.roleDir, "role.yaml");
     const scripts = [
       ...selected.ticketBoard ? ["42-ticket-provider.sh"] : [],
       ...selected.systemd ? ["70-systemd.sh"] : [],
@@ -12380,7 +12410,7 @@ var ApplyDeferredExternalEffects = class extends Command {
     ];
     const logs = [];
     for (const script of scripts) {
-      const path = join15(ctx.roleDir, ".scripts", script);
+      const path = join16(ctx.roleDir, ".scripts", script);
       if (!existsSync11(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes script is missing: ${path}` };
       }
@@ -12419,7 +12449,7 @@ ${logs.join("\n")}` : ""}`
 // src/commands/hermes/ApplyDeferredHostEffects.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
 import { existsSync as existsSync12 } from "node:fs";
-import { join as join16 } from "node:path";
+import { join as join17 } from "node:path";
 var ApplyDeferredHostEffects = class extends Command {
   async invoke() {
     const ctx = this.context;
@@ -12456,7 +12486,7 @@ var ApplyDeferredHostEffects = class extends Command {
     const scripts = ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh"];
     const logs = [];
     for (const script of scripts) {
-      const path = join16(ctx.roleDir, ".scripts", script);
+      const path = join17(ctx.roleDir, ".scripts", script);
       if (!existsSync12(path)) {
         return { success: false, outcome: "failed", message: `Deferred Hermes host script is missing: ${path}` };
       }
@@ -12481,13 +12511,13 @@ ${logs.join("\n")}` : ""}`
 init_tree_diff();
 init_preflight();
 import { existsSync as existsSync13, readFileSync as readFileSync13 } from "node:fs";
-import { join as join17, resolve as resolve6 } from "node:path";
+import { join as join18, resolve as resolve7 } from "node:path";
 import YAML7 from "yaml";
 function deploymentDeferrals(ctx) {
   const deferred = [];
   if (ctx.local || ctx.skipPlane) deferred.push("ticket-board provisioning");
   if (ctx.local || ctx.skipSystemd) deferred.push("systemd service activation");
-  const projectManifest = join17(ctx.targetDir, ".project.json");
+  const projectManifest = join18(ctx.targetDir, ".project.json");
   if (!ctx.skipPlane && existsSync13(projectManifest)) {
     try {
       const project = JSON.parse(readFileSync13(projectManifest, "utf8"));
@@ -12497,7 +12527,7 @@ function deploymentDeferrals(ctx) {
       deferred.push("ticket board state unreadable");
     }
   }
-  const rolePath = ctx.roleDir ? join17(ctx.roleDir, "role.yaml") : "";
+  const rolePath = ctx.roleDir ? join18(ctx.roleDir, "role.yaml") : "";
   if (rolePath && existsSync13(rolePath)) {
     try {
       const role = YAML7.parse(readFileSync13(rolePath, "utf8"));
@@ -12573,7 +12603,7 @@ var HermesAgentRecipe = class extends Recipe {
       const observedChanges = before ? changedTreePaths(ctx.targetDir, before, snapshotTree(ctx.targetDir)) : [];
       let status = result2.outcome ?? (result2.success ? ctx.dryRun && result2.filePath ? "planned" : result2.filePath ? "changed" : "unchanged" : "failed");
       if (result2.success && !ctx.dryRun && observedChanges.length) status = "changed";
-      const declaredChanges = status === "changed" && result2.filePath ? [resolve6(ctx.targetDir, result2.filePath)] : [];
+      const declaredChanges = status === "changed" && result2.filePath ? [resolve7(ctx.targetDir, result2.filePath)] : [];
       const actualChanges = [.../* @__PURE__ */ new Set([...observedChanges, ...declaredChanges])].sort();
       phases.push({ id: CommandClass.name, status, changedFiles: actualChanges, message: result2.message || void 0 });
       changedFiles.push(...actualChanges);
@@ -12876,13 +12906,13 @@ var NodeRecipe = class extends Recipe {
 init_project();
 import { spawnSync as spawnSync13 } from "node:child_process";
 import { existsSync as existsSync19, lstatSync as lstatSync12, readFileSync as readFileSync19, rmSync as rmSync5 } from "node:fs";
-import { dirname as dirname11, isAbsolute as isAbsolute5, join as join24, relative as relativePath, resolve as resolve13 } from "node:path";
+import { dirname as dirname12, isAbsolute as isAbsolute6, join as join25, relative as relativePath, resolve as resolve14 } from "node:path";
 init_tree_diff();
 
 // src/recipes/NotebookRecipe.ts
 init_project();
 import { existsSync as existsSync18, readFileSync as readFileSync18 } from "node:fs";
-import { join as join23 } from "node:path";
+import { join as join24 } from "node:path";
 
 // src/notebook/checks.ts
 init_config();
@@ -12890,7 +12920,7 @@ init_notes();
 init_output();
 init_state();
 import { existsSync as existsSync16, readFileSync as readFileSync16 } from "node:fs";
-import { join as join19 } from "node:path";
+import { join as join20 } from "node:path";
 var NOTEBOOK_RULE_IDS = [
   "notebook.configuration",
   "notebook.binding",
@@ -12907,7 +12937,7 @@ function result(check, status, summary, changedFiles = [], details = []) {
   return { id: check.id, title: check.title, status, summary, changedFiles, details };
 }
 function manifestNotebook(repo) {
-  const path = join19(repo, ".project.json");
+  const path = join20(repo, ".project.json");
   if (!existsSync16(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync16(path, "utf8"));
@@ -13171,7 +13201,7 @@ init_project();
 init_config();
 init_open_notebook_client();
 init_notes();
-import { resolve as resolve12 } from "node:path";
+import { resolve as resolve13 } from "node:path";
 
 // src/notebook/overview.ts
 init_notes();
@@ -13179,7 +13209,7 @@ init_git_evidence();
 init_types();
 import { spawnSync as spawnSync10 } from "node:child_process";
 import { realpathSync as realpathSync7 } from "node:fs";
-import { relative as relative10, resolve as resolve10, sep as sep5 } from "node:path";
+import { relative as relative10, resolve as resolve11, sep as sep5 } from "node:path";
 var DEFAULT_OVERVIEW_REFERENCES = [".project.json", "README.md", "AGENTS.md", "CLAUDE.md", "docs/architecture.md"];
 function git2(repo, args, timeout) {
   const result2 = spawnSync10("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 1024 * 1024, timeout, shell: false });
@@ -13188,7 +13218,7 @@ function git2(repo, args, timeout) {
 function normalizedReference(repo, value) {
   if (!value || value.includes("\0") || value.startsWith("/") || value.split(/[\\/]/u).includes("..")) throw new NotebookError("INVALID_INPUT", `Overview reference is not a contained relative path: ${value}`);
   const root = realpathSync7(repo);
-  const candidate = resolve10(root, value);
+  const candidate = resolve11(root, value);
   const rel = relative10(root, candidate).split(sep5).join("/");
   if (!rel || rel === ".." || rel.startsWith("../")) throw new NotebookError("INVALID_INPUT", `Overview reference escapes the repository: ${value}`);
   return rel.normalize("NFC");
@@ -13323,18 +13353,18 @@ init_types();
 import { spawn, spawnSync as spawnSync11 } from "node:child_process";
 import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync17, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync17, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync5, writeFileSync as writeFileSync10 } from "node:fs";
-import { basename as basename8, dirname as dirname10, isAbsolute as isAbsolute3, join as join22, parse as parse3, relative as relative11, resolve as resolve11, sep as sep6 } from "node:path";
+import { basename as basename8, dirname as dirname11, isAbsolute as isAbsolute4, join as join23, parse as parse3, relative as relative11, resolve as resolve12, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function bundledSkillCandidates() {
   const candidates = [];
-  let cursor = dirname10(fileURLToPath5(import.meta.url));
+  let cursor = dirname11(fileURLToPath5(import.meta.url));
   for (let depth = 0; depth < 8; depth++) {
-    candidates.push(join22(cursor, "dist", "assets", "project-notebook-skill"), join22(cursor, "assets", "project-notebook-skill"));
-    const parent = dirname10(cursor);
+    candidates.push(join23(cursor, "dist", "assets", "project-notebook-skill"), join23(cursor, "assets", "project-notebook-skill"));
+    const parent = dirname11(cursor);
     if (parent === cursor) break;
     cursor = parent;
   }
-  return [...new Set(candidates.map((candidate) => resolve11(candidate)))];
+  return [...new Set(candidates.map((candidate) => resolve12(candidate)))];
 }
 function safeSkillRelativePath(value) {
   if (!value || value.startsWith("/") || value.includes("\0")) return false;
@@ -13352,7 +13382,7 @@ function assertOwnedSkillTree(source) {
     if (uid !== void 0 && directoryStat.uid !== uid) throw new NotebookError("CONFLICT", "Project Notebook skill source is not owned by the current user");
     if (directoryStat.mode & 3586) throw new NotebookError("CONFLICT", "Project Notebook skill source has unsafe directory mode bits");
     for (const entry of readdirSync8(directory, { withFileTypes: true })) {
-      const path = join22(directory, entry.name);
+      const path = join23(directory, entry.name);
       const stat = lstatSync11(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a symlink");
       if (entry.isDirectory()) walk(path);
@@ -13369,7 +13399,7 @@ function enumerateSkillPayload(source) {
   const result2 = [];
   const walk = (directory) => {
     for (const entry of readdirSync8(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
-      const path = join22(directory, entry.name);
+      const path = join23(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
       if (!safeSkillRelativePath(rel)) throw new NotebookError("CONFLICT", `Project Notebook skill export path is unsafe: ${rel}`);
@@ -13386,7 +13416,7 @@ function enumerateSkillPayload(source) {
   return result2.sort((a, b) => a.path.localeCompare(b.path, "en"));
 }
 function parsePackedManifest(source) {
-  const manifestPath = join22(source, "export-manifest.json");
+  const manifestPath = join23(source, "export-manifest.json");
   if (!existsSync17(manifestPath)) return null;
   const value = JSON.parse(readFileSync17(manifestPath, "utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new NotebookError("CONFLICT", "Project Notebook skill export manifest is invalid");
@@ -13397,7 +13427,7 @@ function parsePackedManifest(source) {
     if (!entry || typeof entry.path !== "string" || !/^[a-f0-9]{64}$/u.test(entry.sha256) || !/^(?:0644|0755)$/u.test(entry.mode)) throw new NotebookError("CONFLICT", "Project Notebook skill export entry is invalid");
     if (!safeSkillRelativePath(entry.path) || paths.has(entry.path)) throw new NotebookError("CONFLICT", "Project Notebook skill export path is unsafe or duplicated");
     paths.add(entry.path);
-    const path = join22(source, ...entry.path.split("/"));
+    const path = join23(source, ...entry.path.split("/"));
     const stat = lstatSync11(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
     const actual = createHash7("sha256").update(readFileSync17(path)).digest("hex");
@@ -13412,12 +13442,12 @@ function parsePackedManifest(source) {
   if (JSON.stringify(actualPaths) !== JSON.stringify(manifest.files.map((entry) => entry.path))) throw new NotebookError("CONFLICT", "Project Notebook skill manifest does not exactly enumerate its payload");
   const sums = `${manifest.files.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n")}
 `;
-  if (!existsSync17(join22(source, "SHA256SUMS")) || readFileSync17(join22(source, "SHA256SUMS"), "utf8") !== sums) throw new NotebookError("CONFLICT", "Project Notebook skill SHA256SUMS is missing or stale");
+  if (!existsSync17(join23(source, "SHA256SUMS")) || readFileSync17(join23(source, "SHA256SUMS"), "utf8") !== sums) throw new NotebookError("CONFLICT", "Project Notebook skill SHA256SUMS is missing or stale");
   return manifest;
 }
 function expectedPackedSkill() {
   for (const candidate of bundledSkillCandidates()) {
-    if (!existsSync17(join22(candidate, "export-manifest.json"))) continue;
+    if (!existsSync17(join23(candidate, "export-manifest.json"))) continue;
     assertOwnedSkillTree(candidate);
     const manifest = parsePackedManifest(candidate);
     if (!manifest) continue;
@@ -13427,7 +13457,7 @@ function expectedPackedSkill() {
   throw new NotebookError("NOT_CONFIGURED", "PJ\xE1ngler package has no verified Project Notebook skill export");
 }
 function isCanonicalSkillexProjectionPath(path) {
-  return resolve11(path).split(sep6).join("/").endsWith("/all-skills/project-notebook");
+  return resolve12(path).split(sep6).join("/").endsWith("/all-skills/project-notebook");
 }
 function isVerifiedCanonicalSkillexProjection(path) {
   if (!isCanonicalSkillexProjectionPath(path)) return false;
@@ -13447,14 +13477,14 @@ function describeProjectNotebookSkillDrift(source) {
   }
   let actual;
   try {
-    const absolute = resolve11(source);
+    const absolute = resolve12(source);
     const packed = parsePackedManifest(absolute);
     actual = packed?.files ?? enumerateSkillPayload(absolute);
   } catch (error) {
     return [boundedDiagnostic(error)];
   }
   const pinned = new Map(expected.manifest.files.map((entry) => [entry.path, entry]));
-  const present = new Map(actual.map((entry) => [entry.path, entry]));
+  const present2 = new Map(actual.map((entry) => [entry.path, entry]));
   const drift = [];
   for (const entry of actual) {
     const match = pinned.get(entry.path);
@@ -13466,12 +13496,12 @@ function describeProjectNotebookSkillDrift(source) {
     else if (match.mode !== entry.mode) drift.push(`${entry.path}: mode ${entry.mode} differs from pinned ${match.mode}`);
   }
   for (const entry of expected.manifest.files) {
-    if (!present.has(entry.path)) drift.push(`${entry.path}: missing from the projection`);
+    if (!present2.has(entry.path)) drift.push(`${entry.path}: missing from the projection`);
   }
   return drift.length ? drift.slice(0, 20) : ["no per-file drift detected; the export enumeration itself differs"];
 }
 function verifyProjectNotebookSkillExport(source) {
-  const absolute = resolve11(source);
+  const absolute = resolve12(source);
   assertOwnedSkillTree(absolute);
   const packed = parsePackedManifest(absolute);
   const actual = packed ?? { schema_version: 1, skill: "project-notebook", files: enumerateSkillPayload(absolute) };
@@ -13483,14 +13513,14 @@ function verifyProjectNotebookSkillExport(source) {
 }
 function resolveProjectNotebookSkillSource(env2 = process.env) {
   if (env2.PJ_PROJECT_NOTEBOOK_SKILL_ROOT) {
-    const explicit = resolve11(env2.PJ_PROJECT_NOTEBOOK_SKILL_ROOT);
-    if (!existsSync17(join22(explicit, "SKILL.md"))) throw new NotebookError("NOT_CONFIGURED", "Configured Project Notebook skill source is unavailable");
+    const explicit = resolve12(env2.PJ_PROJECT_NOTEBOOK_SKILL_ROOT);
+    if (!existsSync17(join23(explicit, "SKILL.md"))) throw new NotebookError("NOT_CONFIGURED", "Configured Project Notebook skill source is unavailable");
     verifyProjectNotebookSkillExport(explicit);
     return explicit;
   }
   if (env2.PJ_SKILLS_REGISTRY_ROOT) {
-    const canonical = resolve11(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
-    if (existsSync17(join22(canonical, "SKILL.md"))) {
+    const canonical = resolve12(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
+    if (existsSync17(join23(canonical, "SKILL.md"))) {
       verifyProjectNotebookSkillExport(canonical);
       return canonical;
     }
@@ -13513,7 +13543,7 @@ function probeCanonicalSkillexRootProjection(skillsRoot, link) {
   if (!rootLink.isSymbolicLink()) return { state: "plain" };
   const decline = (code, summary, details = []) => ({ state: "declined", block: { code, summary, details, repair: REPAIR_COMMAND } });
   try {
-    assertNoSymlinkComponents2(dirname10(skillsRoot));
+    assertNoSymlinkComponents2(dirname11(skillsRoot));
     const uid = typeof process.getuid === "function" ? process.getuid() : void 0;
     if (uid !== void 0 && rootLink.uid !== uid) throw new Error("owner");
     const globalRoot = realpathSync8(skillsRoot);
@@ -13522,10 +13552,10 @@ function probeCanonicalSkillexRootProjection(skillsRoot, link) {
     if (!globalStat.isDirectory() || globalStat.isSymbolicLink()) throw new Error("root-type");
     if (uid !== void 0 && globalStat.uid !== uid) throw new Error("root-owner");
     if (globalStat.mode & 3586) throw new Error("root-mode");
-    const skillSetsRoot = dirname10(globalRoot);
+    const skillSetsRoot = dirname11(globalRoot);
     if (basename8(globalRoot) !== "global" || basename8(skillSetsRoot) !== "skill-sets") throw new Error("layout");
-    const checkoutRoot = dirname10(skillSetsRoot);
-    const expectedSource = join22(checkoutRoot, "all-skills", "project-notebook");
+    const checkoutRoot = dirname11(skillSetsRoot);
+    const expectedSource = join23(checkoutRoot, "all-skills", "project-notebook");
     const linkStat = lstatSync11(link);
     if (!linkStat.isSymbolicLink()) throw new Error("projection-type");
     if (uid !== void 0 && linkStat.uid !== uid) throw new Error("projection-owner");
@@ -13562,28 +13592,28 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const manifest = verifyProjectNotebookSkillExport(source);
   const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
-  if (!home || !resolve11(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
-  const skillsRoot = join22(home, ".agents", "skills");
-  const link = join22(skillsRoot, "project-notebook");
-  const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
-  if (probe.state === "adopted") return { installed: false, path: link, digest };
-  if (probe.state === "declined") return { installed: false, path: link, digest, blocked: probe.block };
-  const dataRoot = resolve11(env2.XDG_DATA_HOME || join22(home, ".local", "share"), "pjangler", "skills", "project-notebook");
-  const payload = join22(dataRoot, `${PJANGLER_VERSION}-${digest}`);
-  assertNoSymlinkComponents2(dirname10(dataRoot), true);
+  if (!home || !resolve12(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
+  const skillsRoot = join23(home, ".agents", "skills");
+  const link = join23(skillsRoot, "project-notebook");
+  const probe2 = probeCanonicalSkillexRootProjection(skillsRoot, link);
+  if (probe2.state === "adopted") return { installed: false, path: link, digest };
+  if (probe2.state === "declined") return { installed: false, path: link, digest, blocked: probe2.block };
+  const dataRoot = resolve12(env2.XDG_DATA_HOME || join23(home, ".local", "share"), "pjangler", "skills", "project-notebook");
+  const payload = join23(dataRoot, `${PJANGLER_VERSION}-${digest}`);
+  assertNoSymlinkComponents2(dirname11(dataRoot), true);
   mkdirSync7(dataRoot, { recursive: true, mode: 448 });
   assertNoSymlinkComponents2(dataRoot);
   const dataStat = lstatSync11(dataRoot);
   if (!dataStat.isDirectory() || dataStat.isSymbolicLink() || typeof process.getuid === "function" && dataStat.uid !== process.getuid()) throw new NotebookError("CONFLICT", "Project Notebook skill data root is not a current-user directory");
   chmodSync4(dataRoot, 448);
   if (!existsSync17(payload)) {
-    const staging = join22(dataRoot, `.staging-${randomUUID5()}`);
+    const staging = join23(dataRoot, `.staging-${randomUUID5()}`);
     mkdirSync7(staging, { recursive: false, mode: 448 });
     try {
       for (const entry of manifest.files) {
-        const destination = join22(staging, ...entry.path.split("/"));
-        mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
-        copyFileSync3(join22(source, ...entry.path.split("/")), destination);
+        const destination = join23(staging, ...entry.path.split("/"));
+        mkdirSync7(dirname11(destination), { recursive: true, mode: 493 });
+        copyFileSync3(join23(source, ...entry.path.split("/")), destination);
         const mode = entry.mode === "0755" ? 493 : 420;
         chmodSync4(destination, mode);
         const fd = openSync6(destination, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0));
@@ -13595,9 +13625,9 @@ function installPackagedProjectNotebookSkill(input = {}) {
           closeSync6(fd);
         }
       }
-      writeFileSync10(join22(staging, "export-manifest.json"), `${JSON.stringify(manifest, null, 2)}
+      writeFileSync10(join23(staging, "export-manifest.json"), `${JSON.stringify(manifest, null, 2)}
 `, { mode: 420, flag: "wx" });
-      writeFileSync10(join22(staging, "SHA256SUMS"), `${manifest.files.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n")}
+      writeFileSync10(join23(staging, "SHA256SUMS"), `${manifest.files.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n")}
 `, { mode: 420, flag: "wx" });
       verifyProjectNotebookSkillExport(staging);
       renameSync6(staging, payload);
@@ -13666,7 +13696,7 @@ function collectSupersededPayloads(dataRoot, keep) {
   }
   for (const name of entries) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?-[0-9a-f]{64}$/u.test(name)) continue;
-    const candidate = join22(dataRoot, name);
+    const candidate = join23(dataRoot, name);
     try {
       const stat = lstatSync11(candidate);
       if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
@@ -13681,23 +13711,23 @@ function collectSupersededPayloads(dataRoot, keep) {
 function repairProjectNotebookSkillProjection(input = {}) {
   const env2 = input.env ?? process.env;
   const home = env2.HOME;
-  if (!home || !resolve11(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to repair the Project Notebook skill projection");
-  const skillsRoot = join22(home, ".agents", "skills");
-  const link = join22(skillsRoot, "project-notebook");
-  const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
-  if (probe.state === "adopted") return { status: "clean", summary: "Canonical Skillex projection already matches the version-pinned export", source: probe.source, drift: [], changed_files: [] };
-  if (probe.state !== "declined") {
+  if (!home || !resolve12(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to repair the Project Notebook skill projection");
+  const skillsRoot = join23(home, ".agents", "skills");
+  const link = join23(skillsRoot, "project-notebook");
+  const probe2 = probeCanonicalSkillexRootProjection(skillsRoot, link);
+  if (probe2.state === "adopted") return { status: "clean", summary: "Canonical Skillex projection already matches the version-pinned export", source: probe2.source, drift: [], changed_files: [] };
+  if (probe2.state !== "declined") {
     return { status: "clean", summary: "No canonical Skillex projection is in use; the version-pinned payload is installed directly", source: null, drift: [], changed_files: [] };
   }
-  const source = probe.block.repairable_source;
-  if (!source) return { status: "blocked", summary: probe.block.summary, source: null, drift: probe.block.details, changed_files: [] };
+  const source = probe2.block.repairable_source;
+  if (!source) return { status: "blocked", summary: probe2.block.summary, source: null, drift: probe2.block.details, changed_files: [] };
   const expected = expectedPackedSkill();
   const wanted = new Set(expected.manifest.files.map((entry) => entry.path));
   assertOwnedSkillTree(source);
-  const present = [];
+  const present2 = [];
   const walk = (directory) => {
     for (const entry of readdirSync8(directory, { withFileTypes: true })) {
-      const path = join22(directory, entry.name);
+      const path = join23(directory, entry.name);
       const rel = relative11(source, path).split(sep6).join("/");
       if (entry.isDirectory()) {
         walk(path);
@@ -13705,13 +13735,13 @@ function repairProjectNotebookSkillProjection(input = {}) {
       }
       if (!entry.isFile()) throw new NotebookError("CONFLICT", `Refusing to repair a projection containing a non-regular entry: ${rel}`);
       if (!rel.includes("/") && (rel === "export-manifest.json" || rel === "SHA256SUMS" || rel === ".source.yaml")) continue;
-      present.push(rel);
+      present2.push(rel);
     }
   };
   walk(source);
-  const stale = present.filter((rel) => !wanted.has(rel)).sort();
+  const stale = present2.filter((rel) => !wanted.has(rel)).sort();
   const changed = expected.manifest.files.filter((entry) => {
-    const path = join22(source, ...entry.path.split("/"));
+    const path = join23(source, ...entry.path.split("/"));
     if (!existsSync17(path)) return true;
     const stat = lstatSync11(path);
     if (!stat.isFile()) return true;
@@ -13722,23 +13752,23 @@ function repairProjectNotebookSkillProjection(input = {}) {
   }).map((entry) => entry.path);
   const affected = [.../* @__PURE__ */ new Set([...changed, ...stale])].sort();
   if (!affected.length) {
-    return { status: "blocked", summary: `${source} does not verify against the pinned export, but no per-file difference was found`, source, drift: probe.block.details, changed_files: [] };
+    return { status: "blocked", summary: `${source} does not verify against the pinned export, but no per-file difference was found`, source, drift: probe2.block.details, changed_files: [] };
   }
   if (!input.apply) {
     return {
       status: "planned",
       summary: `Would restore ${affected.length} file(s) in ${source} from the version-pinned export`,
       source,
-      drift: probe.block.details,
-      changed_files: affected.map((rel) => join22(source, ...rel.split("/")))
+      drift: probe2.block.details,
+      changed_files: affected.map((rel) => join23(source, ...rel.split("/")))
     };
   }
-  for (const rel of stale) rmSync4(join22(source, ...rel.split("/")), { force: true });
+  for (const rel of stale) rmSync4(join23(source, ...rel.split("/")), { force: true });
   for (const rel of changed) {
-    const destination = join22(source, ...rel.split("/"));
+    const destination = join23(source, ...rel.split("/"));
     const entry = expected.manifest.files.find((item) => item.path === rel);
-    mkdirSync7(dirname10(destination), { recursive: true, mode: 493 });
-    copyFileSync3(join22(expected.source, ...rel.split("/")), destination);
+    mkdirSync7(dirname11(destination), { recursive: true, mode: 493 });
+    copyFileSync3(join23(expected.source, ...rel.split("/")), destination);
     chmodSync4(destination, entry.mode === "0755" ? 493 : 420);
   }
   verifyProjectNotebookSkillExport(source);
@@ -13746,21 +13776,21 @@ function repairProjectNotebookSkillProjection(input = {}) {
     status: "repaired",
     summary: `Restored ${affected.length} file(s) in ${source} from the version-pinned export; commit the change in the Skillex checkout`,
     source,
-    drift: probe.block.details,
-    changed_files: affected.map((rel) => join22(source, ...rel.split("/")))
+    drift: probe2.block.details,
+    changed_files: affected.map((rel) => join23(source, ...rel.split("/")))
   };
 }
 function inspectProjectNotebookIntegration(env2 = process.env) {
   const home = env2.HOME;
   if (!home) return { skill_installed: false, hooks_projected: false, details: ["HOME is unavailable"] };
-  const skillsRoot = join22(home, ".agents", "skills");
-  const link = join22(skillsRoot, "project-notebook");
+  const skillsRoot = join23(home, ".agents", "skills");
+  const link = join23(skillsRoot, "project-notebook");
   try {
     const expected = expectedPackedSkill();
-    const dataRoot = resolve11(env2.XDG_DATA_HOME || join22(home, ".local", "share"), "pjangler", "skills", "project-notebook");
-    const expectedPayload = join22(dataRoot, `${PJANGLER_VERSION}-${expected.digest}`);
-    const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
-    if (probe.state === "declined") return { skill_installed: false, hooks_projected: false, details: probe.block.details, blocked: probe.block };
+    const dataRoot = resolve12(env2.XDG_DATA_HOME || join23(home, ".local", "share"), "pjangler", "skills", "project-notebook");
+    const expectedPayload = join23(dataRoot, `${PJANGLER_VERSION}-${expected.digest}`);
+    const probe2 = probeCanonicalSkillexRootProjection(skillsRoot, link);
+    if (probe2.state === "declined") return { skill_installed: false, hooks_projected: false, details: probe2.block.details, blocked: probe2.block };
     const stat = lstatSync11(link);
     if (!stat.isSymbolicLink()) {
       return {
@@ -13798,8 +13828,8 @@ function inspectProjectNotebookIntegration(env2 = process.env) {
   }
 }
 function projectorArguments(source, command, input) {
-  const script = join22(source, "scripts", "project-hooks.py");
-  const args = [script, command, "--master", join22(source, "hooks", "hooks.master.json"), "--fragment", join22(source, "hooks", "claude.settings.json"), "--target", input.target];
+  const script = join23(source, "scripts", "project-hooks.py");
+  const args = [script, command, "--master", join23(source, "hooks", "hooks.master.json"), "--fragment", join23(source, "hooks", "claude.settings.json"), "--target", input.target];
   if (command === "check") args.push("--json");
   else if (input.stateHome) args.push("--state-home", input.stateHome);
   return args;
@@ -13821,7 +13851,7 @@ function checkProjectNotebookHooks(input = {}) {
   verifyProjectNotebookSkillExport(source);
   const home = env2.HOME;
   if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to check Project Notebook hooks");
-  const target = resolve11(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join22(home, ".claude", "settings.json"));
+  const target = resolve12(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join23(home, ".claude", "settings.json"));
   const result2 = spawnSync11("/usr/bin/python3", ["-I", ...projectorArguments(source, "check", { target })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
   if (result2.status !== 0 && result2.status !== 1) throw new NotebookError("CONFLICT", (result2.stderr || "Project Notebook projector check failed").trim().slice(0, 512));
   try {
@@ -13839,8 +13869,8 @@ function installProjectNotebookIntegration(input = {}) {
   const source = realpathSync8(skill.path);
   const home = env2.HOME;
   if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to install Project Notebook hooks");
-  const target = resolve11(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join22(home, ".claude", "settings.json"));
-  const stateHome = resolve11(env2.XDG_STATE_HOME || join22(home, ".local", "state"));
+  const target = resolve12(input.target ?? env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join23(home, ".claude", "settings.json"));
+  const stateHome = resolve12(env2.XDG_STATE_HOME || join23(home, ".local", "state"));
   const result2 = spawnSync11("/usr/bin/python3", ["-I", ...projectorArguments(source, "install", { target, stateHome })], { encoding: "utf8", env: projectorEnvironment(env2), timeout: 5e3, maxBuffer: 1048576 });
   if (result2.status !== 0) {
     if (skill.installed) {
@@ -13859,11 +13889,11 @@ function boundedDiagnostic(value, max = 512) {
   return message.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").slice(0, max);
 }
 function assertNoSymlinkComponents2(path, allowMissing = false) {
-  const absolute = resolve11(path);
+  const absolute = resolve12(path);
   const root = parse3(absolute).root;
   let cursor = root;
   for (const component of absolute.slice(root.length).split(sep6).filter(Boolean)) {
-    cursor = join22(cursor, component);
+    cursor = join23(cursor, component);
     let stat;
     try {
       stat = lstatSync11(cursor);
@@ -13979,7 +14009,7 @@ async function prepareNotebookObservationResolved(module, resolved, config, loca
 }
 
 // src/notebook/module.ts
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir8 } from "node:os";
 init_types();
 function decodeCursor(cursor) {
   try {
@@ -14046,7 +14076,7 @@ var NotebookModule = class {
     return {
       changedFiles: [
         ...installed.skill.installed ? [installed.skill.path] : [],
-        ...installed.hooksChanged ? [resolve12(env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? `${home}/.claude/settings.json`)] : []
+        ...installed.hooksChanged ? [resolve13(env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? `${home}/.claude/settings.json`)] : []
       ],
       ...installed.blocked ? { blocked: installed.blocked } : {}
     };
@@ -14273,7 +14303,7 @@ var NotebookModule = class {
       targetDir: local.config.repo_path,
       repoRoot: local.config.repo_path,
       pjanglerRoot: resolvePjanglerRoot(),
-      homeDir: this.environment.HOME || homedir7(),
+      homeDir: this.environment.HOME || homedir8(),
       notebookStateRoot: this.stateRoot,
       notebookRegistryDeclared: Boolean(local.resolved.project.notebook && typeof local.resolved.project.notebook === "object"),
       notebookFocusedAudit: true,
@@ -14345,14 +14375,14 @@ init_remote_mutation_journal();
 function integrationEnvironment(module, ctx) {
   const env2 = { ...module.environment, HOME: ctx.homeDir };
   if (module.environment.HOME !== ctx.homeDir) {
-    env2.XDG_DATA_HOME = join23(ctx.homeDir, ".local", "share");
-    env2.XDG_STATE_HOME = join23(ctx.homeDir, ".local", "state");
-    env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS = join23(ctx.homeDir, ".claude", "settings.json");
+    env2.XDG_DATA_HOME = join24(ctx.homeDir, ".local", "share");
+    env2.XDG_STATE_HOME = join24(ctx.homeDir, ".local", "state");
+    env2.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS = join24(ctx.homeDir, ".claude", "settings.json");
   }
   return env2;
 }
 function resolvedForPlan(plan) {
-  const manifestPath = join23(plan.project.repo_path, ".project.json");
+  const manifestPath = join24(plan.project.repo_path, ".project.json");
   let manifest = plan.manifest;
   if (existsSync18(manifestPath)) {
     const parsed = JSON.parse(readFileSync18(manifestPath, "utf8"));
@@ -14510,7 +14540,7 @@ var PRODUCTION_RUNTIME = {
   }
 };
 function unsafeToRemove(targetDir) {
-  const absolute = resolve13(targetDir);
+  const absolute = resolve14(targetDir);
   let cursor = absolute;
   const seen = /* @__PURE__ */ new Set();
   while (!seen.has(cursor)) {
@@ -14525,7 +14555,7 @@ function unsafeToRemove(targetDir) {
         return `${cursor} could not be inspected: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
-    const parent = dirname11(cursor);
+    const parent = dirname12(cursor);
     if (parent === cursor) break;
     cursor = parent;
   }
@@ -14544,11 +14574,11 @@ function publicMigration(report) {
   };
 }
 function hasGitRepository(runtime, targetDir) {
-  if (!existsSync19(join24(targetDir, ".git"))) return false;
+  if (!existsSync19(join25(targetDir, ".git"))) return false;
   return runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]).status === 0;
 }
 function refreshPlanFromCanonicalManifest(plan) {
-  const manifestPath = join24(plan.project.repo_path, ".project.json");
+  const manifestPath = join25(plan.project.repo_path, ".project.json");
   const manifest = JSON.parse(readFileSync19(manifestPath, "utf8"));
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${manifestPath} must contain a JSON object`);
@@ -14796,7 +14826,7 @@ var ProjectRecipe = class extends Recipe {
         if (hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
         } else {
-          const gitPath = join24(targetDir, ".git");
+          const gitPath = join25(targetDir, ".git");
           for (const { args, label, options } of [
             { args: ["init", "--initial-branch=main"], label: "git init" },
             { args: ["add", "-A"], label: "git add" },
@@ -14966,8 +14996,8 @@ var ProjectRecipe = class extends Recipe {
       } else try {
         rmSync5(targetDir, { recursive: true, force: true });
         const insideTarget = (path) => {
-          const relative12 = relativePath(resolve13(targetDir), resolve13(path));
-          return relative12 === "" || !relative12.startsWith("..") && !isAbsolute5(relative12);
+          const relative13 = relativePath(resolve14(targetDir), resolve14(path));
+          return relative13 === "" || !relative13.startsWith("..") && !isAbsolute6(relative13);
         };
         const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
@@ -15308,8 +15338,8 @@ var recipeRegistry = new RecipeRegistry([
 ]);
 
 // src/commands/AgentHooksCommands.ts
-import { homedir as homedir8 } from "node:os";
-import { join as join25, dirname as dirname12 } from "node:path";
+import { homedir as homedir9 } from "node:os";
+import { join as join26, dirname as dirname13 } from "node:path";
 import { existsSync as existsSync20, cpSync as cpSync2, mkdirSync as mkdirSync8, readFileSync as readFileSync20, writeFileSync as writeFileSync11 } from "node:fs";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 init_project();
@@ -15320,18 +15350,18 @@ function resolveTemplateRoot() {
     candidates.push(process.env.PJANGLER_COMMONPROJECT_TEMPLATE);
   }
   try {
-    let dir = dirname12(fileURLToPath6(import.meta.url));
+    let dir = dirname13(fileURLToPath6(import.meta.url));
     for (let i = 0; i < 8; i++) {
-      candidates.push(join25(dir, "templates", "commonproject", "template"));
-      const parent = dirname12(dir);
+      candidates.push(join26(dir, "templates", "commonproject", "template"));
+      const parent = dirname13(dir);
       if (parent === dir) break;
       dir = parent;
     }
   } catch {
   }
-  candidates.push(join25(homedir8(), "code", "pjangler", "templates", "commonproject", "template"));
+  candidates.push(join26(homedir9(), "code", "pjangler", "templates", "commonproject", "template"));
   for (const c of candidates) {
-    if (existsSync20(join25(c, ".agents", "hooks", "hooks.master.json"))) return c;
+    if (existsSync20(join26(c, ".agents", "hooks", "hooks.master.json"))) return c;
   }
   throw new Error(
     "Could not locate the CommonProject template. Set PJANGLER_COMMONPROJECT_TEMPLATE to <repo>/templates/commonproject/template."
@@ -15357,15 +15387,15 @@ var CopyAgentHooksTree = class extends Command {
     const created = [];
     const skipped = [];
     for (const { rel, dir } of items) {
-      const src = join25(templateRoot, rel);
-      const dest = join25(this.context.targetDir, rel);
+      const src = join26(templateRoot, rel);
+      const dest = join26(this.context.targetDir, rel);
       if (!existsSync20(src)) continue;
       if (existsSync20(dest) && !this.context.force) {
         skipped.push(rel);
         continue;
       }
       if (!this.context.dryRun) {
-        mkdirSync8(dirname12(dest), { recursive: true });
+        mkdirSync8(dirname13(dest), { recursive: true });
         cpSync2(src, dest, { recursive: dir, force: true });
       }
       created.push(rel);
@@ -15386,7 +15416,7 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     if (!resolveAgentHooksLayer2()) {
       return { success: true, message: this.formatMessage(AGENT_HOOKS_SKIP_MESSAGE) };
     }
-    const misePath = join25(this.context.targetDir, "mise.toml");
+    const misePath = join26(this.context.targetDir, "mise.toml");
     if (!existsSync20(misePath)) {
       return {
         success: false,
@@ -15593,7 +15623,7 @@ if __name__ == "__main__":
 
 // src/commands/AddMiseCodegraphScript.ts
 import { chmodSync as chmodSync5 } from "fs";
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 var AddMiseCodegraphScript = class extends Command {
   async invoke() {
     const filePath = ".mise/scripts/codegraph.sh";
@@ -15647,7 +15677,7 @@ fi
 `;
     this.writeFile(filePath, content);
     if (!this.context.dryRun) {
-      chmodSync5(join26(this.context.targetDir, filePath), 493);
+      chmodSync5(join27(this.context.targetDir, filePath), 493);
     }
     return {
       success: true,
@@ -15684,19 +15714,19 @@ SECRET_KEY=""
 
 // src/parity/index.ts
 import { existsSync as existsSync21 } from "node:fs";
-import { homedir as homedir9 } from "node:os";
-import { dirname as dirname13, join as join27, resolve as resolve14 } from "node:path";
+import { homedir as homedir10 } from "node:os";
+import { dirname as dirname14, join as join28, resolve as resolve15 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 function resolvePjanglerRoot2() {
-  let dir = dirname13(fileURLToPath7(import.meta.url));
-  while (dir !== dirname13(dir)) {
-    if (existsSync21(join27(dir, "package.json")) && existsSync21(join27(dir, "templates", "commonproject", "copier.yml"))) return dir;
-    dir = dirname13(dir);
+  let dir = dirname14(fileURLToPath7(import.meta.url));
+  while (dir !== dirname14(dir)) {
+    if (existsSync21(join28(dir, "package.json")) && existsSync21(join28(dir, "templates", "commonproject", "copier.yml"))) return dir;
+    dir = dirname14(dir);
   }
-  return resolve14(process.cwd());
+  return resolve15(process.cwd());
 }
 function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overrides = {}) {
-  const repoRoot = resolve14(repoArg ?? process.cwd());
+  const repoRoot = resolve15(repoArg ?? process.cwd());
   return {
     ...overrides,
     targetDir: repoRoot,
@@ -15704,7 +15734,7 @@ function lifecycleContext(repoArg, dryRun, acceptRegistryMatches = false, overri
     dryRun: overrides.dryRun ?? dryRun,
     force: overrides.force ?? false,
     pjanglerRoot: overrides.pjanglerRoot ?? resolvePjanglerRoot2(),
-    homeDir: overrides.homeDir ?? homedir9(),
+    homeDir: overrides.homeDir ?? homedir10(),
     acceptRegistryMatches: overrides.acceptRegistryMatches ?? acceptRegistryMatches
   };
 }
@@ -15857,13 +15887,13 @@ init_version();
 
 // src/describe/index.ts
 import { existsSync as existsSync22, readFileSync as readFileSync21, readdirSync as readdirSync9, statSync as statSync4 } from "node:fs";
-import { join as join29, resolve as resolve15 } from "node:path";
+import { join as join30, resolve as resolve16 } from "node:path";
 init_project();
 
 // src/describe/activity.ts
 import { spawn as spawn2, spawnSync as spawnSync14 } from "node:child_process";
 import { statSync as statSync3 } from "node:fs";
-import { join as join28 } from "node:path";
+import { join as join29 } from "node:path";
 var ACTIVE_WINDOW_SECONDS = 24 * 60 * 60;
 var MAX_DIRTY_STATS = 500;
 var GIT_TIMEOUT_MS = 5e3;
@@ -15992,7 +16022,7 @@ function uncommittedSource(repo, paths) {
   let newest = 0;
   for (const path of paths.slice(0, MAX_DIRTY_STATS)) {
     try {
-      const mtime = Math.floor(statSync3(join28(repo, path)).mtimeMs / 1e3);
+      const mtime = Math.floor(statSync3(join29(repo, path)).mtimeMs / 1e3);
       if (mtime > newest) newest = mtime;
     } catch {
     }
@@ -16123,7 +16153,7 @@ function describeType(repo) {
   const evidence = [];
   const note = (signal, file) => evidence.push(`${signal} (${file})`);
   for (const marker of LANGUAGE_MARKERS) {
-    if (!existsSync22(join29(repo, marker.file))) continue;
+    if (!existsSync22(join30(repo, marker.file))) continue;
     if (!languages.includes(marker.language)) {
       languages.push(marker.language);
       note(marker.language, marker.file);
@@ -16137,9 +16167,9 @@ function describeType(repo) {
     }
   } catch {
   }
-  const pkg = readJson(join29(repo, "package.json"));
+  const pkg = readJson(join30(repo, "package.json"));
   if (pkg) {
-    if (existsSync22(join29(repo, "tsconfig.json"))) {
+    if (existsSync22(join30(repo, "tsconfig.json"))) {
       const index = languages.indexOf("javascript");
       if (index >= 0) languages.splice(index, 1);
       if (!languages.includes("typescript")) {
@@ -16173,14 +16203,14 @@ function describeType(repo) {
     ["hermes-fleet-host", "agents/hermes"]
   ];
   for (const [role, marker] of roleMarkers) {
-    if (!existsSync22(join29(repo, marker))) continue;
+    if (!existsSync22(join30(repo, marker))) continue;
     roles.push(role);
     note(role, marker);
   }
   return { primaryLanguage: languages[0], languages, roles, evidence };
 }
 function describeIdentity(repo, registryPath2) {
-  const manifestPath = join29(repo, ".project.json");
+  const manifestPath = join30(repo, ".project.json");
   const manifest = readJson(manifestPath);
   const drift = [];
   let record;
@@ -16188,8 +16218,8 @@ function describeIdentity(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
     const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : void 0;
-    const resolved = resolve15(repo);
-    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve15(project.repo_path) === resolved);
+    const resolved = resolve16(repo);
+    record = (slug ? registry.projects[slug] : void 0) ?? Object.values(registry.projects).find((project) => resolve16(project.repo_path) === resolved);
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -16200,7 +16230,7 @@ function describeIdentity(repo, registryPath2) {
   if (record && !manifest) {
     drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
   }
-  if (record && resolve15(record.repo_path) !== resolve15(repo)) {
+  if (record && resolve16(record.repo_path) !== resolve16(repo)) {
     drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
   }
   const manifestProvider = manifest?.ticket_provider;
@@ -16218,10 +16248,10 @@ function describeIdentity(repo, registryPath2) {
       ["identifier", provider?.identifier, record.ticket_provider.identifier],
       ["board_id", provider?.board_id, record.ticket_provider.board_id]
     ];
-    for (const [field2, fromManifest, fromRegistry] of fields) {
+    for (const [field3, fromManifest, fromRegistry] of fields) {
       if ((fromManifest ?? "") === (fromRegistry ?? "")) continue;
       drift.push({
-        note: `ticket_provider.${field2} differs: .project.json has "${fromManifest ?? ""}", registry has "${fromRegistry ?? ""}" \u2014 the manifest is the source of truth, so the registry record needs re-syncing`
+        note: `ticket_provider.${field3} differs: .project.json has "${fromManifest ?? ""}", registry has "${fromRegistry ?? ""}" \u2014 the manifest is the source of truth, so the registry record needs re-syncing`
       });
     }
   }
@@ -16267,12 +16297,12 @@ function describeSubsystems(repo, findings) {
     const markers = SUBSYSTEM_MARKERS[metadata.id] ?? [];
     const evidence = metadata.id === "notebook" ? (() => {
       try {
-        const manifest = JSON.parse(readFileSync21(join29(repo, ".project.json"), "utf8"));
+        const manifest = JSON.parse(readFileSync21(join30(repo, ".project.json"), "utf8"));
         return manifest.notebook && typeof manifest.notebook === "object" ? [".project.json#notebook"] : [];
       } catch {
         return [];
       }
-    })() : markers.filter((marker) => existsSync22(join29(repo, marker)));
+    })() : markers.filter((marker) => existsSync22(join30(repo, marker)));
     const rules = (byRecipe.get(metadata.id) ?? []).map((finding2) => ({
       id: finding2.id,
       title: finding2.title,
@@ -16282,16 +16312,16 @@ function describeSubsystems(repo, findings) {
     }));
     const graded = rules.filter((rule) => rule.status !== "skip");
     const parity = graded.length === 0 ? "unchecked" : graded.every((rule) => rule.status === "pass") ? "ok" : "drift";
-    const present = evidence.length > 0;
-    const status = !present ? "absent" : parity === "drift" ? "drifted" : "installed";
+    const present2 = evidence.length > 0;
+    const status = !present2 ? "absent" : parity === "drift" ? "drifted" : "installed";
     return { id: metadata.id, name: metadata.name, description: metadata.description, status, parity, evidence, rules };
   });
 }
 function describeNotebook(repo, registryPath2) {
   try {
     const registry = loadProjectRegistry(registryPath2);
-    const project = Object.values(registry.projects).find((entry) => resolve15(entry.repo_path) === resolve15(repo));
-    const manifest = existsSync22(join29(repo, ".project.json")) ? JSON.parse(readFileSync21(join29(repo, ".project.json"), "utf8")) : void 0;
+    const project = Object.values(registry.projects).find((entry) => resolve16(entry.repo_path) === resolve16(repo));
+    const manifest = existsSync22(join30(repo, ".project.json")) ? JSON.parse(readFileSync21(join30(repo, ".project.json"), "utf8")) : void 0;
     const declared = Boolean(project?.notebook || manifest?.notebook && typeof manifest.notebook === "object");
     if (!declared) return { declared: false, bindingState: null, notebookId: null, overviewNoteId: null, health: null, remoteCheck: "skip", captureAdmission: null };
     const config = loadEffectiveNotebookConfig(repo, registryPath2);
@@ -16309,7 +16339,7 @@ function describeNotebook(repo, registryPath2) {
   }
 }
 function describeConfigFiles(repo) {
-  return CONFIG_FILES.filter((spec) => existsSync22(join29(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
+  return CONFIG_FILES.filter((spec) => existsSync22(join30(repo, spec.path))).map((spec) => ({ path: spec.path, purpose: spec.purpose, subsystem: spec.subsystem }));
 }
 function describeNextSteps(description, findings) {
   const steps = [];
@@ -16387,7 +16417,7 @@ function describeNextSteps(description, findings) {
   return steps;
 }
 function describeProject(input = {}) {
-  const repo = resolve15(input.repoArg ?? process.cwd());
+  const repo = resolve16(input.repoArg ?? process.cwd());
   if (!existsSync22(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync4(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
   const registryPath2 = input.registryPath ?? projectRegistryPath();
@@ -16484,8 +16514,8 @@ function renderDescribe(description, options = {}) {
     }
   }
   lines.push("");
-  const present = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
-  lines.push(section("Subsystems", `${present.length}/${description.subsystems.length} installed`));
+  const present2 = description.subsystems.filter((subsystem) => subsystem.status !== "absent");
+  lines.push(section("Subsystems", `${present2.length}/${description.subsystems.length} installed`));
   const nameWidth = description.subsystems.reduce((max, subsystem) => Math.max(max, subsystem.name.length), 0);
   for (const subsystem of description.subsystems) {
     const style = SUBSYSTEM_STYLE[subsystem.status];
@@ -16535,15 +16565,2739 @@ function formatProjectDescription(description, options = {}) {
 // src/mcp-server.ts
 init_project();
 init_preflight();
+
+// src/fleet/mcp.ts
+import { z } from "zod";
+
+// src/fleet/inventory.ts
+import { createHash as createHash8 } from "node:crypto";
+import { existsSync as existsSync24, lstatSync as lstatSync13, readFileSync as readFileSync23, readlinkSync as readlinkSync3, statSync as statSync6 } from "node:fs";
+import { homedir as homedir12 } from "node:os";
+import { isAbsolute as isAbsolute7, join as join32, posix, relative as relative12, resolve as resolve18 } from "node:path";
+import YAML9 from "yaml";
+
+// src/fleet/contract.ts
+import { existsSync as existsSync23, readFileSync as readFileSync22, statSync as statSync5 } from "node:fs";
+import { dirname as dirname15, join as join31, resolve as resolve17 } from "node:path";
+import { fileURLToPath as fileURLToPath8 } from "node:url";
+import YAML8 from "yaml";
+
+// src/fleet/types.ts
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 1 };
+var FLEET_SCHEMA_VERSION = 1;
+var FLEET_CONTRACT_ROOT_KEYS = [
+  "schema_version",
+  "contract_version",
+  "compatibility",
+  "authorities",
+  "projections",
+  "classifications",
+  "service_model",
+  "activation",
+  "retired"
+];
+var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
+var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
+var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
+var FLEET_CLASSIFICATION_KEYS = ["required_fields", "entries", "notes"];
+var FLEET_RETIRED_KEYS = ["id", "reason", "superseded_by", "detect"];
+var FLEET_CLASSIFICATION_IDS = [
+  "managed_agent",
+  "managed_shared_service",
+  "intentionally_unmanaged",
+  "retired",
+  "unclassified"
+];
+var FLEET_CLASSIFICATION_REQUIRED_FIELDS = [
+  "id",
+  "kind",
+  "owner",
+  "source",
+  "lifecycle_state",
+  "rationale",
+  "policy_domains"
+];
+var FLEET_ACTIVATION_STATES = [
+  "discovered",
+  "installed",
+  "healthy",
+  "routing_ready",
+  "activated"
+];
+var FLEET_RETIRED_IDS = [
+  "per-agent-bloodbank-consumer",
+  "per-agent-checkpoint-timer",
+  "n8n-owned-truth",
+  "activation-by-discovery",
+  "hard-coded-hermes-checkout-path"
+];
+var FLEET_HEALTHY_SECTIONS = ["authorities", "projections", "service_model", "activation"];
+var FLEET_HEALTHY_CLASSIFICATIONS = ["managed_agent", "managed_shared_service"];
+var FLEET_FORBIDDEN_KEYS = ["__proto__", "constructor", "prototype"];
+var FLEET_EXTENSION_PREFIX = "x-";
+var FleetError = class extends Error {
+  constructor(code, message, retryable = false, details = {}, options) {
+    super(message, options);
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
+  }
+  name = "FleetError";
+};
+var FLEET_INVENTORY_MAX_ROWS = 1e3;
+var FLEET_PROVENANCE_STATUSES = [
+  "match",
+  "mismatch",
+  "dirty",
+  "missing",
+  "unsupported",
+  "unobserved"
+];
+var FLEET_PROVENANCE_MAX_FACTS = 5e3;
+var FLEET_PROVENANCE_MAX_PROBES = 500;
+
+// src/fleet/contract.ts
+var FLEET_CONTRACT_RELATIVE_PATH = join31("contracts", "fleet-contract.yaml");
+var FLEET_CONTRACT_MAX_BYTES = 1048576;
+var DOCUMENT_PATH = "contract";
+var SEMVER = /^\d+\.\d+\.\d+$/u;
+var OWNER_NAME = /^[a-z][a-z0-9-]*$/u;
+var ENV_KEY = /^[A-Z][A-Z0-9_]*$/u;
+var DIRECTION = /^[a-z0-9_]+_to_[a-z0-9_]+$/u;
+var FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
+var HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
+var SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+var FLEET_DETECT_MAX_PATTERN_BYTES = 200;
+var NESTED_QUANTIFIER = /\((?:\?[:=!])?[^)]*[+*}][^)]*\)\s*[+*{]/u;
+var SECRET_VALUE = [
+  /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,}\b/u,
+  /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}\b/u,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/u,
+  /\bAKIA[0-9A-Z]{16}\b/u,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./u,
+  /(?:api[_-]?key|password|passwd|secret|token|credential)\s*[:=]\s*\S{8,}/iu
+];
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function storeToken(store) {
+  return store.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "");
+}
+function stringList2(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function resolveFleetContractPath(override) {
+  if (override !== void 0 && override.trim() !== "") return resolve17(override);
+  let dir = dirname15(fileURLToPath8(import.meta.url));
+  while (dir !== dirname15(dir)) {
+    if (existsSync23(join31(dir, "package.json")) && existsSync23(join31(dir, FLEET_CONTRACT_RELATIVE_PATH))) {
+      return join31(dir, FLEET_CONTRACT_RELATIVE_PATH);
+    }
+    dir = dirname15(dir);
+  }
+  return resolve17(process.cwd(), FLEET_CONTRACT_RELATIVE_PATH);
+}
+function loadFleetContract(path) {
+  if (!existsSync23(path)) throw new FleetError("NOT_FOUND", "Fleet contract not found", false, {});
+  const stat = statSync5(path);
+  if (!stat.isFile()) throw new FleetError("INVALID_INPUT", "Fleet contract is not a regular file", false, {});
+  if (stat.size > FLEET_CONTRACT_MAX_BYTES) {
+    throw new FleetError("INVALID_INPUT", `Fleet contract exceeds ${FLEET_CONTRACT_MAX_BYTES} bytes`, false, {});
+  }
+  const text2 = readFileSync22(path, "utf8");
+  return { path, text: text2, document: YAML8.parseDocument(text2) };
+}
+function resolveContractPath(root, path) {
+  let node = root;
+  for (const segment of path.split(".")) {
+    if (!isRecord4(node)) return void 0;
+    if (!Object.prototype.hasOwnProperty.call(node, segment)) return void 0;
+    node = node[segment];
+  }
+  return node;
+}
+function collectFleetExtensions(value) {
+  const extensions = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) return node.map((item, index) => walk(item, `${path}[${index}]`));
+    if (!isRecord4(node)) return node;
+    const result2 = /* @__PURE__ */ Object.create(null);
+    for (const [key, item] of Object.entries(node)) {
+      const child = path ? `${path}.${key}` : key;
+      if (key.startsWith(FLEET_EXTENSION_PREFIX)) extensions.push({ path: child, value: item });
+      else result2[key] = walk(item, child);
+    }
+    return result2;
+  };
+  const policy = walk(value, "");
+  extensions.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return { policy, extensions };
+}
+function scalars(node, path, out) {
+  if (Array.isArray(node)) {
+    node.forEach((item, index) => scalars(item, `${path}[${index}]`, out));
+    return;
+  }
+  if (isRecord4(node)) {
+    for (const [key, item] of Object.entries(node)) {
+      const child = path ? `${path}.${key}` : key;
+      out.push({ path: child, text: key });
+      scalars(item, child, out);
+    }
+    return;
+  }
+  if (node !== null && node !== void 0) out.push({ path, text: String(node) });
+}
+function sortDiagnostics(items) {
+  return [...items].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.message < b.message ? -1 : a.message > b.message ? 1 : 0);
+}
+function validateFleetContract(document) {
+  const parseErrors = document.errors.slice(0, 20).map((error) => {
+    const at = error.linePos?.[0];
+    const where = at ? ` at line ${at.line} column ${at.col}` : "";
+    return { code: "INVALID_INPUT", path: DOCUMENT_PATH, message: `YAML parse failed (${error.code})${where}` };
+  });
+  if (parseErrors.length) return { diagnostics: parseErrors, contract: null, extensions: [] };
+  let tree;
+  try {
+    tree = document.toJS();
+  } catch {
+    return { diagnostics: [{ code: "INVALID_INPUT", path: DOCUMENT_PATH, message: "contract could not be materialised (alias expansion or depth limit)" }], contract: null, extensions: [] };
+  }
+  const { policy, extensions } = collectFleetExtensions(tree);
+  if (!isRecord4(policy)) {
+    return { diagnostics: [{ code: "INVALID_INPUT", path: DOCUMENT_PATH, message: "contract must be a mapping" }], contract: null, extensions };
+  }
+  const stages = [
+    () => validateVersion(policy),
+    () => sortDiagnostics(validateStructure(policy, extensions)),
+    () => validateAuthorityConflicts(policy),
+    () => sortDiagnostics(validateClassifications(policy)),
+    () => sortDiagnostics(validateRetiredModes(policy))
+  ];
+  for (const stage of stages) {
+    const findings = stage();
+    if (findings.length) return { diagnostics: findings, contract: null, extensions };
+  }
+  return { diagnostics: [], contract: policy, extensions };
+}
+function validateVersion(policy) {
+  const declared = policy.schema_version;
+  if (!Number.isSafeInteger(declared)) {
+    return [{ code: "INVALID_INPUT", path: "schema_version", message: "schema_version must be an integer" }];
+  }
+  const version = Number(declared);
+  const { min, max } = FLEET_SUPPORTED_SCHEMA_VERSIONS;
+  if (version < min || version > max) {
+    return [{
+      code: "UNSUPPORTED_SCHEMA_VERSION",
+      path: "schema_version",
+      message: `contract schema_version ${version} is outside the supported range ${min}..${max}`
+    }];
+  }
+  const compatibility = policy.compatibility;
+  if (!isRecord4(compatibility)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility must be a mapping" }];
+  }
+  const lower = compatibility.min_schema_version;
+  const upper = compatibility.max_schema_version;
+  if (!Number.isSafeInteger(lower) || !Number.isSafeInteger(upper)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility bounds must be integers" }];
+  }
+  if (Number(lower) > Number(upper)) {
+    return [{ code: "INVALID_INPUT", path: "compatibility", message: "compatibility min_schema_version exceeds max_schema_version" }];
+  }
+  if (version < Number(lower) || version > Number(upper)) {
+    return [{
+      code: "UNSUPPORTED_SCHEMA_VERSION",
+      path: "compatibility",
+      message: `schema_version ${version} is outside the contract's own declared range ${String(lower)}..${String(upper)}`
+    }];
+  }
+  return [];
+}
+function validateStructure(policy, extensions) {
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  for (const key of Object.keys(policy)) {
+    if (!FLEET_CONTRACT_ROOT_KEYS.includes(key)) fail(key, "unknown top-level key");
+  }
+  for (const key of FLEET_CONTRACT_ROOT_KEYS) {
+    if (policy[key] === void 0) fail(key, "required top-level key is missing");
+  }
+  const compatibility = policy.compatibility;
+  if (isRecord4(compatibility)) {
+    for (const key of Object.keys(compatibility)) {
+      if (!FLEET_COMPATIBILITY_KEYS.includes(key)) fail(`compatibility.${key}`, "unknown compatibility key");
+    }
+  }
+  if (typeof policy.contract_version !== "string" || !SEMVER.test(policy.contract_version)) {
+    fail("contract_version", "contract_version must be a semantic version");
+  }
+  if (findings.length) return findings;
+  const leaves = [];
+  for (const [key, value] of Object.entries(policy)) {
+    if (key !== "retired") {
+      scalars(value, key, leaves);
+      continue;
+    }
+    if (!Array.isArray(value)) {
+      scalars(value, key, leaves);
+      continue;
+    }
+    value.forEach((entry, index) => {
+      if (!isRecord4(entry)) {
+        scalars(entry, `${key}[${index}]`, leaves);
+        return;
+      }
+      for (const [entryKey, entryValue] of Object.entries(entry)) {
+        if (entryKey === "detect") continue;
+        scalars(entryValue, `${key}[${index}].${entryKey}`, leaves);
+      }
+    });
+  }
+  for (const extension of extensions) {
+    leaves.push({ path: extension.path, text: extension.path });
+    scalars(extension.value, extension.path, leaves);
+  }
+  for (const leaf of leaves) {
+    if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
+    if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+    if (SECRET_VALUE.some((pattern) => pattern.test(leaf.text))) fail(leaf.path, "contract must not carry a credential-shaped value");
+    if (FLEET_FORBIDDEN_KEYS.includes(leaf.text)) fail(leaf.path, `forbidden key name: ${leaf.text}`);
+  }
+  if (findings.length) return findings;
+  const owners = /* @__PURE__ */ new Set();
+  const fieldIndex = /* @__PURE__ */ new Map();
+  const authorities = policy.authorities;
+  if (!isRecord4(authorities) || Object.keys(authorities).length === 0) {
+    fail("authorities", "authorities must be a non-empty mapping");
+  } else {
+    for (const [id, entry] of Object.entries(authorities)) {
+      const at = `authorities.${id}`;
+      if (!isRecord4(entry)) {
+        fail(at, "authority must be a mapping");
+        continue;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_AUTHORITY_KEYS.includes(key)) fail(`${at}.${key}`, "unknown authority key");
+      }
+      const owner = entry.owner;
+      if (typeof owner !== "string" || !OWNER_NAME.test(owner)) fail(`${at}.owner`, "owner must be a lower-kebab identifier");
+      else owners.add(owner);
+      if (typeof entry.store !== "string" || entry.store.length === 0) fail(`${at}.store`, "store must be a non-empty name");
+      const readOnly = entry.read_only;
+      if (readOnly !== void 0 && typeof readOnly !== "boolean") fail(`${at}.read_only`, "read_only must be a boolean");
+      const storeEnv = entry.store_env;
+      if (!stringList2(storeEnv)) fail(`${at}.store_env`, "store_env must be a list of environment keys");
+      else if (storeEnv.length === 0 && readOnly !== true) fail(`${at}.store_env`, "store_env may only be empty on a read-only authority");
+      else storeEnv.forEach((key, index) => {
+        if (!ENV_KEY.test(key)) fail(`${at}.store_env[${index}]`, `not an environment key: ${key}`);
+      });
+      if (entry.notes !== void 0 && !stringList2(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
+      const fields = entry.writable_fields;
+      if (!Array.isArray(fields)) {
+        fail(`${at}.writable_fields`, "writable_fields must be a list");
+        continue;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      fields.forEach((field3, index) => {
+        const where = `${at}.writable_fields[${index}]`;
+        if (typeof field3 !== "string" || !FIELD_PATH.test(field3)) {
+          fail(where, "not a dotted field path");
+          return;
+        }
+        if (seen.has(field3)) fail(where, `duplicate field path: ${field3}`);
+        seen.add(field3);
+        if (typeof owner === "string" && typeof entry.store === "string" && !fieldIndex.has(field3)) {
+          fieldIndex.set(field3, { id, owner, store: entry.store });
+        }
+      });
+      if (readOnly === true && fields.length > 0) {
+        fail(`${at}.writable_fields`, "a read-only authority may not declare writable fields");
+      }
+    }
+  }
+  const projections = policy.projections;
+  if (!Array.isArray(projections)) fail("projections", "projections must be a list");
+  else {
+    const seenPairs = /* @__PURE__ */ new Map();
+    const seenTargets = /* @__PURE__ */ new Map();
+    projections.forEach((entry, index) => {
+      const at = `projections[${index}]`;
+      if (!isRecord4(entry)) {
+        fail(at, "projection must be a mapping");
+        return;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_PROJECTION_KEYS.includes(key)) fail(`${at}.${key}`, "unknown projection key");
+      }
+      for (const key of ["field", "source", "target"]) {
+        const value = entry[key];
+        if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        else if (key !== "field" && !FIELD_PATH.test(value)) fail(`${at}.${key}`, "not a dotted field path");
+      }
+      const source = entry.source;
+      const target = entry.target;
+      const writableBy = entry.writable_by;
+      if (typeof writableBy !== "string" || !owners.has(writableBy)) {
+        fail(`${at}.writable_by`, "writable_by must name exactly one declared authority owner");
+      }
+      if (typeof source !== "string" || typeof target !== "string") return;
+      if (source === target) fail(`${at}.target`, "a projection must cross two field paths, not point at itself");
+      const pair = `${source} -> ${target}`;
+      const previous = seenPairs.get(pair);
+      if (previous !== void 0) fail(`${at}`, `duplicate projection: ${pair} is already declared at projections[${previous}]`);
+      else seenPairs.set(pair, index);
+      const reverse = seenPairs.get(`${target} -> ${source}`);
+      if (reverse !== void 0 && reverse !== index) {
+        fail(`${at}.direction`, `a field pair may flow in one direction only; the reverse is declared at projections[${reverse}]`);
+      }
+      const fedBy = seenTargets.get(target);
+      if (fedBy !== void 0) fail(`${at}.target`, `${target} is already fed by projections[${fedBy}]`);
+      else seenTargets.set(target, index);
+      const from = fieldIndex.get(source);
+      const to = fieldIndex.get(target);
+      if (!from) fail(`${at}.source`, `${source} is not declared writable by any authority`);
+      if (!to) fail(`${at}.target`, `${target} is not declared writable by any authority`);
+      if (!from || !to) return;
+      if (typeof writableBy === "string" && owners.has(writableBy) && to.owner !== writableBy) {
+        fail(`${at}.writable_by`, `${writableBy} does not declare ${target} writable; ${to.owner} does`);
+      }
+      if (from.store === to.store) {
+        fail(`${at}.direction`, `a projection must cross two stores; both ends live in ${from.store}`);
+        return;
+      }
+      const expected = `${storeToken(from.store)}_to_${storeToken(to.store)}`;
+      const direction = entry.direction;
+      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
+        fail(`${at}.direction`, `direction must be ${expected}`);
+      } else if (direction !== expected) {
+        fail(`${at}.direction`, `direction is ${direction} but ${source} -> ${target} flows ${expected}`);
+      }
+    });
+  }
+  const classifications = policy.classifications;
+  if (!isRecord4(classifications)) fail("classifications", "classifications must be a mapping");
+  else {
+    for (const key of Object.keys(classifications)) {
+      if (!FLEET_CLASSIFICATION_IDS.includes(key)) fail(`classifications.${key}`, "unknown lifecycle class");
+    }
+    for (const id of FLEET_CLASSIFICATION_IDS) {
+      const at = `classifications.${id}`;
+      const entry = classifications[id];
+      if (!isRecord4(entry)) {
+        fail(at, "lifecycle class is missing or is not a mapping");
+        continue;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_CLASSIFICATION_KEYS.includes(key)) fail(`${at}.${key}`, "unknown lifecycle class key");
+      }
+      const required = entry.required_fields;
+      if (!stringList2(required) || required.length === 0) fail(`${at}.required_fields`, "required_fields must be a non-empty list of names");
+      const entries = entry.entries;
+      if (!Array.isArray(entries)) fail(`${at}.entries`, "entries must be a list");
+      else entries.forEach((item, index) => {
+        if (!isRecord4(item)) fail(`${at}.entries[${index}]`, "entry must be a mapping");
+      });
+      if (entry.notes !== void 0 && !stringList2(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
+    }
+  }
+  const service = policy.service_model;
+  if (!isRecord4(service)) fail("service_model", "service_model must be a mapping");
+  else {
+    for (const key of ["per_agent", "fleet_shared", "profile_layout"]) {
+      if (!isRecord4(service[key])) fail(`service_model.${key}`, `${key} must be a mapping`);
+    }
+    const perAgent = isRecord4(service.per_agent) ? service.per_agent : {};
+    for (const key of ["gateway_unit", "heartbeat_service", "heartbeat_timer"]) {
+      const value = perAgent[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.per_agent.${key}`, `${key} must be a unit name pattern`);
+      else if (!value.includes("{agent_id}")) fail(`service_model.per_agent.${key}`, "a per-agent unit pattern must carry the {agent_id} placeholder");
+    }
+    const unitNames = ["gateway_unit", "heartbeat_service", "heartbeat_timer"].map((key) => perAgent[key]).filter((value) => typeof value === "string" && value.length > 0);
+    if (unitNames.length === 3 && new Set(unitNames).size !== 3) {
+      fail("service_model.per_agent", "gateway_unit, heartbeat_service and heartbeat_timer must be three distinct patterns");
+    }
+    const shared = isRecord4(service.fleet_shared) ? service.fleet_shared : {};
+    for (const key of ["bloodbank_gateway_unit", "bloodbank_gateway_profile", "command_subject", "target_field"]) {
+      const value = shared[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.fleet_shared.${key}`, `${key} must be a non-empty string`);
+    }
+    const layout = isRecord4(service.profile_layout) ? service.profile_layout : {};
+    if (typeof layout.root !== "string" || layout.root.length === 0) fail("service_model.profile_layout.root", "root must be a non-empty path pattern");
+    else if (!layout.root.includes("{profile_name}")) fail("service_model.profile_layout.root", "a profile root must carry the {profile_name} placeholder");
+    if (layout.symlink_allowed !== false) fail("service_model.profile_layout.symlink_allowed", "symlink_allowed must be declared false");
+    for (const key of ["identity_file", "override_file", "generated_file"]) {
+      const value = layout[key];
+      if (typeof value !== "string" || value.length === 0) fail(`service_model.profile_layout.${key}`, `${key} must be a non-empty file name`);
+    }
+    const layoutFiles = ["identity_file", "override_file", "generated_file"].map((key) => layout[key]).filter((value) => typeof value === "string" && value.length > 0);
+    if (layoutFiles.length === 3 && new Set(layoutFiles).size !== 3) {
+      fail("service_model.profile_layout", "identity_file, override_file and generated_file must be three distinct names");
+    }
+  }
+  const activation = policy.activation;
+  if (!isRecord4(activation)) fail("activation", "activation must be a mapping");
+  else {
+    const states = activation.states;
+    if (!stringList2(states) || states.length !== FLEET_ACTIVATION_STATES.length || states.some((state, index) => state !== FLEET_ACTIVATION_STATES[index])) {
+      fail("activation.states", `states must be exactly [${FLEET_ACTIVATION_STATES.join(", ")}]`);
+    }
+    const authority = activation.execution_authority;
+    if (!isRecord4(authority)) fail("activation.execution_authority", "execution_authority must be a mapping");
+    else {
+      const field3 = authority.field;
+      if (typeof field3 !== "string" || !FIELD_PATH.test(field3)) fail("activation.execution_authority.field", "field must be a dotted field path");
+      if (typeof authority.strict !== "boolean") fail("activation.execution_authority.strict", "strict must be a boolean");
+      if (typeof authority.default !== "string" || authority.default.length === 0) fail("activation.execution_authority.default", "default must be a non-empty decision");
+      const owner = authority.owner;
+      if (typeof owner !== "string" || !owners.has(owner)) fail("activation.execution_authority.owner", "owner must name a declared authority owner");
+      else if (typeof field3 === "string" && isRecord4(authorities)) {
+        const declaring = Object.entries(authorities).filter(([, value]) => isRecord4(value) && Array.isArray(value.writable_fields) && value.writable_fields.includes(field3));
+        const holder = declaring[0];
+        if (declaring.length > 1) {
+        } else if (!holder) {
+          fail("activation.execution_authority.field", `${field3} is not declared writable by any authority`);
+        } else if (!isRecord4(holder[1]) || holder[1].owner !== owner) {
+          fail("activation.execution_authority.field", `${field3} is not declared writable by ${owner}`);
+        } else if (!Array.isArray(holder[1].writable_fields) || holder[1].writable_fields.length !== 1) {
+          fail(
+            "activation.execution_authority.field",
+            `authorities.${holder[0]} must declare ${field3} and nothing else; an authority that also writes discovery metadata cannot be the execution gate`
+          );
+        }
+      }
+    }
+  }
+  const retired = policy.retired;
+  if (!Array.isArray(retired)) fail("retired", "retired must be a list");
+  else {
+    const ids = /* @__PURE__ */ new Set();
+    retired.forEach((entry, index) => {
+      const at = `retired[${index}]`;
+      if (!isRecord4(entry)) {
+        fail(at, "retired mode must be a mapping");
+        return;
+      }
+      for (const key of Object.keys(entry)) {
+        if (!FLEET_RETIRED_KEYS.includes(key)) fail(`${at}.${key}`, "unknown retired-mode key");
+      }
+      for (const key of ["id", "reason", "superseded_by"]) {
+        const value = entry[key];
+        if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+      }
+      if (typeof entry.id === "string") {
+        if (ids.has(entry.id)) fail(`${at}.id`, `duplicate retired mode id: ${entry.id}`);
+        ids.add(entry.id);
+      }
+      if (typeof entry.superseded_by === "string" && entry.superseded_by.length > 0 && resolveContractPath(policy, entry.superseded_by) === void 0) {
+        fail(`${at}.superseded_by`, `${entry.superseded_by} does not resolve to a declared contract path`);
+      }
+      const detect = entry.detect;
+      if (!stringList2(detect) || detect.length === 0) {
+        fail(`${at}.detect`, "detect must be a non-empty list of patterns");
+        return;
+      }
+      detect.forEach((pattern, patternIndex) => {
+        if (pattern.length > FLEET_DETECT_MAX_PATTERN_BYTES) {
+          fail(`${at}.detect[${patternIndex}]`, `detect pattern exceeds ${FLEET_DETECT_MAX_PATTERN_BYTES} characters`);
+          return;
+        }
+        if (NESTED_QUANTIFIER.test(pattern)) {
+          fail(`${at}.detect[${patternIndex}]`, "detect pattern nests a quantifier inside a quantified group and may backtrack catastrophically");
+          return;
+        }
+        try {
+          new RegExp(pattern, "iu");
+        } catch {
+          fail(`${at}.detect[${patternIndex}]`, "detect pattern is not a valid regular expression");
+        }
+      });
+    });
+    for (const id of FLEET_RETIRED_IDS) {
+      if (!ids.has(id)) fail("retired", `retired must declare the superseded mode ${id}`);
+    }
+  }
+  return findings;
+}
+function validateAuthorityConflicts(contract) {
+  const claims = /* @__PURE__ */ new Map();
+  for (const [id, authority] of Object.entries(contract.authorities)) {
+    for (const field3 of authority.writable_fields) {
+      const existing = claims.get(field3);
+      if (existing) existing.push({ id, owner: authority.owner });
+      else claims.set(field3, [{ id, owner: authority.owner }]);
+    }
+  }
+  const findings = [];
+  for (const field3 of [...claims.keys()].sort()) {
+    const claimants = (claims.get(field3) ?? []).slice().sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    if (claimants.length > 1) {
+      findings.push({
+        code: "AUTHORITY_CONFLICT",
+        path: `authorities.writable_fields.${field3}`,
+        message: `${field3} claimed writable by: ${claimants.map((claim) => `${claim.id} (${claim.owner})`).join(", ")}`
+      });
+    }
+  }
+  return findings;
+}
+function validateClassifications(contract) {
+  const findings = [];
+  for (const id of FLEET_CLASSIFICATION_IDS) {
+    const classification = contract.classifications[id];
+    if (!classification) continue;
+    const declared = new Set(classification.required_fields);
+    if (id !== "managed_agent") {
+      for (const field3 of FLEET_CLASSIFICATION_REQUIRED_FIELDS) {
+        if (!declared.has(field3)) {
+          findings.push({
+            code: "INVALID_CLASSIFICATION",
+            path: `classifications.${id}.required_fields`,
+            message: `${id} must require ${field3}`
+          });
+        }
+      }
+    }
+    classification.entries.forEach((entry, index) => {
+      const name = typeof entry.id === "string" && entry.id.length > 0 ? entry.id : `#${index}`;
+      for (const field3 of classification.required_fields) {
+        const value = entry[field3];
+        const missing = value === void 0 || value === null || typeof value === "string" && value.trim() === "" || Array.isArray(value) && value.length === 0;
+        if (missing) {
+          findings.push({
+            code: "INVALID_CLASSIFICATION",
+            path: `classifications.${id}.entries[${index}].${field3}`,
+            message: `${id} entry ${name} is missing required field ${field3}`
+          });
+        }
+      }
+    });
+  }
+  return findings;
+}
+function validateRetiredModes(contract) {
+  const findings = [];
+  const authority = contract.activation.execution_authority;
+  if (authority.default !== "deny") {
+    findings.push({
+      code: "RETIRED_MODE",
+      path: "activation.execution_authority.default",
+      message: `activation-by-discovery: execution authority defaults to "${authority.default}" instead of deny`
+    });
+  }
+  if (authority.strict !== true) {
+    findings.push({
+      code: "RETIRED_MODE",
+      path: "activation.execution_authority.strict",
+      message: "activation-by-discovery: execution authority must be strict, so an absent or coercible flag never grants dispatch"
+    });
+  }
+  const leaves = [];
+  const tree = contract;
+  for (const section2 of FLEET_HEALTHY_SECTIONS) scalars(tree[section2], section2, leaves);
+  for (const id of FLEET_HEALTHY_CLASSIFICATIONS) {
+    const classification = contract.classifications?.[id];
+    if (classification) scalars(classification.entries, `classifications.${id}.entries`, leaves);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const mode of contract.retired) {
+    for (const pattern of mode.detect) {
+      let expression;
+      try {
+        expression = new RegExp(pattern, "iu");
+      } catch {
+        continue;
+      }
+      for (const leaf of leaves) {
+        if (!expression.test(leaf.text)) continue;
+        const key = `${leaf.path}\0${mode.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        findings.push({
+          code: "RETIRED_MODE",
+          path: leaf.path,
+          message: `declares the retired mode ${mode.id} as healthy; superseded by ${mode.superseded_by}`
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+// src/fleet/output.ts
+import { homedir as homedir11, userInfo as userInfo2 } from "node:os";
+init_style();
+var MAX_STRING = 512;
+var MAX_DETAILS = 20;
+var MAX_NEXT_ACTIONS = 20;
+function bounded2(value, max = MAX_STRING) {
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "").replace(/[\r\n]+/gu, " ").slice(0, max);
+}
+function homeCandidates() {
+  const candidates = /* @__PURE__ */ new Set();
+  try {
+    if (homedir11()) candidates.add(homedir11());
+  } catch {
+  }
+  try {
+    if (userInfo2().homedir) candidates.add(userInfo2().homedir);
+  } catch {
+  }
+  return [...candidates].sort((a, b) => b.length - a.length);
+}
+function redactHome(path, homes = homeCandidates()) {
+  for (const home of homes) {
+    if (!home) continue;
+    if (path === home) return "~";
+    if (path.startsWith(`${home}/`)) return `~${path.slice(home.length)}`;
+  }
+  return path.replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>").replace(/^\/root(?=\/|$)/u, "/root/<redacted>");
+}
+function normalizeFleetError(error) {
+  if (error instanceof FleetError) return error;
+  return new FleetError("INTERNAL_ERROR", "Fleet command encountered an unexpected internal error", false, {}, { cause: error });
+}
+function fleetSuccessEnvelope(command, data, nextActions = []) {
+  return {
+    schema_version: FLEET_SCHEMA_VERSION,
+    ok: true,
+    command,
+    data,
+    error: null,
+    next_actions: nextActions.slice(0, MAX_NEXT_ACTIONS).map((item) => bounded2(item))
+  };
+}
+function fleetFailureEnvelope(command, error, nextActions = []) {
+  const normalized = normalizeFleetError(error);
+  return {
+    schema_version: FLEET_SCHEMA_VERSION,
+    ok: false,
+    command,
+    data: null,
+    error: {
+      code: normalized.code,
+      message: bounded2(normalized.message),
+      retryable: normalized.retryable,
+      details: sanitizeDetails(normalized.details)
+    },
+    next_actions: nextActions.slice(0, MAX_NEXT_ACTIONS).map((item) => bounded2(item))
+  };
+}
+function sanitizeDetails(details) {
+  const result2 = {};
+  for (const [key, value] of Object.entries(details).slice(0, MAX_DETAILS)) {
+    if (!key) continue;
+    if (typeof value === "string") result2[bounded2(key, 128)] = bounded2(value);
+    else if (typeof value === "number" || typeof value === "boolean" || value === null) result2[bounded2(key, 128)] = value;
+  }
+  return result2;
+}
+
+// src/fleet/runtime.ts
+import { spawn as spawn3 } from "node:child_process";
+var FLEET_DEFAULT_PROBE_TIMEOUT_MS = 5e3;
+var PROBE_MAX_BYTES = 4 * 1024 * 1024;
+var MIN_PROBE_TIMEOUT_MS = 1;
+var NEVER_ABORTED = new AbortController().signal;
+function createRunContext(options = {}) {
+  const now = options.now ?? Date.now;
+  const deadline = options.deadlineMs;
+  if (deadline !== void 0) {
+    if (!Number.isInteger(deadline) || deadline <= 0) {
+      throw new FleetError("INVALID_INPUT", "deadlineMs must be a positive whole number of milliseconds");
+    }
+  }
+  const probeTimeout = options.probeTimeoutMs ?? FLEET_DEFAULT_PROBE_TIMEOUT_MS;
+  if (!Number.isInteger(probeTimeout) || probeTimeout < MIN_PROBE_TIMEOUT_MS) {
+    throw new FleetError("INVALID_INPUT", "probeTimeoutMs must be a positive whole number of milliseconds");
+  }
+  return {
+    signal: options.signal ?? NEVER_ABORTED,
+    deadlineAt: deadline === void 0 ? null : now() + deadline,
+    probeTimeoutMs: probeTimeout
+  };
+}
+function throwIfCancelled(ctx) {
+  if (ctx.signal.aborted) throw new FleetError("CANCELLED", "Fleet command was cancelled before it completed");
+}
+function remainingMs(ctx, now = Date.now) {
+  throwIfCancelled(ctx);
+  if (ctx.deadlineAt === null) return Number.POSITIVE_INFINITY;
+  const left = ctx.deadlineAt - now();
+  if (left <= 0) throw new FleetError("TIMEOUT", "Fleet command exceeded its deadline before it completed");
+  return left;
+}
+function probe(ctx, argv, cwd) {
+  const [command, ...args] = argv;
+  if (!command) return Promise.resolve({ outcome: "failed", value: null });
+  const budget = Math.min(ctx.probeTimeoutMs, remainingMs(ctx));
+  return new Promise((settle) => {
+    let child;
+    try {
+      child = spawn3(command, [...args], {
+        cwd,
+        stdio: ["ignore", "pipe", "ignore"],
+        // Its own process GROUP, so `kill` below can reach the whole tree.
+        // Measured: a shim that is `#!/bin/sh ... sleep 60` puts the sleep under
+        // the sh. SIGKILLing the sh alone leaves the sleep holding the write end
+        // of our stdout pipe, and the CLI then hung after writing its CANCELLED
+        // envelope -- exit code set, process never leaving, because an active
+        // handle kept the loop alive.
+        detached: true,
+        // An observation probe has no business inheriting a pager, an editor,
+        // a credential helper, or a terminal. `GIT_TERMINAL_PROMPT=0` is the
+        // one that matters: without it a checkout with an unauthenticated
+        // remote can block on a credential prompt forever behind the timeout.
+        //
+        // `GIT_OPTIONAL_LOCKS=0` is deliberately NOT set. It would do the same
+        // job as the `--no-optional-locks` flag every caller passes -- and that
+        // is the problem: with both in place, deleting the flag changed nothing
+        // and the suite's index-mtime assertion stayed green. Measured. One
+        // mechanism, provably load-bearing, beats two that hide each other.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", PAGER: "cat" }
+      });
+    } catch {
+      settle({ outcome: "failed", value: null });
+      return;
+    }
+    let out = "";
+    let size = 0;
+    let settled = false;
+    const finish = (result2) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ctx.signal.removeEventListener("abort", onAbort);
+      try {
+        child.stdout?.destroy();
+      } catch {
+      }
+      child.unref();
+      settle(result2);
+    };
+    const kill = () => {
+      try {
+        if (child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }
+    };
+    const timer = setTimeout(() => {
+      kill();
+      finish({ outcome: "timeout", value: null });
+    }, budget);
+    timer.unref?.();
+    const onAbort = () => {
+      kill();
+      finish({ outcome: "cancelled", value: null });
+    };
+    ctx.signal.addEventListener("abort", onAbort, { once: true });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > PROBE_MAX_BYTES) {
+        kill();
+        finish({ outcome: "failed", value: null });
+        return;
+      }
+      out += chunk;
+    });
+    child.on("error", () => finish({ outcome: "failed", value: null }));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish({ outcome: "failed", value: null });
+        return;
+      }
+      finish({ outcome: "ok", value: out.trim() });
+    });
+  });
+}
+async function mapBounded(items, limit, run) {
+  const results = new Array(items.length);
+  const width = Math.max(1, Math.min(limit, items.length));
+  let next = 0;
+  const worker = async () => {
+    for (; ; ) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await run(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  return results;
+}
+
+// src/fleet/inventory.ts
+var REGISTRY_MAX_BYTES = 16 * 1024 * 1024;
+var MAX_FINDINGS = 2e3;
+var MAX_CONFLICT_GROUPS = 500;
+var MAX_MANIFEST_NOTES = 10;
+var MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
+var ROLE_RUNTIME_DIRNAME = "runtime";
+var ROW_INTEGRITY_CODES = /* @__PURE__ */ new Set([
+  "identity-conflict",
+  "agent-row-malformed",
+  "agent-id-not-a-string"
+]);
+var ROW_SHAPE_CODES = /* @__PURE__ */ new Set(["agent-id-unsafe"]);
+var SUPPORTED_REGISTRY_SCHEMA = 1;
+var AGENT_STORE = "hermes-agent-registry";
+var PROJECT_STORE = "pjangler-project-registry";
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function expandHome2(path, home) {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return join32(home, path.slice(2));
+  return path;
+}
+function shownPath(path) {
+  return bounded2(redactHome(path));
+}
+function field2(value, source, state) {
+  return { value, source, state };
+}
+function unresolved(source) {
+  return { value: null, source, state: "unresolved" };
+}
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+function normalizeFieldPath(path) {
+  return path.replace(/\{[^}]*\}/gu, "{}");
+}
+function buildAuthorityIndex(contract) {
+  const declared = /* @__PURE__ */ new Map();
+  for (const authority of Object.values(contract.authorities)) {
+    for (const path of authority.writable_fields ?? []) {
+      if (typeof path !== "string" || !path) continue;
+      declared.set(normalizeFieldPath(path), authority.owner);
+    }
+  }
+  const cache = /* @__PURE__ */ new Map();
+  const ownerOf = (fieldPath) => {
+    const key = normalizeFieldPath(fieldPath);
+    const cached = cache.get(key);
+    if (cached !== void 0) return cached;
+    let answer = declared.get(key) ?? null;
+    if (answer === null) {
+      const tally = /* @__PURE__ */ new Map();
+      for (const [path, owner] of declared) {
+        if (!path.startsWith(`${key}.`)) continue;
+        tally.set(owner, (tally.get(owner) ?? 0) + 1);
+      }
+      const ranked = [...tally].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+      const top = ranked[0];
+      const runnerUp = ranked[1];
+      answer = top && (!runnerUp || runnerUp[1] < top[1]) ? top[0] : null;
+    }
+    cache.set(key, answer);
+    return answer;
+  };
+  return { ownerOf, declared };
+}
+function classifyPath(raw, options = {}) {
+  const value = nonEmptyString(raw);
+  if (value === null) return { declared: null, classification: "undeclared", link_target: null };
+  const declared = shownPath(value);
+  if (!isAbsolute7(value)) return { declared, classification: "relative", link_target: null };
+  const root = options.root ? resolve18(options.root) : null;
+  if (root) {
+    const inside = relative12(root, resolve18(value));
+    if (inside === "" || inside === ".." || inside.startsWith("../") || isAbsolute7(inside)) {
+      return { declared, classification: "outside-root", link_target: null };
+    }
+  }
+  let stat;
+  try {
+    stat = lstatSync13(value);
+  } catch (error) {
+    const code = error.code;
+    return { declared, classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable", link_target: null };
+  }
+  if (stat.isSymbolicLink()) {
+    let target = null;
+    try {
+      target = shownPath(readlinkSync3(value));
+    } catch {
+      target = null;
+    }
+    return { declared, classification: "symlink", link_target: target };
+  }
+  if (options.directory && !stat.isDirectory()) return { declared, classification: "not-a-directory", link_target: null };
+  return { declared, classification: "ok", link_target: null };
+}
+function readYamlDocument(path, label) {
+  if (!existsSync24(path)) {
+    throw new FleetError("NOT_FOUND", `${label} not found`, false, { path: shownPath(path) });
+  }
+  const stat = statSync6(path);
+  if (!stat.isFile()) throw new FleetError("INVALID_INPUT", `${label} is not a regular file`, false, { path: shownPath(path) });
+  if (stat.size > REGISTRY_MAX_BYTES) {
+    throw new FleetError("INVALID_INPUT", `${label} exceeds ${REGISTRY_MAX_BYTES} bytes`, false, { path: shownPath(path) });
+  }
+  const text2 = readFileSync23(path, "utf8");
+  const document = YAML9.parseDocument(text2, { uniqueKeys: false });
+  if (document.errors.length) {
+    const first = document.errors[0];
+    const at = first.linePos?.[0];
+    throw new FleetError(
+      "INVALID_INPUT",
+      `${label} could not be parsed (${first.code})${at ? ` at line ${at.line} column ${at.col}` : ""}`,
+      false,
+      { path: shownPath(path) }
+    );
+  }
+  return { document, text: text2 };
+}
+function countCollectionRows(text2, collection) {
+  try {
+    const document = YAML9.parseDocument(text2, { uniqueKeys: false });
+    const contents = document.contents;
+    const pairs = contents && Array.isArray(contents.items) ? contents.items : [];
+    for (const pair of pairs) {
+      if (pair?.key?.value !== collection) continue;
+      return Array.isArray(pair.value?.items) ? pair.value.items.length : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function readKeyedStore(path, label, collection) {
+  const { document, text: text2 } = readYamlDocument(path, label);
+  const node = document.get(collection, true);
+  const nodeIsMapping = Boolean(node) && typeof node === "object" && Array.isArray(node.items);
+  const items = nodeIsMapping ? node.items : [];
+  const collectionState = nodeIsMapping ? "ok" : node === void 0 || node === null ? "missing" : "not-a-mapping";
+  const counted = countCollectionRows(text2, collection);
+  const sourceRows = counted ?? items.length;
+  const countIndependent = counted !== null;
+  const entries = [];
+  const seen = /* @__PURE__ */ new Map();
+  let salvaged = false;
+  for (const item of items) {
+    const rawKey = item?.key?.value;
+    const keyIsString = typeof rawKey === "string" && rawKey.length > 0;
+    const key = bounded2(keyIsString ? rawKey : String(rawKey ?? ""), 128);
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+    let value = null;
+    let malformed = false;
+    try {
+      value = typeof item?.value?.toJSON === "function" ? item.value.toJSON() : null;
+    } catch {
+      value = null;
+      malformed = true;
+    }
+    if (!isRecord5(value)) malformed = true;
+    if (malformed || !keyIsString) salvaged = true;
+    entries.push({ key, keyIsString, value, malformed });
+  }
+  let top = {};
+  let schemaVersion = null;
+  try {
+    const tree = document.toJS();
+    if (isRecord5(tree)) {
+      top = tree;
+      schemaVersion = typeof tree.schema_version === "number" ? tree.schema_version : null;
+    }
+  } catch {
+    salvaged = true;
+  }
+  return {
+    path,
+    exists: true,
+    parse: salvaged ? "salvaged" : "ok",
+    collection: collectionState,
+    sourceRows,
+    countIndependent,
+    entries,
+    duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => a < b ? -1 : 1),
+    schemaVersion,
+    top
+  };
+}
+function readAgentRegistryRaw(path) {
+  return readKeyedStore(path, "Hermes agent registry", "agents");
+}
+function readProjectRegistryRaw(path) {
+  return readKeyedStore(path, "PJangler project registry", "projects");
+}
+function resolveInventoryStores(options = {}) {
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir12();
+  const agentsKey = env2.HERMES_AGENTS_REGISTRY?.trim() ?? "";
+  const fleetKey = env2.HERMES_FLEET_REGISTRY_FILE?.trim() ?? "";
+  const agentsDefault = join32(home, ".hermes", "agents-registry.yaml");
+  const agentsConfigured = resolve18(expandHome2(agentsKey || fleetKey || agentsDefault, home));
+  let disagreement = null;
+  if (agentsKey && fleetKey && resolve18(expandHome2(agentsKey, home)) !== resolve18(expandHome2(fleetKey, home))) {
+    disagreement = "HERMES_AGENTS_REGISTRY and HERMES_FLEET_REGISTRY_FILE name different files";
+  } else if (!agentsKey && fleetKey && resolve18(expandHome2(fleetKey, home)) !== resolve18(agentsDefault)) {
+    disagreement = "HERMES_FLEET_REGISTRY_FILE is set but HERMES_AGENTS_REGISTRY is not; the TypeScript reader would use the default path";
+  }
+  const projectsKey = env2.PJ_PROJECT_REGISTRY?.trim() ?? "";
+  const projectsConfigured = resolve18(expandHome2(projectsKey || join32(home, ".config", "pjangler", "projects.yaml"), home));
+  for (const [value, name] of [[options.agentRegistry, "agentRegistry"], [options.projectRegistry, "projectRegistry"]]) {
+    if (value !== void 0 && value.trim() === "") {
+      throw new FleetError("INVALID_INPUT", `${name} was given an empty value`, false);
+    }
+  }
+  const agentOverride = options.agentRegistry?.trim();
+  const projectOverride = options.projectRegistry?.trim();
+  return {
+    agents: {
+      id: AGENT_STORE,
+      configuredPath: agentsConfigured,
+      inspectedPath: agentOverride ? resolve18(expandHome2(agentOverride, home)) : agentsConfigured,
+      overridden: Boolean(agentOverride),
+      envKeys: ["HERMES_AGENTS_REGISTRY", "HERMES_FLEET_REGISTRY_FILE"]
+    },
+    projects: {
+      id: PROJECT_STORE,
+      configuredPath: projectsConfigured,
+      inspectedPath: projectOverride ? resolve18(expandHome2(projectOverride, home)) : projectsConfigured,
+      overridden: Boolean(projectOverride),
+      envKeys: ["PJ_PROJECT_REGISTRY"]
+    },
+    disagreement
+  };
+}
+var SAFE_PATH_SEGMENT2 = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/u;
+function isSafePathSegment(value) {
+  if (typeof value !== "string") return false;
+  if (value.trim() !== value || !value) return false;
+  if (value === "." || value === ".." || value.includes("/") || value.includes("\\")) return false;
+  if (isAbsolute7(value)) return false;
+  return SAFE_PATH_SEGMENT2.test(value);
+}
+function addFinding(ctx, finding2) {
+  if (ctx.findings.length >= MAX_FINDINGS) {
+    ctx.droppedFindings += 1;
+    return;
+  }
+  ctx.findings.push({ ...finding2, detail: bounded2(finding2.detail) });
+}
+function resolveProfileLayout(contract, env2, home) {
+  const layout = contract.service_model?.profile_layout;
+  const raw = isRecord5(layout) ? nonEmptyString(layout.root) : null;
+  if (raw === null) return { root: null, template: null };
+  const fleetHome2 = env2.HERMES_FLEET_HOME?.trim() || join32(home, ".hermes");
+  const template = raw.replaceAll("{HERMES_FLEET_HOME}", fleetHome2);
+  const marker = template.indexOf("{profile_name}");
+  if (marker < 0) return { root: null, template: null };
+  return { root: template.slice(0, marker).replace(/\/+$/u, ""), template };
+}
+function unitPatternsFrom(contract) {
+  const perAgent = contract.service_model?.per_agent;
+  if (!isRecord5(perAgent)) return [];
+  return Object.keys(perAgent).sort((a, b) => a < b ? -1 : 1).map((key) => perAgent[key]).filter((value) => typeof value === "string" && value.length > 0);
+}
+function gatewayPatternFrom(contract) {
+  const perAgent = contract.service_model?.per_agent;
+  if (!isRecord5(perAgent)) return null;
+  return nonEmptyString(perAgent.gateway_unit);
+}
+var MANIFEST_READABLE_CLASSIFICATIONS = /* @__PURE__ */ new Set(["ok", "symlink"]);
+function readManifest2(repoPath, classification) {
+  if (!repoPath || !MANIFEST_READABLE_CLASSIFICATIONS.has(classification)) return { present: false, parsed: null, path: null };
+  const path = join32(repoPath, ".project.json");
+  if (!existsSync24(path)) return { present: false, parsed: null, path };
+  try {
+    const stat = statSync6(path);
+    if (!stat.isFile() || stat.size > MANIFEST_MAX_BYTES) return { present: true, parsed: null, path };
+    const parsed = JSON.parse(readFileSync23(path, "utf8"));
+    return { present: true, parsed: isRecord5(parsed) ? parsed : null, path };
+  } catch {
+    return { present: true, parsed: null, path };
+  }
+}
+function buildInventoryRow(entry, ctx) {
+  const own = ctx.authority;
+  const agentNamespaceOwner = own.ownerOf("agents.{agent_id}");
+  const raw = isRecord5(entry.value) ? entry.value : {};
+  const agentId = entry.key;
+  const findings = [];
+  const paths = {};
+  const note = (code, path, source, severity, detail) => {
+    if (!findings.includes(code)) findings.push(code);
+    addFinding(ctx, { code, field: path, agent_id: agentId, source, severity, detail });
+  };
+  if (agentNamespaceOwner === null) {
+    note(
+      "authority-owner-undeclared",
+      "agents.{agent_id}",
+      null,
+      "error",
+      "the contract declares no authority owner for the agent namespace; provenance cannot be attributed"
+    );
+  }
+  if (entry.malformed) {
+    note(
+      "agent-row-malformed",
+      "agents.{agent_id}",
+      agentNamespaceOwner,
+      "error",
+      `agent row is not a mapping (${typeof entry.value}); only its raw identity key is usable`
+    );
+  }
+  if (!entry.keyIsString) {
+    note(
+      "agent-id-not-a-string",
+      "agents.{agent_id}",
+      agentNamespaceOwner,
+      "error",
+      "agent identity key is not a string; the raw key is reported verbatim and never used as a path segment"
+    );
+  }
+  const idSafe = isSafePathSegment(agentId);
+  if (!idSafe) {
+    note(
+      "agent-id-unsafe",
+      "agents.{agent_id}",
+      agentNamespaceOwner,
+      "error",
+      "agent id is not a safe single path segment; no unit name or directory is derived from it"
+    );
+  }
+  const scalar = (key, path) => {
+    const owner = own.ownerOf(path);
+    const value = raw[key];
+    if (typeof value === "string" && value.trim() !== "") return field2(bounded2(value), owner, "resolved");
+    if (value !== void 0 && typeof value !== "string") {
+      note("agent-field-malformed", path, owner, "warn", `${key} is a ${typeof value}, not a string`);
+    }
+    return unresolved(owner);
+  };
+  const repo = scalar("repo", "agents.{agent_id}.repo");
+  const role = scalar("role", "agents.{agent_id}.role");
+  const projectPath = scalar("project_path", "agents.{agent_id}.project_path");
+  const roleDir = scalar("role_dir", "agents.{agent_id}.role_dir");
+  const profileName = scalar("profile_name", "agents.{agent_id}.profile_name");
+  const projectSlugOwner = own.ownerOf("projects.{slug}.slug");
+  const repoPathOwner = own.ownerOf("projects.{slug}.repo_path");
+  let correlated;
+  let basis = null;
+  if (projectPath.value) {
+    const expanded = expandHome2(projectPath.value, ctx.home);
+    if (isAbsolute7(expanded)) {
+      correlated = ctx.projectsByRepoPath.get(resolve18(expanded));
+      if (correlated) basis = "project_path";
+    }
+  }
+  if (!correlated && repo.value) {
+    correlated = ctx.projectsBySlug.get(repo.value);
+    if (correlated) basis = "repo";
+  }
+  const projectId = correlated ? field2(bounded2(correlated.slug), projectSlugOwner, "resolved") : unresolved(projectSlugOwner);
+  const repoPathValue = correlated?.repoPath ?? null;
+  const repoPath = repoPathValue ? field2(shownPath(repoPathValue), repoPathOwner, "resolved") : unresolved(repoPathOwner);
+  const correlation = basis ? field2(basis, projectSlugOwner, "resolved") : unresolved(projectSlugOwner);
+  if (!correlated) {
+    note(
+      "project-record-missing",
+      "projects.{slug}.repo_path",
+      repoPathOwner,
+      "warn",
+      `no project record matches ${projectPath.value ? shownPath(projectPath.value) : "an undeclared project_path"}`
+    );
+  }
+  paths.project_path = classifyPath(projectPath.value, { directory: true });
+  if (projectPath.value && paths.project_path.classification !== "ok") {
+    note(
+      "project-path-unusable",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "warn",
+      `project_path is ${paths.project_path.classification}`
+    );
+  }
+  paths.role_dir = classifyPath(roleDir.value, { directory: true });
+  if (roleDir.value && paths.role_dir.classification !== "ok") {
+    note(
+      "role-dir-unusable",
+      "agents.{agent_id}.role_dir",
+      roleDir.source,
+      "warn",
+      `role_dir is ${paths.role_dir.classification}`
+    );
+  }
+  const runtimeValue = roleDir.value ? join32(roleDir.value, ROLE_RUNTIME_DIRNAME) : null;
+  paths.runtime_path = classifyPath(runtimeValue, { root: roleDir.value ?? null, directory: true });
+  const runtimePath = runtimeValue && paths.runtime_path.classification === "ok" ? field2(shownPath(runtimeValue), roleDir.source, "resolved") : runtimeValue ? field2(shownPath(runtimeValue), roleDir.source, "unresolved") : unresolved(roleDir.source);
+  if (runtimeValue && paths.runtime_path.classification !== "ok") {
+    note(
+      "runtime-path-unusable",
+      "agents.{agent_id}.role_dir",
+      roleDir.source,
+      "warn",
+      `expected runtime directory is ${paths.runtime_path.classification}`
+    );
+  }
+  const profileOwner = own.ownerOf("profiles.{profile_name}");
+  let profilePathValue = null;
+  if (profileName.value && ctx.profilePathTemplate) {
+    if (isSafePathSegment(profileName.value)) {
+      profilePathValue = ctx.profilePathTemplate.replaceAll("{profile_name}", profileName.value);
+    } else {
+      note(
+        "profile-name-unsafe",
+        "agents.{agent_id}.profile_name",
+        profileName.source,
+        "error",
+        "profile_name is not a safe single path segment; no profile path is derived from it"
+      );
+    }
+  }
+  paths.profile_path = classifyPath(profilePathValue, { root: ctx.profileRoot, directory: true });
+  let profileState = paths.profile_path.classification === "ok" ? "resolved" : "unresolved";
+  if (profilePathValue && paths.profile_path.classification === "symlink") {
+    profileState = "unresolved";
+    note(
+      "profile-path-symlinked",
+      "agents.{agent_id}.profile_name",
+      profileOwner,
+      "error",
+      `profile root entry is a symlink to ${paths.profile_path.link_target ?? "an unreadable target"}; the contract declares service_model.profile_layout.symlink_allowed: false`
+    );
+  } else if (profilePathValue && paths.profile_path.classification !== "ok") {
+    note(
+      "profile-path-unusable",
+      "agents.{agent_id}.profile_name",
+      profileOwner,
+      "warn",
+      `profile directory is ${paths.profile_path.classification}`
+    );
+  }
+  const profilePath = profilePathValue ? field2(shownPath(profilePathValue), profileOwner, profileState) : unresolved(profileOwner);
+  const unitOwner = own.ownerOf("agents.{agent_id}.systemd.gateway_unit");
+  let expectedUnits;
+  if (idSafe && ctx.unitPatterns.length) {
+    const names = ctx.unitPatterns.map((pattern) => bounded2(pattern.replaceAll("{agent_id}", agentId)));
+    expectedUnits = field2(names, unitOwner, "unobserved");
+  } else {
+    expectedUnits = unresolved(unitOwner);
+  }
+  const storedGateway = nonEmptyString(isRecord5(raw.systemd) ? raw.systemd.gateway_unit : void 0);
+  const expectedGateway = idSafe && ctx.gatewayPattern ? bounded2(ctx.gatewayPattern.replaceAll("{agent_id}", agentId)) : null;
+  if (storedGateway && expectedGateway && bounded2(storedGateway) !== expectedGateway) {
+    note(
+      "systemd-unit-name-drift",
+      "agents.{agent_id}.systemd.gateway_unit",
+      unitOwner,
+      "warn",
+      `stored gateway unit ${bounded2(storedGateway)} is not ${expectedGateway}, the name the contract's service model derives`
+    );
+  }
+  const gatewayUnit = storedGateway ? field2(bounded2(storedGateway), unitOwner, "resolved") : unresolved(unitOwner);
+  const plane = isRecord5(raw.plane) ? raw.plane : {};
+  const boardOwner = own.ownerOf("agents.{agent_id}.plane.identifier");
+  const binding = {
+    workspace: nonEmptyString(plane.workspace) ? bounded2(plane.workspace) : null,
+    project_id: nonEmptyString(plane.project_id) ? bounded2(plane.project_id) : null,
+    identifier: nonEmptyString(plane.identifier) ? bounded2(plane.identifier) : null
+  };
+  const board = binding.identifier || binding.project_id || binding.workspace ? field2(binding, boardOwner, "resolved") : unresolved(boardOwner);
+  if (!board.value) {
+    note(
+      "board-binding-missing",
+      "agents.{agent_id}.plane.identifier",
+      boardOwner,
+      "info",
+      "the agent row stores no board binding"
+    );
+  }
+  const bloodbank = isRecord5(raw.bloodbank) ? raw.bloodbank : {};
+  const scopeOwner = own.ownerOf("agents.{agent_id}.bloodbank.gateway_scope");
+  const targetOwner = own.ownerOf("agents.{agent_id}.bloodbank.target_agent_id");
+  const bloodbankScope = nonEmptyString(bloodbank.gateway_scope) ? field2(bounded2(bloodbank.gateway_scope), scopeOwner, "resolved") : unresolved(scopeOwner);
+  const bloodbankTarget = nonEmptyString(bloodbank.target_agent_id) ? field2(bounded2(bloodbank.target_agent_id), targetOwner, "resolved") : unresolved(targetOwner);
+  const activationRaw = isRecord5(raw.bloodbank) ? raw.bloodbank.enabled : void 0;
+  const activation = typeof activationRaw === "boolean" ? field2(activationRaw, ctx.activationOwner, "resolved") : unresolved(ctx.activationOwner);
+  if (activation.value === null) {
+    note(
+      "activation-flag-unresolved",
+      ctx.activationField,
+      ctx.activationOwner,
+      "warn",
+      "the strict activation flag is absent or not a boolean; the contract's declared default is deny"
+    );
+  }
+  const activationField = field2(bounded2(ctx.activationField), ctx.activationOwner, "resolved");
+  const manifestRead = readManifest2(projectPath.value, paths.project_path.classification);
+  const manifestNotes = [];
+  let agrees = null;
+  if (manifestRead.present && manifestRead.parsed) {
+    const disagreements = [];
+    const provider = isRecord5(manifestRead.parsed.ticket_provider) ? manifestRead.parsed.ticket_provider : {};
+    const compare = (label, manifestValue, registryValue) => {
+      const seenValue = nonEmptyString(manifestValue);
+      if (!seenValue || !registryValue) return;
+      if (seenValue.trim() === registryValue.trim()) return;
+      disagreements.push(bounded2(`${label}: manifest ${seenValue.trim()} vs registry ${registryValue.trim()}`));
+    };
+    compare("identifier", provider.identifier, binding.identifier);
+    compare("board_id", provider.board_id, binding.project_id);
+    compare("workspace", provider.workspace, binding.workspace);
+    compare("project_slug", manifestRead.parsed.project_slug, correlated?.slug ?? null);
+    manifestNotes.push(...disagreements);
+    agrees = disagreements.length === 0;
+    if (!agrees) {
+      note(
+        "manifest-disagrees",
+        "agents.{agent_id}.plane.identifier",
+        boardOwner,
+        "warn",
+        `.project.json contradicts the registries (${manifestNotes.join("; ")}); it is evidence, never a tiebreaker`
+      );
+    }
+  } else if (manifestRead.present && !manifestRead.parsed) {
+    manifestNotes.push("manifest present but unreadable");
+    note(
+      "manifest-unreadable",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "warn",
+      ".project.json is present but could not be read as JSON"
+    );
+  } else if (projectPath.value && !MANIFEST_READABLE_CLASSIFICATIONS.has(paths.project_path.classification)) {
+    note(
+      "manifest-not-consulted",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "warn",
+      `project_path is ${paths.project_path.classification}, so no .project.json was read; resolving it would depend on the caller's working directory`
+    );
+  } else if (projectPath.value) {
+    note(
+      "manifest-missing",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "info",
+      "the repository carries no .project.json to confirm the registries"
+    );
+  }
+  if (manifestNotes.length > MAX_MANIFEST_NOTES) {
+    note(
+      "manifest-notes-truncated",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "info",
+      `${manifestNotes.length - MAX_MANIFEST_NOTES} of ${manifestNotes.length} manifest notes dropped`
+    );
+  }
+  const manifest = {
+    path: classifyPath(manifestRead.path, {}),
+    present: manifestRead.present,
+    agrees,
+    notes: manifestNotes.slice(0, MAX_MANIFEST_NOTES)
+  };
+  return {
+    agent_id: entry.keyIsString && idSafe ? field2(agentId, agentNamespaceOwner, "resolved") : field2(agentId, agentNamespaceOwner, "unresolved"),
+    // The lifecycle class of a registered row. It is `managed_agent` because the
+    // row exists in the registry the contract declares as its owner -- nothing
+    // here observes anything to decide otherwise.
+    classification: entry.malformed ? field2("unclassified", agentNamespaceOwner, "unresolved") : field2("managed_agent", agentNamespaceOwner, "resolved"),
+    correlation,
+    project_id: projectId,
+    repo,
+    repo_path: repoPath,
+    role,
+    role_dir: roleDir.value ? field2(shownPath(roleDir.value), roleDir.source, paths.role_dir.classification === "ok" ? "resolved" : "unresolved") : roleDir,
+    profile_name: profileName,
+    profile_path: profilePath,
+    runtime_path: runtimePath,
+    expected_units: expectedUnits,
+    gateway_unit: gatewayUnit,
+    board,
+    bloodbank_scope: bloodbankScope,
+    bloodbank_target: bloodbankTarget,
+    activation,
+    activation_field: activationField,
+    manifest,
+    paths,
+    conflicts: [],
+    findings,
+    malformed: entry.malformed || !entry.keyIsString
+  };
+}
+function normalizePathValue(value) {
+  if (!value) return null;
+  const normalized = posix.normalize(value).replace(/\/+$/u, "");
+  return normalized === "" ? "/" : normalized;
+}
+function conflictGroupId(fieldPath, value) {
+  const normalized = value.normalize("NFC").trim();
+  return `conflict:${fieldPath}:${createHash8("sha256").update(normalized, "utf8").digest("hex").slice(0, 12)}`;
+}
+var DIMENSIONS = {
+  agentId: { key: "agent-id", field: "agents.{agent_id}", kind: "agent" },
+  repo: { key: "repo", field: "agents.{agent_id}.repo", kind: "agent" },
+  projectPath: { key: "project-path", field: "agents.{agent_id}.project_path", kind: "agent" },
+  profileName: { key: "profile-name", field: "agents.{agent_id}.profile_name", kind: "agent" },
+  boardIdentifier: { key: "board-identifier", field: "agents.{agent_id}.plane.identifier", kind: "agent" },
+  bloodbankTarget: { key: "bloodbank-target", field: "agents.{agent_id}.bloodbank.target_agent_id", kind: "agent" },
+  // AC5's seventh dimension. The unit name that reaches systemd is the STORED
+  // one, and two agents can store the same one; the names derived from the
+  // contract's per-agent patterns are `f(agent_id)`, so a collision there is
+  // only ever a duplicate agent id, which `agentId` already reports.
+  gatewayUnit: { key: "gateway-unit", field: "agents.{agent_id}.systemd.gateway_unit", kind: "agent" },
+  projectId: { key: "project-id", field: "projects.{slug}.slug", kind: "agent" },
+  projectKey: { key: "project-key", field: "projects.{slug}", kind: "project" },
+  projectRepoPath: { key: "project-repo-path", field: "projects.{slug}.repo_path", kind: "project" },
+  projectBoardId: { key: "project-board-id", field: "projects.{slug}.ticket_provider.board_id", kind: "project" },
+  projectIdentifier: { key: "project-identifier", field: "projects.{slug}.ticket_provider.identifier", kind: "project" }
+};
+function matchException(group, contract) {
+  const entries = contract.classifications?.intentionally_unmanaged?.entries ?? [];
+  for (const entry of entries) {
+    if (!isRecord5(entry)) continue;
+    if (nonEmptyString(entry.source) !== group.field) continue;
+    const declared = Array.isArray(entry.participants) ? entry.participants.filter((item) => typeof item === "string") : null;
+    if (!declared) continue;
+    const wanted = new Set(group.participants);
+    const got = new Set(declared);
+    if (wanted.size !== got.size) continue;
+    let same = true;
+    for (const item of wanted) if (!got.has(item)) {
+      same = false;
+      break;
+    }
+    if (!same) continue;
+    const id = nonEmptyString(entry.id);
+    if (id) return { id: bounded2(id) };
+  }
+  return null;
+}
+function detectConflicts(input) {
+  const buckets = /* @__PURE__ */ new Map();
+  const claim = (dimension, rawValue, participant) => {
+    const value = nonEmptyString(rawValue);
+    if (value === null) return;
+    const normalized = value.normalize("NFC").trim();
+    const id = conflictGroupId(dimension.field, normalized);
+    const bucket = buckets.get(id) ?? { dimension, value: normalized, participants: /* @__PURE__ */ new Set() };
+    bucket.participants.add(participant);
+    buckets.set(id, bucket);
+  };
+  const idCounts = /* @__PURE__ */ new Map();
+  for (const row of input.rows) {
+    const id = row.agent_id.value;
+    if (id === null) continue;
+    idCounts.set(id, (idCounts.get(id) ?? 0) + 1);
+  }
+  for (const row of input.rows) {
+    const agentId = row.agent_id.value;
+    if (agentId === null) continue;
+    claim(DIMENSIONS.repo, row.repo.value, agentId);
+    claim(DIMENSIONS.projectPath, normalizePathValue(row.paths.project_path?.declared), agentId);
+    claim(DIMENSIONS.profileName, row.profile_name.value, agentId);
+    claim(DIMENSIONS.boardIdentifier, row.board.value?.identifier ?? null, agentId);
+    claim(DIMENSIONS.bloodbankTarget, row.bloodbank_target.value, agentId);
+    claim(DIMENSIONS.gatewayUnit, row.gateway_unit.value, agentId);
+    claim(DIMENSIONS.projectId, row.project_id.value, agentId);
+  }
+  for (const project of input.projects) {
+    claim(DIMENSIONS.projectKey, project.slug, project.key);
+    claim(DIMENSIONS.projectRepoPath, normalizePathValue(project.repoPath ? shownPath(project.repoPath) : null), project.key);
+    claim(DIMENSIONS.projectBoardId, project.boardId ? `${project.providerScope}/${project.boardId}` : null, project.key);
+    claim(DIMENSIONS.projectIdentifier, project.identifier ? `${project.providerScope}/${project.identifier.toUpperCase()}` : null, project.key);
+  }
+  const groups = [];
+  for (const [id, bucket] of buckets) {
+    if (bucket.participants.size < 2) continue;
+    groups.push({
+      id,
+      field: bucket.dimension.field,
+      dimension: bucket.dimension.key,
+      value: shownPath(bucket.value),
+      participants: [...bucket.participants].sort((a, b) => a < b ? -1 : 1),
+      participant_kind: bucket.dimension.kind,
+      owners: [input.authority.ownerOf(bucket.dimension.field)].filter((owner) => owner !== null),
+      permitted: false,
+      exception_id: null
+    });
+  }
+  for (const [agentId, count] of idCounts) {
+    if (count < 2) continue;
+    groups.push({
+      id: conflictGroupId(DIMENSIONS.agentId.field, agentId),
+      field: DIMENSIONS.agentId.field,
+      dimension: DIMENSIONS.agentId.key,
+      value: bounded2(agentId),
+      participants: [agentId],
+      participant_kind: "agent",
+      owners: [input.authority.ownerOf(DIMENSIONS.agentId.field)].filter((owner) => owner !== null),
+      permitted: false,
+      exception_id: null
+    });
+  }
+  for (const key of input.duplicateProjectKeys) {
+    groups.push({
+      id: conflictGroupId(DIMENSIONS.projectKey.field, key),
+      field: DIMENSIONS.projectKey.field,
+      dimension: DIMENSIONS.projectKey.key,
+      value: bounded2(key),
+      participants: [key],
+      participant_kind: "project",
+      owners: [input.authority.ownerOf(DIMENSIONS.projectKey.field)].filter((owner) => owner !== null),
+      permitted: false,
+      exception_id: null
+    });
+  }
+  for (const group of groups) {
+    const exception = matchException(group, input.contract);
+    if (exception) {
+      group.permitted = true;
+      group.exception_id = exception.id;
+    }
+  }
+  return groups.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+var CONFLICT_FIELD_KEYS = {
+  "agents.{agent_id}.repo": "repo",
+  "agents.{agent_id}.profile_name": "profile_name",
+  "agents.{agent_id}.plane.identifier": "board",
+  "agents.{agent_id}.bloodbank.target_agent_id": "bloodbank_target",
+  "agents.{agent_id}.systemd.gateway_unit": "gateway_unit",
+  "projects.{slug}.slug": "project_id",
+  "agents.{agent_id}": "agent_id"
+};
+function projectIndex(store) {
+  const entries = [];
+  for (const entry of store.entries) {
+    const record = isRecord5(entry.value) ? entry.value : {};
+    const provider = isRecord5(record.ticket_provider) ? record.ticket_provider : {};
+    entries.push({
+      key: entry.key,
+      slug: nonEmptyString(record.slug) ?? entry.key,
+      repoPath: nonEmptyString(record.repo_path),
+      identifier: nonEmptyString(provider.identifier),
+      boardId: nonEmptyString(provider.board_id),
+      workspace: nonEmptyString(provider.workspace),
+      // Mirrors `ticketProviderScope` in src/project/index.ts. Two projects on
+      // different providers may hold the same board key without colliding, so a
+      // scope-blind comparison would invent a conflict the store itself allows.
+      providerScope: `${nonEmptyString(provider.type) ?? ""}/${(nonEmptyString(provider.workspace) ?? "").toLowerCase()}`
+    });
+  }
+  return entries;
+}
+function storeView(resolved, owner, store, raw) {
+  return {
+    id: resolved.id,
+    owner,
+    store,
+    env_keys: [...resolved.envKeys],
+    configured_path: shownPath(resolved.configuredPath),
+    inspected_path: shownPath(resolved.inspectedPath),
+    overridden: resolved.overridden,
+    exists: raw !== null,
+    source_rows: raw?.sourceRows ?? 0,
+    parse: raw?.parse ?? "unreadable"
+  };
+}
+function authorityFor(contract, storeName) {
+  for (const authority of Object.values(contract.authorities)) {
+    if (authority.store === storeName) return { owner: authority.owner, store: authority.store };
+  }
+  return { owner: null, store: storeName };
+}
+function collectFleetInventory(options = {}) {
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir12();
+  const contractPath = resolveFleetContractPath(options.contract);
+  const loaded = loadFleetContract(contractPath);
+  const validation = validateFleetContract(loaded.document);
+  const first = validation.diagnostics[0];
+  if (!validation.contract || first) {
+    throw new FleetError(
+      first?.code ?? "INVALID_INPUT",
+      `fleet contract is not usable: ${first ? `${first.path}: ${first.message}` : "validation produced no contract"}`,
+      false,
+      { contract_path: shownPath(contractPath) }
+    );
+  }
+  const contract = validation.contract;
+  const stores = resolveInventoryStores(options);
+  const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
+  const projectRaw = readProjectRegistryRaw(stores.projects.inspectedPath);
+  const authority = buildAuthorityIndex(contract);
+  const layout = resolveProfileLayout(contract, env2, home);
+  const execution = contract.activation?.execution_authority;
+  const activationField = nonEmptyString(execution?.field) ?? "agents.{agent_id}.bloodbank.enabled";
+  const activationOwner = nonEmptyString(execution?.owner) ?? authority.ownerOf(activationField);
+  const projects = projectIndex(projectRaw);
+  const projectsByRepoPath = /* @__PURE__ */ new Map();
+  const projectsBySlug = /* @__PURE__ */ new Map();
+  for (const project of projects) {
+    if (project.repoPath) {
+      const key = resolve18(expandHome2(project.repoPath, home));
+      if (!projectsByRepoPath.has(key)) projectsByRepoPath.set(key, project);
+    }
+    if (!projectsBySlug.has(project.slug)) projectsBySlug.set(project.slug, project);
+  }
+  const ctx = {
+    contract,
+    authority,
+    profileRoot: layout.root,
+    profilePathTemplate: layout.template,
+    unitPatterns: unitPatternsFrom(contract),
+    gatewayPattern: gatewayPatternFrom(contract),
+    activationField,
+    activationOwner,
+    projectsByRepoPath,
+    projectsBySlug,
+    home,
+    findings: [],
+    droppedFindings: 0
+  };
+  if (stores.disagreement && !stores.agents.overridden) {
+    addFinding(ctx, {
+      code: "agent-registry-store-env-disagreement",
+      field: "agents.{agent_id}",
+      agent_id: null,
+      source: authority.ownerOf("agents.{agent_id}.repo"),
+      severity: "warn",
+      detail: `${stores.disagreement}; this run treats ${shownPath(stores.agents.configuredPath)} as the configured store`
+    });
+  }
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"],
+    [stores.projects, projectRaw, "projects"]
+  ]) {
+    if (raw.collection === "ok") continue;
+    addFinding(ctx, {
+      code: "registry-collection-unreadable",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: raw.collection === "missing" ? `${store.id} declares no ${collection}: mapping; the file parsed but carries no fleet to inventory` : `${store.id}'s ${collection}: key is not a mapping; the file parsed but carries no fleet to inventory`
+    });
+  }
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"],
+    [stores.projects, projectRaw, "projects"]
+  ]) {
+    if (raw.collection !== "ok" || raw.countIndependent) continue;
+    addFinding(ctx, {
+      code: "source-count-not-independent",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: `${store.id}'s ${collection}: mapping was read but could not be counted by a separate parse; source_rows fell back to the reader's own array and cannot disagree with it`
+    });
+  }
+  if (layout.root === null) {
+    addFinding(ctx, {
+      code: "profile-layout-undeclared",
+      field: "service_model.profile_layout.root",
+      agent_id: null,
+      source: authority.ownerOf("profiles.{profile_name}"),
+      severity: "error",
+      detail: "the contract declares no usable profile_layout.root; no profile path can be derived"
+    });
+  }
+  for (const [store, raw] of [[stores.agents, agentRaw], [stores.projects, projectRaw]]) {
+    if (raw.schemaVersion === null || raw.schemaVersion === SUPPORTED_REGISTRY_SCHEMA) continue;
+    addFinding(ctx, {
+      code: "registry-schema-version-unsupported",
+      field: "schema_version",
+      agent_id: null,
+      source: null,
+      severity: "error",
+      detail: `${store.id} declares schema_version ${raw.schemaVersion}; this build reads version ${SUPPORTED_REGISTRY_SCHEMA} and would report a later shape as if it were one`
+    });
+  }
+  if (ctx.unitPatterns.length === 0) {
+    addFinding(ctx, {
+      code: "service-model-undeclared",
+      field: "service_model.per_agent",
+      agent_id: null,
+      source: authority.ownerOf("agents.{agent_id}.systemd.gateway_unit"),
+      severity: "error",
+      detail: "the contract declares no per-agent unit-name patterns; no expected unit name can be derived"
+    });
+  }
+  const runContext = options.runContext;
+  const allRows = agentRaw.entries.map((entry) => {
+    if (runContext) throwIfCancelled(runContext);
+    return buildInventoryRow(entry, ctx);
+  });
+  allRows.sort((a, b) => {
+    const left = a.agent_id.value ?? "";
+    const right = b.agent_id.value ?? "";
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const conflicts = detectConflicts({
+    rows: allRows,
+    projects,
+    duplicateProjectKeys: projectRaw.duplicateKeys,
+    authority,
+    contract
+  });
+  const byParticipant = /* @__PURE__ */ new Map();
+  for (const group of conflicts) {
+    if (group.participant_kind !== "agent") continue;
+    for (const participant of group.participants) {
+      const list = byParticipant.get(participant) ?? [];
+      list.push(group);
+      byParticipant.set(participant, list);
+    }
+  }
+  for (const row of allRows) {
+    const id = row.agent_id.value;
+    if (id === null) continue;
+    for (const group of byParticipant.get(id) ?? []) {
+      if (!row.conflicts.includes(group.id)) row.conflicts.push(group.id);
+      const key = CONFLICT_FIELD_KEYS[group.field];
+      if (key) {
+        const target = row[key];
+        if (target && typeof target === "object" && "state" in target) target.state = "conflicted";
+      }
+      if (!row.findings.includes("identity-conflict")) row.findings.push("identity-conflict");
+      addFinding(ctx, {
+        code: "identity-conflict",
+        field: group.field,
+        agent_id: id,
+        source: group.owners[0] ?? null,
+        severity: group.permitted ? "info" : "error",
+        detail: `${group.value} is claimed by ${group.participants.join(", ")}${group.permitted ? ` (permitted by ${group.exception_id})` : ""}`
+      });
+    }
+    row.conflicts.sort((a, b) => a < b ? -1 : 1);
+  }
+  for (const group of conflicts) {
+    if (group.participant_kind !== "project") continue;
+    addFinding(ctx, {
+      code: "project-registry-duplicate",
+      field: group.field,
+      agent_id: null,
+      source: group.owners[0] ?? null,
+      severity: group.permitted ? "info" : "error",
+      detail: `${group.value} is claimed by ${group.participants.join(", ")}${group.permitted ? ` (permitted by ${group.exception_id})` : ""}`
+    });
+  }
+  const wanted = options.agentId?.trim();
+  let scope = { kind: "fleet", agent_id: null, label: "whole registered fleet" };
+  let selectedRows = allRows;
+  if (wanted) {
+    selectedRows = allRows.filter((row) => row.agent_id.value === wanted);
+    if (selectedRows.length === 0) {
+      throw new FleetError("NOT_FOUND", "No agent with that id is registered", false, { agent_id: bounded2(wanted, 128) });
+    }
+    scope = { kind: "agent", agent_id: bounded2(wanted, 128), label: `scoped to agent ${bounded2(wanted, 128)}` };
+  }
+  const truncated = [];
+  let rows = selectedRows;
+  if (rows.length > FLEET_INVENTORY_MAX_ROWS) {
+    truncated.push(`rows: ${rows.length - FLEET_INVENTORY_MAX_ROWS} of ${rows.length} rows dropped`);
+    rows = rows.slice(0, FLEET_INVENTORY_MAX_ROWS);
+  }
+  if (ctx.droppedFindings > 0) {
+    truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
+  }
+  const findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
+  let reportedConflicts = conflicts;
+  if (reportedConflicts.length > MAX_CONFLICT_GROUPS) {
+    truncated.push(`conflicts: ${reportedConflicts.length - MAX_CONFLICT_GROUPS} of ${reportedConflicts.length} groups dropped`);
+    reportedConflicts = reportedConflicts.slice(0, MAX_CONFLICT_GROUPS);
+    const kept = new Set(reportedConflicts.map((group) => group.id));
+    for (const row of rows) row.conflicts = row.conflicts.filter((id) => kept.has(id));
+  }
+  const malformedRows = allRows.filter((row) => row.malformed).length;
+  const correlatedRows = allRows.filter((row) => row.project_id.value !== null).length;
+  const unpermitted = conflicts.filter((group) => !group.permitted).length;
+  const malformedAgentIds = new Set(
+    allRows.filter((row) => row.malformed).map((row) => row.agent_id.value).filter((id) => id !== null)
+  );
+  const contractViolations = ctx.findings.filter((finding2) => {
+    if (finding2.severity !== "error") return false;
+    if (ROW_INTEGRITY_CODES.has(finding2.code)) return false;
+    if (ROW_SHAPE_CODES.has(finding2.code) && finding2.agent_id !== null && malformedAgentIds.has(finding2.agent_id)) return false;
+    return true;
+  }).length;
+  const unresolvedRows = allRows.filter((row) => row.project_id.state !== "resolved" || row.profile_path.state !== "resolved" || row.role_dir.state !== "resolved").length;
+  const totals = {
+    source_rows: agentRaw.sourceRows,
+    emitted_rows: allRows.length,
+    selected: selectedRows.length,
+    observed: rows.length,
+    malformed_rows: malformedRows,
+    registered_agents: allRows.length,
+    project_records: projectRaw.sourceRows,
+    correlated: correlatedRows,
+    uncorrelated: allRows.length - correlatedRows,
+    conflict_groups: conflicts.length,
+    permitted_conflict_groups: conflicts.length - unpermitted,
+    findings: ctx.findings.length + ctx.droppedFindings
+  };
+  const health = {
+    healthy: unpermitted === 0 && malformedRows === 0 && contractViolations === 0 && truncated.length === 0 && agentRaw.parse === "ok" && projectRaw.parse === "ok" && agentRaw.collection === "ok" && projectRaw.collection === "ok" && totals.source_rows === totals.emitted_rows,
+    conflicts: unpermitted,
+    permitted_conflicts: totals.permitted_conflict_groups,
+    contract_violations: contractViolations,
+    malformed_rows: malformedRows,
+    unresolved_rows: unresolvedRows,
+    // A store whose COLLECTION could not be read. A `salvaged` parse is not
+    // one: a single scalar agent row set `parse: "salvaged"` and made the human
+    // report print "1 unreadable stores" about a store that returned every row
+    // it had. `malformed_rows` already counts that row, and `data.stores[].parse`
+    // already reports the salvage.
+    collection_errors: (agentRaw.collection === "ok" ? 0 : 1) + (projectRaw.collection === "ok" ? 0 : 1),
+    truncated: truncated.length > 0
+  };
+  const agentAuthority = authorityFor(contract, AGENT_STORE);
+  const projectAuthority = authorityFor(contract, PROJECT_STORE);
+  return {
+    contract_path: shownPath(contractPath),
+    contract_version: contract.contract_version,
+    scope,
+    stores: [
+      storeView(stores.agents, agentAuthority.owner, agentAuthority.store, agentRaw),
+      storeView(stores.projects, projectAuthority.owner, projectAuthority.store, projectRaw)
+    ],
+    totals,
+    health,
+    rows,
+    conflicts: reportedConflicts,
+    findings,
+    truncated
+  };
+}
+
+// src/fleet/provenance.ts
+import { createHash as createHash9 } from "node:crypto";
+import { existsSync as existsSync25, lstatSync as lstatSync14, readFileSync as readFileSync24, realpathSync as realpathSync9, statSync as statSync7 } from "node:fs";
+import { homedir as homedir13 } from "node:os";
+import { dirname as dirname16, isAbsolute as isAbsolute8, join as join33, resolve as resolve19 } from "node:path";
+init_project();
+init_boardUrl();
+init_project();
+init_project();
+var MAX_FINDINGS2 = 2e3;
+var PROBE_CONCURRENCY = 4;
+var CONFIG_MAX_BYTES = 1024 * 1024;
+var PROFILE_CONFIG_MAX_BYTES = 4 * 1024 * 1024;
+var TEMPLATE_SUBMODULE_PATH = "templates/hermes-agent";
+var PIN_KEYS = ["hermes_bin", "hermes_repo", "hermes_git_url", "hermes_git_ref", "hermes_git_sha", "fleet_env", "registry_file"];
+var FLEET_ENV_KEYS = ["HERMES_FLEET_HOME", "HERMES_FLEET_REPO", "HERMES_FLEET_BIN", "HERMES_FLEET_REGISTRY_FILE"];
+var SOURCE_TEMPLATE_CONFIG = "hermes-template-config";
+var SOURCE_FLEET_ENV = "hermes-fleet-env";
+var SOURCE_PJANGLER_REPO = "pjangler-repository";
+var SOURCE_TEMPLATE_SUBMODULE = "hermes-agent-template-submodule";
+var SOURCE_AGENT_REGISTRY = "hermes-agent-registry";
+var SOURCE_AGENT_CHECKOUT = "hermes-agent-checkout";
+var SOURCE_PROVENANCE_POLICY = "pjangler-fleet-provenance";
+var SOURCE_ROLE_SCAFFOLD = "hermes-agent-role-scaffold";
+var SOURCE_PROFILE_TREE = "hermes-profile-tree";
+var SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function nonEmptyString2(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+function expandHome3(path, home) {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return join33(home, path.slice(2));
+  return path;
+}
+function shownPath2(path) {
+  return bounded2(redactHome(path));
+}
+function present(value, source, extra = {}) {
+  return { value: bounded2(value), source, state: "present", family: null, classification: null, ...extra };
+}
+function absent(source, state, extra = {}) {
+  return { value: null, source, state, family: null, classification: null, ...extra };
+}
+function compareFact(desired, observed, mismatchStatus = "mismatch") {
+  for (const state of ["unobserved", "unsupported", "missing"]) {
+    if (desired.state === state || observed.state === state) return state;
+  }
+  if (desired.value === null || observed.value === null) return "missing";
+  return desired.value === observed.value ? "match" : mismatchStatus;
+}
+function resolveProvenanceSources(options) {
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir13();
+  const stores = resolveInventoryStores(options);
+  const root = resolvePjanglerRoot();
+  const file = (id, kind, configured, inspected = configured) => {
+    let exists = false;
+    let parse4 = "unread";
+    try {
+      const stat = lstatSync14(inspected);
+      exists = true;
+      parse4 = stat.isFile() || stat.isDirectory() || stat.isSymbolicLink() ? "ok" : "unreadable";
+    } catch {
+      exists = false;
+      parse4 = "unreadable";
+    }
+    return { id, kind, configuredPath: configured, inspectedPath: inspected, exists, parse: parse4 };
+  };
+  return [
+    file(SOURCE_TEMPLATE_CONFIG, "pin", resolveTemplateConfigPath2(env2, home)),
+    file(SOURCE_FLEET_ENV, "shell-env", ticketProviderFleetEnvPath(env2)),
+    file(SOURCE_PJANGLER_REPO, "repository", root),
+    file(SOURCE_TEMPLATE_SUBMODULE, "submodule", join33(root, TEMPLATE_SUBMODULE_PATH)),
+    file(SOURCE_AGENT_REGISTRY, "registry", stores.agents.configuredPath, stores.agents.inspectedPath)
+  ];
+}
+function readConfiguredPin(sources) {
+  const config = {};
+  const configSource = sources.find((source) => source.id === SOURCE_TEMPLATE_CONFIG);
+  if (configSource?.exists) {
+    let text2 = "";
+    try {
+      const stat = statSync7(configSource.inspectedPath);
+      if (stat.isFile() && stat.size <= CONFIG_MAX_BYTES) text2 = readFileSync24(configSource.inspectedPath, "utf8");
+    } catch {
+      text2 = "";
+    }
+    for (const key of PIN_KEYS) {
+      const value = nonEmptyString2(readTomlScalar(text2, "fleet", key));
+      if (value !== null) config[key] = value;
+    }
+  }
+  const envSource = sources.find((source) => source.id === SOURCE_FLEET_ENV);
+  const env2 = {};
+  if (envSource?.exists) {
+    const found = readShellAssignments(envSource.inspectedPath, [...FLEET_ENV_KEYS]);
+    for (const key of FLEET_ENV_KEYS) {
+      const value = nonEmptyString2(found[key]);
+      if (value !== null) env2[key] = value;
+    }
+  }
+  const repo = config.hermes_repo ?? env2.HERMES_FLEET_REPO ?? null;
+  return { config, env: env2, releaseRoot: repo && isAbsolute8(repo) ? dirname16(repo) : null };
+}
+function classifyExecutableFamily(rawPath, pin, contract) {
+  if (!rawPath) return null;
+  const shown = shownPath2(rawPath);
+  if (pin.releaseRoot) {
+    const root = shownPath2(pin.releaseRoot);
+    if (shown === root || shown.startsWith(`${root}/`)) return "pinned-release";
+  }
+  for (const mode of contract.retired ?? []) {
+    for (const pattern of mode.detect ?? []) {
+      let expression;
+      try {
+        expression = new RegExp(pattern, "iu");
+      } catch {
+        continue;
+      }
+      if (expression.test(shown) || expression.test(rawPath)) return mode.id;
+    }
+  }
+  return "unclassified";
+}
+function gitArgv(path, args) {
+  return ["git", "--no-optional-locks", "-C", path, ...args];
+}
+async function probeCheckout(ctx, declared, home) {
+  const target = shownPath2(declared);
+  const base = {
+    target,
+    classification: "undeclared",
+    reached: false,
+    outcome: "skipped",
+    reason: null,
+    remote: null,
+    head: null,
+    clean: null
+  };
+  const expanded = expandHome3(declared, home);
+  if (!isAbsolute8(expanded)) return { ...base, classification: "relative", reason: "relative-path" };
+  const view = classifyPath(expanded, { directory: true });
+  const classification = view.classification;
+  if (classification !== "ok" && classification !== "symlink") {
+    return { ...base, classification, reason: classification };
+  }
+  const toplevel = await probe(ctx, gitArgv(expanded, ["rev-parse", "--show-toplevel"]));
+  if (toplevel.outcome !== "ok" || !toplevel.value) {
+    return {
+      ...base,
+      classification,
+      outcome: toplevel.outcome === "ok" ? "failed" : toplevel.outcome,
+      reason: toplevel.outcome === "timeout" ? "probe-timeout" : toplevel.outcome === "cancelled" ? "probe-cancelled" : "probe-failed"
+    };
+  }
+  const canonical = (path) => {
+    try {
+      return realpathSync9(path);
+    } catch {
+      return resolve19(path);
+    }
+  };
+  if (canonical(toplevel.value) !== canonical(expanded)) {
+    return { ...base, classification, outcome: "skipped", reason: "not-a-repository-root" };
+  }
+  const [remote, head, status] = await Promise.all([
+    probe(ctx, gitArgv(expanded, ["remote", "get-url", "origin"])),
+    probe(ctx, gitArgv(expanded, ["rev-parse", "HEAD"])),
+    probe(ctx, gitArgv(expanded, ["status", "--porcelain"]))
+  ]);
+  const worst = [remote.outcome, head.outcome, status.outcome].find((outcome) => outcome !== "ok") ?? "ok";
+  return {
+    target,
+    classification,
+    reached: true,
+    outcome: worst,
+    reason: worst === "ok" ? null : worst === "timeout" ? "probe-timeout" : worst === "cancelled" ? "probe-cancelled" : "probe-failed",
+    remote: remote.outcome === "ok" ? remote.value : null,
+    head: head.outcome === "ok" ? head.value : null,
+    // `""` is the porcelain answer for a clean tree, so `status.value || null`
+    // would report a clean checkout as unobserved -- the one reading this fact
+    // exists to distinguish.
+    clean: status.outcome === "ok" ? status.value === "" : null
+  };
+}
+function addFinding2(ctx, finding2) {
+  if (ctx.findings.length >= MAX_FINDINGS2) {
+    ctx.droppedFindings += 1;
+    return;
+  }
+  ctx.findings.push({ ...finding2, detail: bounded2(finding2.detail) });
+}
+function addProbe(ctx, record) {
+  if (ctx.probes.length >= FLEET_PROVENANCE_MAX_PROBES) {
+    ctx.droppedProbes += 1;
+    return;
+  }
+  ctx.probes.push({ ...record, id: bounded2(record.id), target: bounded2(record.target) });
+}
+function ownerFor(ctx, fieldPath) {
+  const exact = ctx.authority.ownerOf(fieldPath);
+  if (exact !== null) return exact;
+  const segments = fieldPath.split(".");
+  for (let end = segments.length - 1; end > 0; end -= 1) {
+    const owner = ctx.authority.ownerOf(segments.slice(0, end).join("."));
+    if (owner !== null) return owner;
+  }
+  if (!ctx.undeclaredFields.has(fieldPath)) {
+    ctx.undeclaredFields.add(fieldPath);
+    addFinding2(ctx, {
+      code: "authority-owner-undeclared",
+      field: fieldPath,
+      agent_id: null,
+      source: null,
+      severity: "warn",
+      detail: "the contract declares no authority owner for this field path or any of its parents; provenance is reported with owner null and is never attributed to a guess"
+    });
+  }
+  return null;
+}
+function addFact(ctx, fact) {
+  if (ctx.facts.length >= FLEET_PROVENANCE_MAX_FACTS) {
+    ctx.droppedFacts += 1;
+    return;
+  }
+  const { mismatchStatus, status, ...rest } = fact;
+  ctx.facts.push({
+    ...rest,
+    owner: ownerFor(ctx, fact.field),
+    status: status ?? compareFact(fact.desired, fact.observed, mismatchStatus ?? "mismatch"),
+    detail: bounded2(fact.detail)
+  });
+}
+function registrySide(raw, source, extra = {}) {
+  const value = nonEmptyString2(raw);
+  return value === null ? absent(source, "missing", extra) : present(value, source, extra);
+}
+function pinSide(value, source, extra = {}) {
+  return value === void 0 ? absent(source, "missing", extra) : present(value, source, extra);
+}
+function pathSide(raw, source, home, extra = {}) {
+  const value = nonEmptyString2(raw);
+  if (value === null) return absent(source, "missing", extra);
+  const view = classifyPath(expandHome3(value, home), { directory: true });
+  return present(shownPath2(value), source, { classification: view.classification, ...extra });
+}
+function agentSubjects(entries) {
+  const subjects = [];
+  for (const entry of entries) {
+    const raw = isRecord6(entry.value) ? entry.value : {};
+    subjects.push({
+      agentId: entry.key,
+      hermes: isRecord6(raw.hermes) ? raw.hermes : {},
+      roleDir: nonEmptyString2(raw.role_dir),
+      profileName: nonEmptyString2(raw.profile_name)
+    });
+  }
+  return subjects.sort((a, b) => a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0);
+}
+async function addTemplateFacts(ctx, root) {
+  const submodule = join33(root, TEMPLATE_SUBMODULE_PATH);
+  const field3 = "scaffold";
+  const staged = await probe(ctx.run, gitArgv(root, ["ls-files", "--stage", "--", TEMPLATE_SUBMODULE_PATH]));
+  addProbe(ctx, {
+    id: `gitlink:${shownPath2(root)}`,
+    kind: "gitlink",
+    target: shownPath2(root),
+    outcome: staged.outcome,
+    reason: staged.outcome === "ok" ? null : staged.outcome === "timeout" ? "probe-timeout" : staged.outcome === "cancelled" ? "probe-cancelled" : "probe-failed"
+  });
+  const parsed = /^160000\s+([0-9a-f]{40})\s/u.exec(staged.value ?? "");
+  const desiredGitlink = parsed ? present(parsed[1], SOURCE_PJANGLER_REPO) : absent(SOURCE_PJANGLER_REPO, staged.outcome === "ok" ? "missing" : "unobserved");
+  const checkout = await probeCheckout(ctx.run, submodule, ctx.home);
+  addProbe(ctx, {
+    id: `submodule:${checkout.target}`,
+    kind: "submodule",
+    target: checkout.target,
+    outcome: checkout.outcome,
+    reason: checkout.reason
+  });
+  addFact(ctx, {
+    id: "template.gitlink",
+    scope: "fleet",
+    agent_id: null,
+    field: field3,
+    desired: desiredGitlink,
+    observed: checkout.head ? present(checkout.head, SOURCE_TEMPLATE_SUBMODULE) : absent(SOURCE_TEMPLATE_SUBMODULE, "unobserved"),
+    detail: `the committed gitlink for ${TEMPLATE_SUBMODULE_PATH} against the commit its worktree has checked out`
+  });
+  const declaredUrl = readSubmoduleUrl(root, TEMPLATE_SUBMODULE_PATH);
+  addFact(ctx, {
+    id: "template.remote_url",
+    scope: "fleet",
+    agent_id: null,
+    field: field3,
+    desired: declaredUrl ? present(declaredUrl, SOURCE_PJANGLER_REPO) : absent(SOURCE_PJANGLER_REPO, "missing"),
+    observed: checkout.remote ? present(checkout.remote, SOURCE_TEMPLATE_SUBMODULE) : absent(SOURCE_TEMPLATE_SUBMODULE, "unobserved"),
+    detail: `the remote .gitmodules declares for ${TEMPLATE_SUBMODULE_PATH} against the remote its worktree points at`
+  });
+  addFact(ctx, {
+    id: "template.worktree_clean",
+    scope: "fleet",
+    agent_id: null,
+    field: field3,
+    desired: present("clean", SOURCE_PROVENANCE_POLICY),
+    observed: checkout.clean === null ? absent(SOURCE_TEMPLATE_SUBMODULE, "unobserved") : present(checkout.clean ? "clean" : "dirty", SOURCE_TEMPLATE_SUBMODULE),
+    mismatchStatus: "dirty",
+    detail: "whether the tracked template worktree carries uncommitted changes; a dirty template is not a version anything can be pinned to"
+  });
+}
+function readSubmoduleUrl(root, path) {
+  const file = join33(root, ".gitmodules");
+  if (!existsSync25(file)) return null;
+  let text2;
+  try {
+    text2 = readFileSync24(file, "utf8");
+  } catch {
+    return null;
+  }
+  let inSection = false;
+  let url = null;
+  let sectionPath = null;
+  let sectionUrl = null;
+  for (const raw of text2.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("[")) {
+      if (sectionPath === path && sectionUrl) url = sectionUrl;
+      inSection = line.startsWith("[submodule");
+      sectionPath = null;
+      sectionUrl = null;
+      continue;
+    }
+    if (!inSection) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (key === "path") sectionPath = value;
+    if (key === "url") sectionUrl = value;
+  }
+  if (sectionPath === path && sectionUrl) url = sectionUrl;
+  return url;
+}
+function addHostPinFacts(ctx) {
+  const pairs = [
+    ["fleet.hermes_bin", "hermes_bin", "HERMES_FLEET_BIN", "the shared hermes executable the template config pins against the one every agent launcher sources"],
+    ["fleet.hermes_repo", "hermes_repo", "HERMES_FLEET_REPO", "the pinned release checkout the template config declares against the one the fleet env exports"],
+    ["fleet.registry_file", "registry_file", "HERMES_FLEET_REGISTRY_FILE", "the agent registry the template config names against the one the fleet env exports"]
+  ];
+  for (const [id, configKey, envKey, detail] of pairs) {
+    const rawConfig = ctx.pin.config[configKey];
+    const rawEnv = ctx.pin.env[envKey];
+    const desired = pinSide(rawConfig === void 0 ? void 0 : shownPath2(expandHome3(rawConfig, ctx.home)), SOURCE_TEMPLATE_CONFIG);
+    const unexpanded = rawEnv !== void 0 && SHELL_REFERENCE.test(rawEnv);
+    const observed = rawEnv === void 0 ? absent(SOURCE_FLEET_ENV, "missing") : unexpanded ? present(rawEnv, SOURCE_FLEET_ENV, { state: "unsupported", family: "shell-variable-reference" }) : present(shownPath2(expandHome3(rawEnv, ctx.home)), SOURCE_FLEET_ENV);
+    addFact(ctx, {
+      id,
+      scope: "fleet",
+      agent_id: null,
+      field: id,
+      desired,
+      observed,
+      detail: unexpanded ? `${detail}; the fleet env spells it with an unexpanded shell reference, reported verbatim and never expanded` : detail
+    });
+  }
+}
+function addAgentRecordFacts(ctx, subject) {
+  const { agentId, hermes } = subject;
+  const pin = ctx.pin.config;
+  const executable = registrySide(hermes.bin, SOURCE_AGENT_REGISTRY);
+  if (executable.value !== null) {
+    executable.classification = classifyPath(expandHome3(executable.value, ctx.home)).classification;
+    executable.family = classifyExecutableFamily(nonEmptyString2(hermes.bin), ctx.pin, ctx.contract);
+    executable.value = shownPath2(nonEmptyString2(hermes.bin));
+  }
+  addFact(ctx, {
+    id: "hermes.executable",
+    scope: "agent",
+    agent_id: agentId,
+    field: "agents.{agent_id}.hermes.bin",
+    desired: pinSide(pin.hermes_bin === void 0 ? void 0 : shownPath2(pin.hermes_bin), SOURCE_TEMPLATE_CONFIG, { family: "pinned-release" }),
+    observed: executable,
+    detail: "the hermes executable this agent's launcher execs, against the one the host config pins; the binary is classified by path and never run"
+  });
+  if (executable.family && executable.family !== "pinned-release" && executable.family !== "unclassified") {
+    addFinding2(ctx, {
+      code: "hermes-executable-retired-family",
+      field: "agents.{agent_id}.hermes.bin",
+      agent_id: agentId,
+      source: ctx.authority.ownerOf("agents.{agent_id}.hermes.bin"),
+      severity: "error",
+      detail: `the declared executable matches the retired mode ${executable.family}; pinned releases are resolved from the registry, never from a path`
+    });
+  }
+  const repository = pathSide(hermes.repo, SOURCE_AGENT_REGISTRY, ctx.home);
+  if (repository.value !== null) repository.family = classifyExecutableFamily(nonEmptyString2(hermes.repo), ctx.pin, ctx.contract);
+  addFact(ctx, {
+    id: "hermes.repository",
+    scope: "agent",
+    agent_id: agentId,
+    field: "agents.{agent_id}.hermes.repo",
+    desired: pinSide(pin.hermes_repo === void 0 ? void 0 : shownPath2(pin.hermes_repo), SOURCE_TEMPLATE_CONFIG, { family: "pinned-release" }),
+    observed: repository,
+    detail: "the hermes checkout this agent declares, against the pinned release the host config declares"
+  });
+  for (const [id, key, pinKey, detail] of [
+    ["hermes.git_url", "git_url", "hermes_git_url", "the hermes remote this agent's row records, against the configured pin"],
+    ["hermes.git_ref", "git_ref", "hermes_git_ref", "the hermes ref this agent's row records, against the configured pin"],
+    ["hermes.git_sha", "git_sha", "hermes_git_sha", "the hermes commit this agent's row records, against the configured pin"]
+  ]) {
+    const observed = registrySide(hermes[key], SOURCE_AGENT_REGISTRY);
+    addFact(ctx, {
+      id,
+      scope: "agent",
+      agent_id: agentId,
+      field: `agents.{agent_id}.hermes.${key}`,
+      desired: pinSide(pin[pinKey], SOURCE_TEMPLATE_CONFIG),
+      observed,
+      detail: observed.state === "missing" ? `${detail}; the registry row records none, so the configured pin cannot be confirmed` : detail
+    });
+  }
+  addFact(ctx, {
+    id: "hermes.fleet_env",
+    scope: "agent",
+    agent_id: agentId,
+    field: "agents.{agent_id}.hermes.fleet_env",
+    desired: pinSide(pin.fleet_env === void 0 ? void 0 : shownPath2(expandHome3(pin.fleet_env, ctx.home)), SOURCE_TEMPLATE_CONFIG),
+    observed: pathSide(hermes.fleet_env, SOURCE_AGENT_REGISTRY, ctx.home),
+    detail: "the fleet env file this agent's row records, against the one the host config declares"
+  });
+}
+function addUnsupportedFacts(ctx, subject, profileTemplate) {
+  const { agentId, roleDir, profileName } = subject;
+  const scaffoldEvidence = roleDir === null ? absent(SOURCE_ROLE_SCAFFOLD, "missing") : (() => {
+    const dir = expandHome3(roleDir, ctx.home);
+    const view = classifyPath(dir, { directory: true });
+    const manifest = join33(dir, "role.yaml");
+    const state = view.classification === "ok" && existsSync25(manifest) ? "role.yaml present" : `role directory is ${view.classification}`;
+    return present(state, SOURCE_ROLE_SCAFFOLD, { classification: view.classification });
+  })();
+  addFact(ctx, {
+    id: "scaffold.template_ref",
+    scope: "agent",
+    agent_id: agentId,
+    field: "scaffold",
+    desired: absent(SOURCE_ROLE_SCAFFOLD, "unsupported"),
+    observed: scaffoldEvidence,
+    detail: "a deployed role scaffold records no template ref -- it renders no .copier-answers.yml and the repo-root one is CommonProject's, with no _commit -- so no comparison is possible and none is invented"
+  });
+  const profilePath = profileName && profileTemplate ? profileTemplate.replaceAll("{profile_name}", profileName) : null;
+  const generated = profilePath ? join33(profilePath, "config.yaml") : null;
+  addFact(ctx, {
+    id: "profile.render_generation",
+    scope: "agent",
+    agent_id: agentId,
+    field: "profiles.{profile_name}.config.yaml",
+    desired: absent(SOURCE_PROFILE_TREE, "unsupported"),
+    observed: generated === null ? absent(SOURCE_PROFILE_TREE, "missing") : profileDigest(generated),
+    detail: "a generated profile config carries only the GENERATED FILE marker -- no generation counter, digest, or sidecar -- so its bytes are the only stable evidence and nothing can be compared against a recorded render"
+  });
+}
+function profileDigest(path) {
+  try {
+    const stat = lstatSync14(path);
+    if (stat.isSymbolicLink()) return present("symlink", SOURCE_PROFILE_TREE, { classification: "symlink" });
+    if (!stat.isFile()) return present(`not-a-file`, SOURCE_PROFILE_TREE, { classification: "not-a-directory" });
+    if (stat.size > PROFILE_CONFIG_MAX_BYTES) return absent(SOURCE_PROFILE_TREE, "unobserved", { classification: "unreadable" });
+    return present(`sha256:${createHash9("sha256").update(readFileSync24(path)).digest("hex")}`, SOURCE_PROFILE_TREE, { classification: "ok" });
+  } catch (error) {
+    const code = error.code;
+    return absent(SOURCE_PROFILE_TREE, "missing", { classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable" });
+  }
+}
+function addCheckoutFacts(ctx, subject, observation2) {
+  const { agentId } = subject;
+  const field3 = "agents.{agent_id}.hermes.repo";
+  const pin = ctx.pin.config;
+  const unobserved = (extra = {}) => absent(SOURCE_AGENT_CHECKOUT, "unobserved", { classification: observation2?.classification ?? null, ...extra });
+  const reached = observation2 !== null && observation2.reached;
+  const observedValue = (value) => reached && value !== null ? present(value, SOURCE_AGENT_CHECKOUT, { classification: observation2.classification }) : unobserved();
+  const why = (what, present_) => {
+    if (observation2 === null) return "the row declares no hermes checkout to probe";
+    if (!reached) return `the declared checkout was not read (${observation2.reason ?? "unreachable"})`;
+    return present_ ? null : `the declared checkout was read, but ${what} could not be`;
+  };
+  addFact(ctx, {
+    id: "hermes.checkout_identity",
+    scope: "agent",
+    agent_id: agentId,
+    field: field3,
+    desired: pinSide(pin.hermes_git_url, SOURCE_TEMPLATE_CONFIG),
+    observed: observedValue(reached ? observation2.remote : null),
+    detail: reached ? why("its origin remote", observation2.remote !== null) ?? "the remote the declared checkout actually points at, against the configured pin" : `${why("its origin remote", false)}; no other repository's identity is reported for this agent`
+  });
+  addFact(ctx, {
+    id: "hermes.checkout_head",
+    scope: "agent",
+    agent_id: agentId,
+    field: field3,
+    desired: pinSide(pin.hermes_git_sha, SOURCE_TEMPLATE_CONFIG),
+    observed: observedValue(reached ? observation2.head : null),
+    detail: why("its HEAD", reached && observation2.head !== null) ?? "the commit the declared checkout has checked out, against the configured pin"
+  });
+  addFact(ctx, {
+    id: "hermes.checkout_clean",
+    scope: "agent",
+    agent_id: agentId,
+    field: field3,
+    desired: present("clean", SOURCE_PROVENANCE_POLICY),
+    observed: observedValue(reached && observation2.clean !== null ? observation2.clean ? "clean" : "dirty" : null),
+    mismatchStatus: "dirty",
+    detail: why("its working tree state", reached && observation2.clean !== null) ?? "whether the declared checkout carries uncommitted changes"
+  });
+  if (reached && observation2.clean === false) {
+    addFinding2(ctx, {
+      code: "hermes-checkout-dirty",
+      field: field3,
+      agent_id: agentId,
+      source: ctx.authority.ownerOf(field3),
+      severity: "warn",
+      detail: `the declared checkout ${observation2.target} carries uncommitted changes; a dirty checkout is not a version anything can be pinned to`
+    });
+  }
+  if (observation2 !== null && observation2.outcome !== "ok") {
+    addFinding2(ctx, {
+      code: "provenance-probe-incomplete",
+      field: field3,
+      agent_id: agentId,
+      source: ctx.authority.ownerOf(field3),
+      severity: "warn",
+      detail: `the declared checkout ${observation2.target} could not be observed (${observation2.reason ?? observation2.outcome}); its identity facts are unobserved rather than assumed`
+    });
+  }
+}
+async function collectFleetProvenance(options) {
+  const runContext = options.runContext;
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir13();
+  throwIfCancelled(runContext);
+  const contractPath = resolveFleetContractPath(options.contract);
+  const loaded = loadFleetContract(contractPath);
+  const validation = validateFleetContract(loaded.document);
+  const first = validation.diagnostics[0];
+  if (!validation.contract || first) {
+    throw new FleetError(
+      first?.code ?? "INVALID_INPUT",
+      `fleet contract is not usable: ${first ? `${first.path}: ${first.message}` : "validation produced no contract"}`,
+      false,
+      { contract_path: shownPath2(contractPath) }
+    );
+  }
+  const contract = validation.contract;
+  const inventory = collectFleetInventory({ ...options, agentId: void 0, runContext });
+  const stores = resolveInventoryStores(options);
+  const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
+  throwIfCancelled(runContext);
+  const sources = resolveProvenanceSources(options);
+  const pin = readConfiguredPin(sources);
+  const authority = buildAuthorityIndex(contract);
+  const layout = resolveProfileLayout(contract, env2, home);
+  const root = resolvePjanglerRoot();
+  const ctx = {
+    contract,
+    authority,
+    pin,
+    home,
+    run: runContext,
+    facts: [],
+    probes: [],
+    findings: [],
+    droppedFacts: 0,
+    droppedProbes: 0,
+    droppedFindings: 0,
+    undeclaredFields: /* @__PURE__ */ new Set()
+  };
+  for (const source of sources) {
+    if (source.exists) continue;
+    addFinding2(ctx, {
+      code: "provenance-source-missing",
+      field: source.id,
+      agent_id: null,
+      source: null,
+      severity: source.id === SOURCE_TEMPLATE_CONFIG ? "error" : "warn",
+      detail: `${source.id} is not present at ${shownPath2(source.inspectedPath)}; every fact whose desired side comes from it reports missing rather than a guess`
+    });
+  }
+  for (const key of ["hermes_git_url", "hermes_git_ref", "hermes_git_sha"]) {
+    if (pin.config[key] !== void 0) continue;
+    addFinding2(ctx, {
+      code: "provenance-pin-missing",
+      field: `fleet.${key}`,
+      agent_id: null,
+      source: null,
+      severity: "error",
+      detail: `the host template config declares no [fleet] ${key}; there is no pin to compare any agent against and none is invented`
+    });
+  }
+  await addTemplateFacts(ctx, root);
+  addHostPinFacts(ctx);
+  const subjects = agentSubjects(agentRaw.entries);
+  const byCanonical = /* @__PURE__ */ new Map();
+  for (const subject of subjects) {
+    const declared = nonEmptyString2(subject.hermes.repo);
+    if (declared === null) continue;
+    const expanded = expandHome3(declared, home);
+    let key;
+    try {
+      key = realpathSync9(expanded);
+    } catch {
+      key = resolve19(expanded);
+    }
+    if (!byCanonical.has(key)) byCanonical.set(key, declared);
+  }
+  const targets = [...byCanonical.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1);
+  remainingMs(runContext);
+  const observations = await mapBounded(targets, PROBE_CONCURRENCY, async ([, declared]) => probeCheckout(runContext, declared, home));
+  const byDeclared = /* @__PURE__ */ new Map();
+  targets.forEach(([canonical, declared], index) => {
+    const observation2 = observations[index];
+    byDeclared.set(canonical, observation2);
+    addProbe(ctx, {
+      id: `checkout:${observation2.target}`,
+      kind: "checkout",
+      target: observation2.target,
+      outcome: observation2.outcome,
+      reason: observation2.reason
+    });
+    void declared;
+  });
+  for (const subject of subjects) {
+    throwIfCancelled(runContext);
+    addAgentRecordFacts(ctx, subject);
+    const declared = nonEmptyString2(subject.hermes.repo);
+    let observation2 = null;
+    if (declared !== null) {
+      const expanded = expandHome3(declared, home);
+      let key;
+      try {
+        key = realpathSync9(expanded);
+      } catch {
+        key = resolve19(expanded);
+      }
+      observation2 = byDeclared.get(key) ?? null;
+    }
+    addCheckoutFacts(ctx, subject, observation2);
+    addUnsupportedFacts(ctx, subject, layout.template);
+  }
+  ctx.facts.sort((a, b) => {
+    const rank = (fact) => fact.scope === "fleet" ? 0 : 1;
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    const left = a.agent_id ?? "";
+    const right = b.agent_id ?? "";
+    if (left !== right) return left < right ? -1 : 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  ctx.probes.sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0);
+  const findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
+  const byStatus = Object.fromEntries(FLEET_PROVENANCE_STATUSES.map((status) => [status, 0]));
+  for (const fact of ctx.facts) byStatus[fact.status] += 1;
+  const probeFailures = ctx.probes.filter((record) => record.outcome === "failed" || record.outcome === "timeout" || record.outcome === "cancelled").length;
+  const wanted = options.agentId?.trim();
+  let scope = { kind: "fleet", agent_id: null, label: "whole registered fleet" };
+  let selected = ctx.facts;
+  if (wanted) {
+    if (!subjects.some((subject) => subject.agentId === wanted)) {
+      throw new FleetError("NOT_FOUND", "No agent with that id is registered", false, { agent_id: bounded2(wanted, 128) });
+    }
+    selected = ctx.facts.filter((fact) => fact.scope === "fleet" || fact.agent_id === wanted);
+    scope = { kind: "agent", agent_id: bounded2(wanted, 128), label: `scoped to agent ${bounded2(wanted, 128)}` };
+  }
+  const truncated = [];
+  let facts = selected;
+  if (facts.length > FLEET_PROVENANCE_MAX_FACTS) {
+    truncated.push(`facts: ${facts.length - FLEET_PROVENANCE_MAX_FACTS} of ${facts.length} facts dropped`);
+    facts = facts.slice(0, FLEET_PROVENANCE_MAX_FACTS);
+  }
+  if (ctx.droppedFacts > 0) truncated.push(`facts: ${ctx.droppedFacts} of ${ctx.facts.length + ctx.droppedFacts} facts dropped`);
+  if (ctx.droppedProbes > 0) truncated.push(`probes: ${ctx.droppedProbes} of ${ctx.probes.length + ctx.droppedProbes} probes dropped`);
+  if (ctx.droppedFindings > 0) truncated.push(`findings: ${ctx.droppedFindings} of ${findings.length + ctx.droppedFindings} findings dropped`);
+  const totals = {
+    agents: inventory.totals.registered_agents,
+    facts: ctx.facts.length + ctx.droppedFacts,
+    emitted_facts: facts.length,
+    probes: ctx.probes.length + ctx.droppedProbes,
+    by_status: byStatus,
+    findings: findings.length + ctx.droppedFindings
+  };
+  const health = {
+    // Drift only. `unsupported` is a declared, permanent gap in what this host
+    // records, and `unobserved` is a gap in what could be reached -- both are
+    // reported in their own counters and in `complete`, and neither is drift.
+    healthy: byStatus.mismatch === 0 && byStatus.dirty === 0 && byStatus.missing === 0 && truncated.length === 0,
+    complete: byStatus.unobserved === 0 && probeFailures === 0 && truncated.length === 0,
+    mismatched: byStatus.mismatch,
+    dirty: byStatus.dirty,
+    missing: byStatus.missing,
+    unsupported: byStatus.unsupported,
+    unobserved: byStatus.unobserved,
+    probe_failures: probeFailures,
+    truncated: truncated.length > 0
+  };
+  return {
+    contract_path: shownPath2(contractPath),
+    contract_version: contract.contract_version,
+    scope,
+    sources: sources.map((source) => ({
+      id: source.id,
+      kind: source.kind,
+      configured_path: shownPath2(source.configuredPath),
+      inspected_path: shownPath2(source.inspectedPath),
+      exists: source.exists,
+      parse: source.parse
+    })),
+    totals,
+    health,
+    facts,
+    probes: ctx.probes,
+    findings,
+    truncated
+  };
+}
+
+// src/fleet/mcp.ts
+var INVENTORY_COMMAND = "fleet.inventory";
+var PROVENANCE_COMMAND = "fleet.provenance";
+var FLEET_TOOL_INPUT = {
+  agent: z.string().optional().describe("Report only this agent; totals and the verdict still describe the whole fleet."),
+  projectRegistry: z.string().optional().describe("Inspect this project registry instead of the configured one. Never rewrites the configured path."),
+  agentRegistry: z.string().optional().describe("Inspect this agent registry instead of the configured one."),
+  contract: z.string().optional().describe("Validate and read this fleet contract instead of the tracked one."),
+  deadlineMs: z.number().int().positive().optional().describe("Fail with TIMEOUT if the whole run has not finished within this budget.")
+};
+function requireValue(value, flag) {
+  if (value === void 0) return;
+  if (value.trim() === "") throw new FleetError("INVALID_INPUT", `${flag} was given an empty value`);
+  if (value.startsWith("--")) throw new FleetError("INVALID_INPUT", `${flag} was given an option, not a value`);
+}
+async function runFleetTool(command, args, signal, collect, succeed, failureActions) {
+  try {
+    requireValue(args.agent, "agent");
+    requireValue(args.projectRegistry, "projectRegistry");
+    requireValue(args.agentRegistry, "agentRegistry");
+    requireValue(args.contract, "contract");
+    const runContext = createRunContext({ signal, deadlineMs: args.deadlineMs });
+    const value = await collect({
+      agentId: args.agent,
+      projectRegistry: args.projectRegistry,
+      agentRegistry: args.agentRegistry,
+      contract: args.contract,
+      runContext
+    });
+    return succeed(value);
+  } catch (error) {
+    const normalized = normalizeFleetError(error);
+    return fleetFailureEnvelope(command, normalized, failureActions(normalized));
+  }
+}
+function inventoryEnvelope(inventory) {
+  return fleetSuccessEnvelope(INVENTORY_COMMAND, inventory, inventory.health.healthy ? ["Consume data.rows as the fleet's declared state; every value names the authority that owns it"] : [inventory.health.conflicts ? "Rule on each unpermitted conflict group: repair the drift, or record it under classifications.intentionally_unmanaged" : "Review data.findings; each names the owning registry and the field path to repair"]);
+}
+function provenanceEnvelope(provenance) {
+  return fleetSuccessEnvelope(PROVENANCE_COMMAND, provenance, provenance.health.healthy && provenance.health.complete ? ["Consume data.facts as the fleet's proven provenance; every fact names the source of both sides"] : [provenance.health.mismatched ? "Repoint each mismatched agent at the configured pin, or move the pin -- data.facts names both sides and the authority that owns the field" : provenance.health.missing ? "Record the missing values on the owning side; an absent pin is never a match" : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it"]);
+}
+function budgetAwareActions(what) {
+  return (error) => [
+    error.code === "TIMEOUT" || error.code === "CANCELLED" ? `Re-run with a larger deadlineMs; no partial ${what} is reported, because a partial one must never be mistaken for a complete one` : `Fix the reported source path, or run \`pjangler fleet contract validate\` if the fault is in the contract`
+  ];
+}
+function registerFleetMcpTools(server2, asText2) {
+  server2.registerTool(
+    "pjangler_fleet_inventory",
+    {
+      title: "Inventory the Hermes fleet",
+      description: "Reads the two canonical registries and reports every registered agent with per-field authoritative-source provenance, identity conflicts under stable group ids, and independently counted totals. Strictly read-only. Returns the fleet JSON v1 envelope; an unhealthy fleet is still ok:true with data.health.healthy false.",
+      inputSchema: z.strictObject({ ...FLEET_TOOL_INPUT })
+    },
+    async (args, extra) => {
+      const envelope = await runFleetTool(
+        INVENTORY_COMMAND,
+        args,
+        extra.signal,
+        async (input) => collectFleetInventory(input),
+        inventoryEnvelope,
+        budgetAwareActions("inventory")
+      );
+      return { isError: !envelope.ok, ...asText2(envelope) };
+    }
+  );
+  server2.registerTool(
+    "pjangler_fleet_provenance",
+    {
+      title: "Report Hermes fleet provenance",
+      description: "Pairs every recorded or pinned fleet value with its live counterpart -- template gitlink, host pin, per-agent hermes executable, checkout identity, HEAD and cleanliness -- each side naming its own source and categorized match/mismatch/dirty/missing/unsupported/unobserved. Never executes the observed binary and never touches the network. Returns the fleet JSON v1 envelope; a drifted fleet is still ok:true with data.health.healthy false.",
+      inputSchema: z.strictObject({ ...FLEET_TOOL_INPUT })
+    },
+    async (args, extra) => {
+      const envelope = await runFleetTool(
+        PROVENANCE_COMMAND,
+        args,
+        extra.signal,
+        async (input) => collectFleetProvenance(input),
+        provenanceEnvelope,
+        budgetAwareActions("provenance")
+      );
+      return { isError: !envelope.ok, ...asText2(envelope) };
+    }
+  );
+}
+
+// src/mcp-server.ts
 var server = new McpServer({
   name: "pjangler-mcp",
   version: PJANGLER_VERSION
 });
-var TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
-var BOARD_URL_COMPAT_SCHEMA = z.string().optional().describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.").meta({ deprecated: true });
-var RUNTIME_REPO_COMPAT_SCHEMA = z.boolean().optional().describe("Deprecated no-op. Hermes always converges ignored role-local runtime state and never provisions a per-agent GitHub repository.").meta({ deprecated: true });
+var TICKET_PROVIDER_SCHEMA = z2.enum(["plane", "trello"]);
+var BOARD_URL_COMPAT_SCHEMA = z2.string().optional().describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.").meta({ deprecated: true });
+var RUNTIME_REPO_COMPAT_SCHEMA = z2.boolean().optional().describe("Deprecated no-op. Hermes always converges ignored role-local runtime state and never provisions a per-agent GitHub repository.").meta({ deprecated: true });
 function safePathSegmentSchema(label) {
-  return z.string().superRefine((value, context) => {
+  return z2.string().superRefine((value, context) => {
     try {
       validateSafePathSegment(value, label);
     } catch (error) {
@@ -16554,7 +19308,7 @@ function safePathSegmentSchema(label) {
 var PROJECT_SLUG_SCHEMA = safePathSegmentSchema("Project slug").describe("A safe single path segment used as the project registry slug.");
 var AGENT_ROLE_SCHEMA = safePathSegmentSchema("Agent role").describe("An arbitrary safe single path segment used beneath agents/hermes; not a fixed role enum.");
 var TARGET_REPO_SCHEMA = safePathSegmentSchema("Hermes target repository").describe("A safe repository/profile identity segment; defaults to the target directory basename.");
-var EXPLICIT_TARGET_DIR_SCHEMA = z.string().refine((value) => value.trim().length > 0, {
+var EXPLICIT_TARGET_DIR_SCHEMA = z2.string().refine((value) => value.trim().length > 0, {
   message: "targetDir must be a non-empty explicit path"
 });
 var INTERACTIVE_RECIPE_IDS = /* @__PURE__ */ new Set(["hermes-agent"]);
@@ -16584,22 +19338,22 @@ function validateExternalEffectConsent(input, options) {
   return selected;
 }
 function resolveTargetDir(targetDir) {
-  const dir = resolve16(targetDir ?? process.cwd());
-  if (!existsSync23(dir)) {
+  const dir = resolve20(targetDir ?? process.cwd());
+  if (!existsSync26(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
-  if (!statSync5(dir).isDirectory()) {
+  if (!statSync8(dir).isDirectory()) {
     throw new Error(`Target path is not a directory: ${dir}`);
   }
   return dir;
 }
 function resolvePjanglerRoot3() {
-  let dir = dirname14(fileURLToPath8(import.meta.url));
-  while (dir !== dirname14(dir)) {
-    if (existsSync23(join30(dir, "package.json")) && existsSync23(join30(dir, "templates", "commonproject", "copier.yml"))) {
+  let dir = dirname17(fileURLToPath9(import.meta.url));
+  while (dir !== dirname17(dir)) {
+    if (existsSync26(join34(dir, "package.json")) && existsSync26(join34(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
-    dir = dirname14(dir);
+    dir = dirname17(dir);
   }
   throw new Error("Unable to resolve pjangler root");
 }
@@ -16693,7 +19447,7 @@ function projectPreflightFailure(plan, errors, audit) {
   };
 }
 function preflightExistingHermesScaffold(targetDir) {
-  if (!existsSync23(join30(targetDir, "agents", "hermes"))) return void 0;
+  if (!existsSync26(join34(targetDir, "agents", "hermes"))) return void 0;
   const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
   if (!owner) return "Hermes lifecycle owner is unavailable";
   const finding2 = owner.check.audit(lifecycleContext(targetDir, true));
@@ -16809,7 +19563,7 @@ server.registerTool(
   {
     title: "List pjangler capabilities",
     description: "Returns available recipes, commands, parity rules, workflows, and @33god-projects tool guidance.",
-    inputSchema: z.strictObject({})
+    inputSchema: z2.strictObject({})
   },
   async () => {
     const payload = {
@@ -16847,7 +19601,7 @@ server.registerTool(
   {
     title: "List pjangler parity rules",
     description: "Returns parity rule ids plus brief @33god-projects guidance.",
-    inputSchema: z.strictObject({})
+    inputSchema: z2.strictObject({})
   },
   async () => asText({ parityRules: getParityRuleIds(), guidance: parityGuidance() })
 );
@@ -16856,9 +19610,9 @@ server.registerTool(
   {
     title: "Audit project parity",
     description: "Runs pjangler parity audit for a project and returns structured findings with summary counts and next actions.",
-    inputSchema: z.strictObject({
-      targetDir: z.string().optional(),
-      json: z.boolean().optional()
+    inputSchema: z2.strictObject({
+      targetDir: z2.string().optional(),
+      json: z2.boolean().optional()
     })
   },
   async ({ targetDir, json }) => {
@@ -16877,12 +19631,12 @@ server.registerTool(
   {
     title: "Migrate project parity",
     description: "Runs one pjangler parity migration rule, or all rules, against a project.",
-    inputSchema: z.strictObject({
-      targetDir: z.string().optional(),
-      ruleId: z.string().optional(),
-      all: z.boolean().optional(),
-      dryRun: z.boolean().optional(),
-      acceptRegistryMatches: z.boolean().optional()
+    inputSchema: z2.strictObject({
+      targetDir: z2.string().optional(),
+      ruleId: z2.string().optional(),
+      all: z2.boolean().optional(),
+      dryRun: z2.boolean().optional(),
+      acceptRegistryMatches: z2.boolean().optional()
     })
   },
   async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
@@ -16914,34 +19668,34 @@ server.registerTool(
   {
     title: "Bootstrap a new @33god project",
     description: "Create a new CommonProject-based 33god repo with optional non-interactive Hermes provisioning. Preview is the default; each external effect requires live=true plus an explicit positive opt-in.",
-    inputSchema: z.strictObject({
-      parentDir: z.string().optional(),
-      targetDir: z.string().optional(),
-      projectName: z.string(),
-      projectDescription: z.string().optional(),
+    inputSchema: z2.strictObject({
+      parentDir: z2.string().optional(),
+      targetDir: z2.string().optional(),
+      projectName: z2.string(),
+      projectDescription: z2.string().optional(),
       projectSlug: PROJECT_SLUG_SCHEMA.optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
-      boardId: z.string().optional(),
+      boardId: z2.string().optional(),
       boardUrl: BOARD_URL_COMPAT_SCHEMA,
-      workspace: z.string().optional(),
-      planeWorkspace: z.string().optional(),
-      planeProjectId: z.string().optional(),
-      projectIdentifier: z.string().optional(),
-      primaryLanguage: z.string().optional(),
-      skipPlane: z.boolean().optional(),
-      provisionAgent: z.boolean().optional(),
+      workspace: z2.string().optional(),
+      planeWorkspace: z2.string().optional(),
+      planeProjectId: z2.string().optional(),
+      projectIdentifier: z2.string().optional(),
+      primaryLanguage: z2.string().optional(),
+      skipPlane: z2.boolean().optional(),
+      provisionAgent: z2.boolean().optional(),
       agentRole: AGENT_ROLE_SCHEMA.optional(),
-      agentPurpose: z.string().optional(),
-      local: z.boolean().optional(),
+      agentPurpose: z2.string().optional(),
+      local: z2.boolean().optional(),
       provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
-      force: z.boolean().optional(),
-      overwrite: z.boolean().optional(),
-      dryRun: z.boolean().optional(),
-      registryPath: z.string().optional(),
-      sourceSkill: z.string().optional(),
-      live: z.boolean().optional()
+      provisionTicketBoard: z2.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
+      enableSystemd: z2.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
+      force: z2.boolean().optional(),
+      overwrite: z2.boolean().optional(),
+      dryRun: z2.boolean().optional(),
+      registryPath: z2.string().optional(),
+      sourceSkill: z2.string().optional(),
+      live: z2.boolean().optional()
     })
   },
   async (input) => {
@@ -16952,12 +19706,12 @@ server.registerTool(
       );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
-      const explicitTargetDir = input.targetDir ? resolve16(input.targetDir) : void 0;
-      const parentDir = resolve16(input.parentDir ?? (explicitTargetDir ? dirname14(explicitTargetDir) : process.cwd()));
-      if (!existsSync23(parentDir) || !statSync5(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
+      const explicitTargetDir = input.targetDir ? resolve20(input.targetDir) : void 0;
+      const parentDir = resolve20(input.parentDir ?? (explicitTargetDir ? dirname17(explicitTargetDir) : process.cwd()));
+      if (!existsSync26(parentDir) || !statSync8(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
-        explicitTargetDir ?? join30(parentDir, projectSlug),
+        explicitTargetDir ?? join34(parentDir, projectSlug),
         "Bootstrap target"
       );
       const overwrite = input.overwrite ?? input.force ?? false;
@@ -16969,7 +19723,7 @@ server.registerTool(
       if (externalEffects.ticketBoard && ticketProvider === "plane" && !boardId) {
         throw new Error("boardId or planeProjectId is required when skipPlane=false for Plane; keep skipPlane=true for safe local bootstrap");
       }
-      if (!dryRun && existsSync23(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
+      if (!dryRun && existsSync26(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
       const plan = planProjectInit({
         name: input.projectName,
         description: input.projectDescription,
@@ -17055,28 +19809,28 @@ server.registerTool(
   {
     title: "Initialize a pjangler project",
     description: "Plan or apply a registry-backed CommonProject project init. Preview is the default; writes require apply=true and each external effect requires live=true plus an explicit positive opt-in.",
-    inputSchema: z.strictObject({
-      name: z.string(),
-      description: z.string().optional(),
-      targetDir: z.string().optional(),
-      sourceSkill: z.string().optional(),
-      primaryLanguage: z.string().optional(),
-      provisionAgent: z.boolean().optional(),
+    inputSchema: z2.strictObject({
+      name: z2.string(),
+      description: z2.string().optional(),
+      targetDir: z2.string().optional(),
+      sourceSkill: z2.string().optional(),
+      primaryLanguage: z2.string().optional(),
+      provisionAgent: z2.boolean().optional(),
       agentRole: AGENT_ROLE_SCHEMA.optional(),
-      apply: z.boolean().optional(),
-      live: z.boolean().optional(),
+      apply: z2.boolean().optional(),
+      live: z2.boolean().optional(),
       provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
-      skipPlane: z.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
+      provisionTicketBoard: z2.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
+      enableSystemd: z2.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
+      skipPlane: z2.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
       slug: PROJECT_SLUG_SCHEMA.optional(),
-      identifier: z.string().optional(),
+      identifier: z2.string().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
-      boardId: z.string().optional(),
+      boardId: z2.string().optional(),
       boardUrl: BOARD_URL_COMPAT_SCHEMA,
-      workspace: z.string().optional(),
-      registryPath: z.string().optional(),
-      force: z.boolean().optional()
+      workspace: z2.string().optional(),
+      registryPath: z2.string().optional(),
+      force: z2.boolean().optional()
     })
   },
   async (input) => {
@@ -17104,7 +19858,7 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
-        scaffold: !(input.targetDir && existsSync23(join30(resolve16(input.targetDir), ".git")))
+        scaffold: !(input.targetDir && existsSync26(join34(resolve20(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());
@@ -17139,8 +19893,8 @@ server.registerTool(
   {
     title: "List pjangler registry projects",
     description: "Return projects from the pjangler central registry.",
-    inputSchema: z.strictObject({
-      registryPath: z.string().optional()
+    inputSchema: z2.strictObject({
+      registryPath: z2.string().optional()
     })
   },
   async ({ registryPath: registryPath2 }) => asText(loadProjectRegistry(registryPath2 ?? projectRegistryPath()))
@@ -17150,9 +19904,9 @@ server.registerTool(
   {
     title: "Show a pjangler registry project",
     description: "Return one project by slug from the pjangler central registry.",
-    inputSchema: z.strictObject({
+    inputSchema: z2.strictObject({
       slug: PROJECT_SLUG_SCHEMA,
-      registryPath: z.string().optional()
+      registryPath: z2.string().optional()
     })
   },
   async ({ slug, registryPath: registryPath2 }) => {
@@ -17168,10 +19922,10 @@ server.registerTool(
   {
     title: "Describe a project",
     description: "Reads a repo and returns its detected type, installed pjangler subsystems, config files present, parity counts, and suggested next steps. The orientation call for an agent landing in an unfamiliar repo.",
-    inputSchema: z.strictObject({
-      targetDir: z.string().optional(),
-      registryPath: z.string().optional(),
-      json: z.boolean().optional()
+    inputSchema: z2.strictObject({
+      targetDir: z2.string().optional(),
+      registryPath: z2.string().optional(),
+      json: z2.boolean().optional()
     })
   },
   async ({ targetDir, registryPath: registryPath2, json }) => {
@@ -17191,8 +19945,8 @@ server.registerTool(
   {
     title: "Describe recipe",
     description: "Returns metadata for a specific pjangler recipe.",
-    inputSchema: z.strictObject({
-      recipe: z.string()
+    inputSchema: z2.strictObject({
+      recipe: z2.string()
     })
   },
   async ({ recipe }) => {
@@ -17215,11 +19969,11 @@ server.registerTool(
   {
     title: "Run recipe",
     description: "Preview or apply a non-interactive pjangler recipe against an explicit target directory. Preview is the default; writes require apply=true.",
-    inputSchema: z.strictObject({
-      recipe: z.enum(GENERIC_RECIPE_NAMES),
+    inputSchema: z2.strictObject({
+      recipe: z2.enum(GENERIC_RECIPE_NAMES),
       targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
-      force: z.boolean().optional(),
-      apply: z.boolean().optional()
+      force: z2.boolean().optional(),
+      apply: z2.boolean().optional()
     })
   },
   async ({ recipe, targetDir, force, apply }) => {
@@ -17258,27 +20012,27 @@ server.registerTool(
   {
     title: "Deploy Hermes agent",
     description: "Preview or apply a non-interactive Hermes agent deployment. Local writes require apply=true. External effects additionally require live=true, local=false, and an explicit positive opt-in for each effect. Bloodbank routing is always fleet-shared.",
-    inputSchema: z.strictObject({
+    inputSchema: z2.strictObject({
       targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
       targetRepo: TARGET_REPO_SCHEMA.optional(),
       role: AGENT_ROLE_SCHEMA,
-      agentPurpose: z.string().optional(),
-      soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
-      modelProvider: z.string().optional(),
-      modelName: z.string().optional(),
-      modelBaseUrl: z.string().optional(),
-      modelApiMode: z.enum(["", "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"]).optional(),
-      modelKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
-      local: z.boolean().optional(),
-      apply: z.boolean().optional(),
-      live: z.boolean().optional(),
+      agentPurpose: z2.string().optional(),
+      soulTone: z2.enum(["direct", "playful", "formal", "terse"]).optional(),
+      modelProvider: z2.string().optional(),
+      modelName: z2.string().optional(),
+      modelBaseUrl: z2.string().optional(),
+      modelApiMode: z2.enum(["", "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"]).optional(),
+      modelKeyEnv: z2.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
+      local: z2.boolean().optional(),
+      apply: z2.boolean().optional(),
+      live: z2.boolean().optional(),
       provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
-      force: z.boolean().optional(),
+      provisionTicketBoard: z2.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
+      enableSystemd: z2.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
+      force: z2.boolean().optional(),
       skipRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      skipPlane: z.boolean().optional(),
-      skipSystemd: z.boolean().optional(),
+      skipPlane: z2.boolean().optional(),
+      skipSystemd: z2.boolean().optional(),
       ticketProvider: TICKET_PROVIDER_SCHEMA.optional()
     })
   },
@@ -17408,6 +20162,7 @@ server.registerTool(
     }
   }
 );
+registerFleetMcpTools(server, asText);
 var transport = new StdioServerTransport();
 await server.connect(transport);
 //# sourceMappingURL=mcp-server.js.map

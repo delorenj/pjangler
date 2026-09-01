@@ -22,11 +22,15 @@ import {
   type FleetInventory,
   type FleetInventoryFinding,
   type FleetInventoryRow,
+  type FleetProbeRecord,
+  type FleetProvenance,
+  type FleetProvenanceFact,
+  type FleetProvenanceStatus,
 } from "./types";
 import { bold, cyan, dim, glyph, gray, green, joinDot, padVisible, red, statusStyle, yellow } from "../utils/style";
 
 /** Commands allowed to produce a fleet envelope. */
-export const FLEET_COMMANDS = ["fleet.contract.validate", "fleet.inventory"] as const;
+export const FLEET_COMMANDS = ["fleet.contract.validate", "fleet.inventory", "fleet.provenance"] as const;
 
 /**
  * The `data` keys each command's success envelope must carry.
@@ -47,6 +51,13 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   "fleet.inventory": [
     "contract_path", "contract_version", "scope",
     "stores", "totals", "health", "rows", "conflicts", "findings", "truncated",
+  ],
+  // Same discipline the inventory entry documents: a key omitted here is a key
+  // `validateFleetEnvelope` will wave through if a future edit drops it, so
+  // every key the report renders and the suite asserts is listed.
+  "fleet.provenance": [
+    "contract_path", "contract_version", "scope",
+    "sources", "totals", "health", "facts", "probes", "findings", "truncated",
   ],
 };
 
@@ -639,6 +650,151 @@ export function formatFleetInventoryReport(inventory: FleetInventory): string {
     lines.push("");
     lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the stores on disk are complete")}`);
     for (const note of inventory.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Provenance report
+// ---------------------------------------------------------------------------
+
+/** How many facts the human report prints before it says how many it withheld. */
+const REPORT_MAX_FACTS = 80;
+/** How many probe records the human report lists. */
+const REPORT_MAX_PROBES = 30;
+
+function provenanceGlyph(status: FleetProvenanceStatus): string {
+  if (status === "match") return green(glyph.pass);
+  if (status === "mismatch") return red(glyph.fail);
+  if (status === "dirty" || status === "missing") return yellow(glyph.warn);
+  return gray(glyph.skip);
+}
+
+function provenanceColor(status: FleetProvenanceStatus): (value: string | number) => string {
+  if (status === "match") return green;
+  if (status === "mismatch") return red;
+  if (status === "dirty" || status === "missing") return yellow;
+  return gray;
+}
+
+function sideCell(side: { value: string | null; family: string | null }): string {
+  const shown = side.value ?? "-";
+  return bounded(side.family && side.family !== "pinned-release" ? `${shown} [${side.family}]` : shown);
+}
+
+function factLines(fact: FleetProvenanceFact, idWidth: number): string[] {
+  const style = provenanceColor(fact.status);
+  const subject = fact.agent_id ? `${fact.agent_id} ${glyph.dot} ${fact.id}` : fact.id;
+  const lines = [
+    `    ${provenanceGlyph(fact.status)}  ${padVisible(bounded(subject), idWidth)}  ${style(fact.status)}`,
+    `       ${dim(glyph.arrow)} ${dim(`desired ${sideCell(fact.desired)} (${fact.desired.source ?? "no source"}/${fact.desired.state})`)}`,
+    `       ${dim(glyph.arrow)} ${dim(`observed ${sideCell(fact.observed)} (${fact.observed.source ?? "no source"}/${fact.observed.state})`)}`,
+  ];
+  // The reason a fact is anything other than a match is the half an operator
+  // acts on. A match needs no explanation and printing one for all 300 would
+  // bury the ones that do.
+  if (fact.status !== "match") lines.push(`       ${dim(glyph.arrow)} ${dim(fact.detail)}`);
+  return lines;
+}
+
+function probeLine(record: FleetProbeRecord, kindWidth: number): string {
+  const ok = record.outcome === "ok";
+  const style = statusStyle(ok ? "pass" : record.outcome === "skipped" ? "skip" : "fail");
+  const reason = record.reason ? `  ${dim(record.reason)}` : "";
+  return `    ${style.color(style.glyph)}  ${padVisible(record.kind, kindWidth)}  ${dim(record.target)}  ${style.color(record.outcome)}${reason}`;
+}
+
+/**
+ * Report in the `formatFleetInventoryReport` house style. The caller prints it.
+ *
+ * The verdict leads, and its REASONS lead with it. A drifted fleet exits 0 --
+ * provenance drift is data, not a command failure -- so an operator on the human
+ * path has to be able to see WHY provenance is unhealthy, not only that it is.
+ * The two verdicts are deliberately separate: `healthy` is about drift,
+ * `complete` is about whether everything that should have been observed was, and
+ * a run that could not reach half the fleet must never read as a clean bill.
+ */
+export function formatFleetProvenanceReport(provenance: FleetProvenance): string {
+  const { health, totals } = provenance;
+  const lines = [""];
+
+  const headline = health.healthy
+    ? `${green(glyph.pass)} ${bold("Fleet provenance healthy")}`
+    : `${red(glyph.fail)} ${bold("Fleet provenance UNHEALTHY")}`;
+  lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot([
+    `${totals.emitted_facts} of ${totals.facts} facts`,
+    `${totals.agents} agent${totals.agents === 1 ? "" : "s"}`,
+    health.complete ? green("complete") : yellow("INCOMPLETE"),
+  ])}`);
+  const why = [
+    health.mismatched ? red(`${health.mismatched} mismatched`) : dim("0 mismatched"),
+    health.dirty ? red(`${health.dirty} dirty`) : dim("0 dirty"),
+    health.missing ? yellow(`${health.missing} missing`) : dim("0 missing"),
+    health.unsupported ? gray(`${health.unsupported} unsupported`) : dim("0 unsupported"),
+    health.unobserved ? yellow(`${health.unobserved} unobserved`) : dim("0 unobserved"),
+    health.probe_failures ? red(`${health.probe_failures} probe failure${health.probe_failures === 1 ? "" : "s"}`) : dim("0 probe failures"),
+  ];
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot(why)}`);
+  lines.push(`  ${joinDot([dim(provenance.scope.label), dim(provenance.contract_path), dim(`contract ${provenance.contract_version ?? "?"}`)])}`);
+
+  section(lines, "Sources");
+  const sourceWidth = provenance.sources.reduce((max, source) => Math.max(max, source.id.length), 0);
+  for (const source of provenance.sources) {
+    const style = statusStyle(source.exists && source.parse === "ok" ? "pass" : "fail");
+    lines.push(`    ${style.color(style.glyph)}  ${padVisible(source.id, sourceWidth)}  ${cyan(source.kind)}  ${dim(source.configured_path)}`);
+    if (source.inspected_path !== source.configured_path) {
+      lines.push(`       ${dim(glyph.arrow)} ${yellow(`inspected ${source.inspected_path}`)}`);
+    }
+  }
+
+  section(lines, "Totals");
+  for (const [label, value] of Object.entries(totals)) {
+    if (label === "by_status") continue;
+    lines.push(`    ${dim(glyph.bullet)} ${padVisible(label, 24)}  ${cyan(String(value))}`);
+  }
+  for (const [status, count] of Object.entries(totals.by_status)) {
+    lines.push(`    ${dim(glyph.bullet)} ${padVisible(`by_status.${status}`, 24)}  ${provenanceColor(status as FleetProvenanceStatus)(String(count))}`);
+  }
+
+  section(lines, "Probes");
+  if (provenance.probes.length === 0) lines.push(`    ${dim("none")}`);
+  const kindWidth = provenance.probes.reduce((max, record) => Math.max(max, record.kind.length), 0);
+  for (const record of provenance.probes.slice(0, REPORT_MAX_PROBES)) lines.push(probeLine(record, kindWidth));
+  if (provenance.probes.length > REPORT_MAX_PROBES) {
+    lines.push(`    ${dim(`... ${provenance.probes.length - REPORT_MAX_PROBES} more probe(s); use --json for all of them`)}`);
+  }
+
+  section(lines, "Facts");
+  // Drift first, then everything else. An operator scanning 300 facts for the
+  // handful that need a decision should not have to scroll past 200 matches.
+  const ranked = [...provenance.facts].sort((a, b) => {
+    const rank = (status: FleetProvenanceStatus): number => (status === "match" ? 1 : 0);
+    return rank(a.status) - rank(b.status);
+  });
+  const factWidth = ranked.slice(0, REPORT_MAX_FACTS)
+    .reduce((max, fact) => Math.max(max, (fact.agent_id ? `${fact.agent_id} ${glyph.dot} ${fact.id}` : fact.id).length), 0);
+  for (const fact of ranked.slice(0, REPORT_MAX_FACTS)) for (const line of factLines(fact, factWidth)) lines.push(line);
+  if (ranked.length > REPORT_MAX_FACTS) {
+    lines.push(`    ${dim(`... ${ranked.length - REPORT_MAX_FACTS} more fact(s); use --json for all of them`)}`);
+  }
+
+  section(lines, "Findings");
+  if (provenance.findings.length === 0) lines.push(`    ${dim("none")}`);
+  const codeWidth = provenance.findings.slice(0, REPORT_MAX_FINDINGS).reduce((max, item) => Math.max(max, item.code.length), 0);
+  for (const finding of provenance.findings.slice(0, REPORT_MAX_FINDINGS)) {
+    lines.push(`    ${findingGlyph(finding.severity)}  ${padVisible(finding.code, codeWidth)}  ${dim(finding.field)}${finding.agent_id ? `  ${cyan(finding.agent_id)}` : ""}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.detail} ${glyph.dot} owner ${finding.source ?? "undeclared"}`)}`);
+  }
+  if (provenance.findings.length > REPORT_MAX_FINDINGS) {
+    lines.push(`    ${dim(`... ${provenance.findings.length - REPORT_MAX_FINDINGS} more finding(s); use --json for all of them`)}`);
+  }
+
+  if (provenance.truncated.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the sources on disk are complete")}`);
+    for (const note of provenance.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
   }
 
   lines.push("");

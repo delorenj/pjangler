@@ -151,6 +151,92 @@ machine, run after run. A group can be declared permitted by adding an entry to
 equals the group's field path and whose `participants` match the group's set
 exactly; a superset never absorbs a claimant nobody ruled on.
 
+## Fleet provenance
+
+`pjangler fleet provenance` answers the question the inventory does not: *which
+build is each agent actually running?* It pairs every **recorded, pinned, or
+declared** value with its **live** counterpart, each side naming its own source.
+
+```bash
+pjangler fleet provenance                                  # human report
+pjangler fleet provenance --json                           # fleet JSON v1 envelope
+pjangler fleet provenance --agent pjangler-pm --json       # one agent, full-fleet totals
+pjangler fleet provenance --agent-registry ./copy.yaml     # inspect a copy
+pjangler fleet provenance --project-registry ./copy.yaml   # inspect a copy
+pjangler fleet provenance --contract ./candidate.yaml      # read a candidate contract
+pjangler fleet provenance --deadline-ms 30000              # bound the whole run
+```
+
+`--agent`, `--project-registry`, `--agent-registry`, `--contract` and
+`--deadline-ms` are also accepted by `pjangler fleet inventory`, and both
+commands are exposed as MCP tools with the same options and the same envelope.
+
+**One global rule: `desired` is the recorded side, `observed` is the live side.**
+That is what makes the template gitlink structural rather than defensive — the
+recorded gitlink is read from `git ls-files --stage` on the *parent*, so no
+worktree move can make it report the worktree's SHA. `observed` is the
+submodule's own `HEAD`. A reader never has to ask which side is authoritative.
+
+Every fact lands in exactly one of six statuses, and **absence is never a
+match**:
+
+| status | meaning |
+| --- | --- |
+| `match` | both sides are present and equal |
+| `mismatch` | both sides are present and differ |
+| `dirty` | a cleanliness fact whose observed side is not clean — always its own fact, never a modifier on the value beside it |
+| `missing` | a side that should carry a value carries none |
+| `unsupported` | no comparable value exists without inventing one: nothing records the desired value, or it is spelled as an unexpanded `$VAR` |
+| `unobserved` | the probe did not run, or ran and failed — nothing may be claimed |
+
+Within one fact the precedence is
+`unobserved` > `unsupported` > `missing` > `dirty` > `mismatch` > `match`.
+`data.totals.by_status` counts all six, and `data.health` reports `healthy`
+(drift-free) and `complete` (everything that should have been observed was) as
+two separate verdicts — a run that could not reach half the fleet must never
+read as a clean bill.
+
+It is strictly read-only, and provably so. Every git probe passes
+`--no-optional-locks`, because a plain `git status` refreshes `.git/index` and a
+command that rewrites an index on 28 repositories is not read-only. The observed
+`hermes` binary is classified by **path** — against the configured release root
+first, then the contract's retired `detect` patterns — and is **never executed**.
+Nothing fetches, pulls, clones, or reaches the network. `~/.hermes/fleet.env` is
+read through a key allowlist, so the Plane API keys beside the fleet paths never
+enter memory at all.
+
+Two failure modes are deliberately different. A **per-probe** timeout downgrades
+one fact to `unobserved`, records the probe, sets `health.complete: false`, and
+the run still succeeds. A **whole-run** deadline is a command failure, because a
+truncated provenance report is exactly the kind of partial that must never be
+mistaken for a complete one.
+
+**A drifted fleet is data, not a failure.** It exits `0` with `ok: true` and
+`data.health.healthy: false`. Only a *command* failure is nonzero:
+
+| exit | meaning |
+| --- | --- |
+| `0` | the command ran — read `data.health.healthy` and `data.health.complete` for the verdicts |
+| `2` | a malformed flag value |
+| `3` | a source that is not there, or an `--agent` id that is not registered |
+| `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
+| `5` | the fleet contract declares a schema version this build does not support |
+| `6` | internal |
+| `7` | the whole-run `--deadline-ms` budget expired; no partial result is reported |
+| `8` | the run was cancelled (`SIGINT`/`SIGTERM`, or an aborted MCP request); no probe child survives |
+
+`data` is deterministic: no timestamp, duration, hostname, or ordering by
+completion. Two runs over unchanged state produce byte-identical `data`, which is
+what lets the MCP tool result be compared to the CLI `--json` envelope by
+equality rather than by resemblance.
+
+Two provenance questions this host records nothing to answer, and which are
+therefore reported as `unsupported` with their observed evidence rather than
+guessed: a deployed role scaffold carries no template ref (it renders no
+`.copier-answers.yml`), and a generated profile config carries only the
+`GENERATED FILE -- DO NOT EDIT` marker — no generation counter, digest, or
+sidecar — so a sha256 of its bytes is the only stable evidence.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,
@@ -246,3 +332,5 @@ Exposed tools:
 - `pjangler_describe_recipe`
 - `pjangler_run_recipe`
 - `pjangler_deploy_hermes_agent`
+- `pjangler_fleet_inventory`
+- `pjangler_fleet_provenance`

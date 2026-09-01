@@ -37,6 +37,7 @@ import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { loadFleetContract, resolveFleetContractPath, validateFleetContract } from "./contract";
 import { bounded, redactHome } from "./output";
+import { throwIfCancelled, type FleetRunContext } from "./runtime";
 import {
   FLEET_INVENTORY_MAX_ROWS,
   FleetError,
@@ -135,6 +136,15 @@ export interface FleetInventoryOptions {
   agentRegistry?: string;
   /** Validate and read this contract instead of the tracked one. */
   contract?: string;
+  /**
+   * The run's cancellation and deadline budget.
+   *
+   * Threaded rather than owned so `fleet inventory` and `fleet provenance`
+   * honour the SAME inputs: an MCP client that aborts a request, or a CLI caller
+   * that hits ctrl-C, must stop both commands the same way. Omitted, the
+   * inventory behaves exactly as it did before -- there is no implicit deadline.
+   */
+  runContext?: FleetRunContext;
   env?: NodeJS.ProcessEnv;
   home?: string;
 }
@@ -613,8 +623,15 @@ function addFinding(ctx: InventoryContext, finding: FleetInventoryFinding): void
   ctx.findings.push({ ...finding, detail: bounded(finding.detail) });
 }
 
-/** Read the contract's declared profile layout rather than re-deriving one. */
-function resolveProfileLayout(contract: FleetContract, env: NodeJS.ProcessEnv, home: string): { root: string | null; template: string | null } {
+/**
+ * Read the contract's declared profile layout rather than re-deriving one.
+ *
+ * Exported for `provenance.ts`, which has to reach the GENERATED profile config
+ * on disk. A row's `profile_path` is home-redacted for display and cannot be
+ * opened, so the alternative was a second copy of the substitution -- and two
+ * copies of a contract-derived path are two paths.
+ */
+export function resolveProfileLayout(contract: FleetContract, env: NodeJS.ProcessEnv, home: string): { root: string | null; template: string | null } {
   const layout = contract.service_model?.profile_layout;
   const raw = isRecord(layout) ? nonEmptyString(layout.root) : null;
   if (raw === null) return { root: null, template: null };
@@ -1397,7 +1414,16 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     });
   }
 
-  const allRows = agentRaw.entries.map((entry) => buildInventoryRow(entry, ctx));
+  // Checked per row, not once before the loop: a 1000-agent registry spends
+  // most of a run in here (an `lstat` and a `.project.json` read per row), and a
+  // cancellation that is only noticed after the last row has been built is not a
+  // cancellation. `throwIfCancelled` is a no-op when no caller supplied a
+  // context, so the unbudgeted path is unchanged.
+  const runContext = options.runContext;
+  const allRows = agentRaw.entries.map((entry) => {
+    if (runContext) throwIfCancelled(runContext);
+    return buildInventoryRow(entry, ctx);
+  });
   allRows.sort((a, b) => {
     const left = a.agent_id.value ?? "";
     const right = b.agent_id.value ?? "";

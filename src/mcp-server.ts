@@ -25,6 +25,7 @@ import {
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
 import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
+import { registerFleetMcpTools } from "./fleet/mcp";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -1021,6 +1022,12 @@ server.registerTool(
     }
   }
 );
+
+// The fleet observation tools register from `src/fleet/mcp.ts`, so the claim
+// that they add only envelope wrapping and never policy stays reviewable in one
+// file. `asText` is handed in rather than imported there, because this module
+// connects a transport at load time and must never be imported for a helper.
+registerFleetMcpTools(server, asText);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

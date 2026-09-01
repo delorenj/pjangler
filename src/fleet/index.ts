@@ -1,8 +1,9 @@
 // Public surface of the fleet contract module.
 //
-// Story 1.1 ships one read-only command. Later Epic 1 stories consume the
-// loader, the validator, and the envelope from here rather than re-deriving
-// authority answers, which is the whole point of having a contract.
+// Story 1.1 shipped one read-only command; 1.2 added the inventory and 1.3 the
+// provenance core, its run context, and the MCP adapter. Later Epic 1 stories
+// consume all of it from here rather than re-deriving authority, registry, or
+// probe answers, which is the whole point of having a contract.
 
 export {
   FLEET_CONTRACT_RELATIVE_PATH,
@@ -28,11 +29,36 @@ export {
   readAgentRegistryRaw,
   readProjectRegistryRaw,
   resolveInventoryStores,
+  resolveProfileLayout,
   type FleetAuthorityIndex,
   type FleetInventoryOptions,
   type ResolvedStore,
   type ResolvedStores,
 } from "./inventory";
+
+export {
+  FLEET_DEFAULT_PROBE_TIMEOUT_MS,
+  createRunContext,
+  mapBounded,
+  probe,
+  remainingMs,
+  throwIfCancelled,
+  type FleetProbeResult,
+  type FleetRunContext,
+  type FleetRunContextOptions,
+} from "./runtime";
+
+export {
+  classifyExecutableFamily,
+  collectFleetProvenance,
+  compareFact,
+  readConfiguredPin,
+  resolveProvenanceSources,
+  type ConfiguredPin,
+  type FleetProvenanceOptions,
+} from "./provenance";
+
+export { registerFleetMcpTools } from "./mcp";
 
 export {
   FLEET_COMMANDS,
@@ -49,6 +75,7 @@ export {
   formatFleetContractReport,
   formatFleetErrorReport,
   formatFleetInventoryReport,
+  formatFleetProvenanceReport,
   normalizeFleetError,
   redactHome,
   renderFleetJson,
@@ -74,6 +101,12 @@ export {
   FLEET_ERROR_CODES,
   FLEET_INVENTORY_MAX_ROWS,
   FLEET_PATH_CLASSIFICATIONS,
+  FLEET_PROBE_OUTCOMES,
+  FLEET_PROVENANCE_MAX_FACTS,
+  FLEET_PROVENANCE_MAX_PROBES,
+  FLEET_PROVENANCE_SIDE_STATES,
+  FLEET_PROVENANCE_STATUSES,
+  FLEET_PROVENANCE_STATUS_PRECEDENCE,
   FLEET_RETIRED_IDS,
   FLEET_SCHEMA_VERSION,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
@@ -90,6 +123,7 @@ export {
   type FleetExtension,
   type FleetFieldState,
   type FleetFieldValue,
+  type FleetFindingSeverity,
   type FleetInventory,
   type FleetInventoryFinding,
   type FleetInventoryHealth,
@@ -99,7 +133,17 @@ export {
   type FleetManifestEvidence,
   type FleetPathClassification,
   type FleetPathView,
+  type FleetProbeOutcome,
+  type FleetProbeRecord,
   type FleetProjection,
+  type FleetProvenance,
+  type FleetProvenanceFact,
+  type FleetProvenanceHealth,
+  type FleetProvenanceSide,
+  type FleetProvenanceSideState,
+  type FleetProvenanceSourceView,
+  type FleetProvenanceStatus,
+  type FleetProvenanceTotals,
   type FleetRetiredMode,
   type FleetServiceModel,
   type FleetStoreView,

@@ -712,8 +712,21 @@ export function ticketProviderFleetEnvPath(env: NodeJS.ProcessEnv = process.env)
   return env.HERMES_FLEET_ENV?.trim() || join(env.HOME || homedir(), ".hermes", "fleet.env");
 }
 
-/** Pull `KEY=value` / `export KEY=value` assignments for the requested keys only. */
-function readShellAssignments(path: string, keys: string[]): Record<string, string> {
+/**
+ * Pull `KEY=value` / `export KEY=value` assignments for the requested keys only.
+ *
+ * The allowlist is the credential guarantee, not a filter applied afterwards:
+ * `~/.hermes/fleet.env` carries live Plane API keys beside its fleet paths, and
+ * an unlisted key never enters memory at all, so there is no moment at which a
+ * secret exists to be leaked and no redaction pass that can be forgotten.
+ * Exported for `src/fleet/provenance.ts` for exactly that reason -- a second
+ * copy of this reader would be a second copy of the risk.
+ *
+ * It does NOT expand `$VAR`. `HERMES_FLEET_REGISTRY_FILE=$HERMES_FLEET_HOME/...`
+ * comes back unexpanded, and a caller must report it that way rather than
+ * inventing the expansion this reader deliberately does not perform.
+ */
+export function readShellAssignments(path: string, keys: string[]): Record<string, string> {
   const found: Record<string, string> = {};
   if (!existsSync(path)) return found;
   let text: string;

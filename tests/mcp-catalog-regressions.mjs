@@ -4,6 +4,13 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(resolve(root, "src", "mcp-server.ts"), "utf8");
+// The fleet tools register from their own module, so the catalog assertion has
+// to read that module too. Pointed only at `mcp-server.ts`, this check would
+// silently stop covering `pjangler_fleet_inventory` and
+// `pjangler_fleet_provenance` -- green because the text it greps no longer
+// contains them, not because they are gone.
+const fleetSource = readFileSync(resolve(root, "src", "fleet", "mcp.ts"), "utf8");
+const registrations = `${source}\n${fleetSource}`;
 
 for (const tool of [
   "pjangler_list_parity_rules",
@@ -13,9 +20,16 @@ for (const tool of [
   "pjangler_project_init",
   "pjangler_project_list",
   "pjangler_project_show",
+  "pjangler_fleet_inventory",
+  "pjangler_fleet_provenance",
 ]) {
-  assert.match(source, new RegExp(`server\\.registerTool\\(\\s*[\"']${tool}[\"']`), `${tool} must be registered`);
+  assert.match(registrations, new RegExp(`registerTool\\(\\s*[\"']${tool}[\"']`), `${tool} must be registered`);
 }
+
+// The wiring itself, not just the registration: a tool defined in a module
+// nothing calls is a tool nobody can reach.
+assert.match(source, /registerFleetMcpTools\(server, asText\)/, "mcp-server.ts must call the fleet tool registrar with the shared asText helper");
+assert.doesNotMatch(fleetSource, /from "\.\.\/mcp-server"/, "src/fleet/mcp.ts must not import mcp-server.ts, which connects a transport at module scope");
 
 for (const required of [
   "@33god-projects",

@@ -176,11 +176,13 @@ export type FleetErrorCode =
   | "INVALID_CLASSIFICATION"
   | "RETIRED_MODE"
   | "UNSUPPORTED_SCHEMA_VERSION"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "TIMEOUT"
+  | "CANCELLED";
 
 export const FLEET_ERROR_CODES = [
   "INVALID_INPUT", "NOT_FOUND", "AUTHORITY_CONFLICT", "INVALID_CLASSIFICATION",
-  "RETIRED_MODE", "UNSUPPORTED_SCHEMA_VERSION", "INTERNAL_ERROR",
+  "RETIRED_MODE", "UNSUPPORTED_SCHEMA_VERSION", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED",
 ] as const;
 
 /**
@@ -215,7 +217,11 @@ export class FleetError extends Error {
  *
  * Banded the way `notebookExitCode` bands its taxonomy: 2 is malformed input,
  * 3 is "the thing is not there", 4 is a contract the file states but must not,
- * 5 is a version this build cannot speak, 6 is us.
+ * 5 is a version this build cannot speak, 6 is us, 7 is "we ran out of the time
+ * you gave us", 8 is "you asked us to stop".
+ *
+ * The switch is exhaustive with no `default` on purpose: a new code that forgets
+ * an exit band is a compile error rather than an `undefined` exit status.
  */
 export function fleetExitCode(code: FleetErrorCode): number {
   switch (code) {
@@ -226,6 +232,8 @@ export function fleetExitCode(code: FleetErrorCode): number {
     case "RETIRED_MODE": return 4;
     case "UNSUPPORTED_SCHEMA_VERSION": return 5;
     case "INTERNAL_ERROR": return 6;
+    case "TIMEOUT": return 7;
+    case "CANCELLED": return 8;
   }
 }
 
@@ -440,6 +448,182 @@ export interface FleetInventory {
   health: FleetInventoryHealth;
   rows: FleetInventoryRow[];
   conflicts: FleetConflictGroup[];
+  findings: FleetInventoryFinding[];
+  /** Dotted paths where a bound clipped the reported value. */
+  truncated: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Fleet provenance (story 1.3)
+//
+// The inventory above says what the stores CONTAIN. Everything below says which
+// build each thing actually is, by pairing every recorded/pinned value with its
+// live counterpart. Same file, same reason: a reported provenance field cannot
+// exist without a declared owner beside it.
+//
+// ONE GLOBAL RULE: `desired` is the recorded/pinned/declared side; `observed` is
+// the live side. That is what makes the template gitlink structural rather than
+// defensive -- the recorded gitlink is read from the PARENT's index and lands in
+// `desired`, so no worktree movement can ever make it report the worktree's SHA.
+// ---------------------------------------------------------------------------
+
+/**
+ * What one fact concluded. Absence is never a match.
+ *
+ * `match`       both sides are present and equal.
+ * `mismatch`    both sides are present and differ.
+ * `dirty`       a cleanliness fact whose observed side is not clean. Its own
+ *               status, never a modifier on a value comparison, so it can never
+ *               shadow a `mismatch` on the value beside it.
+ * `missing`     a side that should carry a value carries none.
+ * `unsupported` no comparable value can be obtained without inventing one --
+ *               nothing on this host RECORDS the desired value (a deployed role
+ *               scaffold carries no template ref), or the recorded value is a
+ *               form this command must not resolve (an unexpanded `$VAR`).
+ *               Observed evidence is still reported; nothing is guessed.
+ * `unobserved`  the probe did not run, or ran and failed. Nothing may be claimed.
+ */
+export const FLEET_PROVENANCE_STATUSES = [
+  "match", "mismatch", "dirty", "missing", "unsupported", "unobserved",
+] as const;
+export type FleetProvenanceStatus = (typeof FLEET_PROVENANCE_STATUSES)[number];
+
+/**
+ * Status precedence WITHIN one fact, strongest first.
+ *
+ * `unobserved` outranks everything: if the probe did not run, nothing may be
+ * claimed. This is the concrete form of "the aggregate does not turn absence
+ * into a match".
+ */
+export const FLEET_PROVENANCE_STATUS_PRECEDENCE = [
+  "unobserved", "unsupported", "missing", "dirty", "mismatch", "match",
+] as const satisfies readonly FleetProvenanceStatus[];
+
+/** What is known about ONE side of a fact. */
+export const FLEET_PROVENANCE_SIDE_STATES = ["present", "missing", "unsupported", "unobserved"] as const;
+export type FleetProvenanceSideState = (typeof FLEET_PROVENANCE_SIDE_STATES)[number];
+
+/** How a probe ended. `skipped` is a decision not to run, never a silent absence. */
+export const FLEET_PROBE_OUTCOMES = ["ok", "failed", "timeout", "cancelled", "skipped"] as const;
+export type FleetProbeOutcome = (typeof FLEET_PROBE_OUTCOMES)[number];
+
+/**
+ * Hard caps on what one provenance envelope carries.
+ *
+ * Deliberately not `MAX_ITEMS` (100) from the envelope's generic list bound, for
+ * the same reason `FLEET_INVENTORY_MAX_ROWS` is not: running the facts array
+ * through `boundedValue` would silently drop agent 101's facts, which is the
+ * exact failure a provenance report exists to prevent. Both caps record every
+ * clip in `truncated`.
+ */
+export const FLEET_PROVENANCE_MAX_FACTS = 5000;
+export const FLEET_PROVENANCE_MAX_PROBES = 500;
+
+/**
+ * One side of one fact.
+ *
+ * `source` names WHERE the value came from -- a store id, a config file, a live
+ * probe -- not who is allowed to write it; the fact's `owner` carries that.
+ * `family` is set only where a value belongs to a named executable/checkout
+ * family (the contract's `retired[].detect` classes, or the configured release
+ * root); everywhere else it is null.
+ *
+ * `classification` is set only where the value is a path this run `lstat`ed. It
+ * is what the path IS, established without following it -- never a realpath
+ * substituted for the declared value.
+ */
+export interface FleetProvenanceSide {
+  value: string | null;
+  source: string | null;
+  state: FleetProvenanceSideState;
+  family: string | null;
+  classification: FleetPathClassification | null;
+}
+
+/**
+ * One recorded-versus-live comparison.
+ *
+ * `id` is the fact KIND, not a unique key: `hermes.git_sha` appears once per
+ * agent. The array key is `(scope, agent_id, id)` and that tuple is also the
+ * sort order.
+ */
+export interface FleetProvenanceFact {
+  id: string;
+  scope: "fleet" | "agent";
+  agent_id: string | null;
+  /** The contract field path this fact is about, or a `{placeholder}` path for a host artifact. */
+  field: string;
+  /** The authority owner the CONTRACT declares for `field`, or null if it declares none. */
+  owner: string | null;
+  desired: FleetProvenanceSide;
+  observed: FleetProvenanceSide;
+  status: FleetProvenanceStatus;
+  detail: string;
+}
+
+/**
+ * One bounded child probe, recorded whether or not it produced a value.
+ *
+ * Never carries stderr, a raw command line, or a duration: `probe()` parses
+ * stdout into a single value and discards the rest, and a duration would make
+ * two runs over identical state produce different `data`.
+ */
+export interface FleetProbeRecord {
+  /** Stable id: `{kind}:{redacted target}`. */
+  id: string;
+  kind: string;
+  /** The directory or artifact probed, bounded and home-redacted. */
+  target: string;
+  outcome: FleetProbeOutcome;
+  /** A stable category (`not-a-repository-root`, `absent`, ...), never a subprocess message. */
+  reason: string | null;
+}
+
+/** One source this run read, with the same configured/inspected split the stores use. */
+export interface FleetProvenanceSourceView {
+  id: string;
+  kind: string;
+  configured_path: string;
+  inspected_path: string;
+  exists: boolean;
+  parse: "ok" | "salvaged" | "unreadable" | "unread";
+}
+
+export interface FleetProvenanceTotals {
+  /** Registered agents in the whole fleet, scope-independent. Equals the inventory's `registered_agents`. */
+  agents: number;
+  /** Facts built, before the scope filter and the fact cap. */
+  facts: number;
+  /** Facts actually carried in `facts`. */
+  emitted_facts: number;
+  probes: number;
+  by_status: Record<FleetProvenanceStatus, number>;
+  findings: number;
+}
+
+export interface FleetProvenanceHealth {
+  /** Drift-free: no mismatch, no dirty, no missing, nothing clipped. */
+  healthy: boolean;
+  /** Everything that could be observed was: no `unobserved` fact and no failed probe. */
+  complete: boolean;
+  mismatched: number;
+  dirty: number;
+  missing: number;
+  unsupported: number;
+  unobserved: number;
+  probe_failures: number;
+  truncated: boolean;
+}
+
+export interface FleetProvenance {
+  contract_path: string;
+  contract_version: string | null;
+  scope: FleetInventoryScope;
+  sources: FleetProvenanceSourceView[];
+  totals: FleetProvenanceTotals;
+  health: FleetProvenanceHealth;
+  facts: FleetProvenanceFact[];
+  probes: FleetProbeRecord[];
   findings: FleetInventoryFinding[];
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
