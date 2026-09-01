@@ -19438,7 +19438,9 @@ var FLEET_RETIRED_IDS = [
   "activation-by-discovery",
   "hard-coded-hermes-checkout-path"
 ];
-var FLEET_HEALTHY_SECTIONS = ["service_model", "activation", "classifications"];
+var FLEET_HEALTHY_SECTIONS = ["authorities", "projections", "service_model", "activation"];
+var FLEET_HEALTHY_CLASSIFICATIONS = ["managed_agent", "managed_shared_service"];
+var FLEET_FORBIDDEN_KEYS = ["__proto__", "constructor", "prototype"];
 var FLEET_EXTENSION_PREFIX = "x-";
 var FLEET_ERROR_CODES = [
   "INVALID_INPUT",
@@ -19484,10 +19486,22 @@ var OWNER_NAME = /^[a-z][a-z0-9-]*$/u;
 var ENV_KEY = /^[A-Z][A-Z0-9_]*$/u;
 var DIRECTION = /^[a-z0-9_]+_to_[a-z0-9_]+$/u;
 var FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
-var HOST_PATH = /\/(?:home|Users)\/[A-Za-z0-9._-]+\//u;
+var HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
 var SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+var SECRET_VALUE = [
+  /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,}\b/u,
+  /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}\b/u,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/u,
+  /\bAKIA[0-9A-Z]{16}\b/u,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./u,
+  /(?:api[_-]?key|password|passwd|secret|token|credential)\s*[:=]\s*\S{8,}/iu
+];
 function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function storeToken(store) {
+  return store.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "");
 }
 function stringList2(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
@@ -19521,7 +19535,7 @@ function collectFleetExtensions(value) {
   const walk = (node, path) => {
     if (Array.isArray(node)) return node.map((item, index) => walk(item, `${path}[${index}]`));
     if (!isRecord6(node)) return node;
-    const result2 = {};
+    const result2 = /* @__PURE__ */ Object.create(null);
     for (const [key, item] of Object.entries(node)) {
       const child = path ? `${path}.${key}` : key;
       if (key.startsWith(FLEET_EXTENSION_PREFIX)) extensions.push({ path: child, value: item });
@@ -19564,7 +19578,7 @@ function validateFleetContract(document) {
   }
   const stages = [
     () => validateVersion(policy),
-    () => sortDiagnostics(validateStructure(policy)),
+    () => sortDiagnostics(validateStructure(policy, extensions)),
     () => validateAuthorityConflicts(policy),
     () => sortDiagnostics(validateClassifications(policy)),
     () => sortDiagnostics(validateRetiredModes(policy))
@@ -19610,7 +19624,7 @@ function validateVersion(policy) {
   }
   return [];
 }
-function validateStructure(policy) {
+function validateStructure(policy, extensions) {
   const findings = [];
   const fail = (path, message) => {
     findings.push({ code: "INVALID_INPUT", path, message });
@@ -19636,11 +19650,19 @@ function validateStructure(policy) {
     if (key === "retired") continue;
     scalars(value, key, leaves);
   }
+  for (const extension of extensions) {
+    leaves.push({ path: extension.path, text: extension.path });
+    scalars(extension.value, extension.path, leaves);
+  }
   for (const leaf of leaves) {
     if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
     if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+    if (SECRET_VALUE.some((pattern) => pattern.test(leaf.text))) fail(leaf.path, "contract must not carry a credential-shaped value");
+    if (FLEET_FORBIDDEN_KEYS.includes(leaf.text)) fail(leaf.path, `forbidden key name: ${leaf.text}`);
   }
+  if (findings.length) return findings;
   const owners = /* @__PURE__ */ new Set();
+  const fieldIndex = /* @__PURE__ */ new Map();
   const authorities = policy.authorities;
   if (!isRecord6(authorities) || Object.keys(authorities).length === 0) {
     fail("authorities", "authorities must be a non-empty mapping");
@@ -19658,13 +19680,14 @@ function validateStructure(policy) {
       if (typeof owner !== "string" || !OWNER_NAME.test(owner)) fail(`${at}.owner`, "owner must be a lower-kebab identifier");
       else owners.add(owner);
       if (typeof entry.store !== "string" || entry.store.length === 0) fail(`${at}.store`, "store must be a non-empty name");
+      const readOnly = entry.read_only;
+      if (readOnly !== void 0 && typeof readOnly !== "boolean") fail(`${at}.read_only`, "read_only must be a boolean");
       const storeEnv = entry.store_env;
-      if (!stringList2(storeEnv) || storeEnv.length === 0) fail(`${at}.store_env`, "store_env must be a non-empty list of environment keys");
+      if (!stringList2(storeEnv)) fail(`${at}.store_env`, "store_env must be a list of environment keys");
+      else if (storeEnv.length === 0 && readOnly !== true) fail(`${at}.store_env`, "store_env may only be empty on a read-only authority");
       else storeEnv.forEach((key, index) => {
         if (!ENV_KEY.test(key)) fail(`${at}.store_env[${index}]`, `not an environment key: ${key}`);
       });
-      const readOnly = entry.read_only;
-      if (readOnly !== void 0 && typeof readOnly !== "boolean") fail(`${at}.read_only`, "read_only must be a boolean");
       if (entry.notes !== void 0 && !stringList2(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
       const fields = entry.writable_fields;
       if (!Array.isArray(fields)) {
@@ -19680,6 +19703,9 @@ function validateStructure(policy) {
         }
         if (seen.has(field2)) fail(where, `duplicate field path: ${field2}`);
         seen.add(field2);
+        if (typeof owner === "string" && typeof entry.store === "string" && !fieldIndex.has(field2)) {
+          fieldIndex.set(field2, { id, owner, store: entry.store });
+        }
       });
       if (readOnly === true && fields.length > 0) {
         fail(`${at}.writable_fields`, "a read-only authority may not declare writable fields");
@@ -19689,6 +19715,7 @@ function validateStructure(policy) {
   const projections = policy.projections;
   if (!Array.isArray(projections)) fail("projections", "projections must be a list");
   else {
+    const seenPairs = /* @__PURE__ */ new Map();
     projections.forEach((entry, index) => {
       const at = `projections[${index}]`;
       if (!isRecord6(entry)) {
@@ -19703,13 +19730,36 @@ function validateStructure(policy) {
         if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
         else if (key !== "field" && !FIELD_PATH.test(value)) fail(`${at}.${key}`, "not a dotted field path");
       }
-      const direction = entry.direction;
-      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
-        fail(`${at}.direction`, "direction must name exactly one source and one target, as <source>_to_<target>");
-      }
+      const source = entry.source;
+      const target = entry.target;
       const writableBy = entry.writable_by;
       if (typeof writableBy !== "string" || !owners.has(writableBy)) {
         fail(`${at}.writable_by`, "writable_by must name exactly one declared authority owner");
+      }
+      if (typeof source !== "string" || typeof target !== "string") return;
+      if (source === target) fail(`${at}.target`, "a projection must cross two field paths, not point at itself");
+      const pair = `${source} -> ${target}`;
+      const previous = seenPairs.get(pair);
+      if (previous !== void 0) fail(`${at}`, `duplicate projection: ${pair} is already declared at projections[${previous}]`);
+      else seenPairs.set(pair, index);
+      const from = fieldIndex.get(source);
+      const to = fieldIndex.get(target);
+      if (!from) fail(`${at}.source`, `${source} is not declared writable by any authority`);
+      if (!to) fail(`${at}.target`, `${target} is not declared writable by any authority`);
+      if (!from || !to) return;
+      if (typeof writableBy === "string" && owners.has(writableBy) && to.owner !== writableBy) {
+        fail(`${at}.writable_by`, `${writableBy} does not declare ${target} writable; ${to.owner} does`);
+      }
+      if (from.store === to.store) {
+        fail(`${at}.direction`, `a projection must cross two stores; both ends live in ${from.store}`);
+        return;
+      }
+      const expected = `${storeToken(from.store)}_to_${storeToken(to.store)}`;
+      const direction = entry.direction;
+      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
+        fail(`${at}.direction`, `direction must be ${expected}`);
+      } else if (direction !== expected) {
+        fail(`${at}.direction`, `direction is ${direction} but ${source} -> ${target} flows ${expected}`);
       }
     });
   }
@@ -19781,8 +19831,19 @@ function validateStructure(policy) {
       const owner = authority.owner;
       if (typeof owner !== "string" || !owners.has(owner)) fail("activation.execution_authority.owner", "owner must name a declared authority owner");
       else if (typeof field2 === "string" && isRecord6(authorities)) {
-        const owned = Object.values(authorities).some((entry) => isRecord6(entry) && entry.owner === owner && Array.isArray(entry.writable_fields) && entry.writable_fields.includes(field2));
-        if (!owned) fail("activation.execution_authority.field", `${field2} is not declared writable by ${owner}`);
+        const declaring = Object.entries(authorities).filter(([, value]) => isRecord6(value) && Array.isArray(value.writable_fields) && value.writable_fields.includes(field2));
+        const holder = declaring[0];
+        if (declaring.length > 1) {
+        } else if (!holder) {
+          fail("activation.execution_authority.field", `${field2} is not declared writable by any authority`);
+        } else if (!isRecord6(holder[1]) || holder[1].owner !== owner) {
+          fail("activation.execution_authority.field", `${field2} is not declared writable by ${owner}`);
+        } else if (!Array.isArray(holder[1].writable_fields) || holder[1].writable_fields.length !== 1) {
+          fail(
+            "activation.execution_authority.field",
+            `authorities.${holder[0]} must declare ${field2} and nothing else; an authority that also writes discovery metadata cannot be the execution gate`
+          );
+        }
       }
     }
   }
@@ -19825,23 +19886,21 @@ function validateStructure(policy) {
 }
 function validateAuthorityConflicts(contract) {
   const claims = /* @__PURE__ */ new Map();
-  const claim = (field2, owner) => {
-    const existing = claims.get(field2);
-    if (existing) existing.add(owner);
-    else claims.set(field2, /* @__PURE__ */ new Set([owner]));
-  };
-  for (const authority of Object.values(contract.authorities)) {
-    for (const field2 of authority.writable_fields) claim(field2, authority.owner);
+  for (const [id, authority] of Object.entries(contract.authorities)) {
+    for (const field2 of authority.writable_fields) {
+      const existing = claims.get(field2);
+      if (existing) existing.push({ id, owner: authority.owner });
+      else claims.set(field2, [{ id, owner: authority.owner }]);
+    }
   }
-  for (const projection of contract.projections) claim(projection.target, projection.writable_by);
   const findings = [];
   for (const field2 of [...claims.keys()].sort()) {
-    const owners = [...claims.get(field2) ?? []].sort();
-    if (owners.length > 1) {
+    const claimants = (claims.get(field2) ?? []).slice().sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    if (claimants.length > 1) {
       findings.push({
         code: "AUTHORITY_CONFLICT",
         path: `authorities.writable_fields.${field2}`,
-        message: `${field2} claimed writable by: ${owners.join(", ")}`
+        message: `${field2} claimed writable by: ${claimants.map((claim) => `${claim.id} (${claim.owner})`).join(", ")}`
       });
     }
   }
@@ -19899,8 +19958,11 @@ function validateRetiredModes(contract) {
     });
   }
   const leaves = [];
-  for (const section3 of FLEET_HEALTHY_SECTIONS) {
-    scalars(contract[section3], section3, leaves);
+  const tree = contract;
+  for (const section3 of FLEET_HEALTHY_SECTIONS) scalars(tree[section3], section3, leaves);
+  for (const id of FLEET_HEALTHY_CLASSIFICATIONS) {
+    const classification = contract.classifications?.[id];
+    if (classification) scalars(classification.entries, `classifications.${id}.entries`, leaves);
   }
   const seen = /* @__PURE__ */ new Set();
   for (const mode of contract.retired) {
@@ -19957,19 +20019,47 @@ function redactHome(path, homes = homeCandidates()) {
   }
   return path.replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>");
 }
-function boundedValue(value, depth = 0) {
-  if (depth > 6) return null;
-  if (typeof value === "string") return bounded3(value);
+function boundedContext() {
+  return { truncated: [] };
+}
+var MAX_DEPTH = 6;
+var MAX_KEYS = 50;
+var MAX_ITEMS = 100;
+function boundedValue(value, context = boundedContext(), path = "", depth = 0) {
+  const clip = (reason) => {
+    if (!context.truncated.includes(`${path}: ${reason}`)) context.truncated.push(`${path}: ${reason}`);
+  };
+  if (depth > MAX_DEPTH) {
+    clip(`nesting deeper than ${MAX_DEPTH} levels dropped`);
+    return null;
+  }
+  if (typeof value === "string") {
+    const result2 = bounded3(value);
+    if (result2.length < value.length) clip(`string clipped to ${MAX_STRING} characters`);
+    return result2;
+  }
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, 100).map((item) => boundedValue(item, depth + 1));
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ITEMS) clip(`${value.length - MAX_ITEMS} of ${value.length} items dropped`);
+    return value.slice(0, MAX_ITEMS).map((item, index) => boundedValue(item, context, `${path}[${index}]`, depth + 1));
+  }
   if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > MAX_KEYS) clip(`${entries.length - MAX_KEYS} of ${entries.length} keys dropped`);
     const result2 = {};
-    for (const [key, item] of Object.entries(value).slice(0, 50)) {
-      result2[bounded3(key, 128)] = boundedValue(item, depth + 1);
+    for (const [key, item] of entries.slice(0, MAX_KEYS)) {
+      const child = path ? `${path}.${key}` : key;
+      result2[bounded3(key, 128)] = boundedValue(item, context, child, depth + 1);
     }
     return result2;
   }
+  clip("value of an unrepresentable type dropped");
   return null;
+}
+function ignoreBrokenPipe(stream = process.stdout) {
+  stream.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+  });
 }
 function normalizeFleetError(error) {
   if (error instanceof FleetError) return error;
@@ -20043,7 +20133,7 @@ function validateFleetEnvelope(envelope) {
   if (envelope.ok) {
     const data = envelope.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) invalid("data must be an object");
-    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "diagnostics"]) {
+    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "truncated", "diagnostics"]) {
       if (data[key] === void 0) invalid(`data.${key} is missing`);
     }
     return;
@@ -20081,8 +20171,13 @@ function formatFleetContractReport(inspection) {
     facts.push(dim(`compatible ${inspection.compatibility.min_schema_version}..${inspection.compatibility.max_schema_version}`));
   }
   facts.push(dim(`supported ${inspection.supported_schema_versions.min}..${inspection.supported_schema_versions.max}`));
-  if (ok) facts.push(dim(inspection.byte_stable ? "byte-stable round trip" : "round trip NOT byte-stable"));
+  if (ok) facts.push(inspection.byte_stable ? dim("byte-stable round trip") : yellow("round trip NOT byte-stable"));
   lines.push(`  ${joinDot(facts)}`);
+  if (inspection.truncated.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the file on disk is complete")}`);
+    for (const note of inspection.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
+  }
   if (!ok) {
     section2(lines, "Findings");
     const width = inspection.diagnostics.reduce((max, item) => Math.max(max, item.code.length), 0);
@@ -20155,6 +20250,7 @@ function describeTree(node, prefix = "") {
 
 // src/fleet/cli.ts
 var VALIDATE_COMMAND = "fleet.contract.validate";
+var MAX_NOTES = 10;
 function emptyInspection(contractPath, diagnostics) {
   return {
     contract_path: contractPath,
@@ -20170,21 +20266,35 @@ function emptyInspection(contractPath, diagnostics) {
     activation: null,
     retired: [],
     extensions: [],
+    truncated: [],
     diagnostics
   };
+}
+function boundedNotes(notes, context, path) {
+  const all = notes ?? [];
+  if (all.length > MAX_NOTES) context.truncated.push(`${path}: ${all.length - MAX_NOTES} of ${all.length} notes dropped`);
+  return all.slice(0, MAX_NOTES).map((note) => bounded3(note));
 }
 function inspectFleetContract(override) {
   const path = resolveFleetContractPath(override);
   const shown = redactHome(path);
+  const canonical = override === void 0;
   const loaded = loadFleetContract(path);
   const { diagnostics, contract, extensions } = validateFleetContract(loaded.document);
   if (!contract) return { ...emptyInspection(shown, diagnostics), extensions };
+  const byteStable = serializeFleetContract(loaded.document) === loaded.text;
+  const findings = [...diagnostics];
+  if (canonical && !byteStable) {
+    findings.push({
+      code: "INVALID_INPUT",
+      path: "contract",
+      message: "the tracked contract is not its own canonical serialization; re-save it through the yaml round trip"
+    });
+  }
+  const context = boundedContext();
   return {
     contract_path: shown,
-    // The tracked file is the canonical artifact, so the serializer must be
-    // able to reproduce it exactly; a drifting round trip means the file can no
-    // longer be edited by tooling without a spurious diff.
-    byte_stable: serializeFleetContract(loaded.document) === loaded.text,
+    byte_stable: byteStable,
     schema_version: contract.schema_version,
     contract_version: contract.contract_version,
     compatibility: { ...contract.compatibility },
@@ -20196,7 +20306,7 @@ function inspectFleetContract(override) {
       store_env: [...authority.store_env],
       read_only: authority.read_only === true,
       writable_fields: [...authority.writable_fields],
-      notes: (authority.notes ?? []).slice(0, 10).map((note) => bounded3(note))
+      notes: boundedNotes(authority.notes, context, `authorities.${id}.notes`)
     })),
     projections: contract.projections.map((projection) => ({
       field: projection.field,
@@ -20209,25 +20319,30 @@ function inspectFleetContract(override) {
       id,
       required_fields: [...classification.required_fields],
       entry_count: classification.entries.length,
-      entries: classification.entries.map((entry) => boundedValue(entry))
+      entries: classification.entries.map((entry, index) => boundedValue(entry, context, `classifications.${id}.entries[${index}]`))
     })),
-    service_model: boundedValue(contract.service_model),
-    activation: boundedValue(contract.activation),
+    service_model: boundedValue(contract.service_model, context, "service_model"),
+    activation: boundedValue(contract.activation, context, "activation"),
     retired: contract.retired.map((mode) => ({
       id: mode.id,
       reason: bounded3(mode.reason),
       superseded_by: mode.superseded_by,
       detect: [...mode.detect]
     })),
-    extensions: extensions.map((extension) => ({ path: extension.path, value: boundedValue(extension.value) })),
-    diagnostics
+    extensions: extensions.map((extension) => ({
+      path: extension.path,
+      value: boundedValue(extension.value, context, extension.path)
+    })),
+    truncated: context.truncated,
+    diagnostics: findings
   };
 }
 function validateEnvelope(inspection) {
   const first = inspection.diagnostics[0];
   if (!first) {
     return fleetSuccessEnvelope(VALIDATE_COMMAND, inspection, [
-      "pj fleet contract validate --json  # machine-readable authority map"
+      `Consume the declared authorities from ${FLEET_CONTRACT_RELATIVE_PATH} rather than re-deriving field ownership`,
+      "Record any new managed exception under a lifecycle class before adopting, retiring, or draining it"
     ]);
   }
   const error = new FleetError(
@@ -20240,32 +20355,54 @@ function validateEnvelope(inspection) {
     `Edit ${FLEET_CONTRACT_RELATIVE_PATH} at the reported field paths, then re-run this command`
   ]);
 }
+function isFleetJsonInvocation(args) {
+  return args[0] === "fleet" && args.includes("--json");
+}
+function fleetParserFailureEnvelope(_args) {
+  return fleetFailureEnvelope(VALIDATE_COMMAND, new FleetError("INVALID_INPUT", "Invalid fleet command arguments"));
+}
 function registerFleetCli(program2) {
   const fleet = program2.command("fleet").description("Inspect the 33GOD fleet contract");
   const contract = fleet.command("contract").description("Work with the fleet authority and managed-state contract");
   contract.command("validate").description("Validate the fleet contract and report authorities, classes, service model, and retired modes").option("--contract <path>", "Validate this contract instead of the tracked one").option("--json", "Emit the fleet JSON v1 envelope").action((options) => {
+    ignoreBrokenPipe();
     const json = Boolean(options.json);
-    let envelope;
-    let inspection = null;
     try {
-      inspection = inspectFleetContract(options.contract);
-      envelope = validateEnvelope(inspection);
+      if (options.contract !== void 0 && options.contract.trim() === "") {
+        throw new FleetError("INVALID_INPUT", "--contract was given an empty path");
+      }
+      const inspection = inspectFleetContract(options.contract);
+      const envelope = validateEnvelope(inspection);
+      write(envelope, json, inspection);
     } catch (error) {
       const normalized = normalizeFleetError(error);
-      const shown = redactHome(resolveFleetContractPath(options.contract));
-      envelope = fleetFailureEnvelope(VALIDATE_COMMAND, new FleetError(
+      let shown = "contract";
+      try {
+        shown = redactHome(resolveFleetContractPath(options.contract));
+      } catch {
+      }
+      const envelope = fleetFailureEnvelope(VALIDATE_COMMAND, new FleetError(
         normalized.code,
         normalized.message,
         normalized.retryable,
         { ...normalized.details, contract_path: shown }
       ));
-      inspection = emptyInspection(shown, [{ code: normalized.code, path: "contract", message: normalized.message }]);
-    }
-    if (json) process.stdout.write(renderFleetJson(envelope));
-    else process.stdout.write(`${formatFleetContractReport(inspection)}
+      const inspection = emptyInspection(shown, [{ code: normalized.code, path: "contract", message: normalized.message }]);
+      try {
+        write(envelope, json, inspection);
+      } catch {
+        process.stdout.write(`${JSON.stringify({ schema_version: 1, ok: false, command: VALIDATE_COMMAND, data: null, error: { code: "INTERNAL_ERROR", message: "Fleet command could not render its own result", retryable: false, details: {} }, next_actions: [] }, null, 2)}
 `);
-    process.exitCode = fleetEnvelopeExitCode(envelope);
+        process.exitCode = 6;
+      }
+    }
   });
+}
+function write(envelope, json, inspection) {
+  if (json) process.stdout.write(renderFleetJson(envelope));
+  else process.stdout.write(`${formatFleetContractReport(inspection)}
+`);
+  process.exitCode = fleetEnvelopeExitCode(envelope);
 }
 
 // src/index.ts
@@ -20505,7 +20642,7 @@ var commandArgs = process.argv.slice(2);
 program.exitOverride();
 program.configureOutput({
   writeErr: (text3) => {
-    if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text3);
+    if (!isNotebookJsonInvocation(commandArgs) && !isFleetJsonInvocation(commandArgs)) process.stderr.write(text3);
   }
 });
 registerNotebookCli(program);
@@ -21166,6 +21303,10 @@ try {
     const envelope = notebookParserFailureEnvelope(commandArgs);
     process.stdout.write(renderNotebookJson(envelope));
     process.exitCode = notebookEnvelopeExitCode(envelope);
+  } else if (isFleetJsonInvocation(commandArgs)) {
+    const envelope = fleetParserFailureEnvelope(commandArgs);
+    process.stdout.write(renderFleetJson(envelope));
+    process.exitCode = fleetEnvelopeExitCode(envelope);
   } else if (error instanceof CommanderError) {
     process.exitCode = error.exitCode;
   } else {

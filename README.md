@@ -38,6 +38,29 @@ True `SessionStart` and `SessionEnd` hooks are projected separately from the
 project-scoped hook masters. Their per-repository policy stays fail-open and
 disabled until explicitly enabled in `.project.json`.
 
+## Fleet contract
+
+`pjangler fleet` inspects the 33GOD fleet authority and managed-state contract
+at `contracts/fleet-contract.yaml`. The contract is a declaration, never an
+observation: it records who owns which field, which projections flow in which
+direction, the lifecycle class every managed thing lands in, the canonical
+systemd service model, the activation gate, and the modes that are retired
+drift rather than alternate healthy states.
+
+`validate` is strictly read-only — it opens no registry, profile, service, or
+process, and writes nothing anywhere.
+
+```bash
+pjangler fleet contract validate                          # human report
+pjangler fleet contract validate --json                   # fleet JSON v1 envelope
+pjangler fleet contract validate --contract ./candidate.yaml --json
+```
+
+Exit codes are categorized: `0` valid, `2` malformed contract, `3` contract not
+found, `4` a contract that states something forbidden (dual field ownership, an
+incomplete lifecycle entry, a retired mode declared healthy), `5` a schema
+version this build cannot read, `6` internal.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,

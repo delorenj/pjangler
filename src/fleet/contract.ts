@@ -19,6 +19,8 @@ import {
   FLEET_COMPATIBILITY_KEYS,
   FLEET_CONTRACT_ROOT_KEYS,
   FLEET_EXTENSION_PREFIX,
+  FLEET_FORBIDDEN_KEYS,
+  FLEET_HEALTHY_CLASSIFICATIONS,
   FLEET_HEALTHY_SECTIONS,
   FLEET_PROJECTION_KEYS,
   FLEET_RETIRED_IDS,
@@ -44,8 +46,22 @@ const OWNER_NAME = /^[a-z][a-z0-9-]*$/u;
 const ENV_KEY = /^[A-Z][A-Z0-9_]*$/u;
 const DIRECTION = /^[a-z0-9_]+_to_[a-z0-9_]+$/u;
 const FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
-const HOST_PATH = /\/(?:home|Users)\/[A-Za-z0-9._-]+\//u;
+// `(?:\/|$)` matters: without it a bare `/home/someone` -- no trailing slash --
+// walked straight through, and `/root` was never covered at all.
+const HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
 const SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+// Credential-SHAPED values, not the word "secret" in prose. A key-name scan
+// alone let `store: "sk-live-..."` through, and a prose scan would flag every
+// note that explains why credentials are banned.
+const SECRET_VALUE = [
+  /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,}\b/u,
+  /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}\b/u,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/u,
+  /\bAKIA[0-9A-Z]{16}\b/u,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./u,
+  /(?:api[_-]?key|password|passwd|secret|token|credential)\s*[:=]\s*\S{8,}/iu,
+];
 
 type FleetContractDocument = ReturnType<typeof YAML.parseDocument>;
 
@@ -65,6 +81,11 @@ export interface FleetContractValidation {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Normalize a store name into the token a `direction` is built from. */
+function storeToken(store: string): string {
+  return store.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "");
 }
 
 function stringList(value: unknown): value is string[] {
@@ -119,7 +140,13 @@ export function collectFleetExtensions(value: unknown): { policy: unknown; exten
   const walk = (node: unknown, path: string): unknown => {
     if (Array.isArray(node)) return node.map((item, index) => walk(item, `${path}[${index}]`));
     if (!isRecord(node)) return node;
-    const result: Record<string, unknown> = {};
+    // Null prototype, deliberately. `yaml` hands back `__proto__` as a real own
+    // key, but assigning it onto a normal object literal sets the prototype
+    // instead of creating a property -- so the key silently VANISHED from the
+    // policy tree and no rule could ever see it. With no prototype in the
+    // chain there is no setter to hijack, the key survives as data, and the
+    // forbidden-key rule below can reject it.
+    const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [key, item] of Object.entries(node)) {
       const child = path ? `${path}.${key}` : key;
       if (key.startsWith(FLEET_EXTENSION_PREFIX)) extensions.push({ path: child, value: item });
@@ -181,7 +208,7 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
 
   const stages: Array<() => FleetDiagnostic[]> = [
     () => validateVersion(policy),
-    () => sortDiagnostics(validateStructure(policy)),
+    () => sortDiagnostics(validateStructure(policy, extensions)),
     () => validateAuthorityConflicts(policy as unknown as FleetContract),
     () => sortDiagnostics(validateClassifications(policy as unknown as FleetContract)),
     () => sortDiagnostics(validateRetiredModes(policy as unknown as FleetContract)),
@@ -229,7 +256,7 @@ function validateVersion(policy: Record<string, unknown>): FleetDiagnostic[] {
   return [];
 }
 
-function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
+function validateStructure(policy: Record<string, unknown>, extensions: readonly FleetExtension[]): FleetDiagnostic[] {
   const findings: FleetDiagnostic[] = [];
   const fail = (path: string, message: string): void => { findings.push({ code: "INVALID_INPUT", path, message }); };
 
@@ -251,18 +278,33 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
   if (findings.length) return findings;
 
   // No host state, no credentials. `retired[].detect` is a detection vocabulary
-  // rather than a declaration, so the whole retired block is exempt.
+  // rather than a declaration, so the whole retired block is exempt from the
+  // host-path rule. Extensions are NOT exempt: an `x-` key is not policy, but a
+  // credential parked in one is still a credential in a tracked file.
   const leaves: Array<{ path: string; text: string }> = [];
   for (const [key, value] of Object.entries(policy)) {
     if (key === "retired") continue;
     scalars(value, key, leaves);
   }
+  for (const extension of extensions) {
+    leaves.push({ path: extension.path, text: extension.path });
+    scalars(extension.value, extension.path, leaves);
+  }
   for (const leaf of leaves) {
     if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
     if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+    if (SECRET_VALUE.some((pattern) => pattern.test(leaf.text))) fail(leaf.path, "contract must not carry a credential-shaped value");
+    if ((FLEET_FORBIDDEN_KEYS as readonly string[]).includes(leaf.text)) fail(leaf.path, `forbidden key name: ${leaf.text}`);
   }
+  // A poisoned key that reached here as data is a hard stop: continuing would
+  // run every later rule over a tree an attacker chose the shape of.
+  if (findings.length) return findings;
 
   const owners = new Set<string>();
+  // field path -> the single authority block that declares it writable. Built
+  // here so projections can be checked against real declarations rather than
+  // against a regex that would happily accept `project.{slug}.repo_path`.
+  const fieldIndex = new Map<string, { id: string; owner: string; store: string }>();
   const authorities = policy.authorities;
   if (!isRecord(authorities) || Object.keys(authorities).length === 0) {
     fail("authorities", "authorities must be a non-empty mapping");
@@ -277,11 +319,15 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
       if (typeof owner !== "string" || !OWNER_NAME.test(owner)) fail(`${at}.owner`, "owner must be a lower-kebab identifier");
       else owners.add(owner);
       if (typeof entry.store !== "string" || entry.store.length === 0) fail(`${at}.store`, "store must be a non-empty name");
-      const storeEnv = entry.store_env;
-      if (!stringList(storeEnv) || storeEnv.length === 0) fail(`${at}.store_env`, "store_env must be a non-empty list of environment keys");
-      else storeEnv.forEach((key, index) => { if (!ENV_KEY.test(key)) fail(`${at}.store_env[${index}]`, `not an environment key: ${key}`); });
       const readOnly = entry.read_only;
       if (readOnly !== undefined && typeof readOnly !== "boolean") fail(`${at}.read_only`, "read_only must be a boolean");
+      const storeEnv = entry.store_env;
+      // A read-only observation surface has no store to resolve, so demanding
+      // an env key there only produced a plausible-looking lie -- process
+      // inventory does not come from HERMES_FLEET_HOME.
+      if (!stringList(storeEnv)) fail(`${at}.store_env`, "store_env must be a list of environment keys");
+      else if (storeEnv.length === 0 && readOnly !== true) fail(`${at}.store_env`, "store_env may only be empty on a read-only authority");
+      else storeEnv.forEach((key, index) => { if (!ENV_KEY.test(key)) fail(`${at}.store_env[${index}]`, `not an environment key: ${key}`); });
       if (entry.notes !== undefined && !stringList(entry.notes)) fail(`${at}.notes`, "notes must be a list of strings");
       const fields = entry.writable_fields;
       if (!Array.isArray(fields)) { fail(`${at}.writable_fields`, "writable_fields must be a list"); continue; }
@@ -291,6 +337,9 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
         if (typeof field !== "string" || !FIELD_PATH.test(field)) { fail(where, "not a dotted field path"); return; }
         if (seen.has(field)) fail(where, `duplicate field path: ${field}`);
         seen.add(field);
+        if (typeof owner === "string" && typeof entry.store === "string" && !fieldIndex.has(field)) {
+          fieldIndex.set(field, { id, owner, store: entry.store });
+        }
       });
       if (readOnly === true && fields.length > 0) {
         fail(`${at}.writable_fields`, "a read-only authority may not declare writable fields");
@@ -301,6 +350,7 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
   const projections = policy.projections;
   if (!Array.isArray(projections)) fail("projections", "projections must be a list");
   else {
+    const seenPairs = new Map<string, number>();
     projections.forEach((entry: unknown, index: number) => {
       const at = `projections[${index}]`;
       if (!isRecord(entry)) { fail(at, "projection must be a mapping"); return; }
@@ -312,13 +362,46 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
         if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
         else if (key !== "field" && !FIELD_PATH.test(value)) fail(`${at}.${key}`, "not a dotted field path");
       }
-      const direction = entry.direction;
-      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
-        fail(`${at}.direction`, "direction must name exactly one source and one target, as <source>_to_<target>");
-      }
+      const source = entry.source;
+      const target = entry.target;
       const writableBy = entry.writable_by;
       if (typeof writableBy !== "string" || !owners.has(writableBy)) {
         fail(`${at}.writable_by`, "writable_by must name exactly one declared authority owner");
+      }
+      if (typeof source !== "string" || typeof target !== "string") return;
+
+      if (source === target) fail(`${at}.target`, "a projection must cross two field paths, not point at itself");
+      const pair = `${source} -> ${target}`;
+      const previous = seenPairs.get(pair);
+      if (previous !== undefined) fail(`${at}`, `duplicate projection: ${pair} is already declared at projections[${previous}]`);
+      else seenPairs.set(pair, index);
+
+      // Referential integrity. Both ends must be fields some authority really
+      // declares, and the target must be writable by the owner this projection
+      // names -- otherwise `writable_by` is a label nobody has to honour, and a
+      // typo in a path is indistinguishable from a real declaration.
+      const from = fieldIndex.get(source);
+      const to = fieldIndex.get(target);
+      if (!from) fail(`${at}.source`, `${source} is not declared writable by any authority`);
+      if (!to) fail(`${at}.target`, `${target} is not declared writable by any authority`);
+      if (!from || !to) return;
+      if (typeof writableBy === "string" && owners.has(writableBy) && to.owner !== writableBy) {
+        fail(`${at}.writable_by`, `${writableBy} does not declare ${target} writable; ${to.owner} does`);
+      }
+
+      // Direction is DERIVED from the two stores, never trusted as prose. The
+      // pattern check it replaces accepted a direction that was backwards, and
+      // accepted a three-hop chain, because `[a-z0-9_]+` swallows `_to_`.
+      if (from.store === to.store) {
+        fail(`${at}.direction`, `a projection must cross two stores; both ends live in ${from.store}`);
+        return;
+      }
+      const expected = `${storeToken(from.store)}_to_${storeToken(to.store)}`;
+      const direction = entry.direction;
+      if (typeof direction !== "string" || !DIRECTION.test(direction)) {
+        fail(`${at}.direction`, `direction must be ${expected}`);
+      } else if (direction !== expected) {
+        fail(`${at}.direction`, `direction is ${direction} but ${source} -> ${target} flows ${expected}`);
       }
     });
   }
@@ -390,12 +473,31 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
       const owner = authority.owner;
       if (typeof owner !== "string" || !owners.has(owner)) fail("activation.execution_authority.owner", "owner must name a declared authority owner");
       else if (typeof field === "string" && isRecord(authorities)) {
-        // Discovery is not dispatch: the one field that grants execution has to
-        // be a field its declared owner actually owns, or the gate is decorative.
-        const owned = Object.values(authorities).some((entry) => (
-          isRecord(entry) && entry.owner === owner && Array.isArray(entry.writable_fields) && entry.writable_fields.includes(field)
+        // Discovery is not dispatch. Checking only that SOME block with this
+        // owner writes the field was not enough: `hermes-agent-registry` owns
+        // both the operational records and the activation flag, so pointing the
+        // gate at `bloodbank.gateway_scope` -- a pure discovery field -- passed.
+        // The gate must be the sole field of its own authority block, which is
+        // what makes the block a gate rather than a label.
+        const declaring = Object.entries(authorities).filter(([, value]) => (
+          isRecord(value) && Array.isArray(value.writable_fields) && value.writable_fields.includes(field)
         ));
-        if (!owned) fail("activation.execution_authority.field", `${field} is not declared writable by ${owner}`);
+        const holder = declaring[0];
+        // More than one declarer is a dual-ownership problem, and the conflict
+        // stage says it far better -- it names both blocks and both owners.
+        // Complaining here first would swap a precise AUTHORITY_CONFLICT for a
+        // vague INVALID_INPUT about the same fact.
+        if (declaring.length > 1) { /* validateAuthorityConflicts owns this */ }
+        else if (!holder) {
+          fail("activation.execution_authority.field", `${field} is not declared writable by any authority`);
+        } else if (!isRecord(holder[1]) || holder[1].owner !== owner) {
+          fail("activation.execution_authority.field", `${field} is not declared writable by ${owner}`);
+        } else if (!Array.isArray(holder[1].writable_fields) || holder[1].writable_fields.length !== 1) {
+          fail(
+            "activation.execution_authority.field",
+            `authorities.${holder[0]} must declare ${field} and nothing else; an authority that also writes discovery metadata cannot be the execution gate`,
+          );
+        }
       }
     }
   }
@@ -431,29 +533,33 @@ function validateStructure(policy: Record<string, unknown>): FleetDiagnostic[] {
 }
 
 function validateAuthorityConflicts(contract: FleetContract): FleetDiagnostic[] {
-  // One map, two sources of claims: what each authority says it writes, and
-  // what each projection says may write its target. A field with more than one
-  // distinct claimant is reported with BOTH claimants and neither is chosen --
-  // picking a winner here is exactly the invention this contract exists to stop.
-  const claims = new Map<string, Set<string>>();
-  const claim = (field: string, owner: string): void => {
-    const existing = claims.get(field);
-    if (existing) existing.add(owner);
-    else claims.set(field, new Set([owner]));
-  };
-  for (const authority of Object.values(contract.authorities)) {
-    for (const field of authority.writable_fields) claim(field, authority.owner);
+  // Claims are keyed on the AUTHORITY BLOCK, not the owner name. Keying on the
+  // owner meant `bloodbank_activation` and `agent_operational_records` -- both
+  // owned by `hermes-agent-registry` -- could each claim the activation flag
+  // and agree, which silently collapses the discovery/execution split those two
+  // blocks exist to keep apart. A field belongs to exactly one block.
+  //
+  // Projection targets are NOT claimed here any more; referential integrity in
+  // the structure stage ties a projection to the block that declares its
+  // target, so re-claiming it would report every healthy projection as a
+  // conflict with itself.
+  const claims = new Map<string, Array<{ id: string; owner: string }>>();
+  for (const [id, authority] of Object.entries(contract.authorities)) {
+    for (const field of authority.writable_fields) {
+      const existing = claims.get(field);
+      if (existing) existing.push({ id, owner: authority.owner });
+      else claims.set(field, [{ id, owner: authority.owner }]);
+    }
   }
-  for (const projection of contract.projections) claim(projection.target, projection.writable_by);
 
   const findings: FleetDiagnostic[] = [];
   for (const field of [...claims.keys()].sort()) {
-    const owners = [...(claims.get(field) ?? [])].sort();
-    if (owners.length > 1) {
+    const claimants = (claims.get(field) ?? []).slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (claimants.length > 1) {
       findings.push({
         code: "AUTHORITY_CONFLICT",
         path: `authorities.writable_fields.${field}`,
-        message: `${field} claimed writable by: ${owners.join(", ")}`,
+        message: `${field} claimed writable by: ${claimants.map((claim) => `${claim.id} (${claim.owner})`).join(", ")}`,
       });
     }
   }
@@ -520,9 +626,19 @@ function validateRetiredModes(contract: FleetContract): FleetDiagnostic[] {
     });
   }
 
+  // Everything a contract asserts is HEALTHY gets scanned. The first cut read
+  // only service_model/activation/classifications, so a retired unit smuggled
+  // into an authority's writable_fields, a projection targeting a checkpoint
+  // timer, or `store: n8n-workflow-store` all validated clean.
   const leaves: Array<{ path: string; text: string }> = [];
-  for (const section of FLEET_HEALTHY_SECTIONS) {
-    scalars((contract as unknown as Record<string, unknown>)[section], section, leaves);
+  const tree = contract as unknown as Record<string, unknown>;
+  for (const section of FLEET_HEALTHY_SECTIONS) scalars(tree[section], section, leaves);
+  // Classifications selectively: `retired` and `intentionally_unmanaged` exist
+  // to RECORD a sighting of exactly these patterns. Scanning them would make
+  // the two classes unusable for their only job.
+  for (const id of FLEET_HEALTHY_CLASSIFICATIONS) {
+    const classification = contract.classifications?.[id];
+    if (classification) scalars(classification.entries, `classifications.${id}.entries`, leaves);
   }
   const seen = new Set<string>();
   for (const mode of contract.retired) {

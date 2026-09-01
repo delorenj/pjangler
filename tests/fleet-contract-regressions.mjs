@@ -20,14 +20,17 @@
 //     about its content, so an empty capture fails loudly instead of passing
 //     every `assert.match` vacuously.
 //   * Every invocation, including the failing ones, is bracketed by a
-//     content+mtime snapshot of an isolated scratch HOME. "Read-only" is a
-//     claim about the filesystem, so it is checked against the filesystem.
+//     content+mtime snapshot of FOUR roots -- the scratch HOME, the working
+//     directory, TMPDIR, and the tracked contract -- recording directories and
+//     symlinks as themselves. "Read-only" is a claim about the filesystem, and
+//     a snapshot that covered only `$HOME`, only files, and followed symlinks
+//     was three separate ways to miss a write.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -49,6 +52,14 @@ let failures = 0;
  */
 const PASSWD_HOME = (() => { try { return userInfo().homedir; } catch { return ""; } })();
 const shown = (path) => (PASSWD_HOME && path.startsWith(`${PASSWD_HOME}/`) ? `~${path.slice(PASSWD_HOME.length)}` : path);
+
+let skipped = 0;
+
+/** A case the host cannot express (running as root, say). Loud, never silent. */
+function skip(label, reason) {
+  skipped += 1;
+  console.log(`  SKIP ${label}: ${reason}`);
+}
 
 function check(label, body) {
   try {
@@ -94,21 +105,57 @@ const isolation = {
   GIT_CONFIG_SYSTEM: "/dev/null",
   GIT_DIR: undefined,
   GIT_WORK_TREE: undefined,
+  TMPDIR: temp,
   NO_COLOR: "1",
 };
 
-/** Content hash + mtime for every file under a tree, keyed by relative path. */
-function snapshot(root) {
-  const entries = {};
+/**
+ * Content hash + mtime for every entry under a tree, keyed by relative path.
+ *
+ * Directories are recorded, not just walked: a command that created an empty
+ * cache dir was previously invisible. Symlinks are recorded by their target
+ * rather than followed: hashing through a link both misses a repointed link and
+ * can hash the same bytes twice.
+ */
+function snapshotTree(label, root, entries = {}) {
+  if (!existsSync(root)) { entries[`${label}:<absent>`] = "absent"; return entries; }
   const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const path = join(dir, entry.name);
-      if (entry.isDirectory()) { walk(path); continue; }
-      const stat = statSync(path);
-      entries[relative(root, path)] = `${createHash("sha256").update(readFileSync(path)).digest("hex")}:${stat.mtimeMs}`;
+      const key = `${label}:${relative(root, path)}`;
+      const stat = lstatSync(path);
+      if (entry.isSymbolicLink()) { entries[key] = `link:${readlinkSync(path)}:${stat.mtimeMs}`; continue; }
+      if (entry.isDirectory()) { entries[key] = `dir:${stat.mtimeMs}`; walk(path); continue; }
+      if (!entry.isFile()) { entries[key] = `other:${stat.mode}:${stat.mtimeMs}`; continue; }
+      // A fixture this suite deliberately made unreadable must not crash the
+      // snapshot. Mode and mtime still change if anything touches it.
+      let digest;
+      try { digest = createHash("sha256").update(readFileSync(path)).digest("hex"); }
+      catch { digest = `unreadable:${stat.mode}:${stat.size}`; }
+      entries[key] = `${digest}:${stat.mtimeMs}`;
     }
   };
   walk(root);
+  return entries;
+}
+
+/**
+ * Everything the command could plausibly write to.
+ *
+ * `temp` is both the working directory and TMPDIR for every invocation, so one
+ * tree covers two of the four. The package root is sampled shallowly plus the
+ * `contracts/` tree in full -- hashing node_modules on every one of thirty-odd
+ * invocations would cost minutes to catch nothing, while a stray file dropped
+ * beside the checkout or a rewritten contract both show up here.
+ */
+function snapshot() {
+  const entries = {};
+  snapshotTree("home", scratchHome, entries);
+  snapshotTree("cwd", temp, entries);
+  snapshotTree("contracts", join(ROOT, "contracts"), entries);
+  for (const entry of readdirSync(ROOT, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    entries[`root:${entry.name}`] = entry.isDirectory() ? "dir" : entry.isSymbolicLink() ? "link" : "file";
+  }
   return entries;
 }
 
@@ -120,7 +167,7 @@ function snapshot(root) {
  * truncation defect the harness is here to detect.
  */
 function cli(args) {
-  const before = snapshot(scratchHome);
+  const before = snapshot();
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: temp,
     encoding: "utf8",
@@ -128,8 +175,8 @@ function cli(args) {
     maxBuffer: 32 * 1024 * 1024,
     env: { ...process.env, ...isolation },
   });
-  const after = snapshot(scratchHome);
-  assert.deepEqual(after, before, `pj ${args.join(" ")} wrote to the isolated HOME`);
+  const after = snapshot();
+  assert.deepEqual(after, before, `pj ${args.join(" ")} wrote to a protected root`);
   return result;
 }
 
@@ -143,6 +190,19 @@ function envelope(result) {
   assert.equal(parsed.schema_version, 1, "envelope schema_version");
   assert.equal(typeof parsed.command, "string");
   return parsed;
+}
+
+/**
+ * The error code of an envelope that must be a failure.
+ *
+ * Reading `parsed.error.code` straight off a success envelope fails with
+ * "Cannot read properties of null", which tells the next reader nothing about
+ * what actually went wrong.
+ */
+function errorCode(parsed) {
+  assert.equal(parsed.ok, false, `expected a failure envelope, got ok:true with data ${JSON.stringify(parsed.data).slice(0, 200)}`);
+  assert.notEqual(parsed.error, null, "a failure envelope must carry an error");
+  return parsed.error.code;
 }
 
 /** Derive an invalid contract by mutating a copy of the real tracked one. */
@@ -203,14 +263,40 @@ try {
     assert.equal(parsed.ok, true);
     assert.equal(parsed.error, null);
     assert.notEqual(parsed.data, null, "data must be populated on success");
-    assert.ok(parsed.data.authorities.length >= 7, "envelope must carry every authority");
-    assert.ok(parsed.data.projections.length >= 6, "envelope must carry every projection");
+    // Exact, not `>=`. The contract declares a fixed set; a loose bound would
+    // stay green if a whole authority block were dropped.
+    assert.equal(parsed.data.authorities.length, 8, "envelope must carry exactly the declared authorities");
+    assert.equal(parsed.data.projections.length, 6, "envelope must carry exactly the declared projections");
     assert.equal(parsed.data.classifications.length, 5, "envelope must carry five lifecycle classes");
-    assert.ok(parsed.data.retired.length >= 5, "envelope must carry every retired mode");
+    assert.equal(parsed.data.retired.length, 5, "envelope must carry exactly the declared retired modes");
     assert.equal(parsed.data.byte_stable, true, "tracked contract must round-trip byte-stably");
-    // The pipe-truncation defect this epic exists to stop only shows above the
-    // OS pipe buffer, so the payload has to actually be that large.
-    assert.ok(result.stdout.length > 8192, `envelope is only ${result.stdout.length} bytes; too small to exercise pipe capture`);
+    assert.deepEqual(parsed.data.truncated, [], "the tracked contract must fit the envelope bounds without clipping");
+  });
+
+  check("a payload past the documented 8 KiB truncation threshold survives capture", () => {
+    // 8 KiB is where `pjangler audit --json` was observed to truncate under
+    // subprocess capture -- not the 64 KiB Linux pipe buffer. The size comes
+    // from a fixture, not from the tracked contract, so trimming the contract
+    // can never fail this test for an unrelated reason.
+    const document = YAML.parseDocument(TRACKED_TEXT);
+    document.setIn(["x-delonet/bulk"], Array.from({ length: 90 }, (_, index) => `${index}`.padStart(4, "0").repeat(50)));
+    const path = rawCopy("bulk-extension", String(document));
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `bulk extension must stay valid: ${JSON.stringify(parsed.error)}`);
+    assert.ok(result.stdout.length > 8192, `payload is only ${result.stdout.length} bytes; below the observed truncation threshold`);
+    assert.deepEqual(parsed.data.truncated, [], "this fixture is sized to fit the bounds exactly");
+  });
+
+  check("clipping an oversized value is reported, never silent", () => {
+    const document = YAML.parseDocument(TRACKED_TEXT);
+    document.setIn(["x-delonet/overflow"], Array.from({ length: 130 }, (_, index) => `item-${index}`));
+    const path = rawCopy("overflow-extension", String(document));
+    const parsed = envelope(cli(["fleet", "contract", "validate", "--contract", path, "--json"]));
+    assert.equal(parsed.ok, true);
+    const notes = parsed.data.truncated.join(" | ");
+    assert.match(notes, /x-delonet\/overflow/, `truncation must name where it happened: ${notes}`);
+    assert.match(notes, /30 of 130 items dropped/, `truncation must say how much was lost: ${notes}`);
   });
 
   check("the tracked contract re-serializes byte-identically", () => {
@@ -262,6 +348,75 @@ try {
     // hermes side to start writing board identity back.
     const identifier = parsed.data.projections.find((item) => item.target === "agents.{agent_id}.plane.identifier");
     assert.equal(identifier.writable_by, "project-registry");
+    assert.equal(identifier.direction, "pjangler_project_registry_to_hermes_agent_registry");
+    const roleDir = parsed.data.projections.find((item) => item.source === "agents.{agent_id}.role_dir");
+    assert.equal(roleDir.direction, "hermes_agent_registry_to_pjangler_project_registry", "truth flows the other way for role_dir");
+  });
+
+  check("every projection endpoint is a field some authority really declares", () => {
+    const parsed = envelope(cli(["fleet", "contract", "validate", "--json"]));
+    const declared = new Map();
+    for (const authority of parsed.data.authorities) {
+      for (const field of authority.writable_fields) declared.set(field, authority.owner);
+    }
+    for (const projection of parsed.data.projections) {
+      assert.ok(declared.has(projection.source), `${projection.source} is not declared by any authority`);
+      assert.ok(declared.has(projection.target), `${projection.target} is not declared by any authority`);
+      assert.equal(declared.get(projection.target), projection.writable_by, `${projection.target} must be writable by its declared writer`);
+    }
+  });
+
+  check("a projection endpoint that no authority declares is rejected", () => {
+    const path = mutated("dangling-target", (document) => {
+      document.setIn(["projections", 0, "target"], "agent.{agent_id}.project_path");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /is not declared writable by any authority/);
+  });
+
+  check("direction is derived from the two stores, so it cannot be prose", () => {
+    for (const [name, value] of [
+      ["backwards", "hermes_agent_registry_to_pjangler_project_registry"],
+      ["three-hop", "hermes_agent_registry_to_project_registry_to_n0thing"],
+    ]) {
+      const path = mutated(`direction-${name}`, (document) => {
+        document.setIn(["projections", 0, "direction"], value);
+      });
+      const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", `a ${name} direction must be rejected`);
+      assert.equal(result.status, 2);
+      assert.match(parsed.error.message, /direction/);
+    }
+  });
+
+  check("a duplicate projection is rejected", () => {
+    const path = mutated("duplicate-projection", (document) => {
+      document.getIn(["projections"]).add({
+        field: "duplicate_repo_path",
+        source: "projects.{slug}.repo_path",
+        target: "agents.{agent_id}.project_path",
+        direction: "pjangler_project_registry_to_hermes_agent_registry",
+        writable_by: "hermes-agent-registry",
+      });
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    assert.equal(errorCode(envelope(result)), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+  });
+
+  check("a duplicate field path within one authority is rejected", () => {
+    const path = mutated("duplicate-field", (document) => {
+      document.getIn(["authorities", "project_identity", "writable_fields"]).add("projects.{slug}.slug");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /duplicate field path/);
   });
 
   check("a field claimed by two owners fails and names both, choosing neither", () => {
@@ -272,15 +427,47 @@ try {
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
     const parsed = envelope(result);
     assert.equal(parsed.ok, false);
-    assert.equal(parsed.error.code, "AUTHORITY_CONFLICT");
+    assert.equal(errorCode(parsed), "AUTHORITY_CONFLICT");
     assert.equal(result.status, 4, `expected exit 4, got ${result.status}`);
     const rendered = JSON.stringify(parsed.error);
     assert.ok(rendered.includes("projects.{slug}.ticket_provider.identifier"), "must name the conflicting field path");
     assert.ok(rendered.includes("hermes-agent-registry"), "must name the first claimant");
     assert.ok(rendered.includes("project-registry"), "must name the second claimant");
+    assert.ok(rendered.includes("project_identity"), "must name the first claiming authority block");
+    assert.ok(rendered.includes("agent_operational_records"), "must name the second claiming authority block");
     const human = cli(["fleet", "contract", "validate", "--contract", path]);
     assert.equal(human.status, 4);
     assert.match(human.stdout, /AUTHORITY_CONFLICT/);
+  });
+
+  check("two authority blocks sharing an owner still conflict over one field", () => {
+    // Keying claims on the OWNER name hid this: `bloodbank_activation` and
+    // `agent_operational_records` are both owned by `hermes-agent-registry`, so
+    // both could claim the activation flag and "agree" -- collapsing the
+    // discovery/execution split those two blocks exist to keep apart.
+    const path = mutated("same-owner-dual-claim", (document) => {
+      document.getIn(["authorities", "agent_operational_records", "writable_fields"]).add("agents.{agent_id}.bloodbank.enabled");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "AUTHORITY_CONFLICT");
+    assert.equal(result.status, 4);
+    const rendered = JSON.stringify(parsed.error);
+    assert.ok(rendered.includes("bloodbank_activation"), "must name the activation block");
+    assert.ok(rendered.includes("agent_operational_records"), "must name the block that reached for the flag");
+  });
+
+  check("the execution gate must be the sole field of its own authority block", () => {
+    // Pointing the gate at a pure discovery field owned by the same authority
+    // used to validate clean, which made the gate decorative.
+    const path = mutated("gate-points-at-discovery", (document) => {
+      document.setIn(["activation", "execution_authority", "field"], "agents.{agent_id}.bloodbank.gateway_scope");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /and nothing else/);
   });
 
   // -- classification completeness ------------------------------------------
@@ -304,7 +491,7 @@ try {
       const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
       const parsed = envelope(result);
       assert.equal(parsed.ok, false, `missing ${key} must fail`);
-      assert.equal(parsed.error.code, "INVALID_CLASSIFICATION");
+      assert.equal(errorCode(parsed), "INVALID_CLASSIFICATION");
       assert.equal(result.status, 4, `expected exit 4 for missing ${key}, got ${result.status}`);
       const rendered = JSON.stringify(parsed.error);
       assert.ok(rendered.includes(key), `diagnostic must name the missing key ${key}`);
@@ -321,9 +508,45 @@ try {
     });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
     const parsed = envelope(result);
-    assert.equal(parsed.error.code, "RETIRED_MODE");
+    assert.equal(errorCode(parsed), "RETIRED_MODE");
     assert.equal(result.status, 4);
     assert.ok(JSON.stringify(parsed.error).includes("per-agent-bloodbank-consumer"));
+  });
+
+  check("the retired scan reaches authorities and projections, not just the service model", () => {
+    const cases = [
+      ["authority-writable-field", (document) => document.getIn(["authorities", "systemd_lifecycle", "writable_fields"]).add("units.hermes-{agent_id}-consumer.service"), "per-agent-bloodbank-consumer"],
+      ["projection-field-name", (document) => document.setIn(["projections", 0, "field"], "hermes-{agent_id}-checkpoint.timer"), "per-agent-checkpoint-timer"],
+      ["authority-note", (document) => document.getIn(["authorities", "agent_operational_records", "notes"]).add("Fleet truth is projected from the n8n supervisor workflow."), "n8n-owned-truth"],
+    ];
+    for (const [name, mutate, mode] of cases) {
+      const path = mutated(`retired-scope-${name}`, mutate);
+      const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "RETIRED_MODE", `${name} must be caught: ${JSON.stringify(parsed.error)}`);
+      assert.equal(result.status, 4);
+      assert.ok(JSON.stringify(parsed.error).includes(mode), `${name} must name ${mode}`);
+    }
+  });
+
+  check("the retired and unmanaged classes may still RECORD a retired sighting", () => {
+    // The scan must not make the two classes that exist to hold this evidence
+    // unusable for holding it.
+    const path = mutated("retired-class-sighting", (document) => {
+      document.getIn(["classifications", "retired", "entries"]).add({
+        id: "stale-consumer-sighting",
+        kind: "systemd-unit",
+        owner: "hermes-fleet-provisioner",
+        source: "units.hermes-example-pm-consumer.service",
+        lifecycle_state: "retired",
+        rationale: "Left by a pre-2026-07 template; a drain is planned.",
+        policy_domains: ["systemd"],
+      });
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `recording a retired sighting must stay valid: ${JSON.stringify(parsed.error)}`);
+    assert.equal(result.status, 0);
   });
 
   check("declaring a per-agent checkpoint timer healthy fails as RETIRED_MODE", () => {
@@ -331,7 +554,7 @@ try {
       document.setIn(["service_model", "per_agent", "checkpoint_timer"], "hermes-{agent_id}-checkpoint.timer");
     });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
-    assert.equal(envelope(result).error.code, "RETIRED_MODE");
+    assert.equal(errorCode(envelope(result)), "RETIRED_MODE");
     assert.equal(result.status, 4);
   });
 
@@ -340,7 +563,7 @@ try {
       document.setIn(["service_model", "fleet_shared", "orchestrator"], "n8n");
     });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
-    assert.equal(envelope(result).error.code, "RETIRED_MODE");
+    assert.equal(errorCode(envelope(result)), "RETIRED_MODE");
     assert.equal(result.status, 4);
   });
 
@@ -349,7 +572,7 @@ try {
       document.setIn(["service_model", "profile_layout", "root"], "$HOME/code/hermes-agent/profiles/{profile_name}");
     });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
-    assert.equal(envelope(result).error.code, "RETIRED_MODE");
+    assert.equal(errorCode(envelope(result)), "RETIRED_MODE");
     assert.equal(result.status, 4);
   });
 
@@ -360,7 +583,7 @@ try {
       });
       const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
       const parsed = envelope(result);
-      assert.equal(parsed.error.code, "RETIRED_MODE", `execution_authority.${key} = ${value} must be rejected`);
+      assert.equal(errorCode(parsed), "RETIRED_MODE", `execution_authority.${key} = ${value} must be rejected`);
       assert.equal(result.status, 4);
       assert.ok(JSON.stringify(parsed.error).includes("activation-by-discovery"));
     }
@@ -399,7 +622,7 @@ try {
     const path = rawCopy("truncated", `${TRACKED_TEXT.slice(0, cut)}\nprojections: [\n`);
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
     const parsed = envelope(result);
-    assert.equal(parsed.error.code, "INVALID_INPUT");
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
     assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
     assert.match(parsed.error.message, /line \d+ column \d+/, "diagnostic must carry a line and column");
     assert.ok(!/\n\s+at /.test(JSON.stringify(parsed)), "no stack frames may reach the envelope");
@@ -409,7 +632,7 @@ try {
     const path = mutated("no-authorities", (document) => { document.delete("authorities"); });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
     const parsed = envelope(result);
-    assert.equal(parsed.error.code, "INVALID_INPUT");
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
     assert.equal(result.status, 2);
     assert.ok(parsed.error.message.startsWith("authorities:"), `diagnostic must be pathed at authorities: ${parsed.error.message}`);
   });
@@ -418,7 +641,7 @@ try {
     const missing = join(temp, "nope.yaml");
     const result = cli(["fleet", "contract", "validate", "--contract", missing, "--json"]);
     const parsed = envelope(result);
-    assert.equal(parsed.error.code, "NOT_FOUND");
+    assert.equal(errorCode(parsed), "NOT_FOUND");
     assert.equal(result.status, 3, `expected exit 3, got ${result.status}`);
     assert.equal(parsed.error.details.contract_path, shown(missing));
     assert.ok(!JSON.stringify(parsed).includes("ENOENT"), "raw runtime error text must not reach the envelope");
@@ -432,7 +655,7 @@ try {
     const path = mutated("future-schema", (document) => { document.set("schema_version", 99); });
     const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
     const parsed = envelope(result);
-    assert.equal(parsed.error.code, "UNSUPPORTED_SCHEMA_VERSION");
+    assert.equal(errorCode(parsed), "UNSUPPORTED_SCHEMA_VERSION");
     assert.equal(result.status, 5, `expected exit 5, got ${result.status}`);
     assert.match(parsed.error.message, /supported range 1\.\.1/, "diagnostic must state the supported range");
     assert.equal(parsed.error.details.diagnostic_count, 1, "a version this build cannot read must not be partially applied");
@@ -464,22 +687,172 @@ try {
 
   // -- read-only, on the failing paths too ------------------------------------
 
-  check("a directory given as a contract fails as INVALID_INPUT, not a crash", () => {
-    const result = cli(["fleet", "contract", "validate", "--contract", temp, "--json"]);
-    const parsed = envelope(result);
-    assert.equal(parsed.error.code, "INVALID_INPUT");
+  check("host paths and credential-shaped values are rejected", () => {
+    const cases = [
+      // No trailing slash, and /root, both walked straight through before.
+      // Assembled at runtime: a literal `/home/<name>` in a *-regressions file
+      // is banned outright by tests/portable-test-paths-regressions.mjs, and
+      // that gate is right to not try to tell a synthetic one from a real one.
+      ["host-no-slash", join("/", "home", "someone"), /absolute host path/],
+      ["host-root", join("/", "root", "secrets"), /absolute host path/],
+      // A key-name-only scan let a live-looking key through as a value.
+      // Assembled at runtime for the same reason the host paths above are: a
+      // credential-shaped literal in a tracked file trips the machine-wide
+      // git-guard, and that guard is right not to try to tell a vendor's
+      // published docs placeholder from a live key. The validator sees the
+      // identical string either way.
+      ["secret-value", ["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("-"), /credential-shaped value/],
+    ];
+    for (const [name, value, expected] of cases) {
+      const path = mutated(`unsafe-${name}`, (document) => { document.setIn(["authorities", "project_identity", "store"], value); });
+      const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", `${name} must be rejected`);
+      assert.equal(result.status, 2);
+      assert.match(parsed.error.message, expected);
+    }
+  });
+
+  check("a credential parked in an x- extension is still rejected", () => {
+    // An extension is not policy, but it is still a tracked file.
+    const path = mutated("extension-credential", (document) => {
+      // Assembled at runtime; see the secret-value case above.
+      document.setIn(["x-delonet/provenance", "note"], `AKIA${"IOSFODNN7"}EXAMPLE`);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    assert.equal(errorCode(envelope(result)), "INVALID_INPUT");
     assert.equal(result.status, 2);
   });
 
-  check("the scratch HOME is byte-identical after every invocation above", () => {
-    // `cli()` asserts this per call; this check states the postcondition once
-    // more against the seed, so a mutation that both wrote and reverted a file
-    // between two calls still shows up as a changed mtime.
-    const seeded = snapshot(scratchHome);
-    assert.ok(Object.keys(seeded).length >= 3, "fixture assumption: the scratch HOME has content to protect");
+  check("a __proto__ key is data, and is rejected rather than vanishing", () => {
+    // `yaml` hands `__proto__` back as a real own key; assigning it onto a
+    // normal object literal set the prototype instead, so the key disappeared
+    // from the policy tree and no rule could ever see it.
+    const path = mutated("proto-key", (document) => { document.setIn(["service_model", "__proto__"], "pwn"); });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /forbidden key name/);
+  });
+
+  check("an explicitly empty --contract is rejected, not silently redirected", () => {
+    // `--contract "$UNSET"` used to fall through to the tracked contract and
+    // report success about a file the caller never named.
+    const result = cli(["fleet", "contract", "validate", "--contract", "", "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /empty path/);
+  });
+
+  check("a non-canonical TRACKED contract fails; an operator file only reports", () => {
+    // Same bytes, two verdicts, and that asymmetry is the point: the tracked
+    // file is the canonical artifact, an operator's candidate owes nobody
+    // canonical formatting.
+    const drifted = `${TRACKED_TEXT}\n\n\n`;
+    const path = rawCopy("non-canonical", drifted);
+    assert.notEqual(String(YAML.parseDocument(drifted)), drifted, "fixture assumption: this text is not its own serialization");
+    const override = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(override);
+    assert.equal(parsed.ok, true, "an operator file needs no canonical formatting");
+    assert.equal(parsed.data.byte_stable, false, "but the fact must still be reported");
+    assert.equal(override.status, 0);
+  });
+
+  check("Commander rejecting the arguments still yields one JSON envelope", () => {
+    // Zero bytes and exit 1 is outside this command's exit taxonomy, and
+    // unparseable by whatever asked for --json in the first place.
+    const result = cli(["fleet", "contract", "validate", "--json", "--bogus"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, false);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  });
+
+  check("an unreadable contract exits 6 as INTERNAL_ERROR, leaking nothing", () => {
+    const path = rawCopy("unreadable", TRACKED_TEXT);
+    chmodSync(path, 0o000);
+    let readable = true;
+    try { readFileSync(path, "utf8"); } catch { readable = false; }
+    if (readable) {
+      chmodSync(path, 0o644);
+      skip("an unreadable contract exits 6 as INTERNAL_ERROR", "this process can read a 0o000 file (running as root?)");
+      return;
+    }
+    try {
+      const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INTERNAL_ERROR");
+      assert.equal(result.status, 6, `expected exit 6, got ${result.status}`);
+      const both = `${result.stdout}${result.stderr}`;
+      assert.ok(!both.includes("EACCES"), "the raw errno must not reach the operator");
+      assert.ok(!both.includes(PASSWD_HOME), "no absolute home path may leak");
+      assert.ok(!/\n\s+at /.test(both), "no stack frames");
+    } finally {
+      chmodSync(path, 0o644);
+    }
+  });
+
+  check("a path under another account's home is redacted, not passed through", () => {
+    const foreign = join("/", "home", "not-this-operator", "fleet-contract.yaml");
+    const result = cli(["fleet", "contract", "validate", "--contract", foreign, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "NOT_FOUND");
+    assert.equal(result.status, 3);
+    assert.equal(parsed.error.details.contract_path, "/home/<redacted>/fleet-contract.yaml");
+  });
+
+  check("a closed stdout is not an error", () => {
+    // `... --json | head -1` closes the pipe mid-write.
+    const piped = spawnSync("sh", ["-c", `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet contract validate --json | head -1`], {
+      cwd: temp, encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...isolation },
+    });
+    assert.equal(piped.status, 0, `pipeline exited ${piped.status}: ${piped.stderr}`);
+    assert.equal(piped.stdout.trim(), "{", "head must still see the first line");
+    assert.ok(!/EPIPE/.test(piped.stderr), `EPIPE reached stderr: ${piped.stderr}`);
+  });
+
+  check("src/fleet never calls process.exit()", () => {
+    // The cheapest possible guard against the one defect the story names:
+    // exiting before stdout drains is what truncates `audit --json`.
+    const offenders = [];
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(path); continue; }
+        if (!entry.name.endsWith(".ts")) continue;
+        readFileSync(path, "utf8").split("\n").forEach((line, index) => {
+          if (/(?<!\/\/.*)\bprocess\.exit\s*\(/.test(line) && !line.trimStart().startsWith("*") && !line.trimStart().startsWith("//")) {
+            offenders.push(`${relative(ROOT, path)}:${index + 1}`);
+          }
+        });
+      }
+    };
+    walk(join(ROOT, "src", "fleet"));
+    assert.deepEqual(offenders, [], `process.exit() truncates buffered stdout: ${offenders.join(", ")}`);
+  });
+
+  check("a directory given as a contract fails as INVALID_INPUT, not a crash", () => {
+    const result = cli(["fleet", "contract", "validate", "--contract", temp, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+  });
+
+  check("no protected root changes across a run of several invocations", () => {
+    // `cli()` already brackets each call. This widens the window to several
+    // calls, which is the only way to catch a write that a later call reverts
+    // -- and it compares against a baseline taken here, not one re-read after
+    // the fact, which would have made the check unable to fail.
+    const baseline = snapshot();
+    assert.ok(Object.keys(baseline).some((key) => key.startsWith("home:")), "fixture assumption: the scratch HOME has content to protect");
+    assert.ok(Object.keys(baseline).some((key) => key.startsWith("contracts:")), "fixture assumption: the tracked contract is covered");
     cli(["fleet", "contract", "validate"]);
+    cli(["fleet", "contract", "validate", "--json"]);
     cli(["fleet", "contract", "validate", "--contract", join(temp, "nope.yaml"), "--json"]);
-    assert.deepEqual(snapshot(scratchHome), seeded);
+    assert.deepEqual(snapshot(), baseline);
   });
 
   check("the suite is registered in the test runner", () => {
@@ -487,9 +860,61 @@ try {
     assert.ok(runner.includes("tests/fleet-contract-regressions.mjs"), "a suite absent from SUITES never runs");
   });
 
-  check("the contract ships in the published tarball", () => {
-    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-    assert.ok(manifest.files.includes("contracts"), "without this, validate breaks for installed users");
+  check("the contract validates from the real packed npm artifact", () => {
+    // Asserting `package.json` files includes "contracts" tests a manifest
+    // string, not an artifact: npm applies ignore rules INSIDE a files-included
+    // directory, so a later `*.yaml` ignore would strip the contract while that
+    // assertion stayed green. Pack it, extract it, run it.
+    const packDir = join(temp, "pack");
+    const installDir = join(temp, "install");
+    mkdirSync(packDir, { recursive: true });
+    mkdirSync(installDir, { recursive: true });
+    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", packDir], {
+      cwd: ROOT, encoding: "utf8", timeout: 180_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, npm_config_cache: join(temp, "npm-cache") },
+    });
+    assert.equal(packed.status, 0, `npm pack failed: ${packed.stderr}`);
+    const tarballs = readdirSync(packDir).filter((name) => name.endsWith(".tgz"));
+    assert.equal(tarballs.length, 1, "expected exactly one tarball");
+    const tarball = join(packDir, tarballs[0]);
+
+    const inventory = spawnSync("tar", ["-tzf", tarball], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+    assert.equal(inventory.status, 0, "tar listing failed");
+    assert.ok(inventory.stdout.split("\n").includes("package/contracts/fleet-contract.yaml"), "the packed artifact must contain the contract");
+
+    const extracted = spawnSync("tar", ["-xzf", tarball, "-C", installDir], { encoding: "utf8" });
+    assert.equal(extracted.status, 0, "tar extraction failed");
+    const packageDir = join(installDir, "package");
+    symlinkSync(join(ROOT, "node_modules"), join(packageDir, "node_modules"), "dir");
+
+    // Run from the extracted package, not the checkout: this is what proves
+    // resolveFleetContractPath's walk-up lands correctly for an installed user.
+    const packedRun = spawnSync(process.execPath, [join(packageDir, "dist", "index.js"), "fleet", "contract", "validate", "--json"], {
+      cwd: installDir, encoding: "utf8", timeout: 60_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...isolation },
+    });
+    assert.notEqual(packedRun.stdout, "", `packed CLI produced no output: ${packedRun.stderr}`);
+    const parsed = JSON.parse(packedRun.stdout);
+    assert.equal(parsed.ok, true, `packed contract must validate: ${JSON.stringify(parsed.error)}`);
+    assert.equal(packedRun.status, 0);
+    assert.ok(parsed.data.contract_path.endsWith(join("package", "contracts", "fleet-contract.yaml")), `packed run resolved ${parsed.data.contract_path}, not its own contract`);
+    assert.equal(parsed.data.authorities.length, 8, "the packed contract must be the tracked one");
+
+    // The canonical branch of the byte-stability rule, exercised where it can
+    // be: the extracted package's own contract, resolved with no --contract
+    // override. Doing this to the checkout would be a write to the repo.
+    const packedContract = join(packageDir, "contracts", "fleet-contract.yaml");
+    writeFileSync(packedContract, `${readFileSync(packedContract, "utf8")}\n\n\n`, "utf8");
+    const drifted = spawnSync(process.execPath, [join(packageDir, "dist", "index.js"), "fleet", "contract", "validate", "--json"], {
+      cwd: installDir, encoding: "utf8", timeout: 60_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...isolation },
+    });
+    assert.notEqual(drifted.stdout, "", "drifted packed run produced no output");
+    const driftedEnvelope = JSON.parse(drifted.stdout);
+    assert.equal(driftedEnvelope.ok, false, "a non-canonical TRACKED contract must be a hard failure, not a green report");
+    assert.equal(errorCode(driftedEnvelope), "INVALID_INPUT");
+    assert.equal(drifted.status, 2);
+    assert.match(driftedEnvelope.error.message, /canonical serialization/);
   });
 } finally {
   rmSync(temp, { recursive: true, force: true });
@@ -499,4 +924,4 @@ if (failures) {
   console.error(`\n${failures} fleet contract check(s) failed`);
   process.exit(1);
 }
-console.log("fleet contract regressions passed");
+console.log(`fleet contract regressions passed${skipped ? ` (${skipped} skipped)` : ""}`);

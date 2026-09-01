@@ -52,7 +52,8 @@ import { PJANGLER_VERSION } from "./utils/version";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
-import { registerFleetCli } from "./fleet/cli";
+import { fleetParserFailureEnvelope, isFleetJsonInvocation, registerFleetCli } from "./fleet/cli";
+import { fleetEnvelopeExitCode, renderFleetJson } from "./fleet/output";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 
 /** Red ✖ prefix for user-facing error lines. */
@@ -409,7 +410,7 @@ const program = new Command();
 const commandArgs = process.argv.slice(2);
 program.exitOverride();
 program.configureOutput({
-  writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text); },
+  writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs) && !isFleetJsonInvocation(commandArgs)) process.stderr.write(text); },
 });
 registerNotebookCli(program);
 registerFleetCli(program);
@@ -1453,6 +1454,13 @@ try {
     const envelope = notebookParserFailureEnvelope(commandArgs);
     process.stdout.write(renderNotebookJson(envelope));
     process.exitCode = notebookEnvelopeExitCode(envelope);
+  } else if (isFleetJsonInvocation(commandArgs)) {
+    // A caller that asked for --json gets JSON even when Commander is the one
+    // refusing. Without this the fleet namespace answered a rejected argument
+    // list with zero bytes and exit 1 -- outside its own exit taxonomy.
+    const envelope = fleetParserFailureEnvelope(commandArgs);
+    process.stdout.write(renderFleetJson(envelope));
+    process.exitCode = fleetEnvelopeExitCode(envelope);
   } else if (error instanceof CommanderError) {
     process.exitCode = error.exitCode;
   } else {

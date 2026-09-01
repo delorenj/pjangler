@@ -15,12 +15,14 @@ export {
   type LoadedFleetContract,
 } from "./contract";
 
-export { inspectFleetContract, registerFleetCli } from "./cli";
+export { fleetParserFailureEnvelope, inspectFleetContract, isFleetJsonInvocation, registerFleetCli } from "./cli";
 
 export {
   FLEET_COMMANDS,
   bounded,
+  boundedContext,
   boundedValue,
+  ignoreBrokenPipe,
   diagnosticDetails,
   fleetEnvelopeExitCode,
   fleetFailureEnvelope,
@@ -30,6 +32,7 @@ export {
   redactHome,
   renderFleetJson,
   validateFleetEnvelope,
+  type BoundedContext,
   type FleetAuthorityView,
   type FleetClassificationView,
   type FleetContractInspection,
@@ -42,6 +45,8 @@ export {
   FLEET_ACTIVATION_STATES,
   FLEET_CLASSIFICATION_IDS,
   FLEET_CLASSIFICATION_REQUIRED_FIELDS,
+  FLEET_HEALTHY_CLASSIFICATIONS,
+  FLEET_HEALTHY_SECTIONS,
   FLEET_CONTRACT_SCHEMA_VERSION,
   FLEET_ERROR_CODES,
   FLEET_RETIRED_IDS,

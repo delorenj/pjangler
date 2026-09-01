@@ -73,8 +73,23 @@ export const FLEET_RETIRED_IDS = [
   "hard-coded-hermes-checkout-path",
 ] as const;
 
-/** Contract subtrees the retired-mode scan reads as "declared healthy". */
-export const FLEET_HEALTHY_SECTIONS = ["service_model", "activation", "classifications"] as const;
+/**
+ * Contract subtrees the retired-mode scan reads as "declared healthy".
+ *
+ * All of them, minus two deliberate exclusions. `retired` is the detection
+ * vocabulary itself. And `classifications` is scanned selectively (see
+ * FLEET_HEALTHY_CLASSIFICATIONS) because the `retired` and
+ * `intentionally_unmanaged` classes exist precisely to RECORD a sighting of a
+ * retired unit -- scanning them would make the two classes unusable for the one
+ * job they have.
+ */
+export const FLEET_HEALTHY_SECTIONS = ["authorities", "projections", "service_model", "activation"] as const;
+
+/** Lifecycle classes whose entries assert something is healthy and managed. */
+export const FLEET_HEALTHY_CLASSIFICATIONS = ["managed_agent", "managed_shared_service"] as const;
+
+/** Key names that must never appear in a contract at any depth. */
+export const FLEET_FORBIDDEN_KEYS = ["__proto__", "constructor", "prototype"] as const;
 
 /** Prefix marking a namespaced extension: preserved verbatim, never policy. */
 export const FLEET_EXTENSION_PREFIX = "x-";

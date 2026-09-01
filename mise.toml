@@ -24,6 +24,13 @@ script = "'{{config_root}}/.mise/scripts/materialize-env.sh'"
 description = "Symlink pjangler bins into ~/.local/bin so they survive a node version change"
 run = "{{config_root}}/.mise/scripts/link-bins.sh"
 
+# Validates the DECLARED contract file, not the deployed fleet. `fleet:check`
+# and `fleet:sync` below reconcile real agents on this host; this one never
+# touches a registry, profile, service, or process.
+[tasks."fleet:contract"]
+description = "Validate the tracked fleet authority and managed-state contract (read-only)"
+run = "node {{config_root}}/dist/index.js fleet contract validate"
+
 [tasks."fleet:check"]
 description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"

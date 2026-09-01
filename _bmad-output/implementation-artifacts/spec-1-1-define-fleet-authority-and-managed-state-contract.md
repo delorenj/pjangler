@@ -2,7 +2,7 @@
 title: 'Story 1.1: Define Fleet Authority and Managed-State Contract'
 type: 'feature'
 created: '2026-08-31'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '0319f67f4c97efa400c74b11638c43e71ab35cde'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -10,7 +10,69 @@ context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/planning-artifacts/fleet-convergence-live-assessment-2026-08-31.md'
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      Many live Hermes registry fields carry no declared owner in the fleet contract.
+    evidence: |-
+      Cross-checked contracts/fleet-contract.yaml against the live
+      ~/.hermes/agents-registry.yaml. Undeclared: hindsight.*, reporting.*,
+      internal_role_name, slack.{team_id,team_name,bot_user_id,bot_id,bot_username,workspace,status},
+      telegram.{bot_id,bot_username,status}, hermes.codex_home,
+      systemd.{cron_tick_timer,artifact_bridge_timer,watchdog_timer,checkpoint_timer},
+      and gateways.bloodbank.legacy_profile_consumers. Story 1.1's ACs require
+      declaring an owner per domain, not per live key, and Story 1.2 explicitly
+      owns "reads the configured canonical registries" - so exhaustive field
+      coverage belongs there, driven by real registry reads rather than by hand.
+    location: >-
+      contracts/fleet-contract.yaml (authorities.*.writable_fields)
+    severity: medium
+  - summary: >-
+      activation.routing_prerequisites is declared but no code evaluates it.
+    evidence: |-
+      The constraint vocabulary (equals-fleet, equals-agent-id, nonblank) is
+      defined nowhere in src/fleet/, the field paths are unchecked, and because
+      the activation block is intentionally open-keyed, a typo in the key name
+      silently drops the whole block with no diagnostic. It becomes load-bearing
+      in Story 1.10 (Bloodbank routing readiness), which is where the resolver
+      that consumes it lands.
+    location: >-
+      contracts/fleet-contract.yaml (activation.routing_prerequisites)
+    severity: low
+  - summary: >-
+      The dotted field-path grammar cannot distinguish file names from nested keys.
+    evidence: |-
+      scaffold.role.yaml, scaffold.SOUL.md and profiles.{profile_name}.config.delta.memory.provider
+      share one namespace with no separator between a file identity and a key
+      path. FIELD_PATH forbids a leading dot, so .gitignore had to be written as
+      scaffold.gitignore, which no longer names the real file. Nothing validates
+      that a {placeholder} is one of the known set, so {agentid} passes.
+    location: >-
+      src/fleet/contract.ts (FIELD_PATH)
+    severity: low
+  - summary: >-
+      dist/ is tracked, so every build churns 1000+ lines of generated bundle into each diff.
+    evidence: |-
+      git ls-files dist returns tracked entries, and this story's diff carries
+      1000 changed lines of dist/index.js against 2300 lines of real source.
+      This contradicts the repo-hygiene rule that generated output whose source
+      is already tracked should not be committed, and it makes every review diff
+      noisier than the change it represents. Pre-existing, repo-wide, and not
+      caused by this story.
+    location: >-
+      dist/
+    severity: low
+  - summary: >-
+      Several validator branches are unexercised by any test.
+    evidence: |-
+      No case covers an unknown top-level key, an unknown authority/projection/
+      classification/retired key, an invalid detect regex, an oversized (>1 MiB)
+      contract, a non-integer schema_version, a compatibility range narrower than
+      the supported range, or read_only true alongside a non-empty writable_fields.
+      Coverage is not failing (the ratchet rose 57.07 to 57.62 percent), so this is
+      hardening rather than a regression.
+    location: >-
+      tests/fleet-contract-regressions.mjs
+    severity: low
 ---
 
 <intent-contract>

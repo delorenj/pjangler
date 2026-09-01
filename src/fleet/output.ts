@@ -88,6 +88,8 @@ export interface FleetContractInspection {
   activation: Record<string, unknown> | null;
   retired: FleetRetiredView[];
   extensions: FleetExtension[];
+  /** Dotted paths where an envelope bound clipped the reported value. */
+  truncated: string[];
   diagnostics: FleetDiagnostic[];
 }
 
@@ -133,20 +135,63 @@ export function redactHome(path: string, homes: readonly string[] = homeCandidat
   return path.replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>");
 }
 
+/**
+ * Where a bound was actually applied, so a caller is never quietly short-changed.
+ *
+ * Bounds are non-negotiable -- an envelope has to stay one document a pipe can
+ * carry -- but silently dropping the 51st key while reporting "extensions
+ * survive verbatim" would be a lie the caller has no way to detect. Every clip
+ * records its dotted path here and the command surfaces the list.
+ */
+export interface BoundedContext {
+  truncated: string[];
+}
+
+export function boundedContext(): BoundedContext {
+  return { truncated: [] };
+}
+
+const MAX_DEPTH = 6;
+const MAX_KEYS = 50;
+const MAX_ITEMS = 100;
+
 /** Keep an open-keyed contract subtree inside the envelope's bounds. */
-export function boundedValue(value: unknown, depth = 0): unknown {
-  if (depth > 6) return null;
-  if (typeof value === "string") return bounded(value);
+export function boundedValue(value: unknown, context: BoundedContext = boundedContext(), path = "", depth = 0): unknown {
+  const clip = (reason: string): void => { if (!context.truncated.includes(`${path}: ${reason}`)) context.truncated.push(`${path}: ${reason}`); };
+  if (depth > MAX_DEPTH) { clip(`nesting deeper than ${MAX_DEPTH} levels dropped`); return null; }
+  if (typeof value === "string") {
+    const result = bounded(value);
+    if (result.length < value.length) clip(`string clipped to ${MAX_STRING} characters`);
+    return result;
+  }
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, 100).map((item) => boundedValue(item, depth + 1));
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ITEMS) clip(`${value.length - MAX_ITEMS} of ${value.length} items dropped`);
+    return value.slice(0, MAX_ITEMS).map((item, index) => boundedValue(item, context, `${path}[${index}]`, depth + 1));
+  }
   if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > MAX_KEYS) clip(`${entries.length - MAX_KEYS} of ${entries.length} keys dropped`);
     const result: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 50)) {
-      result[bounded(key, 128)] = boundedValue(item, depth + 1);
+    for (const [key, item] of entries.slice(0, MAX_KEYS)) {
+      const child = path ? `${path}.${key}` : key;
+      result[bounded(key, 128)] = boundedValue(item, context, child, depth + 1);
     }
     return result;
   }
+  clip("value of an unrepresentable type dropped");
   return null;
+}
+
+/**
+ * Ignore a closed stdout instead of dying on it.
+ *
+ * `pj fleet contract validate --json | head -1` closes the pipe mid-write. With
+ * no handler that surfaces as an unhandled EPIPE and a stack trace -- from a
+ * command whose entire contract is "one clean document, no stack traces".
+ */
+export function ignoreBrokenPipe(stream: NodeJS.WriteStream = process.stdout): void {
+  stream.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") throw error; });
 }
 
 export function normalizeFleetError(error: unknown): FleetError {
@@ -237,7 +282,7 @@ export function validateFleetEnvelope(envelope: FleetEnvelopeV1): void {
   if (envelope.ok) {
     const data = envelope.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) invalid("data must be an object");
-    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "diagnostics"]) {
+    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "truncated", "diagnostics"]) {
       if ((data as Record<string, unknown>)[key] === undefined) invalid(`data.${key} is missing`);
     }
     return;
@@ -288,8 +333,14 @@ export function formatFleetContractReport(inspection: FleetContractInspection): 
     facts.push(dim(`compatible ${inspection.compatibility.min_schema_version}..${inspection.compatibility.max_schema_version}`));
   }
   facts.push(dim(`supported ${inspection.supported_schema_versions.min}..${inspection.supported_schema_versions.max}`));
-  if (ok) facts.push(dim(inspection.byte_stable ? "byte-stable round trip" : "round trip NOT byte-stable"));
+  if (ok) facts.push(inspection.byte_stable ? dim("byte-stable round trip") : yellow("round trip NOT byte-stable"));
   lines.push(`  ${joinDot(facts)}`);
+
+  if (inspection.truncated.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the file on disk is complete")}`);
+    for (const note of inspection.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
+  }
 
   if (!ok) {
     section(lines, "Findings");

@@ -63,6 +63,7 @@ authorities:
       - projects.{slug}.ticket_provider.state
       - projects.{slug}.agents.{role}.role
       - projects.{slug}.agents.{role}.provisioning_state
+      - projects.{slug}.agents.{role}.role_dir
       - projects.{slug}.automation
       - projects.{slug}.notebook
       - projects.{slug}.created_at
@@ -106,6 +107,24 @@ authorities:
       - gateways.bloodbank.command_subject
       - gateways.bloodbank.target_field
       - gateways.bloodbank.systemd_unit
+
+  board_identity_projection:
+    owner: project-registry
+    store: hermes-agent-registry
+    store_env:
+      - HERMES_AGENTS_REGISTRY
+      - HERMES_FLEET_REGISTRY_FILE
+    notes:
+      - The one cross-store write that actually happens today. `pj project
+        identity --apply` copies confirmed board identity from the project
+        registry into the agent registry.
+      - Held as its own block so the agent registry's own writers cannot claim
+        these fields, and so the projections that target them have something
+        real to point at.
+    writable_fields:
+      - agents.{agent_id}.plane.workspace
+      - agents.{agent_id}.plane.project_id
+      - agents.{agent_id}.plane.identifier
 
   generated_profile_inputs:
     owner: hermes-profile-renderer
@@ -163,8 +182,7 @@ authorities:
   live_process_observations:
     owner: fleet-observer
     store: process-table
-    store_env:
-      - HERMES_FLEET_HOME
+    store_env: []
     read_only: true
     notes:
       - Observation only. A process is attributed and classified; it is never
@@ -188,38 +206,38 @@ projections:
   - field: project_repository_path
     source: projects.{slug}.repo_path
     target: agents.{agent_id}.project_path
-    direction: project_registry_to_hermes_agent_registry
+    direction: pjangler_project_registry_to_hermes_agent_registry
     writable_by: hermes-agent-registry
 
   - field: project_slug
     source: projects.{slug}.slug
     target: agents.{agent_id}.repo
-    direction: project_registry_to_hermes_agent_registry
+    direction: pjangler_project_registry_to_hermes_agent_registry
     writable_by: hermes-agent-registry
 
   - field: board_identifier
     source: projects.{slug}.ticket_provider.identifier
     target: agents.{agent_id}.plane.identifier
-    direction: project_registry_to_hermes_agent_registry
+    direction: pjangler_project_registry_to_hermes_agent_registry
     writable_by: project-registry
 
   - field: board_id
     source: projects.{slug}.ticket_provider.board_id
     target: agents.{agent_id}.plane.project_id
-    direction: project_registry_to_hermes_agent_registry
+    direction: pjangler_project_registry_to_hermes_agent_registry
     writable_by: project-registry
 
   - field: board_workspace
     source: projects.{slug}.ticket_provider.workspace
     target: agents.{agent_id}.plane.workspace
-    direction: project_registry_to_hermes_agent_registry
+    direction: pjangler_project_registry_to_hermes_agent_registry
     writable_by: project-registry
 
   - field: agent_role_directory
     source: agents.{agent_id}.role_dir
     target: projects.{slug}.agents.{role}.role_dir
-    direction: hermes_agent_registry_to_project_registry
-    writable_by: hermes-agent-registry
+    direction: hermes_agent_registry_to_pjangler_project_registry
+    writable_by: project-registry
 
 classifications:
   managed_agent:
