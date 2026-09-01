@@ -46,7 +46,7 @@ story_location: _bmad-output/implementation-artifacts
 # before starting any of them.
 development_status:
   epic-1: in-progress
-  1-1-define-fleet-authority-and-managed-state-contract: backlog  # PJAN-92
+  1-1-define-fleet-authority-and-managed-state-contract: done  # PJAN-92
   1-2-discover-the-complete-fleet-and-detect-identity-conflicts: backlog  # PJAN-93
   1-3-report-fleet-provenance-through-shared-cli-and-mcp: backlog  # PJAN-94
   1-4-deliver-parse-safe-registry-wide-fleet-status: backlog  # PJAN-95
