@@ -708,10 +708,21 @@ export type FleetStatusState = (typeof FLEET_STATUS_STATES)[number];
  * `error` outranks everything: a domain whose collection failed may not report
  * the state of the half that did work. `unobserved` outranks the observed states
  * for the same reason provenance's does -- if it was not read, nothing may be
- * claimed. `unsupported` sits above `fail` because "this release cannot see it"
- * is a stronger statement about the ANSWER than any answer is.
+ * claimed.
  *
- * Read by `rollUp`, not merely declared: a precedence constant nothing iterates
+ * ONE EXCEPTION, AND IT IS PART OF THE RULE, NOT A DEVIATION FROM IT:
+ * `unsupported` sits above `fail` here and YIELDS whenever the domain produced
+ * any other state. `unsupported` says "no adapter exists in this release" -- a
+ * statement about this BUILD, not about the fleet -- so for a domain with
+ * nothing else (`live_process`) it is correctly the strongest answer, and for a
+ * MIXED domain it is the weakest thing to report: `template_scaffold` carries a
+ * permanent "a deployed role scaffold records no template ref" beside its real
+ * findings, and the raw order rolled that domain up to `unsupported` while 135
+ * assets were failing. `rollUp` therefore drops `unsupported` from the candidate
+ * set when anything else is present, and then walks THIS array. Read the two
+ * together or the constant will mislead you; DW-67 records the history.
+ *
+ * Iterated by `rollUp`, not merely declared: a precedence constant nothing reads
  * is decoration (the exact defect story 1.3's review found in
  * `FLEET_PROVENANCE_STATUS_PRECEDENCE`).
  */

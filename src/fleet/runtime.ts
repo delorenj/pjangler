@@ -121,14 +121,25 @@ export interface FleetProbeResult {
 }
 
 /**
- * A bounded child's full result, including the half `probe` deliberately drops.
+ * A bounded child's full result, including the halves `probe` deliberately drops.
  *
- * `code` is the process exit status (null when the child was killed or never
- * ran). `value` is trimmed stdout, and unlike `FleetProbeResult` it SURVIVES a
- * nonzero exit when the caller asked it to -- see `captureSelf`.
+ * `code` is the process exit status, null when the child was killed or never ran.
+ * It is what separates "exited 1 WITH a complete report" -- which
+ * `pjangler audit` does by design on a drifted repository -- from "exited 127
+ * with nothing", and `auditRepository` reads it to categorize the difference.
+ *
+ * `overflow` says the child was killed for exceeding `PROBE_MAX_BYTES` rather
+ * than for saying nothing. Without it a report one byte past the cap is
+ * indistinguishable from an empty one, and the real audit report on this fleet
+ * is already 3.7 MB against a 4 MiB cap -- so the two are one growth spurt apart
+ * and must not report the same reason.
+ *
+ * `value` is trimmed stdout, and unlike `FleetProbeResult` it SURVIVES a nonzero
+ * exit when the caller asked it to -- see `captureSelf`.
  */
 export interface FleetCaptureResult extends FleetProbeResult {
   code: number | null;
+  overflow: boolean;
 }
 
 interface BoundedChildOptions {
@@ -144,6 +155,17 @@ interface BoundedChildOptions {
    * findings the caller spawned the child for.
    */
   keepStdoutOnFailure?: boolean;
+  /**
+   * Wall-clock budget for THIS child, replacing `ctx.probeTimeoutMs`.
+   *
+   * Still floored by `remainingMs`, so a whole-run deadline always wins. It
+   * exists because the per-probe budget is sized for a local `git` read and the
+   * audit child is not one: the bmad rule inside it gives `npm view` an 8 s
+   * timeout of its own (`src/parity/rules.ts`), so inheriting a 5 s budget made
+   * every repository time out on a cold cache -- reported as `unobserved` for a
+   * reason no operator could see.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -237,8 +259,9 @@ export function captureSelf(
   args: readonly string[],
   cwd?: string,
   env?: NodeJS.ProcessEnv,
+  timeoutMs?: number,
 ): Promise<FleetCaptureResult> {
-  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env, keepStdoutOnFailure: true });
+  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env, timeoutMs, keepStdoutOnFailure: true });
 }
 
 function runBoundedChild(
@@ -247,11 +270,15 @@ function runBoundedChild(
   args: readonly string[],
   options: BoundedChildOptions = {},
 ): Promise<FleetCaptureResult> {
-  const { cwd, env, keepStdoutOnFailure = false } = options;
+  const { cwd, env, keepStdoutOnFailure = false, timeoutMs } = options;
   // Checked BEFORE the spawn, so a cancelled or expired run never starts one
   // more child. `remainingMs` throws TIMEOUT and CANCELLED; both are command
   // failures and must escape rather than become a probe outcome.
-  const budget = Math.min(ctx.probeTimeoutMs, remainingMs(ctx));
+  //
+  // `timeoutMs` overrides the PER-PROBE budget and never the whole-run one: a
+  // caller may say its child needs longer than a `git` read, and no caller may
+  // outlive the deadline the operator gave the command.
+  const budget = Math.min(timeoutMs ?? ctx.probeTimeoutMs, remainingMs(ctx));
 
   return new Promise<FleetCaptureResult>((settle) => {
     let child;
@@ -274,7 +301,7 @@ function runBoundedChild(
         env: env ?? probeEnv(),
       });
     } catch {
-      settle({ outcome: "failed", value: null, code: null });
+      settle({ outcome: "failed", value: null, code: null, overflow: false });
       return;
     }
 
@@ -302,10 +329,10 @@ function runBoundedChild(
       catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
     };
 
-    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", value: null, code: null }); }, budget);
+    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", value: null, code: null, overflow: false }); }, budget);
     timer.unref?.();
 
-    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", value: null, code: null }); };
+    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", value: null, code: null, overflow: false }); };
     // If the caller cancelled between the budget check and the spawn, the
     // listener fires immediately and the child is killed on its first tick.
     ctx.signal.addEventListener("abort", onAbort, { once: true });
@@ -313,19 +340,23 @@ function runBoundedChild(
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       size += chunk.length;
-      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", value: null, code: null }); return; }
+      // `overflow`, not a bare failure: a child killed for saying too much and a
+      // child that said nothing are different answers, and at 3.7 MB against a
+      // 4 MiB cap the audit report is one growth spurt from needing the
+      // distinction.
+      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", value: null, code: null, overflow: true }); return; }
       out += chunk;
     });
-    child.on("error", () => finish({ outcome: "failed", value: null, code: null }));
+    child.on("error", () => finish({ outcome: "failed", value: null, code: null, overflow: false }));
     child.on("close", (code) => {
       if (code !== 0) {
         // `keepStdoutOnFailure` is the whole reason this body was extracted from
         // `probe`. The outcome still says `failed`; what changes is that the
         // caller can read WHAT the child said before it said no.
-        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code });
+        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code, overflow: false });
         return;
       }
-      finish({ outcome: "ok", value: out.trim(), code });
+      finish({ outcome: "ok", value: out.trim(), code, overflow: false });
     });
   });
 }

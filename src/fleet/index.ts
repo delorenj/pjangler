@@ -62,6 +62,7 @@ export {
 } from "./provenance";
 
 export {
+  FLEET_STATUS_AUDIT_TIMEOUT_MS,
   auditChildEnv,
   auditRepository,
   collectFleetStatus,

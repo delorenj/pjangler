@@ -175,6 +175,26 @@ function makeRepo(slug) {
   return dir;
 }
 
+/**
+ * A repository whose audit report exceeds the 64 KiB pipe buffer, built once.
+ *
+ * `hermes.untracked-runtimes` reports one detail line per role directory, so 400
+ * long-named roles produce a ~3.7 MB report -- the payload the truncation defect
+ * and the closed-pipe defect both need to be reachable.
+ */
+function auditScaleRepo() {
+  const dir = join(temp, "audit-scale");
+  if (existsSync(dir)) return dir;
+  mkdirSync(dir, { recursive: true });
+  for (let index = 0; index < 400; index += 1) {
+    const role = join(dir, "agents", "hermes", `role-with-a-fairly-long-name-number-${index}`);
+    mkdirSync(role, { recursive: true });
+    writeFileSync(join(role, "role.yaml"), "role: pm\n", "utf8");
+  }
+  assert.equal(git(dir, ["init", "--quiet"]).status, 0);
+  return dir;
+}
+
 function agentRow(slug) {
   return {
     repo: slug,
@@ -221,6 +241,20 @@ function writeProjectRegistry(path, slugs) {
     };
   }
   writeFileSync(path, YAML.stringify({ schema_version: 1, projects }), "utf8");
+  return path;
+}
+
+/**
+ * A registry YAML with an extra raw entry appended verbatim.
+ *
+ * Used by the cap cases: `zzzz-broken: not-a-mapping` is a MALFORMED row, which
+ * makes its `registry` domain `fail`, and its id sorts last so the agent cap
+ * drops its record. That is the exact shape the fleet-level counts used to lose.
+ */
+function writeAgentRegistryWith(path, slugs, extra) {
+  const agents = {};
+  for (const slug of slugs) agents[`${slug}-pm`] = agentRow(slug);
+  writeFileSync(path, `${YAML.stringify({ schema_version: 1, agents })}\n${extra}\n`, "utf8");
   return path;
 }
 
@@ -413,6 +447,22 @@ function status(result) {
   assert.equal(parsed.error, null, "ok envelopes carry no error");
   assert.equal(parsed.command, "fleet.status");
   for (const key of DATA_KEYS) assert.notEqual(parsed.data[key], undefined, `data.${key} must be present`);
+  // Checked on EVERY envelope this suite parses, not in one case: `field` and
+  // `source` were the two halves of a finding nobody had ever asserted, so all
+  // four call sites shipped `source: null` (the human report printed "owner
+  // undeclared" for every one) and a `field` of the literal source id
+  // "recipe-audit", which also made the findings sort by `field` a no-op.
+  for (const finding of parsed.data.findings) {
+    assert.equal(
+      finding.field.includes("-"), false,
+      `a finding's field must be a dotted contract path, not a source id: ${finding.field}`,
+    );
+    if (!/^(audit-|registry-declares-no-agents)/u.test(finding.code)) continue;
+    assert.ok(
+      typeof finding.source === "string" && finding.source.length > 0,
+      `finding ${finding.code} must name the authority that owns its field`,
+    );
+  }
   return parsed.data;
 }
 
@@ -715,6 +765,15 @@ try {
     for (const agent of data.agents) {
       assert.deepEqual(Object.keys(agent.domains), ["systemd"], "the other eight must not be implied");
     }
+    // No child means no host findings either -- and that has to be SAID, not
+    // left for the operator to infer from an empty array. systemd's only live
+    // observer is `systemd.sentinel`, which is host-scoped.
+    assert.deepEqual(data.host, [], "no child ran, so nothing may appear in data.host");
+    const gap = data.findings.find((finding) => finding.code === "audit-host-rules-not-collected");
+    assert.ok(gap, `an empty host block must be explained, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
+    assert.match(gap.detail, /systemd\.sentinel/u, "the finding must name the rule it did not collect");
+    assert.ok(typeof gap.source === "string" && gap.source.length > 0, "a finding must name the authority that owns its field");
+    assert.match(gap.field, /^[a-z]+[.{]/u, "a finding's field must be a dotted contract path, not a source id");
   });
 
   check("--domain registry --live spawns no audit child and no provenance probe", () => {
@@ -725,6 +784,10 @@ try {
     assert.deepEqual(invocationsOf(shim), [], "zero audit children");
     assert.deepEqual(data.probes, [], "zero provenance probes");
     assert.equal(data.scope.domain, "registry");
+    assert.deepEqual(data.host, [], "no child ran, so nothing may appear in data.host");
+    const gap = data.findings.find((finding) => finding.code === "audit-host-rules-not-collected");
+    assert.ok(gap, "an empty host block must be explained");
+    assert.match(gap.detail, /hermes\.registry-parity/u, "the finding must name the rule it did not collect");
   });
 
   check("an unknown --agent fails NOT_FOUND before anything spawns", () => {
@@ -831,7 +894,10 @@ ${syntheticReport([PROJECT_PASS_RULE]).slice(RECORD_PREAMBLE.length)}
     assert.equal(result.status, 0, "no crash");
     const data = status(result);
     assert.equal(data.totals.audits_attempted, 0);
-    assert.ok(data.findings.some((finding) => finding.code === "audit-cli-unavailable"));
+    const unavailable = data.findings.find((finding) => finding.code === "audit-cli-unavailable");
+    assert.ok(unavailable, "a missing entry must be a visible finding");
+    assert.ok(typeof unavailable.source === "string" && unavailable.source.length > 0, "and it must name the owning authority");
+    assert.equal(unavailable.field.includes("-"), false, "and carry a contract path, not a source id");
     for (const agent of data.agents) {
       for (const domain of AUDIT_FED) {
         assert.equal(agent.domains[domain], "unobserved", `${domain} must be unobserved, never assumed`);
@@ -1016,14 +1082,289 @@ setTimeout(() => {}, 120000);
     const agent = agentNamed(data, "alpha-pm");
     assert.equal(agent.truncated, true, "the clipped record must say so");
     assert.equal(agent.observations.length, MAX_OBSERVATIONS);
-    assert.match(agent.retrieval, /^pjangler fleet status --agent alpha-pm /u, "a clipped record must carry the command that returns the rest");
     assert.ok(data.totals.observations > data.totals.emitted_observations, "totals must still count everything");
-    assert.ok(data.truncated.some((item) => item.startsWith("agents.alpha-pm.observations:")), `truncated must name the dotted path, got ${JSON.stringify(data.truncated)}`);
+    const note = data.truncated.find((item) => item.startsWith("agents.alpha-pm.observations:"));
+    assert.ok(note, `truncated must name the dotted path, got ${JSON.stringify(data.truncated)}`);
+    assert.ok(note.includes(agent.retrieval), "the truncation note must carry the same retrieval the record does");
     assert.equal(agent.complete, false, "a clipped record is not complete");
     // The clip alone must not move the health verdict: the rollup is computed
     // from the FULL set, so a bound on what the envelope carries cannot change
     // what it concludes.
     assert.equal(agent.healthy, true, "clipping is an incompleteness, never a drift");
+
+    // RUN THE EMITTED COMMAND. A prefix regex proved only that a string had the
+    // right shape -- and on an unfiltered run the shape it had was the exact
+    // invocation that just clipped, so following it returned the same clipped
+    // record. The retrieval has to NARROW, and the only way to know is to run it.
+    const narrowed = /--domain (\S+)/u.exec(agent.retrieval);
+    assert.ok(narrowed, `the retrieval must narrow to a domain, got "${agent.retrieval}"`);
+    const domain = narrowed[1];
+    const argv = agent.retrieval.replace(/^pjangler /u, "").split(" ");
+    const after = status(cli(argv, { PJ_FLEET_CLI_ENTRY: shim }));
+    const before = agent.observations.filter((item) => item.domain === domain).length;
+    const returned = agentNamed(after, "alpha-pm").observations.filter((item) => item.domain === domain).length;
+    assert.ok(
+      returned > before,
+      `the retrieval must return more of ${domain} than the clipped record carried: got ${returned}, had ${before}`,
+    );
+  });
+
+  check("a failure past the agent cap still moves the fleet verdict", () => {
+    // THE defect this case exists for: agents past `FLEET_STATUS_MAX_AGENTS` were
+    // never built at all, and only the CLIPPED observations reached the
+    // fleet-level counters. Measured on the pre-fix build with this exact
+    // registry: health.healthy true, failed 0, domains[registry].state "pass" --
+    // while `--agent zzzz-broken` on the same registry reported the failure. A
+    // bound on what the envelope CARRIES must never move what it CONCLUDES.
+    const slugs = Array.from({ length: MAX_AGENTS + 20 }, (unused, index) => `scale${String(index).padStart(4, "0")}`);
+    const agents = join(temp, "cap-agents.yaml");
+    const projects = join(temp, "cap-projects.yaml");
+    writeAgentRegistryWith(agents, slugs, "  zzzz-broken: not-a-mapping");
+    writeProjectRegistry(projects, slugs);
+    const args = ["fleet", "status", "--domain", "registry", "--json", "--agent-registry", agents, "--project-registry", projects];
+    const data = status(cli(args));
+
+    assert.equal(data.totals.agents, slugs.length + 1, "totals must count every registered agent");
+    assert.equal(data.totals.emitted_agents, MAX_AGENTS);
+    assert.equal(data.agents.some((agent) => agent.agent_id === "zzzz-broken"), false, "the failing row's RECORD is past the cap");
+    assert.equal(data.totals.observations, slugs.length + 1, "every dropped agent's observations must still be counted");
+    assert.equal(data.health.healthy, false, "the failure past the cap must still make the fleet unhealthy");
+    assert.equal(data.health.failed, 1);
+    assert.equal(data.totals.by_state.fail, 1, "by_state must see the dropped agent");
+    assert.equal(data.domains[0].state, "fail", "the domain rollup must see it too");
+    assert.equal(data.domains[0].counts.fail, 1);
+
+    // And the same fleet, scoped to the dropped agent, must agree.
+    const scoped = status(cli([...args.slice(0, 5), "--agent", "zzzz-broken", ...args.slice(5)]));
+    assert.equal(scoped.health.healthy, false);
+    assert.equal(scoped.health.failed, 1);
+
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("a failure in an agent's clipped tail still moves the fleet verdict", () => {
+    // The other half of the same defect: only `kept` reached the fleet counters,
+    // so a `fail` sorted past `FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT` was
+    // invisible to health. `template_scaffold` sorts last of the nine domains, so
+    // the bulk rules and the failing one both land in the clipped tail.
+    const rules = [
+      ...Array.from({ length: MAX_OBSERVATIONS + 60 }, (unused, index) => ({
+        id: `bulk.rule-${String(index).padStart(4, "0")}`, title: "bulk", status: "pass",
+        summary: `bulk observation ${index}`, details: [], fixable: false, scope: "project",
+      })),
+      { id: "zzz.the-only-failure", title: "the only failure", status: "fail", summary: "sorted into the clipped tail", details: [], fixable: false, scope: "project" },
+    ];
+    const withFail = entry("tail-fail", syntheticReport(rules));
+    const withoutFail = entry("tail-clean", syntheticReport(rules.slice(0, -1)));
+    resetEntry(withFail);
+    resetEntry(withoutFail);
+    const argv = ["fleet", "status", "--agent", "alpha-pm", "--live", "--json"];
+    const dirty = status(cli(argv, { PJ_FLEET_CLI_ENTRY: withFail }));
+    const clean = status(cli(argv, { PJ_FLEET_CLI_ENTRY: withoutFail }));
+    const agent = agentNamed(dirty, "alpha-pm");
+    assert.equal(agent.truncated, true);
+    assert.equal(
+      agent.observations.some((item) => item.rule_id === "zzz.the-only-failure"), false,
+      "for this case to mean anything the failure must be in the DROPPED tail",
+    );
+    // A DELTA against the identical run without that one rule. An absolute
+    // `failed >= 1` would have been satisfied by the synthetic fleet's own
+    // fleet-scoped provenance failures and pinned nothing -- verified by
+    // mutation: clipping `ctx.observations` back to `kept` left that assertion
+    // green.
+    assert.equal(
+      dirty.health.failed, clean.health.failed + 1,
+      "the failure the envelope dropped must still be counted exactly once",
+    );
+    assert.equal(dirty.health.healthy, false, "and it must still make the fleet unhealthy");
+    assert.equal(agent.healthy, false, "as must the agent record");
+  });
+
+  await checkAsync("the audit child gets its own budget, not the git-probe one", async () => {
+    // `FLEET_DEFAULT_PROBE_TIMEOUT_MS` is 5 000 ms and is sized for a local
+    // `git` read. The audit child is a node startup plus 25 rules, one of which
+    // gives `npm view` an 8 000 ms timeout of its OWN -- so on a cold cache the
+    // inherited budget timed out every repository and reported `unobserved` for
+    // a reason no operator could see. This shim sleeps 6 500 ms: past the probe
+    // budget, inside the audit one.
+    const shim = entry("slow-audit", `${RECORD_PREAMBLE}
+const rules = ${JSON.stringify([PROJECT_PASS_RULE])};
+setTimeout(() => {
+  const report = { repo: REPO, ok: true, hostOk: true, auditedAt: new Date().toISOString(), rules };
+  process.stdout.write(JSON.stringify(report, null, 2) + "\\n");
+  process.exit(0);
+}, 6500);
+`);
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--agent", "alpha-pm", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const probe = data.probes.find((item) => item.kind === "audit");
+    assert.ok(probe, "the audit child must have been recorded");
+    assert.equal(probe.outcome, "ok", `a 6.5 s child must fit the audit budget, got ${probe.outcome}/${probe.reason}`);
+    assert.equal(data.totals.audits_observed, 1);
+    assert.equal(agentNamed(data, "alpha-pm").domains.profile, "pass", "and its findings must land");
+  });
+
+  check("a child that prints past the byte cap is categorized as too large, not as silence", () => {
+    // `PROBE_MAX_BYTES` is 4 MiB and the real audit report on this fleet is
+    // already 3.7 MB. A child killed for saying too much and a child that said
+    // nothing are different problems with different repairs, and they used to
+    // report the same reason.
+    const shim = entry("oversized", `${RECORD_PREAMBLE}
+const chunk = "x".repeat(1024 * 1024);
+for (let index = 0; index < 6; index += 1) process.stdout.write(chunk);
+process.stdout.write("\\n");
+`);
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--agent", "alpha-pm", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    assert.equal(result.status, 0, "an oversized child is a collection error, not a command failure");
+    const data = status(result);
+    const probe = data.probes.find((item) => item.kind === "audit");
+    assert.ok(probe, "the audit child must have been recorded");
+    assert.equal(probe.reason, "audit-output-too-large", `expected the byte-cap category, got ${probe.reason}`);
+    const agent = agentNamed(data, "alpha-pm");
+    for (const domain of AUDIT_FED) assert.equal(agent.domains[domain], "error");
+    assert.ok(data.findings.some((finding) => finding.code === "audit-failed"));
+  });
+
+  check("an agent registry declaring no agents claims nothing", () => {
+    // Measured on the pre-fix build: `agents: {}` returned
+    // {healthy:true, complete:true, fleet_complete:true} over zero observations --
+    // an aggregate turning absence into agreement.
+    const agents = join(temp, "no-agents.yaml");
+    const projects = join(temp, "no-projects.yaml");
+    writeFileSync(agents, "schema_version: 1\nagents: {}\n", "utf8");
+    writeFileSync(projects, "schema_version: 1\nprojects: {}\n", "utf8");
+    const data = status(cli([
+      "fleet", "status", "--live", "--json",
+      "--agent-registry", agents, "--project-registry", projects,
+    ]));
+    assert.equal(data.totals.agents, 0);
+    assert.deepEqual(data.agents, []);
+    assert.equal(data.health.fleet_complete, false, "zero rows is not a completely observed fleet");
+    assert.equal(data.health.complete, false, "a registry this run could not read a fleet out of is a collection error");
+    assert.ok(data.health.collection_errors >= 1);
+    const finding = data.findings.find((item) => item.code === "registry-declares-no-agents");
+    assert.ok(finding, `an empty registry must be a visible finding, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
+    assert.ok(typeof finding.source === "string" && finding.source.length > 0, "and it must name the authority that owns the field");
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("two repositories disagreeing on one host rule report the WORST reading", () => {
+    // First-wins dedupe kept whichever repository the alphabetical loop reached
+    // first, so a `pass` from `alpha` masked a `fail` from a later one. `theta`
+    // is deliberately not first.
+    const shim = entry("host-disagree", `${RECORD_PREAMBLE}
+const host = REPO.endsWith("/theta")
+  ? { id: "systemd.sentinel", title: "systemd sentinel", status: "fail", summary: "a unit is missing on this host", details: ["hermes-theta-pm-gateway.service not found"], fixable: false, scope: "host" }
+  : { id: "systemd.sentinel", title: "systemd sentinel", status: "pass", summary: "units match", details: [], fixable: false, scope: "host" };
+const rules = [host];
+const report = { repo: REPO, ok: true, hostOk: host.status === "pass", auditedAt: new Date().toISOString(), rules };
+process.stdout.write(JSON.stringify(report, null, 2) + "\\n");
+process.exit(0);
+`);
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.equal(invocationsOf(shim).length, BASE_SLUGS.length, "every repository must have been audited");
+    const sentinel = data.host.filter((finding) => finding.rule_id === "systemd.sentinel");
+    assert.equal(sentinel.length, 1, "still exactly one entry per rule id");
+    assert.equal(sentinel[0].state, "fail", "the worst reading must survive, not the first one");
+    assert.ok(
+      sentinel[0].details.some((line) => /repositories disagreed/u.test(line)),
+      `the disagreement must be recorded, got ${JSON.stringify(sentinel[0].details)}`,
+    );
+    // A host-scoped fail is still not any agent's failure.
+    for (const agent of data.agents) {
+      assert.equal(agent.observations.some((item) => item.rule_id === "systemd.sentinel"), false);
+    }
+  });
+
+  check("every provenance fact id maps to a declared domain", () => {
+    // The mirror of `audit-rule-unmapped`. A fact id matching no prefix used to
+    // be filed under release_provenance in silence, and the fallback
+    // "no release fact" observation kept the presence assertion green.
+    const source = readFileSync(join(ROOT, "src", "fleet", "status.ts"), "utf8");
+    const table = source.slice(source.indexOf("const FACT_PREFIX_DOMAIN"));
+    const prefixes = [...table.slice(0, table.indexOf("] as const)")).matchAll(/\["([a-z_]+\.)",/gu)].map((match) => match[1]);
+    assert.ok(prefixes.length >= 4, `FACT_PREFIX_DOMAIN must declare prefixes for this case to mean anything, found ${prefixes.length}`);
+
+    const provenance = JSON.parse(cli(["fleet", "provenance", "--json"]).stdout).data;
+    const ids = [...new Set(provenance.facts.map((fact) => fact.id))].sort();
+    assert.ok(ids.length > 0, "the provenance core must emit facts for this case to mean anything");
+    const unmapped = ids.filter((id) => !prefixes.some((prefix) => id.startsWith(prefix)));
+    assert.deepEqual(unmapped, [], `these fact ids match no declared prefix: ${unmapped.join(", ")}`);
+
+    // And the running guard must agree: no fact reached the fallback.
+    const data = status(cli(["fleet", "status", "--json"]));
+    assert.deepEqual(
+      data.findings.filter((finding) => finding.code === "provenance-fact-unmapped"),
+      [],
+      "the guard must not fire on the facts this build actually produces",
+    );
+  });
+
+  check("data.health.healthy is false on a drifted fleet and true on a clean slice", () => {
+    // `healthy` was asserted NOWHERE: every hit was per-agent, or the report
+    // regex /Fleet status (healthy|UNHEALTHY)/ which matches either word.
+    // Dropping the `byState.fail === 0` conjunct kept all 35 cases green.
+    // beta-pm's profile directory is a symlink and the contract declares
+    // symlink_allowed: false, so its profile domain is a guaranteed `fail`.
+    const drifted = status(cli(["fleet", "status", "--domain", "profile", "--agent", "beta-pm", "--json"]));
+    assert.equal(drifted.health.healthy, false, "a symlinked profile directory must make the fleet verdict false");
+    assert.equal(drifted.health.failed, 1);
+
+    const clean = status(cli(["fleet", "status", "--domain", "profile", "--agent", "alpha-pm", "--json"]));
+    assert.equal(clean.health.healthy, true, "and a slice with no fail and no error must read true");
+    assert.equal(clean.health.failed, 0);
+    assert.equal(clean.health.errors, 0);
+
+    // Fleet-wide, the drifted agent is in scope, so the verdict is false.
+    const whole = status(cli(["fleet", "status", "--json"]));
+    assert.equal(whole.health.healthy, false, "the fleet contains beta-pm, so the fleet verdict is false");
+  });
+
+  check("a rejected argument list still answers in JSON, naming the status command", () => {
+    // Without this the `status:` entry in the null-prototype positional map is
+    // unpinned: deleting it makes `fleet status --json --bogus` answer
+    // command "fleet.contract.validate" with every other case still green.
+    const result = cli(["fleet", "status", "--json", "--bogus"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.command, "fleet.status", "the envelope must name the command that failed");
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+  });
+
+  check("--contract reads the file it names, and refuses one it cannot", () => {
+    // Registered and documented, and exercised by nothing until now.
+    const tracked = status(cli(["fleet", "status", "--domain", "registry", "--json"]));
+    const copy = join(temp, "contract-copy.yaml");
+    writeFileSync(copy, readFileSync(TRACKED_CONTRACT, "utf8"), "utf8");
+    const named = status(cli(["fleet", "status", "--domain", "registry", "--json", "--contract", copy]));
+    assert.equal(named.contract_version, tracked.contract_version, "a copy of the tracked contract must report the same version");
+    assert.ok(named.contract_path.endsWith("contract-copy.yaml"), `the envelope must name the file it read, got ${named.contract_path}`);
+    assert.notEqual(named.contract_path, tracked.contract_path, "and it must not echo the tracked path back");
+
+    const broken = join(temp, "contract-broken.yaml");
+    writeFileSync(broken, "schema_version: 1\ncontract_version: 1.0.0\n", "utf8");
+    const refused = cli(["fleet", "status", "--json", "--contract", broken]);
+    assert.equal(errorCode(envelope(refused)), "INVALID_INPUT");
+    assert.equal(refused.status, 2, "a contract missing its required blocks is a command failure");
+    rmSync(copy, { force: true });
+    rmSync(broken, { force: true });
+  });
+
+  check("pjangler audit --json into a closed pipe writes no stack trace", () => {
+    // A regression from removing `process.exit` on the audit path: writeStdout
+    // removes its own error listener when it settles, so an EPIPE arriving after
+    // that reached the process as an unhandled 'error' event. MEASURED 5/5
+    // against a 3.7 MB report before the persistent guard was installed.
+    const big = auditScaleRepo();
+    const result = spawnSync("sh", ["-c", `"$0" "$@" | head -c 10`, process.execPath, CLI, "audit", big, "--json"], {
+      cwd: workdir, env: { ...process.env, ...isolation }, encoding: "utf8", timeout: 180_000,
+    });
+    assert.doesNotMatch(result.stderr ?? "", /EPIPE|Unhandled|at .*\n\s+at /u, `a closed pipe produced: ${(result.stderr ?? "").slice(0, 300)}`);
   });
 
   // -- AC14: credentials are excluded by construction -------------------------

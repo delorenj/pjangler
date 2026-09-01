@@ -217,7 +217,12 @@ const DOMAIN_FIELD: Readonly<Record<FleetStatusDomain, string>> = Object.freeze(
   registry: "agents.{agent_id}",
   project_binding: "agents.{agent_id}.plane.identifier",
   template_scaffold: "scaffold",
-  profile: "profiles.{profile_name}",
+  // `agents.{agent_id}.profile_name`, not `profiles.{profile_name}`. Both are
+  // defensible and having BOTH was not: `observeFromInventory` emitted one and
+  // this table the other for the same domain, so the two observations resolved
+  // their fallback owner from different contract paths -- the only domain where
+  // that happened.
+  profile: "agents.{agent_id}.profile_name",
   runtime: "agents.{agent_id}.role_dir",
   systemd: "agents.{agent_id}.systemd.gateway_unit",
   live_process: "processes.{agent_id}",
@@ -225,11 +230,53 @@ const DOMAIN_FIELD: Readonly<Record<FleetStatusDomain, string>> = Object.freeze(
   release_provenance: "agents.{agent_id}.hermes.bin",
 });
 
+/**
+ * Provenance fact-id prefix -> observation domain.
+ *
+ * The same discipline `RULE_DOMAIN` gets, and for the same reason: a fact id
+ * that matches nothing lands in `UNMAPPED_FACT_DOMAIN` **and** raises
+ * `provenance-fact-unmapped`, so a fact a later story adds to the provenance
+ * core cannot be silently dropped or silently misfiled. Before this, the
+ * fleet-scoped branch was a bare `startsWith("template.") ? ... : ...`, which
+ * filed every unrecognized fact under `release_provenance` and said nothing.
+ */
+const FACT_PREFIX_DOMAIN: ReadonlyArray<readonly [string, FleetStatusDomain]> = Object.freeze([
+  ["scaffold.", "template_scaffold"],
+  ["template.", "template_scaffold"],
+  ["hermes.", "release_provenance"],
+  ["profile.", "release_provenance"],
+  // The host pin: `fleet.hermes_bin`, `fleet.hermes_repo`, `fleet.registry_file`.
+  ["fleet.", "release_provenance"],
+] as const);
+
+const UNMAPPED_FACT_DOMAIN: FleetStatusDomain = "release_provenance";
+
+/** Which domain a provenance fact belongs to, and whether anything declared it. */
+function factDomain(factId: string): { domain: FleetStatusDomain; mapped: boolean } {
+  for (const [prefix, domain] of FACT_PREFIX_DOMAIN) {
+    if (factId.startsWith(prefix)) return { domain, mapped: true };
+  }
+  return { domain: UNMAPPED_FACT_DOMAIN, mapped: false };
+}
+
 /** Source ids, used as the `source` on an observation. */
 const SOURCE_REGISTRY = "fleet-inventory";
 const SOURCE_PROVENANCE = "fleet-provenance";
 const SOURCE_AUDIT = "recipe-audit";
 const SOURCE_DECLARED_GAP = "declared-gap";
+
+/**
+ * Wall-clock budget for ONE audit child, still floored by the whole-run deadline.
+ *
+ * Its own number, not the per-probe one. `FLEET_DEFAULT_PROBE_TIMEOUT_MS` is
+ * 5 000 ms and is sized for a local `git` read; the audit child is a node
+ * startup plus 25 rules, one of which (`bmad.version`) gives `npm view` an 8 000
+ * ms timeout of its OWN (`src/parity/rules.ts`, 1 h disk cache). Inheriting the
+ * probe budget therefore timed out every repository on a cold cache -- reported
+ * as `unobserved` for a reason no operator could see. 20 s leaves the child's own
+ * 8 s call room to finish and still bounds a hung `systemctl`.
+ */
+export const FLEET_STATUS_AUDIT_TIMEOUT_MS = 20_000;
 
 /** The env key that redirects the audit child at a different entry point. */
 const CLI_ENTRY_ENV = "PJ_FLEET_CLI_ENTRY";
@@ -338,6 +385,30 @@ function retrievalFor(agentId: string | null, domain: FleetStatusDomain | null, 
   return bounded(parts.join(" "));
 }
 
+/**
+ * The domain a clip hurt most, so a clipped record can name a narrowing that works.
+ *
+ * `own` minus `kept`, per domain. Ties keep the earlier domain in
+ * `FLEET_STATUS_DOMAINS` order, which is fixed, so two runs over unchanged state
+ * pick the same one. Falls back to the first selected domain when nothing was
+ * actually dropped from any of them.
+ */
+function mostClippedDomain(
+  own: readonly FleetStatusObservation[],
+  kept: readonly FleetStatusObservation[],
+  domains: readonly FleetStatusDomain[],
+): FleetStatusDomain {
+  const count = (list: readonly FleetStatusObservation[], domain: FleetStatusDomain): number =>
+    list.reduce((total, item) => total + (item.domain === domain ? 1 : 0), 0);
+  let best = domains[0]!;
+  let bestDropped = -1;
+  for (const domain of domains) {
+    const dropped = count(own, domain) - count(kept, domain);
+    if (dropped > bestDropped) { best = domain; bestDropped = dropped; }
+  }
+  return best;
+}
+
 /** Bound every detail line and record the clip in the line itself, never silently. */
 function boundedDetails(details: readonly unknown[] | undefined): string[] {
   const all = (details ?? []).filter((item): item is string => typeof item === "string");
@@ -355,6 +426,12 @@ function boundedDetails(details: readonly unknown[] | undefined): string[] {
  * a precedence constant that no code iterates is decoration, and reordering it
  * has to move behaviour or it is not the rule it claims to be.
  */
+/** Where a state sits in the declared precedence. Lower is worse. */
+function stateRank(state: FleetStatusState): number {
+  const index = (FLEET_STATUS_STATE_PRECEDENCE as readonly FleetStatusState[]).indexOf(state);
+  return index === -1 ? FLEET_STATUS_STATE_PRECEDENCE.length : index;
+}
+
 export function rollUp(observations: readonly { state: FleetStatusState }[]): FleetStatusState {
   // `unsupported` STEPS ASIDE when the domain produced anything else, and this
   // is the one deliberate refinement of the raw precedence.
@@ -514,6 +591,8 @@ export interface FleetStatusContext {
   unmappedRules: Set<string>;
   /** Rule ids already reported as mapping outside `AUDIT_PER_AGENT_DOMAINS`. Same discipline. */
   unexpectedDomainRules: Set<string>;
+  /** Provenance fact ids already reported as carrying no declared domain. Same discipline. */
+  unmappedFacts: Set<string>;
 }
 
 function addFinding(ctx: FleetStatusContext, finding: FleetInventoryFinding): void {
@@ -616,7 +695,7 @@ export function observeFromInventory(
   }
 
   if (domains.has("profile")) {
-    const field = "agents.{agent_id}.profile_name";
+    const field = DOMAIN_FIELD.profile;
     const view = row.paths.profile_path;
     const details: string[] = [];
     let state: FleetStatusState = "pass";
@@ -736,59 +815,75 @@ export function observeFromProvenance(
   domains: ReadonlySet<FleetStatusDomain>,
 ): FleetStatusObservation[] {
   const out: FleetStatusObservation[] = [];
-  const mine = facts.filter((fact) => fact.agent_id === agentId);
+  const byDomain = new Map<FleetStatusDomain, number>();
 
-  if (domains.has("template_scaffold")) {
-    const scaffold = mine.filter((fact) => fact.id.startsWith("scaffold."));
-    for (const fact of scaffold) {
-      out.push(observation(ctx, {
-        domain: "template_scaffold", agentId, state: provenanceState(fact.status),
-        field: fact.field, owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`,
-        ],
-        source: SOURCE_PROVENANCE,
-      }));
-    }
-    if (scaffold.length === 0) {
-      out.push(observation(ctx, {
-        domain: "template_scaffold", agentId, state: "unobserved",
-        field: DOMAIN_FIELD.template_scaffold,
-        summary: "the provenance core reported no scaffold fact for this agent",
-        source: SOURCE_PROVENANCE,
-      }));
-    }
+  for (const fact of facts) {
+    if (fact.agent_id !== agentId) continue;
+    const { domain } = classifyFact(ctx, fact);
+    byDomain.set(domain, (byDomain.get(domain) ?? 0) + 1);
+    if (!domains.has(domain)) continue;
+    out.push(factObservation(ctx, fact, domain, agentId));
   }
 
-  if (domains.has("release_provenance")) {
-    const release = mine.filter((fact) => fact.id.startsWith("hermes.") || fact.id.startsWith("profile."));
-    for (const fact of release) {
-      out.push(observation(ctx, {
-        domain: "release_provenance", agentId, state: provenanceState(fact.status),
-        field: fact.field, owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`,
-        ],
-        source: SOURCE_PROVENANCE,
-      }));
-    }
-    if (release.length === 0) {
-      out.push(observation(ctx, {
-        domain: "release_provenance", agentId, state: "unobserved",
-        field: "agents.{agent_id}.hermes.bin",
-        summary: "the provenance core reported no release fact for this agent",
-        source: SOURCE_PROVENANCE,
-      }));
-    }
+  // A domain the provenance core answered NOTHING for is `unobserved`, not
+  // absent: the domain must appear on every record even when the source that
+  // feeds it returned no fact at all.
+  for (const domain of ["template_scaffold", "release_provenance"] as const) {
+    if (!domains.has(domain) || (byDomain.get(domain) ?? 0) > 0) continue;
+    out.push(observation(ctx, {
+      domain, agentId, state: "unobserved",
+      field: DOMAIN_FIELD[domain],
+      summary: `the provenance core reported no ${domain === "template_scaffold" ? "scaffold" : "release"} fact for this agent`,
+      source: SOURCE_PROVENANCE,
+    }));
   }
 
   return out;
+}
+
+/** One provenance fact as one observation. Shared by the per-agent and fleet paths. */
+function factObservation(
+  ctx: FleetStatusContext,
+  fact: FleetProvenanceFact,
+  domain: FleetStatusDomain,
+  agentId: string | null,
+): FleetStatusObservation {
+  return observation(ctx, {
+    domain, agentId, state: provenanceState(fact.status),
+    field: fact.field, owner: fact.owner,
+    ruleId: fact.id,
+    summary: fact.detail,
+    details: [
+      `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
+      `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`,
+    ],
+    source: SOURCE_PROVENANCE,
+  });
+}
+
+/**
+ * Which domain a fact belongs to, raising a finding the first time none does.
+ *
+ * The mirror of the `audit-rule-unmapped` guard. Without it a fact id a later
+ * story adds -- `systemd.unit_state`, say -- would land under
+ * `release_provenance` (or be dropped by a prefix filter) with nothing said, and
+ * the suite's per-domain presence assertion would stay green because the
+ * fallback `unobserved` observation fills the hole.
+ */
+function classifyFact(ctx: FleetStatusContext, fact: FleetProvenanceFact): { domain: FleetStatusDomain; mapped: boolean } {
+  const resolved = factDomain(fact.id);
+  if (!resolved.mapped && !ctx.unmappedFacts.has(fact.id)) {
+    ctx.unmappedFacts.add(fact.id);
+    addFinding(ctx, {
+      code: "provenance-fact-unmapped",
+      field: fact.field,
+      agent_id: null,
+      source: fact.owner,
+      severity: "warn",
+      detail: `the provenance fact ${fact.id} matches no prefix in FACT_PREFIX_DOMAIN; it is reported under ${UNMAPPED_FACT_DOMAIN} so it cannot disappear, and src/fleet/status.ts is where it should be classified`,
+    });
+  }
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------
@@ -840,6 +935,8 @@ export interface AuditObservationResult {
   outcome: "ok" | "timeout" | "failed";
   /** A stable category, never a subprocess message. */
   reason: string | null;
+  /** The child's exit status, null when it was killed or never ran. Reported in the finding. */
+  code: number | null;
 }
 
 /**
@@ -864,28 +961,39 @@ export async function auditRepository(
   const args = ["audit", repoPath, "--json"];
   if (registryPath) args.push("--registry", registryPath);
 
-  const result = await captureSelf(ctx, entry, args, undefined, env);
-  if (result.outcome === "timeout") return { rules: null, outcome: "timeout", reason: "timeout" };
+  const result = await captureSelf(ctx, entry, args, undefined, env, FLEET_STATUS_AUDIT_TIMEOUT_MS);
+  if (result.outcome === "timeout") return { rules: null, outcome: "timeout", reason: "timeout", code: result.code };
   if (result.outcome === "cancelled") {
     // A cancellation is a COMMAND failure, not an observation outcome. It has to
     // escape rather than become one repository's downgraded domain.
     throw new FleetError("CANCELLED", "Fleet command was cancelled before it completed");
   }
+  // The byte cap is its OWN category. A child killed for saying too much and a
+  // child that said nothing are different problems with different repairs, and
+  // the real audit report on this fleet is 3.7 MB against a 4 MiB cap -- one
+  // growth spurt from making the distinction load-bearing.
+  if (result.overflow) return { rules: null, outcome: "failed", reason: "audit-output-too-large", code: result.code };
   const text = result.value ?? "";
   if (text === "") {
-    return { rules: null, outcome: "failed", reason: result.outcome === "ok" ? "audit-empty-output" : "audit-no-output" };
+    // `code` is what separates "ran and printed nothing" from "never ran": node
+    // exits 1 for a module it cannot load and the child is killed with a null
+    // code, and an operator chasing an empty report needs to know which.
+    const reason = result.outcome === "ok"
+      ? "audit-empty-output"
+      : result.code === null ? "audit-child-killed" : "audit-no-output";
+    return { rules: null, outcome: "failed", reason, code: result.code };
   }
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
-  catch { return { rules: null, outcome: "failed", reason: "audit-unparseable-json" }; }
+  catch { return { rules: null, outcome: "failed", reason: "audit-unparseable-json", code: result.code }; }
   if (!isRecord(parsed) || !Array.isArray(parsed.rules)) {
-    return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown" };
+    return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown", code: result.code };
   }
   // The child exiting 1 is NOT an error: `pjangler audit` exits 1 by design on a
   // drifted repository, with the complete report on stdout. Reporting that as a
   // collection failure would throw away exactly the findings this call exists
   // to collect.
-  return { rules: parsed.rules.filter(isRecord), outcome: "ok", reason: null };
+  return { rules: parsed.rules.filter(isRecord), outcome: "ok", reason: null, code: result.code };
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +1058,24 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     droppedFindings: 0,
     unmappedRules: new Set<string>(),
     unexpectedDomainRules: new Set<string>(),
+    unmappedFacts: new Set<string>(),
   };
+
+  // NOTHING OBSERVED IS NOT A CLEAN BILL. Measured on an `agents: {}` registry:
+  // this command reported `{healthy: true, complete: true, fleet_complete: true}`
+  // over zero agents -- the aggregate turning absence into agreement, which is
+  // the one thing it exists not to do. `fleet_complete` now requires at least one
+  // registered row (below), and the empty registry is a visible finding here.
+  if (inventory.totals.registered_agents === 0) {
+    addFinding(ctx, {
+      code: "registry-declares-no-agents",
+      field: "agents.{agent_id}",
+      agent_id: null,
+      source: ctx.authority.ownerOf("agents.{agent_id}"),
+      severity: "error",
+      detail: "the agent registry declares no agents, so nothing was observed; an empty fleet is a source this run could not read, never a healthy one",
+    });
+  }
 
   // -- the raw registry, for paths a probe can actually open -----------------
   // A ROW carries home-redacted, bounded projections for display: correct for an
@@ -997,9 +1122,13 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     if (auditEntry === null) {
       addFinding(ctx, {
         code: "audit-cli-unavailable",
-        field: SOURCE_AUDIT,
+        field: DOMAIN_FIELD.template_scaffold,
         agent_id: null,
-        source: null,
+        // A real owner, resolved from the contract like every other finding this
+        // namespace emits. `source: null` printed "owner undeclared" on the
+        // human path for all four of these, from a command whose whole point is
+        // that every value names who owns it.
+        source: ctx.authority.ownerOf(DOMAIN_FIELD.template_scaffold),
         severity: "error",
         detail: `no built CLI to audit with (${CLI_ENTRY_ENV} names a file that is not there, or dist/index.js is not built); every audit-fed domain is unobserved rather than assumed`,
       });
@@ -1039,11 +1168,11 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
         if (result.outcome !== "ok") {
           addFinding(ctx, {
             code: `audit-${result.outcome}`,
-            field: SOURCE_AUDIT,
+            field: DOMAIN_FIELD.template_scaffold,
             agent_id: null,
-            source: null,
+            source: ctx.authority.ownerOf(DOMAIN_FIELD.template_scaffold),
             severity: "error",
-            detail: `the recipe audit of ${shownPath(repoPath)} did not produce a report (${result.reason ?? result.outcome}); its audit-fed domains are ${result.outcome === "timeout" ? "unobserved" : "error"} rather than assumed`,
+            detail: `the recipe audit of ${shownPath(repoPath)} did not produce a report (${result.reason ?? result.outcome}${result.code === null ? ", killed" : `, exit ${result.code}`}); its audit-fed domains are ${result.outcome === "timeout" ? "unobserved" : "error"} rather than assumed`,
           });
         }
       });
@@ -1054,22 +1183,54 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     }
   }
 
+  // -- P9: a selected domain whose ONLY observer is host-scoped --------------
+  // `--domain systemd --live` spawns no child, because no per-agent observation
+  // could come of it (AC6 forbids the spawn, and every systemd rule is
+  // host-scoped). That is correct and it is also a gap: `data.host` comes back
+  // empty for the one domain whose whole live story lives there. Said out loud
+  // rather than left for the operator to infer from an empty array.
+  if (live && !wantsAudit) {
+    for (const domain of domains) {
+      const rules = Object.entries(RULE_DOMAIN).filter(([, mapped]) => mapped === domain).map(([ruleId]) => ruleId);
+      if (rules.length === 0) continue;
+      addFinding(ctx, {
+        code: "audit-host-rules-not-collected",
+        field: DOMAIN_FIELD[domain],
+        agent_id: null,
+        source: ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
+        severity: "warn",
+        detail: `domain ${domain} is observed live only by the host-scoped rule(s) ${rules.join(", ")}, and a --domain ${domain} run spawns no audit child, so data.host is empty; run without --domain to collect them`,
+      });
+    }
+  }
+
   // -- per-agent records -----------------------------------------------------
-  const hostFindings = new Map<string, FleetStatusHostFinding>();
+  //
+  // Every selected agent's observations are BUILT and counted. Only the first
+  // `FLEET_STATUS_MAX_AGENTS` get a record, and each record carries at most
+  // `FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT` of them -- but neither cap may
+  // move a fleet-level number. Before this, agents past the agent cap were never
+  // built at all and only the CLIPPED observations reached `ctx.observations`, so
+  // a >500-agent registry whose single registry failure sorted past the cap
+  // reported `health.healthy: true`, `failed: 0`, `domains[registry].state:
+  // "pass"` -- while the same fleet at `--agent <that id>` reported the failure.
+  // MEASURED. A bound on what the envelope CARRIES must never move what it
+  // CONCLUDES.
+  const hostByRule = new Map<string, { finding: FleetStatusHostFinding; states: Map<FleetStatusState, number> }>();
   const agentRecords: FleetStatusAgent[] = [];
   let totalObservations = 0;
   let emittedObservations = 0;
   const truncated: string[] = [];
 
-  const emitted = agentIds.slice(0, FLEET_STATUS_MAX_AGENTS);
   if (agentIds.length > FLEET_STATUS_MAX_AGENTS) {
     truncated.push(
       `agents: ${agentIds.length - FLEET_STATUS_MAX_AGENTS} of ${agentIds.length} agent records dropped; `
-      + "retrieve one with `pjangler fleet status --agent <id> --json`",
+      + "every one of them is still counted in totals, by_state and health; "
+      + "retrieve a dropped record with `pjangler fleet status --agent <id> --json`",
     );
   }
 
-  for (const agentId of emitted) {
+  for (const agentId of agentIds) {
     throwIfCancelled(runContext);
     const row = rowsById.get(agentId)!;
     const own: FleetStatusObservation[] = [];
@@ -1118,9 +1279,9 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
             ctx.unmappedRules.add(ruleId);
             addFinding(ctx, {
               code: "audit-rule-unmapped",
-              field: SOURCE_AUDIT,
+              field: DOMAIN_FIELD[domain],
               agent_id: null,
-              source: null,
+              source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
               severity: "warn",
               detail: `the recipe rule ${ruleId} has no declared status domain; it is reported under ${UNMAPPED_RULE_DOMAIN} so it cannot disappear, and RULE_DOMAIN in src/fleet/status.ts is where it should be classified`,
             });
@@ -1135,9 +1296,9 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           ctx.unexpectedDomainRules.add(ruleId);
           addFinding(ctx, {
             code: "audit-domain-unexpected",
-            field: SOURCE_AUDIT,
+            field: DOMAIN_FIELD[domain],
             agent_id: null,
-            source: null,
+            source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
             severity: "warn",
             detail: `the project-scoped rule ${ruleId} maps to domain ${domain}, which AUDIT_PER_AGENT_DOMAINS in src/fleet/status.ts does not list; a --domain ${domain} run spawns no audit child and would not report it`,
           });
@@ -1146,20 +1307,33 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
         const owner = recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? null;
         const state = ruleState(rule.status);
         if (scopeOfRule === "host") {
-          // ONCE, deduped by rule id. A host condition repeated 28 times is not
-          // 28 problems, and folding it into an agent record would fail a
+          // ONCE, deduped by rule id -- a host condition repeated 28 times is
+          // not 28 problems, and folding it into an agent record would fail a
           // repository for something no work in that repository can change.
-          if (!hostFindings.has(ruleId)) {
-            hostFindings.set(ruleId, {
-              rule_id: ruleId,
-              owner,
-              domain,
-              state,
-              summary: bounded(redactHome(nonEmptyString(rule.summary) ?? nonEmptyString(rule.title) ?? ruleId)),
-              details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
-              finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
-              retrieval: retrievalFor(null, domain, true),
-            });
+          //
+          // WORST WINS, not first wins. The loop runs in alphabetical agent
+          // order, so `if (!has(ruleId))` kept whichever repository came first
+          // and a `pass` from `alpha` masked a `fail` for the same rule from
+          // `zeta`. Repositories CAN disagree about a host rule (a rule that
+          // reads both $HOME and the repo, or one that skips where the repo has
+          // no notebook), so the reading that must survive is the worst one, and
+          // the disagreement is recorded rather than resolved silently.
+          const accumulated = hostByRule.get(ruleId);
+          const candidate: FleetStatusHostFinding = {
+            rule_id: ruleId,
+            owner,
+            domain,
+            state,
+            summary: bounded(redactHome(nonEmptyString(rule.summary) ?? nonEmptyString(rule.title) ?? ruleId)),
+            details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
+            finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
+            retrieval: retrievalFor(null, domain, true),
+          };
+          if (accumulated === undefined) {
+            hostByRule.set(ruleId, { finding: candidate, states: new Map([[state, 1]]) });
+          } else {
+            accumulated.states.set(state, (accumulated.states.get(state) ?? 0) + 1);
+            if (stateRank(state) < stateRank(accumulated.finding.state)) accumulated.finding = candidate;
           }
           continue;
         }
@@ -1186,21 +1360,36 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
             : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0
     ));
 
+    // EVERY observation, from EVERY selected agent, counted -- including the
+    // agents whose record the cap will drop.
     totalObservations += own.length;
+    ctx.observations.push(...own);
+
+    // Rolled up from the FULL set, not the clipped one.
+    const byDomain: Partial<Record<FleetStatusDomain, FleetStatusState>> = {};
+    for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
+
+    if (agentRecords.length >= FLEET_STATUS_MAX_AGENTS) continue;
+
     let kept = own;
     let clipped = false;
+    let retrieval = retrievalFor(agentId, domains.length === 1 ? domains[0]! : null, live);
     if (own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT) {
       clipped = true;
       kept = own.slice(0, FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT);
-      truncated.push(`agents.${agentId}.observations: ${own.length - FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT} of ${own.length} observations dropped`);
+      // A retrieval that RE-RUNS THE SAME CLIP is not a retrieval. On an
+      // unfiltered run `--agent <id> --json` is exactly the invocation that just
+      // clipped, so the narrowing has to be a `--domain`: the one whose
+      // observations were dropped hardest. Running it returns that domain's
+      // full set, because a single-domain record has no clip pressure from the
+      // other eight.
+      retrieval = retrievalFor(agentId, mostClippedDomain(own, kept, domains), live);
+      truncated.push(
+        `agents.${agentId}.observations: ${own.length - FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT} of ${own.length} `
+        + `observations dropped; retrieve them with \`${retrieval}\``,
+      );
     }
     emittedObservations += kept.length;
-    ctx.observations.push(...kept);
-
-    // Rolled up from the FULL set, not the clipped one: a bound on what the
-    // envelope carries must never move the verdict it reports.
-    const byDomain: Partial<Record<FleetStatusDomain, FleetStatusState>> = {};
-    for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
 
     agentRecords.push({
       agent_id: agentId,
@@ -1210,7 +1399,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       healthy: !own.some((item) => item.state === "fail" || item.state === "error"),
       complete: !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped,
       truncated: clipped,
-      retrieval: retrievalFor(agentId, domains.length === 1 ? domains[0]! : null, live),
+      retrieval,
     });
   }
 
@@ -1219,19 +1408,9 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   if (needsProvenance) {
     for (const fact of provenanceFacts) {
       if (fact.scope !== "fleet") continue;
-      const domain: FleetStatusDomain = fact.id.startsWith("template.") ? "template_scaffold" : "release_provenance";
+      const { domain } = classifyFact(ctx, fact);
       if (!domainSet.has(domain)) continue;
-      fleetObservations.push(observation(ctx, {
-        domain, agentId: null, state: provenanceState(fact.status),
-        field: fact.field, owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`,
-        ],
-        source: SOURCE_PROVENANCE,
-      }));
+      fleetObservations.push(factObservation(ctx, fact, domain, null));
     }
     fleetObservations.sort((a, b) => (
       a.domain < b.domain ? -1 : a.domain > b.domain ? 1
@@ -1244,7 +1423,24 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   }
 
   // -- domain rollups: every selected domain, always ------------------------
-  const host = [...hostFindings.values()].sort((a, b) => (a.rule_id < b.rule_id ? -1 : a.rule_id > b.rule_id ? 1 : 0));
+  const host = [...hostByRule.values()]
+    .map(({ finding, states }) => {
+      if (states.size <= 1) return finding;
+      // The disagreement is DATA. An operator told only the worst reading would
+      // have no way to know that 27 repositories reported something else.
+      const spread = [...states.entries()]
+        .sort((a, b) => stateRank(a[0]) - stateRank(b[0]))
+        .map(([state, count]) => `${count} ${state}`)
+        .join(", ");
+      return {
+        ...finding,
+        details: boundedDetails([
+          ...finding.details,
+          `repositories disagreed on this host rule (${spread}); the worst reading is reported`,
+        ]),
+      };
+    })
+    .sort((a, b) => (a.rule_id < b.rule_id ? -1 : a.rule_id > b.rule_id ? 1 : 0));
   const domainRollups: FleetStatusDomainRollup[] = domains.map((domain) => {
     const perDomain = ctx.observations.filter((item) => item.domain === domain);
     const counts = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0])) as Record<FleetStatusState, number>;
@@ -1275,8 +1471,12 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0])) as Record<FleetStatusState, number>;
   for (const item of ctx.observations) byState[item.state] += 1;
 
+  // `collection_errors` is "sources this run could not read at all", and a
+  // registry that declares no agents is one of them -- which is also what stops
+  // `complete` from reading true over zero observations.
   const collectionErrors = probes.filter((record) => record.outcome !== "ok" && record.kind === "audit").length
-    + (wantsAudit && auditEntry === null ? 1 : 0);
+    + (wantsAudit && auditEntry === null ? 1 : 0)
+    + (inventory.totals.registered_agents === 0 ? 1 : 0);
 
   const totals: FleetStatusTotals = {
     agents: inventory.totals.registered_agents,
@@ -1313,6 +1513,16 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     && scope.kind === "fleet"
     && scope.domain === null
     && scope.live
+    // A fleet of zero rows is not a completely observed fleet. Measured on the
+    // pre-fix build: an `agents: {}` registry claimed `fleet_complete: true`
+    // over nothing observed.
+    //
+    // Defence in depth, and said out loud as such: an empty registry ALSO
+    // counts as a collection error above, which already forces `complete` false
+    // and therefore this too. The conjunct stays because `fleet_complete` is the
+    // field that means "every registered row was observed", and zero rows must
+    // never satisfy it however `complete` was computed.
+    && totals.agents > 0
     && totals.emitted_agents === totals.agents;
 
   return {

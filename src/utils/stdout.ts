@@ -41,10 +41,38 @@
 /** Ceiling on how long `exitAfterFlush` waits for a stream to drain. */
 const DRAIN_DEADLINE_MS = 30_000;
 
+/** Streams already carrying the persistent guard, so a second call adds no listener. */
+const guarded = new WeakSet<object>();
+
 /** Errors that mean "the reader is gone", which is not this process's problem. */
 function isBrokenPipe(error: NodeJS.ErrnoException | null | undefined): boolean {
   const code = error?.code;
   return code === "EPIPE" || code === "ERR_STREAM_DESTROYED" || code === "ERR_STREAM_WRITE_AFTER_END";
+}
+
+/**
+ * Install a PERSISTENT broken-pipe guard on stdout and stderr.
+ *
+ * `writeStdout` handles an EPIPE that arrives while it is waiting, and removes
+ * its listener when it settles -- which leaves the window this function closes.
+ * MEASURED 5/5 on a 3.7 MB report: `pj audit --json | head -c 10` printed
+ * "Unhandled 'error' event ... write EPIPE" with a stack, because the reader
+ * closed the pipe after the write callback had already fired. `process.exit()`
+ * used to mask that by racing it; removing the exit exposed it.
+ *
+ * Idempotent, and only ever swallows EPIPE: any other stream error still throws,
+ * because a full disk must not read as a successful write.
+ *
+ * `ignoreBrokenPipe` in `src/fleet/output.ts` does the same job for the fleet
+ * namespace and is left alone; this one lives here so any command in the binary
+ * can adopt it without importing the fleet envelope module.
+ */
+export function guardBrokenPipe(streams: readonly NodeJS.WritableStream[] = [process.stdout, process.stderr]): void {
+  for (const stream of streams) {
+    if (!stream || guarded.has(stream)) continue;
+    guarded.add(stream);
+    stream.on("error", (error: NodeJS.ErrnoException) => { if (!isBrokenPipe(error)) throw error; });
+  }
 }
 
 /**

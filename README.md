@@ -271,15 +271,22 @@ the same envelope.
 
 | domain | observed today | what `--live` adds |
 | --- | --- | --- |
-| `registry` | the agent row itself: well-formedness, identity conflicts, correlation to a project record | `hermes.registry-parity` (**host-scoped** → `data.host`) |
+| `registry` | the agent row itself: well-formedness, identity conflicts, correlation to a project record | `hermes.registry-parity` (**host-scoped** → `data.host`, unfiltered runs only†) |
 | `project_binding` | the row's board binding and whether the repository's `.project.json` agrees | the notebook and `sot.project-json` rules |
 | `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide); `scaffold.template_ref` is `unsupported` — a deployed role scaffold records none | every tracked-asset parity rule |
 | `profile` | the generated profile directory, `lstat`ed and never followed; a symlink is a `fail`, because the contract declares `symlink_allowed: false` | `hermes.runtime-singleton`; `hermes.profile-wiring` (**host-scoped**) |
 | `runtime` | the role-local runtime directory derived from `role_dir` | `hermes.untracked-runtimes` |
-| `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**), never promoted to an agent |
+| `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**, unfiltered runs only†), never promoted to an agent |
 | `live_process` | `unsupported` — there is no `ps`, `pgrep`, or `/proc` read anywhere in this build | nothing |
-| `bloodbank` | the stored routing record and the strict activation flag; liveness is `unsupported` | `hermes.fleet-config` (**host-scoped**) |
+| `bloodbank` | the stored routing record and the strict activation flag; liveness is `unsupported` | `hermes.fleet-config` (**host-scoped**, unfiltered runs only†) |
 | `release_provenance` | every provenance fact for the agent: executable, checkout, remote, HEAD, cleanliness | nothing |
+
+† `registry`, `systemd` and `bloodbank` are each observed live by exactly one
+rule, and that rule is **host-scoped** — it can add nothing to any agent's
+record, only to `data.host`. Filters constrain collection, so
+`--domain systemd --live` spawns no audit child at all and `data.host` comes back
+empty; the run says so with an `audit-host-rules-not-collected` finding naming
+the rule it did not collect. Run without `--domain` to get them.
 
 Story 1.8 owns the systemd observer, 1.9 the live-process observer, and 1.10
 Bloodbank routing readiness. Until then those domains say so, by name, rather
@@ -298,9 +305,18 @@ than disappearing.
 | `error` | collection itself failed; never silently a `pass`, never a dropped agent |
 
 Within a domain and then across domains the precedence is
-`error` > `unobserved` > `unsupported` > `fail` > `warn` > `skip` > `pass`, with
-one refinement: `unsupported` steps aside when the domain produced anything
-else, so a permanent gap cannot mask a real failure beside it.
+
+1. `unsupported` **yields** whenever the domain produced any other state. It is a
+   statement about this build, not about the fleet, so it is the strongest answer
+   for a domain with nothing else (`live_process`) and the weakest thing to report
+   for a domain that also has real findings — without this, a
+   `template_scaffold` domain carrying one permanent "no template ref is
+   recorded" reported `unsupported` while 135 tracked assets were failing.
+2. Then, over whatever is left:
+   `error` > `unobserved` > `unsupported` > `fail` > `warn` > `skip` > `pass`.
+
+Both halves are the rule; the ordered list alone is not. `rollUp` in
+`src/fleet/status.ts` applies them in that order.
 
 ### What `--live` does and does not authorize
 

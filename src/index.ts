@@ -49,7 +49,7 @@ import { runChecklist } from "./describe/checklist";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import { projectNotebookDryRunProjection } from "./recipes/NotebookRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
-import { exitAfterFlush, writeStdout } from "./utils/stdout";
+import { exitAfterFlush, guardBrokenPipe, writeStdout } from "./utils/stdout";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
@@ -1186,6 +1186,12 @@ program
   // about the whole fleet. `process.exit` is KEPT -- the audit's nonzero exit on
   // a drifted repo is a documented part of its contract -- it just flushes first.
   .action(async (repo: string | undefined, options) => {
+    // BEFORE the first write, and persistent. `writeStdout` removes its own
+    // error listener when it settles, so an EPIPE that arrives after that --
+    // which is what `| head -c 10` produces against a multi-megabyte report --
+    // reached the process as an unhandled 'error' event and a stack trace.
+    // Measured 5/5 before this line; `process.exit` used to hide it by racing.
+    guardBrokenPipe();
     try {
       const profile = options.profile as string | undefined;
       const live = (options.live as boolean | undefined) ?? false;

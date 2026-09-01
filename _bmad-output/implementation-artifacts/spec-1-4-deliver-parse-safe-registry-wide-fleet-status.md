@@ -2,7 +2,7 @@
 title: 'Story 1.4: Deliver Parse-Safe Registry-Wide Fleet Status'
 type: 'feature'
 created: '2026-09-01'
-status: 'done'
+status: 'in-review'
 baseline_revision: '564d40bf81205476735fb5a2ac91c8ed68e17256'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -293,6 +293,80 @@ drain — and the audit command adopts it, because the status core parses its st
 
 ## Review Triage Log
 
+### 2026-09-01 — Review pass
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 17 (high 3, medium 8, low 6)
+- defer: 6 (recorded by the coordinator)
+- reject: 0
+
+**Reproduced against the shipped build, then fixed and pinned by mutation:**
+
+- `[high]` **Fleet-level counts derived from the CLIPPED set, so a bound moved the verdict.**
+  Agents past `FLEET_STATUS_MAX_AGENTS` were never built, and only each agent's `kept`
+  observations reached `ctx.observations` -- which `by_state`, `health` and `domains[].counts`
+  all read. Measured on a 521-agent registry whose only malformed row sorts last:
+  `healthy: true, failed: 0, domains[registry].state: "pass"`, while `--agent zzzz-broken` on
+  the same registry reported the failure. Every selected agent's full observation set is now
+  built and counted; only `agents[]` and each record's `observations` are clipped. Measured
+  after: `healthy: false, failed: 1, registry fail`, `totals.observations` 500 -> 521. Two new
+  cases, one per cap, and the tail case is a DELTA against the identical run without the
+  failing rule -- an absolute `failed >= 1` was satisfied by the fleet's own provenance
+  failures and pinned nothing (verified by mutation).
+- `[high]` **`audit --json` into an early-closing reader crashed with an unhandled EPIPE.**
+  A regression from removing `process.exit` on that path: `writeStdout` drops its own error
+  listener when it settles, and `process.exit` used to mask the late EPIPE by racing it.
+  Measured 5/5 against a 3.7 MB report. `guardBrokenPipe()` in `src/utils/stdout.ts` installs a
+  persistent, idempotent stdout/stderr guard that swallows EPIPE and nothing else; the audit
+  action installs it before its first write. Measured after: 6/6 clean.
+- `[high]` **An empty registry claimed a completely observed healthy fleet.** `agents: {}`
+  returned `{healthy: true, complete: true, fleet_complete: true}` over zero observations.
+  `fleet_complete` now requires `totals.agents > 0`, a zero-row registry counts as a collection
+  error (which is what it is -- a source no fleet could be read out of), and it raises
+  `registry-declares-no-agents`.
+- `[medium]` **Host-finding dedupe was first-wins and could hide a fail.** The alphabetical
+  agent loop kept whichever repository came first, so a `pass` from `alpha` masked a `fail` for
+  the same rule from `theta`. Now rolled up worst-wins under the precedence, with the
+  disagreement recorded as a detail line rather than resolved in silence.
+- `[medium]` **The audit child inherited the 5 s git-probe budget** while the bmad rule inside
+  it gives `npm view` 8 s of its own, so a cold cache timed every repository out to
+  `unobserved`. `FLEET_STATUS_AUDIT_TIMEOUT_MS` (20 s) is its own declared budget, still floored
+  by `remainingMs`.
+- `[medium]` **A report past the 4 MiB child cap reported as `audit-no-output`** -- and the real
+  report is already 3.7 MB. `FleetCaptureResult` gained `overflow`, `code` acquired the reader
+  it never had, and the three states are now `audit-output-too-large`, `audit-child-killed` and
+  `audit-no-output`.
+- `[medium]` **A clipped record's `retrieval` re-ran the identical clip.** On an unfiltered run
+  it emitted the very invocation that had just clipped. It now narrows to the domain the clip
+  hurt most, the truncation note carries the same command, and the case RUNS it and asserts it
+  returns more of that domain than the clipped record held.
+- `[medium]` **An unmapped provenance fact vanished** where an unmapped audit rule raised a
+  finding. `FACT_PREFIX_DOMAIN` + `classifyFact` mirror the rule guard, and the fleet-scoped
+  branch no longer files everything unrecognized under `release_provenance` in silence.
+- `[medium]` **`--domain registry|systemd|bloodbank --live` returned an empty `data.host`,
+  contradicting the README.** The child gate was NOT widened: AC6 is in this spec's read-only
+  intent-contract and requires zero audit children for `--domain registry --live`. The
+  reviewer's own second branch was taken instead -- the README now says those three are
+  collected on unfiltered runs only, and the run emits `audit-host-rules-not-collected` naming
+  the rule it did not collect.
+- `[medium]` **The precedence constant lied.** No behaviour changed; the constant's doc, the
+  README table and this spec's Design Notes now all state both halves of the rule (DW-67).
+- `[medium]` **`data.health.healthy` was asserted nowhere** -- dropping the `byState.fail === 0`
+  conjunct kept all 35 cases green. Now asserted false on a drifted slice, true on a clean one,
+  and false fleet-wide.
+- `[low]` findings carried `source: null` and a `field` of the literal source id, so the human
+  report printed "owner undeclared" for every one and the sort by `field` was a no-op; both are
+  now real, and the suite's shared envelope helper enforces it on every case.
+- `[low]` `DOMAIN_FIELD.profile` and `observeFromInventory` disagreed on the same domain's field
+  path; `[low]` both CHANGELOG entries said PJAN-94; `[low]` DW-68 had no `status:` line;
+  `[low]` `fleet status --json --bogus` and `[low]` `--contract` were exercised by nothing.
+
+**Mutation-checked.** Each fix was reverted in isolation, rebuilt, and the suite re-run: P1
+(both caps), P2, P4, P5, P6, P7, P9, P11, P12 and P16 each turn their own case red. P3's
+`totals.agents > 0` conjunct is the one exception -- it is redundant with the collection-error
+half of the same fix and is kept as defence in depth, said so in the code.
+
 ## Design Notes
 
 **Why the recipe audit runs as a child process.** `runAudit` is synchronous and calls `spawnSync`
@@ -310,10 +384,23 @@ them. So `--live` has one honest meaning here: *may reach the host and the netwo
 does not conjure a systemd, process, or Bloodbank observer — those stay `unsupported`, named, with
 the story that owns them.
 
-**Seven states, one precedence, applied within one domain then across domains:**
-`error > unobserved > unsupported > fail > warn > skip > pass`. `skip` means *declared not
-applicable* and does not reduce completeness; `unobserved` means *applicable but not read* and does.
-`unsupported` means *no adapter exists in this release* — counted and visible, but it cannot make
+**Seven states, one precedence, applied within one domain then across domains.** Two halves, and
+both are the rule:
+
+1. `unsupported` **yields** whenever the domain produced any other state.
+2. Then, over whatever is left: `error > unobserved > unsupported > fail > warn > skip > pass`.
+
+The first half is not a deviation from the second; it is what makes the second correct. `unsupported`
+means *no adapter exists in this release* — a statement about the BUILD, not about the fleet — so for
+a domain with nothing else (`live_process`) it is rightly the strongest answer, and for a mixed
+domain it is the weakest thing to report. Measured without it: `template_scaffold` carries one
+permanent `scaffold.template_ref` `unsupported` beside its real findings, and the domain rolled up to
+`unsupported` while 135 tracked assets were failing — which also contradicts this story's own
+acceptance criterion that a project-scoped `warn` rolls that agent's domain up to `warn`. Recorded as
+DW-67; `FLEET_STATUS_STATE_PRECEDENCE`'s doc comment and the README both state both halves.
+
+`skip` means *declared not applicable* and does not reduce completeness; `unobserved` means
+*applicable but not read* and does. `unsupported` is counted and visible, but it cannot make
 `complete` permanently false, which would make the flag meaningless. `warn` never gates `healthy`,
 matching `gatesProject` (`src/recipes/types.ts:189`).
 

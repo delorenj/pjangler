@@ -19023,9 +19023,19 @@ init_version();
 
 // src/utils/stdout.ts
 var DRAIN_DEADLINE_MS = 3e4;
+var guarded = /* @__PURE__ */ new WeakSet();
 function isBrokenPipe(error) {
   const code = error?.code;
   return code === "EPIPE" || code === "ERR_STREAM_DESTROYED" || code === "ERR_STREAM_WRITE_AFTER_END";
+}
+function guardBrokenPipe(streams = [process.stdout, process.stderr]) {
+  for (const stream of streams) {
+    if (!stream || guarded.has(stream)) continue;
+    guarded.add(stream);
+    stream.on("error", (error) => {
+      if (!isBrokenPipe(error)) throw error;
+    });
+  }
 }
 function writeStdout(text3, stream = process.stdout) {
   if (text3.length === 0) return Promise.resolve();
@@ -20905,12 +20915,12 @@ function probe(ctx, argv, cwd) {
   if (!command) return Promise.resolve({ outcome: "failed", value: null });
   return runBoundedChild(ctx, command, args, { cwd });
 }
-function captureSelf(ctx, entry, args, cwd, env2) {
-  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, keepStdoutOnFailure: true });
+function captureSelf(ctx, entry, args, cwd, env2, timeoutMs) {
+  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, timeoutMs, keepStdoutOnFailure: true });
 }
 function runBoundedChild(ctx, command, args, options = {}) {
-  const { cwd, env: env2, keepStdoutOnFailure = false } = options;
-  const budget = Math.min(ctx.probeTimeoutMs, remainingMs(ctx));
+  const { cwd, env: env2, keepStdoutOnFailure = false, timeoutMs } = options;
+  const budget = Math.min(timeoutMs ?? ctx.probeTimeoutMs, remainingMs(ctx));
   return new Promise((settle) => {
     let child;
     try {
@@ -20932,7 +20942,7 @@ function runBoundedChild(ctx, command, args, options = {}) {
         env: env2 ?? probeEnv()
       });
     } catch {
-      settle({ outcome: "failed", value: null, code: null });
+      settle({ outcome: "failed", value: null, code: null, overflow: false });
       return;
     }
     let out = "";
@@ -20962,12 +20972,12 @@ function runBoundedChild(ctx, command, args, options = {}) {
     };
     const timer = setTimeout(() => {
       kill();
-      finish({ outcome: "timeout", value: null, code: null });
+      finish({ outcome: "timeout", value: null, code: null, overflow: false });
     }, budget);
     timer.unref?.();
     const onAbort = () => {
       kill();
-      finish({ outcome: "cancelled", value: null, code: null });
+      finish({ outcome: "cancelled", value: null, code: null, overflow: false });
     };
     ctx.signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
@@ -20975,18 +20985,18 @@ function runBoundedChild(ctx, command, args, options = {}) {
       size += chunk.length;
       if (size > PROBE_MAX_BYTES) {
         kill();
-        finish({ outcome: "failed", value: null, code: null });
+        finish({ outcome: "failed", value: null, code: null, overflow: true });
         return;
       }
       out += chunk;
     });
-    child.on("error", () => finish({ outcome: "failed", value: null, code: null }));
+    child.on("error", () => finish({ outcome: "failed", value: null, code: null, overflow: false }));
     child.on("close", (code) => {
       if (code !== 0) {
-        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code });
+        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code, overflow: false });
         return;
       }
-      finish({ outcome: "ok", value: out.trim(), code });
+      finish({ outcome: "ok", value: out.trim(), code, overflow: false });
     });
   });
 }
@@ -22865,17 +22875,38 @@ var DOMAIN_FIELD = Object.freeze({
   registry: "agents.{agent_id}",
   project_binding: "agents.{agent_id}.plane.identifier",
   template_scaffold: "scaffold",
-  profile: "profiles.{profile_name}",
+  // `agents.{agent_id}.profile_name`, not `profiles.{profile_name}`. Both are
+  // defensible and having BOTH was not: `observeFromInventory` emitted one and
+  // this table the other for the same domain, so the two observations resolved
+  // their fallback owner from different contract paths -- the only domain where
+  // that happened.
+  profile: "agents.{agent_id}.profile_name",
   runtime: "agents.{agent_id}.role_dir",
   systemd: "agents.{agent_id}.systemd.gateway_unit",
   live_process: "processes.{agent_id}",
   bloodbank: "agents.{agent_id}.bloodbank.gateway_scope",
   release_provenance: "agents.{agent_id}.hermes.bin"
 });
+var FACT_PREFIX_DOMAIN = Object.freeze([
+  ["scaffold.", "template_scaffold"],
+  ["template.", "template_scaffold"],
+  ["hermes.", "release_provenance"],
+  ["profile.", "release_provenance"],
+  // The host pin: `fleet.hermes_bin`, `fleet.hermes_repo`, `fleet.registry_file`.
+  ["fleet.", "release_provenance"]
+]);
+var UNMAPPED_FACT_DOMAIN = "release_provenance";
+function factDomain(factId) {
+  for (const [prefix, domain] of FACT_PREFIX_DOMAIN) {
+    if (factId.startsWith(prefix)) return { domain, mapped: true };
+  }
+  return { domain: UNMAPPED_FACT_DOMAIN, mapped: false };
+}
 var SOURCE_REGISTRY = "fleet-inventory";
 var SOURCE_PROVENANCE = "fleet-provenance";
 var SOURCE_AUDIT = "recipe-audit";
 var SOURCE_DECLARED_GAP = "declared-gap";
+var FLEET_STATUS_AUDIT_TIMEOUT_MS = 2e4;
 var CLI_ENTRY_ENV = "PJ_FLEET_CLI_ENTRY";
 var AUDIT_CHILD_ENV_KEYS = [
   "PATH",
@@ -22931,6 +22962,19 @@ function retrievalFor(agentId, domain, live) {
   parts.push("--json");
   return bounded3(parts.join(" "));
 }
+function mostClippedDomain(own, kept, domains) {
+  const count = (list, domain) => list.reduce((total, item) => total + (item.domain === domain ? 1 : 0), 0);
+  let best = domains[0];
+  let bestDropped = -1;
+  for (const domain of domains) {
+    const dropped = count(own, domain) - count(kept, domain);
+    if (dropped > bestDropped) {
+      best = domain;
+      bestDropped = dropped;
+    }
+  }
+  return best;
+}
 function boundedDetails(details) {
   const all = (details ?? []).filter((item) => typeof item === "string");
   const kept = all.slice(0, FLEET_STATUS_MAX_DETAILS).map((item) => bounded3(redactHome(item)));
@@ -22938,6 +22982,10 @@ function boundedDetails(details) {
     kept[kept.length - 1] = bounded3(`... ${all.length - FLEET_STATUS_MAX_DETAILS} of ${all.length} detail line(s) dropped`);
   }
   return kept;
+}
+function stateRank(state) {
+  const index = FLEET_STATUS_STATE_PRECEDENCE.indexOf(state);
+  return index === -1 ? FLEET_STATUS_STATE_PRECEDENCE.length : index;
 }
 function rollUp(observations) {
   const decisive = observations.some((observation3) => observation3.state !== "unsupported") ? observations.filter((observation3) => observation3.state !== "unsupported") : observations;
@@ -23095,7 +23143,7 @@ function observeFromInventory(ctx, row, domains) {
     out.push(observation2(ctx, { domain: "project_binding", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
   }
   if (domains.has("profile")) {
-    const field3 = "agents.{agent_id}.profile_name";
+    const field3 = DOMAIN_FIELD.profile;
     const view = row.paths.profile_path;
     const details = [];
     let state = "pass";
@@ -23186,66 +23234,57 @@ function observeFromInventory(ctx, row, domains) {
 }
 function observeFromProvenance(ctx, facts, agentId, domains) {
   const out = [];
-  const mine = facts.filter((fact) => fact.agent_id === agentId);
-  if (domains.has("template_scaffold")) {
-    const scaffold = mine.filter((fact) => fact.id.startsWith("scaffold."));
-    for (const fact of scaffold) {
-      out.push(observation2(ctx, {
-        domain: "template_scaffold",
-        agentId,
-        state: provenanceState(fact.status),
-        field: fact.field,
-        owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
-        ],
-        source: SOURCE_PROVENANCE
-      }));
-    }
-    if (scaffold.length === 0) {
-      out.push(observation2(ctx, {
-        domain: "template_scaffold",
-        agentId,
-        state: "unobserved",
-        field: DOMAIN_FIELD.template_scaffold,
-        summary: "the provenance core reported no scaffold fact for this agent",
-        source: SOURCE_PROVENANCE
-      }));
-    }
+  const byDomain = /* @__PURE__ */ new Map();
+  for (const fact of facts) {
+    if (fact.agent_id !== agentId) continue;
+    const { domain } = classifyFact(ctx, fact);
+    byDomain.set(domain, (byDomain.get(domain) ?? 0) + 1);
+    if (!domains.has(domain)) continue;
+    out.push(factObservation(ctx, fact, domain, agentId));
   }
-  if (domains.has("release_provenance")) {
-    const release = mine.filter((fact) => fact.id.startsWith("hermes.") || fact.id.startsWith("profile."));
-    for (const fact of release) {
-      out.push(observation2(ctx, {
-        domain: "release_provenance",
-        agentId,
-        state: provenanceState(fact.status),
-        field: fact.field,
-        owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
-        ],
-        source: SOURCE_PROVENANCE
-      }));
-    }
-    if (release.length === 0) {
-      out.push(observation2(ctx, {
-        domain: "release_provenance",
-        agentId,
-        state: "unobserved",
-        field: "agents.{agent_id}.hermes.bin",
-        summary: "the provenance core reported no release fact for this agent",
-        source: SOURCE_PROVENANCE
-      }));
-    }
+  for (const domain of ["template_scaffold", "release_provenance"]) {
+    if (!domains.has(domain) || (byDomain.get(domain) ?? 0) > 0) continue;
+    out.push(observation2(ctx, {
+      domain,
+      agentId,
+      state: "unobserved",
+      field: DOMAIN_FIELD[domain],
+      summary: `the provenance core reported no ${domain === "template_scaffold" ? "scaffold" : "release"} fact for this agent`,
+      source: SOURCE_PROVENANCE
+    }));
   }
   return out;
+}
+function factObservation(ctx, fact, domain, agentId) {
+  return observation2(ctx, {
+    domain,
+    agentId,
+    state: provenanceState(fact.status),
+    field: fact.field,
+    owner: fact.owner,
+    ruleId: fact.id,
+    summary: fact.detail,
+    details: [
+      `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
+      `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
+    ],
+    source: SOURCE_PROVENANCE
+  });
+}
+function classifyFact(ctx, fact) {
+  const resolved = factDomain(fact.id);
+  if (!resolved.mapped && !ctx.unmappedFacts.has(fact.id)) {
+    ctx.unmappedFacts.add(fact.id);
+    addFinding3(ctx, {
+      code: "provenance-fact-unmapped",
+      field: fact.field,
+      agent_id: null,
+      source: fact.owner,
+      severity: "warn",
+      detail: `the provenance fact ${fact.id} matches no prefix in FACT_PREFIX_DOMAIN; it is reported under ${UNMAPPED_FACT_DOMAIN} so it cannot disappear, and src/fleet/status.ts is where it should be classified`
+    });
+  }
+  return resolved;
 }
 function resolveAuditCli(env2 = process.env) {
   const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
@@ -23268,25 +23307,27 @@ function auditChildEnv(base = process.env) {
 async function auditRepository(ctx, entry, repoPath, registryPath2, env2) {
   const args = ["audit", repoPath, "--json"];
   if (registryPath2) args.push("--registry", registryPath2);
-  const result2 = await captureSelf(ctx, entry, args, void 0, env2);
-  if (result2.outcome === "timeout") return { rules: null, outcome: "timeout", reason: "timeout" };
+  const result2 = await captureSelf(ctx, entry, args, void 0, env2, FLEET_STATUS_AUDIT_TIMEOUT_MS);
+  if (result2.outcome === "timeout") return { rules: null, outcome: "timeout", reason: "timeout", code: result2.code };
   if (result2.outcome === "cancelled") {
     throw new FleetError("CANCELLED", "Fleet command was cancelled before it completed");
   }
+  if (result2.overflow) return { rules: null, outcome: "failed", reason: "audit-output-too-large", code: result2.code };
   const text3 = result2.value ?? "";
   if (text3 === "") {
-    return { rules: null, outcome: "failed", reason: result2.outcome === "ok" ? "audit-empty-output" : "audit-no-output" };
+    const reason = result2.outcome === "ok" ? "audit-empty-output" : result2.code === null ? "audit-child-killed" : "audit-no-output";
+    return { rules: null, outcome: "failed", reason, code: result2.code };
   }
   let parsed;
   try {
     parsed = JSON.parse(text3);
   } catch {
-    return { rules: null, outcome: "failed", reason: "audit-unparseable-json" };
+    return { rules: null, outcome: "failed", reason: "audit-unparseable-json", code: result2.code };
   }
   if (!isRecord9(parsed) || !Array.isArray(parsed.rules)) {
-    return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown" };
+    return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown", code: result2.code };
   }
-  return { rules: parsed.rules.filter(isRecord9), outcome: "ok", reason: null };
+  return { rules: parsed.rules.filter(isRecord9), outcome: "ok", reason: null, code: result2.code };
 }
 async function collectFleetStatus(options) {
   const runContext = options.runContext;
@@ -23325,8 +23366,19 @@ async function collectFleetStatus(options) {
     probes: [],
     droppedFindings: 0,
     unmappedRules: /* @__PURE__ */ new Set(),
-    unexpectedDomainRules: /* @__PURE__ */ new Set()
+    unexpectedDomainRules: /* @__PURE__ */ new Set(),
+    unmappedFacts: /* @__PURE__ */ new Set()
   };
+  if (inventory.totals.registered_agents === 0) {
+    addFinding3(ctx, {
+      code: "registry-declares-no-agents",
+      field: "agents.{agent_id}",
+      agent_id: null,
+      source: ctx.authority.ownerOf("agents.{agent_id}"),
+      severity: "error",
+      detail: "the agent registry declares no agents, so nothing was observed; an empty fleet is a source this run could not read, never a healthy one"
+    });
+  }
   const stores = resolveInventoryStores(options);
   const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
   const repoByAgent = /* @__PURE__ */ new Map();
@@ -23362,9 +23414,13 @@ async function collectFleetStatus(options) {
     if (auditEntry === null) {
       addFinding3(ctx, {
         code: "audit-cli-unavailable",
-        field: SOURCE_AUDIT,
+        field: DOMAIN_FIELD.template_scaffold,
         agent_id: null,
-        source: null,
+        // A real owner, resolved from the contract like every other finding this
+        // namespace emits. `source: null` printed "owner undeclared" on the
+        // human path for all four of these, from a command whose whole point is
+        // that every value names who owns it.
+        source: ctx.authority.ownerOf(DOMAIN_FIELD.template_scaffold),
         severity: "error",
         detail: `no built CLI to audit with (${CLI_ENTRY_ENV} names a file that is not there, or dist/index.js is not built); every audit-fed domain is unobserved rather than assumed`
       });
@@ -23394,11 +23450,11 @@ async function collectFleetStatus(options) {
         if (result2.outcome !== "ok") {
           addFinding3(ctx, {
             code: `audit-${result2.outcome}`,
-            field: SOURCE_AUDIT,
+            field: DOMAIN_FIELD.template_scaffold,
             agent_id: null,
-            source: null,
+            source: ctx.authority.ownerOf(DOMAIN_FIELD.template_scaffold),
             severity: "error",
-            detail: `the recipe audit of ${shownPath3(repoPath)} did not produce a report (${result2.reason ?? result2.outcome}); its audit-fed domains are ${result2.outcome === "timeout" ? "unobserved" : "error"} rather than assumed`
+            detail: `the recipe audit of ${shownPath3(repoPath)} did not produce a report (${result2.reason ?? result2.outcome}${result2.code === null ? ", killed" : `, exit ${result2.code}`}); its audit-fed domains are ${result2.outcome === "timeout" ? "unobserved" : "error"} rather than assumed`
           });
         }
       });
@@ -23408,18 +23464,31 @@ async function collectFleetStatus(options) {
       }
     }
   }
-  const hostFindings = /* @__PURE__ */ new Map();
+  if (live && !wantsAudit) {
+    for (const domain of domains) {
+      const rules = Object.entries(RULE_DOMAIN).filter(([, mapped]) => mapped === domain).map(([ruleId]) => ruleId);
+      if (rules.length === 0) continue;
+      addFinding3(ctx, {
+        code: "audit-host-rules-not-collected",
+        field: DOMAIN_FIELD[domain],
+        agent_id: null,
+        source: ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
+        severity: "warn",
+        detail: `domain ${domain} is observed live only by the host-scoped rule(s) ${rules.join(", ")}, and a --domain ${domain} run spawns no audit child, so data.host is empty; run without --domain to collect them`
+      });
+    }
+  }
+  const hostByRule = /* @__PURE__ */ new Map();
   const agentRecords = [];
   let totalObservations = 0;
   let emittedObservations = 0;
   const truncated = [];
-  const emitted = agentIds.slice(0, FLEET_STATUS_MAX_AGENTS);
   if (agentIds.length > FLEET_STATUS_MAX_AGENTS) {
     truncated.push(
-      `agents: ${agentIds.length - FLEET_STATUS_MAX_AGENTS} of ${agentIds.length} agent records dropped; retrieve one with \`pjangler fleet status --agent <id> --json\``
+      `agents: ${agentIds.length - FLEET_STATUS_MAX_AGENTS} of ${agentIds.length} agent records dropped; every one of them is still counted in totals, by_state and health; retrieve a dropped record with \`pjangler fleet status --agent <id> --json\``
     );
   }
-  for (const agentId of emitted) {
+  for (const agentId of agentIds) {
     throwIfCancelled(runContext);
     const row = rowsById.get(agentId);
     const own = [];
@@ -23464,9 +23533,9 @@ async function collectFleetStatus(options) {
             ctx.unmappedRules.add(ruleId);
             addFinding3(ctx, {
               code: "audit-rule-unmapped",
-              field: SOURCE_AUDIT,
+              field: DOMAIN_FIELD[domain],
               agent_id: null,
-              source: null,
+              source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
               severity: "warn",
               detail: `the recipe rule ${ruleId} has no declared status domain; it is reported under ${UNMAPPED_RULE_DOMAIN} so it cannot disappear, and RULE_DOMAIN in src/fleet/status.ts is where it should be classified`
             });
@@ -23477,9 +23546,9 @@ async function collectFleetStatus(options) {
           ctx.unexpectedDomainRules.add(ruleId);
           addFinding3(ctx, {
             code: "audit-domain-unexpected",
-            field: SOURCE_AUDIT,
+            field: DOMAIN_FIELD[domain],
             agent_id: null,
-            source: null,
+            source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
             severity: "warn",
             detail: `the project-scoped rule ${ruleId} maps to domain ${domain}, which AUDIT_PER_AGENT_DOMAINS in src/fleet/status.ts does not list; a --domain ${domain} run spawns no audit child and would not report it`
           });
@@ -23488,17 +23557,22 @@ async function collectFleetStatus(options) {
         const owner = recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? null;
         const state = ruleState(rule.status);
         if (scopeOfRule === "host") {
-          if (!hostFindings.has(ruleId)) {
-            hostFindings.set(ruleId, {
-              rule_id: ruleId,
-              owner,
-              domain,
-              state,
-              summary: bounded3(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId)),
-              details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
-              finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
-              retrieval: retrievalFor(null, domain, true)
-            });
+          const accumulated = hostByRule.get(ruleId);
+          const candidate = {
+            rule_id: ruleId,
+            owner,
+            domain,
+            state,
+            summary: bounded3(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId)),
+            details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
+            finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
+            retrieval: retrievalFor(null, domain, true)
+          };
+          if (accumulated === void 0) {
+            hostByRule.set(ruleId, { finding: candidate, states: /* @__PURE__ */ new Map([[state, 1]]) });
+          } else {
+            accumulated.states.set(state, (accumulated.states.get(state) ?? 0) + 1);
+            if (stateRank(state) < stateRank(accumulated.finding.state)) accumulated.finding = candidate;
           }
           continue;
         }
@@ -23518,17 +23592,22 @@ async function collectFleetStatus(options) {
     }
     own.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : (a.rule_id ?? "") < (b.rule_id ?? "") ? -1 : (a.rule_id ?? "") > (b.rule_id ?? "") ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0);
     totalObservations += own.length;
+    ctx.observations.push(...own);
+    const byDomain = {};
+    for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
+    if (agentRecords.length >= FLEET_STATUS_MAX_AGENTS) continue;
     let kept = own;
     let clipped = false;
+    let retrieval = retrievalFor(agentId, domains.length === 1 ? domains[0] : null, live);
     if (own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT) {
       clipped = true;
       kept = own.slice(0, FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT);
-      truncated.push(`agents.${agentId}.observations: ${own.length - FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT} of ${own.length} observations dropped`);
+      retrieval = retrievalFor(agentId, mostClippedDomain(own, kept, domains), live);
+      truncated.push(
+        `agents.${agentId}.observations: ${own.length - FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT} of ${own.length} observations dropped; retrieve them with \`${retrieval}\``
+      );
     }
     emittedObservations += kept.length;
-    ctx.observations.push(...kept);
-    const byDomain = {};
-    for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
     agentRecords.push({
       agent_id: agentId,
       observations: kept,
@@ -23537,36 +23616,33 @@ async function collectFleetStatus(options) {
       healthy: !own.some((item) => item.state === "fail" || item.state === "error"),
       complete: !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped,
       truncated: clipped,
-      retrieval: retrievalFor(agentId, domains.length === 1 ? domains[0] : null, live)
+      retrieval
     });
   }
   const fleetObservations = [];
   if (needsProvenance) {
     for (const fact of provenanceFacts) {
       if (fact.scope !== "fleet") continue;
-      const domain = fact.id.startsWith("template.") ? "template_scaffold" : "release_provenance";
+      const { domain } = classifyFact(ctx, fact);
       if (!domainSet.has(domain)) continue;
-      fleetObservations.push(observation2(ctx, {
-        domain,
-        agentId: null,
-        state: provenanceState(fact.status),
-        field: fact.field,
-        owner: fact.owner,
-        ruleId: fact.id,
-        summary: fact.detail,
-        details: [
-          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
-          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
-        ],
-        source: SOURCE_PROVENANCE
-      }));
+      fleetObservations.push(factObservation(ctx, fact, domain, null));
     }
     fleetObservations.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.summary < b.summary ? -1 : a.summary > b.summary ? 1 : 0);
     ctx.observations.push(...fleetObservations);
     totalObservations += fleetObservations.length;
     emittedObservations += fleetObservations.length;
   }
-  const host = [...hostFindings.values()].sort((a, b) => a.rule_id < b.rule_id ? -1 : a.rule_id > b.rule_id ? 1 : 0);
+  const host = [...hostByRule.values()].map(({ finding: finding2, states }) => {
+    if (states.size <= 1) return finding2;
+    const spread = [...states.entries()].sort((a, b) => stateRank(a[0]) - stateRank(b[0])).map(([state, count]) => `${count} ${state}`).join(", ");
+    return {
+      ...finding2,
+      details: boundedDetails([
+        ...finding2.details,
+        `repositories disagreed on this host rule (${spread}); the worst reading is reported`
+      ])
+    };
+  }).sort((a, b) => a.rule_id < b.rule_id ? -1 : a.rule_id > b.rule_id ? 1 : 0);
   const domainRollups = domains.map((domain) => {
     const perDomain = ctx.observations.filter((item) => item.domain === domain);
     const counts = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
@@ -23586,7 +23662,7 @@ async function collectFleetStatus(options) {
   const probes = [...ctx.probes].sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0);
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
   for (const item of ctx.observations) byState[item.state] += 1;
-  const collectionErrors = probes.filter((record) => record.outcome !== "ok" && record.kind === "audit").length + (wantsAudit && auditEntry === null ? 1 : 0);
+  const collectionErrors = probes.filter((record) => record.outcome !== "ok" && record.kind === "audit").length + (wantsAudit && auditEntry === null ? 1 : 0) + (inventory.totals.registered_agents === 0 ? 1 : 0);
   const totals = {
     agents: inventory.totals.registered_agents,
     emitted_agents: agentRecords.length,
@@ -23611,7 +23687,7 @@ async function collectFleetStatus(options) {
     collection_errors: collectionErrors,
     truncated: truncated.length > 0
   };
-  health.fleet_complete = health.complete && scope.kind === "fleet" && scope.domain === null && scope.live && totals.emitted_agents === totals.agents;
+  health.fleet_complete = health.complete && scope.kind === "fleet" && scope.domain === null && scope.live && totals.agents > 0 && totals.emitted_agents === totals.agents;
   return {
     contract_path: shownPath3(contractPath),
     contract_version: contract.contract_version,
@@ -24667,6 +24743,7 @@ commandCmd.command("create").argument("<name>", "Command name").argument("<promp
   console.log("");
 });
 program.command("audit").argument("[repo]", "Path to repo to audit (default: cwd)").description("Deterministic parity audit against 33god project standard").option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)").option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)").option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`).option("--json", "Output machine-parseable JSON").action(async (repo, options) => {
+  guardBrokenPipe();
   try {
     const profile = options.profile;
     const live = options.live ?? false;
