@@ -479,7 +479,16 @@ try {
   for (const script of ["42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
     assert.equal((deferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `${script} must be dispatched exactly once`);
   }
-  assert.ok(effectText.indexOf("local-hermes:") < effectText.indexOf("curl:-fsS"), "local rendering must precede the deferred provider effect");
+  // Ordering, stated so it cannot pass vacuously. The previous form compared
+  // against indexOf("curl:-fsS"), but -fsS only appears in plane.sh's
+  // describe_board; this path resolves through `tp resolve`, which uses -sS.
+  // A marker that never appears returns -1, so the comparison was false for a
+  // reason the message never revealed. Require BOTH markers, then order them.
+  const localAt = effectText.indexOf("local-hermes:");
+  const providerAt = effectText.search(/^curl:/m);
+  assert.notEqual(localAt, -1, `local rendering must run\n${effectText}`);
+  assert.notEqual(providerAt, -1, `a deferred provider effect must run\n${effectText}`);
+  assert.ok(localAt < providerAt, `local rendering must precede the deferred provider effect\n${effectText}`);
   const deployedRole = YAML.parse(readFileSync(join(target, "agents", "hermes", "director", "role.yaml"), "utf8"));
   assert.equal(deployedRole.deployment.local_only, false, "successful live deployment must clear temporary local-only metadata");
   assert.equal(deployedRole.deployment.systemd, "required", "successful systemd grant must persist required deployment metadata");
