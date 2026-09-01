@@ -16583,7 +16583,7 @@ import { fileURLToPath as fileURLToPath8 } from "node:url";
 import YAML8 from "yaml";
 
 // src/fleet/types.ts
-var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 1 };
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 2 };
 var FLEET_SCHEMA_VERSION = 1;
 var FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version",
@@ -16594,8 +16594,21 @@ var FLEET_CONTRACT_ROOT_KEYS = [
   "classifications",
   "service_model",
   "activation",
-  "retired"
+  "retired",
+  "health_policy"
 ];
+var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy"];
+var FLEET_HEALTH_POLICY_KEYS = [
+  "required_domains",
+  "deferred_capabilities",
+  "allowed_warnings",
+  "allowed_skips",
+  "freshness"
+];
+var FLEET_HEALTH_POLICY_DEFERRED_KEYS = ["domain", "capability", "reason", "owner_story"];
+var FLEET_HEALTH_POLICY_WARNING_KEYS = ["rule_id", "reason", "owner"];
+var FLEET_HEALTH_POLICY_SKIP_KEYS = ["domain", "rule_id", "reason"];
+var FLEET_HEALTH_POLICY_FRESHNESS_KEYS = ["field", "max_age_days", "applies_to"];
 var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
 var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
 var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
@@ -16690,6 +16703,22 @@ var FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT = 200;
 var FLEET_STATUS_MAX_FINDINGS = 2e3;
 var FLEET_STATUS_MAX_DETAILS = 20;
 var FLEET_STATUS_AUDIT_CONCURRENCY = 4;
+var FLEET_STATUS_SEVERITY_PRECEDENCE = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info"
+];
+var FLEET_STATUS_MEMBER_PRECEDENCE = [
+  "unclassified",
+  "unhealthy",
+  "exception",
+  "incomplete",
+  "deferred",
+  "healthy"
+];
+var FLEET_STATUS_MAX_TRANSITIONS = 2e3;
 
 // src/fleet/contract.ts
 var FLEET_CONTRACT_RELATIVE_PATH = join31("contracts", "fleet-contract.yaml");
@@ -16809,7 +16838,8 @@ function validateFleetContract(document) {
     () => sortDiagnostics(validateStructure(policy, extensions)),
     () => validateAuthorityConflicts(policy),
     () => sortDiagnostics(validateClassifications(policy)),
-    () => sortDiagnostics(validateRetiredModes(policy))
+    () => sortDiagnostics(validateRetiredModes(policy)),
+    () => sortDiagnostics(validateHealthPolicy(policy))
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -16861,6 +16891,7 @@ function validateStructure(policy, extensions) {
     if (!FLEET_CONTRACT_ROOT_KEYS.includes(key)) fail(key, "unknown top-level key");
   }
   for (const key of FLEET_CONTRACT_ROOT_KEYS) {
+    if (FLEET_CONTRACT_OPTIONAL_ROOT_KEYS.includes(key)) continue;
     if (policy[key] === void 0) fail(key, "required top-level key is missing");
   }
   const compatibility = policy.compatibility;
@@ -17263,9 +17294,530 @@ function validateRetiredModes(contract) {
   }
   return findings;
 }
+function validateHealthPolicy(policy) {
+  const block = policy.health_policy;
+  if (block === void 0) return [];
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  if (!isRecord4(block)) {
+    fail("health_policy", "health_policy must be a mapping");
+    return findings;
+  }
+  for (const key of Object.keys(block)) {
+    if (!FLEET_HEALTH_POLICY_KEYS.includes(key)) fail(`health_policy.${key}`, "unknown health_policy key");
+  }
+  const domains = FLEET_STATUS_DOMAINS;
+  const requireDomain = (value, at) => {
+    if (typeof value !== "string" || !domains.includes(value)) {
+      fail(at, `must name one of ${domains.join(", ")}`);
+    }
+  };
+  const declaredFields = /* @__PURE__ */ new Set();
+  const authorities = policy.authorities;
+  if (isRecord4(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord4(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field3 of entry.writable_fields) if (typeof field3 === "string") declaredFields.add(field3);
+    }
+  }
+  const required = block.required_domains;
+  if (required !== void 0) {
+    if (!Array.isArray(required)) fail("health_policy.required_domains", "required_domains must be a list");
+    else {
+      const seen = /* @__PURE__ */ new Set();
+      required.forEach((value, index) => {
+        const at = `health_policy.required_domains[${index}]`;
+        requireDomain(value, at);
+        if (typeof value !== "string") return;
+        if (seen.has(value)) fail(at, `duplicate required domain: ${value}`);
+        seen.add(value);
+      });
+    }
+  }
+  const deferred = block.deferred_capabilities;
+  if (deferred !== void 0) {
+    if (!Array.isArray(deferred)) fail("health_policy.deferred_capabilities", "deferred_capabilities must be a list");
+    else {
+      const seen = /* @__PURE__ */ new Set();
+      deferred.forEach((entry, index) => {
+        const at = `health_policy.deferred_capabilities[${index}]`;
+        if (!isRecord4(entry)) {
+          fail(at, "deferred capability must be a mapping");
+          return;
+        }
+        for (const key2 of Object.keys(entry)) {
+          if (!FLEET_HEALTH_POLICY_DEFERRED_KEYS.includes(key2)) fail(`${at}.${key2}`, "unknown deferred_capabilities key");
+        }
+        requireDomain(entry.domain, `${at}.domain`);
+        if (entry.capability !== void 0 && (typeof entry.capability !== "string" || entry.capability.length === 0)) {
+          fail(`${at}.capability`, "capability must be a non-empty name when it is declared");
+        }
+        for (const key2 of ["reason", "owner_story"]) {
+          const value = entry[key2];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key2}`, `${key2} must be a non-empty string`);
+        }
+        const key = `${String(entry.domain)} ${typeof entry.capability === "string" ? entry.capability : ""}`;
+        if (seen.has(key)) fail(at, "duplicate deferred capability: the same domain and capability is already declared");
+        seen.add(key);
+      });
+    }
+  }
+  const warnings = block.allowed_warnings;
+  if (warnings !== void 0) {
+    if (!Array.isArray(warnings)) fail("health_policy.allowed_warnings", "allowed_warnings must be a list");
+    else {
+      warnings.forEach((entry, index) => {
+        const at = `health_policy.allowed_warnings[${index}]`;
+        if (!isRecord4(entry)) {
+          fail(at, "allowed warning must be a mapping");
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!FLEET_HEALTH_POLICY_WARNING_KEYS.includes(key)) fail(`${at}.${key}`, "unknown allowed_warnings key");
+        }
+        for (const key of ["rule_id", "reason", "owner"]) {
+          const value = entry[key];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        }
+      });
+    }
+  }
+  const skips = block.allowed_skips;
+  if (skips !== void 0) {
+    if (!Array.isArray(skips)) fail("health_policy.allowed_skips", "allowed_skips must be a list");
+    else {
+      skips.forEach((entry, index) => {
+        const at = `health_policy.allowed_skips[${index}]`;
+        if (!isRecord4(entry)) {
+          fail(at, "allowed skip must be a mapping");
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!FLEET_HEALTH_POLICY_SKIP_KEYS.includes(key)) fail(`${at}.${key}`, "unknown allowed_skips key");
+        }
+        const hasDomain = entry.domain !== void 0;
+        const hasRule = entry.rule_id !== void 0;
+        if (hasDomain === hasRule) fail(at, "an allowed skip must name exactly one of domain or rule_id");
+        if (hasDomain) requireDomain(entry.domain, `${at}.domain`);
+        if (hasRule && (typeof entry.rule_id !== "string" || entry.rule_id.trim().length === 0)) {
+          fail(`${at}.rule_id`, "rule_id must be a non-empty string");
+        }
+        if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) fail(`${at}.reason`, "reason must be a non-empty string");
+      });
+    }
+  }
+  const freshness = block.freshness;
+  if (freshness !== void 0) {
+    if (!Array.isArray(freshness)) fail("health_policy.freshness", "freshness must be a list");
+    else {
+      const seen = /* @__PURE__ */ new Set();
+      freshness.forEach((entry, index) => {
+        const at = `health_policy.freshness[${index}]`;
+        if (!isRecord4(entry)) {
+          fail(at, "freshness entry must be a mapping");
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!FLEET_HEALTH_POLICY_FRESHNESS_KEYS.includes(key)) fail(`${at}.${key}`, "unknown freshness key");
+        }
+        const field3 = entry.field;
+        if (typeof field3 !== "string" || !FIELD_PATH.test(field3)) fail(`${at}.field`, "field must be a dotted field path");
+        else if (!declaredFields.has(field3)) fail(`${at}.field`, `${field3} is not declared writable by any authority`);
+        else if (seen.has(field3)) fail(`${at}.field`, `duplicate freshness policy for ${field3}`);
+        else seen.add(field3);
+        const age = entry.max_age_days;
+        if (!Number.isSafeInteger(age) || Number(age) <= 0) fail(`${at}.max_age_days`, "max_age_days must be a positive whole number of days");
+        requireDomain(entry.applies_to, `${at}.applies_to`);
+      });
+    }
+  }
+  return findings;
+}
 
 // src/fleet/output.ts
 import { homedir as homedir11, userInfo as userInfo2 } from "node:os";
+
+// src/fleet/health.ts
+var DAY_MS = 864e5;
+var SCOPE_ORDER = ["fleet", "host", "agent"];
+function list(value) {
+  return Array.isArray(value) ? value : [];
+}
+function readHealthPolicy(contract) {
+  const block = contract.health_policy;
+  if (!block) {
+    return { declared: false, requiredDomains: /* @__PURE__ */ new Set(), deferred: [], warnings: [], skips: [], freshness: [] };
+  }
+  return {
+    declared: true,
+    requiredDomains: new Set(list(block.required_domains)),
+    deferred: list(block.deferred_capabilities).map((entry, index) => ({ path: `health_policy.deferred_capabilities[${index}]`, entry })),
+    warnings: list(block.allowed_warnings).map((entry, index) => ({ path: `health_policy.allowed_warnings[${index}]`, entry })),
+    skips: list(block.allowed_skips).map((entry, index) => ({ path: `health_policy.allowed_skips[${index}]`, entry })),
+    freshness: list(block.freshness).map((entry, index) => ({ path: `health_policy.freshness[${index}]`, entry }))
+  };
+}
+function evaluateFreshness(field3, isoValue, referenceMs, policy) {
+  if (field3 === null) return "not_applicable";
+  const declared = policy.freshness.find((item) => item.entry.field === field3);
+  if (!declared) return "not_applicable";
+  if (isoValue === null || isoValue.trim() === "") return "unknown";
+  const parsed = Date.parse(isoValue.trim());
+  if (!Number.isFinite(parsed)) return "unknown";
+  if (parsed > referenceMs) return "unknown";
+  return referenceMs - parsed <= declared.entry.max_age_days * DAY_MS ? "current" : "stale";
+}
+var FRESHNESS_PRECEDENCE = ["stale", "unknown", "current", "not_applicable"];
+function evaluateDomainFreshness(domain, values, referenceMs, policy) {
+  const buckets = policy.freshness.filter((item) => item.entry.applies_to === domain).map((item) => evaluateFreshness(item.entry.field, values.get(item.entry.field) ?? null, referenceMs, policy));
+  for (const bucket of FRESHNESS_PRECEDENCE) if (buckets.includes(bucket)) return bucket;
+  return "not_applicable";
+}
+var SOURCE_EVIDENCE = Object.freeze({
+  "fleet-inventory": "direct",
+  "fleet-provenance": "direct",
+  "recipe-audit": "direct",
+  "declared-gap": "absent"
+});
+var UNREAD_STATES = /* @__PURE__ */ new Set(["unobserved", "unsupported", "error"]);
+function resolveJustification(input, policy) {
+  if (input.state === "unsupported") {
+    const deferred = policy.deferred.find((item) => item.entry.domain === input.domain && (item.entry.capability === void 0 || item.entry.capability === input.capability));
+    if (deferred) {
+      return {
+        kind: "deferred_capability",
+        policy: deferred.path,
+        reason: bounded2(deferred.entry.reason),
+        owner: bounded2(deferred.entry.owner_story)
+      };
+    }
+  }
+  if (input.exceptionId !== null) {
+    return {
+      kind: "exception",
+      policy: `classifications.intentionally_unmanaged.entries.${bounded2(input.exceptionId, 128)}`,
+      reason: bounded2(input.exceptionReason ?? "a managed exception the contract records for exactly these participants"),
+      owner: null
+    };
+  }
+  if (input.state === "warn" && input.ruleId !== null) {
+    const allowed = policy.warnings.find((item) => item.entry.rule_id === input.ruleId);
+    if (allowed) {
+      return { kind: "allowed_warning", policy: allowed.path, reason: bounded2(allowed.entry.reason), owner: bounded2(allowed.entry.owner) };
+    }
+  }
+  if (input.state === "skip") {
+    const allowed = policy.skips.find((item) => item.entry.rule_id !== void 0 && item.entry.rule_id === input.ruleId || item.entry.domain !== void 0 && item.entry.domain === input.domain);
+    if (allowed) {
+      return { kind: "allowed_skip", policy: allowed.path, reason: bounded2(allowed.entry.reason), owner: null };
+    }
+  }
+  return null;
+}
+function needsJustification(state) {
+  return state === "warn" || state === "skip" || state === "unsupported";
+}
+function classifyObservation(input, policy) {
+  const justification = resolveJustification(input, policy);
+  const evidence = input.evidence ?? (UNREAD_STATES.has(input.state) ? "absent" : SOURCE_EVIDENCE[input.source] ?? "derived");
+  const domainRequired = !policy.declared || policy.requiredDomains.size === 0 ? true : policy.requiredDomains.has(input.domain);
+  let applicability;
+  if (justification?.kind === "deferred_capability") applicability = "deferred";
+  else if (justification?.kind === "exception") applicability = "exception";
+  else if (input.state === "skip") applicability = "not_applicable";
+  else applicability = domainRequired ? "required" : "optional";
+  const justified = justification !== null;
+  const stale = input.freshness === "stale";
+  const severity = deriveSeverity(input.state, applicability, justified, stale);
+  const { repair, next_action, next_action_class } = deriveRepair(input, justification);
+  return { applicability, evidence, freshness: input.freshness, severity, repair, next_action, next_action_class, justification };
+}
+function deriveSeverity(state, applicability, justified, stale) {
+  if (state === "error") return "critical";
+  if (state === "fail") return applicability === "required" ? "critical" : "high";
+  if (state === "unobserved") return applicability === "required" ? "high" : "medium";
+  if (stale) return justified ? "low" : "medium";
+  if (state === "warn" || state === "unsupported") return justified ? "low" : "medium";
+  if (state === "skip") return justified ? "info" : "low";
+  return "info";
+}
+function deriveRepair(input, justification) {
+  const readOnly = (next_action, repair) => ({ repair, next_action: bounded2(redactHome(next_action)), next_action_class: "read-only" });
+  if (input.state === "pass" && input.freshness !== "stale") return readOnly(input.retrieval, "none");
+  if (input.state === "skip" && justification !== null) return readOnly(input.retrieval, "none");
+  if (input.field === input.activationField) {
+    return {
+      repair: "approval-gated",
+      next_action: bounded2(
+        `Request execution authority from ${input.activationOwner}: ${input.activationField} is strict with a declared default of deny, and no change in any repository grants it`
+      ),
+      next_action_class: "requires-authorization"
+    };
+  }
+  if (justification?.kind === "deferred_capability") {
+    return readOnly(
+      `Nothing to run in this release: ${input.capability ?? input.domain} is deferred to story ${justification.owner ?? "unnamed"}; re-read it with ${input.retrieval}`,
+      "blocked"
+    );
+  }
+  if (input.ruleScope === "host") {
+    return readOnly(
+      `Repair the host condition ${input.ruleId ?? input.domain} reports on this machine; no work in any repository changes it. Re-read it with ${input.retrieval}`,
+      "other-owner"
+    );
+  }
+  if (input.ruleScope === "project" && input.ruleId !== null && input.fixable === true) {
+    const repo = input.repo ?? ".";
+    return readOnly(`pjangler migrate ${input.ruleId} ${repo} --dry-run`, "automatic");
+  }
+  return readOnly(input.retrieval, "manual");
+}
+var PROVEN_BAD = /* @__PURE__ */ new Set(["fail", "error"]);
+function detectContradictions(observations) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const observation3 of observations) {
+    if (observation3.evidence === "absent") continue;
+    const key = [observation3.agent_id ?? "", observation3.domain, observation3.field].join("\0");
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(observation3);
+    else groups.set(key, [observation3]);
+  }
+  const out = [];
+  for (const bucket of groups.values()) {
+    const bad = bucket.filter((item) => PROVEN_BAD.has(item.state));
+    const good = bucket.filter((item) => item.state === "pass");
+    if (bad.length === 0 || good.length === 0) continue;
+    const sources = [...new Set([...bad, ...good].map((item) => item.source))];
+    if (sources.length < 2) continue;
+    const first = bad[0];
+    out.push({
+      agent_id: first.agent_id,
+      domain: first.domain,
+      field: first.field,
+      finding_ids: [...bad, ...good].map((item) => item.finding_id).sort(),
+      detail: `${bad.map((item) => `${item.source} reports ${item.state}`).join(", ")} while ${good.map((item) => `${item.source} reports pass`).join(", ")} for the same field; both readings are kept, the worse one wins the rollup, and neither is discarded`
+    });
+  }
+  return out.sort((a, b) => (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : 0);
+}
+function classifyMember(agent, classification, observations) {
+  const candidates = /* @__PURE__ */ new Set();
+  if (classification === "unclassified") candidates.add("unclassified");
+  const failures = observations.filter((item) => PROVEN_BAD.has(item.state));
+  if (!agent.healthy) {
+    const allExcepted = failures.length > 0 && failures.every((item) => item.justification?.kind === "exception");
+    candidates.add(allExcepted ? "exception" : "unhealthy");
+  } else if (classification === "intentionally_unmanaged") {
+    candidates.add("exception");
+  }
+  if (!agent.complete) candidates.add("incomplete");
+  const gaps = observations.filter((item) => item.state !== "pass" && item.state !== "skip");
+  if (gaps.length > 0 && gaps.every((item) => item.justification?.kind === "deferred_capability")) {
+    candidates.add("deferred");
+  }
+  for (const member of FLEET_STATUS_MEMBER_PRECEDENCE) if (candidates.has(member)) return member;
+  return "healthy";
+}
+function emptyMembers() {
+  return { healthy: 0, unhealthy: 0, incomplete: 0, deferred: 0, exception: 0, unclassified: 0 };
+}
+function severityRank(severity) {
+  const index = FLEET_STATUS_SEVERITY_PRECEDENCE.indexOf(severity);
+  return index === -1 ? FLEET_STATUS_SEVERITY_PRECEDENCE.length : index;
+}
+function scopeRank(scope) {
+  const index = SCOPE_ORDER.indexOf(scope);
+  return index === -1 ? SCOPE_ORDER.length : index;
+}
+function compareStatusFindings(a, b) {
+  if (a.gating !== b.gating) return a.gating ? -1 : 1;
+  const bySeverity = severityRank(a.status_severity) - severityRank(b.status_severity);
+  if (bySeverity !== 0) return bySeverity;
+  const byScope = scopeRank(a.scope) - scopeRank(b.scope);
+  if (byScope !== 0) return byScope;
+  const left = a.agent_id ?? "";
+  const right = b.agent_id ?? "";
+  if (left !== right) return left < right ? -1 : 1;
+  if (a.domain !== b.domain) return a.domain < b.domain ? -1 : 1;
+  if (a.finding_id !== b.finding_id) return a.finding_id < b.finding_id ? -1 : 1;
+  return 0;
+}
+function snapshotOf(record, scope) {
+  const id = typeof record.finding_id === "string" ? record.finding_id : null;
+  if (id === null || id === "") return null;
+  const state = typeof record.state === "string" && FLEET_STATUS_STATES.includes(record.state) ? record.state : null;
+  if (state === null) return null;
+  const severity = typeof record.severity === "string" && FLEET_STATUS_SEVERITY_PRECEDENCE.includes(record.severity) ? record.severity : "info";
+  const evidence = typeof record.evidence === "string" ? record.evidence : "absent";
+  return {
+    finding_id: id,
+    scope,
+    agent_id: typeof record.agent_id === "string" ? record.agent_id : null,
+    domain: typeof record.domain === "string" ? record.domain : "registry",
+    state,
+    severity,
+    evidence
+  };
+}
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function snapshotStatusDocument(document) {
+  const root = isRecord5(document) && isRecord5(document.data) ? document.data : document;
+  if (!isRecord5(root)) return [];
+  const out = [];
+  for (const agent of Array.isArray(root.agents) ? root.agents : []) {
+    if (!isRecord5(agent)) continue;
+    for (const observation3 of Array.isArray(agent.observations) ? agent.observations : []) {
+      if (!isRecord5(observation3)) continue;
+      const snapshot = snapshotOf(observation3, "agent");
+      if (snapshot) out.push(snapshot);
+    }
+  }
+  for (const rollup of Array.isArray(root.domains) ? root.domains : []) {
+    if (!isRecord5(rollup)) continue;
+    for (const observation3 of Array.isArray(rollup.observations) ? rollup.observations : []) {
+      if (!isRecord5(observation3)) continue;
+      const snapshot = snapshotOf(observation3, "fleet");
+      if (snapshot) out.push(snapshot);
+    }
+  }
+  for (const finding2 of Array.isArray(root.host) ? root.host : []) {
+    if (!isRecord5(finding2)) continue;
+    const snapshot = snapshotOf(finding2, "host");
+    if (snapshot) out.push(snapshot);
+  }
+  return out;
+}
+function snapshotCurrent(observations, host) {
+  const out = [];
+  for (const observation3 of observations) {
+    out.push({
+      finding_id: observation3.finding_id,
+      scope: observation3.agent_id === null ? "fleet" : "agent",
+      agent_id: observation3.agent_id,
+      domain: observation3.domain,
+      state: observation3.state,
+      severity: observation3.severity,
+      evidence: observation3.evidence
+    });
+  }
+  for (const finding2 of host) {
+    out.push({
+      finding_id: finding2.finding_id,
+      scope: "host",
+      agent_id: null,
+      domain: finding2.domain,
+      state: finding2.state,
+      severity: finding2.severity,
+      evidence: finding2.evidence
+    });
+  }
+  return out;
+}
+function parseBaselineDocument(text2, shownPath4) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch {
+    throw new FleetError(
+      "INVALID_INPUT",
+      "--baseline is not one complete JSON document",
+      false,
+      { baseline: bounded2(shownPath4) }
+    );
+  }
+  const snapshots = snapshotStatusDocument(parsed);
+  if (snapshots.length === 0 && !(isRecord5(parsed) && (Array.isArray(parsed.agents) || isRecord5(parsed.data)))) {
+    throw new FleetError(
+      "INVALID_INPUT",
+      "--baseline is JSON but is not a fleet status document",
+      false,
+      { baseline: bounded2(shownPath4) }
+    );
+  }
+  return snapshots;
+}
+function diffFindings(baseline, current) {
+  const before = /* @__PURE__ */ new Map();
+  for (const item of baseline) if (!before.has(item.finding_id)) before.set(item.finding_id, item);
+  const after = /* @__PURE__ */ new Map();
+  for (const item of current) if (!after.has(item.finding_id)) after.set(item.finding_id, item);
+  const transitions = [];
+  const push = (kind, subject, from, to, detail) => {
+    transitions.push({
+      finding_id: subject.finding_id,
+      kind,
+      scope: subject.scope,
+      agent_id: subject.agent_id,
+      domain: subject.domain,
+      from: from ? { state: from.state, severity: from.severity, evidence: from.evidence } : null,
+      to: to ? { state: to.state, severity: to.severity, evidence: to.evidence } : null,
+      detail: bounded2(detail)
+    });
+  };
+  for (const [id, now] of after) {
+    const then = before.get(id);
+    if (!then) {
+      push("appeared", now, null, now, `${now.domain} ${now.state}: not present in the baseline`);
+      continue;
+    }
+    if (then.state !== now.state) push("state_changed", now, then, now, `${then.state} -> ${now.state}`);
+    if (then.severity !== now.severity) push("severity_changed", now, then, now, `${then.severity} -> ${now.severity}`);
+    if (then.evidence !== now.evidence) push("evidence_changed", now, then, now, `${then.evidence} -> ${now.evidence}`);
+  }
+  for (const [id, then] of before) {
+    if (after.has(id)) continue;
+    push("resolved", then, then, null, `${then.domain} ${then.state}: no longer reported`);
+  }
+  return transitions.sort((a, b) => a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0);
+}
+function evaluateFleetHealth(input) {
+  const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
+  let stale = 0;
+  let unjustified = 0;
+  for (const observation3 of input.observations) {
+    byState[observation3.state] += 1;
+    if (observation3.freshness === "stale") stale += 1;
+    if (needsJustification(observation3.state) && observation3.justification === null) unjustified += 1;
+  }
+  const healthy = byState.fail === 0 && byState.error === 0;
+  const complete = byState.unobserved === 0 && byState.error === 0 && input.collectionErrors === 0 && !input.truncated && input.contradictions === 0;
+  const fleetComplete = complete && input.scope.kind === "fleet" && input.scope.domain === null && input.scope.live && input.totalAgents > 0 && input.emittedAgents === input.totalAgents;
+  const verdict = !healthy ? "unhealthy" : !complete || stale > 0 || unjustified > 0 ? "unproven" : "healthy";
+  const exitCategory = verdict === "unhealthy" ? "unhealthy" : verdict === "unproven" ? "incomplete" : "ok";
+  return {
+    healthy,
+    complete,
+    fleet_complete: fleetComplete,
+    failed: byState.fail,
+    warned: byState.warn,
+    skipped: byState.skip,
+    unsupported: byState.unsupported,
+    unobserved: byState.unobserved,
+    errors: byState.error,
+    collection_errors: input.collectionErrors,
+    truncated: input.truncated,
+    verdict,
+    proven: verdict === "healthy" && fleetComplete,
+    exit_category: exitCategory,
+    stale,
+    unjustified,
+    contradictions: input.contradictions,
+    members: { ...input.members }
+  };
+}
+function boundTransitions(transitions, truncated) {
+  if (transitions.length <= FLEET_STATUS_MAX_TRANSITIONS) return [...transitions];
+  truncated.push(
+    `transitions: ${transitions.length - FLEET_STATUS_MAX_TRANSITIONS} of ${transitions.length} transitions dropped; narrow the run with --agent or --domain and re-diff against the same baseline`
+  );
+  return transitions.slice(0, FLEET_STATUS_MAX_TRANSITIONS);
+}
+
+// src/fleet/output.ts
 init_style();
 var MAX_STRING = 512;
 var MAX_DETAILS = 20;
@@ -17507,7 +18059,7 @@ var ROW_SHAPE_CODES = /* @__PURE__ */ new Set(["agent-id-unsafe"]);
 var SUPPORTED_REGISTRY_SCHEMA = 1;
 var AGENT_STORE = "hermes-agent-registry";
 var PROJECT_STORE = "pjangler-project-registry";
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function expandHome2(path, home) {
@@ -17653,7 +18205,7 @@ function readKeyedStore(path, label, collection) {
       value = null;
       malformed = true;
     }
-    if (!isRecord5(value)) malformed = true;
+    if (!isRecord6(value)) malformed = true;
     if (malformed || !keyIsString) salvaged = true;
     entries.push({ key, keyIsString, value, malformed });
   }
@@ -17661,7 +18213,7 @@ function readKeyedStore(path, label, collection) {
   let schemaVersion = null;
   try {
     const tree = document.toJS();
-    if (isRecord5(tree)) {
+    if (isRecord6(tree)) {
       top = tree;
       schemaVersion = typeof tree.schema_version === "number" ? tree.schema_version : null;
     }
@@ -17744,7 +18296,7 @@ function addFinding(ctx, finding2) {
 }
 function resolveProfileLayout(contract, env2, home) {
   const layout = contract.service_model?.profile_layout;
-  const raw = isRecord5(layout) ? nonEmptyString(layout.root) : null;
+  const raw = isRecord6(layout) ? nonEmptyString(layout.root) : null;
   if (raw === null) return { root: null, template: null };
   const fleetHome2 = env2.HERMES_FLEET_HOME?.trim() || join32(home, ".hermes");
   const template = raw.replaceAll("{HERMES_FLEET_HOME}", fleetHome2);
@@ -17754,12 +18306,12 @@ function resolveProfileLayout(contract, env2, home) {
 }
 function unitPatternsFrom(contract) {
   const perAgent = contract.service_model?.per_agent;
-  if (!isRecord5(perAgent)) return [];
+  if (!isRecord6(perAgent)) return [];
   return Object.keys(perAgent).sort((a, b) => a < b ? -1 : 1).map((key) => perAgent[key]).filter((value) => typeof value === "string" && value.length > 0);
 }
 function gatewayPatternFrom(contract) {
   const perAgent = contract.service_model?.per_agent;
-  if (!isRecord5(perAgent)) return null;
+  if (!isRecord6(perAgent)) return null;
   return nonEmptyString(perAgent.gateway_unit);
 }
 var MANIFEST_READABLE_CLASSIFICATIONS = /* @__PURE__ */ new Set(["ok", "symlink"]);
@@ -17771,7 +18323,7 @@ function readManifest2(repoPath, classification) {
     const stat = statSync6(path);
     if (!stat.isFile() || stat.size > MANIFEST_MAX_BYTES) return { present: true, parsed: null, path };
     const parsed = JSON.parse(readFileSync23(path, "utf8"));
-    return { present: true, parsed: isRecord5(parsed) ? parsed : null, path };
+    return { present: true, parsed: isRecord6(parsed) ? parsed : null, path };
   } catch {
     return { present: true, parsed: null, path };
   }
@@ -17779,7 +18331,7 @@ function readManifest2(repoPath, classification) {
 function buildInventoryRow(entry, ctx) {
   const own = ctx.authority;
   const agentNamespaceOwner = own.ownerOf("agents.{agent_id}");
-  const raw = isRecord5(entry.value) ? entry.value : {};
+  const raw = isRecord6(entry.value) ? entry.value : {};
   const agentId = entry.key;
   const findings = [];
   const paths = {};
@@ -17942,7 +18494,7 @@ function buildInventoryRow(entry, ctx) {
   } else {
     expectedUnits = unresolved(unitOwner);
   }
-  const storedGateway = nonEmptyString(isRecord5(raw.systemd) ? raw.systemd.gateway_unit : void 0);
+  const storedGateway = nonEmptyString(isRecord6(raw.systemd) ? raw.systemd.gateway_unit : void 0);
   const expectedGateway = idSafe && ctx.gatewayPattern ? bounded2(ctx.gatewayPattern.replaceAll("{agent_id}", agentId)) : null;
   if (storedGateway && expectedGateway && bounded2(storedGateway) !== expectedGateway) {
     note(
@@ -17954,7 +18506,7 @@ function buildInventoryRow(entry, ctx) {
     );
   }
   const gatewayUnit = storedGateway ? field2(bounded2(storedGateway), unitOwner, "resolved") : unresolved(unitOwner);
-  const plane = isRecord5(raw.plane) ? raw.plane : {};
+  const plane = isRecord6(raw.plane) ? raw.plane : {};
   const boardOwner = own.ownerOf("agents.{agent_id}.plane.identifier");
   const binding = {
     workspace: nonEmptyString(plane.workspace) ? bounded2(plane.workspace) : null,
@@ -17971,12 +18523,12 @@ function buildInventoryRow(entry, ctx) {
       "the agent row stores no board binding"
     );
   }
-  const bloodbank = isRecord5(raw.bloodbank) ? raw.bloodbank : {};
+  const bloodbank = isRecord6(raw.bloodbank) ? raw.bloodbank : {};
   const scopeOwner = own.ownerOf("agents.{agent_id}.bloodbank.gateway_scope");
   const targetOwner = own.ownerOf("agents.{agent_id}.bloodbank.target_agent_id");
   const bloodbankScope = nonEmptyString(bloodbank.gateway_scope) ? field2(bounded2(bloodbank.gateway_scope), scopeOwner, "resolved") : unresolved(scopeOwner);
   const bloodbankTarget = nonEmptyString(bloodbank.target_agent_id) ? field2(bounded2(bloodbank.target_agent_id), targetOwner, "resolved") : unresolved(targetOwner);
-  const activationRaw = isRecord5(raw.bloodbank) ? raw.bloodbank.enabled : void 0;
+  const activationRaw = isRecord6(raw.bloodbank) ? raw.bloodbank.enabled : void 0;
   const activation = typeof activationRaw === "boolean" ? field2(activationRaw, ctx.activationOwner, "resolved") : unresolved(ctx.activationOwner);
   if (activation.value === null) {
     note(
@@ -17993,7 +18545,7 @@ function buildInventoryRow(entry, ctx) {
   let agrees = null;
   if (manifestRead.present && manifestRead.parsed) {
     const disagreements = [];
-    const provider = isRecord5(manifestRead.parsed.ticket_provider) ? manifestRead.parsed.ticket_provider : {};
+    const provider = isRecord6(manifestRead.parsed.ticket_provider) ? manifestRead.parsed.ticket_provider : {};
     const compare = (label, manifestValue, registryValue) => {
       const seenValue = nonEmptyString(manifestValue);
       if (!seenValue || !registryValue) return;
@@ -18115,7 +18667,7 @@ var DIMENSIONS = {
 function matchException(group, contract) {
   const entries = contract.classifications?.intentionally_unmanaged?.entries ?? [];
   for (const entry of entries) {
-    if (!isRecord5(entry)) continue;
+    if (!isRecord6(entry)) continue;
     if (nonEmptyString(entry.source) !== group.field) continue;
     const declared = Array.isArray(entry.participants) ? entry.participants.filter((item) => typeof item === "string") : null;
     if (!declared) continue;
@@ -18230,8 +18782,8 @@ var CONFLICT_FIELD_KEYS = {
 function projectIndex(store) {
   const entries = [];
   for (const entry of store.entries) {
-    const record = isRecord5(entry.value) ? entry.value : {};
-    const provider = isRecord5(record.ticket_provider) ? record.ticket_provider : {};
+    const record = isRecord6(entry.value) ? entry.value : {};
+    const provider = isRecord6(record.ticket_provider) ? record.ticket_provider : {};
     entries.push({
       key: entry.key,
       slug: nonEmptyString(record.slug) ?? entry.key,
@@ -18409,9 +18961,9 @@ function collectFleetInventory(options = {}) {
   for (const group of conflicts) {
     if (group.participant_kind !== "agent") continue;
     for (const participant of group.participants) {
-      const list = byParticipant.get(participant) ?? [];
-      list.push(group);
-      byParticipant.set(participant, list);
+      const list2 = byParticipant.get(participant) ?? [];
+      list2.push(group);
+      byParticipant.set(participant, list2);
     }
   }
   for (const row of allRows) {
@@ -18435,6 +18987,21 @@ function collectFleetInventory(options = {}) {
       });
     }
     row.conflicts.sort((a, b) => a < b ? -1 : 1);
+  }
+  const groupsById = new Map(conflicts.map((group) => [group.id, group]));
+  for (const row of allRows) {
+    if (row.malformed) continue;
+    if (row.conflicts.length === 0) continue;
+    const groups = row.conflicts.map((id) => groupsById.get(id));
+    if (!groups.every((group) => group !== void 0 && group.permitted)) continue;
+    row.classification = {
+      ...row.classification,
+      value: "intentionally_unmanaged",
+      // `resolved` stays: the class WAS resolved, from a contract entry that
+      // names these exact participants. The conflict is still reported and
+      // still visible; what changed is that the row says who decided it.
+      state: "resolved"
+    };
   }
   for (const group of conflicts) {
     if (group.participant_kind !== "project") continue;
@@ -18562,7 +19129,7 @@ var SOURCE_PROVENANCE_POLICY = "pjangler-fleet-provenance";
 var SOURCE_ROLE_SCAFFOLD = "hermes-agent-role-scaffold";
 var SOURCE_PROFILE_TREE = "hermes-profile-tree";
 var SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function nonEmptyString2(value) {
@@ -18800,10 +19367,10 @@ function pathSide(raw, source, home, extra = {}) {
 function agentSubjects(entries) {
   const subjects = [];
   for (const entry of entries) {
-    const raw = isRecord6(entry.value) ? entry.value : {};
+    const raw = isRecord7(entry.value) ? entry.value : {};
     subjects.push({
       agentId: entry.key,
-      hermes: isRecord6(raw.hermes) ? raw.hermes : {},
+      hermes: isRecord7(raw.hermes) ? raw.hermes : {},
       roleDir: nonEmptyString2(raw.role_dir),
       profileName: nonEmptyString2(raw.profile_name)
     });
@@ -19298,7 +19865,7 @@ async function collectFleetProvenance(options) {
 
 // src/fleet/status.ts
 import { createHash as createHash10 } from "node:crypto";
-import { existsSync as existsSync26 } from "node:fs";
+import { existsSync as existsSync26, readFileSync as readFileSync25 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
 import { isAbsolute as isAbsolute9, join as join34, resolve as resolve20 } from "node:path";
 init_project();
@@ -19368,6 +19935,36 @@ var DOMAIN_FIELD = Object.freeze({
   bloodbank: "agents.{agent_id}.bloodbank.gateway_scope",
   release_provenance: "agents.{agent_id}.hermes.bin"
 });
+var DOMAIN_DESIRED = Object.freeze({
+  registry: "a well-formed row, in no identity conflict, correlated to exactly one project record",
+  project_binding: "a stored board binding the repository manifest agrees with",
+  template_scaffold: "every tracked asset at the committed template's pinned gitlink",
+  profile: "a real directory under the declared profile root; the contract declares symlink_allowed: false",
+  runtime: "a real role-local runtime directory derived from role_dir, ignored by git",
+  systemd: "the canonical per-agent unit set, observed on this machine",
+  live_process: "every running Hermes process attributed to a registry row",
+  bloodbank: "a fleet-scoped routing record with a target id and an explicit boolean activation flag",
+  release_provenance: "the recorded pin and the live build agreeing"
+});
+var DOMAIN_AUTHORITY_BLOCK = Object.freeze({
+  registry: "agent_operational_records",
+  project_binding: "project_identity",
+  template_scaffold: "tracked_role_scaffold",
+  profile: "generated_profile_inputs",
+  runtime: "agent_operational_records",
+  systemd: "systemd_lifecycle",
+  live_process: "live_process_observations",
+  bloodbank: "agent_operational_records",
+  release_provenance: "agent_operational_records"
+});
+var CAPABILITY_SYSTEMD = "unit_topology";
+var CAPABILITY_LIVE_PROCESS = "process_attribution";
+var CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
+var FINDING_SEVERITY = Object.freeze({
+  error: "critical",
+  warn: "medium",
+  info: "info"
+});
 var FACT_PREFIX_DOMAIN = Object.freeze([
   ["scaffold.", "template_scaffold"],
   ["template.", "template_scaffold"],
@@ -19417,7 +20014,7 @@ var AUDIT_CHILD_ENV_KEYS = [
   "PJ_PROJECT_REGISTRY",
   "NO_COLOR"
 ];
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function nonEmptyString3(value) {
@@ -19444,7 +20041,7 @@ function retrievalFor(agentId, domain, live) {
   return bounded2(parts.join(" "));
 }
 function mostClippedDomain(own, kept, domains) {
-  const count = (list, domain) => list.reduce((total, item) => total + (item.domain === domain ? 1 : 0), 0);
+  const count = (list2, domain) => list2.reduce((total, item) => total + (item.domain === domain ? 1 : 0), 0);
   let best = domains[0];
   let bestDropped = -1;
   for (const domain of domains) {
@@ -19555,28 +20152,88 @@ function resolveStatusScope(options, registeredIds, totalRegisteredAgents) {
     domains
   };
 }
-function addFinding3(ctx, finding2) {
+function addFinding3(ctx, input) {
   if (ctx.findings.length >= FLEET_STATUS_MAX_FINDINGS) {
     ctx.droppedFindings += 1;
     return;
   }
-  ctx.findings.push({ ...finding2, detail: bounded2(redactHome(finding2.detail)) });
+  const scope = input.scope ?? (input.agent_id === null ? "fleet" : "agent");
+  ctx.findings.push({
+    code: input.code,
+    field: input.field,
+    agent_id: input.agent_id,
+    source: input.source,
+    severity: input.severity,
+    detail: bounded2(redactHome(input.detail)),
+    domain: input.domain,
+    scope,
+    // The same stable-id idiom every observation uses, so a finding can be
+    // joined across runs and across adapters exactly as an observation can.
+    // `code` plus `subject` take the rule-id slot: the code says what KIND of
+    // finding it is and the subject says which one.
+    finding_id: statusFindingId(
+      scope,
+      input.agent_id,
+      input.domain,
+      input.subject ? `${input.code}:${input.subject}` : input.code,
+      input.field,
+      "finding"
+    ),
+    status_severity: input.statusSeverity ?? FINDING_SEVERITY[input.severity],
+    gating: input.gating ?? input.severity === "error"
+  });
 }
 function observation2(ctx, input) {
   const scope = input.agentId === null ? "fleet" : "agent";
+  const field3 = bounded2(input.field);
+  const summary = bounded2(redactHome(input.summary));
+  const retrieval = retrievalFor(input.agentId, input.domain, ctx.live);
+  const declaredOwner = input.owner !== void 0 ? input.owner : ctx.authority.ownerOf(input.field);
+  const freshness = input.source === SOURCE_REGISTRY && input.agentId !== null ? evaluateDomainFreshness(input.domain, ctx.freshnessFor(input.agentId), ctx.referenceMs, ctx.policy) : "not_applicable";
+  const classification = classifyObservation({
+    domain: input.domain,
+    state: input.state,
+    field: field3,
+    ruleId: input.ruleId ?? null,
+    ruleScope: input.ruleScope ?? null,
+    source: input.source,
+    capability: input.capability ?? null,
+    evidence: input.evidence ?? null,
+    fixable: input.fixable ?? null,
+    exceptionId: input.exceptionId ?? null,
+    exceptionReason: input.exceptionReason ?? null,
+    freshness,
+    repo: input.agentId === null ? null : ctx.repoFor(input.agentId),
+    retrieval,
+    activationField: ctx.activationField,
+    activationOwner: ctx.activationOwner
+  }, ctx.policy);
   return {
     domain: input.domain,
     agent_id: input.agentId,
     state: input.state,
     rule_id: input.ruleId ?? null,
-    owner: input.owner !== void 0 ? input.owner : ctx.authority.ownerOf(input.field),
+    owner: declaredOwner ?? ctx.domainOwner(input.domain),
     rule_scope: input.ruleScope ?? null,
-    field: bounded2(input.field),
-    summary: bounded2(redactHome(input.summary)),
+    field: field3,
+    summary,
     details: boundedDetails(input.details),
     finding_id: statusFindingId(scope, input.agentId, input.domain, input.ruleId ?? null, input.field, input.source),
     source: input.source,
-    retrieval: retrievalFor(input.agentId, input.domain, ctx.live)
+    retrieval,
+    applicability: classification.applicability,
+    evidence: classification.evidence,
+    freshness: classification.freshness,
+    severity: classification.severity,
+    repair: classification.repair,
+    // Never a fabricated pair: where the site supplied neither side, the live
+    // half is what this run concluded and the recorded half is what the domain
+    // declares. Both are real statements; neither is a value nobody stores.
+    observed: bounded2(redactHome(input.observed ?? summary)),
+    desired: bounded2(redactHome(input.desired ?? DOMAIN_DESIRED[input.domain])),
+    next_action: classification.next_action,
+    next_action_class: classification.next_action_class,
+    justification: classification.justification
   };
 }
 function observeFromInventory(ctx, row, domains) {
@@ -19587,20 +20244,45 @@ function observeFromInventory(ctx, row, domains) {
     const details = [];
     let state = "pass";
     let summary = "the registry row is well formed and correlated to a project record";
+    let observed = "well formed, in no conflict, correlated";
+    let evidence = null;
+    let exceptionId = null;
+    let exceptionReason = null;
     if (row.malformed) {
       state = "fail";
       summary = "the registry row is malformed; it was salvaged rather than read";
+      observed = "a malformed entry, salvaged";
     } else if (row.conflicts.length > 0) {
       state = "fail";
       summary = `this row participates in ${row.conflicts.length} identity conflict group(s)`;
       details.push(...row.conflicts);
+      observed = `${row.conflicts.length} identity conflict group(s): ${row.conflicts.join(", ")}`;
+      evidence = "derived";
+      const rulings = row.conflicts.map((groupId) => ctx.exceptionFor(groupId));
+      if (rulings.length > 0 && rulings.every((ruling) => ruling !== null)) {
+        exceptionId = rulings.map((ruling) => ruling.id).join(", ");
+        exceptionReason = rulings[0].reason;
+      }
     } else if (row.correlation.state !== "resolved") {
       state = "warn";
       summary = "the row is not correlated to a project-registry record";
       details.push(`correlation is ${row.correlation.state}`);
+      observed = `correlation is ${row.correlation.state}`;
     }
     if (row.findings.length) details.push(`row findings: ${row.findings.join(", ")}`);
-    out.push(observation2(ctx, { domain: "registry", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    out.push(observation2(ctx, {
+      domain: "registry",
+      agentId,
+      state,
+      field: field3,
+      summary,
+      details,
+      source: SOURCE_REGISTRY,
+      observed,
+      evidence,
+      exceptionId,
+      exceptionReason
+    }));
   }
   if (domains.has("project_binding")) {
     const field3 = "agents.{agent_id}.plane.identifier";
@@ -19618,10 +20300,21 @@ function observeFromInventory(ctx, row, domains) {
       state = "warn";
       summary = `the row's project identity is ${row.project_id.state}`;
     }
-    if (row.board.value) {
-      details.push(`workspace=${row.board.value.workspace ?? "-"} board=${row.board.value.project_id ?? "-"} identifier=${row.board.value.identifier ?? "-"}`);
-    }
-    out.push(observation2(ctx, { domain: "project_binding", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    const binding = row.board.value ? `workspace=${row.board.value.workspace ?? "-"} board=${row.board.value.project_id ?? "-"} identifier=${row.board.value.identifier ?? "-"}` : "no board binding recorded";
+    if (row.board.value) details.push(binding);
+    out.push(observation2(ctx, {
+      domain: "project_binding",
+      agentId,
+      state,
+      field: field3,
+      summary,
+      details,
+      source: SOURCE_REGISTRY,
+      observed: binding,
+      // The manifest comparison is DERIVED: it is a disagreement between two
+      // readings rather than a reading of its own.
+      evidence: row.manifest.agrees === false ? "derived" : null
+    }));
   }
   if (domains.has("profile")) {
     const field3 = DOMAIN_FIELD.profile;
@@ -19641,7 +20334,16 @@ function observeFromInventory(ctx, row, domains) {
       summary = `the profile directory is ${view?.classification ?? "undeclared"}`;
     }
     if (view?.declared) details.push(view.declared);
-    out.push(observation2(ctx, { domain: "profile", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    out.push(observation2(ctx, {
+      domain: "profile",
+      agentId,
+      state,
+      field: field3,
+      summary,
+      details,
+      source: SOURCE_REGISTRY,
+      observed: `${row.profile_name.value ?? "no profile named"} at ${view?.declared ?? "an undeclared path"} (${view?.classification ?? "undeclared"})`
+    }));
   }
   if (domains.has("runtime")) {
     const field3 = "agents.{agent_id}.role_dir";
@@ -19657,7 +20359,16 @@ function observeFromInventory(ctx, row, domains) {
       summary = `the expected runtime directory is ${view?.classification ?? "undeclared"}`;
     }
     if (view?.declared) details.push(view.declared);
-    out.push(observation2(ctx, { domain: "runtime", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    out.push(observation2(ctx, {
+      domain: "runtime",
+      agentId,
+      state,
+      field: field3,
+      summary,
+      details,
+      source: SOURCE_REGISTRY,
+      observed: `${view?.declared ?? "no runtime directory derived"} (${view?.classification ?? "undeclared"})`
+    }));
   }
   if (domains.has("bloodbank")) {
     const field3 = "agents.{agent_id}.bloodbank.gateway_scope";
@@ -19671,11 +20382,35 @@ function observeFromInventory(ctx, row, domains) {
     if (row.bloodbank_scope.value === null || row.bloodbank_target.value === null) {
       state = "warn";
       summary = "the row records an incomplete Bloodbank routing record";
-    } else if (row.activation.value === null) {
-      state = "warn";
-      summary = "the strict activation flag is absent or not a boolean; the contract's declared default is deny";
     }
-    out.push(observation2(ctx, { domain: "bloodbank", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    out.push(observation2(ctx, {
+      domain: "bloodbank",
+      agentId,
+      state,
+      field: field3,
+      summary,
+      details,
+      source: SOURCE_REGISTRY,
+      observed: `gateway_scope=${row.bloodbank_scope.value ?? "-"} target_agent_id=${row.bloodbank_target.value ?? "-"}`,
+      desired: "a fleet-scoped routing record naming this agent as its target",
+      // DECLARED, not direct. The row ASSERTS a routing target; nothing in this
+      // run read the shared gateway to see whether it can reach one. That
+      // distinction is what stops a registry field from ever setting
+      // `capability_readiness: "ready"`.
+      evidence: "declared"
+    }));
+    out.push(observation2(ctx, {
+      domain: "bloodbank",
+      agentId,
+      state: row.activation.value === null ? "warn" : "pass",
+      field: ctx.activationField,
+      summary: row.activation.value === null ? "the strict activation flag is absent or not a boolean; the contract's declared default is deny" : `execution authority is ${row.activation.value ? "granted" : "denied"} by the strict flag the contract declares`,
+      details: [`${row.activation_field.value ?? ctx.activationField} owned by ${ctx.activationOwner}, strict, default deny`],
+      source: SOURCE_REGISTRY,
+      observed: row.activation.value === null ? "absent or not a boolean" : row.activation.value ? "true" : "false",
+      desired: "an explicit boolean, written only by the declared execution-authority owner",
+      evidence: "declared"
+    }));
     out.push(observation2(ctx, {
       domain: "bloodbank",
       agentId,
@@ -19683,7 +20418,15 @@ function observeFromInventory(ctx, row, domains) {
       field: "gateways.bloodbank.command_subject",
       summary: "no Bloodbank liveness observer exists in this release; routing readiness is story 1.10",
       details: ["the routing RECORD above is observed; whether the shared gateway can dispatch to it is not"],
-      source: SOURCE_DECLARED_GAP
+      source: SOURCE_DECLARED_GAP,
+      // The capability the CONTRACT authorizes, by name. Remove the
+      // `health_policy.deferred_capabilities` entry and this observation is
+      // unchanged, unjustified, and counted against `proven` -- which is the
+      // difference between a gap somebody signed off and a gap that authorized
+      // itself.
+      capability: CAPABILITY_BLOODBANK_LIVENESS,
+      observed: "not observed",
+      desired: "the fleet-shared gateway proven able to dispatch to this target"
     }));
   }
   if (domains.has("systemd")) {
@@ -19697,7 +20440,10 @@ function observeFromInventory(ctx, row, domains) {
         ...(row.expected_units.value ?? []).map((unit) => `expected ${unit}`),
         "canonical systemd topology and service health is story 1.8"
       ],
-      source: SOURCE_DECLARED_GAP
+      source: SOURCE_DECLARED_GAP,
+      capability: CAPABILITY_SYSTEMD,
+      observed: "not observed",
+      desired: (row.expected_units.value ?? []).join(", ") || "the canonical per-agent unit set"
     }));
   }
   if (domains.has("live_process")) {
@@ -19708,7 +20454,10 @@ function observeFromInventory(ctx, row, domains) {
       field: "processes.{agent_id}",
       summary: "no live-process observer exists in this release",
       details: ["there is no ps, pgrep, or /proc read anywhere in this build; process attribution is story 1.9"],
-      source: SOURCE_DECLARED_GAP
+      source: SOURCE_DECLARED_GAP,
+      capability: CAPABILITY_LIVE_PROCESS,
+      observed: "not observed",
+      desired: "every running Hermes process attributed to a registry row"
     }));
   }
   return out;
@@ -19731,7 +20480,9 @@ function observeFromProvenance(ctx, facts, agentId, domains) {
       state: "unobserved",
       field: DOMAIN_FIELD[domain],
       summary: `the provenance core reported no ${domain === "template_scaffold" ? "scaffold" : "release"} fact for this agent`,
-      source: SOURCE_PROVENANCE
+      source: SOURCE_PROVENANCE,
+      observed: "no fact",
+      desired: `at least one ${domain === "template_scaffold" ? "scaffold" : "release"} provenance fact for this agent`
     }));
   }
   return out;
@@ -19749,7 +20500,18 @@ function factObservation(ctx, fact, domain, agentId) {
       `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
       `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
     ],
-    source: SOURCE_PROVENANCE
+    source: SOURCE_PROVENANCE,
+    // The pair the provenance core already computed, carried across rather than
+    // re-derived: one global rule, `desired` is the recorded/pinned side and
+    // `observed` is the live one, and inventing a second shape for it here is
+    // how the two halves start disagreeing about which is which.
+    observed: fact.observed.value ?? `${fact.observed.state} (${fact.observed.source ?? "no source"})`,
+    desired: fact.desired.value ?? `${fact.desired.state} (${fact.desired.source ?? "no source"})`,
+    // A provenance `unsupported` is the SAME kind of statement the three
+    // declared gaps make -- nothing on this host records a comparable value --
+    // so it joins the policy on the fact id, and an undeclared one is
+    // unjustified exactly as an undeclared declared-gap is.
+    capability: fact.status === "unsupported" ? fact.id : null
   });
 }
 function classifyFact(ctx, fact) {
@@ -19758,6 +20520,8 @@ function classifyFact(ctx, fact) {
     ctx.unmappedFacts.add(fact.id);
     addFinding3(ctx, {
       code: "provenance-fact-unmapped",
+      domain: resolved.domain,
+      subject: fact.id,
       field: fact.field,
       agent_id: null,
       source: fact.owner,
@@ -19766,6 +20530,21 @@ function classifyFact(ctx, fact) {
     });
   }
   return resolved;
+}
+function agentLifecycle(row, own) {
+  const routingRecorded = row.bloodbank_scope.value !== null && row.bloodbank_target.value !== null;
+  const profileNamed = row.profile_name.value !== null;
+  const desired = row.activation.value === true ? "activated" : routingRecorded ? "routing_ready" : profileNamed ? "installed" : "discovered";
+  const profileProven = own.some((item) => item.domain === "profile" && item.source === SOURCE_REGISTRY && item.evidence === "direct" && item.state === "pass");
+  const anyFailure = own.some((item) => item.state === "fail" || item.state === "error");
+  const observed = !profileProven ? "discovered" : anyFailure ? "installed" : "healthy";
+  const readiness = !routingRecorded ? "not_applicable" : own.some((item) => item.domain === "bloodbank" && (item.state === "fail" || item.state === "error")) ? "blocked" : "unproven";
+  return {
+    desired_state: desired,
+    observed_state: observed,
+    capability_readiness: readiness,
+    activation: row.activation.value === true ? "granted" : row.activation.value === false ? "denied" : "undeclared"
+  };
 }
 function resolveAuditCli(env2 = process.env) {
   const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
@@ -19805,10 +20584,30 @@ async function auditRepository(ctx, entry, repoPath, registryPath2, env2) {
   } catch {
     return { rules: null, outcome: "failed", reason: "audit-unparseable-json", code: result2.code };
   }
-  if (!isRecord7(parsed) || !Array.isArray(parsed.rules)) {
+  if (!isRecord8(parsed) || !Array.isArray(parsed.rules)) {
     return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown", code: result2.code };
   }
-  return { rules: parsed.rules.filter(isRecord7), outcome: "ok", reason: null, code: result2.code };
+  return { rules: parsed.rules.filter(isRecord8), outcome: "ok", reason: null, code: result2.code };
+}
+function timestampAt(root, segments) {
+  let node = root;
+  for (const segment of segments) {
+    if (!isRecord8(node)) return null;
+    node = node[segment];
+  }
+  if (typeof node === "string") return nonEmptyString3(node);
+  if (node instanceof Date) return node.toISOString();
+  return null;
+}
+function resolveFreshnessValues(policy, agentRow, projectRecord) {
+  const values = /* @__PURE__ */ new Map();
+  for (const { entry } of policy.freshness) {
+    const [root, key, ...rest] = entry.field.split(".");
+    if (root === "agents" && key === "{agent_id}") values.set(entry.field, timestampAt(agentRow, rest));
+    else if (root === "projects" && key === "{slug}") values.set(entry.field, timestampAt(projectRecord, rest));
+    else values.set(entry.field, null);
+  }
+  return values;
 }
 async function collectFleetStatus(options) {
   const runContext = options.runContext;
@@ -19816,6 +20615,25 @@ async function collectFleetStatus(options) {
   const home = options.home ?? homedir14();
   const live = options.live === true;
   throwIfCancelled(runContext);
+  const referenceMs = Date.now();
+  let baselineSnapshots = [];
+  const baselinePath = nonEmptyString3(options.baseline);
+  if (baselinePath !== null) {
+    const resolved = resolve20(expandHome4(baselinePath, home));
+    const shown = shownPath3(resolved);
+    let text2;
+    try {
+      text2 = readFileSync25(resolved, "utf8");
+    } catch {
+      throw new FleetError(
+        "INVALID_INPUT",
+        "--baseline names a file that could not be read",
+        false,
+        { baseline: shown }
+      );
+    }
+    baselineSnapshots = parseBaselineDocument(text2, shown);
+  }
   const contractPath = resolveFleetContractPath(options.contract);
   const loaded = loadFleetContract(contractPath);
   const validation = validateFleetContract(loaded.document);
@@ -19839,8 +20657,49 @@ async function collectFleetStatus(options) {
   const { scope, agentIds, domains } = resolveStatusScope(options, registeredIds, inventory.totals.registered_agents);
   const domainSet = new Set(domains);
   const selectedAgents = new Set(agentIds);
+  const stores = resolveInventoryStores(options);
+  const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
+  const agentRawById = /* @__PURE__ */ new Map();
+  for (const entry of agentRaw.entries) if (!agentRawById.has(entry.key)) agentRawById.set(entry.key, entry.value);
+  const repoByAgent = /* @__PURE__ */ new Map();
+  for (const entry of agentRaw.entries) {
+    if (!selectedAgents.has(entry.key)) continue;
+    const raw = isRecord8(entry.value) ? entry.value : {};
+    const declared = nonEmptyString3(raw.project_path);
+    if (declared !== null) repoByAgent.set(entry.key, resolve20(expandHome4(declared, home)));
+  }
+  const policy = readHealthPolicy(contract);
+  const projectRawBySlug = /* @__PURE__ */ new Map();
+  if (policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
+    const projectRaw = readProjectRegistryRaw(stores.projects.inspectedPath);
+    for (const entry of projectRaw.entries) {
+      if (!projectRawBySlug.has(entry.key)) projectRawBySlug.set(entry.key, entry.value);
+      const slug = isRecord8(entry.value) ? nonEmptyString3(entry.value.slug) : null;
+      if (slug !== null && !projectRawBySlug.has(slug)) projectRawBySlug.set(slug, entry.value);
+    }
+  }
+  const freshnessByAgent = /* @__PURE__ */ new Map();
+  const authority = buildAuthorityIndex(contract);
+  const execution = contract.activation?.execution_authority;
+  const activationField = nonEmptyString3(execution?.field) ?? "agents.{agent_id}.bloodbank.enabled";
+  const activationOwner = nonEmptyString3(execution?.owner) ?? "the declared execution-authority owner";
+  const domainOwners = /* @__PURE__ */ new Map();
+  for (const [domain, block] of Object.entries(DOMAIN_AUTHORITY_BLOCK)) {
+    const declared = contract.authorities?.[block];
+    domainOwners.set(domain, nonEmptyString3(declared?.owner));
+  }
+  const exceptionsByGroup = /* @__PURE__ */ new Map();
+  for (const group of inventory.conflicts) {
+    const ruling = matchException(group, contract);
+    if (!ruling) continue;
+    const entry = (contract.classifications?.intentionally_unmanaged?.entries ?? []).find((candidate) => isRecord8(candidate) && nonEmptyString3(candidate.id) === ruling.id);
+    exceptionsByGroup.set(group.id, {
+      id: ruling.id,
+      reason: (isRecord8(entry) ? nonEmptyString3(entry.rationale) : null) ?? "a managed exception the contract records for exactly these participants"
+    });
+  }
   const ctx = {
-    authority: buildAuthorityIndex(contract),
+    authority,
     live,
     observations: [],
     findings: [],
@@ -19849,26 +20708,54 @@ async function collectFleetStatus(options) {
     unmappedRules: /* @__PURE__ */ new Set(),
     unexpectedDomainRules: /* @__PURE__ */ new Set(),
     unmappedFacts: /* @__PURE__ */ new Set(),
-    unreportedHostRules: /* @__PURE__ */ new Set()
+    unreportedHostRules: /* @__PURE__ */ new Set(),
+    policy,
+    referenceMs,
+    activationField,
+    activationOwner,
+    domainOwner: (domain) => domainOwners.get(domain) ?? null,
+    freshnessFor: (agentId) => {
+      const cached = freshnessByAgent.get(agentId);
+      if (cached) return cached;
+      const row = rowsById.get(agentId);
+      const slug = row?.project_id.value ?? null;
+      const values = resolveFreshnessValues(
+        policy,
+        agentRawById.get(agentId),
+        slug === null ? void 0 : projectRawBySlug.get(slug)
+      );
+      freshnessByAgent.set(agentId, values);
+      return values;
+    },
+    repoFor: (agentId) => {
+      const repo = repoByAgent.get(agentId);
+      return repo === void 0 ? null : shownPath3(repo);
+    },
+    exceptionFor: (groupId) => exceptionsByGroup.get(groupId) ?? null
   };
+  if (!policy.declared) {
+    addFinding3(ctx, {
+      code: "health-policy-undeclared",
+      domain: "registry",
+      field: "agents.{agent_id}",
+      agent_id: null,
+      source: authority.ownerOf("agents.{agent_id}"),
+      severity: "warn",
+      statusSeverity: "high",
+      gating: true,
+      detail: `${shownPath3(contractPath)} declares no health_policy block, so no skip, warning, deferred capability or managed exception is authorized; every non-pass is reported unjustified and the fleet cannot claim proof`
+    });
+  }
   if (inventory.totals.registered_agents === 0) {
     addFinding3(ctx, {
       code: "registry-declares-no-agents",
+      domain: "registry",
       field: "agents.{agent_id}",
       agent_id: null,
       source: ctx.authority.ownerOf("agents.{agent_id}"),
       severity: "error",
       detail: "the agent registry declares no agents, so nothing was observed; an empty fleet is a source this run could not read, never a healthy one"
     });
-  }
-  const stores = resolveInventoryStores(options);
-  const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
-  const repoByAgent = /* @__PURE__ */ new Map();
-  for (const entry of agentRaw.entries) {
-    if (!selectedAgents.has(entry.key)) continue;
-    const raw = isRecord7(entry.value) ? entry.value : {};
-    const declared = nonEmptyString3(raw.project_path);
-    if (declared !== null) repoByAgent.set(entry.key, resolve20(expandHome4(declared, home)));
   }
   let provenanceFacts = [];
   const needsProvenance = domains.some((domain) => PROVENANCE_FED_DOMAINS.has(domain));
@@ -19906,6 +20793,7 @@ async function collectFleetStatus(options) {
     if (auditEntry === null) {
       addFinding3(ctx, {
         code: "audit-cli-unavailable",
+        domain: "template_scaffold",
         field: DOMAIN_FIELD.template_scaffold,
         agent_id: null,
         // A real owner, resolved from the contract like every other finding this
@@ -19942,6 +20830,8 @@ async function collectFleetStatus(options) {
         if (result2.outcome !== "ok") {
           addFinding3(ctx, {
             code: `audit-${result2.outcome}`,
+            domain: "template_scaffold",
+            subject: shownPath3(repoPath),
             field: DOMAIN_FIELD.template_scaffold,
             agent_id: null,
             source: ctx.authority.ownerOf(DOMAIN_FIELD.template_scaffold),
@@ -19962,6 +20852,8 @@ async function collectFleetStatus(options) {
       if (rules.length === 0) continue;
       addFinding3(ctx, {
         code: "audit-host-rules-not-collected",
+        domain,
+        subject: domain,
         field: DOMAIN_FIELD[domain],
         agent_id: null,
         source: ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
@@ -19975,6 +20867,7 @@ async function collectFleetStatus(options) {
   let totalObservations = 0;
   let emittedObservations = 0;
   const truncated = [];
+  const members = emptyMembers();
   if (agentIds.length > FLEET_STATUS_MAX_AGENTS) {
     truncated.push(
       `agents: ${agentIds.length - FLEET_STATUS_MAX_AGENTS} of ${agentIds.length} agent records dropped; every one of them is still counted in totals, by_state and health; retrieve a dropped record with \`pjangler fleet status --agent <id> --json\``
@@ -19996,7 +20889,9 @@ async function collectFleetStatus(options) {
           field: DOMAIN_FIELD[domain],
           summary: "the recipe-owned audit rules were not run; pass --live to authorize bounded read-only host observation",
           details: ["a default run makes no network call, and the bmad version rule's `npm view` is a real one"],
-          source: SOURCE_AUDIT
+          source: SOURCE_AUDIT,
+          observed: "not read",
+          desired: "the recipe-owned audit rules run for this agent's repository"
         }));
       }
     } else if (auditEntry === null || audit === void 0 || audit.outcome !== "ok") {
@@ -20011,7 +20906,9 @@ async function collectFleetStatus(options) {
           field: DOMAIN_FIELD[domain],
           summary: `the recipe audit for this agent's repository could not be read (${reason})`,
           details: ["every other agent's record is unaffected; a collection error is never a pass and never a dropped agent"],
-          source: SOURCE_AUDIT
+          source: SOURCE_AUDIT,
+          observed: reason,
+          desired: "a parseable report from the recipe audit of this agent's repository"
         }));
       }
     } else {
@@ -20025,6 +20922,8 @@ async function collectFleetStatus(options) {
             ctx.unmappedRules.add(ruleId);
             addFinding3(ctx, {
               code: "audit-rule-unmapped",
+              domain,
+              subject: ruleId,
               field: DOMAIN_FIELD[domain],
               agent_id: null,
               source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
@@ -20038,6 +20937,8 @@ async function collectFleetStatus(options) {
           ctx.unexpectedDomainRules.add(ruleId);
           addFinding3(ctx, {
             code: "audit-domain-unexpected",
+            domain,
+            subject: ruleId,
             field: DOMAIN_FIELD[domain],
             agent_id: null,
             source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
@@ -20050,6 +20951,9 @@ async function collectFleetStatus(options) {
             ctx.unreportedHostRules.add(ruleId);
             addFinding3(ctx, {
               code: "audit-host-rules-not-reported",
+              domain,
+              subject: ruleId,
+              scope: "host",
               field: DOMAIN_FIELD[domain],
               agent_id: null,
               source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
@@ -20070,21 +20974,48 @@ async function collectFleetStatus(options) {
         const state = ruleState(rule.status);
         if (scopeOfRule === "host") {
           const accumulated = hostByRule.get(ruleId);
-          const candidate = {
-            rule_id: ruleId,
-            owner,
+          const hostRetrieval = retrievalFor(null, AUDIT_PER_AGENT_DOMAINS.has(domain) ? domain : null, true);
+          const hostSummary = bounded2(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId));
+          const hostClassification = classifyObservation({
             domain,
             state,
-            summary: bounded2(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId)),
+            field: DOMAIN_FIELD[domain],
+            ruleId,
+            ruleScope: "host",
+            source: SOURCE_AUDIT,
+            capability: null,
+            evidence: null,
+            fixable: typeof rule.fixable === "boolean" ? rule.fixable : null,
+            exceptionId: null,
+            exceptionReason: null,
+            freshness: "not_applicable",
+            repo: null,
+            retrieval: hostRetrieval,
+            activationField: ctx.activationField,
+            activationOwner: ctx.activationOwner
+          }, ctx.policy);
+          const candidate = {
+            rule_id: ruleId,
+            // Never null on a non-pass: `recipeRegistry` answers for every rule
+            // it declares, and the contract's own authority for the domain
+            // answers for one it does not.
+            owner: owner ?? ctx.domainOwner(domain),
+            domain,
+            state,
+            summary: hostSummary,
             details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
             finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
-            // A retrieval that returns nothing is worse than none. `--domain
-            // registry|systemd|bloodbank --live` spawns no child (they are not in
-            // `AUDIT_PER_AGENT_DOMAINS`), so the narrowed command comes back with
-            // `data.host: []` -- measured on the live fleet for 4 of 6 host
-            // findings, each of which named exactly that command. Those domains
-            // get the unfiltered invocation, which is the one that collects them.
-            retrieval: retrievalFor(null, AUDIT_PER_AGENT_DOMAINS.has(domain) ? domain : null, true)
+            retrieval: hostRetrieval,
+            applicability: hostClassification.applicability,
+            evidence: hostClassification.evidence,
+            freshness: hostClassification.freshness,
+            severity: hostClassification.severity,
+            repair: hostClassification.repair,
+            observed: hostSummary,
+            desired: bounded2(`the host-scoped rule ${ruleId} reporting pass on this machine`),
+            next_action: hostClassification.next_action,
+            next_action_class: hostClassification.next_action_class,
+            justification: hostClassification.justification
           };
           if (accumulated === void 0) {
             hostByRule.set(ruleId, { finding: candidate, states: /* @__PURE__ */ new Map([[state, 1]]) });
@@ -20094,6 +21025,7 @@ async function collectFleetStatus(options) {
           }
           continue;
         }
+        const ruleSummary = nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId;
         own.push(observation2(ctx, {
           domain,
           agentId,
@@ -20102,9 +21034,17 @@ async function collectFleetStatus(options) {
           owner,
           ruleId,
           ruleScope: "project",
-          summary: nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId,
+          summary: ruleSummary,
           details: Array.isArray(rule.details) ? rule.details : [],
-          source: SOURCE_AUDIT
+          source: SOURCE_AUDIT,
+          observed: ruleSummary,
+          desired: `the recipe rule ${ruleId} reporting pass for this repository`,
+          // The rule's OWN `fixable`, verbatim. It is what decides whether the
+          // repair class is `automatic` and whether the next action can be a
+          // real `pjangler migrate` invocation -- read from the report rather
+          // than guessed from the rule id, so a rule that loses its recipe
+          // stops claiming one in the same run.
+          fixable: typeof rule.fixable === "boolean" ? rule.fixable : null
         }));
       }
     }
@@ -20113,12 +21053,20 @@ async function collectFleetStatus(options) {
     ctx.observations.push(...own);
     const byDomain = {};
     for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
+    const healthy = !own.some((item) => item.state === "fail" || item.state === "error");
+    const clipped = own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT;
+    const complete = !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped;
+    const lifecycle = agentLifecycle(row, own);
+    const memberClass = classifyMember(
+      { healthy, complete },
+      row.classification.value ?? "unclassified",
+      own
+    );
+    members[memberClass] += 1;
     if (agentRecords.length >= FLEET_STATUS_MAX_AGENTS) continue;
     let kept = own;
-    let clipped = false;
     let retrieval = retrievalFor(agentId, domains.length === 1 ? domains[0] : null, live);
-    if (own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT) {
-      clipped = true;
+    if (clipped) {
       kept = own.slice(0, FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT);
       retrieval = retrievalFor(agentId, mostClippedDomain(own, kept, domains), live);
       truncated.push(
@@ -20131,10 +21079,12 @@ async function collectFleetStatus(options) {
       observations: kept,
       domains: byDomain,
       state: rollUp(own),
-      healthy: !own.some((item) => item.state === "fail" || item.state === "error"),
-      complete: !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped,
+      healthy,
+      complete,
       truncated: clipped,
-      retrieval
+      retrieval,
+      lifecycle,
+      member_class: memberClass
     });
   }
   const fleetObservations = [];
@@ -20176,8 +21126,23 @@ async function collectFleetStatus(options) {
   if (ctx.droppedFindings > 0) {
     truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
   }
-  const findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
+  const contradictions = detectContradictions(ctx.observations);
+  for (const contradiction of contradictions) {
+    addFinding3(ctx, {
+      code: "status-contradiction",
+      domain: contradiction.domain,
+      field: contradiction.field,
+      agent_id: contradiction.agent_id,
+      source: ctx.authority.ownerOf(contradiction.field) ?? ctx.domainOwner(contradiction.domain),
+      severity: "error",
+      statusSeverity: "high",
+      gating: true,
+      detail: `${contradiction.detail}; joined observations ${contradiction.finding_ids.join(", ")}`
+    });
+  }
+  const findings = [...ctx.findings].sort(compareStatusFindings);
   const probes = [...ctx.probes].sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0);
+  const transitions = baselinePath === null ? [] : boundTransitions(diffFindings(baselineSnapshots, snapshotCurrent(ctx.observations, host)), truncated);
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
   for (const item of ctx.observations) byState[item.state] += 1;
   const collectionErrors = probes.filter((record) => record.outcome !== "ok" && record.kind === "audit").length + (wantsAudit && auditEntry === null ? 1 : 0) + (inventory.totals.registered_agents === 0 ? 1 : 0);
@@ -20192,20 +21157,16 @@ async function collectFleetStatus(options) {
     audits_observed: auditsObserved,
     by_state: byState
   };
-  const health = {
-    healthy: byState.fail === 0 && byState.error === 0,
-    complete: byState.unobserved === 0 && byState.error === 0 && collectionErrors === 0 && truncated.length === 0,
-    fleet_complete: false,
-    failed: byState.fail,
-    warned: byState.warn,
-    skipped: byState.skip,
-    unsupported: byState.unsupported,
-    unobserved: byState.unobserved,
-    errors: byState.error,
-    collection_errors: collectionErrors,
-    truncated: truncated.length > 0
-  };
-  health.fleet_complete = health.complete && scope.kind === "fleet" && scope.domain === null && scope.live && totals.agents > 0 && totals.emitted_agents === totals.agents;
+  const health = evaluateFleetHealth({
+    observations: ctx.observations,
+    members,
+    collectionErrors,
+    contradictions: contradictions.length,
+    truncated: truncated.length > 0,
+    scope,
+    totalAgents: totals.agents,
+    emittedAgents: totals.emitted_agents
+  });
   return {
     contract_path: shownPath3(contractPath),
     contract_version: contract.contract_version,
@@ -20217,6 +21178,7 @@ async function collectFleetStatus(options) {
     host,
     findings,
     probes,
+    transitions,
     truncated
   };
 }
@@ -20244,6 +21206,7 @@ async function runFleetTool(command, args, signal, collect, succeed, failureActi
     requireValue(args.agentRegistry, "agentRegistry");
     requireValue(args.contract, "contract");
     requireValue(args.domain, "domain");
+    requireValue(args.baseline, "baseline");
     const runContext = createRunContext({ signal, deadlineMs: args.deadlineMs });
     const value = await collect({
       agentId: args.agent,
@@ -20252,6 +21215,7 @@ async function runFleetTool(command, args, signal, collect, succeed, failureActi
       contract: args.contract,
       domain: args.domain,
       live: args.live,
+      baseline: args.baseline,
       runContext
     });
     return succeed(value);
@@ -20267,7 +21231,7 @@ function provenanceEnvelope(provenance) {
   return fleetSuccessEnvelope(PROVENANCE_COMMAND, provenance, provenance.health.healthy && provenance.health.complete ? ["Consume data.facts as the fleet's proven provenance; every fact names the source of both sides"] : [provenance.health.mismatched ? "Repoint each mismatched agent at the configured pin, or move the pin -- data.facts names both sides and the authority that owns the field" : provenance.health.missing ? "Record the missing values on the owning side; an absent pin is never a match" : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it"]);
 }
 function statusEnvelope(status) {
-  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.healthy && status.health.complete ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"] : [status.health.errors || status.health.collection_errors ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read" : status.health.failed ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine" : status.scope.live ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)" : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.proven ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its evidence, its severity, and the one action that changes it"] : [status.health.errors || status.health.collection_errors ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read" : status.health.failed ? "Repair the failing observations in data.agents, worst first -- data.findings is sorted by gating impact and severity, and data.host is separate on purpose" : status.health.unjustified ? "Every non-pass without a justification blocks proof: authorize it under health_policy in the fleet contract, or repair it" : status.health.stale ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry" : status.scope.live ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)" : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 function budgetAwareActions(what) {
   return (error) => [
@@ -20326,7 +21290,13 @@ function registerFleetMcpTools(server2, asText2) {
         // records that divergence for `deadlineMs`; there is no reason to add a
         // second instance of it here.
         domain: z.string().optional().describe(`Report only this domain: ${FLEET_STATUS_DOMAINS.join(", ")}.`),
-        live: z.boolean().optional().describe("Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository. Never mutation, process control, service changes, board changes, or Bloodbank activation.")
+        live: z.boolean().optional().describe("Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository. Never mutation, process control, service changes, board changes, or Bloodbank activation."),
+        baseline: z.string().optional().describe("Correlate against a prior status document and report every transition. Opened for reading only; an unreadable or unparseable file is INVALID_INPUT naming the path."),
+        // Accepted for surface parity with the CLI's `--exit-code` and inert
+        // over a protocol that has no process exit. `data.health.exit_category`
+        // is the discriminant on both adapters, which is what finally gives an
+        // MCP client one at all.
+        exitCode: z.boolean().optional().describe("No effect over MCP; read data.health.exit_category instead. Accepted so this tool exposes the CLI's option surface one-for-one.")
       })
     },
     async (args, extra) => {

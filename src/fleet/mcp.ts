@@ -58,6 +58,18 @@ interface FleetToolArgs {
   domain?: string;
   /** `fleet status` only. Authorizes bounded, read-only host and network observation. */
   live?: boolean;
+  /** `fleet status` only. A prior status document to correlate this run against. */
+  baseline?: string;
+  /**
+   * `fleet status` only, and deliberately INERT here.
+   *
+   * The CLI projects `data.health.exit_category` onto a process exit; a tool
+   * call has no process to exit. It is accepted so the two adapters expose one
+   * option surface -- an option the CLI has and the tool does not is how they
+   * stop being one command -- and it changes nothing in `data`, which is what
+   * keeps the deep-equality assertion meaningful.
+   */
+  exitCode?: boolean;
 }
 
 /**
@@ -76,6 +88,7 @@ interface FleetToolCollectInput {
   contract?: string;
   domain?: string;
   live?: boolean;
+  baseline?: string;
   runContext: FleetRunContext;
 }
 
@@ -127,6 +140,7 @@ async function runFleetTool<T>(
     requireValue(args.agentRegistry, "agentRegistry");
     requireValue(args.contract, "contract");
     requireValue(args.domain, "domain");
+    requireValue(args.baseline, "baseline");
     const runContext = createRunContext({ signal, deadlineMs: args.deadlineMs });
     const value = await collect({
       agentId: args.agent,
@@ -135,6 +149,7 @@ async function runFleetTool<T>(
       contract: args.contract,
       domain: args.domain,
       live: args.live,
+      baseline: args.baseline,
       runContext,
     });
     return succeed(value);
@@ -178,15 +193,19 @@ function provenanceEnvelope(provenance: FleetProvenance): FleetEnvelopeV1 {
  * absent: a caller reaching this over a protocol already has the JSON.
  */
 function statusEnvelope(status: FleetStatus): FleetEnvelopeV1 {
-  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.healthy && status.health.complete
-    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"]
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.proven
+    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its evidence, its severity, and the one action that changes it"]
     : [status.health.errors || status.health.collection_errors
       ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read"
       : status.health.failed
-        ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine"
-        : status.scope.live
-          ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
-          : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
+        ? "Repair the failing observations in data.agents, worst first -- data.findings is sorted by gating impact and severity, and data.host is separate on purpose"
+        : status.health.unjustified
+          ? "Every non-pass without a justification blocks proof: authorize it under health_policy in the fleet contract, or repair it"
+          : status.health.stale
+            ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry"
+            : status.scope.live
+              ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+              : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 
 function budgetAwareActions(what: string): (error: FleetError) => string[] {
@@ -271,6 +290,12 @@ export function registerFleetMcpTools(server: ToolHost, asText: AsText): void {
         // second instance of it here.
         domain: z.string().optional().describe(`Report only this domain: ${FLEET_STATUS_DOMAINS.join(", ")}.`),
         live: z.boolean().optional().describe("Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository. Never mutation, process control, service changes, board changes, or Bloodbank activation."),
+        baseline: z.string().optional().describe("Correlate against a prior status document and report every transition. Opened for reading only; an unreadable or unparseable file is INVALID_INPUT naming the path."),
+        // Accepted for surface parity with the CLI's `--exit-code` and inert
+        // over a protocol that has no process exit. `data.health.exit_category`
+        // is the discriminant on both adapters, which is what finally gives an
+        // MCP client one at all.
+        exitCode: z.boolean().optional().describe("No effect over MCP; read data.health.exit_category instead. Accepted so this tool exposes the CLI's option surface one-for-one."),
       }),
     },
     async (args: unknown, extra: { signal: AbortSignal }) => {

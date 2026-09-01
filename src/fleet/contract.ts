@@ -17,14 +17,21 @@ import {
   FLEET_CLASSIFICATION_KEYS,
   FLEET_CLASSIFICATION_REQUIRED_FIELDS,
   FLEET_COMPATIBILITY_KEYS,
+  FLEET_CONTRACT_OPTIONAL_ROOT_KEYS,
   FLEET_CONTRACT_ROOT_KEYS,
   FLEET_EXTENSION_PREFIX,
+  FLEET_HEALTH_POLICY_DEFERRED_KEYS,
+  FLEET_HEALTH_POLICY_FRESHNESS_KEYS,
+  FLEET_HEALTH_POLICY_KEYS,
+  FLEET_HEALTH_POLICY_SKIP_KEYS,
+  FLEET_HEALTH_POLICY_WARNING_KEYS,
   FLEET_FORBIDDEN_KEYS,
   FLEET_HEALTHY_CLASSIFICATIONS,
   FLEET_HEALTHY_SECTIONS,
   FLEET_PROJECTION_KEYS,
   FLEET_RETIRED_IDS,
   FLEET_RETIRED_KEYS,
+  FLEET_STATUS_DOMAINS,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
   FleetError,
   type FleetContract,
@@ -241,6 +248,7 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
     () => validateAuthorityConflicts(policy as unknown as FleetContract),
     () => sortDiagnostics(validateClassifications(policy as unknown as FleetContract)),
     () => sortDiagnostics(validateRetiredModes(policy as unknown as FleetContract)),
+    () => sortDiagnostics(validateHealthPolicy(policy)),
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -293,6 +301,11 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
     if (!(FLEET_CONTRACT_ROOT_KEYS as readonly string[]).includes(key)) fail(key, "unknown top-level key");
   }
   for (const key of FLEET_CONTRACT_ROOT_KEYS) {
+    // `health_policy` is in the allowlist -- it is real policy, not an `x-`
+    // extension -- but it is not REQUIRED: a schema-1 contract predates it and
+    // still has to load. Splitting the two loops is what makes the block
+    // optional without also making a typo of it an accepted unknown key.
+    if ((FLEET_CONTRACT_OPTIONAL_ROOT_KEYS as readonly string[]).includes(key)) continue;
     if (policy[key] === undefined) fail(key, "required top-level key is missing");
   }
   const compatibility = policy.compatibility;
@@ -758,5 +771,171 @@ function validateRetiredModes(contract: FleetContract): FleetDiagnostic[] {
       }
     }
   }
+  return findings;
+}
+
+/**
+ * Validate the optional `health_policy` block.
+ *
+ * OPTIONAL, and that is load-bearing: a schema-1 contract carries no block at
+ * all and must still validate. What it may not do is carry a block that LIES --
+ * a domain nobody declares, a `max_age_days` that is not a positive whole
+ * number of days, a deferral with no owner, or a freshness entry about a field
+ * no authority writes. An unvalidated policy block is a policy that stops
+ * authorizing anything the moment somebody typos a domain name, and it fails
+ * open: every gap it was supposed to justify silently becomes unjustified.
+ *
+ * Runs LAST of the six stages. Everything it checks is expressed in terms of
+ * the authorities and domains the earlier stages have already proven well
+ * formed, so running it first would mean re-deriving them from a tree nobody
+ * had validated.
+ */
+function validateHealthPolicy(policy: Record<string, unknown>): FleetDiagnostic[] {
+  const block = policy.health_policy;
+  if (block === undefined) return [];
+
+  const findings: FleetDiagnostic[] = [];
+  const fail = (path: string, message: string): void => { findings.push({ code: "INVALID_INPUT", path, message }); };
+  if (!isRecord(block)) {
+    fail("health_policy", "health_policy must be a mapping");
+    return findings;
+  }
+  for (const key of Object.keys(block)) {
+    if (!(FLEET_HEALTH_POLICY_KEYS as readonly string[]).includes(key)) fail(`health_policy.${key}`, "unknown health_policy key");
+  }
+
+  const domains = FLEET_STATUS_DOMAINS as readonly string[];
+  const requireDomain = (value: unknown, at: string): void => {
+    if (typeof value !== "string" || !domains.includes(value)) {
+      fail(at, `must name one of ${domains.join(", ")}`);
+    }
+  };
+
+  // Every field a policy entry addresses has to be a field some authority
+  // declares writable. Without this, `board_confirmd_at` is a freshness policy
+  // that matches nothing and reports every row `not_applicable` forever.
+  const declaredFields = new Set<string>();
+  const authorities = policy.authorities;
+  if (isRecord(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field of entry.writable_fields) if (typeof field === "string") declaredFields.add(field);
+    }
+  }
+
+  const required = block.required_domains;
+  if (required !== undefined) {
+    if (!Array.isArray(required)) fail("health_policy.required_domains", "required_domains must be a list");
+    else {
+      const seen = new Set<string>();
+      required.forEach((value: unknown, index: number) => {
+        const at = `health_policy.required_domains[${index}]`;
+        requireDomain(value, at);
+        if (typeof value !== "string") return;
+        if (seen.has(value)) fail(at, `duplicate required domain: ${value}`);
+        seen.add(value);
+      });
+    }
+  }
+
+  const deferred = block.deferred_capabilities;
+  if (deferred !== undefined) {
+    if (!Array.isArray(deferred)) fail("health_policy.deferred_capabilities", "deferred_capabilities must be a list");
+    else {
+      const seen = new Set<string>();
+      deferred.forEach((entry: unknown, index: number) => {
+        const at = `health_policy.deferred_capabilities[${index}]`;
+        if (!isRecord(entry)) { fail(at, "deferred capability must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_HEALTH_POLICY_DEFERRED_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown deferred_capabilities key");
+        }
+        requireDomain(entry.domain, `${at}.domain`);
+        if (entry.capability !== undefined && (typeof entry.capability !== "string" || entry.capability.length === 0)) {
+          fail(`${at}.capability`, "capability must be a non-empty name when it is declared");
+        }
+        // Both required, and this is the whole point of the entry: a deferral
+        // that names no reason and no owning story is an excuse, and nothing
+        // downstream can tell an operator when it stops being true.
+        for (const key of ["reason", "owner_story"] as const) {
+          const value = entry[key];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        }
+        const key = `${String(entry.domain)} ${typeof entry.capability === "string" ? entry.capability : ""}`;
+        if (seen.has(key)) fail(at, "duplicate deferred capability: the same domain and capability is already declared");
+        seen.add(key);
+      });
+    }
+  }
+
+  const warnings = block.allowed_warnings;
+  if (warnings !== undefined) {
+    if (!Array.isArray(warnings)) fail("health_policy.allowed_warnings", "allowed_warnings must be a list");
+    else {
+      warnings.forEach((entry: unknown, index: number) => {
+        const at = `health_policy.allowed_warnings[${index}]`;
+        if (!isRecord(entry)) { fail(at, "allowed warning must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_HEALTH_POLICY_WARNING_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown allowed_warnings key");
+        }
+        for (const key of ["rule_id", "reason", "owner"] as const) {
+          const value = entry[key];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        }
+      });
+    }
+  }
+
+  const skips = block.allowed_skips;
+  if (skips !== undefined) {
+    if (!Array.isArray(skips)) fail("health_policy.allowed_skips", "allowed_skips must be a list");
+    else {
+      skips.forEach((entry: unknown, index: number) => {
+        const at = `health_policy.allowed_skips[${index}]`;
+        if (!isRecord(entry)) { fail(at, "allowed skip must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_HEALTH_POLICY_SKIP_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown allowed_skips key");
+        }
+        const hasDomain = entry.domain !== undefined;
+        const hasRule = entry.rule_id !== undefined;
+        // Exactly one subject. An entry with neither matches nothing; an entry
+        // with both is two policies wearing one reason, and only one of them
+        // would ever be the one an operator meant.
+        if (hasDomain === hasRule) fail(at, "an allowed skip must name exactly one of domain or rule_id");
+        if (hasDomain) requireDomain(entry.domain, `${at}.domain`);
+        if (hasRule && (typeof entry.rule_id !== "string" || entry.rule_id.trim().length === 0)) {
+          fail(`${at}.rule_id`, "rule_id must be a non-empty string");
+        }
+        if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) fail(`${at}.reason`, "reason must be a non-empty string");
+      });
+    }
+  }
+
+  const freshness = block.freshness;
+  if (freshness !== undefined) {
+    if (!Array.isArray(freshness)) fail("health_policy.freshness", "freshness must be a list");
+    else {
+      const seen = new Set<string>();
+      freshness.forEach((entry: unknown, index: number) => {
+        const at = `health_policy.freshness[${index}]`;
+        if (!isRecord(entry)) { fail(at, "freshness entry must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_HEALTH_POLICY_FRESHNESS_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown freshness key");
+        }
+        const field = entry.field;
+        if (typeof field !== "string" || !FIELD_PATH.test(field)) fail(`${at}.field`, "field must be a dotted field path");
+        else if (!declaredFields.has(field)) fail(`${at}.field`, `${field} is not declared writable by any authority`);
+        else if (seen.has(field)) fail(`${at}.field`, `duplicate freshness policy for ${field}`);
+        else seen.add(field);
+        const age = entry.max_age_days;
+        // A whole number of DAYS, and positive. A zero or a fraction would make
+        // every reading stale or make the bucket depend on the hour a run
+        // happened to start, and `data` has to be byte-identical across two
+        // consecutive runs.
+        if (!Number.isSafeInteger(age) || Number(age) <= 0) fail(`${at}.max_age_days`, "max_age_days must be a positive whole number of days");
+        requireDomain(entry.applies_to, `${at}.applies_to`);
+      });
+    }
+  }
+
   return findings;
 }

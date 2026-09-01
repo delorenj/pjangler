@@ -532,7 +532,11 @@ try {
         assert.equal(statusTool.inputSchema.additionalProperties, false, "pjangler_fleet_status must reject unknown top-level arguments");
         assert.deepEqual(
           Object.keys(statusTool.inputSchema.properties ?? {}).sort(),
-          ["agent", "agentRegistry", "contract", "deadlineMs", "domain", "live", "projectRegistry"],
+          // Story 1.5 added `--baseline` and `--exit-code` to the CLI, so the
+          // tool grew both. `exitCode` is inert over a protocol with no process
+          // to exit -- it is accepted for surface parity and changes nothing in
+          // `data`, which the deep-equality cases below rely on.
+          ["agent", "agentRegistry", "baseline", "contract", "deadlineMs", "domain", "exitCode", "live", "projectRegistry"],
           "pjangler_fleet_status must expose the CLI's option surface one-for-one",
         );
         await expectInvalidParams("pjangler_fleet_provenance", { deadline_ms: 5 }, "a misspelled deadline_ms must not be silently dropped into an unbounded run");
@@ -552,6 +556,12 @@ try {
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "bogus"], { domain: "bogus" }],
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--agent", "definitely-not-registered"], { agent: "definitely-not-registered" }],
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--live", "--deadline-ms", "1"], { live: true, deadlineMs: 1 }],
+          // Story 1.5. `--exit-code` projects `data.health.exit_category` onto
+          // the CLI's process exit and is inert over MCP, so `data` must be
+          // IDENTICAL on both sides -- which is the whole reason the
+          // discriminant lives in `data` rather than in the envelope.
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--exit-code"], { exitCode: true }],
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--baseline", join(fleetTmp, "no-such-baseline.json")], { baseline: join(fleetTmp, "no-such-baseline.json") }],
         ]) {
           const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
           const cli = cliEnvelope(argv, cleanEnv);
@@ -560,6 +570,29 @@ try {
           assert.deepEqual(mcp.data, cli.data, `${tool} ${JSON.stringify(args)}: data must deep-equal the CLI envelope's`);
           assert.deepEqual(mcp.error, cli.error, `${tool} ${JSON.stringify(args)}: error must deep-equal the CLI envelope's`);
         }
+
+        // Story 1.5: a REAL baseline, written by the CLI and read by both
+        // adapters. A byte-identical baseline must produce an empty
+        // `transitions[]` on both sides, and every `finding_id` must match --
+        // the id is the join key the diff runs on, so a resemblance here would
+        // make the whole correlation meaningless.
+        const baselinePath = join(fleetTmp, "status-baseline.json");
+        writeFileSync(baselinePath, JSON.stringify(cliEnvelope(["fleet", "status"], cleanEnv)), "utf8");
+        const baselineMcp = toolEnvelope(await fleetClient.callTool({
+          name: "pjangler_fleet_status", arguments: { baseline: baselinePath },
+        }));
+        const baselineCli = cliEnvelope(["fleet", "status", "--baseline", baselinePath], cleanEnv);
+        assert.equal(baselineMcp.ok, true, "a readable baseline is not a command failure");
+        assert.deepEqual(baselineMcp.data.transitions, [], "a byte-identical baseline must produce no transitions");
+        assert.deepEqual(baselineMcp.data, baselineCli.data, "--baseline must produce the same data on both adapters");
+        assert.equal(
+          baselineMcp.data.health.exit_category, baselineCli.data.health.exit_category,
+          "data.health.exit_category is the machine discriminant and must be identical on both adapters",
+        );
+        const mcpIds = baselineMcp.data.agents.flatMap((agent) => agent.observations.map((item) => item.finding_id));
+        const cliIds = baselineCli.data.agents.flatMap((agent) => agent.observations.map((item) => item.finding_id));
+        assert.ok(mcpIds.length > 0, "the fixture must produce observations or this proves nothing");
+        assert.deepEqual(mcpIds, cliIds, "every finding_id must match across the two adapters");
       });
 
       // A partial probe: one broken `git` on PATH, both adapters. The run still

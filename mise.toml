@@ -57,10 +57,15 @@ depends = ["build"]
 run = "node {{config_root}}/dist/index.js fleet provenance"
 
 # Answers "is the fleet correct?" in ONE invocation: every registered agent across
-# all nine observation domains. Strictly read-only. Without --live no recipe audit
-# child runs and no network call is made, and every audit-fed domain says so. An
-# unhealthy or incomplete fleet still exits 0 -- only a command failure, a blown
-# deadline, or a cancellation is nonzero.
+# all nine observation domains, plus the three-way verdict (healthy / unhealthy /
+# unproven) an aggregate needs before it may claim health over a fleet it did not
+# fully read. Strictly read-only. Without --live no recipe audit child runs and no
+# network call is made, and every audit-fed domain says so. An unhealthy or
+# incomplete fleet still exits 0 -- only a command failure, a blown deadline, or a
+# cancellation is nonzero. Pass --exit-code to opt in to the nonzero projection
+# (10 unhealthy, 11 unproven); this task deliberately does not, because a gate
+# that is permanently red on the real fleet teaches an operator to ignore it, and
+# gating CI is story 1.21's job.
 [tasks."fleet:status"]
 description = "Report registry-wide Hermes fleet status across all nine observation domains (read-only)"
 # `depends` matters: without a build this task's failure mode on a fresh clone is

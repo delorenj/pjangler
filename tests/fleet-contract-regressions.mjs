@@ -237,7 +237,10 @@ try {
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
     const out = result.stdout;
     assert.match(out, /Fleet contract valid/);
-    assert.match(out, /schema 1/, "report must name the effective schema version");
+    // Story 1.5 bumped the tracked contract to schema 2: `health_policy` is a
+    // new ROOT key, and a new root key is a grammar change. The build still
+    // READS schema 1, which the supported-range line beside this one states.
+    assert.match(out, /schema 2/, "report must name the effective schema version");
     assert.match(out, /contract 1\.\d+\.\d+/, "report must name the contract version");
     for (const owner of ["project-registry", "hermes-agent-registry", "hermes-profile-renderer", "hermes-agent-template", "hermes-fleet-provisioner", "fleet-observer"]) {
       assert.ok(out.includes(owner), `report must name authority owner ${owner}`);
@@ -662,7 +665,7 @@ try {
     const parsed = envelope(result);
     assert.equal(errorCode(parsed), "UNSUPPORTED_SCHEMA_VERSION");
     assert.equal(result.status, 5, `expected exit 5, got ${result.status}`);
-    assert.match(parsed.error.message, /supported range 1\.\.1/, "diagnostic must state the supported range");
+    assert.match(parsed.error.message, /supported range 1\.\.2/, "diagnostic must state the supported range");
     assert.equal(parsed.error.details.diagnostic_count, 1, "a version this build cannot read must not be partially applied");
   });
 

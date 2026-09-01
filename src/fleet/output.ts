@@ -30,8 +30,11 @@ import {
   type FleetStatusAgent,
   type FleetStatusDomainRollup,
   type FleetStatusObservation,
+  type FleetStatusSeverity,
   type FleetStatusState,
+  type FleetStatusVerdict,
 } from "./types";
+import { compareStatusFindings, hostSortKey, observationSortKey } from "./health";
 import { bold, cyan, dim, glyph, gray, green, joinDot, padVisible, red, statusStyle, yellow } from "../utils/style";
 
 /** Commands allowed to produce a fleet envelope. */
@@ -69,7 +72,7 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   // future edit drops the key, which is the one thing this table exists to stop.
   "fleet.status": [
     "contract_path", "contract_version", "scope",
-    "totals", "health", "agents", "domains", "host", "findings", "probes", "truncated",
+    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "truncated",
   ],
 };
 
@@ -360,8 +363,23 @@ export function renderFleetJson(envelope: FleetEnvelopeV1): string {
   return `${JSON.stringify(envelope, null, 2)}\n`;
 }
 
-export function fleetEnvelopeExitCode(envelope: FleetEnvelopeV1): number {
-  return envelope.ok || !envelope.error ? 0 : fleetExitCode(envelope.error.code);
+/**
+ * The process exit for one envelope, and the ONE choke point for the taxonomy.
+ *
+ * A command failure always wins: `ok: false` maps through `fleetExitCode` and
+ * `projected` is not consulted, because an unreadable registry is not an
+ * unhealthy fleet and the two must never share an exit band.
+ *
+ * `projected` is how an `ok: true` envelope can still exit nonzero. `unhealthy`
+ * and `incomplete` are `ok: true` states -- the command succeeded, the fleet did
+ * not -- so they cannot be `FleetErrorCode` members without nulling `data` on
+ * exactly the runs that matter. They live in `data.health.exit_category`, which
+ * both adapters carry, and only the CLI projects them, only under `--exit-code`.
+ * The default stays 0.
+ */
+export function fleetEnvelopeExitCode(envelope: FleetEnvelopeV1, projected = 0): number {
+  if (!envelope.ok && envelope.error) return fleetExitCode(envelope.error.code);
+  return projected;
 }
 
 export function validateFleetEnvelope(envelope: FleetEnvelopeV1): void {
@@ -821,6 +839,8 @@ export function formatFleetProvenanceReport(provenance: FleetProvenance): string
 const REPORT_MAX_AGENTS = 40;
 /** How many actionable observations the human report lists. */
 const REPORT_MAX_OBSERVATIONS = 40;
+/** How many baseline transitions the human report lists. */
+const REPORT_MAX_TRANSITIONS = 30;
 
 function statusGlyph(state: FleetStatusState): string {
   if (state === "pass") return green(glyph.pass);
@@ -836,28 +856,63 @@ function statusColor(state: FleetStatusState): (value: string | number) => strin
   return gray;
 }
 
-/** How badly an operator needs to look at this observation. Lower sorts first. */
-function actionRank(state: FleetStatusState): number {
-  const order: FleetStatusState[] = ["error", "fail", "unobserved", "warn", "unsupported", "skip", "pass"];
-  const index = order.indexOf(state);
-  return index === -1 ? order.length : index;
+/** The verdict's own colour. `unproven` is not a failure and must not read as one. */
+function verdictColor(verdict: FleetStatusVerdict): (value: string | number) => string {
+  if (verdict === "healthy") return green;
+  if (verdict === "unhealthy") return red;
+  return yellow;
 }
 
+function severityColor(severity: FleetStatusSeverity): (value: string | number) => string {
+  if (severity === "critical" || severity === "high") return red;
+  if (severity === "medium") return yellow;
+  if (severity === "low") return gray;
+  return dim;
+}
+
+/**
+ * One observation, with the four axes and the one thing to do about it.
+ *
+ * The severity, the repair class, the observed/desired pair and the next action
+ * are all printed, because an operator on the human path who can see THAT a
+ * domain is wrong and not WHAT TO DO has been given a dashboard rather than a
+ * report. The retrieval is kept beside them for a clipped envelope.
+ */
 function observationLines(observation: FleetStatusObservation, width: number): string[] {
   const subject = observation.agent_id
     ? `${observation.agent_id} ${glyph.dot} ${observation.domain}`
     : `fleet ${glyph.dot} ${observation.domain}`;
   const style = statusColor(observation.state);
+  const axes = joinDot([
+    severityColor(observation.severity)(observation.severity),
+    dim(observation.applicability),
+    dim(observation.evidence),
+    observation.freshness === "stale" ? yellow("stale") : dim(observation.freshness),
+    dim(`repair ${observation.repair}`),
+  ]);
   const lines = [
     `    ${statusGlyph(observation.state)}  ${padVisible(bounded(subject), width)}  ${style(observation.state)}`
     + `${observation.rule_id ? `  ${cyan(observation.rule_id)}` : ""}`,
     `       ${dim(glyph.arrow)} ${dim(observation.summary)}`,
+    `       ${dim(glyph.arrow)} ${axes}`,
   ];
-  // The retrieval command is the half an operator acts on when the envelope
-  // clipped, so it is printed for the observations they are most likely to
-  // chase and withheld from the ones that need no follow-up.
   if (observation.state !== "pass" && observation.state !== "skip") {
-    lines.push(`       ${dim(glyph.arrow)} ${dim(observation.retrieval)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`observed ${observation.observed ?? "-"}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`desired  ${observation.desired ?? "-"}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`owner ${observation.owner ?? "undeclared"}`)}`);
+  }
+  if (observation.justification) {
+    lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation.justification.policy}: ${observation.justification.reason}`)}`);
+  }
+  // The next action is the half an operator acts on, so it is printed for
+  // everything that needs one -- and a command that is NOT read-only is
+  // labelled, loudly, because that label is the only thing standing between a
+  // reader and a change to the fleet.
+  if (observation.repair !== "none") {
+    const label = observation.next_action_class === "requires-authorization"
+      ? yellow("[requires-authorization]")
+      : dim("[read-only]");
+    lines.push(`       ${dim(glyph.arrow)} ${label} ${cyan(observation.next_action)}`);
   }
   return lines;
 }
@@ -868,9 +923,18 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
     return statusColor(state)(`${rollup.domain}=${state}`);
   });
   const head = `    ${statusGlyph(agent.state)}  ${padVisible(bounded(agent.agent_id), width)}  ${statusColor(agent.state)(agent.state)}`
+    + `  ${dim(glyph.dot)}  ${dim(agent.member_class)}`
     + `  ${dim(glyph.dot)}  ${agent.healthy ? dim("healthy") : red("UNHEALTHY")}`
     + `  ${dim(glyph.dot)}  ${agent.complete ? dim("complete") : yellow("incomplete")}`;
   const lines = [head, `       ${dim(glyph.arrow)} ${joinDot(cells)}`];
+  // Four separate values, printed as four separate values. Collapsing any two
+  // of them here would undo in the report what the record keeps apart.
+  lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+    dim(`desired ${agent.lifecycle.desired_state}`),
+    dim(`observed ${agent.lifecycle.observed_state}`),
+    agent.lifecycle.capability_readiness === "ready" ? green("routing ready") : dim(`routing ${agent.lifecycle.capability_readiness}`),
+    agent.lifecycle.activation === "granted" ? yellow("activation granted") : dim(`activation ${agent.lifecycle.activation}`),
+  ])}`);
   if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
   return lines;
 }
@@ -878,12 +942,14 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
 /**
  * Report in the `formatFleetProvenanceReport` house style. The caller prints it.
  *
- * The verdict leads, and its REASONS lead with it. An unhealthy or incomplete
- * fleet exits 0 -- drift is data, not a command failure -- so an operator on the
- * human path has to be able to see WHY, not only THAT. The two verdicts are
- * deliberately separate: `healthy` is about the fleet being wrong, `complete` is
- * about this run not having seen all of it, and a run that could not read half
- * the domains must never read as a clean bill.
+ * THE VERDICT LEADS, and it is the three-way one. `healthy` and `complete` are
+ * printed beside it because they are still what it is built from, but the
+ * headline can no longer read "healthy" over a fleet whose audit-fed half was
+ * never opened -- which is the exact sentence story 1.4's report could produce.
+ *
+ * The reason it is not `healthy` leads with it, for the same reason it always
+ * has: an unhealthy or unproven fleet exits 0, so an operator on the human path
+ * has to be able to see WHY, not only THAT.
  *
  * The host block is printed apart from the agents, once, for the same reason it
  * is stored apart: a condition about this MACHINE is not any repository's
@@ -893,35 +959,59 @@ export function formatFleetStatusReport(status: FleetStatus): string {
   const { health, totals, scope } = status;
   const lines = [""];
 
-  const headline = health.healthy
-    ? `${green(glyph.pass)} ${bold("Fleet status healthy")}`
-    : `${red(glyph.fail)} ${bold("Fleet status UNHEALTHY")}`;
+  const verdictLabel = health.verdict === "healthy"
+    ? "Fleet status HEALTHY"
+    : health.verdict === "unhealthy" ? "Fleet status UNHEALTHY" : "Fleet status UNPROVEN";
+  const paint = verdictColor(health.verdict);
+  const headline = `${health.verdict === "healthy" ? green(glyph.pass) : health.verdict === "unhealthy" ? red(glyph.fail) : yellow(glyph.warn)} ${bold(paint(verdictLabel))}`;
   lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot([
     `${totals.emitted_agents} of ${totals.agents} agents`,
     `${totals.emitted_observations} of ${totals.observations} observations`,
-    health.complete ? green("complete") : yellow("INCOMPLETE"),
-    health.fleet_complete ? green("fleet-complete") : dim("not fleet-complete"),
+    health.proven ? green("proven") : yellow("NOT proven"),
+    dim(`exit_category ${health.exit_category}`),
   ])}`);
+  // WHY it is not healthy, before anything else. `verdict` is derived from
+  // `healthy`, `complete`, `stale` and `unjustified`, so all four are on the
+  // line under it rather than left for a reader to reconstruct from counts.
   const why = [
-    health.failed ? red(`${health.failed} failed`) : dim("0 failed"),
+    health.healthy ? dim("no proven drift") : red(`${health.failed} failed`),
     health.errors ? red(`${health.errors} errors`) : dim("0 errors"),
-    health.warned ? yellow(`${health.warned} warned`) : dim("0 warned"),
+    health.complete ? dim("complete") : yellow("INCOMPLETE"),
     health.unobserved ? yellow(`${health.unobserved} unobserved`) : dim("0 unobserved"),
-    health.unsupported ? gray(`${health.unsupported} unsupported`) : dim("0 unsupported"),
-    health.skipped ? gray(`${health.skipped} skipped`) : dim("0 skipped"),
+    health.unjustified ? yellow(`${health.unjustified} unjustified`) : dim("0 unjustified"),
+    health.stale ? yellow(`${health.stale} stale`) : dim("0 stale"),
+    health.contradictions ? red(`${health.contradictions} contradiction${health.contradictions === 1 ? "" : "s"}`) : dim("0 contradictions"),
     health.collection_errors ? red(`${health.collection_errors} collection error${health.collection_errors === 1 ? "" : "s"}`) : dim("0 collection errors"),
   ];
   lines.push(`  ${dim(glyph.arrow)} ${joinDot(why)}`);
+  const counts = [
+    health.warned ? yellow(`${health.warned} warned`) : dim("0 warned"),
+    health.unsupported ? gray(`${health.unsupported} unsupported`) : dim("0 unsupported"),
+    health.skipped ? gray(`${health.skipped} skipped`) : dim("0 skipped"),
+    health.fleet_complete ? green("fleet-complete") : dim("not fleet-complete"),
+  ];
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot(counts)}`);
+  // Every SELECTED agent, in exactly one bucket, summing to the selection --
+  // not to the records the cap let through.
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot([
+    dim(`members of ${scope.selected_agents}`),
+    green(`${health.members.healthy} healthy`),
+    red(`${health.members.unhealthy} unhealthy`),
+    yellow(`${health.members.incomplete} incomplete`),
+    gray(`${health.members.deferred} deferred`),
+    gray(`${health.members.exception} exception`),
+    gray(`${health.members.unclassified} unclassified`),
+  ])}`);
   lines.push(`  ${joinDot([dim(scope.label), dim(status.contract_path), dim(`contract ${status.contract_version ?? "?"}`)])}`);
 
   section(lines, "Domains");
   const domainWidth = status.domains.reduce((max, rollup) => Math.max(max, rollup.domain.length), 0);
   for (const rollup of status.domains) {
-    const counts = Object.entries(rollup.counts)
+    const stateCounts = Object.entries(rollup.counts)
       .filter(([, count]) => count > 0)
       .map(([state, count]) => statusColor(state as FleetStatusState)(`${count} ${state}`));
     lines.push(`    ${statusGlyph(rollup.state)}  ${padVisible(rollup.domain, domainWidth)}  ${statusColor(rollup.state)(rollup.state)}  ${dim(`${rollup.agents} agent${rollup.agents === 1 ? "" : "s"}`)}`);
-    lines.push(`       ${dim(glyph.arrow)} ${counts.length ? joinDot(counts) : dim("no observations")}`);
+    lines.push(`       ${dim(glyph.arrow)} ${stateCounts.length ? joinDot(stateCounts) : dim("no observations")}`);
     for (const observation of rollup.observations) {
       lines.push(`       ${dim(glyph.arrow)} ${statusColor(observation.state)(observation.state)} ${dim(observation.summary)}`);
     }
@@ -931,10 +1021,15 @@ export function formatFleetStatusReport(status: FleetStatus): string {
   if (status.host.length === 0) {
     lines.push(`    ${dim(scope.live ? "none" : "not observed; pass --live to run the recipe-owned audit rules")}`);
   }
-  const hostWidth = status.host.reduce((max, finding) => Math.max(max, finding.rule_id.length), 0);
-  for (const finding of status.host) {
-    lines.push(`    ${statusGlyph(finding.state)}  ${padVisible(finding.rule_id, hostWidth)}  ${statusColor(finding.state)(finding.state)}  ${dim(finding.domain)}`);
-    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.summary} ${glyph.dot} owner ${finding.owner ?? "undeclared"}`)}`);
+  const hostRanked = [...status.host].sort((a, b) => compareStatusFindings(hostSortKey(a), hostSortKey(b)));
+  const hostWidth = hostRanked.reduce((max, finding) => Math.max(max, finding.rule_id.length), 0);
+  for (const finding of hostRanked) {
+    lines.push(`    ${statusGlyph(finding.state)}  ${padVisible(finding.rule_id, hostWidth)}  ${statusColor(finding.state)(finding.state)}  ${severityColor(finding.severity)(finding.severity)}  ${dim(finding.domain)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.summary} ${glyph.dot} owner ${finding.owner ?? "undeclared"} ${glyph.dot} repair ${finding.repair}`)}`);
+    if (finding.repair !== "none") {
+      const label = finding.next_action_class === "requires-authorization" ? yellow("[requires-authorization]") : dim("[read-only]");
+      lines.push(`       ${dim(glyph.arrow)} ${label} ${cyan(finding.next_action)}`);
+    }
   }
 
   section(lines, "Agents");
@@ -948,18 +1043,15 @@ export function formatFleetStatusReport(status: FleetStatus): string {
   }
 
   section(lines, "Highest-priority observations");
-  // Ranked by how badly an operator needs to look, then by the stable sort key.
-  // Scanning 250 observations for the handful that need a decision is not a
-  // report; it is a dump with a verdict on top.
+  // The SAME sort the machine path applies, and applied BEFORE the cap. Ranking
+  // by state alone put a `medium` unjustified warn above a `critical` failure
+  // whenever the states tied, and a cap over an unranked list is a dump with a
+  // verdict on top.
   const ranked = status.agents
     .flatMap((agent) => agent.observations)
     .concat(status.domains.flatMap((rollup) => rollup.observations))
     .filter((observation) => observation.state !== "pass" && observation.state !== "skip")
-    .sort((a, b) => (
-      actionRank(a.state) - actionRank(b.state)
-      || (a.agent_id ?? "") .localeCompare(b.agent_id ?? "")
-      || a.domain.localeCompare(b.domain)
-    ));
+    .sort((a, b) => compareStatusFindings(observationSortKey(a), observationSortKey(b)));
   if (ranked.length === 0) lines.push(`    ${dim("none")}`);
   const observationWidth = ranked.slice(0, REPORT_MAX_OBSERVATIONS).reduce((max, observation) => Math.max(
     max,
@@ -972,15 +1064,33 @@ export function formatFleetStatusReport(status: FleetStatus): string {
     lines.push(`    ${dim(`... ${ranked.length - REPORT_MAX_OBSERVATIONS} more actionable observation(s); use --json for all of them`)}`);
   }
 
+  if (status.transitions.length > 0) {
+    section(lines, "Transitions since the baseline");
+    const transitionWidth = status.transitions.reduce((max, item) => Math.max(max, item.kind.length), 0);
+    for (const transition of status.transitions.slice(0, REPORT_MAX_TRANSITIONS)) {
+      const subject = transition.agent_id ? `${transition.agent_id} ${glyph.dot} ${transition.domain}` : `${transition.scope} ${glyph.dot} ${transition.domain}`;
+      const paintKind = transition.kind === "resolved" ? green : transition.kind === "appeared" ? red : yellow;
+      lines.push(`    ${dim(glyph.bullet)}  ${paintKind(padVisible(transition.kind, transitionWidth))}  ${dim(bounded(subject))}  ${dim(transition.finding_id)}`);
+      lines.push(`       ${dim(glyph.arrow)} ${dim(transition.detail)}`);
+    }
+    if (status.transitions.length > REPORT_MAX_TRANSITIONS) {
+      lines.push(`    ${dim(`... ${status.transitions.length - REPORT_MAX_TRANSITIONS} more transition(s); use --json for all of them`)}`);
+    }
+  }
+
   section(lines, "Findings");
   if (status.findings.length === 0) lines.push(`    ${dim("none")}`);
-  const codeWidth = status.findings.slice(0, REPORT_MAX_FINDINGS).reduce((max, item) => Math.max(max, item.code.length), 0);
-  for (const finding of status.findings.slice(0, REPORT_MAX_FINDINGS)) {
-    lines.push(`    ${findingGlyph(finding.severity)}  ${padVisible(finding.code, codeWidth)}  ${dim(finding.field)}${finding.agent_id ? `  ${cyan(finding.agent_id)}` : ""}`);
+  // SORTED BEFORE THE CAP. `status.findings` already arrives in this order from
+  // the core; re-applying it here is what keeps the guarantee true if a caller
+  // ever hands this function a differently-ordered document, and it is cheap.
+  const rankedFindings = [...status.findings].sort(compareStatusFindings);
+  const codeWidth = rankedFindings.slice(0, REPORT_MAX_FINDINGS).reduce((max, item) => Math.max(max, item.code.length), 0);
+  for (const finding of rankedFindings.slice(0, REPORT_MAX_FINDINGS)) {
+    lines.push(`    ${findingGlyph(finding.severity)}  ${padVisible(finding.code, codeWidth)}  ${severityColor(finding.status_severity)(finding.status_severity)}  ${dim(finding.field)}${finding.agent_id ? `  ${cyan(finding.agent_id)}` : ""}`);
     lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.detail} ${glyph.dot} owner ${finding.source ?? "undeclared"}`)}`);
   }
-  if (status.findings.length > REPORT_MAX_FINDINGS) {
-    lines.push(`    ${dim(`... ${status.findings.length - REPORT_MAX_FINDINGS} more finding(s); use --json for all of them`)}`);
+  if (rankedFindings.length > REPORT_MAX_FINDINGS) {
+    lines.push(`    ${dim(`... ${rankedFindings.length - REPORT_MAX_FINDINGS} more finding(s); use --json for all of them`)}`);
   }
 
   if (status.truncated.length) {

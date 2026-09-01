@@ -24,12 +24,12 @@
 # rather than be rejected as an unknown key, because rejecting it would hide the
 # very drift this contract exists to name.
 
-schema_version: 1
-contract_version: 1.0.0
+schema_version: 2
+contract_version: 1.1.0
 
 compatibility:
   min_schema_version: 1
-  max_schema_version: 1
+  max_schema_version: 2
 
 x-delonet/provenance:
   assessment: fleet-convergence-live-assessment-2026-08-31
@@ -344,6 +344,120 @@ service_model:
     override_file: config.delta.yaml
     generated_file: config.yaml
     generated_marker: GENERATED FILE -- DO NOT EDIT
+
+# Which gaps are AUTHORIZED, and nothing else.
+#
+# Optional, and schema 1 contracts that omit it still load. What it changes is
+# what an aggregate may CLAIM: a skip, a warning, a deferred capability, or a
+# managed exception is "justified" only if it is named here, and anything
+# unjustified keeps the fleet from claiming proof. Nothing in this block grants
+# a capability, relaxes the activation gate, or turns an observation into a
+# pass -- an authorized gap is still reported with its own state.
+health_policy:
+  # Domains an aggregate must have observed before it may claim proof. All nine
+  # are required; the deferred_capabilities below are what carve out the halves
+  # no adapter exists for in this release.
+  required_domains:
+    - registry
+    - project_binding
+    - template_scaffold
+    - profile
+    - runtime
+    - systemd
+    - live_process
+    - bloodbank
+    - release_provenance
+
+  # A capability no observer in this release can answer, and the story that owns
+  # it. Each entry authorizes ONE unsupported answer; it never authorizes
+  # inferring the answer from something else.
+  deferred_capabilities:
+    - domain: systemd
+      capability: unit_topology
+      reason: >-
+        No systemd observer exists in this release. The unit names reported for
+        an agent are the patterns service_model.per_agent derives, carried as
+        expectations and never as observations of the user manager.
+      owner_story: "1.8"
+    - domain: live_process
+      capability: process_attribution
+      reason: >-
+        No process observer exists in this release: nothing in the build reads
+        the process table, so no running Hermes process can be attributed to a
+        registry row or classified as sprawl.
+      owner_story: "1.9"
+    - domain: bloodbank
+      capability: routing_liveness
+      reason: >-
+        The stored routing record is observed; whether the fleet-shared gateway
+        can dispatch to it is not. Routing readiness is a separate authority
+        from the record and must never be inferred from it.
+      owner_story: "1.10"
+    - domain: template_scaffold
+      capability: scaffold.template_ref
+      reason: >-
+        A deployed role scaffold records no template ref, so there is no
+        recorded value on this host to compare against the pinned gitlink and
+        none may be invented.
+      owner_story: "1.6"
+    - domain: release_provenance
+      capability: profile.render_generation
+      reason: >-
+        A generated profile config carries only the generated-file marker. The
+        renderer records no generation identity, so nothing comparable exists
+        until generated profile health is proven.
+      owner_story: "1.7"
+    - domain: release_provenance
+      capability: fleet.registry_file
+      reason: >-
+        The host config names the agent registry through an unexpanded shell
+        variable and this control plane must not resolve one. It is the same
+        declared divergence the agent_operational_records authority records in
+        its two store_env keys.
+      owner_story: "1.1"
+
+  # A rule whose warn is upstream cadence rather than fleet drift.
+  allowed_warnings:
+    - rule_id: bmad.version
+      reason: >-
+        A currency check against the published BMAD release, cached for an hour
+        and degraded to a skip offline. A newer upstream release is upstream
+        cadence, not drift in this fleet.
+      owner: bmad-method
+
+  # A rule or domain whose skip is a deliberate property of a read-only default
+  # run rather than an observation nobody got round to.
+  allowed_skips:
+    - rule_id: notebook.remote-notebook
+      reason: >-
+        A default audit makes no network request, so remote notebook state is
+        not applicable to it.
+    - rule_id: notebook.overview-note
+      reason: >-
+        A default audit makes no network request, so the remote Overview note is
+        not applicable to it.
+    - rule_id: notebook.skill-installed
+      reason: >-
+        A default audit reads no global path, so the host skill projection is
+        not applicable to it.
+    - rule_id: notebook.hooks-projected
+      reason: >-
+        A default audit reads no global settings file, so the host hook
+        projection is not applicable to it.
+
+  # How long a recorded timestamp may go unrefreshed before the value it stamps
+  # stops counting as current evidence. Reported as a BUCKET and never as an
+  # age: an age in seconds would make two runs over unchanged state differ.
+  freshness:
+    - field: projects.{slug}.ticket_provider.board_confirmed_at
+      max_age_days: 180
+      applies_to: project_binding
+    - field: projects.{slug}.ticket_provider.identifier_fetched_at
+      max_age_days: 180
+      applies_to: project_binding
+    - field: agents.{agent_id}.provisioned_at
+      max_age_days: 365
+      applies_to: registry
 
 activation:
   states:

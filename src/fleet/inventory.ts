@@ -1493,6 +1493,39 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     }
     row.conflicts.sort((a, b) => (a < b ? -1 : 1));
   }
+
+  // -- lifecycle class: resolved against the contract, not a literal ---------
+  //
+  // DW-30. Every well-formed row used to get the bare string `managed_agent`
+  // and every malformed one `unclassified`, typed against nothing -- so a typo
+  // compiled and shipped, and the field could never report
+  // `intentionally_unmanaged` even though the contract declares the class and
+  // records real entries under it. A value that can only ever be one of two
+  // constants carries no information, and story 1.5 counts agents into six
+  // buckets two of which were therefore always empty.
+  //
+  // A row whose EVERY identity conflict is covered by an
+  // `classifications.intentionally_unmanaged` entry is exactly what that class
+  // describes: state an operator has decided the control plane must observe,
+  // report, and leave alone. A row with one covered conflict and one unruled
+  // conflict is NOT -- an operator decision must never widen itself to absorb a
+  // claimant nobody ruled on, which is the same rule `matchException` already
+  // enforces on the participant set.
+  const groupsById = new Map(conflicts.map((group) => [group.id, group]));
+  for (const row of allRows) {
+    if (row.malformed) continue;
+    if (row.conflicts.length === 0) continue;
+    const groups = row.conflicts.map((id) => groupsById.get(id));
+    if (!groups.every((group) => group !== undefined && group.permitted)) continue;
+    row.classification = {
+      ...row.classification,
+      value: "intentionally_unmanaged",
+      // `resolved` stays: the class WAS resolved, from a contract entry that
+      // names these exact participants. The conflict is still reported and
+      // still visible; what changed is that the row says who decided it.
+      state: "resolved",
+    };
+  }
   for (const group of conflicts) {
     if (group.participant_kind !== "project") continue;
     addFinding(ctx, {

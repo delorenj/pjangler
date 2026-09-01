@@ -15,6 +15,7 @@ source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: low
 reason: The constraint vocabulary (equals-fleet, equals-agent-id, nonblank) is defined nowhere in src/fleet/, the field paths are unchecked, and because the activation block is intentionally open-keyed, a typo in the key name silently drops the whole block with no diagnostic. It becomes load-bearing in Story 1.10 (Bloodbank routing readiness), which is where the resolver that consumes it lands.
 status: open
+note: Story 1.5 gave the answer a typed home (`lifecycle.capability_readiness`, reported `unproven`) without evaluating the prerequisite list, deliberately -- deriving a routing verdict from registry fields is the inference story 1.10 exists to prevent. Carried forward as DW-71.
 
 ### DW-3: The dotted field-path grammar cannot distinguish file names from nested keys.
 origin: spec-deferred a81dfebc7446
@@ -46,7 +47,8 @@ location: tests/pjan-23-regressions.mjs (makeCurlStub) vs templates/hermes-agent
 source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: medium
 reason: pjan-23-regressions and pjan-67-trusted-lifecycle-regressions both fail at "plane: <METHOD> <path> returned invalid HTTP status {json body}". The provider reads the status from `curl -w '%{http_code}'` with the body sent to `-o <file>`; the test's curl stub ignores -o/-D/-w and writes the body to stdout, so the status check receives JSON. Verified pre-existing: both fail identically at baseline 0319f67 in a clean worktree, and this story's diff touches neither the tests, the provider, nor the hermes-agent submodule pinning it.
-status: open
+status: closed
+addressed: Verified on `d5caa98` while story 1.5 was in progress: `node tests/pjan-23-regressions.mjs` and `node tests/pjan-67-trusted-lifecycle-regressions.mjs` both pass. The curl stub now honours `-o`, `-D` and `-w` (`91e2128`) and the PJAN-67 ordering check states what it means (`5f27761`), so the status line this entry carried was stale evidence rather than a red suite. Do not attribute either suite to a later story on its word.
 
 ### DW-7: Sourcemaps are about 59 percent of the published npm tarball.
 origin: spec-deferred 4c2b4b4b77c9
@@ -56,6 +58,8 @@ severity: low
 reason: dist/index.js.map, dist/mcp-server.js.map and dist/prompt.js.map compress to ~904 KB of a 1.54 MB tarball. That is why the packed-size guard in generated-project-lifecycle-regressions had only 8 KB of headroom before this story and had to be raised. Dropping maps from package.json `files` would take the package to roughly 630 KB, but it changes what installed users get, so it is a packaging decision rather than part of this story.
 measured: 2026-09-01 (story 1.4). Published tarball 1_864_558 bytes; the same tree with `dist/*.map` excluded from package.json `files` packs to 729_149 bytes -- 61% of every download is sourcemap. The size gate in tests/generated-project-lifecycle-regressions.mjs has now been raised three times (1_500_000 -> 1_750_000 -> 1_850_000 -> 1_950_000) and each raise has been mostly map bytes, so it no longer constrains anything it was written to constrain. The one-line fix is replacing `"dist"` in package.json `files` with `"dist/**/*.js"` + `"dist/assets"`; the cost is that a consumer's stack trace resolves to bundle offsets in an unminified bundle rather than to original source. That is a publishing decision with an owner, which is why three stories in a row have declined to make it in passing.
 status: open
+note: Story 1.5 raised the packed-tarball ceiling for the FOURTH time -- 1 947 627 -> 1 975 285 bytes for roughly a thousand lines of new source, against a 1 950 000 gate. The bundles are 1.2 MB and 1.0 MB; their sourcemaps are 2.6 MB and 2.3 MB. Every raise so far has been paying for sourcemap. The next story to reach the ceiling should take this entry's fix rather than move the number again; the gate's own comment now says so.
+
 
 ### DW-8: Every suite runs dist/index.js and nothing proves dist matches src.
 origin: spec-deferred 929cd684e703
@@ -170,6 +174,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: low
 reason: `truncated.length === 0` is a conjunct of `healthy`, so a fleet of 1001 well-formed agents, or one that trips MAX_FINDINGS, gets the identical UNHEALTHY verdict a real identity conflict produces. `health.truncated` already exists as its own signal. Defensible as "you did not see all of it", but the verdict should read from the fleet, and the two states should not be indistinguishable to a consumer.
 status: open
+note: Unchanged, and this entry is about the fleet INVENTORY. Story 1.5 did not widen it: `FleetStatusHealth.healthy` is a different field on a different command, keeps provenance's split, and excludes truncation -- and the new `health.verdict` reads from `healthy`, `complete`, `stale` and `unjustified` rather than folding a presentation cap into any of them.
 
 ### DW-22: Nothing drives the row cap, so FLEET_INVENTORY_MAX_ROWS is unproven.
 origin: spec-deferred 3f62718a26a7
@@ -242,6 +247,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: medium
 reason: Every well-formed row gets the literal `managed_agent` at state `resolved`; malformed rows get `unclassified`. Neither literal is typed against `FLEET_CLASSIFICATION_IDS` in the same `types.ts`, so a typo compiles and ships, and the field can never report `intentionally_unmanaged` or `retired` even though the contract declares both and four live profile entries are exactly the `intentionally_unmanaged` shape. AC3's "lifecycle classification" is satisfied by a value that carries no information.
 status: open
+addressed: Story 1.5 types `FleetInventoryRow.classification` against `FLEET_CLASSIFICATION_IDS` and resolves `intentionally_unmanaged` for a row whose EVERY identity conflict is covered by a contract exception, so a typo no longer compiles and the value carries information -- which is what makes story 1.5's `exception` member bucket reachable instead of permanently empty. Still open: `managed_shared_service` and `retired` remain unreachable from a registry row, because nothing this build observes can put a row in either.
 
 ### DW-31: The `outside-root` classification is unreachable from every call site.
 origin: spec-deferred d3e97c666ddb
@@ -354,6 +360,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: medium
 reason: The README ships a row for each and `cli.ts` has a dedicated `contractFault` branch producing different `next_actions`. No check drives a contract fault, even though `packageWithContract` already builds a relocated package around a mutated contract and could produce one. `profile-layout-undeclared` and `service-model-undeclared` are unreachable in the suite for the same reason.
 status: open
+note: Still open for 4 and 5. Story 1.5 added exits 10 and 11 (`--exit-code` projecting `data.health.exit_category`) and exercises both, plus the case that a COMMAND failure still wins over them -- `tests/fleet-health-regressions.mjs`, "--exit-code projects the category". The contract-fault bands are unchanged and still unexercised.
 
 ### DW-45: `row.findings` can name a code whose finding the cap dropped.
 origin: spec-deferred cd3e9594019e
@@ -442,6 +449,7 @@ source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
 severity: medium
 reason: `FleetProvenanceSourceView.parse` is typed `"ok" | "salvaged" | "unreadable" | "unread"`, but it is set once from an `lstat`: a path that is a file, directory or symlink is `"ok"`. `readConfiguredPin` then swallows read failures with `catch { text = ""; }` and nothing updates the field. A template config that exists but is unreadable, is a directory, or exceeds `CONFIG_MAX_BYTES` reports `exists: true, parse: "ok"` with every pin silently `missing` and no finding -- an operator reading `parse: ok` beside a wall of `missing` has been told the file was read. `"salvaged"` is produced by nothing at all. The fix is to set `parse` where the parse actually happens and emit a `provenance-source-unreadable` finding when an existing source yields no text.
 status: open
+note: Unchanged. Story 1.5's `evidence` axis is about how strongly an OBSERVATION is supported, not about whether a source was parsed, so `parse: "ok"` beside a wall of `missing` is still the same lie in the provenance payload. The fix is still "set `parse` where the parse happens, and raise `provenance-source-unreadable`".
 
 ### DW-56: The `--agent` id is validated after the whole probe sweep has run.
 origin: review-deferred story-1.3
@@ -506,6 +514,7 @@ source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
 severity: medium
 reason: `systemd`, `live_process` and the Bloodbank LIVENESS half of `bloodbank` are reported `unsupported` with a named reason and the story that owns them, because this story's Never list forbids implementing any of the three. Concretely: `systemd` carries the contract-derived expected unit names as evidence and observes nothing (story 1.8 owns canonical topology and service health); `live_process` observes nothing at all -- there is no `ps`, `pgrep` or `/proc` read anywhere in `src/` (story 1.9); `bloodbank` observes the stored routing RECORD and the strict activation flag, and reports routing readiness `unsupported` (story 1.10). The consequence a later story inherits: `health.complete` on this build is only ever about the domains that DO have an adapter, and three of the nine contribute a permanent `unsupported` to `totals.by_state` that no run can clear.
 status: open
+addressed: The three `unsupported` literals no longer authorize themselves. `health_policy.deferred_capabilities` in the tracked contract declares `systemd`/`unit_topology` (story 1.8), `live_process`/`process_attribution` (1.9) and `bloodbank`/`routing_liveness` (1.10), each with a reason and an owning story, and story 1.5's evaluator reports the same observations with `applicability: "deferred"`, `repair: "blocked"` and a `justification.policy` naming the entry. Remove an entry and the identical observation is reported unjustified and blocks `proven` -- pinned by a delta case in `tests/fleet-health-regressions.mjs`. The domains still have no observer; the gap is now authorized rather than assumed, and two more of the same kind (`scaffold.template_ref` for 1.6, `profile.render_generation` for 1.7) are declared beside them.
 
 ### DW-64: Thirty-four JSON-emitting `process.exit()` sites in src/index.ts are still unflushed.
 origin: spec-deferred story-1.4
@@ -539,6 +548,7 @@ severity: low
 reason: The declared precedence is `error > unobserved > unsupported > fail > warn > skip > pass`, and `rollUp` iterates that constant. Applied literally to a MIXED domain it inverts into a lie: `template_scaffold` carries one permanent "a deployed role scaffold records no template ref" (`unsupported`) beside eighteen stale tracked assets (`fail`), and the raw precedence rolls that domain up to `unsupported` -- telling an operator this release cannot see the scaffold when it can see it and it is broken. It also contradicts the story's own acceptance criterion that a project-scoped `warn` rolls its domain up to `warn`. So an `unsupported` observation is filtered out of the candidate set when the domain produced anything else. The refinement is correct and tested; what was left open was that a later story reasoning from the constant alone would be surprised by it.
 status: documented, behaviour unchanged
 addressed: The review pass corrected every place that stated the one-line rule. `FLEET_STATUS_STATE_PRECEDENCE`'s doc comment now says the yield is PART of the rule and why (a statement about the build, not about the fleet); the README's precedence paragraph is a two-step list rather than a single ordering; and the spec's `## Design Notes` says the same. The array order is unchanged and `rollUp` still iterates it, so nothing behavioural moved -- the divergence is now impossible to read as an accident. What remains genuinely open is the underlying modelling question: whether `unsupported` should have been given a rank at all, or whether a domain with no adapter deserves a separate axis from a domain with an unread half.
+resolved (modelling question): The open half was "whether a domain with no adapter deserves a separate axis from a domain with an unread half". Story 1.5 answers yes and adds it: `applicability: "deferred"` beside `evidence: "absent"` IS that axis, so `unsupported` needs no different rank in `FLEET_STATUS_STATE_PRECEDENCE`. The array order and `rollUp`'s behaviour are untouched.
 
 ### DW-68: A domain rollup can read `unobserved` while a real failure sits underneath it.
 origin: spec-deferred story-1.4
@@ -547,6 +557,7 @@ source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
 severity: low
 reason: Without `--live`, every audit-fed domain receives an explicit `unobserved` observation naming the flag, and `unobserved` outranks `fail` -- correctly, because nothing may be claimed about a half that was not read. The consequence is that on a DEFAULT run `profile` reads `unobserved` for an agent whose profile directory is a symlink, even though the store read alone proves the failure. Nothing is hidden: the `fail` observation is emitted, `data.domains[].counts` shows it, and `health.failed` counts it -- but the single-word domain state under-reports what the run actually knows. A later story may want a separate "observed so far" state, or to rank `fail` above `unobserved` when the failure came from a source that WAS read.
 status: open
+addressed (visibility, not ranking): The `evidence` axis makes the underlying proof visible without moving the state ordering -- on a default run the symlinked profile is `fail` with `evidence: "direct"` beside the audit half's `unobserved` with `evidence: "absent"`, so a consumer can tell a proven failure from a silence at the observation level. `detectContradictions` deliberately requires BOTH sides to have read something, so a fail beside an unread half is not reported as a disagreement. Still open: the single-word domain state reads `unobserved`, and ranking `fail` above it when the failure came from a source that WAS read is a separate decision.
 
 ### DW-69: The recipe audit's own git calls omit `--no-optional-locks`.
 origin: review-deferred story-1.4
@@ -562,4 +573,44 @@ location: tests/fleet-status-regressions.mjs (snapshotShared)
 source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
 severity: low
 reason: This repository's own `.git/index` and top-level direntries are worth checking -- a command that writes the repo it runs in rather than the isolated HOME is exactly the defect -- but this machine runs parallel agents by design and any of them can move both. Measured during one run of this suite: `.pjan-67-trusted-lifecycle-FmLEQj` and `.pjan-67-trusted-lifecycle-R2bRQf` appeared in this root mid-invocation, created by a different process. The check now measures tracked CONTENT rather than stat bytes, ignores other suites' dot-prefixed scratch directories, and runs once per suite with wording that names both possible causes -- which removes the misattribution but not the shared surface. A real fix needs either a run-level exclusive lock on the repo for the test suite, or a control measurement that proves the machine is quiet before the assertion is allowed to fail.
+status: open
+
+### DW-71: `activation.routing_prerequisites` is still read by no code.
+origin: spec-deferred story-1.5
+location: contracts/fleet-contract.yaml (activation.routing_prerequisites) / src/fleet/health.ts
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: DW-2's original finding is unchanged, and this story deliberately did not close it. `lifecycle.capability_readiness` now reports `unproven` for every row that records a routing target, derived from "nothing observed the gateway" rather than from the three declared prerequisites (`gateway_scope` equals-fleet, `target_agent_id` equals-agent-id, `profile_name` nonblank). Evaluating them here would have produced a `routing_ready`-shaped answer out of registry fields alone, which is exactly the inference story 1.10 exists to prevent. What changed is that the field the answer belongs in now exists and is typed; story 1.10 fills it from a real gateway observation and may then also consume the prerequisite list.
+status: open
+
+### DW-72: `evidence: "declared"` is asserted by construction, not by a check on the reader side.
+origin: spec-deferred story-1.5
+location: src/fleet/status.ts (observeFromInventory, the Bloodbank observations)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: The rule "a `declared` observation may never set `capability_readiness: ready` and never contributes to `proven`" is enforced by the two places that could do either -- `agentLifecycle` never returns `ready` at all, and `evaluateFleetHealth` reads states rather than evidence. Nothing asserts the INVARIANT: a later story that derives readiness from a `declared` observation would compile, ship, and pass every current case. A cheap fix is a check in `evaluateFleetHealth` that refuses to return `proven: true` when any observation contributing to a `ready` readiness carries `evidence: "declared"`; it was left out because there is no `ready` producer yet to guard against.
+status: open
+
+### DW-73: freshness attaches to the store read only, so an audit-fed domain has no age at all.
+origin: spec-deferred story-1.5
+location: src/fleet/status.ts (observation, the freshness gate)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: A freshness bucket is computed only for observations whose source is the registry store read, because those are the only ones with a recorded timestamp behind them and because `health.stale` has to count readings rather than agents -- giving the audit half of `project_binding` the store read's bucket counted one stale board confirmation twice. The consequence is that a recipe-audit observation always reads `freshness: "not_applicable"` even though the audit itself has an age (the run that produced it), and a `--live` run whose audit child answered from `npm view`'s one-hour disk cache is not distinguishable from one that reached the network. Closing it needs the audit report to carry an observation instant the status core can trust, which today it deliberately drops at the boundary because it would make `data` nondeterministic.
+status: open
+
+### DW-74: the fleet-scoped template facts describe the operator's checkout, not the fleet.
+origin: review-deferred story-1.5
+location: src/fleet/provenance.ts (addTemplateFacts) / tests/fleet-health-regressions.mjs
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: medium
+reason: `template.gitlink`, `template.remote_url` and `template.worktree_clean` are read out of `resolvePjanglerRoot()/templates/hermes-agent` -- the running build's own checkout. MEASURED while building story 1.5's suite: the same submodule reads clean through this repository's git and DIRTY through a probe, because `probeEnv` strips `GIT_CONFIG_GLOBAL` and `git status --porcelain` then reports untracked files a global excludes file had been hiding. So a fleet-scoped `fail` can be produced by the operator's editor droppings rather than by anything about the fleet. The suite works around it by building its own package root with its own committed template submodule; the command has no such option. Either the fact set should be scoped to what is TRACKED (`git status --porcelain --untracked-files=no`), or the probe should stop stripping the global config, and both are decisions about what "clean" means for a pinned template.
+status: open
+
+### DW-75: a contradiction is detected per FIELD PATH, which is coarser than per thing.
+origin: review-deferred story-1.5
+location: src/fleet/health.ts (detectContradictions) / src/fleet/status.ts (DOMAIN_FIELD)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: medium
+reason: `detectContradictions` groups on `(agent_id, domain, field)`, which is the tuple the spec names -- but `DOMAIN_FIELD` gives EVERY rule in a domain the same field path, so a store read and an audit rule that examine different properties of one domain register as a disagreement about one field. MEASURED on the live fleet: 10 contradictions, and every one is of that shape. `zshyzsh-pm` is representative -- the store read reports `pass` because the role-local runtime directory really is a real directory, and `hermes.untracked-runtimes` reports `fail` because `agents/hermes/pm/.gitignore` is missing its `runtime/` entry. Both readings are TRUE and neither refutes the other; they are answers to different questions filed under one path. The report is defensible at the granularity it claims (two sources, one declared field, two states) and every one of the ten is actionable, but `health.complete` now reads false for ten agents on a ground that is partly an artefact of the field table. Sharpening it needs an observation-level subject finer than the domain's contract field -- which is a modelling decision about what an audit rule is ABOUT, not a bug fix.
 status: open

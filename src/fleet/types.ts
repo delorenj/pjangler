@@ -5,11 +5,18 @@
 // a credential, or a health result -- those belong to the later observation
 // stories and would make this file a moving target for every one of them.
 
-/** The only contract schema this build can interpret. */
-export const FLEET_CONTRACT_SCHEMA_VERSION = 1 as const;
+/**
+ * The contract schema version this build WRITES.
+ *
+ * Bumped to 2 by story 1.5: `health_policy` is a new ROOT key, and a new root
+ * key is a grammar change rather than a content one. The build still READS
+ * schema 1 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because a schema-1
+ * contract is simply one that authorizes no gap at all.
+ */
+export const FLEET_CONTRACT_SCHEMA_VERSION = 2 as const;
 
 /** Inclusive range of contract schema versions this build accepts. */
-export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 1 } as const;
+export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 2 } as const;
 
 /** Envelope version for `pjangler fleet ...` machine output. */
 export const FLEET_SCHEMA_VERSION = 1 as const;
@@ -30,7 +37,27 @@ export const FLEET_SCHEMA_VERSION = 1 as const;
 export const FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version", "contract_version", "compatibility", "authorities",
   "projections", "classifications", "service_model", "activation", "retired",
+  "health_policy",
 ] as const;
+
+/**
+ * Root keys a contract may omit and still validate.
+ *
+ * `health_policy` is real policy, not an `x-` extension, so it belongs in the
+ * allowlist above -- but a schema-1 contract predates it and must still load.
+ * A contract without it authorizes nothing, which is why an absent block makes
+ * every non-pass unjustified rather than making the run fail.
+ */
+export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy"] as const;
+
+/** Closed key set for `health_policy` and each of its four entry lists. */
+export const FLEET_HEALTH_POLICY_KEYS = [
+  "required_domains", "deferred_capabilities", "allowed_warnings", "allowed_skips", "freshness",
+] as const;
+export const FLEET_HEALTH_POLICY_DEFERRED_KEYS = ["domain", "capability", "reason", "owner_story"] as const;
+export const FLEET_HEALTH_POLICY_WARNING_KEYS = ["rule_id", "reason", "owner"] as const;
+export const FLEET_HEALTH_POLICY_SKIP_KEYS = ["domain", "rule_id", "reason"] as const;
+export const FLEET_HEALTH_POLICY_FRESHNESS_KEYS = ["field", "max_age_days", "applies_to"] as const;
 
 export const FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"] as const;
 
@@ -46,6 +73,7 @@ export const FLEET_RETIRED_KEYS = ["id", "reason", "superseded_by", "detect"] as
 export const FLEET_CLASSIFICATION_IDS = [
   "managed_agent", "managed_shared_service", "intentionally_unmanaged", "retired", "unclassified",
 ] as const;
+export type FleetClassificationId = (typeof FLEET_CLASSIFICATION_IDS)[number];
 
 /**
  * Fields every entry of a managed class other than `managed_agent` must carry.
@@ -63,6 +91,7 @@ export const FLEET_CLASSIFICATION_REQUIRED_FIELDS = [
 export const FLEET_ACTIVATION_STATES = [
   "discovered", "installed", "healthy", "routing_ready", "activated",
 ] as const;
+export type FleetActivationState = (typeof FLEET_ACTIVATION_STATES)[number];
 
 /** Retired modes the contract must name so they can be detected, never provisioned. */
 export const FLEET_RETIRED_IDS = [
@@ -147,6 +176,63 @@ export interface FleetRetiredMode {
   detect: string[];
 }
 
+/**
+ * One capability no observer in this release can answer, and who owns it.
+ *
+ * `capability` is optional because a whole DOMAIN can be deferred (nothing in
+ * this build reads the process table) while elsewhere only one named half is
+ * (the Bloodbank routing RECORD is observed; its liveness is not). `reason` and
+ * `owner_story` are both required: a deferral with no owner is an excuse.
+ */
+export interface FleetHealthPolicyDeferredCapability {
+  domain: string;
+  capability?: string;
+  reason: string;
+  owner_story: string;
+}
+
+/** One rule whose `warn` is somebody else's cadence rather than fleet drift. */
+export interface FleetHealthPolicyAllowedWarning {
+  rule_id: string;
+  reason: string;
+  owner: string;
+}
+
+/** One rule or domain whose `skip` is a declared property, not an omission. */
+export interface FleetHealthPolicyAllowedSkip {
+  domain?: string;
+  rule_id?: string;
+  reason: string;
+}
+
+/**
+ * How long one recorded timestamp counts as current evidence.
+ *
+ * `field` must be a path some authority declares, so a policy entry cannot
+ * silently be about a field nobody owns. `applies_to` is the status domain the
+ * bucket lands on.
+ */
+export interface FleetHealthPolicyFreshness {
+  field: string;
+  max_age_days: number;
+  applies_to: string;
+}
+
+/**
+ * The only thing that can JUSTIFY a gap.
+ *
+ * Nothing here grants a capability, relaxes the activation gate, or turns an
+ * observation into a pass. An authorized gap is still reported with its own
+ * state; what changes is whether the aggregate may claim it was PROVEN.
+ */
+export interface FleetHealthPolicy {
+  required_domains: string[];
+  deferred_capabilities: FleetHealthPolicyDeferredCapability[];
+  allowed_warnings: FleetHealthPolicyAllowedWarning[];
+  allowed_skips: FleetHealthPolicyAllowedSkip[];
+  freshness: FleetHealthPolicyFreshness[];
+}
+
 export interface FleetContract {
   schema_version: number;
   contract_version: string;
@@ -157,6 +243,8 @@ export interface FleetContract {
   service_model: FleetServiceModel;
   activation: FleetActivation;
   retired: FleetRetiredMode[];
+  /** Optional. Absent on a schema-1 contract, which then authorizes no gap at all. */
+  health_policy?: FleetHealthPolicy;
 }
 
 /** One namespaced extension, kept out of policy and reported separately. */
@@ -323,7 +411,15 @@ export interface FleetManifestEvidence {
 /** One row per raw `agents:` entry, whatever shape that entry turned out to be. */
 export interface FleetInventoryRow {
   agent_id: FleetFieldValue<string>;
-  classification: FleetFieldValue<string>;
+  /**
+   * The lifecycle class the CONTRACT declares for this row.
+   *
+   * Typed against `FLEET_CLASSIFICATION_IDS` rather than `string` (DW-30): the
+   * bare literals it used to carry were checked by nothing, so a typo compiled
+   * and shipped and the `intentionally_unmanaged` value was unreachable even
+   * though the contract declares the class and story 1.5 counts agents into it.
+   */
+  classification: FleetFieldValue<FleetClassificationId>;
   correlation: FleetFieldValue<string>;
   project_id: FleetFieldValue<string>;
   repo: FleetFieldValue<string>;
@@ -761,6 +857,287 @@ export const FLEET_STATUS_MAX_DETAILS = 20;
  */
 export const FLEET_STATUS_AUDIT_CONCURRENCY = 4;
 
+
+// ---------------------------------------------------------------------------
+// Fleet health (story 1.5)
+//
+// Story 1.4 reports WHAT every domain observed. It cannot say whether the
+// answer is TRUSTWORTHY or ACTIONABLE: `health.healthy` is `fail === 0 &&
+// error === 0`, so a default run over a fleet where three domains have no
+// observer at all and every audit-fed domain is `unobserved` still reads
+// `healthy: true`.
+//
+// The vocabulary below is what makes that impossible. Four SEPARATE axes --
+// applicability, evidence, freshness and state -- because one word cannot carry
+// four questions; a severity, a repair class and one exact next action derived
+// from real fields rather than from prose; and a three-way verdict beside
+// `healthy` rather than instead of it, so 1.4's meaning is preserved and the
+// aggregate still cannot claim health over an unread fleet.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether an observation was REQUIRED, and if not, on whose authority.
+ *
+ * `required`       the contract's `health_policy.required_domains` names its
+ *                  domain (and with no policy at all, everything is required --
+ *                  the conservative reading, never the flattering one).
+ * `optional`       a domain the policy does not require.
+ * `not_applicable` the observation itself says so: a `skip`.
+ * `deferred`       a capability `health_policy.deferred_capabilities` declares
+ *                  no observer exists for in this release, with the story that
+ *                  owns it.
+ * `exception`      a managed exception the contract records under
+ *                  `classifications.intentionally_unmanaged`.
+ *
+ * DW-67 left open "whether a domain with no adapter deserves an axis separate
+ * from a domain with an unread half". This is that axis: `deferred` beside
+ * `evidence: "absent"` says exactly that, which is why `unsupported` needs no
+ * different rank in `FLEET_STATUS_STATE_PRECEDENCE`.
+ */
+export const FLEET_STATUS_APPLICABILITIES = [
+  "required", "optional", "not_applicable", "deferred", "exception",
+] as const;
+export type FleetStatusApplicability = (typeof FLEET_STATUS_APPLICABILITIES)[number];
+
+/**
+ * How strongly the observation is supported.
+ *
+ * `direct`   this run read the thing itself.
+ * `declared` a registry field asserts it and nothing verified it. "A timer is
+ *            active, a gateway process exists, a deploy exited zero, a board
+ *            says complete" all reduce to this. A `declared` observation may be
+ *            `pass` on its own record, but it may never set
+ *            `capability_readiness: "ready"` and never contribute to `proven`.
+ * `derived`  computed from other observations rather than read (an identity
+ *            conflict is a fact about the whole registry, not about one row).
+ * `absent`   nothing was read at all: `unobserved`, `unsupported`, `error`.
+ */
+export const FLEET_STATUS_EVIDENCE = ["direct", "declared", "derived", "absent"] as const;
+export type FleetStatusEvidence = (typeof FLEET_STATUS_EVIDENCE)[number];
+
+/**
+ * Whether the evidence is still current, as a BUCKET and never as an age.
+ *
+ * `data` must be byte-identical across two consecutive runs. An age in seconds
+ * is not, so the reference instant is captured once per run, each policy entry
+ * declares `max_age_days`, and only the bucket is emitted.
+ *
+ * `not_applicable` is the honest default: most observations have no timestamp
+ * behind them and no policy entry claiming one. `unknown` means a policy entry
+ * DOES apply and the timestamp is absent or unparseable -- which is a different
+ * problem from "no policy applies" and must not collapse into it.
+ */
+export const FLEET_STATUS_FRESHNESS = ["current", "stale", "unknown", "not_applicable"] as const;
+export type FleetStatusFreshness = (typeof FLEET_STATUS_FRESHNESS)[number];
+
+/**
+ * How badly this needs a decision. Derived from `state` x `applicability`.
+ *
+ * Deliberately NOT `FLEET_FINDING_SEVERITIES` (`error`/`warn`/`info`). That
+ * three-value axis is the inventory's finding severity and means something
+ * else; overloading it would make "an error-severity finding" and "a critical
+ * observation" the same word for two different questions.
+ */
+export const FLEET_STATUS_SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
+export type FleetStatusSeverity = (typeof FLEET_STATUS_SEVERITIES)[number];
+
+/**
+ * Severity precedence, strongest first.
+ *
+ * Iterated by `compareStatusFindings`, not merely declared: a precedence
+ * constant nothing reads is decoration, which is the exact defect story 1.3's
+ * review found in `FLEET_PROVENANCE_STATUS_PRECEDENCE`.
+ */
+export const FLEET_STATUS_SEVERITY_PRECEDENCE = [
+  "critical", "high", "medium", "low", "info",
+] as const satisfies readonly FleetStatusSeverity[];
+
+/**
+ * WHO can repair this, and therefore what the next action can possibly be.
+ *
+ * `automatic`       an audit rule that reports `fixable` on a project scope --
+ *                   `pjangler migrate` has a recipe for it.
+ * `approval-gated`  it touches `activation.execution_authority`, which the
+ *                   contract declares `strict: true, default: deny`. No
+ *                   repository change grants it.
+ * `blocked`         a contract-declared deferred capability. Nothing to run in
+ *                   this release; the action names the owning story.
+ * `other-owner`     a host-scoped rule. No amount of work in any repository
+ *                   changes a condition about this machine.
+ * `manual`          everything else that needs a decision.
+ * `none`            nothing to repair: the observation passes, or its skip is
+ *                   declared not applicable.
+ */
+export const FLEET_STATUS_REPAIRS = [
+  "automatic", "approval-gated", "blocked", "other-owner", "manual", "none",
+] as const;
+export type FleetStatusRepair = (typeof FLEET_STATUS_REPAIRS)[number];
+
+/**
+ * Whether the recommended command is safe to run unread.
+ *
+ * A recommended command is read-only unless it is LABELLED, and a
+ * `requires-authorization` action must name the authorization in the string
+ * itself -- otherwise the label is the only thing standing between an operator
+ * and a command that changes the fleet.
+ */
+export const FLEET_STATUS_NEXT_ACTION_CLASSES = ["read-only", "requires-authorization"] as const;
+export type FleetStatusNextActionClass = (typeof FLEET_STATUS_NEXT_ACTION_CLASSES)[number];
+
+/** On whose authority a non-pass observation is allowed to stand. */
+export const FLEET_STATUS_JUSTIFICATION_KINDS = [
+  "deferred_capability", "allowed_warning", "allowed_skip", "exception",
+] as const;
+export type FleetStatusJustificationKind = (typeof FLEET_STATUS_JUSTIFICATION_KINDS)[number];
+
+/**
+ * The contract entry that authorizes one gap.
+ *
+ * `policy` is the dotted path to the entry, so an operator can open the
+ * contract at it. A justification is never inferred: with no `health_policy`
+ * block, every non-pass carries `null` here and the fleet cannot claim proof.
+ */
+export interface FleetStatusJustification {
+  kind: FleetStatusJustificationKind;
+  policy: string;
+  reason: string;
+  owner: string | null;
+}
+
+/**
+ * The three-way aggregate. What the report headline and `exit_category` lead with.
+ *
+ * `healthy`   nothing failed AND everything that had to be observed was, with
+ *             every non-pass justified.
+ * `unhealthy` drift is PROVEN.
+ * `unproven`  nothing is proven either way -- an unread half, a stale reading,
+ *             or an unjustified gap.
+ *
+ * Held BESIDE `health.healthy` rather than replacing it. `healthy` keeps story
+ * 1.4's drift-only meaning, `complete` keeps its coverage meaning, and this is
+ * the aggregate a machine client reads.
+ */
+export const FLEET_STATUS_VERDICTS = ["healthy", "unhealthy", "unproven"] as const;
+export type FleetStatusVerdict = (typeof FLEET_STATUS_VERDICTS)[number];
+
+/**
+ * The machine discriminant, carried in `data` on BOTH adapters.
+ *
+ * `unhealthy` and `incomplete` are `ok: true` states -- the command succeeded,
+ * the fleet did not -- so they cannot be `FleetErrorCode` members without
+ * nulling `data` on exactly the runs that matter.
+ */
+export const FLEET_STATUS_EXIT_CATEGORIES = ["ok", "unhealthy", "incomplete"] as const;
+export type FleetStatusExitCategory = (typeof FLEET_STATUS_EXIT_CATEGORIES)[number];
+
+/**
+ * The process exits `--exit-code` projects each category onto.
+ *
+ * Above the `FleetErrorCode` bands (2-8) on purpose: a caller must be able to
+ * tell "the fleet is unhealthy" from "the command failed" by exit status alone.
+ * Applied ONLY under `--exit-code`; the default stays 0 because `fleet status`
+ * is an observation command, gating CI is story 1.21's job, and a
+ * `mise run fleet:status` that is permanently red teaches an operator to ignore
+ * it.
+ */
+export const FLEET_STATUS_EXIT_CODES = {
+  ok: 0,
+  unhealthy: 10,
+  incomplete: 11,
+} as const satisfies Record<FleetStatusExitCategory, number>;
+
+/** Which bucket one agent lands in. Exactly one, over every SELECTED agent. */
+export const FLEET_STATUS_MEMBER_CLASSES = [
+  "healthy", "unhealthy", "incomplete", "deferred", "exception", "unclassified",
+] as const;
+export type FleetStatusMemberClass = (typeof FLEET_STATUS_MEMBER_CLASSES)[number];
+
+/**
+ * Which class wins when an agent qualifies for more than one.
+ *
+ * `unclassified` first: a row this command could not classify supports no other
+ * claim. `unhealthy` before `exception` so a permitted identity conflict can
+ * never absorb an unrelated proven failure -- only an agent whose every failure
+ * is exception-justified reaches `exception`. `incomplete` before `deferred`
+ * because an unread half is a bigger statement than an authorized one.
+ *
+ * Iterated by `classifyMember`, never re-spelled there.
+ */
+export const FLEET_STATUS_MEMBER_PRECEDENCE = [
+  "unclassified", "unhealthy", "exception", "incomplete", "deferred", "healthy",
+] as const satisfies readonly FleetStatusMemberClass[];
+
+/** How one finding moved between the baseline run and this one. */
+export const FLEET_STATUS_TRANSITION_KINDS = [
+  "appeared", "resolved", "state_changed", "severity_changed", "evidence_changed",
+] as const;
+export type FleetStatusTransitionKind = (typeof FLEET_STATUS_TRANSITION_KINDS)[number];
+
+/**
+ * Cap on transitions carried in one envelope.
+ *
+ * Deliberately not `MAX_ITEMS` (100) from the envelope's generic list bound, for
+ * the same reason `FLEET_INVENTORY_MAX_ROWS` is not: 28 agents x 9 domains
+ * crosses 100 trivially, and `boundedValue` would slice the array with no
+ * per-item identity and no record of the clip.
+ */
+export const FLEET_STATUS_MAX_TRANSITIONS = 2000;
+
+/**
+ * The four activation states, kept apart, for one agent.
+ *
+ * FOUR FIELDS, NEVER ONE BOOLEAN. Discovery, installation, health, routing
+ * readiness and execution activation are distinct states, and collapsing any
+ * two of them is how "we can resolve a target" becomes "we may dispatch to it".
+ *
+ * `desired_state` is what the REGISTRY declares as the target for this row -- a
+ * statement of intent, never a claim about the agent. `observed_state` is the
+ * furthest state this run actually PROVED, and it can never read
+ * `routing_ready` or `activated` in this release because no observer for either
+ * exists.
+ */
+export interface FleetStatusLifecycle {
+  desired_state: FleetActivationState;
+  observed_state: FleetActivationState;
+  /**
+   * Whether Bloodbank routing readiness was PROVEN for this agent.
+   *
+   * Never `ready` in this release: `ready` would require a direct observation of
+   * the shared gateway, and a `declared` registry field is not one.
+   */
+  capability_readiness: "ready" | "unproven" | "blocked" | "not_applicable";
+  /** The strict execution-authority flag, read verbatim. The contract's default is deny. */
+  activation: "granted" | "denied" | "undeclared";
+}
+
+/** One agent per bucket, counted over every SELECTED agent -- never over the emitted ones. */
+export interface FleetStatusMembers {
+  healthy: number;
+  unhealthy: number;
+  incomplete: number;
+  deferred: number;
+  exception: number;
+  unclassified: number;
+}
+
+/**
+ * One finding that moved between two runs, joined on a stable `finding_id`.
+ *
+ * `from` and `to` are null on `resolved` and `appeared` respectively. Nothing
+ * here is persisted: the baseline is a document the operator supplies, and this
+ * command never writes state to disk to compute a transition.
+ */
+export interface FleetStatusTransition {
+  finding_id: string;
+  kind: FleetStatusTransitionKind;
+  scope: "fleet" | "agent" | "host";
+  agent_id: string | null;
+  domain: FleetStatusDomain;
+  from: { state: FleetStatusState; severity: FleetStatusSeverity; evidence: FleetStatusEvidence } | null;
+  to: { state: FleetStatusState; severity: FleetStatusSeverity; evidence: FleetStatusEvidence } | null;
+  detail: string;
+}
+
 /**
  * One observation: one thing this run learned about one domain.
  *
@@ -808,6 +1185,28 @@ export interface FleetStatusObservation {
   /** Where the observation came from: a store read, a provenance fact, a recipe audit, or a declared gap. */
   source: string;
   retrieval: string;
+  /** Whether it was REQUIRED, and if not, on whose authority. Story 1.5. */
+  applicability: FleetStatusApplicability;
+  /** How strongly it is supported. `declared` never proves a capability ready. */
+  evidence: FleetStatusEvidence;
+  /** A bucket, never an age -- `data` has to be byte-identical across two runs. */
+  freshness: FleetStatusFreshness;
+  /** `state` x `applicability`, so a fail on a required domain outranks one on an optional. */
+  severity: FleetStatusSeverity;
+  /** Who can repair it, and therefore what `next_action` can possibly be. */
+  repair: FleetStatusRepair;
+  /**
+   * The live side and the recorded side, in the shape `FleetProvenanceFact`
+   * already uses. Both null where a value comparison is not what the
+   * observation is about -- never a fabricated pair.
+   */
+  observed: string | null;
+  desired: string | null;
+  /** One exact thing to do next. Read-only unless `next_action_class` says otherwise. */
+  next_action: string;
+  next_action_class: FleetStatusNextActionClass;
+  /** The contract entry authorizing this gap, or null. Null on a non-pass blocks `proven`. */
+  justification: FleetStatusJustification | null;
 }
 
 /** One agent, every domain, with the per-domain rollup beside the raw observations. */
@@ -823,6 +1222,10 @@ export interface FleetStatusAgent {
   /** True when this record's observations were clipped; `retrieval` then names how to get them all. */
   truncated: boolean;
   retrieval: string;
+  /** The four activation states, kept apart. Story 1.5. */
+  lifecycle: FleetStatusLifecycle;
+  /** Exactly one bucket, resolved under `FLEET_STATUS_MEMBER_PRECEDENCE`. */
+  member_class: FleetStatusMemberClass;
 }
 
 /**
@@ -850,6 +1253,7 @@ export interface FleetStatusDomainRollup {
  */
 export interface FleetStatusHostFinding {
   rule_id: string;
+  /** Never null on a non-pass: a finding nobody owns is a finding nobody acts on. */
   owner: string | null;
   domain: FleetStatusDomain;
   state: FleetStatusState;
@@ -857,6 +1261,36 @@ export interface FleetStatusHostFinding {
   details: string[];
   finding_id: string;
   retrieval: string;
+  /** The same four axes and derivations an observation carries. Story 1.5. */
+  applicability: FleetStatusApplicability;
+  evidence: FleetStatusEvidence;
+  freshness: FleetStatusFreshness;
+  severity: FleetStatusSeverity;
+  /** Always `other-owner` for a host rule that needs repair: no repository change reaches it. */
+  repair: FleetStatusRepair;
+  observed: string | null;
+  desired: string | null;
+  next_action: string;
+  next_action_class: FleetStatusNextActionClass;
+  justification: FleetStatusJustification | null;
+}
+
+/**
+ * A status finding, carrying what the AC7 sort needs and the inventory's does not.
+ *
+ * `FleetInventoryFinding`'s three-value `severity` stays exactly where it is --
+ * it is the inventory's axis and other commands read it. The four fields added
+ * here are what let `compareStatusFindings` rank a gating finding above 200
+ * low-severity ones BEFORE any cap, which is the failure AC7 names.
+ */
+export interface FleetStatusFinding extends FleetInventoryFinding {
+  domain: FleetStatusDomain;
+  scope: "fleet" | "agent" | "host";
+  /** Stable across runs and across both adapters, like an observation's. */
+  finding_id: string;
+  status_severity: FleetStatusSeverity;
+  /** Whether this finding is one of the reasons the fleet cannot claim proof. */
+  gating: boolean;
 }
 
 export interface FleetStatusScope {
@@ -912,6 +1346,27 @@ export interface FleetStatusHealth {
   /** Sources this run could not read at all -- a missing audit CLI, an unparseable child report. */
   collection_errors: number;
   truncated: boolean;
+  /**
+   * The three-way aggregate, and the one a machine client should read.
+   *
+   * BESIDE `healthy`, never instead of it:
+   *   !healthy                                  -> "unhealthy"  (drift PROVEN)
+   *   !complete || stale > 0 || unjustified > 0 -> "unproven"   (nothing proven)
+   *   otherwise                                 -> "healthy"
+   */
+  verdict: FleetStatusVerdict;
+  /** `verdict === "healthy"` AND `fleet_complete`. The only thing that means "we read it all and it was right". */
+  proven: boolean;
+  /** The machine discriminant both adapters carry. `--exit-code` projects it onto a process exit. */
+  exit_category: FleetStatusExitCategory;
+  /** Observations whose evidence is past its declared `max_age_days`. Blocks `proven`. */
+  stale: number;
+  /** Non-pass observations no `health_policy` entry authorizes. Blocks `proven`. */
+  unjustified: number;
+  /** Two sources answering for the same field and disagreeing. Blocks `complete`. */
+  contradictions: number;
+  /** Every SELECTED agent, in exactly one bucket. Sums to `scope.selected_agents`. */
+  members: FleetStatusMembers;
 }
 
 export interface FleetStatus {
@@ -923,8 +1378,15 @@ export interface FleetStatus {
   agents: FleetStatusAgent[];
   domains: FleetStatusDomainRollup[];
   host: FleetStatusHostFinding[];
-  findings: FleetInventoryFinding[];
+  findings: FleetStatusFinding[];
   probes: FleetProbeRecord[];
+  /**
+   * How every finding moved since the `--baseline` document, or `[]`.
+   *
+   * Empty when no baseline was supplied AND when the baseline is byte-identical
+   * to this run: an unchanged finding emits nothing.
+   */
+  transitions: FleetStatusTransition[];
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
 }

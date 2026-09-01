@@ -262,10 +262,12 @@ pjangler fleet status --agent-registry ./copy.yaml      # inspect a copy
 pjangler fleet status --project-registry ./copy.yaml    # inspect a copy
 pjangler fleet status --contract ./candidate.yaml       # read a candidate contract
 pjangler fleet status --deadline-ms 60000               # bound the whole run
+pjangler fleet status --baseline ./base.json --json     # correlate against a prior run
+pjangler fleet status --exit-code                       # project the verdict onto the exit status
 ```
 
 It is exposed as the `pjangler_fleet_status` MCP tool with the same options and
-the same envelope.
+the same envelope, including `baseline` and `exitCode`.
 
 ### The nine domains, and what each observes today
 
@@ -350,32 +352,183 @@ the gitlink and submodule probes and no checkout probe, and
 `--domain release_provenance` the reverse — so a filtered run never pays for
 facts it would discard.
 
-### Two verdicts
+### Four axes, because one word cannot carry four questions
 
-`data.health` reports `healthy` (no `fail` and no `error`) and `complete` (no
-`unobserved`, no collection error, no truncation) as two separate verdicts, plus
-`fleet_complete` — true only for an unfiltered `--live` run in which every
-registered row and every applicable domain was actually observed. A clipped but
-drift-free run is `healthy: true, complete: false`.
+Every observation carries four *separate* axes, and collapsing any two of them is
+how "we did not look" becomes "it is fine".
+
+| axis | values | what it answers |
+| --- | --- | --- |
+| `state` | `pass` `warn` `skip` `fail` `unsupported` `unobserved` `error` | what was concluded |
+| `applicability` | `required` `optional` `not_applicable` `deferred` `exception` | whether it was required, and if not, on whose authority |
+| `evidence` | `direct` `declared` `derived` `absent` | how strongly it is supported |
+| `freshness` | `current` `stale` `unknown` `not_applicable` | whether the evidence is still current |
+
+`evidence: "declared"` is the load-bearing one. A registry field that *asserts*
+something with nothing verifying it — a stored routing target, an activation
+flag, a recorded unit name — is `declared`, never `direct`. A `declared`
+observation may be `pass` on its own record, but it can never set
+`lifecycle.capability_readiness: "ready"` and never contributes to `proven`.
+`derived` is a reading computed across other rows, such as an identity conflict.
+
+**Freshness is a bucket, never an age.** `data` is byte-identical across two runs
+over unchanged state, and an age in seconds is not. The reference instant is
+captured once per run and never serialized; each `health_policy.freshness` entry
+declares a `max_age_days`, and only the bucket is emitted.
+
+### `health_policy`: the only thing that can authorize a gap
+
+`contracts/fleet-contract.yaml` carries an optional `health_policy` root block.
+It is the **only** place a skip, a warning, a deferred capability, or a managed
+exception can be justified — nothing is inferred from a summary, a severity, or
+the absence of other findings.
+
+| key | authorizes |
+| --- | --- |
+| `required_domains` | which domains must be observed before proof can be claimed |
+| `deferred_capabilities[]` | one `unsupported` answer, with a `reason` and the `owner_story` that will implement the observer |
+| `allowed_warnings[]` | one rule whose `warn` is upstream cadence rather than fleet drift |
+| `allowed_skips[]` | one rule or domain whose `skip` is a declared property of a read-only run |
+| `freshness[]` | how long one recorded timestamp counts as current evidence |
+
+An authorized gap is still **reported**, with its own state; what changes is
+whether the aggregate may claim it was proven. Every justified observation names
+the entry that authorized it in `justification.policy`, so an operator can open
+the contract at that path. A contract with **no** `health_policy` block still
+loads — it is a schema-1 contract — and then authorizes nothing: every non-pass
+is unjustified, `proven` is false, and one `health-policy-undeclared` finding
+names the missing block rather than the run failing.
+
+Adding the block was a grammar change, so the tracked contract is
+`schema_version: 2` at `contract_version: 1.1.0`. This build reads schema 1 and 2.
+
+### Three verdicts, and which one to read
+
+```
+verdict = !healthy                                   -> "unhealthy"   drift is PROVEN
+        : !complete || stale > 0 || unjustified > 0  -> "unproven"    nothing is proven either way
+        : "healthy"
+proven  = verdict === "healthy" && fleet_complete
+```
+
+`health.healthy` and `health.complete` keep exactly the meanings they had:
+`healthy` is "no `fail`, no `error`" (the fleet is not *wrong*), `complete` is
+"nothing unobserved, no collection error, no truncation, no contradiction" (this
+run *read* all of it). `health.verdict` is the aggregate built on top of both,
+and it is what the report headline and `data.health.exit_category` lead with — so
+`healthy` can no longer be claimed over a fleet whose audit-fed half was never
+opened, while `healthy` itself still means what story 1.4 pinned it to mean.
+
+`health.proven` is the only field that means *we read all of it and it was right*.
+
+Beside them: `health.stale`, `health.unjustified`, `health.contradictions`, and
+`health.members` — every **selected** agent in exactly one of `healthy`,
+`unhealthy`, `incomplete`, `deferred`, `exception`, `unclassified`. The six counts
+sum to `scope.selected_agents`, not to the records the envelope's cap let
+through.
+
+### Severity, repair class, and one exact next action
+
+Every non-pass observation and every host finding carries an `owner`, an
+`observed`/`desired` pair, a `severity`, a `repair` class, and one `next_action`.
+Each is derived from a real field — the audit rule's own `fixable`, its
+`rule_scope`, and the contract's `activation.execution_authority` — never from
+prose.
+
+| `repair` | condition | next action |
+| --- | --- | --- |
+| `automatic` | an audit rule, project-scoped, reporting `fixable` | the exact `pjangler migrate <rule_id> <repo> --dry-run` |
+| `approval-gated` | the observation's field **is** `activation.execution_authority` (`strict: true`, `default: deny`) | the activation route, and it names the authority |
+| `blocked` | a contract-declared deferred capability | nothing to run in this release; the action names the owning story |
+| `other-owner` | a host-scoped rule | the host route — no work in any repository changes it |
+| `manual` | everything else that needs a decision | the retrieval that returns the observation alone |
+| `none` | a pass, or a declared-not-applicable skip | the retrieval |
+
+Severity is `state` × `applicability`: an `error` is `critical`; a `fail` on a
+required domain is `critical` and elsewhere `high`; an `unobserved` required
+domain is `high`; an unjustified `warn` or a `stale` reading is `medium`; a
+**justified** `warn`, `unsupported` or `stale` is `low`; a `pass` and a justified
+`skip` are `info`. An *unjustified* `unsupported` outranks a justified one —
+same observation, same build, and the only difference is whether anyone wrote
+down that it was expected.
+
+**A recommended command is read-only unless it is labelled.**
+`next_action_class` is `"read-only"` or `"requires-authorization"`, and a
+`requires-authorization` action names the authorization in the string itself.
+
+`data.findings` is stable-sorted by gating impact, then severity, then scope,
+then agent, then domain, then `finding_id` — **before** any cap, on both the
+machine and the human path. A gating finding at position 26 of an unsorted list
+is silently dropped by the report's cap of 25, which is exactly the failure the
+sort exists to prevent.
+
+### Lifecycle: four values, never one boolean
+
+Each agent record carries `lifecycle` with four separate fields.
+`desired_state` is what the registry declares as the target for that row — a
+statement of intent, never a claim about the agent. `observed_state` is the
+furthest state this run actually proved, and it can never read `routing_ready` or
+`activated` in this release because no observer for either exists.
+`capability_readiness` is never `ready` for the same reason: a `declared`
+registry field is not a direct observation of the shared gateway. `activation`
+reports the strict flag verbatim, and the contract's default is deny.
+
+### `--baseline`: two runs, correlated read-only
+
+```bash
+pjangler fleet status --json > base.json
+pjangler fleet status --baseline base.json --json
+```
+
+`--baseline` opens a prior status document **for reading and nothing else**, and
+no state is ever written to disk to compute a transition. Findings are joined on
+`finding_id`, a sha256 prefix that is stable across runs and identical on the CLI
+and MCP adapters, and `data.transitions[]` reports every `appeared`, `resolved`,
+`state_changed`, `severity_changed` and `evidence_changed`. An **unchanged**
+finding emits nothing, so a byte-identical baseline produces an empty array. An
+unreadable or unparseable baseline is `INVALID_INPUT` at exit 2, naming the path,
+before a single probe or audit child spawns.
+
+### The exit taxonomy, and why the projection is opt-in
+
+`data.health.exit_category` is `ok`, `unhealthy`, or `incomplete`, and **both
+adapters carry it** — it is the discriminant an MCP client had no way to read
+before, because `isError` is `false` for a fully unhealthy fleet.
+
+| category | verdict | `--exit-code` exits |
+| --- | --- | --- |
+| `ok` | `healthy` | 0 |
+| `unhealthy` | `unhealthy` | **10** |
+| `incomplete` | `unproven` | **11** |
+
+`unhealthy` and `incomplete` are `ok: true` states — the command succeeded, the
+fleet did not — so they are not error codes and never null out `data`. The
+default exit stays **0**: `fleet status` is an observation command, gating CI is a
+later story's job, and a `mise run fleet:status` that is permanently red on a real
+fleet teaches an operator to ignore it. A *command* failure still wins: an
+unknown `--agent` is exit 3 whether or not `--exit-code` was given.
 
 **Host-scoped findings are reported once**, deduped by rule id, in `data.host`.
 They never reach a per-agent record and never make an agent or the fleet
 unhealthy: no amount of work in a repository can change a condition about this
 machine, so failing the repository for it is a category error.
 
-**An unhealthy fleet is data, not a failure.** It exits `0` with `ok: true` and
-`data.health.healthy: false`. Only a *command* failure is nonzero:
+**An unhealthy fleet is data, not a failure.** By default it exits `0` with
+`ok: true` and `data.health.verdict: "unhealthy"`. Only a *command* failure is
+nonzero without `--exit-code`:
 
 | exit | meaning |
 | --- | --- |
-| `0` | the command ran — read `data.health.healthy` and `data.health.complete` for the verdicts |
-| `2` | a malformed flag value, or a `--domain` that is not one of the nine |
+| `0` | the command ran — read `data.health.verdict` for the answer |
+| `2` | a malformed flag value, a `--domain` that is not one of the nine, or a `--baseline` that could not be read or parsed |
 | `3` | an `--agent` id that is not registered, or a registry that is not there |
 | `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
 | `5` | the fleet contract declares a schema version this build does not support |
 | `6` | internal |
 | `7` | the whole-run `--deadline-ms` budget expired; no partial result is reported |
 | `8` | the run was cancelled (`SIGINT`/`SIGTERM`, or an aborted MCP request); no audit child survives |
+| `10` | **`--exit-code` only** — `data.health.verdict` is `unhealthy` |
+| `11` | **`--exit-code` only** — `data.health.verdict` is `unproven` |
 
 `data` is deterministic: no timestamp, duration, pid, hostname, or ordering by
 completion — the audit child's `auditedAt` is dropped at the boundary and every

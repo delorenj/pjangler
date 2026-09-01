@@ -1461,14 +1461,52 @@ process.exit(0);
     assert.notEqual(result.stdout, "", "the human report must not be empty");
     assert.equal(result.status, 0, `an unhealthy fleet is data, not a failure exit: got ${result.status} ${result.stderr}`);
     const out = result.stdout;
-    assert.match(out.split("\n").slice(0, 3).join("\n"), /Fleet status (healthy|UNHEALTHY)/u, "the verdict must lead");
-    for (const reason of ["failed", "errors", "warned", "unobserved", "unsupported", "skipped"]) {
+    // Story 1.5 moved the headline to the THREE-way verdict. `healthy` is still
+    // reported -- as one of the reasons on the line below -- but the word the
+    // headline leads with can no longer be "healthy" over a fleet whose
+    // audit-fed half was never opened.
+    assert.match(out.split("\n").slice(0, 3).join("\n"), /Fleet status (HEALTHY|UNHEALTHY|UNPROVEN)/u, "the verdict must lead");
+    for (const reason of ["failed", "errors", "warned", "unobserved", "unsupported", "skipped", "unjustified", "stale", "contradictions"]) {
       assert.match(out, new RegExp(`\\d+ ${reason}`, "u"), `the verdict's reasons must name ${reason}`);
     }
     assert.ok(out.indexOf("Fleet status") < out.indexOf("Agents"), "the verdict must come before the agent dump");
     for (const domain of DOMAINS) assert.ok(out.includes(domain), `the report must name the ${domain} domain`);
     assert.match(out, /Host \(this machine/u, "the host block must be visibly separate from the agents");
     assert.ok(out.indexOf("Domains") < out.indexOf("Agents"), "the per-domain rollup must precede the agents");
+  });
+
+  check("health.healthy still computes exactly as story 1.4 defined it", () => {
+    // THE GUARD AGAINST SOLVING 1.5 BY QUIETLY REDEFINING 1.4. Story 1.5 adds a
+    // three-way `verdict` BESIDE `healthy`; the moment `healthy` starts folding
+    // in coverage, staleness or authorization, the provenance split that keeps
+    // "the fleet is wrong" apart from "this run did not see all of it" is gone
+    // and every consumer of the old field is silently wrong.
+    //
+    // Recomputed here from the observations the same envelope carries, over
+    // every EMITTED record -- so this is a derivation from the payload rather
+    // than a restatement of the field.
+    const data = status(cli(["fleet", "status", "--json"]));
+    const observations = [
+      ...data.agents.flatMap((agent) => agent.observations),
+      ...data.domains.flatMap((rollup) => rollup.observations),
+    ];
+    const failed = observations.filter((item) => item.state === "fail").length;
+    const errored = observations.filter((item) => item.state === "error").length;
+    assert.ok(failed > 0, "the fixture must carry a proven failure or this pins nothing");
+    assert.equal(data.health.healthy, failed === 0 && errored === 0);
+    assert.equal(data.health.healthy, false);
+
+    // `unsupported`, `unobserved`, `skip`, `warn`, staleness and an
+    // unauthorized gap must all leave it alone.
+    assert.ok(data.health.unobserved > 0, "the default run leaves the audit half unread");
+    assert.ok(data.health.unsupported > 0, "and three domains have no observer at all");
+    assert.ok(data.health.unjustified > 0, "and the tracked contract authorizes none of this fixture's warnings");
+    assert.equal(data.health.verdict, "unhealthy", "the new verdict is derived, not a second copy of healthy");
+
+    // A clean SLICE still reads `healthy: true`, which is the 1.4 criterion the
+    // three-way verdict is not allowed to break.
+    const clean = status(cli(["fleet", "status", "--json", "--agent", "alpha-pm", "--domain", "runtime"]));
+    assert.equal(clean.health.healthy, true, "a slice with no fail and no error must still read healthy");
   });
 
   // -- The declared vocabulary is the code's, not a second copy ---------------

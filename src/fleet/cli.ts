@@ -34,6 +34,7 @@ import {
 } from "./output";
 import {
   FLEET_STATUS_DOMAINS,
+  FLEET_STATUS_EXIT_CODES,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
   FleetError,
   fleetExitCode,
@@ -68,6 +69,8 @@ type ProvenanceOptions = InventoryOptions;
 interface StatusOptions extends InventoryOptions {
   domain?: string;
   live?: boolean;
+  baseline?: string;
+  exitCode?: boolean;
 }
 
 /** An inspection with nothing learned yet, so a failure still renders a report. */
@@ -252,16 +255,20 @@ function provenanceEnvelope(provenance: FleetProvenance, json: boolean): FleetEn
  * flag, a blown deadline, a cancellation -- is `ok:false`.
  */
 function statusEnvelope(status: FleetStatus, json: boolean): FleetEnvelopeV1 {
-  const nextActions = status.health.healthy && status.health.complete
-    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"]
+  const nextActions = status.health.proven
+    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its evidence, its severity, and the one action that changes it"]
     : [
       status.health.errors || status.health.collection_errors
         ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read"
         : status.health.failed
-          ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine"
-          : status.scope.live
-            ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
-            : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved",
+          ? "Repair the failing observations in data.agents, worst first -- data.findings is sorted by gating impact and severity, and data.host is separate on purpose"
+          : status.health.unjustified
+            ? "Every non-pass without a justification blocks proof: authorize it under health_policy in the fleet contract, or repair it"
+            : status.health.stale
+              ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry"
+              : status.scope.live
+                ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+                : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved",
       "Re-run with --json for the complete observation set",
     ];
   // A caller who already passed --json is reading this string IN the JSON.
@@ -495,6 +502,8 @@ export function registerFleetCli(program: Command): void {
     .option("--agent <id>", "Report only this agent; totals still describe the whole fleet, and no child runs for any other agent")
     .option("--domain <domain>", `Report only this domain (${FLEET_STATUS_DOMAINS.join(", ")})`)
     .option("--live", "Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository")
+    .option("--baseline <path>", "Correlate against a prior status document and report every transition (read-only)")
+    .option("--exit-code", "Project data.health.exit_category onto the process exit: 10 unhealthy, 11 unproven. Default is 0")
     .option("--project-registry <path>", "Inspect this project registry instead of the configured one")
     .option("--agent-registry <path>", "Inspect this agent registry instead of the configured one")
     .option("--contract <path>", "Validate and read this contract instead of the tracked one")
@@ -510,16 +519,25 @@ export function registerFleetCli(program: Command): void {
         // the flag the domain and hand a caller who asked for JSON an ANSI
         // report about a domain named `--json`.
         requireValue(options.domain, "--domain");
+        requireValue(options.baseline, "--baseline");
         const status = await withSignals(deadlineMs, async (runContext) => collectFleetStatus({
           agentId: options.agent,
           domain: options.domain,
           live: Boolean(options.live),
+          baseline: options.baseline,
           projectRegistry: options.projectRegistry,
           agentRegistry: options.agentRegistry,
           contract: options.contract,
           runContext,
         }));
-        await write(statusEnvelope(status, json), json, () => formatFleetStatusReport(status));
+        // OPT-IN, and the default stays 0. `fleet status` is an observation
+        // command: gating CI is story 1.21's job, and a `mise run fleet:status`
+        // that is permanently red on the real (unhealthy) fleet teaches an
+        // operator to ignore it. The envelope is unchanged either way -- `ok`
+        // stays true and `data` stays complete, because the command succeeded;
+        // it is the fleet that did not.
+        const projected = options.exitCode === true ? FLEET_STATUS_EXIT_CODES[status.health.exit_category] : 0;
+        await write(statusEnvelope(status, json), json, () => formatFleetStatusReport(status), projected);
       } catch (error) {
         const normalized = normalizeFleetError(error);
         const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
@@ -594,7 +612,7 @@ export function registerFleetCli(program: Command): void {
  * `FleetContractInspection` and hardwiring `formatFleetContractReport` is what
  * would otherwise have forced a second near-identical copy.
  */
-async function write(envelope: FleetEnvelopeV1, json: boolean, format: () => string): Promise<void> {
+async function write(envelope: FleetEnvelopeV1, json: boolean, format: () => string, projected = 0): Promise<void> {
   // AWAITED, and that is the whole change. `process.stdout` is ASYNCHRONOUS for
   // a pipe on Linux, so `write()` only queues; anything that terminates the
   // process before the queue drains loses the tail. Measured on this runtime: a
@@ -605,7 +623,7 @@ async function write(envelope: FleetEnvelopeV1, json: boolean, format: () => str
   // does call `process.exit`.
   if (json) await writeStdout(renderFleetJson(envelope));
   else await writeStdout(`${format()}\n`);
-  process.exitCode = fleetEnvelopeExitCode(envelope);
+  process.exitCode = fleetEnvelopeExitCode(envelope, projected);
 }
 
 /** Last resort when even rendering the failure envelope threw. */
