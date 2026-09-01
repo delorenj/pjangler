@@ -95,49 +95,49 @@ try {
     assert.equal(inventory.some((path) => path.startsWith(forbidden)), false, `packed development content: ${forbidden}`);
   }
   assert.equal(inventory.some((path) => path.includes("/__pycache__/") || path.endsWith(".pyc")), false, "packed artifact must exclude Python caches");
-  // A backstop against development content leaking into the published package;
-  // the inventory assertions above are what actually enforce hygiene. Raised
-  // from 1_500_000 when the fleet contract module + contracts/fleet-contract.yaml
-  // (PJAN-92) pushed a package that was already at 1_491_670 bytes over the line.
+  // No sourcemap may reappear in the published artifact.
   //
-  // Raised again from 1_750_000 (measured 1_754_340) by story 1.3. The previous
-  // note said to shrink dist/*.map before raising this again, and that was NOT
-  // done -- deliberately, and it is worth stating why. This delta is not map
-  // bytes: dist/index.js grew 1_050_791 -> 1_099_648 and dist/mcp-server.js grew
-  // 794_928 -> 916_683, because exposing the fleet tools over MCP pulls the whole
-  // fleet module, the contract loader and yaml into that second bundle. Both maps
-  // are byte-identical across the change. So the shrink the note asks for is
-  // still owed and still the right fix -- it is DW-7, and dropping dist/*.map
-  // from package.json `files` is an outward-facing publishing decision this
-  // story declined to make on its own.
+  // FIRST, before the size ceiling, and that ordering is the point: a map that
+  // came back would also blow the ceiling, but it would surface as a vague
+  // "unexpectedly large" rather than naming the one line of package.json that
+  // caused it. A ceiling is a backstop; this is the statement of intent.
+  assert.deepEqual(
+    inventory.filter((path) => path.endsWith(".map")), [],
+    "the published package must carry no sourcemap; see package.json files `!dist/**/*.map`",
+  );
+
+  // NO SOURCEMAP IS PUBLISHED, so this ceiling finally measures CODE.
   //
-  // Raised again from 1_850_000 (measured 1_864_558) by story 1.4, and this time
-  // the delta IS map bytes. The bundles grew 8_575 bytes in total
-  // (dist/index.js 1_151_496 -> 1_155_954, dist/mcp-server.js 957_240 ->
-  // 961_357) for ~1_700 lines of new source; the tarball grew far more than that
-  // because dist/*.map embeds every one of those lines. Measured on the same
-  // tree with dist/*.map excluded from package.json `files`: 729_149 bytes --
-  // 61% of what is published today is sourcemap, which is DW-7's number
-  // confirmed rather than estimated.
+  // It was raised four times -- 1_500_000 -> 1_750_000 -> 1_850_000 ->
+  // 2_000_000 -- and every raise but one bought sourcemap rather than bundle.
+  // The last of them (story 1.5) is the arithmetic that ended the argument: the
+  // tarball moved 1_947_627 -> 1_975_285 bytes for roughly a thousand lines of
+  // new source, while the bundles themselves grew a small fraction of that,
+  // because `dist/*.map` embeds every line of every source file it maps. At
+  // that point `dist/index.js` was 1.2 MB against a 2.6 MB map and
+  // `dist/mcp-server.js` 1.0 MB against a 2.3 MB map: 61% of what was published
+  // was sourcemap.
   //
-  // THIS IS THE FOURTH RAISE, and it is the last one that should happen.
+  // `package.json` `files` now carries `!dist/**/*.map`, which is DW-7's fix.
+  // MEASURED by packing and unpacking, not predicted: 1_975_285 -> 758_896
+  // bytes, 104 entries -> 101, and `tar -tzf` finds zero `.map` paths. The maps
+  // are not tracked in git, so they remain pure build output and a developer's
+  // `node --enable-source-maps` still resolves them from `dist/` exactly as
+  // before; the only thing that changed is what an npm consumer downloads.
   //
-  // A ceiling that moves every time it is reached is not a ceiling. Story 1.5
-  // (`src/fleet/health.ts` plus the status/type/output work around it) took the
-  // tarball from 1 947 627 to 1 975 285 bytes -- 27 658 bytes for roughly a
-  // thousand lines of new source, of which the bundles themselves are a small
-  // fraction: `dist/index.js` is 1.2 MB against a 2.6 MB `dist/index.js.map`,
-  // and `dist/mcp-server.js` 1.0 MB against a 2.3 MB map. Every raise so far has
-  // been paying for sourcemap, not for code.
+  // The published bundles still end in a dangling
+  // `//# sourceMappingURL=index.js.map`. It is left deliberately. MEASURED:
+  // under `--enable-source-maps` with the map absent, Node prints a correct,
+  // un-remapped stack trace with no warning and no error, and the packed CLI
+  // runs normally. Stripping it is NOT free -- esbuild's only mode that omits
+  // the comment is `--sourcemap=external`, which would omit it from the local
+  // `dist/` too and break exactly the local debugging this change preserves.
   //
-  // DW-7 records the one-line fix and its measurement -- excluding `dist/*.map`
-  // from package.json `files` puts the tarball at 729 149 bytes -- and it is
-  // still not a decision a story implementing something else should make
-  // unilaterally, because it changes what consumers download and what their
-  // stack traces resolve to. The ceiling is raised once more so this story does
-  // not leave the build red for a reason unrelated to what it changed; the next
-  // story to reach it should take DW-7's fix instead.
-  assert.ok(tarballBytes < 2_000_000, `packed tarball unexpectedly large: ${tarballBytes} bytes`);
+  // So THIS number can hold. 758_896 measured against a 1_000_000 ceiling is
+  // ~240 KB of headroom in real bundle bytes rather than the 1.2% the previous
+  // ceiling had left. If a later story reaches it, that is a bundle that grew
+  // by a third, and it is a number worth defending rather than moving.
+  assert.ok(tarballBytes < 1_000_000, `packed tarball unexpectedly large: ${tarballBytes} bytes`);
 
   // Extract the real npm artifact and link only the already-installed dependency
   // tree. This exercises the packed files without a second registry/network hit.

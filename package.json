@@ -12,6 +12,7 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
     "contracts",
     "templates/commonproject/copier.yml",
     "templates/commonproject/template",

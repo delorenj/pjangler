@@ -56,9 +56,23 @@ location: package.json (files) / tests/generated-project-lifecycle-regressions.m
 source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: low
 reason: dist/index.js.map, dist/mcp-server.js.map and dist/prompt.js.map compress to ~904 KB of a 1.54 MB tarball. That is why the packed-size guard in generated-project-lifecycle-regressions had only 8 KB of headroom before this story and had to be raised. Dropping maps from package.json `files` would take the package to roughly 630 KB, but it changes what installed users get, so it is a packaging decision rather than part of this story.
-measured: 2026-09-01 (story 1.4). Published tarball 1_864_558 bytes; the same tree with `dist/*.map` excluded from package.json `files` packs to 729_149 bytes -- 61% of every download is sourcemap. The size gate in tests/generated-project-lifecycle-regressions.mjs has now been raised three times (1_500_000 -> 1_750_000 -> 1_850_000 -> 1_950_000) and each raise has been mostly map bytes, so it no longer constrains anything it was written to constrain. The one-line fix is replacing `"dist"` in package.json `files` with `"dist/**/*.js"` + `"dist/assets"`; the cost is that a consumer's stack trace resolves to bundle offsets in an unminified bundle rather than to original source. That is a publishing decision with an owner, which is why three stories in a row have declined to make it in passing.
-status: open
-note: Story 1.5 raised the packed-tarball ceiling for the FOURTH time -- 1 947 627 -> 1 975 285 bytes for roughly a thousand lines of new source, against a 1 950 000 gate. The bundles are 1.2 MB and 1.0 MB; their sourcemaps are 2.6 MB and 2.3 MB. Every raise so far has been paying for sourcemap. The next story to reach the ceiling should take this entry's fix rather than move the number again; the gate's own comment now says so.
+measured: 2026-09-01 (story 1.4). Published tarball 1_864_558 bytes; the same tree with `dist/*.map` excluded from package.json `files` packs to 729_149 bytes -- 61% of every download is sourcemap. The size gate in tests/generated-project-lifecycle-regressions.mjs was raised four times (1_500_000 -> 1_750_000 -> 1_850_000 -> 1_950_000 -> 2_000_000) and each raise after the first was mostly map bytes, so it no longer constrained anything it was written to constrain.
+resolved: 2026-09-01 (story 1.5). The repository owner was asked and chose this fix over raising the ceiling a fifth time or re-pointing the gate at bundle size. `package.json` `files` now carries `!dist/**/*.map`. MEASURED by packing and unpacking rather than predicted: 1_975_285 -> 758_896 bytes, 104 entries -> 101, `tar -tzf` finds zero `.map` paths. The ceiling came DOWN from 2_000_000 to 1_000_000 -- the first time it has moved in that direction -- leaving ~240 KB of headroom in real bundle bytes.
+
+  Two things checked before taking it, because both were assumptions worth
+  disproving. The maps are NOT tracked in git (`git ls-files dist` lists no
+  `.map`), so they stay pure build output and local `--enable-source-maps`
+  debugging is untouched; only what an npm consumer downloads changed. And the
+  published bundles keep a now-dangling `//# sourceMappingURL=`: under
+  `--enable-source-maps` with the map absent Node prints a correct un-remapped
+  trace with no warning, and esbuild's only comment-free mode
+  (`--sourcemap=external`) would strip it from the local `dist/` too and break
+  the very debugging this preserves. So it is left deliberately.
+
+  What a consumer loses: a stack trace from an installed `@delorenj/pjangler`
+  now points at offsets in an unminified bundle rather than at original TypeScript.
+  Resolving one means checking out the matching version tag and building.
+status: closed
 
 
 ### DW-8: Every suite runs dist/index.js and nothing proves dist matches src.
@@ -619,4 +633,14 @@ location: src/fleet/health.ts (detectContradictions) / src/fleet/status.ts (DOMA
 source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
 severity: medium
 reason: `detectContradictions` groups on `(agent_id, domain, field)`, which is the tuple the spec names -- but `DOMAIN_FIELD` gives EVERY rule in a domain the same field path, so a store read and an audit rule that examine different properties of one domain register as a disagreement about one field. MEASURED on the live fleet: 10 contradictions, and every one is of that shape. `zshyzsh-pm` is representative -- the store read reports `pass` because the role-local runtime directory really is a real directory, and `hermes.untracked-runtimes` reports `fail` because `agents/hermes/pm/.gitignore` is missing its `runtime/` entry. Both readings are TRUE and neither refutes the other; they are answers to different questions filed under one path. The report is defensible at the granularity it claims (two sources, one declared field, two states) and every one of the ten is actionable, but `health.complete` now reads false for ten agents on a ground that is partly an artefact of the field table. Sharpening it needs an observation-level subject finer than the domain's contract field -- which is a modelling decision about what an audit rule is ABOUT, not a bug fix.
+FALSE POSITIVES, SAID PLAINLY: all ten instances on the live fleet today are false positives, and a later reader must not mistake them for real disagreements. In every one BOTH SIDES ARE TRUE and neither refutes the other. `zshyzsh-pm` is representative and was reconciled against disk: the role-local runtime directory really is a real directory (`drwx------`) AND `agents/hermes/pm/.gitignore` really is missing its `runtime/` entry. There is no contradiction in the fleet; the contradiction is in the MODEL, because two answers to different questions are filed under one contract field path.
+WHY IT SHIPS ANYWAY, and the only direction in which it may: it fails SAFE. The artefact makes `complete` false, so the fleet UNDER-claims proof rather than over-claiming it, and each of the ten is individually actionable on its own terms. In a story whose whole subject is that a verdict must be earned, a measurement artefact driving a verdict is tolerable, not settled. If the polarity ever inverts -- an artefact that lets a fleet claim proof it has not earned -- this stops being deferrable.
+status: open
+
+### DW-76: one test in one suite is all that stands between a NUL byte and a disabled credential scan.
+origin: review-deferred story-1.5
+location: tests/fleet-contract-regressions.mjs ("no TypeScript source carries a raw NUL byte")
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: medium
+reason: Story 1.5 wrote a raw NUL byte into `src/fleet/health.ts` -- a composite-map-key separator in `detectContradictions`, spelled as a literal instead of the `\u0000` escape the codebase's two other separator sites use. One assertion in one suite caught it, and that assertion is the only detection anywhere. The consequence is wildly out of proportion to the typo: GNU grep treats a file containing a NUL as binary, the machine-wide `pre-commit` credential scan greps the unified diff, and a single NUL anywhere in that stream silently no-ops the WHOLE scan for every commit touching the file -- it does not warn, it reports clean. This is the third independent occurrence (`src/fleet/contract.ts`, `src/project/identity.ts`, now `src/fleet/health.ts`), each one somebody reaching for a separator and reinventing the same idea, which says the escape is not discoverable at the moment it is needed. Two gaps beyond that: the check is scoped to `src/**/*.ts`, so a NUL in a `.mjs` suite, a script, or a template goes undetected; and it lives in a fleet-contract suite where nothing about the subject suggests it guards a machine-wide secret scan, so it is one refactor away from being moved or dropped by someone who cannot see what it is for. The protection belongs in the guard itself -- `~/.config/git/hooks/_guard.sh` failing CLOSED when a diff it cannot scan as text reaches it, rather than quietly scanning nothing -- so it does not depend on one repository's test suite being run.
 status: open
