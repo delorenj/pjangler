@@ -119,3 +119,99 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: medium
 reason: Every field path the inventory attributes resolves to exactly one declared owner against the live 28-agent registry, so DW-1 is closed for the fields this story reads. hindsight.*, reporting.*, internal_role_name, slack.*, telegram.*, hermes.codex_home, systemd.{cron_tick,artifact_bridge, watchdog,checkpoint}_timer and gateways.bloodbank.legacy_profile_consumers remain undeclared, because inventory reads none of them. They become load-bearing in Story 1.8 (systemd topology) and Story 1.10 (routing readiness).
 status: open
+
+### DW-16: One store, three declared authorities, and `stores[].owner` reports the first.
+origin: spec-deferred 3843c755939b
+location: src/fleet/inventory.ts (authorityFor / storeView)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: `authorityFor` returns the first authority whose `store` matches. The contract declares three against `hermes-agent-registry`: agent_operational_records (owner hermes-agent-registry), board_identity_projection (owner PROJECT-REGISTRY) and bloodbank_activation. So `data.stores[].owner` says hermes-agent-registry and silently hides the one cross-store write the contract goes out of its way to call out. A derived answer, in a module whose stated rule is that it never invents an owner. Reporting the owner SET, or the authority ids, is the fix.
+status: open
+
+### DW-17: A missing PROJECT registry aborts the whole run instead of degrading.
+origin: spec-deferred 2a2a69fd049a
+location: src/fleet/inventory.ts (readProjectRegistryRaw / storeView)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: `readProjectRegistryRaw` throws NOT_FOUND before any row is built, so a host with a Hermes registry but no ~/.config/pjangler/projects.yaml gets exit 3 and NO inventory -- rather than 28 rows each carrying `project-record-missing`, which is what the uncorrelated case already does when the file merely lacks the record. Two consequences of the same choice: `FleetStoreView.exists` can never be false and the `parse: "unreadable"` fallback is unreachable, because `raw` is never null by the time `storeView` is called.
+status: open
+
+### DW-18: The store env keys and both registry path resolvers are re-derived, not read.
+origin: spec-deferred ee567c48ce60
+location: src/fleet/inventory.ts (resolveInventoryStores)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: `envKeys` is the literal ["HERMES_AGENTS_REGISTRY","HERMES_FLEET_REGISTRY_FILE"] / ["PJ_PROJECT_REGISTRY"], duplicating `authorities.*.store_env`, which the contract already declares and `fleet contract validate` already projects. `resolveInventoryStores` likewise reimplements the exported `hermesAgentsRegistryPath` and `projectRegistryPath`, and diverges from both (it adds the fleet-key fallback and applies expandHome). Same class as the re-hardcoding the story's Always list forbids for unit patterns, one step outside the three surfaces that list names.
+status: open
+
+### DW-19: A duplicate-key conflict group names one participant, itself.
+origin: spec-deferred 114ba23d42b0
+location: src/fleet/inventory.ts (detectConflicts, duplicate-key branches)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: `participants: [agentId]` for the duplicate-agent-id dimension, and the same shape for duplicate project keys. The finding renders as "candystore-pm is claimed by candystore-pm", the group cannot say WHICH two rows collided, and `matchException`'s exact-set rule then forces an operator to declare `participants: [<the-id-itself>]` to permit it. Occurrences (index-qualified) rather than the key repeated.
+status: open
+
+### DW-20: Values are bounded BEFORE they are lstat'd, correlated, and matched.
+origin: spec-deferred 25b181d0725c
+location: src/fleet/inventory.ts (scalar / readKeyedStore key bounding)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: `scalar()` runs every registry value through `bounded()` (512-char cap, C0 stripped, CR/LF folded) and the bounded string is what `classifyPath` lstats and what correlation looks up -- so a path longer than 512 chars, or one containing a control character, is classified and correlated against a value the registry does not contain, and reports `absent` for a directory that exists. Agent identity keys are bounded to 128 in `readKeyedStore` and `--agent` matches the truncated key, so an id longer than 128 chars is inventoried but can never be selected: NOT_FOUND, exit 3, for a genuinely registered agent.
+status: open
+
+### DW-21: `health.healthy` conflates fleet drift with an envelope presentation cap.
+origin: spec-deferred 6873f8f39379
+location: src/fleet/inventory.ts (health.healthy)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: `truncated.length === 0` is a conjunct of `healthy`, so a fleet of 1001 well-formed agents, or one that trips MAX_FINDINGS, gets the identical UNHEALTHY verdict a real identity conflict produces. `health.truncated` already exists as its own signal. Defensible as "you did not see all of it", but the verdict should read from the fleet, and the two states should not be indistinguishable to a consumer.
+status: open
+
+### DW-22: Nothing drives the row cap, so FLEET_INVENTORY_MAX_ROWS is unproven.
+origin: spec-deferred 3f62718a26a7
+location: tests/fleet-inventory-regressions.mjs
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: No case produces more than MAX_ROWS rows or more than MAX_FINDINGS findings, so neither the rows clip nor its `truncated` note has ever executed; the findings-clip assertion is conditional and never fires on a 28-agent fleet. The cap is exactly the code path whose first cut was already wrong once in this story (it stopped pushing at the cap, so the clip could never be recorded).
+status: open
+
+### DW-23: `--agent` leaves `data.findings` fleet-wide, undocumented and unpinned.
+origin: spec-deferred ee89678698d3
+location: src/fleet/inventory.ts (scope filter) / README.md
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: Findings are never filtered by scope, so `--agent pjangler-pm` returns every other agent's findings. That is consistent with the totals/health/conflicts rule and is probably right, but the README bullet enumerates only `data.totals`, `data.health` and `data.conflicts`, and no check pins the behaviour either way -- so it can flip silently.
+status: open
+
+### DW-24: The exported surface is inconsistent and partly uncallable in typed code.
+origin: spec-deferred 7cf364e9d96d
+location: src/fleet/inventory.ts / src/fleet/index.ts
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: `readAgentRegistryRaw`/`readProjectRegistryRaw` are exported and barrelled but their return type `RawStore` is not; `detectConflicts` is exported while its `ConflictInput` parameter type is not, so it cannot be called from typed code; `buildInventoryRow` and `ClassifyPathOptions` are exported from the module but absent from `src/fleet/index.ts`; `FleetFindingSeverity` is missing from the barrel while `FLEET_FINDING_SEVERITIES` is present.
+status: open
+
+### DW-25: Two of the four live symlinked profile directories are reported; two are invisible.
+origin: spec-deferred fc8474c21851
+location: src/fleet/inventory.ts (per-row profile classification)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: ~/.hermes/profiles holds four symlinks. Inventory is row-driven, and only `delonet-company-reporter` and `hermes-agent-pm` are named by a registered agent's profile_name, so those two raise `profile-path-symlinked`. `intelliforia-voice-agent` and `stemjangler-adversarial-review` are symlinks in the declared profile root that no row reaches, so the contract violation they represent is reported by nothing. A profile-root sweep is the missing half; AC8 is written per-row, so this is beyond it.
+status: open
+
+### DW-26: The tracked contract has no exercised managed-exception path.
+origin: spec-deferred 6d10ef420003
+location: tests/fleet-inventory-regressions.mjs (packageWithContract)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: `FleetInventoryOptions.contract` exists in the core and is reachable from no CLI caller (the command ships four flags by design, and --contract is not one). The suite proves the exception mechanism by RELOCATING the built bundle beside a mutated contract and leaning on the walk-up in `resolveFleetContractPath`. That is a real end-to-end run, but it exercises a synthetic package root; nothing exercises an exception against contracts/fleet-contract.yaml itself.
+status: open
+
+### DW-27: The independence of `source_rows` is not observable from outside the CLI.
+origin: spec-deferred edd731a20837
+location: src/fleet/inventory.ts (countCollectionRows) / tests/fleet-inventory-regressions.mjs
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: This pass replaced the tautological count (items.length over the array the row builder walks) with a genuinely separate parse, and PROVED it by mutation: breaking the reader's node extraction now yields source_rows 28, emitted_rows 0 and an UNHEALTHY verdict where it used to yield "healthy, 0 of 0". But no black-box check can inject a reader defect, so the suite pins only the consequence (raw keys, duplicates included; an unreadable collection is loud). A source-shape assertion was deliberately NOT added: a text match would be green because the text matched, not because the property held.
+status: open
