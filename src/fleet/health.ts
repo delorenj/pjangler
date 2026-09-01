@@ -35,9 +35,10 @@
 //
 // ONE CONSTRAINT, AND IT IS LOAD-BEARING: this module and `src/fleet/output.ts`
 // import each other. `output.ts` needs `compareStatusFindings` and the two sort
-// keys to rank a report the same way the machine path ranks it, and this module
-// needs `bounded`/`redactHome` so a string it builds is bounded on the same
-// terms as every other string in the envelope. The cycle is deliberate and it
+// keys so the human report ranks findings exactly as the machine path does, and
+// this file needs `bounded`/`redactHome` from there so a next action or a
+// justification it builds is bounded on the same terms as every other string in
+// the envelope. The cycle is deliberate and it
 // is SAFE ONLY BECAUSE NEITHER FILE CALLS THE OTHER AT MODULE SCOPE -- every
 // use is inside a function body, so whichever half the bundler initializes
 // second still has the first's bindings by the time anything runs.

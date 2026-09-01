@@ -9,16 +9,18 @@
 // complete document -- are reproduced here deliberately.
 //
 // ONE CONSTRAINT, AND IT IS LOAD-BEARING: this module and `src/fleet/health.ts`
-// import each other. `output.ts` needs `compareStatusFindings` and the two sort
-// keys to rank a report the same way the machine path ranks it, and this module
-// needs `bounded`/`redactHome` so a string it builds is bounded on the same
-// terms as every other string in the envelope. The cycle is deliberate and it
-// is SAFE ONLY BECAUSE NEITHER FILE CALLS THE OTHER AT MODULE SCOPE -- every
-// use is inside a function body, so whichever half the bundler initializes
-// second still has the first's bindings by the time anything runs.
+// import each other. This file needs `compareStatusFindings` and the two sort
+// keys so the human report ranks findings exactly as the machine path does --
+// two orderings would make the report's cap drop a different finding from the
+// one the envelope drops. `health.ts` needs `bounded`/`redactHome` from here so
+// a next action or a justification it builds is bounded on the same terms as
+// every other string in the envelope. The cycle is deliberate, and it is SAFE
+// ONLY BECAUSE NEITHER FILE CALLS THE OTHER AT MODULE SCOPE -- every use is
+// inside a function body, so whichever half the bundler initializes second
+// still has the first's bindings by the time anything runs.
 //
 // Do not add a top-level initializer to either file that calls across it. A
-// `const X = bounded(...)` here, or a `const Y = compareStatusFindings(...)`
+// `const X = compareStatusFindings(...)` here, or a `const Y = bounded(...)`
 // there, is a `TypeError: ... is not a function` at import time in whichever
 // order the bundle happens to emit -- and every suite runs the BUNDLE, so it
 // would surface as the whole CLI failing to start rather than as a unit-test
