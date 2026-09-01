@@ -41,7 +41,13 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
     "contract_path", "authorities", "projections", "classifications",
     "service_model", "activation", "retired", "extensions", "truncated", "diagnostics",
   ],
-  "fleet.inventory": ["stores", "totals", "health", "rows", "conflicts", "findings", "truncated"],
+  // `scope`, `contract_path` and `contract_version` are emitted, rendered by the
+  // human report, and asserted by the suite; leaving them off this list meant
+  // the validator would have waved through an envelope that dropped them.
+  "fleet.inventory": [
+    "contract_path", "contract_version", "scope",
+    "stores", "totals", "health", "rows", "conflicts", "findings", "truncated",
+  ],
 };
 
 const MAX_STRING = 512;
@@ -203,14 +209,17 @@ const MAX_ITEMS = 100;
  * Lives here rather than in `cli.ts` because the inventory needs the same bound
  * on the same terms, and two copies of a bound are two bounds.
  */
-export function cappedStrings(values: readonly string[] | undefined, context: BoundedContext, path: string, max = MAX_ITEMS): string[] {
+export function cappedStrings(values: readonly string[] | undefined, context: BoundedContext, path: string, max = MAX_ITEMS, noun = "items"): string[] {
   const all = values ?? [];
-  if (all.length > max) context.truncated.push(`${path}: ${all.length - max} of ${all.length} items dropped`);
+  if (all.length > max) context.truncated.push(`${path}: ${all.length - max} of ${all.length} ${noun} dropped`);
   return all.slice(0, max).map((value) => bounded(value));
 }
 
 export function boundedNotes(notes: readonly string[] | undefined, context: BoundedContext, path: string): string[] {
-  return cappedStrings(notes, context, path, MAX_NOTES);
+  // `noun` is not decoration: folding this into `cappedStrings` silently
+  // rewrote a shipped truncation note from "N of M notes dropped" to
+  // "... items dropped", and no check reads that clip.
+  return cappedStrings(notes, context, path, MAX_NOTES, "notes");
 }
 
 /** Keep an open-keyed contract subtree inside the envelope's bounds. */

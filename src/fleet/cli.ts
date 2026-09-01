@@ -177,7 +177,7 @@ function validateEnvelope(inspection: FleetContractInspection): FleetEnvelopeV1 
  * where the inventory matters most. Only a COMMAND failure -- an unreadable
  * registry, an unknown `--agent`, a bad flag -- is `ok: false`.
  */
-function inventoryEnvelope(inventory: FleetInventory): FleetEnvelopeV1 {
+function inventoryEnvelope(inventory: FleetInventory, json: boolean): FleetEnvelopeV1 {
   const nextActions = inventory.health.healthy
     ? ["Consume data.rows as the fleet's declared state; every value names the authority that owns it"]
     : [
@@ -186,6 +186,8 @@ function inventoryEnvelope(inventory: FleetInventory): FleetEnvelopeV1 {
         : "Review data.findings; each names the owning registry and the field path to repair",
       "Re-run with --json for the complete row set",
     ];
+  // A caller who already passed --json is reading this string IN the JSON.
+  if (json && nextActions.length > 1) nextActions.pop();
   return fleetSuccessEnvelope(INVENTORY_COMMAND, inventory, nextActions);
 }
 
@@ -262,7 +264,7 @@ export function registerFleetCli(program: Command): void {
           projectRegistry: options.projectRegistry,
           agentRegistry: options.agentRegistry,
         });
-        write(inventoryEnvelope(inventory), json, () => formatFleetInventoryReport(inventory));
+        write(inventoryEnvelope(inventory, json), json, () => formatFleetInventoryReport(inventory));
       } catch (error) {
         const normalized = normalizeFleetError(error);
         // Exit 4 and 5 come out of `collectFleetInventory` rethrowing a contract

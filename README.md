@@ -99,7 +99,11 @@ target is never substituted for the declared value or used to derive one. (One
 read does traverse the filesystem's own links: the `.project.json` under an
 agent's `project_path` is opened by path. It is confirming evidence only — it can
 never become a field's `source` or its value — but a symlinked `project_path`
-does redirect which manifest is read.)
+does redirect which manifest is read. Nothing else is opened: a `project_path`
+the classifier calls `relative`, `absent`, `outside-root`, or `not-a-directory`
+is reported as `manifest-not-consulted` and no file is read for it, so the
+evidence an agent is judged against never depends on the directory you ran the
+command from.)
 
 Every emitted value carries `{value, source, state}`, where `source` is the
 authority owner `contracts/fleet-contract.yaml` declares for that field path and

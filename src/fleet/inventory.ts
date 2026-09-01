@@ -97,6 +97,31 @@ const ROW_INTEGRITY_CODES = new Set([
   "agent-id-not-a-string",
 ]);
 
+/**
+ * Row-SHAPE codes, excluded only for a row already counted in `malformed_rows`.
+ *
+ * `agent-id-unsafe` cannot join `ROW_INTEGRITY_CODES` outright: on a WELL-FORMED
+ * row (a real mapping under a string key that simply is not a safe path
+ * segment) nothing else counts it, and dropping it there would let an unsafe id
+ * ride at `healthy: true`. But on a row that is ALSO malformed it is the second
+ * booking of one defect -- measured: a clean fleet reports 0 violations, the
+ * same fleet plus `1234: [not-a-mapping]` reports 0, and plus
+ * `"../escape": [not-a-mapping]` reports 1 while `malformed_rows` already says
+ * 1. That is the leak the previous pass's own entry named and its replacement
+ * set did not close.
+ */
+const ROW_SHAPE_CODES = new Set(["agent-id-unsafe"]);
+
+/**
+ * The registry schema this reader models.
+ *
+ * Both live stores declare `schema_version: 1`. The field was already parsed and
+ * then never consulted, so a v2 registry would have been read, keyed, and
+ * reported as if it were v1 -- confidently wrong about a shape nobody here has
+ * seen.
+ */
+const SUPPORTED_REGISTRY_SCHEMA = 1;
+
 /** Store ids, used as stable keys in `data.stores` and in finding details. */
 const AGENT_STORE = "hermes-agent-registry";
 const PROJECT_STORE = "pjangler-project-registry";
@@ -280,6 +305,15 @@ interface RawStore {
   collection: "ok" | "missing" | "not-a-mapping";
   /** Counted in its own pass over the raw mapping keys, before any row is built. */
   sourceRows: number;
+  /**
+   * Whether `sourceRows` really came from the separate parse.
+   *
+   * `counted ?? items.length` is a necessary fallback, but silently taking it
+   * turns the advertised `source_rows != emitted_rows` invariant back into the
+   * tautology the separate parse exists to break. Recorded so the fallback is
+   * reportable rather than invisible.
+   */
+  countIndependent: boolean;
   entries: RawEntry[];
   /** Keys written more than once in the source document. */
   duplicateKeys: string[];
@@ -374,6 +408,7 @@ function readKeyedStore(path: string, label: string, collection: string): RawSto
   // Pass 1: count, from its own parse.
   const counted = countCollectionRows(text, collection);
   const sourceRows = counted ?? items.length;
+  const countIndependent = counted !== null;
 
   // Pass 2: build.
   const entries: RawEntry[] = [];
@@ -417,6 +452,7 @@ function readKeyedStore(path: string, label: string, collection: string): RawSto
     parse: salvaged ? "salvaged" : "ok",
     collection: collectionState,
     sourceRows,
+    countIndependent,
     entries,
     duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => (a < b ? -1 : 1)),
     schemaVersion,
@@ -485,6 +521,15 @@ export function resolveInventoryStores(options: FleetInventoryOptions = {}): Res
   const projectsKey = env.PJ_PROJECT_REGISTRY?.trim() ?? "";
   const projectsConfigured = resolve(expandHome(projectsKey || join(home, ".config", "pjangler", "projects.yaml"), home));
 
+  // The CLI guards these, but `collectFleetInventory` is exported and barrelled.
+  // Reached directly, a whitespace-only override used to fall through to the
+  // canonical store and then report `overridden: false` about it -- an inventory
+  // of the real fleet returned to a caller who asked for a copy.
+  for (const [value, name] of [[options.agentRegistry, "agentRegistry"], [options.projectRegistry, "projectRegistry"]] as const) {
+    if (value !== undefined && value.trim() === "") {
+      throw new FleetError("INVALID_INPUT", `${name} was given an empty value`, false);
+    }
+  }
   const agentOverride = options.agentRegistry?.trim();
   const projectOverride = options.projectRegistry?.trim();
 
@@ -546,6 +591,8 @@ interface InventoryContext {
   profilePathTemplate: string | null;
   /** `service_model.per_agent` patterns, in declared key order. */
   unitPatterns: string[];
+  /** `service_model.per_agent.gateway_unit` alone, for the drift comparison. */
+  gatewayPattern: string | null;
   activationField: string;
   activationOwner: string | null;
   projectsByRepoPath: Map<string, ProjectIndexEntry>;
@@ -572,7 +619,7 @@ function resolveProfileLayout(contract: FleetContract, env: NodeJS.ProcessEnv, h
   const raw = isRecord(layout) ? nonEmptyString(layout.root) : null;
   if (raw === null) return { root: null, template: null };
   const fleetHome = env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes");
-  const template = raw.replace("{HERMES_FLEET_HOME}", fleetHome);
+  const template = raw.replaceAll("{HERMES_FLEET_HOME}", fleetHome);
   const marker = template.indexOf("{profile_name}");
   if (marker < 0) return { root: null, template: null };
   return { root: template.slice(0, marker).replace(/\/+$/u, ""), template };
@@ -588,8 +635,42 @@ function unitPatternsFrom(contract: FleetContract): string[] {
     .filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
-function readManifest(repoPath: string | null): { present: boolean; parsed: Record<string, unknown> | null; path: string | null } {
-  if (!repoPath) return { present: false, parsed: null, path: null };
+/**
+ * The `gateway_unit` pattern specifically -- not "any of the three".
+ *
+ * Drift used to be judged against the whole `expected_units` array, which the
+ * contract fills with the gateway service, the heartbeat service AND the
+ * heartbeat timer. A registry that stored `hermes-x-heartbeat.timer` in
+ * `systemd.gateway_unit` therefore reported no drift at all: the wrong unit, in
+ * the right set. The contract names the roles; this reads the one it means.
+ */
+function gatewayPatternFrom(contract: FleetContract): string | null {
+  const perAgent = contract.service_model?.per_agent;
+  if (!isRecord(perAgent)) return null;
+  return nonEmptyString(perAgent.gateway_unit);
+}
+
+/**
+ * Read `.project.json` ONLY under a path the classifier accepted.
+ *
+ * `join()` on a relative `project_path` resolves against the CALLER'S working
+ * directory, so without this guard the manifest an agent is judged against
+ * depended on where the operator was standing. Measured, before the guard: a row
+ * declaring `project_path: relrepo` run from a directory containing an
+ * unrelated `relrepo/.project.json` reported `manifest.present: true`,
+ * `agrees: false`, and two `manifest-disagrees` notes -- another repository's
+ * binding, attributed to this agent as evidence. Correlation already refuses a
+ * non-absolute value for exactly this reason; the manifest read did not.
+ *
+ * `ok` and `symlink` are the two classifications that name an existing absolute
+ * directory. Following a symlinked `project_path` to its manifest is deliberate
+ * and documented in the README; resolving a relative, absent, out-of-root, or
+ * non-directory value is not.
+ */
+const MANIFEST_READABLE_CLASSIFICATIONS = new Set<FleetPathClassification>(["ok", "symlink"]);
+
+function readManifest(repoPath: string | null, classification: FleetPathClassification): { present: boolean; parsed: Record<string, unknown> | null; path: string | null } {
+  if (!repoPath || !MANIFEST_READABLE_CLASSIFICATIONS.has(classification)) return { present: false, parsed: null, path: null };
   const path = join(repoPath, ".project.json");
   if (!existsSync(path)) return { present: false, parsed: null, path };
   try {
@@ -727,7 +808,7 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
   let profilePathValue: string | null = null;
   if (profileName.value && ctx.profilePathTemplate) {
     if (isSafePathSegment(profileName.value)) {
-      profilePathValue = ctx.profilePathTemplate.replace("{profile_name}", profileName.value);
+      profilePathValue = ctx.profilePathTemplate.replaceAll("{profile_name}", profileName.value);
     } else {
       note("profile-name-unsafe", "agents.{agent_id}.profile_name", profileName.source, "error",
         "profile_name is not a safe single path segment; no profile path is derived from it");
@@ -751,15 +832,20 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
   const unitOwner = own.ownerOf("agents.{agent_id}.systemd.gateway_unit");
   let expectedUnits: FleetFieldValue<string[]>;
   if (idSafe && ctx.unitPatterns.length) {
-    const names = ctx.unitPatterns.map((pattern) => bounded(pattern.replace("{agent_id}", agentId)));
+    // `replaceAll`: a pattern is operator-authored, and a second `{agent_id}`
+    // would otherwise survive literally into a name reported as expected.
+    const names = ctx.unitPatterns.map((pattern) => bounded(pattern.replaceAll("{agent_id}", agentId)));
     expectedUnits = field(names, unitOwner, "unobserved");
   } else {
     expectedUnits = unresolved<string[]>(unitOwner);
   }
   const storedGateway = nonEmptyString(isRecord(raw.systemd) ? raw.systemd.gateway_unit : undefined);
-  if (storedGateway && expectedUnits.value && !expectedUnits.value.includes(bounded(storedGateway))) {
+  const expectedGateway = idSafe && ctx.gatewayPattern
+    ? bounded(ctx.gatewayPattern.replaceAll("{agent_id}", agentId))
+    : null;
+  if (storedGateway && expectedGateway && bounded(storedGateway) !== expectedGateway) {
     note("systemd-unit-name-drift", "agents.{agent_id}.systemd.gateway_unit", unitOwner, "warn",
-      `stored gateway unit ${bounded(storedGateway)} is not the name the contract's service model derives`);
+      `stored gateway unit ${bounded(storedGateway)} is not ${expectedGateway}, the name the contract's service model derives`);
   }
   // Emitted, not just compared: it is the unit name systemd actually sees, it is
   // AC5's unit-name conflict dimension, and without it on the row the drift
@@ -809,7 +895,7 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
   const activationField = field(bounded(ctx.activationField), ctx.activationOwner, "resolved");
 
   // -- the manifest: confirming evidence, never a source and never a tiebreak -
-  const manifestRead = readManifest(projectPath.value);
+  const manifestRead = readManifest(projectPath.value, paths.project_path.classification);
   const manifestNotes: string[] = [];
   let agrees: boolean | null = null;
   if (manifestRead.present && manifestRead.parsed) {
@@ -835,6 +921,12 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     manifestNotes.push("manifest present but unreadable");
     note("manifest-unreadable", "agents.{agent_id}.project_path", projectPath.source, "warn",
       ".project.json is present but could not be read as JSON");
+  } else if (projectPath.value && !MANIFEST_READABLE_CLASSIFICATIONS.has(paths.project_path.classification)) {
+    // Distinct from `manifest-missing`: nothing was looked for. Saying "carries
+    // no .project.json" about a path this command refused to resolve would be a
+    // claim about a repository it never reached.
+    note("manifest-not-consulted", "agents.{agent_id}.project_path", projectPath.source, "warn",
+      `project_path is ${paths.project_path.classification}, so no .project.json was read; resolving it would depend on the caller's working directory`);
   } else if (projectPath.value) {
     note("manifest-missing", "agents.{agent_id}.project_path", projectPath.source, "info",
       "the repository carries no .project.json to confirm the registries");
@@ -1215,6 +1307,7 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     profileRoot: layout.root,
     profilePathTemplate: layout.template,
     unitPatterns: unitPatternsFrom(contract),
+    gatewayPattern: gatewayPatternFrom(contract),
     activationField,
     activationOwner,
     projectsByRepoPath,
@@ -1224,7 +1317,9 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     droppedFindings: 0,
   };
 
-  if (stores.disagreement) {
+  // Suppressed under an override: the two env keys did not choose this run's
+  // store, so pointing an operator at them would be pointing at the wrong repair.
+  if (stores.disagreement && !stores.agents.overridden) {
     addFinding(ctx, {
       code: "agent-registry-store-env-disagreement",
       field: "agents.{agent_id}",
@@ -1256,6 +1351,20 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
         : `${store.id}'s ${collection}: key is not a mapping; the file parsed but carries no fleet to inventory`,
     });
   }
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"] as const,
+    [stores.projects, projectRaw, "projects"] as const,
+  ]) {
+    if (raw.collection !== "ok" || raw.countIndependent) continue;
+    addFinding(ctx, {
+      code: "source-count-not-independent",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: `${store.id}'s ${collection}: mapping was read but could not be counted by a separate parse; source_rows fell back to the reader's own array and cannot disagree with it`,
+    });
+  }
   if (layout.root === null) {
     addFinding(ctx, {
       code: "profile-layout-undeclared",
@@ -1264,6 +1373,17 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
       source: authority.ownerOf("profiles.{profile_name}"),
       severity: "error",
       detail: "the contract declares no usable profile_layout.root; no profile path can be derived",
+    });
+  }
+  for (const [store, raw] of [[stores.agents, agentRaw] as const, [stores.projects, projectRaw] as const]) {
+    if (raw.schemaVersion === null || raw.schemaVersion === SUPPORTED_REGISTRY_SCHEMA) continue;
+    addFinding(ctx, {
+      code: "registry-schema-version-unsupported",
+      field: "schema_version",
+      agent_id: null,
+      source: null,
+      severity: "error",
+      detail: `${store.id} declares schema_version ${raw.schemaVersion}; this build reads version ${SUPPORTED_REGISTRY_SCHEMA} and would report a later shape as if it were one`,
     });
   }
   if (ctx.unitPatterns.length === 0) {
@@ -1368,6 +1488,11 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
   if (reportedConflicts.length > MAX_CONFLICT_GROUPS) {
     truncated.push(`conflicts: ${reportedConflicts.length - MAX_CONFLICT_GROUPS} of ${reportedConflicts.length} groups dropped`);
     reportedConflicts = reportedConflicts.slice(0, MAX_CONFLICT_GROUPS);
+    // Rows were stamped from the full set. Left alone, `row.conflicts` would
+    // name ids absent from `data.conflicts` and every join a consumer makes
+    // across the two arrays would dangle on exactly the runs the cap fires.
+    const kept = new Set(reportedConflicts.map((group) => group.id));
+    for (const row of rows) row.conflicts = row.conflicts.filter((id) => kept.has(id));
   }
 
   const malformedRows = allRows.filter((row) => row.malformed).length;
@@ -1379,9 +1504,17 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
   // `agent-row-malformed` (excluded) AND `agent-id-not-a-string` (counted), so
   // one defect added one -- or with an unsafe key, two -- to a metric the
   // exclusion exists to keep at zero.
-  const contractViolations = ctx.findings.filter((finding) => (
-    finding.severity === "error" && !ROW_INTEGRITY_CODES.has(finding.code)
-  )).length;
+  const malformedAgentIds = new Set(
+    allRows.filter((row) => row.malformed).map((row) => row.agent_id.value).filter((id): id is string => id !== null),
+  );
+  const contractViolations = ctx.findings.filter((finding) => {
+    if (finding.severity !== "error") return false;
+    if (ROW_INTEGRITY_CODES.has(finding.code)) return false;
+    // The shape of a row that `malformed_rows` already counts is not a second
+    // contract violation. On a well-formed row the same code still counts.
+    if (ROW_SHAPE_CODES.has(finding.code) && finding.agent_id !== null && malformedAgentIds.has(finding.agent_id)) return false;
+    return true;
+  }).length;
   const unresolvedRows = allRows.filter((row) => (
     row.project_id.state !== "resolved" || row.profile_path.state !== "resolved" || row.role_dir.state !== "resolved"
   )).length;
@@ -1411,8 +1544,12 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     contract_violations: contractViolations,
     malformed_rows: malformedRows,
     unresolved_rows: unresolvedRows,
-    collection_errors: (agentRaw.parse === "ok" && agentRaw.collection === "ok" ? 0 : 1)
-      + (projectRaw.parse === "ok" && projectRaw.collection === "ok" ? 0 : 1),
+    // A store whose COLLECTION could not be read. A `salvaged` parse is not
+    // one: a single scalar agent row set `parse: "salvaged"` and made the human
+    // report print "1 unreadable stores" about a store that returned every row
+    // it had. `malformed_rows` already counts that row, and `data.stores[].parse`
+    // already reports the salvage.
+    collection_errors: (agentRaw.collection === "ok" ? 0 : 1) + (projectRaw.collection === "ok" ? 0 : 1),
     truncated: truncated.length > 0,
   };
 

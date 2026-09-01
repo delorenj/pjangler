@@ -20078,7 +20078,21 @@ var FLEET_COMMAND_DATA_KEYS = {
     "truncated",
     "diagnostics"
   ],
-  "fleet.inventory": ["stores", "totals", "health", "rows", "conflicts", "findings", "truncated"]
+  // `scope`, `contract_path` and `contract_version` are emitted, rendered by the
+  // human report, and asserted by the suite; leaving them off this list meant
+  // the validator would have waved through an envelope that dropped them.
+  "fleet.inventory": [
+    "contract_path",
+    "contract_version",
+    "scope",
+    "stores",
+    "totals",
+    "health",
+    "rows",
+    "conflicts",
+    "findings",
+    "truncated"
+  ]
 };
 var MAX_STRING = 512;
 var MAX_DETAILS = 20;
@@ -20113,13 +20127,13 @@ function boundedContext() {
 var MAX_DEPTH = 6;
 var MAX_KEYS = 50;
 var MAX_ITEMS = 100;
-function cappedStrings(values, context, path, max = MAX_ITEMS) {
+function cappedStrings(values, context, path, max = MAX_ITEMS, noun = "items") {
   const all = values ?? [];
-  if (all.length > max) context.truncated.push(`${path}: ${all.length - max} of ${all.length} items dropped`);
+  if (all.length > max) context.truncated.push(`${path}: ${all.length - max} of ${all.length} ${noun} dropped`);
   return all.slice(0, max).map((value) => bounded3(value));
 }
 function boundedNotes(notes, context, path) {
-  return cappedStrings(notes, context, path, MAX_NOTES);
+  return cappedStrings(notes, context, path, MAX_NOTES, "notes");
 }
 function boundedValue(value, context = boundedContext(), path = "", depth = 0) {
   const clip = (reason) => {
@@ -20476,6 +20490,8 @@ var ROW_INTEGRITY_CODES = /* @__PURE__ */ new Set([
   "agent-row-malformed",
   "agent-id-not-a-string"
 ]);
+var ROW_SHAPE_CODES = /* @__PURE__ */ new Set(["agent-id-unsafe"]);
+var SUPPORTED_REGISTRY_SCHEMA = 1;
 var AGENT_STORE = "hermes-agent-registry";
 var PROJECT_STORE = "pjangler-project-registry";
 function isRecord7(value) {
@@ -20607,6 +20623,7 @@ function readKeyedStore(path, label, collection) {
   const collectionState = nodeIsMapping ? "ok" : node === void 0 || node === null ? "missing" : "not-a-mapping";
   const counted = countCollectionRows(text3, collection);
   const sourceRows = counted ?? items.length;
+  const countIndependent = counted !== null;
   const entries = [];
   const seen = /* @__PURE__ */ new Map();
   let salvaged = false;
@@ -20644,6 +20661,7 @@ function readKeyedStore(path, label, collection) {
     parse: salvaged ? "salvaged" : "ok",
     collection: collectionState,
     sourceRows,
+    countIndependent,
     entries,
     duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => a < b ? -1 : 1),
     schemaVersion,
@@ -20671,6 +20689,11 @@ function resolveInventoryStores(options = {}) {
   }
   const projectsKey = env2.PJ_PROJECT_REGISTRY?.trim() ?? "";
   const projectsConfigured = resolve20(expandHome2(projectsKey || join34(home, ".config", "pjangler", "projects.yaml"), home));
+  for (const [value, name] of [[options.agentRegistry, "agentRegistry"], [options.projectRegistry, "projectRegistry"]]) {
+    if (value !== void 0 && value.trim() === "") {
+      throw new FleetError("INVALID_INPUT", `${name} was given an empty value`, false);
+    }
+  }
   const agentOverride = options.agentRegistry?.trim();
   const projectOverride = options.projectRegistry?.trim();
   return {
@@ -20711,7 +20734,7 @@ function resolveProfileLayout(contract, env2, home) {
   const raw = isRecord7(layout) ? nonEmptyString(layout.root) : null;
   if (raw === null) return { root: null, template: null };
   const fleetHome2 = env2.HERMES_FLEET_HOME?.trim() || join34(home, ".hermes");
-  const template = raw.replace("{HERMES_FLEET_HOME}", fleetHome2);
+  const template = raw.replaceAll("{HERMES_FLEET_HOME}", fleetHome2);
   const marker = template.indexOf("{profile_name}");
   if (marker < 0) return { root: null, template: null };
   return { root: template.slice(0, marker).replace(/\/+$/u, ""), template };
@@ -20721,8 +20744,14 @@ function unitPatternsFrom(contract) {
   if (!isRecord7(perAgent)) return [];
   return Object.keys(perAgent).sort((a, b) => a < b ? -1 : 1).map((key) => perAgent[key]).filter((value) => typeof value === "string" && value.length > 0);
 }
-function readManifest2(repoPath) {
-  if (!repoPath) return { present: false, parsed: null, path: null };
+function gatewayPatternFrom(contract) {
+  const perAgent = contract.service_model?.per_agent;
+  if (!isRecord7(perAgent)) return null;
+  return nonEmptyString(perAgent.gateway_unit);
+}
+var MANIFEST_READABLE_CLASSIFICATIONS = /* @__PURE__ */ new Set(["ok", "symlink"]);
+function readManifest2(repoPath, classification) {
+  if (!repoPath || !MANIFEST_READABLE_CLASSIFICATIONS.has(classification)) return { present: false, parsed: null, path: null };
   const path = join34(repoPath, ".project.json");
   if (!existsSync27(path)) return { present: false, parsed: null, path };
   try {
@@ -20860,7 +20889,7 @@ function buildInventoryRow(entry, ctx) {
   let profilePathValue = null;
   if (profileName.value && ctx.profilePathTemplate) {
     if (isSafePathSegment(profileName.value)) {
-      profilePathValue = ctx.profilePathTemplate.replace("{profile_name}", profileName.value);
+      profilePathValue = ctx.profilePathTemplate.replaceAll("{profile_name}", profileName.value);
     } else {
       note(
         "profile-name-unsafe",
@@ -20895,19 +20924,20 @@ function buildInventoryRow(entry, ctx) {
   const unitOwner = own.ownerOf("agents.{agent_id}.systemd.gateway_unit");
   let expectedUnits;
   if (idSafe && ctx.unitPatterns.length) {
-    const names = ctx.unitPatterns.map((pattern) => bounded3(pattern.replace("{agent_id}", agentId)));
+    const names = ctx.unitPatterns.map((pattern) => bounded3(pattern.replaceAll("{agent_id}", agentId)));
     expectedUnits = field2(names, unitOwner, "unobserved");
   } else {
     expectedUnits = unresolved(unitOwner);
   }
   const storedGateway = nonEmptyString(isRecord7(raw.systemd) ? raw.systemd.gateway_unit : void 0);
-  if (storedGateway && expectedUnits.value && !expectedUnits.value.includes(bounded3(storedGateway))) {
+  const expectedGateway = idSafe && ctx.gatewayPattern ? bounded3(ctx.gatewayPattern.replaceAll("{agent_id}", agentId)) : null;
+  if (storedGateway && expectedGateway && bounded3(storedGateway) !== expectedGateway) {
     note(
       "systemd-unit-name-drift",
       "agents.{agent_id}.systemd.gateway_unit",
       unitOwner,
       "warn",
-      `stored gateway unit ${bounded3(storedGateway)} is not the name the contract's service model derives`
+      `stored gateway unit ${bounded3(storedGateway)} is not ${expectedGateway}, the name the contract's service model derives`
     );
   }
   const gatewayUnit = storedGateway ? field2(bounded3(storedGateway), unitOwner, "resolved") : unresolved(unitOwner);
@@ -20945,7 +20975,7 @@ function buildInventoryRow(entry, ctx) {
     );
   }
   const activationField = field2(bounded3(ctx.activationField), ctx.activationOwner, "resolved");
-  const manifestRead = readManifest2(projectPath.value);
+  const manifestRead = readManifest2(projectPath.value, paths.project_path.classification);
   const manifestNotes = [];
   let agrees = null;
   if (manifestRead.present && manifestRead.parsed) {
@@ -20980,6 +21010,14 @@ function buildInventoryRow(entry, ctx) {
       projectPath.source,
       "warn",
       ".project.json is present but could not be read as JSON"
+    );
+  } else if (projectPath.value && !MANIFEST_READABLE_CLASSIFICATIONS.has(paths.project_path.classification)) {
+    note(
+      "manifest-not-consulted",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "warn",
+      `project_path is ${paths.project_path.classification}, so no .project.json was read; resolving it would depend on the caller's working directory`
     );
   } else if (projectPath.value) {
     note(
@@ -21256,6 +21294,7 @@ function collectFleetInventory(options = {}) {
     profileRoot: layout.root,
     profilePathTemplate: layout.template,
     unitPatterns: unitPatternsFrom(contract),
+    gatewayPattern: gatewayPatternFrom(contract),
     activationField,
     activationOwner,
     projectsByRepoPath,
@@ -21264,7 +21303,7 @@ function collectFleetInventory(options = {}) {
     findings: [],
     droppedFindings: 0
   };
-  if (stores.disagreement) {
+  if (stores.disagreement && !stores.agents.overridden) {
     addFinding(ctx, {
       code: "agent-registry-store-env-disagreement",
       field: "agents.{agent_id}",
@@ -21288,6 +21327,20 @@ function collectFleetInventory(options = {}) {
       detail: raw.collection === "missing" ? `${store.id} declares no ${collection}: mapping; the file parsed but carries no fleet to inventory` : `${store.id}'s ${collection}: key is not a mapping; the file parsed but carries no fleet to inventory`
     });
   }
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"],
+    [stores.projects, projectRaw, "projects"]
+  ]) {
+    if (raw.collection !== "ok" || raw.countIndependent) continue;
+    addFinding(ctx, {
+      code: "source-count-not-independent",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: `${store.id}'s ${collection}: mapping was read but could not be counted by a separate parse; source_rows fell back to the reader's own array and cannot disagree with it`
+    });
+  }
   if (layout.root === null) {
     addFinding(ctx, {
       code: "profile-layout-undeclared",
@@ -21296,6 +21349,17 @@ function collectFleetInventory(options = {}) {
       source: authority.ownerOf("profiles.{profile_name}"),
       severity: "error",
       detail: "the contract declares no usable profile_layout.root; no profile path can be derived"
+    });
+  }
+  for (const [store, raw] of [[stores.agents, agentRaw], [stores.projects, projectRaw]]) {
+    if (raw.schemaVersion === null || raw.schemaVersion === SUPPORTED_REGISTRY_SCHEMA) continue;
+    addFinding(ctx, {
+      code: "registry-schema-version-unsupported",
+      field: "schema_version",
+      agent_id: null,
+      source: null,
+      severity: "error",
+      detail: `${store.id} declares schema_version ${raw.schemaVersion}; this build reads version ${SUPPORTED_REGISTRY_SCHEMA} and would report a later shape as if it were one`
     });
   }
   if (ctx.unitPatterns.length === 0) {
@@ -21387,11 +21451,21 @@ function collectFleetInventory(options = {}) {
   if (reportedConflicts.length > MAX_CONFLICT_GROUPS) {
     truncated.push(`conflicts: ${reportedConflicts.length - MAX_CONFLICT_GROUPS} of ${reportedConflicts.length} groups dropped`);
     reportedConflicts = reportedConflicts.slice(0, MAX_CONFLICT_GROUPS);
+    const kept = new Set(reportedConflicts.map((group) => group.id));
+    for (const row of rows) row.conflicts = row.conflicts.filter((id) => kept.has(id));
   }
   const malformedRows = allRows.filter((row) => row.malformed).length;
   const correlatedRows = allRows.filter((row) => row.project_id.value !== null).length;
   const unpermitted = conflicts.filter((group) => !group.permitted).length;
-  const contractViolations = ctx.findings.filter((finding2) => finding2.severity === "error" && !ROW_INTEGRITY_CODES.has(finding2.code)).length;
+  const malformedAgentIds = new Set(
+    allRows.filter((row) => row.malformed).map((row) => row.agent_id.value).filter((id) => id !== null)
+  );
+  const contractViolations = ctx.findings.filter((finding2) => {
+    if (finding2.severity !== "error") return false;
+    if (ROW_INTEGRITY_CODES.has(finding2.code)) return false;
+    if (ROW_SHAPE_CODES.has(finding2.code) && finding2.agent_id !== null && malformedAgentIds.has(finding2.agent_id)) return false;
+    return true;
+  }).length;
   const unresolvedRows = allRows.filter((row) => row.project_id.state !== "resolved" || row.profile_path.state !== "resolved" || row.role_dir.state !== "resolved").length;
   const totals = {
     source_rows: agentRaw.sourceRows,
@@ -21414,7 +21488,12 @@ function collectFleetInventory(options = {}) {
     contract_violations: contractViolations,
     malformed_rows: malformedRows,
     unresolved_rows: unresolvedRows,
-    collection_errors: (agentRaw.parse === "ok" && agentRaw.collection === "ok" ? 0 : 1) + (projectRaw.parse === "ok" && projectRaw.collection === "ok" ? 0 : 1),
+    // A store whose COLLECTION could not be read. A `salvaged` parse is not
+    // one: a single scalar agent row set `parse: "salvaged"` and made the human
+    // report print "1 unreadable stores" about a store that returned every row
+    // it had. `malformed_rows` already counts that row, and `data.stores[].parse`
+    // already reports the salvage.
+    collection_errors: (agentRaw.collection === "ok" ? 0 : 1) + (projectRaw.collection === "ok" ? 0 : 1),
     truncated: truncated.length > 0
   };
   const agentAuthority = authorityFor(contract, AGENT_STORE);
@@ -21545,11 +21624,12 @@ function validateEnvelope(inspection) {
     `Edit ${inspection.contract_path} at the reported field paths, then re-run this command`
   ]);
 }
-function inventoryEnvelope(inventory) {
+function inventoryEnvelope(inventory, json) {
   const nextActions = inventory.health.healthy ? ["Consume data.rows as the fleet's declared state; every value names the authority that owns it"] : [
     inventory.health.conflicts ? "Rule on each unpermitted conflict group: repair the drift, or record it under classifications.intentionally_unmanaged" : "Review data.findings; each names the owning registry and the field path to repair",
     "Re-run with --json for the complete row set"
   ];
+  if (json && nextActions.length > 1) nextActions.pop();
   return fleetSuccessEnvelope(INVENTORY_COMMAND, inventory, nextActions);
 }
 function isFleetJsonInvocation(args) {
@@ -21580,7 +21660,7 @@ function registerFleetCli(program2) {
         projectRegistry: options.projectRegistry,
         agentRegistry: options.agentRegistry
       });
-      write(inventoryEnvelope(inventory), json, () => formatFleetInventoryReport(inventory));
+      write(inventoryEnvelope(inventory, json), json, () => formatFleetInventoryReport(inventory));
     } catch (error) {
       const normalized = normalizeFleetError(error);
       const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;

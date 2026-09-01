@@ -32,7 +32,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, posix, relative, resolve } from "node:path";
 import YAML from "yaml";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -167,10 +167,10 @@ function snapshot() {
  * capture, and a truncation introduced by the harness looks exactly like the
  * truncation defect the harness is here to detect.
  */
-function cliAt(cliPath, args, extraEnv = {}) {
+function cliAt(cliPath, args, extraEnv = {}, cwd = temp) {
   const before = snapshot();
   const result = spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: temp,
+    cwd,
     encoding: "utf8",
     timeout: 60_000,
     maxBuffer: 32 * 1024 * 1024,
@@ -181,8 +181,8 @@ function cliAt(cliPath, args, extraEnv = {}) {
   return result;
 }
 
-function cli(args, extraEnv = {}) {
-  return cliAt(CLI, args, extraEnv);
+function cli(args, extraEnv = {}, cwd = temp) {
+  return cliAt(CLI, args, extraEnv, cwd);
 }
 
 /** Machine output, asserted to exist before it is asserted to say anything. */
@@ -296,6 +296,20 @@ try {
 
   const liveIds = realAgentIds(REAL_AGENT_REGISTRY);
 
+  /**
+   * A case that needs N distinct live agents to express itself.
+   *
+   * `liveIds[0]` / `const [first, second] = liveIds` on a host with a smaller
+   * fleet destructures `undefined` and the case reports FAIL -- the very
+   * "indistinguishable from a real regression" outcome the suite-level guard
+   * above was added to prevent, reproduced one level down. The guard only knows
+   * whether the FILES exist; this knows whether they carry enough to mutate.
+   */
+  function checkWithAgents(count, label, body) {
+    if (liveIds.length < count) { skip(label, `needs ${count} live agents, this host has ${liveIds.length}`); return; }
+    check(label, body);
+  }
+
   // -- the whole fleet, through the real built CLI --------------------------
 
   check("the human report leads with the health verdict and the real totals", () => {
@@ -341,9 +355,14 @@ try {
 
   // -- AC3: every field carries value + source + state ----------------------
 
+  // `repo`, `correlation` and `gateway_unit` are `FleetFieldValue` cells on every
+  // row and were absent from this allowlist -- `repo` is the very field the live
+  // `automatic-ai` conflict sits on, so the AC3 sweep skipped the cell most
+  // likely to be contested.
   const REQUIRED_FIELDS = [
-    "agent_id", "classification", "project_id", "repo_path", "role", "role_dir",
-    "profile_name", "profile_path", "runtime_path", "expected_units", "board",
+    "agent_id", "classification", "correlation", "project_id", "repo", "repo_path",
+    "role", "role_dir", "profile_name", "profile_path", "runtime_path",
+    "expected_units", "gateway_unit", "board",
     "bloodbank_scope", "bloodbank_target", "activation", "activation_field",
   ];
 
@@ -477,7 +496,7 @@ try {
 
   // -- AC5: identity conflicts ----------------------------------------------
 
-  check("two agents sharing a board identifier land in one group, and exit stays 0", () => {
+  checkWithAgents(2, "two agents sharing a board identifier land in one group, and exit stays 0", () => {
     const registry = mutatedRegistry("dup-identifier", REAL_AGENT_REGISTRY, (document) => {
       const [first, second] = document.get("agents").items.map((item) => item.key.value);
       document.setIn(["agents", first, "plane", "identifier"], "DUPES");
@@ -500,7 +519,7 @@ try {
     }
   });
 
-  check("two agents sharing a repo slug land in one group under agents.{agent_id}.repo", () => {
+  checkWithAgents(2, "two agents sharing a repo slug land in one group under agents.{agent_id}.repo", () => {
     const registry = mutatedRegistry("dup-repo", REAL_AGENT_REGISTRY, (document) => {
       const [first, second] = document.get("agents").items.map((item) => item.key.value);
       document.setIn(["agents", first, "repo"], "shared-repo-slug");
@@ -514,7 +533,7 @@ try {
     assert.equal(group.participants.length, 2);
   });
 
-  check("two spellings of one repository path are one claim, not two", () => {
+  checkWithAgents(3, "two spellings of one repository path are one claim, not two", () => {
     // "/x/y", "/x/y/" and "/x/y/../y" are the same repository. Grouping on the
     // raw string would report three innocent-looking agents instead of one
     // three-way conflict -- and resolving with `realpath` would follow a link,
@@ -537,7 +556,7 @@ try {
     );
   });
 
-  check("a group id is stable across runs and identical for every participant", () => {
+  checkWithAgents(2, "a group id is stable across runs and identical for every participant", () => {
     const registry = mutatedRegistry("dup-profile", REAL_AGENT_REGISTRY, (document) => {
       const [first, second] = document.get("agents").items.map((item) => item.key.value);
       document.setIn(["agents", first, "profile_name"], "shared-profile");
@@ -554,7 +573,7 @@ try {
     for (const list of ids) assert.ok(list.includes(groupA.id), "every participant carries the same id");
   });
 
-  check("a duplicate raw agent identity key is reported, not fatal", () => {
+  checkWithAgents(1, "a duplicate raw agent identity key is reported, not fatal", () => {
     // A duplicate mapping key is a parser ERROR by default -- the run would die
     // on the exact drift AC5 asks for. Written as raw text because a YAML
     // document object cannot hold two identical keys to begin with.
@@ -601,7 +620,7 @@ try {
 
   // -- AC6: a declared managed exception -------------------------------------
 
-  check("a managed exception permits exactly its own group, and only while declared", () => {
+  checkWithAgents(2, "a managed exception permits exactly its own group, and only while declared", () => {
     // Start from a copy of the real registry with the two LIVE conflicts removed,
     // so the only conflict in the fixture is the one this case injects. The live
     // conflicts are real drift for an operator to rule on; this story detects
@@ -732,7 +751,7 @@ try {
 
   // -- AC9: scoping -----------------------------------------------------------
 
-  check("--agent <known> emits one row and still reports the whole fleet size", () => {
+  checkWithAgents(1, "--agent <known> emits one row and still reports the whole fleet size", () => {
     const wanted = liveIds[0];
     const result = cli(["fleet", "inventory", "--agent", wanted, "--json"]);
     assert.equal(result.status, 0);
@@ -748,7 +767,7 @@ try {
     assert.equal(data.totals.observed, 1);
   });
 
-  check("a scoped run reports fleet health, never slice health", () => {
+  checkWithAgents(2, "a scoped run reports fleet health, never slice health", () => {
     // An agent with no conflict of its own must not make the run look clean
     // while the fleet is broken. Health, totals and conflicts stay fleet-wide;
     // only `rows` is sliced, and `scope` says so.
@@ -870,7 +889,7 @@ try {
     assert.ok(!/EPIPE/.test(piped.stderr), `EPIPE reached stderr: ${piped.stderr}`);
   });
 
-  check("a control character in a registry cannot reach the terminal raw", () => {
+  checkWithAgents(1, "a control character in a registry cannot reach the terminal raw", () => {
     // The fields injected here must be fields the human report RENDERS. The
     // first cut injected into `display_name` and `repo`, neither of which
     // `rowLines` prints (`display_name` is not even a row field), so the
@@ -923,10 +942,10 @@ try {
   // -- the live fleet, unmediated --------------------------------------------
 
   check("the live configured registries inventory correctly and are left untouched", () => {
-    if (!existsSync(REAL_AGENT_REGISTRY) || !existsSync(REAL_PROJECT_REGISTRY)) {
-      skip("live configured registries", "no live registry on this host");
-      return;
-    }
+    // No existence branch here: `missingStore` has already thrown `SkipSuite` if
+    // either registry is absent. The branch that used to sit here called
+    // `skip()` and returned, after which `check()` printed `ok` anyway -- one
+    // case counted twice, in a suite whose whole job is honest counting.
     const before = { agents: fileFingerprint(REAL_AGENT_REGISTRY), projects: fileFingerprint(REAL_PROJECT_REGISTRY) };
     // Deliberately NOT isolated: this case is the one that runs against real
     // state, which is the story's evidence bar. Zero writes are proven by the
@@ -964,7 +983,7 @@ try {
 
   // -- what a review pass found the first cut got wrong ----------------------
 
-  check("a conflict never stamps a field the conflict is not about", () => {
+  checkWithAgents(2, "a conflict never stamps a field the conflict is not about", () => {
     // `agents.{agent_id}.project_path` (Hermes' field) used to stamp the row's
     // `repo_path` cell, which is `projects.{slug}.repo_path` -- a different
     // field, a different store, a different owner. On an uncorrelated row that
@@ -1019,7 +1038,7 @@ try {
     assert.match(cli(["fleet", "inventory", "--agent-registry", renamed]).stdout, /UNHEALTHY/, "the human report must not say healthy either");
   });
 
-  check("source_rows counts raw keys, so a duplicate id is two rows and not one", () => {
+  checkWithAgents(1, "source_rows counts raw keys, so a duplicate id is two rows and not one", () => {
     // Proves the count is over RAW mapping keys rather than a de-duplicated
     // object: `Object.keys` would collapse these two into one and the count
     // would silently disagree with the fleet on disk.
@@ -1035,7 +1054,7 @@ try {
     assert.equal(data.rows.filter((row) => row.agent_id.value === victim).length, 2, "both occurrences are emitted");
   });
 
-  check("two agents claiming one systemd unit are a conflict group", () => {
+  checkWithAgents(2, "two agents claiming one systemd unit are a conflict group", () => {
     // AC5's unit-name dimension. The stored gateway unit is the name systemd
     // actually sees, and two agents can store the same one; the names derived
     // from the contract's patterns are f(agent_id) and can only collide when the
@@ -1058,7 +1077,7 @@ try {
     }
   });
 
-  check("a malformed row is booked once, in malformed_rows, not again as a contract violation", () => {
+  checkWithAgents(1, "a malformed row is booked once, in malformed_rows, not again as a contract violation", () => {
     const clean = inventory(cli(["fleet", "inventory", "--json"]));
     const broken = rawCopy("one-scalar-row", `${readFileSync(REAL_AGENT_REGISTRY, "utf8").trimEnd()}\n  1234: not-a-mapping\n`);
     const data = inventory(cli(["fleet", "inventory", "--agent-registry", broken, "--json"]));
@@ -1111,7 +1130,7 @@ try {
     assert.ok(!result.stdout.includes(scratchHome), `the scratch HOME leaked: ${result.stdout}`);
   });
 
-  check("a disagreeing .project.json is evidence, never a value and never a tiebreaker", () => {
+  checkWithAgents(1, "a disagreeing .project.json is evidence, never a value and never a tiebreaker", () => {
     // AC4. The only pin was that no field's `source` string matched /manifest/,
     // which a manifest-derived VALUE would pass too: `source` is always taken
     // from the contract's authority index regardless of where the value came
@@ -1148,7 +1167,7 @@ try {
     assert.doesNotMatch(String(row.board.source), /manifest|project\.json/i);
   });
 
-  check("a manifest never FILLS a gap the registries left either", () => {
+  checkWithAgents(1, "a manifest never FILLS a gap the registries left either", () => {
     // The disagreement case above only exercises rows where the registry has a
     // value to win with. The other half of "never a tiebreaker" is the row where
     // the registry has nothing: a manifest that quietly supplies the missing
@@ -1194,6 +1213,251 @@ try {
       assert.ok(readme.includes(flag), `${flag} is undocumented`);
     }
     assert.match(readme, /unhealthy fleet[\s\S]{0,200}exit(s)? `?0/i, "operators must be told an unhealthy fleet still exits 0");
+  });
+
+  // -- what a SECOND review pass found, each pinned by the mutation that showed it
+
+  checkWithAgents(1, "correlation actually correlates: a positive assertion, not only a negative one", () => {
+    // Every correlation assertion in this suite used to be negative -- "0 when
+    // the project registry is empty", "the manifest did not become project_id".
+    // Blanking both index lookups therefore took the live fleet from 9 of 28
+    // correlated to 0 of 28 with the whole suite still green, which means the
+    // `expandHome` asymmetry a previous pass fixed could revert unseen.
+    const projects = YAML.parse(readFileSync(REAL_PROJECT_REGISTRY, "utf8"))?.projects ?? {};
+    const agents = YAML.parse(readFileSync(REAL_AGENT_REGISTRY, "utf8"))?.agents ?? {};
+    const byRepoPath = new Map();
+    for (const [key, record] of Object.entries(projects)) {
+      if (typeof record?.repo_path === "string") byRepoPath.set(resolve(record.repo_path.replace(/^~(?=\/|$)/, REAL_HOME)), { key, record });
+    }
+    const pair = Object.entries(agents)
+      .map(([id, row]) => [id, typeof row?.project_path === "string" ? byRepoPath.get(resolve(row.project_path.replace(/^~(?=\/|$)/, REAL_HOME))) : undefined])
+      .find(([, match]) => match !== undefined);
+    if (!pair) { skip("correlation actually correlates", "no live agent correlates to a project record on this host"); return; }
+    const [agentId, match] = pair;
+
+    const result = cli(["fleet", "inventory", "--json"], {
+      HERMES_AGENTS_REGISTRY: REAL_AGENT_REGISTRY,
+      PJ_PROJECT_REGISTRY: REAL_PROJECT_REGISTRY,
+      HERMES_FLEET_REGISTRY_FILE: REAL_AGENT_REGISTRY,
+    });
+    const data = inventory(result);
+    assert.ok(data.totals.correlated > 0, "a fleet whose registries do correlate must report correlated > 0");
+    const row = data.rows.find((item) => item.agent_id.value === agentId);
+    assert.ok(row, `${agentId} must be emitted`);
+    assert.equal(row.correlation.state, "resolved", "a correlated row must say so");
+    assert.equal(row.correlation.value, "project_path", "and name the basis it correlated on");
+    assert.equal(row.project_id.state, "resolved");
+    assert.equal(row.project_id.value, match.record.slug ?? match.key, "project_id must be the project registry's own slug");
+    assert.ok(row.project_id.source, "a resolved cell names the authority that owns it");
+    assert.equal(row.repo_path.state, "resolved");
+  });
+
+  checkWithAgents(1, "a ~-spelled path correlates from either side, not just when both are absolute", () => {
+    // The asymmetry a previous pass fixed: the index is keyed by
+    // `resolve(expandHome(repo_path))` while the lookup used bare
+    // `resolve(project_path)`, so a `~/...` spelling of the SAME repository
+    // could never find its record. Nothing pinned it, so it could revert.
+    // Both spellings are exercised, because dropping `expandHome` from either
+    // side breaks only that side.
+    const projects = YAML.parse(readFileSync(REAL_PROJECT_REGISTRY, "utf8"))?.projects ?? {};
+    const record = Object.keys(projects)[0];
+    if (!record) { skip("a ~-spelled path correlates from either side", "the live project registry has no records"); return; }
+    const agentId = liveIds[0];
+    const suffix = "code/tilde-correlation";
+    const expectedSlug = projects[record]?.slug ?? record;
+
+    for (const [label, agentSpelling, recordSpelling] of [
+      ["agent side spelled with ~", `~/${suffix}`, join(scratchHome, suffix)],
+      ["record side spelled with ~", join(scratchHome, suffix), `~/${suffix}`],
+    ]) {
+      const agentsFile = mutatedRegistry(`tilde-agents-${label.replace(/\W+/gu, "-")}`, REAL_AGENT_REGISTRY, (doc) => {
+        doc.setIn(["agents", agentId, "project_path"], agentSpelling);
+      });
+      const projectsFile = mutatedRegistry(`tilde-projects-${label.replace(/\W+/gu, "-")}`, REAL_PROJECT_REGISTRY, (doc) => {
+        doc.setIn(["projects", record, "repo_path"], recordSpelling);
+      });
+      const data = inventory(cli([
+        "fleet", "inventory",
+        "--agent-registry", agentsFile,
+        "--project-registry", projectsFile,
+        "--agent", agentId, "--json",
+      ]));
+      const row = data.rows[0];
+      assert.equal(row.correlation.state, "resolved", `${label}: one repository spelled two ways must find one record`);
+      assert.equal(row.correlation.value, "project_path", `${label}: and correlate on the path, not fall through to the slug`);
+      // Not `state === "resolved"`: moving this record's repo_path leaves its
+      // slug reachable by the `repo` fallback, so a second agent may legitimately
+      // claim it and stamp the cell `conflicted`. The VALUE is the correlation
+      // evidence; the state belongs to AC5.
+      assert.equal(row.project_id.value, expectedSlug, `${label}: project_id must be the project registry's own slug`);
+      assert.notEqual(row.project_id.state, "unresolved", `${label}: a correlated row's project_id is not unresolved`);
+    }
+  });
+
+  checkWithAgents(1, "the stored activation flag and Bloodbank record are actually read", () => {
+    // The AC3 shape sweep accepts `{value: null, state: "unresolved"}` for every
+    // cell, so forcing the activation flag and both Bloodbank cells to null left
+    // the suite green while the command reported a fully activated fleet as
+    // default-deny -- which stories 1.3-1.10 would consume as fleet truth.
+    const agents = YAML.parse(readFileSync(REAL_AGENT_REGISTRY, "utf8"))?.agents ?? {};
+    const withActivation = Object.entries(agents).filter(([, row]) => typeof row?.bloodbank?.enabled === "boolean");
+    const withScope = Object.entries(agents).filter(([, row]) => typeof row?.bloodbank?.gateway_scope === "string");
+    if (!withActivation.length || !withScope.length) { skip("the stored activation flag is actually read", "no live agent stores a Bloodbank block"); return; }
+
+    const data = inventory(cli(["fleet", "inventory", "--json"], {
+      HERMES_AGENTS_REGISTRY: REAL_AGENT_REGISTRY,
+      HERMES_FLEET_REGISTRY_FILE: REAL_AGENT_REGISTRY,
+      PJ_PROJECT_REGISTRY: REAL_PROJECT_REGISTRY,
+    }));
+    const resolvedActivation = data.rows.filter((row) => row.activation.state === "resolved");
+    assert.equal(resolvedActivation.length, withActivation.length, "every stored boolean activation flag must be read as resolved");
+    for (const [id, row] of withActivation) {
+      const emitted = data.rows.find((item) => item.agent_id.value === id);
+      assert.equal(emitted.activation.value, row.bloodbank.enabled, `${id} activation must be the STORED value`);
+    }
+    assert.equal(
+      data.rows.filter((row) => row.bloodbank_scope.state === "resolved").length,
+      withScope.length,
+      "every stored gateway_scope must be read",
+    );
+  });
+
+  checkWithAgents(2, "a repo_path group id is computed from a home-redacted value, not this host's path", () => {
+    // The README promises a group id identical on every machine. Reverting the
+    // redaction to `resolve(...)` bakes $HOME into the hash and every existing
+    // check stays green, because the only id assertions are a shape regex and
+    // same-machine stability.
+    const projects = YAML.parse(readFileSync(REAL_PROJECT_REGISTRY, "utf8"))?.projects ?? {};
+    const keys = Object.keys(projects);
+    const donor = keys.find((key) => typeof projects[key]?.repo_path === "string");
+    const other = keys.find((key) => key !== donor);
+    if (!donor || !other) { skip("a repo_path group id is host-independent", "the live project registry has fewer than two records"); return; }
+    const shared = projects[donor].repo_path;
+
+    const collided = mutatedRegistry("shared-repo-path", REAL_PROJECT_REGISTRY, (doc) => {
+      doc.setIn(["projects", other, "repo_path"], shared);
+    });
+    const data = inventory(cli(["fleet", "inventory", "--project-registry", collided, "--json"]));
+    const group = data.conflicts.find((item) => item.field === "projects.{slug}.repo_path");
+    assert.ok(group, "two records on one repo_path must be a group");
+
+    // Recomputed here from the redacted value, exactly as an operator on another
+    // machine would see it -- never from this host's absolute path.
+    const redacted = shared.startsWith(`${REAL_HOME}/`) ? `~${shared.slice(REAL_HOME.length)}` : shared;
+    const normalized = posix.normalize(redacted).replace(/\/+$/u, "").normalize("NFC").trim();
+    const expected = `conflict:projects.{slug}.repo_path:${createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 12)}`;
+    assert.equal(group.id, expected, "a group id must be reproducible without knowing this host's $HOME");
+    assert.ok(!group.id.includes(REAL_HOME), "and must not carry it");
+  });
+
+  checkWithAgents(1, "a relative project_path is never resolved against the caller's directory", () => {
+    // Measured before the fix: a row declaring `project_path: relrepo`, run from
+    // a directory holding an unrelated `relrepo/.project.json`, reported
+    // `manifest.present: true`, `agrees: false` and two disagreement notes --
+    // another repository's binding, attributed to this agent as its evidence.
+    const trap = join(temp, "cwd-trap");
+    mkdirSync(join(trap, "relrepo"), { recursive: true });
+    writeFileSync(
+      join(trap, "relrepo", ".project.json"),
+      `${JSON.stringify({ project_slug: "IMPOSTOR", ticket_provider: { type: "plane", workspace: "nope", identifier: "IMPOST" } })}\n`,
+      "utf8",
+    );
+    const victim = liveIds[0];
+    const relative_ = mutatedRegistry("relative-project-path", REAL_AGENT_REGISTRY, (doc) => {
+      doc.setIn(["agents", victim, "project_path"], "relrepo");
+    });
+    const result = cli(["fleet", "inventory", "--agent-registry", relative_, "--agent", victim, "--json"], {}, trap);
+    const row = inventory(result).rows[0];
+    assert.equal(row.paths.project_path.classification, "relative");
+    assert.equal(row.manifest.present, false, "a manifest under a cwd-relative path must never be read");
+    assert.equal(row.manifest.agrees, null, "and must never produce agreement evidence");
+    assert.deepEqual(row.manifest.notes, []);
+    assert.ok(row.findings.includes("manifest-not-consulted"), "the refusal must be stated, not silent");
+    assert.ok(!row.findings.includes("manifest-disagrees"), "the impostor manifest must not reach the row");
+    assert.ok(!JSON.stringify(row).includes("IMPOSTOR"), "no byte of the caller's directory may reach the envelope");
+  });
+
+  checkWithAgents(1, "a malformed row with an unsafe id is booked once, not twice", () => {
+    // The previous pass's own entry named `agent-id-unsafe` as one of the codes
+    // leaking into `contract_violations`, and the set that replaced the prefix
+    // match did not contain it. Measured: clean 0 violations, `1234:` 0,
+    // `"../escape":` 1 -- while `malformed_rows` already said 1.
+    const baseline = inventory(cli(["fleet", "inventory", "--json"])).health;
+    for (const key of ["1234", "../escape"]) {
+      const broken = rawCopy(
+        `malformed-${key === "1234" ? "safe" : "unsafe"}-key`,
+        `${readFileSync(REAL_AGENT_REGISTRY, "utf8").replace(/\s*$/, "")}\n  ${JSON.stringify(key)}:\n    - not-a-mapping\n`,
+      );
+      const health = inventory(cli(["fleet", "inventory", "--agent-registry", broken, "--json"])).health;
+      assert.equal(health.malformed_rows, 1, `${key}: the row must be counted as malformed`);
+      assert.equal(
+        health.contract_violations, baseline.contract_violations,
+        `${key}: one bad row must not also be booked as a contract violation`,
+      );
+      assert.equal(health.collection_errors, baseline.collection_errors,
+        `${key}: a salvaged row is not an unreadable store`);
+    }
+  });
+
+  checkWithAgents(1, "a well-formed row with an unsafe id is still a contract violation", () => {
+    // The other half of the same fix: nothing else counts an unsafe id on a row
+    // that IS a mapping under a string key, so dropping it outright would let it
+    // ride at healthy.
+    const baseline = inventory(cli(["fleet", "inventory", "--json"])).health;
+    const broken = rawCopy(
+      "wellformed-unsafe-key",
+      `${readFileSync(REAL_AGENT_REGISTRY, "utf8").replace(/\s*$/, "")}\n  "../escape":\n    repo: escapee\n    role: pm\n`,
+    );
+    const health = inventory(cli(["fleet", "inventory", "--agent-registry", broken, "--json"])).health;
+    assert.equal(health.malformed_rows, 0, "a mapping under a string key is not malformed");
+    assert.equal(health.contract_violations, baseline.contract_violations + 1, "but an unsafe id must still be counted somewhere");
+    assert.equal(health.healthy, false);
+  });
+
+  checkWithAgents(1, "the gateway unit drifts against the gateway pattern, not against any of the three", () => {
+    // `expected_units` carries the gateway service, the heartbeat service AND
+    // the heartbeat timer. Comparing the stored gateway unit against the whole
+    // set meant storing the heartbeat timer name in `systemd.gateway_unit`
+    // reported no drift at all: the wrong unit, in the right set.
+    const contract = YAML.parse(readFileSync(TRACKED_CONTRACT, "utf8"));
+    const timerPattern = contract?.service_model?.per_agent?.heartbeat_timer;
+    if (typeof timerPattern !== "string") { skip("the gateway unit drifts against the gateway pattern", "the contract declares no heartbeat_timer pattern"); return; }
+    const victim = liveIds[0];
+    const swapped = mutatedRegistry("gateway-is-the-timer", REAL_AGENT_REGISTRY, (doc) => {
+      doc.setIn(["agents", victim, "systemd", "gateway_unit"], timerPattern.replaceAll("{agent_id}", victim));
+    });
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", swapped, "--agent", victim, "--json"]));
+    const row = data.rows[0];
+    assert.ok(
+      row.expected_units.value.includes(row.gateway_unit.value),
+      "the stored name is deliberately one the contract derives -- just the wrong role",
+    );
+    assert.ok(row.findings.includes("systemd-unit-name-drift"), "a heartbeat timer in the gateway field is drift");
+  });
+
+  check("a registry announcing an unmodelled schema_version is refused, not read as v1", () => {
+    // `schema_version` was parsed into the store and then consulted by nothing,
+    // so a v2 registry would have been keyed and reported as if it were v1.
+    const future = mutatedRegistry("future-schema", REAL_AGENT_REGISTRY, (doc) => { doc.set("schema_version", 2); });
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", future, "--json"]));
+    const finding = data.findings.find((item) => item.code === "registry-schema-version-unsupported");
+    assert.ok(finding, "an unmodelled schema version must be stated");
+    assert.match(finding.detail, /schema_version 2/);
+    assert.equal(data.health.healthy, false, "and must not be reported as a healthy fleet");
+  });
+
+  check("the mise gate names a module that exists, not a substring that matches", () => {
+    // Three regexes over mise.toml stayed green when the run line pointed at
+    // dist/cli.js -- a path that does not exist -- because the header, the
+    // depends and the words "fleet inventory" were all still there.
+    const mise = readFileSync(join(ROOT, "mise.toml"), "utf8");
+    const block = mise.slice(mise.indexOf('[tasks."fleet:inventory"]'));
+    const body = block.slice(0, block.indexOf("\n[tasks") === -1 ? block.length : block.indexOf("\n[tasks"));
+    const run = /run\s*=\s*"([^"]+)"/.exec(body);
+    assert.ok(run, "the gate must declare a run line");
+    const script = /\{\{\s*config_root\s*\}\}\/(\S+)/.exec(run[1]);
+    assert.ok(script, "the run line must resolve its module from config_root, not from the caller's cwd");
+    assert.ok(existsSync(join(ROOT, script[1])), `the gate runs ${script[1]}, which does not exist`);
   });
 
   check("the deferred-work ledger records what DW-1 still owes", () => {
