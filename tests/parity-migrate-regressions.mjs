@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
@@ -56,24 +56,120 @@ function git(cwd, args, env) {
   return result.stdout.trim();
 }
 
-let miseChecked = false;
-let miseOnPath = false;
-function miseAvailable() {
-  if (!miseChecked) {
-    miseChecked = true;
-    miseOnPath = spawnSync("mise", ["--version"], { encoding: "utf8" }).status === 0;
-  }
-  return miseOnPath;
+// --- mise isolation ---------------------------------------------------------
+//
+// `mise trust <path>` records trust by symlinking the trusted directory into
+// <state dir>/trusted-configs. Unisolated, that is the OPERATOR'S real
+// ~/.local/state/mise/trusted-configs, and every throwaway fixture this suite
+// builds was registered there permanently: 3,002 of 4,361 entries on the
+// author's machine were dead pjangler test fixtures, 121 from a single day.
+// The store is append-only and nothing ever prunes it.
+//
+// mise honours MISE_{DATA,STATE,CACHE,CONFIG}_DIR, so pointing all four at a
+// scratch tree keeps every byte mise writes inside the fixture (verified
+// empirically against mise 2026.8.10, including with the fixture living inside
+// $HOME). MISE_CONFIG_DIR earns its place twice: it also stops mise loading the
+// operator's global ~/.config/mise/config.toml, which is untrusted -- and so
+// fatal -- once the trust store is redirected. MISE_TRUSTED_CONFIG_PATHS
+// declares trust without writing anything at all, so isolation survives even if
+// a future mise moves the trust store out from under the *_DIR variables.
+const miseStateRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-mise-state-"));
+
+/** Every fixture handed to the real mise binary, for the pollution guard. */
+const miseTouchedRepos = new Set();
+
+function miseEnv(repo) {
+  return {
+    ...process.env,
+    MISE_DATA_DIR: join(miseStateRoot, "data"),
+    MISE_STATE_DIR: join(miseStateRoot, "state"),
+    MISE_CACHE_DIR: join(miseStateRoot, "cache"),
+    MISE_CONFIG_DIR: join(miseStateRoot, "config"),
+    MISE_TRUSTED_CONFIG_PATHS: repo,
+    MISE_YES: "1",
+  };
 }
 
-// End-to-end guard: the real `mise` binary must parse the generated config. Skips
-// silently where mise is not installed (e.g. minimal CI). Catches TOML syntax
-// regressions like a stray `]`; the structural assertions guard the hook shape.
+/**
+ * The trust store mise would use if this suite forgot to isolate itself --
+ * i.e. the one that must never gain an entry pointing at a fixture.
+ */
+function realTrustStore() {
+  const stateDir = process.env.MISE_STATE_DIR ?? join(homedir(), ".local", "state", "mise");
+  return join(stateDir, "trusted-configs");
+}
+
+/**
+ * The suite polices its own hermeticity. Isolation that is merely asserted in a
+ * comment rots the moment someone adds another `spawnSync("mise", ...)`; this
+ * fails the run instead. Matching on the symlink TARGET (not the entry name)
+ * keeps the guard precise -- it can only ever accuse this suite's own fixtures,
+ * never a concurrent one's.
+ */
+function assertRealTrustStoreUnpolluted() {
+  const store = realTrustStore();
+  let entries;
+  try {
+    entries = readdirSync(store);
+  } catch {
+    return; // no store on this host: nothing to pollute
+  }
+  const leaked = [];
+  for (const name of entries) {
+    let target;
+    try {
+      target = readlinkSync(join(store, name));
+    } catch {
+      continue; // not a symlink, or vanished mid-scan
+    }
+    if (miseTouchedRepos.has(target)) leaked.push(`${name} -> ${target}`);
+  }
+  assert.deepEqual(
+    leaked,
+    [],
+    `mise isolation leaked ${leaked.length} fixture(s) into the real trust store (${store}).\n` +
+      `Every mise invocation in this suite must pass env: miseEnv(repo).\n${leaked.join("\n")}`,
+  );
+}
+
+/**
+ * mise is a hard dependency of this suite, never a soft one.
+ *
+ * This used to be a `miseAvailable()` probe that made the assertions below
+ * silently no-op when mise was absent -- a gate that disappears exactly when it
+ * would have caught something. The "minimal CI" it claimed to accommodate does
+ * not exist: .github/workflows/publish.yml installs mise through a SHA-pinned
+ * jdx/mise-action and verifies `mise --version`, and tests/release-regressions.mjs
+ * asserts both of those steps are present. Missing mise is therefore a broken
+ * environment, and the honest response is to say so loudly.
+ */
+let miseProbe;
+function requireMise() {
+  miseProbe ??= spawnSync("mise", ["--version"], { encoding: "utf8", env: miseEnv(miseStateRoot) });
+  assert.ok(
+    !miseProbe.error && miseProbe.status === 0,
+    "mise is required by parity-migrate-regressions and was not runnable on PATH.\n" +
+      "This suite verifies that the REAL mise binary can parse and address the generated\n" +
+      "mise.toml; without it those assertions cannot be evaluated and are not skipped.\n" +
+      "Install mise (https://mise.jdx.dev) -- CI provisions it via jdx/mise-action.\n" +
+      `probe: ${miseProbe.error?.message ?? `exit ${miseProbe.status}: ${miseProbe.stderr}`}`,
+  );
+}
+
+/** Run the real mise binary against a fixture, fully isolated from the host. */
+function runMise(repo, args) {
+  requireMise();
+  miseTouchedRepos.add(repo);
+  return spawnSync("mise", args, { cwd: repo, encoding: "utf8", env: miseEnv(repo) });
+}
+
+// End-to-end guard: the real `mise` binary must parse the generated config.
+// Catches TOML syntax regressions like a stray `]`; the structural assertions
+// guard the hook shape.
 function assertMiseParses(repo, label) {
-  if (!miseAvailable()) return;
-  const misePath = join(repo, "mise.toml");
-  spawnSync("mise", ["trust", misePath], { encoding: "utf8" });
-  const result = spawnSync("mise", ["tasks"], { cwd: repo, encoding: "utf8" });
+  const trusted = runMise(repo, ["trust", join(repo, "mise.toml")]);
+  assert.equal(trusted.status, 0, `${label}: mise must trust the fixture config\n${trusted.stderr}`);
+  const result = runMise(repo, ["tasks"]);
   assert.equal(result.status, 0, `${label}: mise must parse the generated mise.toml\n${result.stderr}`);
 }
 
@@ -1077,12 +1173,10 @@ exec "$REAL_GIT" "$@"
     // Parsing is not enough: the renamed tasks must actually be ADDRESSABLE by
     // their new names, or `mise run skills:sync` dies with "task not found" —
     // the exact failure the dash/colon split caused.
-    if (miseAvailable()) {
-      const listed = spawnSync("mise", ["tasks", "--no-header"], { cwd: repo, encoding: "utf8" });
-      assert.equal(listed.status, 0, `mise tasks must succeed after the rename\n${listed.stderr}`);
-      for (const name of ["link:agentfiles", "skills:sync", "skills:provision:packs", "hooks:check"]) {
-        assert.match(listed.stdout, new RegExp(`^${name}\\b`, "m"), `mise must list ${name}:\n${listed.stdout}`);
-      }
+    const listed = runMise(repo, ["tasks", "--no-header"]);
+    assert.equal(listed.status, 0, `mise tasks must succeed after the rename\n${listed.stderr}`);
+    for (const name of ["link:agentfiles", "skills:sync", "skills:provision:packs", "hooks:check"]) {
+      assert.match(listed.stdout, new RegExp(`^${name}\\b`, "m"), `mise must list ${name}:\n${listed.stdout}`);
     }
     for (const retired of ["link-agentfiles", "skills-sync", "skills-provision-packs", "hooks-check"]) {
       assert.doesNotMatch(
@@ -1113,8 +1207,13 @@ exec "$REAL_GIT" "$@"
     assert.match(stderr, /interactive terminal/);
   }
 
+  // The suite exercised the real mise binary; prove it did so without touching
+  // the host. Runs before cleanup, while the fixture paths still resolve.
+  assertRealTrustStoreUnpolluted();
+
   console.log("parity migrate regressions passed");
 } finally {
   for (const repo of repos) rmSync(repo, { recursive: true, force: true });
   rmSync(bmadFixtureRoot, { recursive: true, force: true });
+  rmSync(miseStateRoot, { recursive: true, force: true });
 }
