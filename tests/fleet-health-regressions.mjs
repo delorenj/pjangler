@@ -1147,6 +1147,26 @@ try {
     for (const row of shapedRows) {
       assert.equal(row.classification.value, "managed_agent", `${row.agent_id.value} was swept up by a path SHAPE`);
     }
+
+    // EXACT, NOT A PREFIX. `agents.alpha` must not claim `agents.alpha-pm`, or
+    // one operator ruling reaches every row whose id happens to start the same
+    // way -- the same widening the placeholder guard above refuses, one
+    // character at a time.
+    const prefixed = writeContract("declared-prefix", policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = [{
+        id: "prefix-must-not-reach",
+        kind: "managed-agent-exception",
+        owner: "hermes-agent-registry",
+        source: "agents.alpha",
+        lifecycle_state: "accepted",
+        rationale: "A prefix of a row path is not that row, and must claim nothing.",
+        policy_domains: ["profile"],
+      }];
+    }));
+    const prefixRows = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", prefixed]).stdout).data.rows;
+    for (const row of prefixRows) {
+      assert.equal(row.classification.value, "managed_agent", `${row.agent_id.value} was claimed by a PREFIX of its path`);
+    }
   });
 
   check("a fleet clipped past the agent cap produces the same six counts as one under it", () => {
@@ -1440,6 +1460,31 @@ try {
     assert.equal(after.health.healthy, true, "a permitted conflict is not fleet drift");
     assert.equal(after.health.unjustified, before.health.unjustified, "and it is not an unjustified gap either");
 
+    // A FIELD-LEVEL RULING DOES NOT GRANT A ROW-LEVEL EXEMPTION.
+    //
+    // `matchException` reads `participants` to permit one identity-conflict
+    // GROUP -- a statement about one field path shared by named claimants.
+    // `declaredRowClass` used to read the same list, so permitting a shared
+    // `profile_name` also reclassified both rows `intentionally_unmanaged`:
+    // a statement about the WHOLE ROW nobody made. Nothing broke, because both
+    // roads landed in the same member bucket -- but `row.classification` is an
+    // input to what a reconciliation plan skips (1.11, 1.15), and a convergence
+    // engine declining to touch a row because someone permitted a profile-name
+    // collision is an unearned exemption that would be very hard to trace here.
+    for (const contract of [unruled, ruled]) {
+      const inventoryRows = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", contract, "--agent-registry", agents]).stdout).data.rows;
+      for (const row of inventoryRows) {
+        assert.equal(
+          row.classification.value, "managed_agent",
+          `${row.agent_id.value}: permitting a conflict must not reclassify the row (contract ${contract})`,
+        );
+      }
+    }
+    // And the row is therefore NOT in the exception bucket on the strength of a
+    // conflict ruling alone: the ruling authorized the observation, not the row.
+    assert.equal(agentNamed(after, "beta-pm").member_class, "healthy",
+      "a permitted conflict authorizes the OBSERVATION; the row is not exempted by it");
+
     // THE TWO COMMANDS AGREE. This is the finding: `fleet inventory` called
     // this fleet healthy while `fleet status` called it unhealthy.
     const inventory = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", ruled, "--agent-registry", agents]).stdout).data;
@@ -1449,7 +1494,6 @@ try {
       after.health.healthy, inventory.health.healthy,
       "fleet status and fleet inventory must not disagree about whether an operator's ruling counts",
     );
-    assert.equal(agentNamed(after, "beta-pm").member_class, "exception");
 
     rmSync(agents, { force: true });
     rmSync(join(scratchHome, ".hermes", "profiles", "shared-profile"), { recursive: true, force: true });

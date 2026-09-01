@@ -1101,24 +1101,33 @@ const DECLARED_ROW_CLASSES = ["retired", "intentionally_unmanaged"] as const;
 /**
  * Does one classification entry claim THIS agent row?
  *
- * Two spellings, and both are exact:
+ * ONE SPELLING: `source` equal to the CONCRETE row path `agents.<agent_id>`,
+ * compared as a whole string.
  *
- *   `participants` contains the agent id -- the same convention `matchException`
- *   already uses for a conflict-group ruling, so an operator writes one shape.
+ * `participants` was the second spelling and it has been removed, because it
+ * conflated two rulings about two different SCOPES. `matchException` reads
+ * `participants` to permit one identity-conflict GROUP -- a statement about one
+ * field path shared by named claimants. Reading the same list here turned that
+ * into a statement about the whole ROW: "these two agents may share a profile
+ * name" silently also meant "these rows are state the control plane observes
+ * and leaves alone". MEASURED before the fix -- a contract permitting a shared
+ * `profile_name` reclassified BOTH participating rows to
+ * `intentionally_unmanaged`.
  *
- *   `source` is the CONCRETE row path `agents.<agent_id>`.
+ * Nothing broke today only because both roads happened to land in the
+ * `exception` member bucket. The damage was deferred: `row.classification`
+ * becomes an input to what a reconciliation plan skips (stories 1.11, 1.15), and
+ * a convergence engine declining to touch a row because someone permitted a
+ * profile-name collision is exactly the unearned exemption this epic exists to
+ * prevent -- and one that would be very hard to trace back to here.
  *
- * The `{agent_id}` PLACEHOLDER form is deliberately not matched. It is the
- * SHAPE of a path rather than an instance of one -- every authority block in the
- * contract writes it that way -- so honouring it would let a single entry sweep
- * the whole fleet into a class nobody ruled on, which is precisely the
- * widening `matchException` refuses on a participant set.
+ * EXACT, not a prefix: `agents.alpha-pm` must not also claim `agents.alpha-pm-2`.
+ * And the `{agent_id}` PLACEHOLDER form is deliberately not matched -- it is the
+ * SHAPE of a path rather than an instance of one, and every authority block in
+ * the contract writes it that way, so honouring it would let a single entry
+ * sweep the whole fleet into a class nobody ruled on.
  */
 function entryClaimsAgent(entry: Record<string, unknown>, agentId: string): boolean {
-  const participants = Array.isArray(entry.participants)
-    ? entry.participants.filter((item): item is string => typeof item === "string")
-    : [];
-  if (participants.includes(agentId)) return true;
   return nonEmptyString(entry.source) === `agents.${agentId}`;
 }
 

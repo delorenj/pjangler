@@ -18724,8 +18724,6 @@ var DIMENSIONS = {
 };
 var DECLARED_ROW_CLASSES = ["retired", "intentionally_unmanaged"];
 function entryClaimsAgent(entry, agentId) {
-  const participants = Array.isArray(entry.participants) ? entry.participants.filter((item) => typeof item === "string") : [];
-  if (participants.includes(agentId)) return true;
   return nonEmptyString(entry.source) === `agents.${agentId}`;
 }
 function declaredRowClass(contract, agentId) {
