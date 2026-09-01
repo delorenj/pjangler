@@ -629,6 +629,62 @@ try {
       const survivors = (existsSync(hangPids) ? readFileSync(hangPids, "utf8").trim().split("\n").filter(Boolean) : [])
         .filter((pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } });
       assert.deepEqual(survivors, [], "no probe child may survive a cancellation on either adapter");
+
+      // Story 1.4: the same cancellation contract, on the status command's own
+      // children. The provenance case above aborts mid-`git` PROBE; status's
+      // children are audit CLI invocations, spawned through a different code
+      // path (`captureSelf`, not `probe`), so a probe that dies cleanly proves
+      // nothing about an audit child that does not. The entry is a hanging node
+      // script that records its pid, and it is read out of the environment --
+      // which is why the MCP half needs a server of its own.
+      const statusHangPids = join(fleetTmp, "status-hang-pids");
+      const statusHangEntry = join(fleetTmp, "hanging-cli-entry.mjs");
+      writeFileSync(statusHangEntry, [
+        'import { appendFileSync } from "node:fs";',
+        `appendFileSync(${JSON.stringify(statusHangPids)}, \`\${process.pid}\\n\`);`,
+        "setTimeout(() => {}, 120_000);",
+        "",
+      ].join("\n"), "utf8");
+      const hangingStatusEnv = fleetEnvFor({ PJ_FLEET_CLI_ENTRY: statusHangEntry });
+
+      const cliStatusCancel = await new Promise((settle) => {
+        const child = spawn(process.execPath, [resolve(root, "dist", "index.js"), "fleet", "status", "--live", "--json"], {
+          cwd: root, env: hangingStatusEnv, stdio: ["ignore", "pipe", "ignore"],
+        });
+        let out = "";
+        child.stdout.on("data", (chunk) => { out += chunk; });
+        const killer = setTimeout(() => child.kill("SIGINT"), 2500);
+        const guard = setTimeout(() => child.kill("SIGKILL"), 60_000);
+        child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, envelope: JSON.parse(out) }); });
+      });
+      assert.equal(cliStatusCancel.code, 8, "a cancelled status run must exit 8");
+      assert.equal(cliStatusCancel.envelope.error?.code, "CANCELLED");
+      // Non-vacuity: with no pid recorded, the survivor check below would pass
+      // against an empty list and prove nothing about killing anything.
+      const statusHangStarted = existsSync(statusHangPids) ? readFileSync(statusHangPids, "utf8").trim().split("\n").filter(Boolean) : [];
+      assert.ok(statusHangStarted.length > 0, "the cancelled CLI run must actually have started an audit child");
+
+      await withFleetClient(hangingStatusEnv, async (fleetClient) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 2500);
+        let mcp;
+        try {
+          mcp = toolEnvelope(await fleetClient.callTool({ name: "pjangler_fleet_status", arguments: { live: true } }, undefined, { signal: controller.signal, timeout: 60_000 }));
+        } catch (error) {
+          assert.match(String(error?.message ?? error), /abort|cancel/i, `an aborted status request must not resolve successfully: ${error}`);
+          mcp = null;
+        }
+        if (mcp) {
+          assert.equal(mcp.ok, false, "an aborted status request must not report success");
+          assert.equal(mcp.command, cliStatusCancel.envelope.command);
+          assert.deepEqual(mcp.error, cliStatusCancel.envelope.error, "the MCP status cancellation must be the same shape the CLI reports");
+          assert.equal(mcp.data, null);
+        }
+      });
+      await new Promise((wake) => setTimeout(wake, 2000));
+      const statusSurvivors = (existsSync(statusHangPids) ? readFileSync(statusHangPids, "utf8").trim().split("\n").filter(Boolean) : [])
+        .filter((pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } });
+      assert.deepEqual(statusSurvivors, [], "no audit child may survive a status cancellation on either adapter");
     } finally {
       rmSync(fleetTmp, { recursive: true, force: true });
     }
