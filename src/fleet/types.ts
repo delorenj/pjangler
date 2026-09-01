@@ -931,6 +931,38 @@ export const FLEET_STATUS_FRESHNESS = ["current", "stale", "unknown", "not_appli
 export type FleetStatusFreshness = (typeof FLEET_STATUS_FRESHNESS)[number];
 
 /**
+ * Freshness precedence, worst first, when several policy entries apply to one
+ * observation.
+ *
+ * `unknown` sits above `current` because a policy entry that DOES apply to a
+ * field nothing populates is a question this run could not answer, and the
+ * better of two readings must not be the one that survives -- the same
+ * worst-wins rule the host block already has to follow.
+ *
+ * Declared here rather than in `health.ts` because every new vocabulary belongs
+ * in one file: an ordering that lives beside its only consumer is one the
+ * suite's "every declared vocabulary is spelled the same" check cannot see.
+ */
+export const FLEET_STATUS_FRESHNESS_PRECEDENCE = [
+  "stale", "unknown", "current", "not_applicable",
+] as const satisfies readonly FleetStatusFreshness[];
+
+/** What one finding is ABOUT: the whole fleet, this machine, or one row. */
+export const FLEET_STATUS_SCOPES = ["fleet", "host", "agent"] as const;
+export type FleetStatusScopeKind = (typeof FLEET_STATUS_SCOPES)[number];
+
+/**
+ * Scope precedence for the finding sort, broadest blast radius first.
+ *
+ * A fleet-scoped finding is true of everything, a host one of this machine, an
+ * agent one of a single row -- so an operator reading a capped list sees the
+ * widest statement before the narrowest.
+ */
+export const FLEET_STATUS_SCOPE_PRECEDENCE = [
+  "fleet", "host", "agent",
+] as const satisfies readonly FleetStatusScopeKind[];
+
+/**
  * How badly this needs a decision. Derived from `state` x `applicability`.
  *
  * Deliberately NOT `FLEET_FINDING_SEVERITIES` (`error`/`warn`/`info`). That
@@ -1055,16 +1087,29 @@ export type FleetStatusMemberClass = (typeof FLEET_STATUS_MEMBER_CLASSES)[number
 /**
  * Which class wins when an agent qualifies for more than one.
  *
- * `unclassified` first: a row this command could not classify supports no other
- * claim. `unhealthy` before `exception` so a permitted identity conflict can
- * never absorb an unrelated proven failure -- only an agent whose every failure
- * is exception-justified reaches `exception`. `incomplete` before `deferred`
- * because an unread half is a bigger statement than an authorized one.
+ * ONE RULE, applied consistently: what the CONTRACT or the FLEET determines
+ * about the ROW outranks what happened to be true of THIS RUN. A row's
+ * classification and its proven failures are the same on every invocation; its
+ * completeness depends on which flags the caller passed, and on a default run
+ * nearly every row is incomplete -- so letting `incomplete` win would collapse
+ * five of the six buckets into one on the command's most common invocation.
+ *
+ * Within the durable half: `unclassified` first, because a row this command
+ * could not classify supports no other claim; then `unhealthy`, so an operator
+ * ruling can never absorb an unrelated proven failure; then `exception`, an
+ * operator's standing decision about the row; then `deferred`, an authorized
+ * gap in the build rather than in the fleet.
+ *
+ * The previous order put `incomplete` above `deferred` on the reasoning that an
+ * unread half is a bigger statement than an authorized one. That reasoning was
+ * right about the two of them and inconsistent with `exception` sitting above
+ * `incomplete` for the opposite reason; the rule above is what makes all four
+ * agree.
  *
  * Iterated by `classifyMember`, never re-spelled there.
  */
 export const FLEET_STATUS_MEMBER_PRECEDENCE = [
-  "unclassified", "unhealthy", "exception", "incomplete", "deferred", "healthy",
+  "unclassified", "unhealthy", "exception", "deferred", "incomplete", "healthy",
 ] as const satisfies readonly FleetStatusMemberClass[];
 
 /** How one finding moved between the baseline run and this one. */
@@ -1084,6 +1129,35 @@ export type FleetStatusTransitionKind = (typeof FLEET_STATUS_TRANSITION_KINDS)[n
 export const FLEET_STATUS_MAX_TRANSITIONS = 2000;
 
 /**
+ * What `observed_state` may report, and why it needs a value the contract's own
+ * activation ladder does not have.
+ *
+ * A `--domain registry` run never reads the profile tree, so it cannot say
+ * whether the agent is `installed` -- and reporting `discovered` there would let
+ * a COLLECTION FILTER move a conclusion about the agent, which is the one thing
+ * a scope is not allowed to do. `out_of_scope` says "this run did not select
+ * the domain that answers this", which is a statement about the run rather than
+ * about the fleet.
+ */
+export const FLEET_STATUS_LIFECYCLE_STATES = [
+  "discovered", "installed", "healthy", "routing_ready", "activated", "out_of_scope",
+] as const;
+export type FleetStatusLifecycleState = (typeof FLEET_STATUS_LIFECYCLE_STATES)[number];
+
+/**
+ * Whether routing readiness was proven, could not be, or was not looked at.
+ *
+ * `ready` is unreachable in this release by construction -- it would require a
+ * direct observation of the shared gateway and none exists. `blocked` is
+ * unreachable until that observer arrives too. Both are declared so the axis
+ * has somewhere to grow that is not a boolean.
+ */
+export const FLEET_STATUS_READINESS = [
+  "ready", "unproven", "blocked", "not_applicable", "out_of_scope",
+] as const;
+export type FleetStatusReadiness = (typeof FLEET_STATUS_READINESS)[number];
+
+/**
  * The four activation states, kept apart, for one agent.
  *
  * FOUR FIELDS, NEVER ONE BOOLEAN. Discovery, installation, health, routing
@@ -1098,14 +1172,14 @@ export const FLEET_STATUS_MAX_TRANSITIONS = 2000;
  */
 export interface FleetStatusLifecycle {
   desired_state: FleetActivationState;
-  observed_state: FleetActivationState;
+  observed_state: FleetStatusLifecycleState;
   /**
    * Whether Bloodbank routing readiness was PROVEN for this agent.
    *
    * Never `ready` in this release: `ready` would require a direct observation of
    * the shared gateway, and a `declared` registry field is not one.
    */
-  capability_readiness: "ready" | "unproven" | "blocked" | "not_applicable";
+  capability_readiness: FleetStatusReadiness;
   /** The strict execution-authority flag, read verbatim. The contract's default is deny. */
   activation: "granted" | "denied" | "undeclared";
 }
@@ -1197,8 +1271,21 @@ export interface FleetStatusObservation {
   repair: FleetStatusRepair;
   /**
    * The live side and the recorded side, in the shape `FleetProvenanceFact`
-   * already uses. Both null where a value comparison is not what the
-   * observation is about -- never a fabricated pair.
+   * already uses.
+   *
+   * ALWAYS POPULATED, and the two halves are not always a value comparison.
+   * Where one is -- a provenance fact, a profile path, a routing record -- both
+   * carry real values from opposite sides. Where it is not, `observed` is what
+   * this run CONCLUDED and `desired` is what the domain declares it should
+   * conclude: an audit rule reports `observed: "18 scaffold issue(s)
+   * detected"` against `desired: "the recipe rule hermes.pm-scaffold reporting
+   * pass"`. That second shape is close to a restatement of the summary, and it
+   * is kept anyway because AC7 requires every non-pass to carry the pair and a
+   * consumer that has to branch on which shape it got has no pair at all.
+   *
+   * Typed nullable because the ENVELOPE has carried nulls here since 1.5's
+   * first cut and a consumer must keep handling them; nothing produces one
+   * today.
    */
   observed: string | null;
   desired: string | null;
@@ -1304,6 +1391,14 @@ export interface FleetStatusScope {
   total_registered_agents: number;
   selected_agents: number;
   selected_domains: FleetStatusDomain[];
+  /**
+   * Whether this run was correlated against a `--baseline` document.
+   *
+   * Carried so an empty `transitions[]` can be told apart from no baseline
+   * having been read at all -- on the human path those are the same absence and
+   * mean opposite things ("nothing moved" versus "nothing was compared").
+   */
+  baseline: boolean;
 }
 
 export interface FleetStatusTotals {
@@ -1361,6 +1456,16 @@ export interface FleetStatusHealth {
   exit_category: FleetStatusExitCategory;
   /** Observations whose evidence is past its declared `max_age_days`. Blocks `proven`. */
   stale: number;
+  /**
+   * Observations a freshness policy applies to whose timestamp could not be read.
+   *
+   * Held apart from `stale` and blocking `proven` just as hard. A policy entry
+   * naming a field no row populates buckets every reading `unknown`, and if
+   * that did not gate anything the entry would validate, change nothing, and
+   * read as though the fleet had been checked -- "we did not look" wearing the
+   * freshness axis, which is the exact failure this story exists to prevent.
+   */
+  freshness_unknown: number;
   /** Non-pass observations no `health_policy` entry authorizes. Blocks `proven`. */
   unjustified: number;
   /** Two sources answering for the same field and disagreeing. Blocks `complete`. */

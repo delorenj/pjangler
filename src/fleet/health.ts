@@ -51,8 +51,12 @@
 // failure pointing at the line.
 
 import {
+  FLEET_STATUS_DOMAINS,
+  FLEET_STATUS_EVIDENCE,
+  FLEET_STATUS_FRESHNESS_PRECEDENCE,
   FLEET_STATUS_MAX_TRANSITIONS,
   FLEET_STATUS_MEMBER_PRECEDENCE,
+  FLEET_STATUS_SCOPE_PRECEDENCE,
   FLEET_STATUS_SEVERITY_PRECEDENCE,
   FLEET_STATUS_STATES,
   FleetError,
@@ -87,15 +91,6 @@ import { bounded, redactHome } from "./output";
 
 /** One day, in milliseconds. The unit `max_age_days` is declared in. */
 const DAY_MS = 86_400_000;
-
-/**
- * Scope order for the finding sort, broadest blast radius first.
- *
- * A fleet-scoped finding is true of everything, a host one of this machine, an
- * agent one of a single row -- so an operator reading a capped list sees the
- * widest statement before the narrowest. Read by `compareStatusFindings`.
- */
-const SCOPE_ORDER = ["fleet", "host", "agent"] as const;
 
 /**
  * The policy, indexed for lookup, with every entry keeping its contract path.
@@ -181,9 +176,6 @@ export function evaluateFreshness(
   return referenceMs - parsed <= declared.entry.max_age_days * DAY_MS ? "current" : "stale";
 }
 
-/** Bucket precedence when several policy entries apply to one observation. Worst wins. */
-const FRESHNESS_PRECEDENCE = ["stale", "unknown", "current", "not_applicable"] as const satisfies readonly FleetStatusFreshness[];
-
 /**
  * Fold every freshness entry that applies to one domain into a single bucket.
  *
@@ -201,7 +193,7 @@ export function evaluateDomainFreshness(
   const buckets = policy.freshness
     .filter((item) => item.entry.applies_to === domain)
     .map((item) => evaluateFreshness(item.entry.field, values.get(item.entry.field) ?? null, referenceMs, policy));
-  for (const bucket of FRESHNESS_PRECEDENCE) if (buckets.includes(bucket)) return bucket;
+  for (const bucket of FLEET_STATUS_FRESHNESS_PRECEDENCE) if (buckets.includes(bucket)) return bucket;
   return "not_applicable";
 }
 
@@ -351,14 +343,23 @@ export function classifyObservation(
     ? true
     : policy.requiredDomains.has(input.domain);
 
+  // `applicability` answers "was it required, and if not, ON WHOSE AUTHORITY",
+  // so a state may not answer it alone. A `skip` says the RULE believes it does
+  // not apply; only a `health_policy.allowed_skips` entry makes that somebody's
+  // decision. An UNJUSTIFIED skip therefore stays `required` -- a rule
+  // excusing itself is not an authority -- and it is the justification, not the
+  // state, that reports `not_applicable`.
   let applicability: FleetStatusApplicability;
   if (justification?.kind === "deferred_capability") applicability = "deferred";
   else if (justification?.kind === "exception") applicability = "exception";
-  else if (input.state === "skip") applicability = "not_applicable";
+  else if (justification?.kind === "allowed_skip") applicability = "not_applicable";
   else applicability = domainRequired ? "required" : "optional";
 
   const justified = justification !== null;
-  const stale = input.freshness === "stale";
+  // `unknown` counts with `stale`. A policy entry applies and this run could not
+  // read the timestamp, so the evidence is exactly as unusable as an expired
+  // one -- treating it as fresh is the flattering reading.
+  const stale = input.freshness === "stale" || input.freshness === "unknown";
   const severity = deriveSeverity(input.state, applicability, justified, stale);
   const { repair, next_action, next_action_class } = deriveRepair(input, justification);
 
@@ -378,6 +379,7 @@ export function deriveSeverity(
   state: FleetStatusState,
   applicability: FleetStatusApplicability,
   justified: boolean,
+  /** True for `stale` AND for `unknown`: both mean the evidence cannot be relied on. */
   stale: boolean,
 ): FleetStatusSeverity {
   if (state === "error") return "critical";
@@ -387,7 +389,10 @@ export function deriveSeverity(
   // its declared window is not a pass anybody should act on.
   if (stale) return justified ? "low" : "medium";
   if (state === "warn" || state === "unsupported") return justified ? "low" : "medium";
-  if (state === "skip") return justified ? "info" : "low";
+  // An unjustified skip on a REQUIRED domain is a rule declining to answer a
+  // question the contract says has to be answered, and nobody signed off on
+  // that -- it outranks the same skip on an optional domain.
+  if (state === "skip") return justified ? "info" : applicability === "required" ? "medium" : "low";
   return "info";
 }
 
@@ -418,8 +423,22 @@ function deriveRepair(
     { repair, next_action: bounded(redactHome(next_action)), next_action_class: "read-only" }
   );
 
-  if (input.state === "pass" && input.freshness !== "stale") return readOnly(input.retrieval, "none");
+  if (input.state === "pass" && input.freshness === "current") return readOnly(input.retrieval, "none");
+  if (input.state === "pass" && input.freshness !== "stale" && input.freshness !== "unknown") {
+    return readOnly(input.retrieval, "none");
+  }
   if (input.state === "skip" && justification !== null) return readOnly(input.retrieval, "none");
+
+  // STALE EVIDENCE IS A REFRESH, NOT A ROUTE. A `pass` whose evidence is past
+  // its window needs the reading taken again; it does not need the execution
+  // authority, even when the field it sits on IS the activation gate. Tested
+  // before that branch, because the branch below keys on the FIELD alone and
+  // would otherwise label a passing-but-stale activation flag
+  // `requires-authorization` -- telling an operator to request a grant they
+  // already hold.
+  if (input.state === "pass") {
+    return readOnly(`Re-read the evidence behind this observation: ${input.retrieval}`, "manual");
+  }
 
   // The gate, and it is the contract's own field -- not a keyword and not the
   // domain. `strict: true, default: deny` means no repository change can grant
@@ -480,17 +499,42 @@ export interface FleetStatusContradiction {
 const PROVEN_BAD: ReadonlySet<FleetStatusState> = new Set<FleetStatusState>(["fail", "error"]);
 
 /**
- * Every `(agent_id, domain, field)` two sources answered for and disagreed about.
+ * Lifecycle classes that put an otherwise-healthy row in the `exception` bucket.
+ *
+ * All three of the contract's non-default classes, not just one. A `retired`
+ * row is a sighting of a mode the contract has withdrawn and a
+ * `managed_shared_service` row is state that is deliberately managed but is not
+ * a per-agent row -- both are exceptions an operator recorded, and both used to
+ * fall through to `healthy`, which reported a contract-declared retired agent
+ * as a clean one.
+ */
+const EXCEPTED_CLASSES: ReadonlySet<FleetClassificationId> = new Set<FleetClassificationId>([
+  "intentionally_unmanaged", "retired", "managed_shared_service",
+]);
+
+/**
+ * Every `(agent_id, domain, field)` where one source PROVED a failure and
+ * another reported a pass.
+ *
+ * NARROWER THAN "TWO SOURCES DISAGREE", DELIBERATELY, and the narrowness is the
+ * only thing keeping this usable. It fires on `fail`/`error` against `pass` and
+ * on nothing else: not on `warn` against `pass`, not on `skip` against
+ * anything, not on two different non-pass states. `DOMAIN_FIELD` already gives
+ * every rule in a domain ONE contract field path, so even this rule
+ * over-reports -- DW-75 measures ten instances on the live fleet where both
+ * sides are true and neither refutes the other. Widening it to "any two states
+ * that differ" would turn every domain with a warn beside a pass into a
+ * contradiction and make `complete` meaningless.
+ *
+ * Only observations that actually READ something take part (`evidence` is not
+ * `absent`). A store read proving a symlinked profile beside an audit half that
+ * was never run is not a disagreement -- it is one reading and one silence, and
+ * counting it would fire on every default run.
  *
  * A generalization of the host block's worst-wins accumulator, which already
  * proves the pattern: keep every reading, report the worst, record the
  * disagreement as data. Never resolve one by choosing the more favourable value
  * and never drop either side.
- *
- * Only observations that actually READ something take part (`evidence` is not
- * `absent`). A store read proving a symlinked profile beside an audit half that
- * was never run is not a disagreement -- it is one reading and one silence, and
- * calling it a contradiction would fire on every default run.
  */
 export function detectContradictions(observations: readonly FleetStatusObservation[]): FleetStatusContradiction[] {
   const groups = new Map<string, FleetStatusObservation[]>();
@@ -559,9 +603,13 @@ export function classifyMember(
 
   const failures = observations.filter((item) => PROVEN_BAD.has(item.state));
   if (!agent.healthy) {
+    // Every failure carrying an operator ruling is still an exception, even
+    // though a permitted conflict no longer produces one: an entry could yet
+    // authorize a different failing observation, and falling through to
+    // `unhealthy` there would report a ruled-on row as drift.
     const allExcepted = failures.length > 0 && failures.every((item) => item.justification?.kind === "exception");
     candidates.add(allExcepted ? "exception" : "unhealthy");
-  } else if (classification === "intentionally_unmanaged") {
+  } else if (EXCEPTED_CLASSES.has(classification)) {
     candidates.add("exception");
   }
 
@@ -611,7 +659,7 @@ export interface FleetStatusSortable {
  */
 export function observationGates(observation: FleetStatusObservation): boolean {
   if (observation.state === "fail" || observation.state === "error" || observation.state === "unobserved") return true;
-  if (observation.freshness === "stale") return true;
+  if (observation.freshness === "stale" || observation.freshness === "unknown") return true;
   return needsJustification(observation.state) && observation.justification === null;
 }
 
@@ -651,8 +699,8 @@ function severityRank(severity: FleetStatusSeverity): number {
 }
 
 function scopeRank(scope: FleetStatusSortable["scope"]): number {
-  const index = (SCOPE_ORDER as readonly string[]).indexOf(scope);
-  return index === -1 ? SCOPE_ORDER.length : index;
+  const index = (FLEET_STATUS_SCOPE_PRECEDENCE as readonly string[]).indexOf(scope);
+  return index === -1 ? FLEET_STATUS_SCOPE_PRECEDENCE.length : index;
 }
 
 /**
@@ -697,25 +745,41 @@ export interface FleetStatusFindingSnapshot {
   evidence: FleetStatusEvidence;
 }
 
+/**
+ * One baseline record, or null if this build cannot read it.
+ *
+ * EVERY axis is validated against its declared vocabulary and the record is
+ * DROPPED when one does not match -- nothing is defaulted. A baseline written
+ * by an older build, or by a build whose vocabulary has since moved, would
+ * otherwise have `domain` silently become `registry`, `severity` become `info`
+ * and `evidence` become whatever string it carried, and the diff would then
+ * manufacture `severity_changed` and `evidence_changed` transitions out of
+ * those defaults -- fabricated movement, in the one document whose entire
+ * purpose is comparison. A dropped record reports `appeared` instead, which is
+ * at least true of what this build can read.
+ *
+ * Strings are `bounded` because they reach `data` and the baseline is operator
+ * input: a file this command did not write may carry anything.
+ */
 function snapshotOf(record: {
   finding_id?: unknown; agent_id?: unknown; domain?: unknown;
   state?: unknown; severity?: unknown; evidence?: unknown; rule_id?: unknown;
 }, scope: FleetStatusFindingSnapshot["scope"]): FleetStatusFindingSnapshot | null {
-  const id = typeof record.finding_id === "string" ? record.finding_id : null;
-  if (id === null || id === "") return null;
-  const state = typeof record.state === "string" && (FLEET_STATUS_STATES as readonly string[]).includes(record.state)
-    ? record.state as FleetStatusState
-    : null;
-  if (state === null) return null;
-  const severity = typeof record.severity === "string" && (FLEET_STATUS_SEVERITY_PRECEDENCE as readonly string[]).includes(record.severity)
-    ? record.severity as FleetStatusSeverity
-    : "info";
-  const evidence = typeof record.evidence === "string" ? record.evidence as FleetStatusEvidence : "absent";
+  const member = <T extends string>(value: unknown, vocabulary: readonly string[]): T | null => (
+    typeof value === "string" && vocabulary.includes(value) ? value as T : null
+  );
+  const id = typeof record.finding_id === "string" && record.finding_id !== "" ? bounded(record.finding_id, 64) : null;
+  if (id === null) return null;
+  const state = member<FleetStatusState>(record.state, FLEET_STATUS_STATES);
+  const domain = member<FleetStatusDomain>(record.domain, FLEET_STATUS_DOMAINS);
+  const severity = member<FleetStatusSeverity>(record.severity, FLEET_STATUS_SEVERITY_PRECEDENCE);
+  const evidence = member<FleetStatusEvidence>(record.evidence, FLEET_STATUS_EVIDENCE);
+  if (state === null || domain === null || severity === null || evidence === null) return null;
   return {
     finding_id: id,
     scope,
-    agent_id: typeof record.agent_id === "string" ? record.agent_id : null,
-    domain: (typeof record.domain === "string" ? record.domain : "registry") as FleetStatusDomain,
+    agent_id: typeof record.agent_id === "string" ? bounded(record.agent_id, 128) : null,
+    domain,
     state,
     severity,
     evidence,
@@ -724,6 +788,46 @@ function snapshotOf(record: {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The selection a baseline was taken under, and whether it carried everything. */
+export interface FleetStatusBaselineScope {
+  agent_id: string | null;
+  domain: string | null;
+  /** True when the document's own caps clipped what it recorded. */
+  clipped: boolean;
+  label: string;
+}
+
+/**
+ * The scope a status document was produced under.
+ *
+ * `live` is deliberately NOT part of it. `--live` changes what was OBSERVED,
+ * not which agents and domains were SELECTED, so a run that read more than its
+ * baseline did is a real transition an operator wants to see. `--agent` and
+ * `--domain` change the selection itself, and a diff across two different
+ * selections is not a diff.
+ */
+export function baselineScopeOf(document: unknown): FleetStatusBaselineScope | null {
+  const root = isRecord(document) && isRecord(document.data) ? document.data : document;
+  if (!isRecord(root) || !isRecord(root.scope)) return null;
+  const scope = root.scope;
+  // CLIPPED means a CAP dropped records, and the document's own `truncated[]`
+  // is where a cap records itself. Comparing `emitted_agents` with `agents` was
+  // wrong: under `--agent alpha` a two-agent fleet emits one record and nothing
+  // was clipped at all, so every scoped baseline was refused as damaged.
+  //
+  // Only the `agents...` notes matter here. A clipped `findings` or
+  // `transitions` array does not change which observations the document
+  // carries, which is the only thing the diff reads.
+  const notes = Array.isArray(root.truncated) ? root.truncated : [];
+  const clipped = notes.some((note) => typeof note === "string" && note.startsWith("agents"));
+  return {
+    agent_id: typeof scope.agent_id === "string" ? scope.agent_id : null,
+    domain: typeof scope.domain === "string" ? scope.domain : null,
+    clipped,
+    label: typeof scope.label === "string" ? bounded(scope.label) : "an unlabelled scope",
+  };
 }
 
 /**
@@ -807,27 +911,60 @@ export function snapshotCurrent(
  * silently treating it as "no baseline" would report an empty `transitions[]`
  * that reads exactly like "nothing changed".
  */
-export function parseBaselineDocument(text: string, shownPath: string): FleetStatusFindingSnapshot[] {
+export interface FleetStatusBaseline {
+  scope: FleetStatusBaselineScope;
+  snapshots: FleetStatusFindingSnapshot[];
+}
+
+export function parseBaselineDocument(
+  text: string,
+  shownPath: string,
+  current: { agentId: string | null; domain: string | null; label: string },
+): FleetStatusBaseline {
+  const refuse = (message: string, details: Record<string, unknown> = {}): never => {
+    throw new FleetError("INVALID_INPUT", message, false, { baseline: bounded(shownPath), ...details });
+  };
+
   let parsed: unknown;
   try { parsed = JSON.parse(text) as unknown; }
-  catch {
-    throw new FleetError(
-      "INVALID_INPUT",
-      "--baseline is not one complete JSON document",
-      false,
-      { baseline: bounded(shownPath) },
+  catch { return refuse("--baseline is not one complete JSON document"); }
+
+  // A `fleet inventory` or `fleet provenance` envelope is JSON, carries a
+  // `data` object, and yields zero snapshots -- so without this every finding
+  // of the current run would report `appeared` against a document that never
+  // described a status at all.
+  const command = isRecord(parsed) && typeof parsed.command === "string" ? parsed.command : null;
+  if (command !== null && command !== "fleet.status") {
+    return refuse("--baseline is a fleet envelope, but not a fleet status one", { command: bounded(command, 64) });
+  }
+
+  const scope = baselineScopeOf(parsed);
+  if (scope === null) return refuse("--baseline is JSON but is not a fleet status document");
+
+  // THE SCOPES HAVE TO MATCH, and a mismatch is refused rather than diffed.
+  // `fleet status --agent alpha --baseline <unfiltered>` would otherwise report
+  // `resolved` for every other agent's findings -- "it got fixed" about
+  // observations this run never collected, which is the most damaging thing a
+  // correlation can say. Restricting the diff to the intersection was the other
+  // option and it is worse: it produces a quiet, correct-looking answer to a
+  // question the operator did not ask.
+  if (scope.agent_id !== current.agentId || scope.domain !== current.domain) {
+    return refuse(
+      "--baseline was taken under a different scope; re-run both sides with the same --agent and --domain",
+      { baseline_scope: bounded(scope.label), current_scope: bounded(current.label) },
     );
   }
-  const snapshots = snapshotStatusDocument(parsed);
-  if (snapshots.length === 0 && !(isRecord(parsed) && (Array.isArray(parsed.agents) || isRecord(parsed.data)))) {
-    throw new FleetError(
-      "INVALID_INPUT",
-      "--baseline is JSON but is not a fleet status document",
-      false,
-      { baseline: bounded(shownPath) },
-    );
+
+  // A CLIPPED baseline cannot be diffed either. The current side is every
+  // observation this run BUILT, while a document carries only the ones its caps
+  // let through -- so every record the baseline dropped comes back `appeared`
+  // over byte-identical state. Refused rather than annotated, because a
+  // transitions array with known-fabricated entries in it is worse than none.
+  if (scope.clipped) {
+    return refuse("--baseline was written by a run whose own output was clipped, so a diff against it would report every dropped record as appeared");
   }
-  return snapshots;
+
+  return { scope, snapshots: snapshotStatusDocument(parsed) };
 }
 
 /**
@@ -911,6 +1048,10 @@ export interface FleetHealthInput {
   scope: FleetStatusScope;
   totalAgents: number;
   emittedAgents: number;
+  /** The contract's policy, so `required_domains` gates rather than decorates. */
+  policy: FleetHealthPolicyView;
+  /** Each selected domain's rolled-up state, for the required-domain gate. */
+  domainStates: ReadonlyMap<FleetStatusDomain, FleetStatusState>;
 }
 
 /**
@@ -935,10 +1076,12 @@ export interface FleetHealthInput {
 export function evaluateFleetHealth(input: FleetHealthInput): FleetStatusHealth {
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0])) as Record<FleetStatusState, number>;
   let stale = 0;
+  let freshnessUnknown = 0;
   let unjustified = 0;
   for (const observation of input.observations) {
     byState[observation.state] += 1;
     if (observation.freshness === "stale") stale += 1;
+    if (observation.freshness === "unknown") freshnessUnknown += 1;
     if (needsJustification(observation.state) && observation.justification === null) unjustified += 1;
   }
 
@@ -948,16 +1091,33 @@ export function evaluateFleetHealth(input: FleetHealthInput): FleetStatusHealth 
     && input.collectionErrors === 0
     && !input.truncated
     && input.contradictions === 0;
+  // EVERY REQUIRED DOMAIN, SELECTED AND ANSWERED. This is what
+  // `health_policy.required_domains` gates, and it is the one thing `complete`
+  // cannot say on its own: `complete` counts states over the domains this run
+  // SELECTED, so a `--domain registry` run can be complete while eight required
+  // domains were never looked at. A contract that requires a subset gets a
+  // correspondingly narrower gate.
+  //
+  // Deliberately a conjunct on FLEET-COMPLETENESS rather than on `complete`.
+  // Folding it into `complete` would have to make it either stricter (breaking
+  // nothing) or looser -- excusing an `unobserved` on a non-required domain --
+  // and looser would make a story-1.4 criterion false, which is not this
+  // story's to do.
+  const requiredObserved = [...input.policy.requiredDomains].every((domain) => {
+    const state = input.domainStates.get(domain as FleetStatusDomain);
+    return state !== undefined && state !== "unobserved" && state !== "error";
+  });
   const fleetComplete = complete
     && input.scope.kind === "fleet"
     && input.scope.domain === null
     && input.scope.live
     && input.totalAgents > 0
-    && input.emittedAgents === input.totalAgents;
+    && input.emittedAgents === input.totalAgents
+    && requiredObserved;
 
   const verdict: FleetStatusVerdict = !healthy
     ? "unhealthy"
-    : (!complete || stale > 0 || unjustified > 0) ? "unproven" : "healthy";
+    : (!complete || stale > 0 || freshnessUnknown > 0 || unjustified > 0) ? "unproven" : "healthy";
   // A proven failure is more actionable than an unread half, so `unhealthy`
   // outranks `incomplete` when both apply -- which the verdict has already
   // decided, because it is a single value rather than two flags.
@@ -981,21 +1141,50 @@ export function evaluateFleetHealth(input: FleetHealthInput): FleetStatusHealth 
     proven: verdict === "healthy" && fleetComplete,
     exit_category: exitCategory,
     stale,
+    freshness_unknown: freshnessUnknown,
     unjustified,
     contradictions: input.contradictions,
     members: { ...input.members },
   };
 }
 
-/** Cap the transitions an envelope carries, recording the clip rather than slicing in silence. */
+/**
+ * How badly an operator needs to see one transition. Lower sorts first.
+ *
+ * Ranked by the severity of the state it moved TO -- or FROM, for a `resolved`,
+ * where the interesting number is what stopped being true. `diffFindings` sorts
+ * by `finding_id`, which is a sha256 prefix, so a cap applied to that order
+ * keeps an arbitrary subset with respect to how much any of it matters. A cap
+ * over an unranked list is a dump with a number on top; that is this story's
+ * whole thesis about findings and it applies here identically.
+ */
+function transitionRank(transition: FleetStatusTransition): number {
+  const side = transition.to ?? transition.from;
+  const index = side
+    ? (FLEET_STATUS_SEVERITY_PRECEDENCE as readonly string[]).indexOf(side.severity)
+    : -1;
+  return index === -1 ? FLEET_STATUS_SEVERITY_PRECEDENCE.length : index;
+}
+
+/** Cap the transitions an envelope carries, ranked first and never sliced in silence. */
 export function boundTransitions(
   transitions: readonly FleetStatusTransition[],
   truncated: string[],
 ): FleetStatusTransition[] {
-  if (transitions.length <= FLEET_STATUS_MAX_TRANSITIONS) return [...transitions];
+  // Ranked before the cap, then re-sorted into the stable id order the payload
+  // is read in: the ranking decides WHICH survive, the id order decides how
+  // they are laid out, and keeping the two apart is what stops two runs over
+  // one state disagreeing about either.
+  const ranked = [...transitions].sort((a, b) => (
+    transitionRank(a) - transitionRank(b)
+    || (a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0)
+    || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0)
+  ));
+  if (ranked.length <= FLEET_STATUS_MAX_TRANSITIONS) return ranked;
   truncated.push(
-    `transitions: ${transitions.length - FLEET_STATUS_MAX_TRANSITIONS} of ${transitions.length} transitions dropped; `
-    + "narrow the run with --agent or --domain and re-diff against the same baseline",
+    `transitions: ${ranked.length - FLEET_STATUS_MAX_TRANSITIONS} of ${ranked.length} transitions dropped; `
+    + "the highest-severity ones are kept. Re-run BOTH sides at a narrower --agent or --domain "
+    + "and diff those, because a baseline taken at a different scope is refused",
   );
-  return transitions.slice(0, FLEET_STATUS_MAX_TRANSITIONS);
+  return ranked.slice(0, FLEET_STATUS_MAX_TRANSITIONS);
 }

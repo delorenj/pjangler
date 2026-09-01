@@ -1146,6 +1146,121 @@ try {
     assert.deepEqual(offenders, [], `raw NUL byte in TypeScript source; write it as a \\u0000 escape:\n${offenders.join("\n")}`);
   });
 
+  // -- health_policy: the sixth validation stage, one case per fail() branch --
+  //
+  // THE ONLY STAGE THAT HAD NO NEGATIVE TEST, and its failure mode is silent
+  // and FLATTERING, which is the worst combination a validator can have. Delete
+  // the `declaredFields.has(field)` check and a contract whose freshness entry
+  // reads `board_confirmd_at` validates green; `evaluateFreshness` matches by
+  // exact string, so every reading buckets `not_applicable`, `health.stale`
+  // stays 0, and a fleet whose board confirmation is from the year 2000 reports
+  // `proven: true`. The whole suite stays green while the policy silently
+  // authorizes nothing and gates nothing.
+  //
+  // Each case below drives ONE `fail()` branch and asserts the diagnostic PATH,
+  // not just the code -- the path is what tells an operator which entry to open,
+  // and a stage that rejects the right file at the wrong path is barely better
+  // than one that does not reject at all.
+  const policyRejects = (name, mutate, path, hint) => {
+    check(`health_policy: ${name}`, () => {
+      const file = mutated(`health-policy-${name.replace(/[^a-z0-9]+/gu, "-")}`, (document) => {
+        mutate(document.get("health_policy"), document);
+      });
+      const result = cli(["fleet", "contract", "validate", "--contract", file, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", `expected INVALID_INPUT for ${name}`);
+      assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+      assert.ok(
+        parsed.error.message.startsWith(`${path}:`),
+        `the diagnostic must be addressed at ${path}, got ${parsed.error.message}`,
+      );
+      if (hint) assert.match(parsed.error.message, hint, `the diagnostic must say why: ${parsed.error.message}`);
+    });
+  };
+
+  policyRejects("an unknown required domain", (policy) => {
+    policy.set("required_domains", ["registry", "not_a_domain"]);
+  }, "health_policy.required_domains[1]", /must name one of/u);
+
+  policyRejects("a duplicate required domain", (policy) => {
+    policy.set("required_domains", ["registry", "registry"]);
+  }, "health_policy.required_domains[1]", /duplicate required domain/u);
+
+  policyRejects("an unknown top-level policy key", (policy) => {
+    policy.set("allowed_everything", []);
+  }, "health_policy.allowed_everything", /unknown health_policy key/u);
+
+  policyRejects("a deferred capability naming no domain of ours", (policy) => {
+    policy.get("deferred_capabilities").get(0).set("domain", "not_a_domain");
+  }, "health_policy.deferred_capabilities[0].domain", /must name one of/u);
+
+  policyRejects("a deferral with no reason", (policy) => {
+    policy.get("deferred_capabilities").get(0).set("reason", "   ");
+  }, "health_policy.deferred_capabilities[0].reason", /non-empty/u);
+
+  policyRejects("a deferral with no owning story", (policy) => {
+    policy.get("deferred_capabilities").get(0).delete("owner_story");
+  }, "health_policy.deferred_capabilities[0].owner_story", /non-empty/u);
+
+  policyRejects("an unknown deferred_capabilities key", (policy) => {
+    policy.get("deferred_capabilities").get(0).set("until", "someday");
+  }, "health_policy.deferred_capabilities[0].until", /unknown deferred_capabilities key/u);
+
+  policyRejects("an allowed warning with no owner", (policy) => {
+    policy.get("allowed_warnings").get(0).set("owner", "");
+  }, "health_policy.allowed_warnings[0].owner", /non-empty/u);
+
+  policyRejects("an allowed skip naming both a domain and a rule", (policy, document) => {
+    document.setIn(["health_policy", "allowed_skips"], [
+      { domain: "registry", rule_id: "notebook.remote-notebook", reason: "both at once" },
+    ]);
+  }, "health_policy.allowed_skips[0]", /exactly one of domain or rule_id/u);
+
+  policyRejects("an allowed skip naming neither", (policy, document) => {
+    document.setIn(["health_policy", "allowed_skips"], [{ reason: "a reason for nothing in particular" }]);
+  }, "health_policy.allowed_skips[0]", /exactly one of domain or rule_id/u);
+
+  // THE ONE THE REVIEW NAMED. A typo'd field validates green without this and
+  // buckets every reading `not_applicable` forever.
+  policyRejects("a freshness field no authority declares", (policy) => {
+    policy.get("freshness").get(0).set("field", "projects.{slug}.ticket_provider.board_confirmd_at");
+  }, "health_policy.freshness[0].field", /not declared writable by any authority/u);
+
+  policyRejects("a duplicate freshness policy for one field", (policy, document) => {
+    const entry = policy.get("freshness").get(0).toJSON();
+    document.addIn(["health_policy", "freshness"], document.createNode(entry));
+  }, "health_policy.freshness[3].field", /duplicate freshness policy/u);
+
+  policyRejects("a max_age_days of zero", (policy) => {
+    policy.get("freshness").get(0).set("max_age_days", 0);
+  }, "health_policy.freshness[0].max_age_days", /positive whole number of days/u);
+
+  policyRejects("a fractional max_age_days", (policy) => {
+    policy.get("freshness").get(0).set("max_age_days", 0.5);
+  }, "health_policy.freshness[0].max_age_days", /positive whole number of days/u);
+
+  policyRejects("a freshness entry applying to no domain of ours", (policy) => {
+    policy.get("freshness").get(0).set("applies_to", "not_a_domain");
+  }, "health_policy.freshness[0].applies_to", /must name one of/u);
+
+  policyRejects("a health_policy that is not a mapping", (policy, document) => {
+    document.set("health_policy", "yes please");
+  }, "health_policy", /must be a mapping/u);
+
+  check("health_policy: a valid policy still validates, so the cases above are not vacuous", () => {
+    // Every rejection above is only evidence if the UNMUTATED contract passes
+    // this stage -- otherwise they could all be firing on something else.
+    const result = cli(["fleet", "contract", "validate", "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
+    const policy = YAML.parse(TRACKED_TEXT).health_policy;
+    assert.ok(policy, "the tracked contract must declare a health_policy or these cases prove nothing");
+    assert.ok(policy.deferred_capabilities.length >= 3);
+    assert.ok(policy.freshness.length >= 3);
+    assert.ok(policy.allowed_skips.length >= 1);
+    assert.ok(policy.allowed_warnings.length >= 1);
+  });
+
   check("the suite is registered in the test runner", () => {
     const runner = readFileSync(join(ROOT, "scripts", "run-tests.mjs"), "utf8");
     assert.ok(runner.includes("tests/fleet-contract-regressions.mjs"), "a suite absent from SUITES never runs");

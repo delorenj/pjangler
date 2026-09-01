@@ -44,7 +44,7 @@ import {
   readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -60,9 +60,14 @@ const REPAIRS = ["automatic", "approval-gated", "blocked", "other-owner", "manua
 const VERDICTS = ["healthy", "unhealthy", "unproven"];
 const EXIT_CATEGORIES = ["ok", "unhealthy", "incomplete"];
 const MEMBER_CLASSES = ["healthy", "unhealthy", "incomplete", "deferred", "exception", "unclassified"];
+/** Mirrors FLEET_STATUS_MEMBER_PRECEDENCE. Its ORDER is behaviour, not decoration. */
+const MEMBER_PRECEDENCE = ["unclassified", "unhealthy", "exception", "deferred", "incomplete", "healthy"];
+const ACTIVATION_STATES = ["discovered", "installed", "healthy", "routing_ready", "activated"];
 const TRANSITION_KINDS = ["appeared", "resolved", "state_changed", "severity_changed", "evidence_changed"];
 /** Mirrors FLEET_STATUS_EXIT_CODES in src/fleet/types.ts. */
 const EXIT_CODES = { ok: 0, unhealthy: 10, incomplete: 11 };
+/** Mirrors FLEET_STATUS_MAX_TRANSITIONS in src/fleet/types.ts. */
+const MAX_TRANSITIONS = 2000;
 const DATA_KEYS = [
   "contract_path", "contract_version", "scope",
   "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "truncated",
@@ -307,6 +312,13 @@ function seedScratch() {
     `hermes_git_url = "${HERMES_REMOTE}"`,
     'hermes_git_ref = "main"',
     `hermes_git_sha = "${RELEASE_SHA}"`,
+    // DECLARED, so `hermes.fleet_env` MATCHES rather than warning. The first
+    // cut authorized that warning under `allowed_warnings` instead, which made
+    // every agent carry a gap that is not a deferral and put the `deferred`
+    // member bucket permanently out of reach -- authorizing a fixture's own
+    // incompleteness is not the same as fixing it.
+    `fleet_env = "${join(scratchHome, ".hermes", "fleet.env")}"`,
+    `registry_file = "${join(scratchHome, ".hermes", "agents-registry.yaml")}"`,
     "",
   ].join("\n"), "utf8");
 
@@ -527,20 +539,21 @@ function writeContract(name, document) {
 }
 
 /**
- * The two warnings this SYNTHETIC fleet raises that are properties of the
- * fixture rather than of the fleet.
+ * Warnings this SYNTHETIC fleet raises that belong to the fixture.
  *
- * `hermes.fleet_env` and `fleet.registry_file` compare a row or a fleet file
- * against a value the host template config declares, and this fixture's config
- * declares neither. Authorizing them here is exactly what `allowed_warnings` is
- * for, and it is what makes the proven-clean case reachable at all -- the case
- * below then REMOVES one of them and asserts the verdict moves, so the
- * authorization is pinned by a delta rather than assumed.
+ * EMPTY, and that is the point. The first cut authorized `hermes.fleet_env` and
+ * `fleet.registry_file` here, because the fixture's template config declared
+ * neither value to compare against. That worked and it was the wrong fix: an
+ * authorized warning is still a GAP, so every agent carried one, and
+ * `classifyMember`'s `deferred` arm -- which requires every gap to be a
+ * declared deferral -- became unreachable. The fixture now DECLARES both
+ * values, so the facts match and there is nothing to authorize.
+ *
+ * Left as a named empty list rather than deleted: the next fixture warning
+ * should land here and be argued about, not be quietly added to the tracked
+ * contract.
  */
-const FIXTURE_WARNINGS = [
-  { rule_id: "hermes.fleet_env", reason: "This fixture declares no host-level fleet env pin to compare a row against.", owner: "hermes-agent-registry" },
-  { rule_id: "fleet.registry_file", reason: "This fixture's template config declares no registry file to compare the fleet env against.", owner: "hermes-agent-registry" },
-];
+const FIXTURE_WARNINGS = [];
 
 /** The tracked policy plus the fixture's own authorizations. */
 function policyContract(mutate = () => {}) {
@@ -571,14 +584,18 @@ const REPO = process.argv[3] ?? "";
 appendFileSync(join(HERE, "invocations"), REPO + "\\n");
 `;
 
+// `dirname`, not a hardcoded separator. This repo ships
+// `portable-test-paths-regressions` specifically to keep suites off literal
+// paths, and a suite that slices on "/" is the same class of assumption one
+// layer down.
 function invocationsOf(entryPath) {
-  const file = join(entryPath.slice(0, entryPath.lastIndexOf("/")), "invocations");
+  const file = join(dirname(entryPath), "invocations");
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
 }
 
 function resetEntry(entryPath) {
-  rmSync(join(entryPath.slice(0, entryPath.lastIndexOf("/")), "invocations"), { force: true });
+  rmSync(join(dirname(entryPath), "invocations"), { force: true });
 }
 
 function syntheticReport(rules) {
@@ -607,8 +624,15 @@ const RULE = {
   hostFail: { id: "hermes.profile-wiring", title: "Hermes profile wiring", status: "fail", summary: "the shared profile root is wired to the wrong home", details: [], fixable: false, scope: "host" },
 };
 
-/** Every audit-fed domain answered, so nothing is left `unobserved`. */
-const CLEAN_RULES = [RULE.scaffoldPass, RULE.bindingPass, RULE.profilePass, RULE.runtimePass];
+/**
+ * Every audit-fed domain answered, so nothing is left `unobserved`.
+ *
+ * Plus one declared SKIP, which the tracked contract's `allowed_skips`
+ * authorizes. It is what the authorization deltas below remove -- and a skip is
+ * deliberately not a `gap` for member purposes, so adding it here does not put
+ * the `deferred` bucket out of reach the way an authorized WARNING would.
+ */
+const CLEAN_RULES = [RULE.scaffoldPass, RULE.bindingPass, RULE.profilePass, RULE.runtimePass, RULE.notebookSkip];
 
 console.log("fleet health: four axes, one policy, one verdict a machine can act on");
 
@@ -655,11 +679,11 @@ try {
       return status(cliAt(cleanRoot, ["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: cleanShim }));
     })();
 
-    const narrowed = writeContract("one-warning-removed", policyContract((document) => {
-      document.health_policy.allowed_warnings = document.health_policy.allowed_warnings
-        .filter((entryItem) => entryItem.rule_id !== "hermes.fleet_env");
+    const narrowed = writeContract("one-authorization-removed", policyContract((document) => {
+      document.health_policy.allowed_skips = document.health_policy.allowed_skips
+        .filter((entryItem) => entryItem.rule_id !== "notebook.remote-notebook");
     }));
-    const narrowedRoot = makePackageRoot("pkg-one-warning-removed", readFileSync(narrowed, "utf8"));
+    const narrowedRoot = makePackageRoot("pkg-one-authorization-removed", readFileSync(narrowed, "utf8"));
     resetEntry(cleanShim);
     const data = status(cliAt(narrowedRoot, ["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: cleanShim }));
 
@@ -671,10 +695,11 @@ try {
     assert.equal(data.health.healthy, provenData.health.healthy, "health.healthy must be unchanged by an authorization change");
     assert.equal(data.health.healthy, true);
     assert.equal(data.health.failed, provenData.health.failed);
-    const orphan = observationsOf(data).find((item) => item.rule_id === "hermes.fleet_env");
-    assert.ok(orphan, "the warning must still be reported");
+    const orphan = observationsOf(data).find((item) => item.rule_id === "notebook.remote-notebook");
+    assert.ok(orphan, "the skip must still be reported");
+    assert.equal(orphan.state, "skip", "the state is identical; only the authorization moved");
     assert.equal(orphan.justification, null, "and it must now carry no justification");
-    assert.equal(orphan.severity, "medium", "an unjustified warn is medium where a justified one is low");
+    assert.equal(orphan.severity, "medium", "an unjustified skip on a required domain is medium; a justified one is info");
   });
 
   // -- AC3: a contract with no health_policy at all -------------------------
@@ -938,8 +963,11 @@ try {
     const orphan = observationsOf(unauthorized).find((item) => item.rule_id === "notebook.remote-notebook");
     assert.equal(orphan.state, "skip", "the state is identical; only the authorization moved");
     assert.equal(orphan.justification, null);
-    assert.equal(orphan.applicability, "not_applicable");
-    assert.equal(orphan.severity, "low");
+    // NOT `not_applicable`. The axis answers "was it required, and if not, on
+    // WHOSE authority" -- a rule declaring itself not applicable is not an
+    // authority, so an unauthorized skip on a required domain stays `required`.
+    assert.equal(orphan.applicability, "required");
+    assert.equal(orphan.severity, "medium", "an unjustified skip on a required domain outranks one on an optional");
     assert.equal(orphan.repair, "manual");
     assert.ok(unauthorized.health.unjustified > authorized.health.unjustified, "and the count must move with it");
   });
@@ -1304,6 +1332,321 @@ try {
     }
   });
 
+  // -- T1: the member PRECEDENCE's order is behaviour, not a regex over source
+
+  check("a failing agent on an incomplete run is unhealthy, not incomplete", () => {
+    // The order of FLEET_STATUS_MEMBER_PRECEDENCE was pinned only by a regex
+    // over `health.ts`'s text: swap `unhealthy` and `incomplete` and every
+    // failing agent on a DEFAULT run silently becomes `incomplete`,
+    // `members.unhealthy` drops to zero, and nothing fails. A default run is
+    // the case that matters because the audit half is unread, so every agent
+    // qualifies for `incomplete` and the two classes actually compete.
+    const symlinked = join(scratchHome, ".hermes", "profiles", "beta-pm");
+    const shared = join(scratchHome, ".hermes", "profiles", "shared-precedence");
+    mkdirSync(shared, { recursive: true });
+    rmSync(symlinked, { recursive: true, force: true });
+    symlinkSync(shared, symlinked);
+    try {
+      const data = status(cli(["fleet", "status", "--json", "--contract", cleanContract]));
+      const beta = agentNamed(data, "beta-pm");
+      assert.equal(beta.healthy, false, "the symlinked profile is a proven failure");
+      assert.equal(beta.complete, false, "and a default run leaves the audit half unread");
+      // BOTH candidates are live for this agent. The precedence is what picks.
+      assert.equal(beta.member_class, "unhealthy", "a proven failure outranks an unread half");
+      assert.ok(data.health.members.unhealthy >= 1);
+      const alpha = agentNamed(data, "alpha-pm");
+      assert.equal(alpha.healthy, true);
+      assert.equal(alpha.member_class, "incomplete", "and an agent with only the unread half is incomplete");
+    } finally {
+      rmSync(symlinked, { force: true });
+      mkdirSync(symlinked, { recursive: true });
+      writeFileSync(join(symlinked, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+      rmSync(shared, { recursive: true, force: true });
+    }
+  });
+
+  // -- T2: members.deferred, driven ----------------------------------------
+
+  check("an agent whose only gaps are contract-declared deferrals is deferred", () => {
+    // DW-30's shape again: a bucket no case drives is a bucket that can be
+    // wrong forever. `deferred` needs an agent that is COMPLETE (so the audit
+    // half was read) and whose every remaining non-pass is a declared
+    // capability -- which means the fixture's own two warnings have to be
+    // authorized as well, or they are gaps that are not deferrals.
+    resetEntry(cleanShim);
+    const data = status(cliAt(cleanRoot, ["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: cleanShim }));
+    assert.equal(data.health.complete, true, "the fixture must be complete or `deferred` cannot be reached");
+    for (const agent of data.agents) {
+      const gaps = agent.observations.filter((item) => item.state !== "pass" && item.state !== "skip");
+      assert.ok(gaps.length > 0, `${agent.agent_id} must have gaps or the bucket is vacuous`);
+      for (const gap of gaps) {
+        assert.equal(gap.justification?.kind, "deferred_capability",
+          `${agent.agent_id}/${gap.domain} is a gap that is not a declared deferral: ${gap.summary}`);
+      }
+      assert.equal(agent.member_class, "deferred");
+    }
+    assert.equal(data.health.members.deferred, data.scope.selected_agents);
+    assert.equal(data.health.members.healthy, 0, "an agent with authorized gaps is not simply healthy");
+  });
+
+  // -- T3: the exception road THROUGH fleet status --------------------------
+
+  check("a permitted identity conflict warns, is authorized, and is not fleet drift", () => {
+    // The other exception road. `declaredRowClass` is covered above; this is
+    // `ctx.exceptionFor` -> `justification.kind: "exception"`, which nothing
+    // reached through `fleet status` before.
+    //
+    // It also pins the reconciliation between the two commands: `fleet
+    // inventory` counts only UNPERMITTED groups into its aggregate, so a
+    // permitted conflict that still read `fail` here made one registry produce
+    // two opposite verdicts.
+    const agents = join(temp, "permitted-agents.yaml");
+    writeAgentRegistry(agents, SLUGS, (rows) => {
+      rows["alpha-pm"].profile_name = "shared-profile";
+      rows["beta-pm"].profile_name = "shared-profile";
+    });
+    mkdirSync(join(scratchHome, ".hermes", "profiles", "shared-profile"), { recursive: true });
+
+    const unruled = writeContract("conflict-unruled", policyContract());
+    const ruled = writeContract("conflict-ruled", policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = [{
+        id: "shared-profile-ruled-ok",
+        kind: "identity-conflict-exception",
+        owner: "hermes-agent-registry",
+        source: "agents.{agent_id}.profile_name",
+        lifecycle_state: "accepted",
+        rationale: "Two agents intentionally share one generated profile in this fixture.",
+        policy_domains: ["profile"],
+        participants: ["alpha-pm", "beta-pm"],
+      }];
+    }));
+
+    const args = (contract) => ["fleet", "status", "--json", "--domain", "registry", "--contract", contract, "--agent-registry", agents];
+    const before = status(cli(args(unruled)));
+    const after = status(cli(args(ruled)));
+
+    // A DELTA. Without the ruling the identical fleet is drift.
+    const betaBefore = agentNamed(before, "beta-pm").observations.find((o) => o.domain === "registry" && o.source === "fleet-inventory");
+    assert.equal(betaBefore.state, "fail", "an unruled conflict is proven drift");
+    assert.equal(betaBefore.justification, null);
+    assert.equal(betaBefore.severity, "critical");
+    assert.equal(before.health.verdict, "unhealthy");
+
+    const betaAfter = agentNamed(after, "beta-pm").observations.find((o) => o.domain === "registry" && o.source === "fleet-inventory");
+    assert.equal(betaAfter.state, "warn", "a ruled conflict is reported, and it is not drift");
+    assert.equal(betaAfter.justification?.kind, "exception", "the ruling must be named on the observation");
+    assert.match(betaAfter.justification.policy, /intentionally_unmanaged/u);
+    assert.equal(betaAfter.severity, "low", "an authorized warn is low");
+    assert.equal(after.health.healthy, true, "a permitted conflict is not fleet drift");
+    assert.equal(after.health.unjustified, before.health.unjustified, "and it is not an unjustified gap either");
+
+    // THE TWO COMMANDS AGREE. This is the finding: `fleet inventory` called
+    // this fleet healthy while `fleet status` called it unhealthy.
+    const inventory = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", ruled, "--agent-registry", agents]).stdout).data;
+    assert.equal(inventory.health.healthy, true, "the inventory's own aggregate ignores permitted groups");
+    assert.equal(inventory.totals.permitted_conflict_groups, 1);
+    assert.equal(
+      after.health.healthy, inventory.health.healthy,
+      "fleet status and fleet inventory must not disagree about whether an operator's ruling counts",
+    );
+    assert.equal(agentNamed(after, "beta-pm").member_class, "exception");
+
+    rmSync(agents, { force: true });
+    rmSync(join(scratchHome, ".hermes", "profiles", "shared-profile"), { recursive: true, force: true });
+  });
+
+  // -- T5: every freshness bucket, driven ----------------------------------
+
+  check("an absent, unparseable or future timestamp is unknown, and unknown blocks proof", () => {
+    // DW-22's lesson: a bucket no fixture produces is a bucket nobody has ever
+    // seen. `agentRow` always writes `provisioned_at` and `writeProjectRegistry`
+    // always writes both project timestamps, so `unknown` was unreachable --
+    // and `unknown` is the bucket a typo'd freshness field produces for the
+    // WHOLE fleet, which is precisely when it must not read as fine.
+    const projects = join(temp, "unknown-projects.yaml");
+    const cases = {
+      absent: (provider) => { delete provider.board_confirmed_at; },
+      unparseable: (provider) => { provider.board_confirmed_at = "the day before yesterday"; },
+      future: (provider) => { provider.board_confirmed_at = "2099-01-01T00:00:00.000Z"; },
+    };
+    for (const [label, mutate] of Object.entries(cases)) {
+      const document = { schema_version: 1, projects: {} };
+      for (const slug of SLUGS) {
+        const provider = {
+          type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}`,
+          board_confirmed_at: NOW_ISO, identifier_fetched_at: NOW_ISO,
+        };
+        if (slug === "beta") mutate(provider);
+        document.projects[slug] = { name: slug, slug, repo_path: join(reposRoot, slug), status: "active", ticket_provider: provider };
+      }
+      writeFileSync(projects, YAML.stringify(document), "utf8");
+      const data = status(cli(["fleet", "status", "--json", "--contract", cleanContract, "--project-registry", projects]));
+      const beta = agentNamed(data, "beta-pm").observations
+        .find((item) => item.domain === "project_binding" && item.source === "fleet-inventory");
+      assert.equal(beta.freshness, "unknown", `a ${label} timestamp must bucket unknown, got ${beta.freshness}`);
+      assert.equal(data.health.freshness_unknown, 1, `${label}: exactly one reading must be unknown`);
+      assert.equal(data.health.stale, 0, `${label}: unknown is not stale, and the two must not collapse`);
+      assert.equal(data.health.proven, false, `${label}: evidence this run could not read is not proof`);
+      const alpha = agentNamed(data, "alpha-pm").observations
+        .find((item) => item.domain === "project_binding" && item.source === "fleet-inventory");
+      assert.equal(alpha.freshness, "current", `${label}: the untouched agent must stay current`);
+      // And it is ACTIONABLE: an unknown reading reaches the report.
+      const report = cli(["fleet", "status", "--contract", cleanContract, "--project-registry", projects]);
+      assert.ok(report.stdout.includes("freshness unknown"), `${label}: the headline must name the bucket`);
+      assert.match(report.stdout, /beta-pm · project_binding/u, `${label}: and the report must locate it`);
+    }
+    rmSync(projects, { force: true });
+  });
+
+  // -- H1: a baseline taken at a different scope is refused ----------------
+
+  check("a baseline from another scope is refused rather than diffed", () => {
+    const baseline = join(temp, "scope-baseline.json");
+    const unfiltered = cli(["fleet", "status", "--json", "--contract", cleanContract]);
+    status(unfiltered);
+    writeFileSync(baseline, unfiltered.stdout, "utf8");
+
+    // The damage this prevents: every OTHER agent's findings would report
+    // `resolved` -- "it got fixed" about observations the run never collected.
+    const scoped = cli(["fleet", "status", "--json", "--agent", "alpha-pm", "--contract", cleanContract, "--baseline", baseline]);
+    const parsed = envelope(scoped);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(scoped.status, 2);
+    assert.match(parsed.error.message, /different scope/u);
+    assert.ok(parsed.error.details.baseline_scope, "the error must name the baseline's scope");
+    assert.ok(parsed.error.details.current_scope, "and this run's");
+
+    const domainScoped = cli(["fleet", "status", "--json", "--domain", "registry", "--contract", cleanContract, "--baseline", baseline]);
+    assert.equal(errorCode(envelope(domainScoped)), "INVALID_INPUT", "a --domain mismatch is refused too");
+
+    // MATCHING scopes still work, including a narrowed pair.
+    const narrowBase = cli(["fleet", "status", "--json", "--agent", "alpha-pm", "--contract", cleanContract]);
+    const narrowPath = join(temp, "scope-baseline-narrow.json");
+    writeFileSync(narrowPath, narrowBase.stdout, "utf8");
+    const narrowed = status(cli(["fleet", "status", "--json", "--agent", "alpha-pm", "--contract", cleanContract, "--baseline", narrowPath]));
+    assert.deepEqual(narrowed.transitions, [], "two runs at the SAME narrow scope diff cleanly");
+    assert.equal(narrowed.scope.baseline, true, "and the scope records that a baseline was read");
+
+    // `--live` is NOT part of the scope: reading more than the baseline did is
+    // a real transition, not a mismatch.
+    resetEntry(cleanShim);
+    const live = cli(["fleet", "status", "--json", "--agent", "alpha-pm", "--live", "--contract", cleanContract, "--baseline", narrowPath],
+      { PJ_FLEET_CLI_ENTRY: cleanShim });
+    const liveData = status(live);
+    assert.ok(liveData.transitions.length > 0, "a live run against a default baseline must report what it newly observed");
+
+    rmSync(baseline, { force: true });
+    rmSync(narrowPath, { force: true });
+  });
+
+  check("a baseline that is not a fleet status document is refused by command", () => {
+    const inventoryEnvelopePath = join(temp, "inventory-as-baseline.json");
+    writeFileSync(inventoryEnvelopePath, cli(["fleet", "inventory", "--json", "--contract", cleanContract]).stdout, "utf8");
+    // It is JSON, it carries a `data` object, and it yields zero snapshots --
+    // so without the command check every current finding reports `appeared`
+    // against a document that never described a status at all.
+    const result = cli(["fleet", "status", "--json", "--contract", cleanContract, "--baseline", inventoryEnvelopePath]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /not a fleet status one/u);
+    assert.equal(parsed.error.details.command, "fleet.inventory", "the error must name what it was given");
+    rmSync(inventoryEnvelopePath, { force: true });
+  });
+
+  // -- C5: a clipped baseline cannot be diffed -----------------------------
+
+  check("a baseline written by a clipped run is refused", () => {
+    // The current side is every observation this run BUILT; a document carries
+    // only what its caps let through. Diffed, every record the baseline dropped
+    // comes back `appeared` over byte-identical state.
+    const slugs = Array.from({ length: 520 }, (unused, index) => `clip${String(index).padStart(4, "0")}`);
+    const agents = join(temp, "clip-agents.yaml");
+    const projects = join(temp, "clip-projects.yaml");
+    const rows = {};
+    for (const slug of slugs) rows[`${slug}-pm`] = agentRow(slug);
+    writeFileSync(agents, YAML.stringify({ schema_version: 1, agents: rows }), "utf8");
+    writeProjectRegistry(projects, slugs);
+
+    const args = ["fleet", "status", "--json", "--domain", "registry", "--contract", cleanContract, "--agent-registry", agents, "--project-registry", projects];
+    const clipped = cli(args);
+    const data = status(clipped);
+    assert.ok(data.totals.emitted_agents < data.totals.agents, "the fixture must actually engage the agent cap");
+    const baseline = join(temp, "clip-baseline.json");
+    writeFileSync(baseline, clipped.stdout, "utf8");
+
+    const result = cli([...args, "--baseline", baseline]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(parsed.error.message, /clipped/u, "the error must say why the document cannot be diffed");
+
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+    rmSync(baseline, { force: true });
+  });
+
+  // -- T4: both transition caps, driven ------------------------------------
+
+  check("the transition cap keeps the highest-severity transitions and records the clip", () => {
+    // DW-22's recorded lesson, repeated: a cap nothing drives has never
+    // executed. FLEET_STATUS_MAX_TRANSITIONS is 2000, so the fixture has to
+    // move more findings than that -- 300 agents, every one appearing.
+    const slugs = Array.from({ length: 300 }, (unused, index) => `tr${String(index).padStart(4, "0")}`);
+    const emptyAgents = join(temp, "tr-empty-agents.yaml");
+    const fullAgents = join(temp, "tr-full-agents.yaml");
+    const projects = join(temp, "tr-projects.yaml");
+    writeAgentRegistry(emptyAgents, SLUGS);
+    const rows = {};
+    for (const slug of SLUGS) rows[`${slug}-pm`] = agentRow(slug);
+    for (const slug of slugs) rows[`${slug}-pm`] = agentRow(slug);
+    writeFileSync(fullAgents, YAML.stringify({ schema_version: 1, agents: rows }), "utf8");
+    writeProjectRegistry(projects, [...SLUGS, ...slugs]);
+
+    const baseline = join(temp, "tr-baseline.json");
+    const base = cli(["fleet", "status", "--json", "--contract", cleanContract, "--agent-registry", emptyAgents, "--project-registry", projects]);
+    status(base);
+    writeFileSync(baseline, base.stdout, "utf8");
+
+    const data = status(cli(["fleet", "status", "--json", "--contract", cleanContract, "--agent-registry", fullAgents, "--project-registry", projects, "--baseline", baseline]));
+    assert.equal(data.transitions.length, MAX_TRANSITIONS, `the cap must engage, got ${data.transitions.length}`);
+    const note = data.truncated.find((item) => item.startsWith("transitions:"));
+    assert.ok(note, "a clipped transitions array must record the clip");
+    assert.match(note, /highest-severity ones are kept/u);
+    assert.equal(data.health.truncated, true, "and the clip must reach the health verdict");
+
+    // RANKED, not sliced by finding_id. A sha256 prefix is arbitrary with
+    // respect to how much any of it matters.
+    const rank = (item) => SEVERITIES.indexOf((item.to ?? item.from).severity);
+    for (let index = 1; index < data.transitions.length; index += 1) {
+      assert.ok(rank(data.transitions[index - 1]) <= rank(data.transitions[index]),
+        `transitions are out of severity order at ${index}`);
+    }
+
+    // And the REPORT's own cap prints a count rather than truncating silently.
+    const report = cli(["fleet", "status", "--contract", cleanContract, "--agent-registry", fullAgents, "--project-registry", projects, "--baseline", baseline]);
+    assert.match(report.stdout, /Transitions since the baseline/u);
+    assert.match(report.stdout, /more transition\(s\); use --json/u, "the report must say how many it withheld");
+
+    for (const path of [emptyAgents, fullAgents, projects, baseline]) rmSync(path, { force: true });
+  });
+
+  check("a clean diff prints the section, so it is not confused with no baseline", () => {
+    const baseline = join(temp, "clean-diff-baseline.json");
+    const first = cli(["fleet", "status", "--json", "--contract", cleanContract]);
+    status(first);
+    writeFileSync(baseline, first.stdout, "utf8");
+    const report = cli(["fleet", "status", "--contract", cleanContract, "--baseline", baseline]);
+    assert.equal(report.status, 0);
+    assert.match(report.stdout, /Transitions since the baseline/u, "a baseline that moved nothing must still be reported");
+    assert.match(report.stdout, /every finding is exactly as the baseline recorded it/u);
+    // Without a baseline the section is absent, and the two absences mean
+    // opposite things.
+    const plain = cli(["fleet", "status", "--contract", cleanContract]);
+    assert.equal(plain.stdout.includes("Transitions since the baseline"), false);
+    rmSync(baseline, { force: true });
+  });
+
   // -- The gates that make this reachable on a fresh clone ------------------
 
   check("the suite, the README and the mise task all know about story 1.5", () => {
@@ -1349,6 +1692,12 @@ try {
     assert.deepEqual(declared("FLEET_STATUS_EXIT_CATEGORIES"), EXIT_CATEGORIES);
     assert.deepEqual(declared("FLEET_STATUS_MEMBER_CLASSES"), MEMBER_CLASSES);
     assert.deepEqual(declared("FLEET_STATUS_TRANSITION_KINDS"), TRANSITION_KINDS);
+    assert.deepEqual(declared("FLEET_STATUS_FRESHNESS_PRECEDENCE"), ["stale", "unknown", "current", "not_applicable"]);
+    assert.deepEqual(declared("FLEET_STATUS_SCOPE_PRECEDENCE"), ["fleet", "host", "agent"]);
+    assert.deepEqual(declared("FLEET_STATUS_SCOPES"), ["fleet", "host", "agent"]);
+    assert.deepEqual(declared("FLEET_STATUS_LIFECYCLE_STATES"), [...ACTIVATION_STATES, "out_of_scope"]);
+    assert.deepEqual(declared("FLEET_STATUS_READINESS"), ["ready", "unproven", "blocked", "not_applicable", "out_of_scope"]);
+    assert.deepEqual(declared("FLEET_STATUS_MEMBER_PRECEDENCE"), MEMBER_PRECEDENCE);
 
     // A PRECEDENCE CONSTANT NOTHING ITERATES IS DECORATION -- the exact defect
     // story 1.3's review found in FLEET_PROVENANCE_STATUS_PRECEDENCE.
@@ -1357,8 +1706,18 @@ try {
       "compareStatusFindings must rank by iterating the declared severity precedence");
     assert.match(health, /for \(const member of FLEET_STATUS_MEMBER_PRECEDENCE\)/u,
       "classifyMember must resolve by walking the declared member precedence");
-    assert.match(health, /for \(const bucket of FRESHNESS_PRECEDENCE\)/u,
+    assert.match(health, /for \(const bucket of FLEET_STATUS_FRESHNESS_PRECEDENCE\)/u,
       "the freshness fold must walk its declared precedence");
+    // AND THE ORDERINGS LIVE IN types.ts, not beside their only consumer. An
+    // ordering declared in `health.ts` is one the vocabulary check above cannot
+    // see, which is how `FLEET_STATUS_SEVERITY_PRECEDENCE` would have gone
+    // unpinned too.
+    for (const name of ["FRESHNESS_PRECEDENCE", "SCOPE_ORDER"]) {
+      assert.equal(
+        new RegExp(`^const ${name} = `, "mu").test(health), false,
+        `${name} must be declared in src/fleet/types.ts, not in health.ts`,
+      );
+    }
   });
 
   check("the deferred-work ledger records what this story leaves behind", () => {

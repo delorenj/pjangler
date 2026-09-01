@@ -2,7 +2,7 @@
 title: 'Story 1.5: Make Partial Health Truthful and Actionable'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'd5caa98b8cd63ead5c7f0594d0b135c4b448e7c6'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -98,7 +98,7 @@ stable `finding_id`s.
 | Baseline diff | `--baseline <prior status json>` | `transitions[]` with `appeared`/`resolved`/`state_changed`/`severity_changed`/`evidence_changed`; unchanged findings carry the same `finding_id` on both sides and emit nothing | unreadable/unparseable baseline → `INVALID_INPUT`, exit 2, naming the path |
 | `--exit-code` on drift | `--exit-code` with `verdict: "unhealthy"` | exit **10**, envelope still `ok: true` with full `data` | none |
 | `--exit-code` on gap | `--exit-code` with `verdict: "unproven"` | exit **11**, envelope still `ok: true` | none |
-| Contract without `health_policy` | schema-1 contract | loads and validates; every non-pass is unjustified; `proven: false` with a finding naming the missing block | none |
+| Contract without `health_policy` | schema-1 contract | loads and validates; every `warn`, `skip` and `unsupported` is unjustified; `proven: false` with a finding naming the missing block | none |
 | MCP parity | `pjangler_fleet_status` with `baseline`/`exitCode` | `data` deep-equals the CLI `--json` run; `data.health.exit_category` is the machine discriminant | same error codes as CLI |
 
 </intent-contract>
@@ -385,7 +385,7 @@ stable `finding_id`s.
   false, `health.verdict` is `"unproven"`, and `health.healthy` is unchanged — proving the two
   verdicts are independent.
 - Given a contract with no `health_policy` block at all, when status runs, then the contract loads
-  and validates, every non-pass is unjustified, `proven` is false, and a finding names the missing
+  and validates, every `warn`, `skip` and `unsupported` is unjustified, `proven` is false, and a finding names the missing
   block rather than the run failing.
 - Given an agent whose registry row declares `activation: true` and whose gateway nothing observed,
   when status runs, then `lifecycle.desired_state`, `lifecycle.observed_state`,

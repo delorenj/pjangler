@@ -107,6 +107,8 @@ import {
   type FleetStatusFinding,
   type FleetStatusHostFinding,
   type FleetStatusLifecycle,
+  type FleetStatusLifecycleState,
+  type FleetStatusReadiness,
   type FleetStatusMemberClass,
   type FleetStatusMembers,
   type FleetStatusObservation,
@@ -614,7 +616,7 @@ export interface ResolvedStatusScope {
  * can never read as a fleet-complete one.
  */
 export function resolveStatusScope(
-  options: Pick<FleetStatusOptions, "agentId" | "domain" | "live">,
+  options: Pick<FleetStatusOptions, "agentId" | "domain" | "live" | "baseline">,
   registeredIds: readonly string[],
   totalRegisteredAgents: number,
 ): ResolvedStatusScope {
@@ -666,6 +668,7 @@ export function resolveStatusScope(
       total_registered_agents: totalRegisteredAgents,
       selected_agents: agentIds.length,
       selected_domains: domains,
+      baseline: nonEmptyString(options.baseline) !== null,
     },
     agentIds,
     domains,
@@ -749,8 +752,19 @@ interface StatusFindingInput {
   gating?: boolean;
 }
 
+/**
+ * Record one finding. UNBOUNDED here, capped at emit, and the order matters.
+ *
+ * It used to drop past `FLEET_STATUS_MAX_FINDINGS` in ARRIVAL order, with the
+ * sort running afterwards over whatever survived -- so "sorted before every
+ * cap", which this file, the README and `compareStatusFindings`' own doc
+ * comment all promise, was false one cap up. Contradictions are appended last,
+ * so a fleet raising 2000 `audit-rule-unmapped` warns would have discarded
+ * every `status-contradiction`: precisely the "one high-volume domain hides a
+ * higher-priority blocker" failure the sort exists to prevent, moved from the
+ * report to the payload.
+ */
 function addFinding(ctx: FleetStatusContext, input: StatusFindingInput): void {
-  if (ctx.findings.length >= FLEET_STATUS_MAX_FINDINGS) { ctx.droppedFindings += 1; return; }
   const scope = input.scope ?? (input.agent_id === null ? "fleet" : "agent");
   ctx.findings.push({
     code: input.code,
@@ -861,9 +875,12 @@ function observation(ctx: FleetStatusContext, input: ObservationInput): FleetSta
     freshness: classification.freshness,
     severity: classification.severity,
     repair: classification.repair,
-    // Never a fabricated pair: where the site supplied neither side, the live
-    // half is what this run concluded and the recorded half is what the domain
-    // declares. Both are real statements; neither is a value nobody stores.
+    // Where the site supplied neither side, the live half is what this run
+    // CONCLUDED and the recorded half is what the domain declares it should
+    // conclude. Both are real statements and neither is a value nobody stores,
+    // but the fallback pair IS close to a restatement of the summary -- see
+    // `FleetStatusObservation.observed`, which says so rather than claiming a
+    // comparison that is not always there.
     observed: bounded(redactHome(input.observed ?? summary)),
     desired: bounded(redactHome(input.desired ?? DOMAIN_DESIRED[input.domain])),
     next_action: classification.next_action,
@@ -910,20 +927,35 @@ export function observeFromInventory(
       summary = "the registry row is malformed; it was salvaged rather than read";
       observed = "a malformed entry, salvaged";
     } else if (row.conflicts.length > 0) {
-      state = "fail";
-      summary = `this row participates in ${row.conflicts.length} identity conflict group(s)`;
       details.push(...row.conflicts);
       observed = `${row.conflicts.length} identity conflict group(s): ${row.conflicts.join(", ")}`;
+      // A conflict is a fact about the WHOLE registry, not about this row on
+      // its own -- it is computed by comparing every claimant of one value.
       evidence = "derived";
       // An operator ruling recorded under `classifications.intentionally_unmanaged`
       // is what turns a conflict into an authorized one. EVERY group this row
       // is in must be covered: a permitted conflict must never absorb an
       // unruled third claimant standing beside it.
       const rulings = row.conflicts.map((groupId) => ctx.exceptionFor(groupId));
-      if (rulings.length > 0 && rulings.every((ruling) => ruling !== null)) {
+      const allPermitted = rulings.length > 0 && rulings.every((ruling) => ruling !== null);
+      if (allPermitted) {
         exceptionId = rulings.map((ruling) => ruling!.id).join(", ");
         exceptionReason = rulings[0]!.reason;
       }
+      // PERMISSION DECIDES THE STATE, not just the severity. `fleet inventory`
+      // counts only UNPERMITTED groups into its aggregate, so a fleet it calls
+      // healthy read `verdict: "unhealthy"` here -- two commands over one
+      // registry disagreeing about whether an operator's ruling counts, which
+      // makes the ruling worthless in exactly the command that acts on it.
+      //
+      // A permitted conflict is still REPORTED and still visible: `warn`, with
+      // the ruling attached as its justification, so it is authorized rather
+      // than silent. It is not `pass`, because two agents sharing one value is
+      // a thing an operator should keep seeing after they decide to allow it.
+      state = allPermitted ? "warn" : "fail";
+      summary = allPermitted
+        ? `this row participates in ${row.conflicts.length} identity conflict group(s), all permitted by the contract`
+        : `this row participates in ${row.conflicts.length} identity conflict group(s)`;
     } else if (row.correlation.state !== "resolved") {
       state = "warn";
       summary = "the row is not correlated to a project-registry record";
@@ -1244,6 +1276,16 @@ function classifyFact(ctx: FleetStatusContext, fact: FleetProvenanceFact): { dom
 export function agentLifecycle(
   row: FleetInventoryRow,
   own: readonly FleetStatusObservation[],
+  /**
+   * The domains this run SELECTED.
+   *
+   * Without it a `--domain registry` run reports every agent `discovered`,
+   * because the profile tree that would prove `installed` was never read -- and
+   * `capability_readiness` could never reach `blocked` because bloodbank was
+   * not collected either. A collection filter would then be moving a conclusion
+   * about the AGENT, which is the one thing a scope may not do.
+   */
+  domains: ReadonlySet<FleetStatusDomain>,
 ): FleetStatusLifecycle {
   const routingRecorded = row.bloodbank_scope.value !== null && row.bloodbank_target.value !== null;
   const profileNamed = row.profile_name.value !== null;
@@ -1260,15 +1302,17 @@ export function agentLifecycle(
     item.domain === "profile" && item.source === SOURCE_REGISTRY && item.evidence === "direct" && item.state === "pass"
   ));
   const anyFailure = own.some((item) => item.state === "fail" || item.state === "error");
-  const observed: FleetActivationState = !profileProven
-    ? "discovered"
-    : anyFailure ? "installed" : "healthy";
+  const observed: FleetStatusLifecycleState = !domains.has("profile")
+    ? "out_of_scope"
+    : !profileProven ? "discovered" : anyFailure ? "installed" : "healthy";
 
-  const readiness: FleetStatusLifecycle["capability_readiness"] = !routingRecorded
-    ? "not_applicable"
-    : own.some((item) => item.domain === "bloodbank" && (item.state === "fail" || item.state === "error"))
-      ? "blocked"
-      : "unproven";
+  const readiness: FleetStatusReadiness = !domains.has("bloodbank")
+    ? "out_of_scope"
+    : !routingRecorded
+      ? "not_applicable"
+      : own.some((item) => item.domain === "bloodbank" && (item.state === "fail" || item.state === "error"))
+        ? "blocked"
+        : "unproven";
 
   return {
     desired_state: desired,
@@ -1463,29 +1507,33 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // observations of the same run, which is a worse answer than either.
   const referenceMs = Date.now();
 
-  // -- the baseline, read FIRST, before any probe or child ------------------
+  // -- the baseline, READ before any probe or child, PARSED after the scope --
   //
-  // Read-only, and it is the only file this flag opens. Validated here rather
-  // than after collection because DW-56 is the recorded lesson about the other
-  // order: a typo indistinguishable from a slow fleet, exiting 7 where it owed
-  // the caller a 2. Nothing has spawned at this point -- not a probe, not a
-  // child, not the inventory read.
-  let baselineSnapshots: ReturnType<typeof snapshotStatusDocument> = [];
+  // Read-only, and it is the only file this flag opens. The bytes are taken
+  // here because DW-56 is the recorded lesson about validating an input after
+  // the sweep -- a typo indistinguishable from a slow fleet, exiting 7 where it
+  // owed the caller a 2. Nothing has spawned at this point.
+  //
+  // The PARSE waits until the scope is resolved, a few lines below, because a
+  // baseline has to be compared against the selection it is being diffed with:
+  // a document taken over the whole fleet, diffed by a `--agent alpha` run,
+  // would report `resolved` for every other agent -- "it got fixed" about
+  // observations this run never collected.
   const baselinePath = nonEmptyString(options.baseline);
+  let baselineText: string | null = null;
+  let baselineShown = "";
   if (baselinePath !== null) {
     const resolved = resolve(expandHome(baselinePath, home));
-    const shown = shownPath(resolved);
-    let text: string;
-    try { text = readFileSync(resolved, "utf8"); }
+    baselineShown = shownPath(resolved);
+    try { baselineText = readFileSync(resolved, "utf8"); }
     catch {
       throw new FleetError(
         "INVALID_INPUT",
         "--baseline names a file that could not be read",
         false,
-        { baseline: shown },
+        { baseline: baselineShown },
       );
     }
-    baselineSnapshots = parseBaselineDocument(text, shown);
   }
 
   const contractPath = resolveFleetContractPath(options.contract);
@@ -1531,6 +1579,16 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   const { scope, agentIds, domains } = resolveStatusScope(options, registeredIds, inventory.totals.registered_agents);
   const domainSet = new Set<FleetStatusDomain>(domains);
   const selectedAgents = new Set(agentIds);
+
+  // Parsed now, against the scope it will be diffed with, and still before a
+  // single probe or audit child.
+  const baselineSnapshots = baselineText === null
+    ? []
+    : parseBaselineDocument(baselineText, baselineShown, {
+      agentId: scope.agent_id,
+      domain: scope.domain,
+      label: scope.label,
+    }).snapshots;
 
   // -- the raw stores, for values a row does not project ---------------------
   // A ROW carries home-redacted, bounded projections for display: correct for an
@@ -1646,7 +1704,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       severity: "warn",
       statusSeverity: "high",
       gating: true,
-      detail: `${shownPath(contractPath)} declares no health_policy block, so no skip, warning, deferred capability or managed exception is authorized; every non-pass is reported unjustified and the fleet cannot claim proof`,
+      detail: `${shownPath(contractPath)} declares no health_policy block, so no skip, warning or deferred capability is authorized; every warn, skip and unsupported observation is reported unjustified and the fleet cannot claim proof`,
     });
   }
 
@@ -2067,7 +2125,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     // the same way as one that survives.
     const clipped = own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT;
     const complete = !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped;
-    const lifecycle = agentLifecycle(row, own);
+    const lifecycle = agentLifecycle(row, own, domainSet);
     const memberClass = classifyMember(
       { healthy, complete },
       row.classification.value ?? "unclassified",
@@ -2160,10 +2218,6 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     };
   });
 
-  if (ctx.droppedFindings > 0) {
-    truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
-  }
-
   // -- contradictions: keep every reading, resolve none of them --------------
   //
   // A generalization of the host block's worst-wins accumulator, over every
@@ -2194,7 +2248,21 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // dropped by the human report's cap of 25, which is precisely the "one
   // high-volume domain hides a higher-priority blocker" failure this sort
   // exists to prevent.
-  const findings = [...ctx.findings].sort(compareStatusFindings);
+  // SORTED, THEN CAPPED, and the truncation note is written from the result --
+  // not before the contradiction loop above, which is where the cap is most
+  // likely to be reached first. Written early, the note could be absent while
+  // `totals.findings` counted the drops, so the envelope disagreed with itself
+  // and `health.truncated` read false over a run that had discarded gating
+  // findings.
+  const ranked = [...ctx.findings].sort(compareStatusFindings);
+  const findings = ranked.slice(0, FLEET_STATUS_MAX_FINDINGS);
+  const droppedFindings = ranked.length - findings.length;
+  if (droppedFindings > 0) {
+    truncated.push(
+      `findings: ${droppedFindings} of ${ranked.length} findings dropped; `
+      + "the list is ranked by gating impact and severity before the cap, so the ones kept are the ones that matter",
+    );
+  }
   const probes = [...ctx.probes].sort((a, b) => (
     a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0
   ));
@@ -2226,7 +2294,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     observations: totalObservations,
     emitted_observations: emittedObservations,
     host_findings: host.length,
-    findings: findings.length + ctx.droppedFindings,
+    findings: ranked.length,
     audits_attempted: auditsAttempted,
     audits_observed: auditsObserved,
     by_state: byState,
@@ -2254,6 +2322,8 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     scope,
     totalAgents: totals.agents,
     emittedAgents: totals.emitted_agents,
+    policy,
+    domainStates: new Map(domainRollups.map((rollup) => [rollup.domain, rollup.state])),
   });
 
   return {

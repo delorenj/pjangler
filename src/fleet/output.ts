@@ -922,6 +922,14 @@ function observationLines(observation: FleetStatusObservation, width: number): s
   if (observation.justification) {
     lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation.justification.policy}: ${observation.justification.reason}`)}`);
   }
+  // The RETRIEVAL, which is what an operator reaches for when the envelope
+  // clipped: the command that returns this one observation on its own. It was
+  // dropped when the axes were added and the docstring went on promising it --
+  // and it is the one line here that is useful precisely when the rest of the
+  // report is missing.
+  if (observation.state !== "pass" && observation.state !== "skip") {
+    lines.push(`       ${dim(glyph.arrow)} ${dim(observation.retrieval)}`);
+  }
   // The next action is the half an operator acts on, so it is printed for
   // everything that needs one -- and a command that is NOT read-only is
   // labelled, loudly, because that label is the only thing standing between a
@@ -998,6 +1006,7 @@ export function formatFleetStatusReport(status: FleetStatus): string {
     health.unobserved ? yellow(`${health.unobserved} unobserved`) : dim("0 unobserved"),
     health.unjustified ? yellow(`${health.unjustified} unjustified`) : dim("0 unjustified"),
     health.stale ? yellow(`${health.stale} stale`) : dim("0 stale"),
+    health.freshness_unknown ? yellow(`${health.freshness_unknown} freshness unknown`) : dim("0 freshness unknown"),
     health.contradictions ? red(`${health.contradictions} contradiction${health.contradictions === 1 ? "" : "s"}`) : dim("0 contradictions"),
     health.collection_errors ? red(`${health.collection_errors} collection error${health.collection_errors === 1 ? "" : "s"}`) : dim("0 collection errors"),
   ];
@@ -1068,7 +1077,14 @@ export function formatFleetStatusReport(status: FleetStatus): string {
   const ranked = status.agents
     .flatMap((agent) => agent.observations)
     .concat(status.domains.flatMap((rollup) => rollup.observations))
-    .filter((observation) => observation.state !== "pass" && observation.state !== "skip")
+    // A STALE OR UNREADABLE READING IS ACTIONABLE WHATEVER ITS STATE. Filtering
+    // on the state alone dropped every stale `pass`, so the headline could
+    // report `3 stale` with nothing anywhere in the report saying WHICH -- a
+    // count an operator cannot act on is a count that trains them to ignore it.
+    .filter((observation) => (
+      (observation.state !== "pass" && observation.state !== "skip")
+      || observation.freshness === "stale" || observation.freshness === "unknown"
+    ))
     .sort((a, b) => compareStatusFindings(observationSortKey(a), observationSortKey(b)));
   if (ranked.length === 0) lines.push(`    ${dim("none")}`);
   const observationWidth = ranked.slice(0, REPORT_MAX_OBSERVATIONS).reduce((max, observation) => Math.max(
@@ -1082,8 +1098,15 @@ export function formatFleetStatusReport(status: FleetStatus): string {
     lines.push(`    ${dim(`... ${ranked.length - REPORT_MAX_OBSERVATIONS} more actionable observation(s); use --json for all of them`)}`);
   }
 
-  if (status.transitions.length > 0) {
+  // PRINTED WHENEVER A BASELINE WAS READ, empty or not. On the human path "no
+  // section" meant both "nothing moved" and "nothing was compared", and those
+  // are opposite answers -- the first is the result an operator asked for, the
+  // second means their flag did nothing.
+  if (status.scope.baseline) {
     section(lines, "Transitions since the baseline");
+    if (status.transitions.length === 0) {
+      lines.push(`    ${green("none")}  ${dim(glyph.dot)}  ${dim("every finding is exactly as the baseline recorded it")}`);
+    }
     const transitionWidth = status.transitions.reduce((max, item) => Math.max(max, item.kind.length), 0);
     for (const transition of status.transitions.slice(0, REPORT_MAX_TRANSITIONS)) {
       const subject = transition.agent_id ? `${transition.agent_id} ${glyph.dot} ${transition.domain}` : `${transition.scope} ${glyph.dot} ${transition.domain}`;

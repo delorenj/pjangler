@@ -644,3 +644,35 @@ source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
 severity: medium
 reason: Story 1.5 wrote a raw NUL byte into `src/fleet/health.ts` -- a composite-map-key separator in `detectContradictions`, spelled as a literal instead of the `\u0000` escape the codebase's two other separator sites use. One assertion in one suite caught it, and that assertion is the only detection anywhere. The consequence is wildly out of proportion to the typo: GNU grep treats a file containing a NUL as binary, the machine-wide `pre-commit` credential scan greps the unified diff, and a single NUL anywhere in that stream silently no-ops the WHOLE scan for every commit touching the file -- it does not warn, it reports clean. This is the third independent occurrence (`src/fleet/contract.ts`, `src/project/identity.ts`, now `src/fleet/health.ts`), each one somebody reaching for a separator and reinventing the same idea, which says the escape is not discoverable at the moment it is needed. Two gaps beyond that: the check is scoped to `src/**/*.ts`, so a NUL in a `.mjs` suite, a script, or a template goes undetected; and it lives in a fleet-contract suite where nothing about the subject suggests it guards a machine-wide secret scan, so it is one refactor away from being moved or dropped by someone who cannot see what it is for. The protection belongs in the guard itself -- `~/.config/git/hooks/_guard.sh` failing CLOSED when a diff it cannot scan as text reaches it, rather than quietly scanning nothing -- so it does not depend on one repository's test suite being run.
 status: open
+
+### DW-77: the output/health import cycle is prevented by a comment, not by structure.
+origin: review-deferred story-1.5 review pass 1
+location: src/fleet/output.ts / src/fleet/health.ts
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: `output.ts` imports `compareStatusFindings` and the two sort keys so the human report ranks findings exactly as the machine path does; `health.ts` imports `bounded`/`redactHome` so the strings it builds are bounded on the same terms as the rest of the envelope. Both are the right dependency and together they are a cycle, safe only because neither file calls the other at module scope. That constraint is now written in BOTH files, which is the best a comment can do and less than the problem deserves: every suite runs the BUNDLE, so violating it surfaces as the whole CLI failing to start rather than as a unit-test failure pointing at the line. Extracting `bounded`/`redactHome` into a small shared module removes the cycle outright and costs one file. It was not done in this pass because it touches every fleet module's import list and this pass was already 24 findings wide.
+status: open
+
+### DW-78: two lifecycle values are unreachable until the observers that produce them exist.
+origin: review-deferred story-1.5 review pass 1
+location: src/fleet/types.ts (FLEET_STATUS_READINESS) / src/fleet/status.ts (agentLifecycle)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: `capability_readiness: "ready"` is unreachable BY CONSTRUCTION and must stay that way in this release -- it would require a direct observation of the shared Bloodbank gateway, and a `declared` registry field is not one. `"blocked"` is unreachable for the same reason from the other side: it is set when a bloodbank observation FAILS, and the only bloodbank observations this build makes are a store read and two declared gaps, none of which can fail. Both are declared so the axis has somewhere to grow that is not a boolean, and story 1.10 is what makes them reachable. Recorded rather than removed because deleting a value the contract's own activation ladder implies would have to be re-added by the story that finally observes it.
+status: open
+
+### DW-79: `applicability: "optional"` is unreachable while the shipped contract requires all nine domains.
+origin: review-deferred story-1.5 review pass 1
+location: contracts/fleet-contract.yaml (health_policy.required_domains) / src/fleet/health.ts (classifyObservation)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: `classifyObservation` resolves `optional` when a domain is absent from `health_policy.required_domains`, and the tracked contract lists all nine -- deliberately, because a domain nobody requires is a domain an aggregate may skip and still claim proof. So the value is reachable only through a contract that requires a subset, which the health suite does not construct. The branch is real and correct; what is missing is a fixture proving that an unobserved OPTIONAL domain lands `medium` where a required one lands `high`. Cheap to add and left out of review pass 1 only for scope.
+status: open
+
+### DW-80: AC9's verdict partition has no "unhealthy and complete" category.
+origin: review-deferred story-1.5 review pass 1
+location: src/fleet/health.ts (evaluateFleetHealth)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: `verdict` resolves `unhealthy` from `!healthy` alone, before completeness is consulted, so a run that proved drift AND read everything is reported identically to one that proved drift and read half. That is a DOCUMENTED CHOICE and it is the right one for the exit taxonomy -- a proven failure is more actionable than an unread half, so `unhealthy` outranks `incomplete` -- but it does mean `health.verdict` is not a partition of the interesting states, and a consumer wanting "drift, and we saw all of it" has to read `verdict` and `complete` together. The Design Notes say `unhealthy` outranks `incomplete`; what they do not say is that the pair is therefore not recoverable from `verdict` alone. Recorded so a later story does not discover it by being surprised.
+status: open

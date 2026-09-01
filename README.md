@@ -394,10 +394,17 @@ the absence of other findings.
 An authorized gap is still **reported**, with its own state; what changes is
 whether the aggregate may claim it was proven. Every justified observation names
 the entry that authorized it in `justification.policy`, so an operator can open
-the contract at that path. A contract with **no** `health_policy` block still
-loads — it is a schema-1 contract — and then authorizes nothing: every non-pass
-is unjustified, `proven` is false, and one `health-policy-undeclared` finding
-names the missing block rather than the run failing.
+the contract at that path.
+
+`health.unjustified` counts the three states the contract can actually
+authorize — `warn`, `skip` and `unsupported` — and no others. A `fail` or an
+`error` is not something a policy entry may excuse; those are what
+`health.healthy` is for, and an `unobserved` is a coverage question `complete`
+already answers. A contract with **no** `health_policy` block still loads — it
+is a schema-1 contract — and then authorizes nothing: every `warn`, `skip` and
+`unsupported` is unjustified, `proven` is false, and one
+`health-policy-undeclared` finding names the missing block rather than the run
+failing.
 
 Adding the block was a grammar change, so the tracked contract is
 `schema_version: 2` at `contract_version: 1.1.0`. This build reads schema 1 and 2.
@@ -405,8 +412,8 @@ Adding the block was a grammar change, so the tracked contract is
 ### Three verdicts, and which one to read
 
 ```
-verdict = !healthy                                   -> "unhealthy"   drift is PROVEN
-        : !complete || stale > 0 || unjustified > 0  -> "unproven"    nothing is proven either way
+verdict = !healthy                                    -> "unhealthy"  drift is PROVEN
+        : !complete || stale || unknown || unjustified -> "unproven"   nothing is proven either way
         : "healthy"
 proven  = verdict === "healthy" && fleet_complete
 ```
@@ -421,7 +428,12 @@ opened, while `healthy` itself still means what story 1.4 pinned it to mean.
 
 `health.proven` is the only field that means *we read all of it and it was right*.
 
-Beside them: `health.stale`, `health.unjustified`, `health.contradictions`, and
+`health.freshness_unknown` sits beside `health.stale` and blocks `proven` just
+as hard: a policy entry that applies to a field no row populates buckets every
+reading `unknown`, and if that gated nothing the entry would validate, change
+nothing, and read as though the fleet had been checked.
+
+Beside them: `health.stale`, `health.freshness_unknown`, `health.unjustified`, `health.contradictions`, and
 `health.members` — every **selected** agent in exactly one of `healthy`,
 `unhealthy`, `incomplete`, `deferred`, `exception`, `unclassified`. The six counts
 sum to `scope.selected_agents`, not to the records the envelope's cap let
@@ -486,8 +498,15 @@ no state is ever written to disk to compute a transition. Findings are joined on
 and MCP adapters, and `data.transitions[]` reports every `appeared`, `resolved`,
 `state_changed`, `severity_changed` and `evidence_changed`. An **unchanged**
 finding emits nothing, so a byte-identical baseline produces an empty array. An
-unreadable or unparseable baseline is `INVALID_INPUT` at exit 2, naming the path,
-before a single probe or audit child spawns.
+baseline is refused as `INVALID_INPUT` at exit 2, naming the path, before a
+single probe or audit child spawns, when it is unreadable, unparseable, not a
+`fleet.status` document, **taken under a different `--agent`/`--domain` scope**,
+or **written by a run whose own output was clipped**. The scope check is the
+load-bearing one: a document taken over the whole fleet and diffed by a
+`--agent alpha` run would otherwise report `resolved` for every other agent —
+"it got fixed" about observations the run never collected. `--live` is
+deliberately *not* part of the scope, because reading more than the baseline did
+is a real transition.
 
 ### The exit taxonomy, and why the projection is opt-in
 
@@ -500,6 +519,13 @@ before, because `isError` is `false` for a fully unhealthy fleet.
 | `ok` | `healthy` | 0 |
 | `unhealthy` | `unhealthy` | **10** |
 | `incomplete` | `unproven` | **11** |
+
+A contradiction is reported only where one source **proved a failure** and
+another reported a **pass** for the same `(agent, domain, field)` — never on a
+`warn` against a `pass`, and never on two differing non-pass states. The narrow
+rule is deliberate: `DOMAIN_FIELD` gives every rule in a domain one contract
+field path, so even this fires on readings that are both true, and widening it
+to "any two states that differ" would make `complete` meaningless.
 
 `unhealthy` and `incomplete` are `ok: true` states — the command succeeded, the
 fleet did not — so they are not error codes and never null out `data`. The

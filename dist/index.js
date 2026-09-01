@@ -19612,6 +19612,18 @@ var FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT = 200;
 var FLEET_STATUS_MAX_FINDINGS = 2e3;
 var FLEET_STATUS_MAX_DETAILS = 20;
 var FLEET_STATUS_AUDIT_CONCURRENCY = 4;
+var FLEET_STATUS_EVIDENCE = ["direct", "declared", "derived", "absent"];
+var FLEET_STATUS_FRESHNESS_PRECEDENCE = [
+  "stale",
+  "unknown",
+  "current",
+  "not_applicable"
+];
+var FLEET_STATUS_SCOPE_PRECEDENCE = [
+  "fleet",
+  "host",
+  "agent"
+];
 var FLEET_STATUS_SEVERITY_PRECEDENCE = [
   "critical",
   "high",
@@ -19628,8 +19640,8 @@ var FLEET_STATUS_MEMBER_PRECEDENCE = [
   "unclassified",
   "unhealthy",
   "exception",
-  "incomplete",
   "deferred",
+  "incomplete",
   "healthy"
 ];
 var FLEET_STATUS_MAX_TRANSITIONS = 2e3;
@@ -20365,7 +20377,6 @@ import { homedir as homedir13, userInfo } from "node:os";
 
 // src/fleet/health.ts
 var DAY_MS = 864e5;
-var SCOPE_ORDER = ["fleet", "host", "agent"];
 function list(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -20393,10 +20404,9 @@ function evaluateFreshness(field3, isoValue, referenceMs, policy) {
   if (parsed > referenceMs) return "unknown";
   return referenceMs - parsed <= declared.entry.max_age_days * DAY_MS ? "current" : "stale";
 }
-var FRESHNESS_PRECEDENCE = ["stale", "unknown", "current", "not_applicable"];
 function evaluateDomainFreshness(domain, values, referenceMs, policy) {
   const buckets = policy.freshness.filter((item) => item.entry.applies_to === domain).map((item) => evaluateFreshness(item.entry.field, values.get(item.entry.field) ?? null, referenceMs, policy));
-  for (const bucket of FRESHNESS_PRECEDENCE) if (buckets.includes(bucket)) return bucket;
+  for (const bucket of FLEET_STATUS_FRESHNESS_PRECEDENCE) if (buckets.includes(bucket)) return bucket;
   return "not_applicable";
 }
 var SOURCE_EVIDENCE = Object.freeze({
@@ -20450,10 +20460,10 @@ function classifyObservation(input, policy) {
   let applicability;
   if (justification?.kind === "deferred_capability") applicability = "deferred";
   else if (justification?.kind === "exception") applicability = "exception";
-  else if (input.state === "skip") applicability = "not_applicable";
+  else if (justification?.kind === "allowed_skip") applicability = "not_applicable";
   else applicability = domainRequired ? "required" : "optional";
   const justified = justification !== null;
-  const stale = input.freshness === "stale";
+  const stale = input.freshness === "stale" || input.freshness === "unknown";
   const severity = deriveSeverity(input.state, applicability, justified, stale);
   const { repair, next_action, next_action_class } = deriveRepair(input, justification);
   return { applicability, evidence, freshness: input.freshness, severity, repair, next_action, next_action_class, justification };
@@ -20464,13 +20474,19 @@ function deriveSeverity(state, applicability, justified, stale) {
   if (state === "unobserved") return applicability === "required" ? "high" : "medium";
   if (stale) return justified ? "low" : "medium";
   if (state === "warn" || state === "unsupported") return justified ? "low" : "medium";
-  if (state === "skip") return justified ? "info" : "low";
+  if (state === "skip") return justified ? "info" : applicability === "required" ? "medium" : "low";
   return "info";
 }
 function deriveRepair(input, justification) {
   const readOnly = (next_action, repair) => ({ repair, next_action: bounded3(redactHome(next_action)), next_action_class: "read-only" });
-  if (input.state === "pass" && input.freshness !== "stale") return readOnly(input.retrieval, "none");
+  if (input.state === "pass" && input.freshness === "current") return readOnly(input.retrieval, "none");
+  if (input.state === "pass" && input.freshness !== "stale" && input.freshness !== "unknown") {
+    return readOnly(input.retrieval, "none");
+  }
   if (input.state === "skip" && justification !== null) return readOnly(input.retrieval, "none");
+  if (input.state === "pass") {
+    return readOnly(`Re-read the evidence behind this observation: ${input.retrieval}`, "manual");
+  }
   if (input.field === input.activationField) {
     return {
       repair: "approval-gated",
@@ -20499,6 +20515,11 @@ function deriveRepair(input, justification) {
   return readOnly(input.retrieval, "manual");
 }
 var PROVEN_BAD = /* @__PURE__ */ new Set(["fail", "error"]);
+var EXCEPTED_CLASSES = /* @__PURE__ */ new Set([
+  "intentionally_unmanaged",
+  "retired",
+  "managed_shared_service"
+]);
 function detectContradictions(observations) {
   const groups = /* @__PURE__ */ new Map();
   for (const observation3 of observations) {
@@ -20533,7 +20554,7 @@ function classifyMember(agent, classification, observations) {
   if (!agent.healthy) {
     const allExcepted = failures.length > 0 && failures.every((item) => item.justification?.kind === "exception");
     candidates.add(allExcepted ? "exception" : "unhealthy");
-  } else if (classification === "intentionally_unmanaged") {
+  } else if (EXCEPTED_CLASSES.has(classification)) {
     candidates.add("exception");
   }
   if (!agent.complete) candidates.add("incomplete");
@@ -20549,7 +20570,7 @@ function emptyMembers() {
 }
 function observationGates(observation3) {
   if (observation3.state === "fail" || observation3.state === "error" || observation3.state === "unobserved") return true;
-  if (observation3.freshness === "stale") return true;
+  if (observation3.freshness === "stale" || observation3.freshness === "unknown") return true;
   return needsJustification(observation3.state) && observation3.justification === null;
 }
 function observationSortKey(observation3) {
@@ -20577,8 +20598,8 @@ function severityRank(severity) {
   return index === -1 ? FLEET_STATUS_SEVERITY_PRECEDENCE.length : index;
 }
 function scopeRank(scope) {
-  const index = SCOPE_ORDER.indexOf(scope);
-  return index === -1 ? SCOPE_ORDER.length : index;
+  const index = FLEET_STATUS_SCOPE_PRECEDENCE.indexOf(scope);
+  return index === -1 ? FLEET_STATUS_SCOPE_PRECEDENCE.length : index;
 }
 function compareStatusFindings(a, b) {
   if (a.gating !== b.gating) return a.gating ? -1 : 1;
@@ -20594,17 +20615,19 @@ function compareStatusFindings(a, b) {
   return 0;
 }
 function snapshotOf(record, scope) {
-  const id = typeof record.finding_id === "string" ? record.finding_id : null;
-  if (id === null || id === "") return null;
-  const state = typeof record.state === "string" && FLEET_STATUS_STATES.includes(record.state) ? record.state : null;
-  if (state === null) return null;
-  const severity = typeof record.severity === "string" && FLEET_STATUS_SEVERITY_PRECEDENCE.includes(record.severity) ? record.severity : "info";
-  const evidence = typeof record.evidence === "string" ? record.evidence : "absent";
+  const member = (value, vocabulary) => typeof value === "string" && vocabulary.includes(value) ? value : null;
+  const id = typeof record.finding_id === "string" && record.finding_id !== "" ? bounded3(record.finding_id, 64) : null;
+  if (id === null) return null;
+  const state = member(record.state, FLEET_STATUS_STATES);
+  const domain = member(record.domain, FLEET_STATUS_DOMAINS);
+  const severity = member(record.severity, FLEET_STATUS_SEVERITY_PRECEDENCE);
+  const evidence = member(record.evidence, FLEET_STATUS_EVIDENCE);
+  if (state === null || domain === null || severity === null || evidence === null) return null;
   return {
     finding_id: id,
     scope,
-    agent_id: typeof record.agent_id === "string" ? record.agent_id : null,
-    domain: typeof record.domain === "string" ? record.domain : "registry",
+    agent_id: typeof record.agent_id === "string" ? bounded3(record.agent_id, 128) : null,
+    domain,
     state,
     severity,
     evidence
@@ -20612,6 +20635,19 @@ function snapshotOf(record, scope) {
 }
 function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function baselineScopeOf(document) {
+  const root = isRecord7(document) && isRecord7(document.data) ? document.data : document;
+  if (!isRecord7(root) || !isRecord7(root.scope)) return null;
+  const scope = root.scope;
+  const notes = Array.isArray(root.truncated) ? root.truncated : [];
+  const clipped = notes.some((note) => typeof note === "string" && note.startsWith("agents"));
+  return {
+    agent_id: typeof scope.agent_id === "string" ? scope.agent_id : null,
+    domain: typeof scope.domain === "string" ? scope.domain : null,
+    clipped,
+    label: typeof scope.label === "string" ? bounded3(scope.label) : "an unlabelled scope"
+  };
 }
 function snapshotStatusDocument(document) {
   const root = isRecord7(document) && isRecord7(document.data) ? document.data : document;
@@ -20666,28 +20702,32 @@ function snapshotCurrent(observations, host) {
   }
   return out;
 }
-function parseBaselineDocument(text3, shownPath4) {
+function parseBaselineDocument(text3, shownPath4, current) {
+  const refuse = (message, details = {}) => {
+    throw new FleetError("INVALID_INPUT", message, false, { baseline: bounded3(shownPath4), ...details });
+  };
   let parsed;
   try {
     parsed = JSON.parse(text3);
   } catch {
-    throw new FleetError(
-      "INVALID_INPUT",
-      "--baseline is not one complete JSON document",
-      false,
-      { baseline: bounded3(shownPath4) }
+    return refuse("--baseline is not one complete JSON document");
+  }
+  const command = isRecord7(parsed) && typeof parsed.command === "string" ? parsed.command : null;
+  if (command !== null && command !== "fleet.status") {
+    return refuse("--baseline is a fleet envelope, but not a fleet status one", { command: bounded3(command, 64) });
+  }
+  const scope = baselineScopeOf(parsed);
+  if (scope === null) return refuse("--baseline is JSON but is not a fleet status document");
+  if (scope.agent_id !== current.agentId || scope.domain !== current.domain) {
+    return refuse(
+      "--baseline was taken under a different scope; re-run both sides with the same --agent and --domain",
+      { baseline_scope: bounded3(scope.label), current_scope: bounded3(current.label) }
     );
   }
-  const snapshots = snapshotStatusDocument(parsed);
-  if (snapshots.length === 0 && !(isRecord7(parsed) && (Array.isArray(parsed.agents) || isRecord7(parsed.data)))) {
-    throw new FleetError(
-      "INVALID_INPUT",
-      "--baseline is JSON but is not a fleet status document",
-      false,
-      { baseline: bounded3(shownPath4) }
-    );
+  if (scope.clipped) {
+    return refuse("--baseline was written by a run whose own output was clipped, so a diff against it would report every dropped record as appeared");
   }
-  return snapshots;
+  return { scope, snapshots: snapshotStatusDocument(parsed) };
 }
 function diffFindings(baseline, current) {
   const before = /* @__PURE__ */ new Map();
@@ -20726,16 +20766,22 @@ function diffFindings(baseline, current) {
 function evaluateFleetHealth(input) {
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
   let stale = 0;
+  let freshnessUnknown = 0;
   let unjustified = 0;
   for (const observation3 of input.observations) {
     byState[observation3.state] += 1;
     if (observation3.freshness === "stale") stale += 1;
+    if (observation3.freshness === "unknown") freshnessUnknown += 1;
     if (needsJustification(observation3.state) && observation3.justification === null) unjustified += 1;
   }
   const healthy = byState.fail === 0 && byState.error === 0;
   const complete = byState.unobserved === 0 && byState.error === 0 && input.collectionErrors === 0 && !input.truncated && input.contradictions === 0;
-  const fleetComplete = complete && input.scope.kind === "fleet" && input.scope.domain === null && input.scope.live && input.totalAgents > 0 && input.emittedAgents === input.totalAgents;
-  const verdict = !healthy ? "unhealthy" : !complete || stale > 0 || unjustified > 0 ? "unproven" : "healthy";
+  const requiredObserved = [...input.policy.requiredDomains].every((domain) => {
+    const state = input.domainStates.get(domain);
+    return state !== void 0 && state !== "unobserved" && state !== "error";
+  });
+  const fleetComplete = complete && input.scope.kind === "fleet" && input.scope.domain === null && input.scope.live && input.totalAgents > 0 && input.emittedAgents === input.totalAgents && requiredObserved;
+  const verdict = !healthy ? "unhealthy" : !complete || stale > 0 || freshnessUnknown > 0 || unjustified > 0 ? "unproven" : "healthy";
   const exitCategory = verdict === "unhealthy" ? "unhealthy" : verdict === "unproven" ? "incomplete" : "ok";
   return {
     healthy,
@@ -20753,17 +20799,24 @@ function evaluateFleetHealth(input) {
     proven: verdict === "healthy" && fleetComplete,
     exit_category: exitCategory,
     stale,
+    freshness_unknown: freshnessUnknown,
     unjustified,
     contradictions: input.contradictions,
     members: { ...input.members }
   };
 }
+function transitionRank(transition) {
+  const side = transition.to ?? transition.from;
+  const index = side ? FLEET_STATUS_SEVERITY_PRECEDENCE.indexOf(side.severity) : -1;
+  return index === -1 ? FLEET_STATUS_SEVERITY_PRECEDENCE.length : index;
+}
 function boundTransitions(transitions, truncated) {
-  if (transitions.length <= FLEET_STATUS_MAX_TRANSITIONS) return [...transitions];
+  const ranked = [...transitions].sort((a, b) => transitionRank(a) - transitionRank(b) || (a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0) || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0));
+  if (ranked.length <= FLEET_STATUS_MAX_TRANSITIONS) return ranked;
   truncated.push(
-    `transitions: ${transitions.length - FLEET_STATUS_MAX_TRANSITIONS} of ${transitions.length} transitions dropped; narrow the run with --agent or --domain and re-diff against the same baseline`
+    `transitions: ${ranked.length - FLEET_STATUS_MAX_TRANSITIONS} of ${ranked.length} transitions dropped; the highest-severity ones are kept. Re-run BOTH sides at a narrower --agent or --domain and diff those, because a baseline taken at a different scope is refused`
   );
-  return transitions.slice(0, FLEET_STATUS_MAX_TRANSITIONS);
+  return ranked.slice(0, FLEET_STATUS_MAX_TRANSITIONS);
 }
 
 // src/fleet/output.ts
@@ -21356,6 +21409,9 @@ function observationLines(observation3, width) {
   if (observation3.justification) {
     lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation3.justification.policy}: ${observation3.justification.reason}`)}`);
   }
+  if (observation3.state !== "pass" && observation3.state !== "skip") {
+    lines.push(`       ${dim(glyph.arrow)} ${dim(observation3.retrieval)}`);
+  }
   if (observation3.repair !== "none") {
     const label = observation3.next_action_class === "requires-authorization" ? yellow("[requires-authorization]") : dim("[read-only]");
     lines.push(`       ${dim(glyph.arrow)} ${label} ${cyan(observation3.next_action)}`);
@@ -21397,6 +21453,7 @@ function formatFleetStatusReport(status) {
     health.unobserved ? yellow(`${health.unobserved} unobserved`) : dim("0 unobserved"),
     health.unjustified ? yellow(`${health.unjustified} unjustified`) : dim("0 unjustified"),
     health.stale ? yellow(`${health.stale} stale`) : dim("0 stale"),
+    health.freshness_unknown ? yellow(`${health.freshness_unknown} freshness unknown`) : dim("0 freshness unknown"),
     health.contradictions ? red(`${health.contradictions} contradiction${health.contradictions === 1 ? "" : "s"}`) : dim("0 contradictions"),
     health.collection_errors ? red(`${health.collection_errors} collection error${health.collection_errors === 1 ? "" : "s"}`) : dim("0 collection errors")
   ];
@@ -21452,7 +21509,7 @@ function formatFleetStatusReport(status) {
     lines.push(`    ${dim(`... ${status.agents.length - REPORT_MAX_AGENTS} more agent(s); use --json for all of them`)}`);
   }
   section2(lines, "Highest-priority observations");
-  const ranked = status.agents.flatMap((agent) => agent.observations).concat(status.domains.flatMap((rollup) => rollup.observations)).filter((observation3) => observation3.state !== "pass" && observation3.state !== "skip").sort((a, b) => compareStatusFindings(observationSortKey(a), observationSortKey(b)));
+  const ranked = status.agents.flatMap((agent) => agent.observations).concat(status.domains.flatMap((rollup) => rollup.observations)).filter((observation3) => observation3.state !== "pass" && observation3.state !== "skip" || observation3.freshness === "stale" || observation3.freshness === "unknown").sort((a, b) => compareStatusFindings(observationSortKey(a), observationSortKey(b)));
   if (ranked.length === 0) lines.push(`    ${dim("none")}`);
   const observationWidth = ranked.slice(0, REPORT_MAX_OBSERVATIONS).reduce((max, observation3) => Math.max(
     max,
@@ -21464,8 +21521,11 @@ function formatFleetStatusReport(status) {
   if (ranked.length > REPORT_MAX_OBSERVATIONS) {
     lines.push(`    ${dim(`... ${ranked.length - REPORT_MAX_OBSERVATIONS} more actionable observation(s); use --json for all of them`)}`);
   }
-  if (status.transitions.length > 0) {
+  if (status.scope.baseline) {
     section2(lines, "Transitions since the baseline");
+    if (status.transitions.length === 0) {
+      lines.push(`    ${green("none")}  ${dim(glyph.dot)}  ${dim("every finding is exactly as the baseline recorded it")}`);
+    }
     const transitionWidth = status.transitions.reduce((max, item) => Math.max(max, item.kind.length), 0);
     for (const transition of status.transitions.slice(0, REPORT_MAX_TRANSITIONS)) {
       const subject = transition.agent_id ? `${transition.agent_id} ${glyph.dot} ${transition.domain}` : `${transition.scope} ${glyph.dot} ${transition.domain}`;
@@ -23785,17 +23845,14 @@ function resolveStatusScope(options, registeredIds, totalRegisteredAgents) {
       label: bounded3(parts.join(" \xB7 ")),
       total_registered_agents: totalRegisteredAgents,
       selected_agents: agentIds.length,
-      selected_domains: domains
+      selected_domains: domains,
+      baseline: nonEmptyString3(options.baseline) !== null
     },
     agentIds,
     domains
   };
 }
 function addFinding3(ctx, input) {
-  if (ctx.findings.length >= FLEET_STATUS_MAX_FINDINGS) {
-    ctx.droppedFindings += 1;
-    return;
-  }
   const scope = input.scope ?? (input.agent_id === null ? "fleet" : "agent");
   ctx.findings.push({
     code: input.code,
@@ -23865,9 +23922,12 @@ function observation2(ctx, input) {
     freshness: classification.freshness,
     severity: classification.severity,
     repair: classification.repair,
-    // Never a fabricated pair: where the site supplied neither side, the live
-    // half is what this run concluded and the recorded half is what the domain
-    // declares. Both are real statements; neither is a value nobody stores.
+    // Where the site supplied neither side, the live half is what this run
+    // CONCLUDED and the recorded half is what the domain declares it should
+    // conclude. Both are real statements and neither is a value nobody stores,
+    // but the fallback pair IS close to a restatement of the summary -- see
+    // `FleetStatusObservation.observed`, which says so rather than claiming a
+    // comparison that is not always there.
     observed: bounded3(redactHome(input.observed ?? summary)),
     desired: bounded3(redactHome(input.desired ?? DOMAIN_DESIRED[input.domain])),
     next_action: classification.next_action,
@@ -23892,16 +23952,17 @@ function observeFromInventory(ctx, row, domains) {
       summary = "the registry row is malformed; it was salvaged rather than read";
       observed = "a malformed entry, salvaged";
     } else if (row.conflicts.length > 0) {
-      state = "fail";
-      summary = `this row participates in ${row.conflicts.length} identity conflict group(s)`;
       details.push(...row.conflicts);
       observed = `${row.conflicts.length} identity conflict group(s): ${row.conflicts.join(", ")}`;
       evidence = "derived";
       const rulings = row.conflicts.map((groupId) => ctx.exceptionFor(groupId));
-      if (rulings.length > 0 && rulings.every((ruling) => ruling !== null)) {
+      const allPermitted = rulings.length > 0 && rulings.every((ruling) => ruling !== null);
+      if (allPermitted) {
         exceptionId = rulings.map((ruling) => ruling.id).join(", ");
         exceptionReason = rulings[0].reason;
       }
+      state = allPermitted ? "warn" : "fail";
+      summary = allPermitted ? `this row participates in ${row.conflicts.length} identity conflict group(s), all permitted by the contract` : `this row participates in ${row.conflicts.length} identity conflict group(s)`;
     } else if (row.correlation.state !== "resolved") {
       state = "warn";
       summary = "the row is not correlated to a project-registry record";
@@ -24170,14 +24231,14 @@ function classifyFact(ctx, fact) {
   }
   return resolved;
 }
-function agentLifecycle(row, own) {
+function agentLifecycle(row, own, domains) {
   const routingRecorded = row.bloodbank_scope.value !== null && row.bloodbank_target.value !== null;
   const profileNamed = row.profile_name.value !== null;
   const desired = row.activation.value === true ? "activated" : routingRecorded ? "routing_ready" : profileNamed ? "installed" : "discovered";
   const profileProven = own.some((item) => item.domain === "profile" && item.source === SOURCE_REGISTRY && item.evidence === "direct" && item.state === "pass");
   const anyFailure = own.some((item) => item.state === "fail" || item.state === "error");
-  const observed = !profileProven ? "discovered" : anyFailure ? "installed" : "healthy";
-  const readiness = !routingRecorded ? "not_applicable" : own.some((item) => item.domain === "bloodbank" && (item.state === "fail" || item.state === "error")) ? "blocked" : "unproven";
+  const observed = !domains.has("profile") ? "out_of_scope" : !profileProven ? "discovered" : anyFailure ? "installed" : "healthy";
+  const readiness = !domains.has("bloodbank") ? "out_of_scope" : !routingRecorded ? "not_applicable" : own.some((item) => item.domain === "bloodbank" && (item.state === "fail" || item.state === "error")) ? "blocked" : "unproven";
   return {
     desired_state: desired,
     observed_state: observed,
@@ -24255,23 +24316,22 @@ async function collectFleetStatus(options) {
   const live = options.live === true;
   throwIfCancelled(runContext);
   const referenceMs = Date.now();
-  let baselineSnapshots = [];
   const baselinePath = nonEmptyString3(options.baseline);
+  let baselineText = null;
+  let baselineShown = "";
   if (baselinePath !== null) {
     const resolved = resolve22(expandHome4(baselinePath, home));
-    const shown = shownPath3(resolved);
-    let text3;
+    baselineShown = shownPath3(resolved);
     try {
-      text3 = readFileSync28(resolved, "utf8");
+      baselineText = readFileSync28(resolved, "utf8");
     } catch {
       throw new FleetError(
         "INVALID_INPUT",
         "--baseline names a file that could not be read",
         false,
-        { baseline: shown }
+        { baseline: baselineShown }
       );
     }
-    baselineSnapshots = parseBaselineDocument(text3, shown);
   }
   const contractPath = resolveFleetContractPath(options.contract);
   const loaded = loadFleetContract(contractPath);
@@ -24296,6 +24356,11 @@ async function collectFleetStatus(options) {
   const { scope, agentIds, domains } = resolveStatusScope(options, registeredIds, inventory.totals.registered_agents);
   const domainSet = new Set(domains);
   const selectedAgents = new Set(agentIds);
+  const baselineSnapshots = baselineText === null ? [] : parseBaselineDocument(baselineText, baselineShown, {
+    agentId: scope.agent_id,
+    domain: scope.domain,
+    label: scope.label
+  }).snapshots;
   const stores = resolveInventoryStores(options);
   const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
   const agentRawById = /* @__PURE__ */ new Map();
@@ -24382,7 +24447,7 @@ async function collectFleetStatus(options) {
       severity: "warn",
       statusSeverity: "high",
       gating: true,
-      detail: `${shownPath3(contractPath)} declares no health_policy block, so no skip, warning, deferred capability or managed exception is authorized; every non-pass is reported unjustified and the fleet cannot claim proof`
+      detail: `${shownPath3(contractPath)} declares no health_policy block, so no skip, warning or deferred capability is authorized; every warn, skip and unsupported observation is reported unjustified and the fleet cannot claim proof`
     });
   }
   if (inventory.totals.registered_agents === 0) {
@@ -24695,7 +24760,7 @@ async function collectFleetStatus(options) {
     const healthy = !own.some((item) => item.state === "fail" || item.state === "error");
     const clipped = own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT;
     const complete = !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped;
-    const lifecycle = agentLifecycle(row, own);
+    const lifecycle = agentLifecycle(row, own, domainSet);
     const memberClass = classifyMember(
       { healthy, complete },
       row.classification.value ?? "unclassified",
@@ -24762,9 +24827,6 @@ async function collectFleetStatus(options) {
       observations: fleetObservations.filter((item) => item.domain === domain)
     };
   });
-  if (ctx.droppedFindings > 0) {
-    truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
-  }
   const contradictions = detectContradictions(ctx.observations);
   for (const contradiction of contradictions) {
     addFinding3(ctx, {
@@ -24779,7 +24841,14 @@ async function collectFleetStatus(options) {
       detail: `${contradiction.detail}; joined observations ${contradiction.finding_ids.join(", ")}`
     });
   }
-  const findings = [...ctx.findings].sort(compareStatusFindings);
+  const ranked = [...ctx.findings].sort(compareStatusFindings);
+  const findings = ranked.slice(0, FLEET_STATUS_MAX_FINDINGS);
+  const droppedFindings = ranked.length - findings.length;
+  if (droppedFindings > 0) {
+    truncated.push(
+      `findings: ${droppedFindings} of ${ranked.length} findings dropped; the list is ranked by gating impact and severity before the cap, so the ones kept are the ones that matter`
+    );
+  }
   const probes = [...ctx.probes].sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0);
   const transitions = baselinePath === null ? [] : boundTransitions(diffFindings(baselineSnapshots, snapshotCurrent(ctx.observations, host)), truncated);
   const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
@@ -24791,7 +24860,7 @@ async function collectFleetStatus(options) {
     observations: totalObservations,
     emitted_observations: emittedObservations,
     host_findings: host.length,
-    findings: findings.length + ctx.droppedFindings,
+    findings: ranked.length,
     audits_attempted: auditsAttempted,
     audits_observed: auditsObserved,
     by_state: byState
@@ -24804,7 +24873,9 @@ async function collectFleetStatus(options) {
     truncated: truncated.length > 0,
     scope,
     totalAgents: totals.agents,
-    emittedAgents: totals.emitted_agents
+    emittedAgents: totals.emitted_agents,
+    policy,
+    domainStates: new Map(domainRollups.map((rollup) => [rollup.domain, rollup.state]))
   });
   return {
     contract_path: shownPath3(contractPath),
