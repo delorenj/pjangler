@@ -1,0 +1,70 @@
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when its first story starts (via build's sprint sync)
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates the next story after the previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; the status view surfaces open ones
+generated: 08-31-2026 21:03
+last_updated: 08-31-2026 21:03
+project: pjangler
+project_key: PJAN
+tracking_system: plane
+story_location: _bmad-output/implementation-artifacts
+# BOARD BINDING (PJAN, https://plane.delo.sh/33god)
+# ================================================
+# This repo forbids code changes without an active Plane ticket, and every
+# commit must reference one. Sprint 1 = Horizon 1, "One Fleet, One Trustworthy
+# Inventory" (stories 1.1-1.5). Each story's ticket is noted inline below;
+# use it in the branch name and every commit message for that story.
+#   epic-1 -> PJAN-91
+# Stories 1.6-1.22 are later horizons and have no ticket yet -- file one
+# before starting any of them.
+development_status:
+  epic-1: backlog
+  1-1-define-fleet-authority-and-managed-state-contract: backlog  # PJAN-92
+  1-2-discover-the-complete-fleet-and-detect-identity-conflicts: backlog  # PJAN-93
+  1-3-report-fleet-provenance-through-shared-cli-and-mcp: backlog  # PJAN-94
+  1-4-deliver-parse-safe-registry-wide-fleet-status: backlog  # PJAN-95
+  1-5-make-partial-health-truthful-and-actionable: backlog  # PJAN-96
+  1-6-audit-tracked-pm-scaffold-parity-fleet-wide: backlog
+  1-7-prove-generated-profile-health-and-classify-extras: backlog
+  1-8-prove-canonical-systemd-topology-and-service-health: backlog
+  1-9-attribute-live-hermes-processes-and-expose-runtime-sprawl: backlog
+  1-10-prove-bloodbank-routing-readiness-without-granting-activatio: backlog
+  1-11-produce-scoped-versioned-dry-run-reconciliation-plans: backlog
+  1-12-apply-only-current-plans-with-resumable-outcomes: backlog
+  1-13-make-fleet-mutations-crash-and-concurrency-safe: backlog
+  1-14-converge-profiles-through-the-canonical-renderer: backlog
+  1-15-converge-tracked-scaffolds-without-disturbing-runtime-or-wip: backlog
+  1-16-reconcile-positively-owned-services-and-prove-postconditions: backlog
+  1-17-plan-and-execute-safe-legacy-process-drains: backlog
+  1-18-roll-out-through-canaries-and-evidence-gated-waves: backlog
+  1-19-activate-bloodbank-targets-through-a-separate-approval-gate: backlog
+  1-20-continuously-detect-and-publish-fleet-drift: backlog
+  1-21-enforce-fleet-aware-ci-and-release-gates: backlog
+  1-22-close-the-migration-with-current-end-to-end-evidence: backlog
+  epic-1-retrospective: optional
