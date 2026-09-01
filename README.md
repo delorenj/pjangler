@@ -91,11 +91,15 @@ pjangler fleet inventory --agent-registry ./copy.yaml     # inspect a copy
 pjangler fleet inventory --project-registry ./copy.yaml   # inspect a copy
 ```
 
-It is strictly read-only. It opens no service, no process, and no network; it
-creates no directory, project, role, profile, or registry row; and a path it is
-handed is classified with `lstat`, never followed. A symlinked profile directory
-is reported as a symlink with its target as evidence — the target is never
-substituted for the declared path.
+It is strictly read-only. It opens no service, no process, and no network, and
+it creates no directory, project, role, profile, or registry row. Every declared
+path is classified with `lstat`, so a link is *seen* as a link: a symlinked
+profile directory is reported as a symlink with its target as evidence, and the
+target is never substituted for the declared value or used to derive one. (One
+read does traverse the filesystem's own links: the `.project.json` under an
+agent's `project_path` is opened by path. It is confirming evidence only — it can
+never become a field's `source` or its value — but a symlinked `project_path`
+does redirect which manifest is read.)
 
 Every emitted value carries `{value, source, state}`, where `source` is the
 authority owner `contracts/fleet-contract.yaml` declares for that field path and
@@ -114,7 +118,14 @@ on exactly the runs that matter. Only a *command* failure is nonzero:
 | `0` | the command ran — read `data.health.healthy` for the verdict |
 | `2` | a malformed flag value, or a registry that could not be parsed |
 | `3` | a registry that is not there, or an `--agent` id that is not registered |
+| `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
+| `5` | the fleet contract declares a schema version this build does not support |
 | `6` | internal |
+
+Exit `4` and `5` come from the contract, not from a registry: the inventory
+validates `contracts/fleet-contract.yaml` before it reads anything, and refuses
+to attribute provenance against a contract it cannot trust. Run
+`pjangler fleet contract validate` for the diagnostic.
 
 Two more things worth knowing:
 

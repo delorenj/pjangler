@@ -103,3 +103,19 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: low
 reason: The contract declares `agents.{agent_id}.repo`, `.role`, `.role_dir` and so on, but never `agents.{agent_id}` itself - and the row KEY is a value the inventory has to attribute (it is the agent id, and it is one of AC5's conflict dimensions). `buildAuthorityIndex` therefore falls back to the modal owner of everything declared beneath the namespace, which answers `hermes-agent-registry` today because 20 of the 25 declared `agents.*` paths are that authority's. The answer is right, but it is derived rather than declared, and a future contract that moved enough `agents.*` paths to another authority would flip it silently. The same fallback covers `profiles.{profile_name}` (the profile directory, as opposed to the files inside it). Declaring the two namespaces explicitly is Story 1.1's surface; this story's Block If forbids inventing an owner here.
 status: open
+
+### DW-14: The agent-row identity key has no declared owner of its own.
+origin: spec-deferred 0b7946ae09f7
+location: contracts/fleet-contract.yaml (authorities.agent_operational_records) / src/fleet/inventory.ts (buildAuthorityIndex)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: The contract declares agents.{agent_id}.repo, .role, .role_dir and so on, but never agents.{agent_id} itself -- and the row KEY is a value the inventory has to attribute: it is the agent id, and it is one of AC5's conflict dimensions. buildAuthorityIndex therefore falls back to the modal owner of everything declared beneath the namespace, which answers hermes-agent-registry today because 20 of the 25 declared agents.* paths are that authority's. The answer is right, but it is derived rather than declared, and a contract that moved enough agents.* paths elsewhere would flip it silently. The same fallback covers profiles.{profile_name}. Declaring the two namespaces is Story 1.1's surface, and this story's Block If forbids inventing an owner.
+status: open
+
+### DW-15: DW-1's undeclared field list is still undeclared; this story reads none of it.
+origin: spec-deferred f9d4bef858d0
+location: contracts/fleet-contract.yaml (authorities.*.writable_fields)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: medium
+reason: Every field path the inventory attributes resolves to exactly one declared owner against the live 28-agent registry, so DW-1 is closed for the fields this story reads. hindsight.*, reporting.*, internal_role_name, slack.*, telegram.*, hermes.codex_home, systemd.{cron_tick,artifact_bridge, watchdog,checkpoint}_timer and gateways.bloodbank.legacy_profile_consumers remain undeclared, because inventory reads none of them. They become load-bearing in Story 1.8 (systemd topology) and Story 1.10 (routing readiness).
+status: open

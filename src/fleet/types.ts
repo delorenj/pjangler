@@ -326,6 +326,8 @@ export interface FleetInventoryRow {
   profile_path: FleetFieldValue<string>;
   runtime_path: FleetFieldValue<string>;
   expected_units: FleetFieldValue<string[]>;
+  /** The unit name the registry STORES, as opposed to the ones the contract derives. */
+  gateway_unit: FleetFieldValue<string>;
   board: FleetFieldValue<FleetBoardBinding>;
   bloodbank_scope: FleetFieldValue<string>;
   bloodbank_target: FleetFieldValue<string>;

@@ -27,7 +27,7 @@ import {
   type FleetContractInspection,
   type FleetEnvelopeV1,
 } from "./output";
-import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, type FleetDiagnostic, type FleetInventory } from "./types";
+import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, fleetExitCode, type FleetDiagnostic, type FleetInventory } from "./types";
 
 const VALIDATE_COMMAND = "fleet.contract.validate";
 const INVENTORY_COMMAND = "fleet.inventory";
@@ -265,8 +265,13 @@ export function registerFleetCli(program: Command): void {
         write(inventoryEnvelope(inventory), json, () => formatFleetInventoryReport(inventory));
       } catch (error) {
         const normalized = normalizeFleetError(error);
+        // Exit 4 and 5 come out of `collectFleetInventory` rethrowing a contract
+        // diagnostic's own code, and no store path is the fix for those.
+        const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
         const envelope = fleetFailureEnvelope(INVENTORY_COMMAND, normalized, [
-          "Re-run without --json for the full report, or fix the reported store path",
+          contractFault
+            ? "Run `pjangler fleet contract validate` -- the fault is in contracts/fleet-contract.yaml, not in a registry"
+            : "Re-run without --json for the full report, or fix the reported store path",
         ]);
         try { write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized)); }
         catch { emitLastResort(INVENTORY_COMMAND); }

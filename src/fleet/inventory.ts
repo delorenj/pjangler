@@ -66,6 +66,9 @@ const MAX_FINDINGS = 2000;
 /** Cap on conflict groups carried in one envelope. */
 const MAX_CONFLICT_GROUPS = 500;
 
+/** Cap on manifest notes carried on one row; a clip is recorded, never silent. */
+const MAX_MANIFEST_NOTES = 10;
+
 /** Manifest read cap. `.project.json` is a small binding file, not a data store. */
 const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 
@@ -79,6 +82,20 @@ const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
  * field ARE contract-derived and are read from the contract below.
  */
 const ROLE_RUNTIME_DIRNAME = "runtime";
+
+/**
+ * Findings that describe a row's SHAPE rather than a contract breach.
+ *
+ * `malformed_rows` already counts each of these rows exactly once; counting the
+ * findings too would book one bad row two or three times against
+ * `health.contract_violations`. `identity-conflict` is here for the same reason:
+ * `health.conflicts` is its counter.
+ */
+const ROW_INTEGRITY_CODES = new Set([
+  "identity-conflict",
+  "agent-row-malformed",
+  "agent-id-not-a-string",
+]);
 
 /** Store ids, used as stable keys in `data.stores` and in finding details. */
 const AGENT_STORE = "hermes-agent-registry";
@@ -253,6 +270,14 @@ interface RawStore {
   path: string;
   exists: boolean;
   parse: "ok" | "salvaged" | "unreadable";
+  /**
+   * Whether the keyed collection is there at all.
+   *
+   * A file that parses but carries no `agents:` mapping is not an empty fleet;
+   * it is a file this command could not read. Reported so it cannot be mistaken
+   * for a healthy zero.
+   */
+  collection: "ok" | "missing" | "not-a-mapping";
   /** Counted in its own pass over the raw mapping keys, before any row is built. */
   sourceRows: number;
   entries: RawEntry[];
@@ -262,7 +287,7 @@ interface RawStore {
   top: Record<string, unknown>;
 }
 
-function readYamlDocument(path: string, label: string): YAML.Document.Parsed {
+function readYamlDocument(path: string, label: string): { document: YAML.Document.Parsed; text: string } {
   if (!existsSync(path)) {
     throw new FleetError("NOT_FOUND", `${label} not found`, false, { path: shownPath(path) });
   }
@@ -275,7 +300,8 @@ function readYamlDocument(path: string, label: string): YAML.Document.Parsed {
   // The parser's default turns one into a DUPLICATE_KEY error and the run dies
   // on the exact drift AC5 requires this command to name; here both entries
   // survive as separate items and become a conflict group.
-  const document = YAML.parseDocument(readFileSync(path, "utf8"), { uniqueKeys: false });
+  const text = readFileSync(path, "utf8");
+  const document = YAML.parseDocument(text, { uniqueKeys: false });
   if (document.errors.length) {
     const first = document.errors[0]!;
     const at = first.linePos?.[0];
@@ -288,25 +314,66 @@ function readYamlDocument(path: string, label: string): YAML.Document.Parsed {
       { path: shownPath(path) },
     );
   }
-  return document;
+  return { document, text };
+}
+
+/**
+ * Count the collection's raw keys from a SEPARATE parse of the same bytes.
+ *
+ * Independence is the whole point. Counting `items.length` on the very array the
+ * row builder then walks cannot disagree with it no matter what breaks -- the
+ * invariant reads as a check and is a tautology. This re-parses and reaches the
+ * node by a different route (scan the document's own root pairs, rather than
+ * `document.get`), so a defect in the reader's node extraction -- the wrong
+ * collection name, a shape guard that silently yields `[]` -- shows up as
+ * `source_rows != emitted_rows` instead of a fleet quietly reporting zero.
+ *
+ * `uniqueKeys: false` for the same reason the reader uses it: a duplicate agent
+ * id is two raw keys, and this count must say two.
+ */
+function countCollectionRows(text: string, collection: string): number | null {
+  try {
+    const document = YAML.parseDocument(text, { uniqueKeys: false });
+    const contents = document.contents as unknown as { items?: unknown } | null;
+    const pairs = contents && Array.isArray(contents.items)
+      ? (contents.items as Array<{ key?: { value?: unknown }; value?: { items?: unknown } }>)
+      : [];
+    for (const pair of pairs) {
+      if (pair?.key?.value !== collection) continue;
+      return Array.isArray(pair.value?.items) ? (pair.value!.items as unknown[]).length : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Read one keyed store tolerantly.
  *
- * Two loops on purpose. The first counts raw keys and nothing else; the second
- * builds entries. They cannot share a bug.
+ * The count and the entries come from two independent parses on purpose; see
+ * `countCollectionRows`.
  */
 function readKeyedStore(path: string, label: string, collection: string): RawStore {
-  const document = readYamlDocument(path, label);
+  // The guards inside `readYamlDocument` -- existence, regular file, size cap --
+  // must run BEFORE any read, so the text comes back out of it rather than being
+  // read ahead of it. Reading first turned a missing registry into a raw ENOENT,
+  // and NOT_FOUND/exit 3 into INTERNAL_ERROR/exit 6.
+  const { document, text } = readYamlDocument(path, label);
   const node = document.get(collection, true) as unknown;
-  const items = node && typeof node === "object" && Array.isArray((node as { items?: unknown }).items)
+  const nodeIsMapping = Boolean(node) && typeof node === "object" && Array.isArray((node as { items?: unknown }).items);
+  const items = nodeIsMapping
     ? ((node as { items: Array<{ key?: { value?: unknown }; value?: { toJSON?: () => unknown } | null }> }).items)
     : [];
+  const collectionState: RawStore["collection"] = nodeIsMapping
+    ? "ok"
+    : node === undefined || node === null
+      ? "missing"
+      : "not-a-mapping";
 
-  // Pass 1: count only.
-  let sourceRows = 0;
-  for (const _item of items) sourceRows += 1;
+  // Pass 1: count, from its own parse.
+  const counted = countCollectionRows(text, collection);
+  const sourceRows = counted ?? items.length;
 
   // Pass 2: build.
   const entries: RawEntry[] = [];
@@ -348,6 +415,7 @@ function readKeyedStore(path: string, label: string, collection: string): RawSto
     path,
     exists: true,
     parse: salvaged ? "salvaged" : "ok",
+    collection: collectionState,
     sourceRows,
     entries,
     duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => (a < b ? -1 : 1)),
@@ -482,6 +550,8 @@ interface InventoryContext {
   activationOwner: string | null;
   projectsByRepoPath: Map<string, ProjectIndexEntry>;
   projectsBySlug: Map<string, ProjectIndexEntry>;
+  /** The home this run resolves `~` against, on both sides of correlation. */
+  home: string;
   findings: FleetInventoryFinding[];
   /** Findings the cap refused. Counted, because a silent cap is a lie. */
   droppedFindings: number;
@@ -593,9 +663,18 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
   const repoPathOwner = own.ownerOf("projects.{slug}.repo_path");
   let correlated: ProjectIndexEntry | undefined;
   let basis: string | null = null;
+  // The index is keyed by `resolve(expandHome(repo_path))`, so the lookup must
+  // expand `~` too or a "~/code/x" spelling never finds the record for the same
+  // repository. A RELATIVE value is refused outright rather than resolved:
+  // `resolve()` would silently anchor it to whatever directory the operator
+  // happened to be standing in, making correlation depend on the caller's cwd.
+  // `classifyPath` has already reported it as `relative`.
   if (projectPath.value) {
-    correlated = ctx.projectsByRepoPath.get(resolve(projectPath.value));
-    if (correlated) basis = "project_path";
+    const expanded = expandHome(projectPath.value, ctx.home);
+    if (isAbsolute(expanded)) {
+      correlated = ctx.projectsByRepoPath.get(resolve(expanded));
+      if (correlated) basis = "project_path";
+    }
   }
   if (!correlated && repo.value) {
     correlated = ctx.projectsBySlug.get(repo.value);
@@ -682,6 +761,12 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     note("systemd-unit-name-drift", "agents.{agent_id}.systemd.gateway_unit", unitOwner, "warn",
       `stored gateway unit ${bounded(storedGateway)} is not the name the contract's service model derives`);
   }
+  // Emitted, not just compared: it is the unit name systemd actually sees, it is
+  // AC5's unit-name conflict dimension, and without it on the row the drift
+  // finding above names a value the envelope never shows.
+  const gatewayUnit = storedGateway
+    ? field(bounded(storedGateway), unitOwner, "resolved")
+    : unresolved<string>(unitOwner);
 
   // -- stored board binding (projected from the project registry) ------------
   const plane = isRecord(raw.plane) ? raw.plane : {};
@@ -754,11 +839,18 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     note("manifest-missing", "agents.{agent_id}.project_path", projectPath.source, "info",
       "the repository carries no .project.json to confirm the registries");
   }
+  // An announced clip. Every other cap in this module records what it dropped;
+  // a bare `.slice()` here would be the one place the envelope quietly said less
+  // than it knew.
+  if (manifestNotes.length > MAX_MANIFEST_NOTES) {
+    note("manifest-notes-truncated", "agents.{agent_id}.project_path", projectPath.source, "info",
+      `${manifestNotes.length - MAX_MANIFEST_NOTES} of ${manifestNotes.length} manifest notes dropped`);
+  }
   const manifest: FleetManifestEvidence = {
     path: classifyPath(manifestRead.path, {}),
     present: manifestRead.present,
     agrees,
-    notes: manifestNotes.slice(0, 10),
+    notes: manifestNotes.slice(0, MAX_MANIFEST_NOTES),
   };
 
   return {
@@ -783,6 +875,7 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     profile_path: profilePath,
     runtime_path: runtimePath,
     expected_units: expectedUnits,
+    gateway_unit: gatewayUnit,
     board,
     bloodbank_scope: bloodbankScope,
     bloodbank_target: bloodbankTarget,
@@ -841,6 +934,11 @@ const DIMENSIONS = {
   profileName: { key: "profile-name", field: "agents.{agent_id}.profile_name", kind: "agent" },
   boardIdentifier: { key: "board-identifier", field: "agents.{agent_id}.plane.identifier", kind: "agent" },
   bloodbankTarget: { key: "bloodbank-target", field: "agents.{agent_id}.bloodbank.target_agent_id", kind: "agent" },
+  // AC5's seventh dimension. The unit name that reaches systemd is the STORED
+  // one, and two agents can store the same one; the names derived from the
+  // contract's per-agent patterns are `f(agent_id)`, so a collision there is
+  // only ever a duplicate agent id, which `agentId` already reports.
+  gatewayUnit: { key: "gateway-unit", field: "agents.{agent_id}.systemd.gateway_unit", kind: "agent" },
   projectId: { key: "project-id", field: "projects.{slug}.slug", kind: "agent" },
   projectKey: { key: "project-key", field: "projects.{slug}", kind: "project" },
   projectRepoPath: { key: "project-repo-path", field: "projects.{slug}.repo_path", kind: "project" },
@@ -922,12 +1020,17 @@ export function detectConflicts(input: ConflictInput): FleetConflictGroup[] {
     claim(DIMENSIONS.profileName, row.profile_name.value, agentId);
     claim(DIMENSIONS.boardIdentifier, row.board.value?.identifier ?? null, agentId);
     claim(DIMENSIONS.bloodbankTarget, row.bloodbank_target.value, agentId);
+    claim(DIMENSIONS.gatewayUnit, row.gateway_unit.value, agentId);
     claim(DIMENSIONS.projectId, row.project_id.value, agentId);
   }
 
   for (const project of input.projects) {
     claim(DIMENSIONS.projectKey, project.slug, project.key);
-    claim(DIMENSIONS.projectRepoPath, project.repoPath ? resolve(project.repoPath) : null, project.key);
+    // Normalized exactly as the agent-side path dimension is, and for the same
+    // reasons: `resolve()` would bake this host's $HOME into a group id the
+    // README promises is identical on every machine, and would silently prefix
+    // a "~/..." spelling with the working directory.
+    claim(DIMENSIONS.projectRepoPath, normalizePathValue(project.repoPath ? shownPath(project.repoPath) : null), project.key);
     // Board keys are scoped and, for the identifier, case-folded -- because that
     // is how the project registry itself defines uniqueness. Reporting exactly
     // the duplicates `loadProjectRegistry` refuses to load past is the point;
@@ -998,13 +1101,21 @@ export function detectConflicts(input: ConflictInput): FleetConflictGroup[] {
 /** Every field of a row that carries the value a conflict dimension groups on. */
 const CONFLICT_FIELD_KEYS: Record<string, keyof FleetInventoryRow> = {
   "agents.{agent_id}.repo": "repo",
-  "agents.{agent_id}.project_path": "repo_path",
   "agents.{agent_id}.profile_name": "profile_name",
   "agents.{agent_id}.plane.identifier": "board",
   "agents.{agent_id}.bloodbank.target_agent_id": "bloodbank_target",
+  "agents.{agent_id}.systemd.gateway_unit": "gateway_unit",
   "projects.{slug}.slug": "project_id",
   "agents.{agent_id}": "agent_id",
 };
+// `agents.{agent_id}.project_path` is deliberately absent. The row carries no
+// cell for it (`paths.project_path` is a classification, not a field value), and
+// the nearest-looking cell, `repo_path`, is `projects.{slug}.repo_path` -- a
+// different field, in a different store, under a different owner. Stamping it
+// told a reader the project registry's path was contested when it was not, and
+// on an uncorrelated row it emitted `{value: null, state: "conflicted"}`, which
+// the row's own value/state rule forbids. The group is still on the row, in
+// `row.conflicts`.
 
 function projectIndex(store: RawStore): ProjectIndexEntry[] {
   const entries: ProjectIndexEntry[] = [];
@@ -1108,6 +1219,7 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     activationOwner,
     projectsByRepoPath,
     projectsBySlug,
+    home,
     findings: [],
     droppedFindings: 0,
   };
@@ -1119,7 +1231,29 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
       agent_id: null,
       source: authority.ownerOf("agents.{agent_id}.repo"),
       severity: "warn",
-      detail: stores.disagreement,
+      detail: `${stores.disagreement}; this run treats ${shownPath(stores.agents.configuredPath)} as the configured store`,
+    });
+  }
+
+  // A store whose keyed collection is missing or is not a mapping is a store
+  // this command could NOT read -- it is not an empty fleet. Left unsaid, a
+  // registry with a mistyped `agents:` key reported "healthy, 0 of 0 rows" at
+  // exit 0: the silent vanishing the independent count exists to prevent,
+  // arriving one level above the count.
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"] as const,
+    [stores.projects, projectRaw, "projects"] as const,
+  ]) {
+    if (raw.collection === "ok") continue;
+    addFinding(ctx, {
+      code: "registry-collection-unreadable",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: raw.collection === "missing"
+        ? `${store.id} declares no ${collection}: mapping; the file parsed but carries no fleet to inventory`
+        : `${store.id}'s ${collection}: key is not a mapping; the file parsed but carries no fleet to inventory`,
     });
   }
   if (layout.root === null) {
@@ -1224,7 +1358,7 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
   if (ctx.droppedFindings > 0) {
     truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
   }
-  let findings = [...ctx.findings].sort((a, b) => (
+  const findings = [...ctx.findings].sort((a, b) => (
     a.field < b.field ? -1 : a.field > b.field ? 1
       : a.code < b.code ? -1 : a.code > b.code ? 1
         : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1
@@ -1239,8 +1373,14 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
   const malformedRows = allRows.filter((row) => row.malformed).length;
   const correlatedRows = allRows.filter((row) => row.project_id.value !== null).length;
   const unpermitted = conflicts.filter((group) => !group.permitted).length;
+  // A malformed row is already counted, once, in `malformed_rows`. Naming the
+  // row-integrity codes rather than prefix-matching "agent-row" is the fix for a
+  // real double-book: one scalar row with a non-string key raised
+  // `agent-row-malformed` (excluded) AND `agent-id-not-a-string` (counted), so
+  // one defect added one -- or with an unsafe key, two -- to a metric the
+  // exclusion exists to keep at zero.
   const contractViolations = ctx.findings.filter((finding) => (
-    finding.severity === "error" && finding.code !== "identity-conflict" && !finding.code.startsWith("agent-row")
+    finding.severity === "error" && !ROW_INTEGRITY_CODES.has(finding.code)
   )).length;
   const unresolvedRows = allRows.filter((row) => (
     row.project_id.state !== "resolved" || row.profile_path.state !== "resolved" || row.role_dir.state !== "resolved"
@@ -1263,13 +1403,16 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
 
   const health: FleetInventoryHealth = {
     healthy: unpermitted === 0 && malformedRows === 0 && contractViolations === 0 && truncated.length === 0
-      && agentRaw.parse === "ok" && projectRaw.parse === "ok" && totals.source_rows === totals.emitted_rows,
+      && agentRaw.parse === "ok" && projectRaw.parse === "ok"
+      && agentRaw.collection === "ok" && projectRaw.collection === "ok"
+      && totals.source_rows === totals.emitted_rows,
     conflicts: unpermitted,
     permitted_conflicts: totals.permitted_conflict_groups,
     contract_violations: contractViolations,
     malformed_rows: malformedRows,
     unresolved_rows: unresolvedRows,
-    collection_errors: (agentRaw.parse === "ok" ? 0 : 1) + (projectRaw.parse === "ok" ? 0 : 1),
+    collection_errors: (agentRaw.parse === "ok" && agentRaw.collection === "ok" ? 0 : 1)
+      + (projectRaw.parse === "ok" && projectRaw.collection === "ok" ? 0 : 1),
     truncated: truncated.length > 0,
   };
 

@@ -571,6 +571,16 @@ export function formatFleetInventoryReport(inventory: FleetInventory): string {
     health.malformed_rows ? red(`${health.malformed_rows} malformed`) : dim("0 malformed"),
   ];
   lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot(tally)}`);
+  // The verdict's own reasons, on the line under it. They were computed, shipped
+  // in JSON, and never rendered -- so the operator who cannot run `--json` could
+  // see THAT the fleet was unhealthy and never why.
+  const why = [
+    health.unresolved_rows ? yellow(`${health.unresolved_rows} unresolved`) : dim("0 unresolved"),
+    health.contract_violations ? red(`${health.contract_violations} contract violation${health.contract_violations === 1 ? "" : "s"}`) : dim("0 contract violations"),
+    health.permitted_conflicts ? dim(`${health.permitted_conflicts} permitted`) : dim("0 permitted"),
+    health.collection_errors ? red(`${health.collection_errors} unreadable store${health.collection_errors === 1 ? "" : "s"}`) : dim("0 unreadable stores"),
+  ];
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot(why)}`);
   lines.push(`  ${joinDot([dim(inventory.scope.label), dim(inventory.contract_path), dim(`contract ${inventory.contract_version ?? "?"}`)])}`);
 
   section(lines, "Stores");
@@ -634,11 +644,21 @@ export function formatFleetInventoryReport(inventory: FleetInventory): string {
  * error's message and code are already bounded and home-redacted by the time
  * they reach here.
  */
-export function formatFleetErrorReport(title: string, error: { code: string; message: string }): string {
-  return [
+export function formatFleetErrorReport(title: string, error: { code: string; message: string; details?: Record<string, unknown> | null }): string {
+  const lines = [
     "",
     `  ${red(glyph.fail)} ${bold(title)}  ${dim(glyph.dot)}  ${red(error.code)}`,
     `     ${dim(glyph.arrow)} ${dim(bounded(error.message))}`,
-    "",
-  ].join("\n");
+  ];
+  // The detail is the half that identifies the failure: WHICH path was not
+  // there, WHICH agent id is not registered. It goes through the same
+  // `sanitizeDetails` the JSON path uses, so the human report cannot become the
+  // looser of the two surfaces; the operator most likely to have fat-fingered a
+  // path was the one who could not see it.
+  for (const [key, value] of Object.entries(sanitizeDetails(error.details ?? {}))) {
+    if (value === null) continue;
+    lines.push(`     ${dim(glyph.arrow)} ${dim(`${key} ${bounded(String(value))}`)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
 }

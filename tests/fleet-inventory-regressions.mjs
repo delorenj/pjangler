@@ -55,6 +55,9 @@ const scratchHome = join(temp, "home");
 let failures = 0;
 let skipped = 0;
 
+/** Thrown to leave the suite body when the host cannot express any case at all. */
+class SkipSuite extends Error {}
+
 /** A case the host cannot express (no live registry, say). Loud, never silent. */
 function skip(label, reason) {
   skipped += 1;
@@ -264,7 +267,31 @@ function packageWithContract(name, mutate) {
 }
 
 console.log("fleet inventory: registry-wide discovery and identity conflicts");
+
+/**
+ * Every case below derives from the two REAL registries -- that is the point of
+ * the suite, and it is not negotiable: a hand-authored registry stops resembling
+ * the real one and then proves something about a file nobody has.
+ *
+ * But "the operator's laptop has them" is not a property of a test host. On a
+ * fresh clone, on CI, on a second machine, `seedHome`'s `copyFileSync` threw
+ * ENOENT straight out of the harness and `run-tests.mjs` reported the whole
+ * suite FAILED -- indistinguishable from a real regression. A host that cannot
+ * express these cases skips them, loudly, and the run stays honest.
+ */
+const missingStore = [
+  [REAL_AGENT_REGISTRY, "the Hermes agent registry"],
+  [REAL_PROJECT_REGISTRY, "the PJangler project registry"],
+].find(([path]) => !existsSync(path));
+
 try {
+  if (missingStore) {
+    skip(
+      "the whole suite",
+      `${missingStore[1]} is not on this host (${relative(REAL_HOME, missingStore[0])}); every case derives from a copy of a real registry`,
+    );
+    throw new SkipSuite();
+  }
   seedHome();
 
   const liveIds = realAgentIds(REAL_AGENT_REGISTRY);
@@ -844,13 +871,31 @@ try {
   });
 
   check("a control character in a registry cannot reach the terminal raw", () => {
+    // The fields injected here must be fields the human report RENDERS. The
+    // first cut injected into `display_name` and `repo`, neither of which
+    // `rowLines` prints (`display_name` is not even a row field), so the
+    // assertion passed because the values were never emitted at all -- it would
+    // have stayed green with `bounded()` deleted from both. Written as a
+    // JS string escape rather than a raw byte, so this file stays plain text.
+    const id = liveIds[0];
+    const escape = "\u001b[2J";
     const registry = mutatedRegistry("escape-injection", REAL_AGENT_REGISTRY, (document) => {
-      const id = document.get("agents").items[0].key.value;
-      document.setIn(["agents", id, "display_name"], "clear[2Jscreen");
-      document.setIn(["agents", id, "repo"], "repo[2Jname");
+      document.setIn(["agents", id, "role"], `role${escape}x`);
+      document.setIn(["agents", id, "profile_name"], `profile${escape}x`);
+      document.setIn(["agents", id, "systemd", "gateway_unit"], `unit${escape}x`);
+      document.setIn(["agents", id, "display_name"], `clear${escape}screen`);
+      document.setIn(["agents", id, "repo"], `repo${escape}name`);
     });
-    const result = cli(["fleet", "inventory", "--agent-registry", registry]);
-    assert.equal(result.stdout.includes("[2J"), false, "an escape sequence reached the report");
+    const human = cli(["fleet", "inventory", "--agent-registry", registry]);
+    assert.equal(human.stdout.includes(escape), false, "an escape sequence reached the report");
+    // Proof the injected value was actually rendered, so the assertion above is
+    // about stripping and not about absence.
+    assert.ok(/role\s?\[?2Jx/.test(human.stdout), `the injected role never reached the report: ${human.stdout.slice(0, 600)}`);
+    // And the machine surface, which carries every field the report does not.
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--json"]));
+    assert.equal(JSON.stringify(data).includes(escape), false, "an escape sequence reached the envelope");
+    const row = data.rows.find((item) => item.agent_id.value === id);
+    assert.ok(String(row.role.value).includes("2Jx"), `the injected role never reached the envelope: ${row.role.value}`);
   });
 
   check("the two Hermes registry env keys disagreeing is a finding, not a silent choice", () => {
@@ -917,6 +962,231 @@ try {
     assert.match(body, /fleet inventory/);
   });
 
+  // -- what a review pass found the first cut got wrong ----------------------
+
+  check("a conflict never stamps a field the conflict is not about", () => {
+    // `agents.{agent_id}.project_path` (Hermes' field) used to stamp the row's
+    // `repo_path` cell, which is `projects.{slug}.repo_path` -- a different
+    // field, a different store, a different owner. On an uncorrelated row that
+    // also emitted `{value: null, state: "conflicted"}`, which the row's own
+    // value/state rule forbids. The group is reported; the wrong cell is not.
+    const [first, second] = liveIds;
+    const registry = mutatedRegistry("dup-project-path-stamp", REAL_AGENT_REGISTRY, (document) => {
+      const shared = document.getIn(["agents", first, "project_path"]);
+      document.setIn(["agents", second, "project_path"], shared);
+    });
+    const emptyProjects = rawCopy("no-projects-for-stamp", "schema_version: 1\nprojects: {}\n");
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--project-registry", emptyProjects, "--json"]));
+
+    const group = data.conflicts.find((item) => item.field === "agents.{agent_id}.project_path");
+    assert.ok(group, "two agents sharing one project_path must still be one group");
+    assert.deepEqual([...group.participants].sort(), [first, second].sort());
+
+    for (const id of [first, second]) {
+      const row = data.rows.find((item) => item.agent_id.value === id);
+      assert.ok(row, `${id} must still be emitted`);
+      assert.ok(row.conflicts.includes(group.id), "the row must carry the group id");
+      assert.notEqual(row.repo_path.state, "conflicted", "repo_path is a different field, in a different store");
+    }
+
+    // The invariant the mismapping broke, asserted across every row of every
+    // conflicted fleet: a cell with no value cannot be "conflicted".
+    for (const row of data.rows) {
+      for (const [key, cell] of Object.entries(row)) {
+        if (!cell || typeof cell !== "object" || !("state" in cell)) continue;
+        if (cell.value !== null) continue;
+        assert.ok(
+          cell.state === "unresolved" || cell.state === "unobserved",
+          `${row.agent_id.value}.${key} is ${cell.state} with no value`,
+        );
+      }
+    }
+  });
+
+  check("a registry with no agents mapping is an unreadable store, never a healthy zero", () => {
+    // The whole fleet vanishing behind a mistyped key used to read "healthy,
+    // 0 of 0 rows" at exit 0 -- the silent empty this module's independent count
+    // exists to prevent, arriving one level above the count.
+    const renamed = rawCopy("collection-renamed", readFileSync(REAL_AGENT_REGISTRY, "utf8").replace(/^agents:/m, "agent:"));
+    const result = cli(["fleet", "inventory", "--agent-registry", renamed, "--json"]);
+    assert.equal(result.status, 0, "an unreadable collection is data, not a command failure");
+    const data = inventory(result);
+    assert.equal(data.health.healthy, false, "a store that could not be read is not a healthy fleet");
+    assert.ok(data.health.collection_errors >= 1, "the unreadable store must be counted");
+    const finding = data.findings.find((item) => item.code === "registry-collection-unreadable");
+    assert.ok(finding, "the run must say WHICH store carried no fleet");
+    assert.match(finding.detail, /agents/);
+    assert.match(cli(["fleet", "inventory", "--agent-registry", renamed]).stdout, /UNHEALTHY/, "the human report must not say healthy either");
+  });
+
+  check("source_rows counts raw keys, so a duplicate id is two rows and not one", () => {
+    // Proves the count is over RAW mapping keys rather than a de-duplicated
+    // object: `Object.keys` would collapse these two into one and the count
+    // would silently disagree with the fleet on disk.
+    const victim = liveIds[0];
+    const text = readFileSync(REAL_AGENT_REGISTRY, "utf8");
+    const document = YAML.parseDocument(text);
+    const block = String(new YAML.Document({ [victim]: document.getIn(["agents", victim]).toJSON() }))
+      .split("\n").filter(Boolean).map((line) => `  ${line}`).join("\n");
+    const duplicated = rawCopy("duplicate-agent-key", `${text.trimEnd()}\n${block}\n`);
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", duplicated, "--json"]));
+    assert.equal(data.totals.source_rows, liveIds.length + 1, "a duplicate key is two raw keys");
+    assert.equal(data.totals.emitted_rows, data.totals.source_rows, "every raw key becomes a row");
+    assert.equal(data.rows.filter((row) => row.agent_id.value === victim).length, 2, "both occurrences are emitted");
+  });
+
+  check("two agents claiming one systemd unit are a conflict group", () => {
+    // AC5's unit-name dimension. The stored gateway unit is the name systemd
+    // actually sees, and two agents can store the same one; the names derived
+    // from the contract's patterns are f(agent_id) and can only collide when the
+    // ids do, which `agents.{agent_id}` already reports.
+    const [first, second] = liveIds;
+    const registry = mutatedRegistry("dup-gateway-unit", REAL_AGENT_REGISTRY, (document) => {
+      const shared = document.getIn(["agents", first, "systemd", "gateway_unit"]);
+      assert.ok(shared, "the real registry must carry a stored gateway unit to duplicate");
+      document.setIn(["agents", second, "systemd", "gateway_unit"], shared);
+    });
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--json"]));
+    const group = data.conflicts.find((item) => item.field === "agents.{agent_id}.systemd.gateway_unit");
+    assert.ok(group, "a shared unit name must be reported");
+    assert.deepEqual([...group.participants].sort(), [first, second].sort());
+    assert.ok(group.owners.length > 0, "the group must name the declared owner");
+    for (const id of [first, second]) {
+      const row = data.rows.find((item) => item.agent_id.value === id);
+      assert.equal(row.gateway_unit.state, "conflicted", "the contested field is the one that is stamped");
+      assert.ok(row.conflicts.includes(group.id));
+    }
+  });
+
+  check("a malformed row is booked once, in malformed_rows, not again as a contract violation", () => {
+    const clean = inventory(cli(["fleet", "inventory", "--json"]));
+    const broken = rawCopy("one-scalar-row", `${readFileSync(REAL_AGENT_REGISTRY, "utf8").trimEnd()}\n  1234: not-a-mapping\n`);
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", broken, "--json"]));
+    assert.equal(data.health.malformed_rows, 1, "the bad row must be counted, once");
+    assert.equal(
+      data.health.contract_violations,
+      clean.health.contract_violations,
+      "a row's SHAPE is not a contract breach; malformed_rows is its counter",
+    );
+  });
+
+  check("--project-registry reports its own configured/inspected split", () => {
+    // AC10 names both flags. Only the agent store's split was ever asserted, so
+    // swapping the project store's two fields would have told automation a
+    // scratch copy was the canonical registry with nothing failing.
+    const override = rawCopy("projects-override", "schema_version: 1\nprojects: {}\n");
+    const data = inventory(cli(["fleet", "inventory", "--project-registry", override, "--json"]));
+    const store = data.stores.find((item) => item.id === "pjangler-project-registry");
+    assert.ok(store, "the project store must be reported");
+    assert.equal(store.overridden, true);
+    assert.ok(store.inspected_path.includes("projects-override"), `the inspected path must name the override: ${store.inspected_path}`);
+    assert.ok(!store.configured_path.includes("projects-override"), "an override says which bytes to read, not which file is canonical");
+    assert.match(store.configured_path, /projects\.yaml$/);
+    const agents = data.stores.find((item) => item.id === "hermes-agent-registry");
+    assert.equal(agents.overridden, false, "the other store is untouched by this flag");
+  });
+
+  for (const [label, args, code, expectedStatus] of [
+    ["an unknown agent", ["fleet", "inventory", "--agent", "no-such-agent-anywhere"], "NOT_FOUND", 3],
+    ["a missing registry", ["fleet", "inventory", "--agent-registry", join(scratchHome, "nope", "agents-registry.yaml")], "NOT_FOUND", 3],
+  ]) {
+    check(`${label} answers the HUMAN path with the detail that identifies it`, () => {
+      // Every failing case was asserted through --json. The path an operator at
+      // a terminal and `mise run fleet:inventory` actually take was unpinned, so
+      // a formatter fault there would fall through to the last-resort JSON at
+      // exit 6 with the whole suite still green.
+      const result = cli(args);
+      assert.equal(result.status, expectedStatus, `expected exit ${expectedStatus}, got ${result.status}: ${result.stderr}`);
+      assert.notEqual(result.stdout.trim(), "", "the human path still owes an answer");
+      assert.doesNotMatch(result.stdout, /^\s*[{[]/, "a human invocation must not emit a JSON envelope");
+      assert.ok(result.stdout.includes(code), `the report must name ${code}`);
+      assert.doesNotMatch(result.stdout, /\bat [A-Za-z$_][\w$.]*\s*\(/, "no stack frame may reach the operator");
+      assert.doesNotMatch(result.stdout, /node:internal/, "no runtime internals may reach the operator");
+    });
+  }
+
+  check("the human failure names the value that identifies it, home-redacted", () => {
+    const result = cli(["fleet", "inventory", "--agent-registry", join(scratchHome, "nope", "agents-registry.yaml")]);
+    assert.match(result.stdout, /~\//, "the path tried must be shown, and shown redacted");
+    assert.ok(!result.stdout.includes(scratchHome), `the scratch HOME leaked: ${result.stdout}`);
+  });
+
+  check("a disagreeing .project.json is evidence, never a value and never a tiebreaker", () => {
+    // AC4. The only pin was that no field's `source` string matched /manifest/,
+    // which a manifest-derived VALUE would pass too: `source` is always taken
+    // from the contract's authority index regardless of where the value came
+    // from. So this asserts on the value.
+    const repo = join(temp, "manifest-repo");
+    mkdirSync(repo, { recursive: true });
+    const victim = liveIds[0];
+    const registryText = YAML.parse(readFileSync(REAL_AGENT_REGISTRY, "utf8"));
+    const declared = registryText.agents[victim]?.plane?.identifier ?? null;
+    writeFileSync(join(repo, ".project.json"), `${JSON.stringify({
+      project_name: "contradiction",
+      project_slug: "not-the-registry-slug",
+      ticket_provider: { type: "plane", workspace: "elsewhere", identifier: "NOTREAL", board_id: "00000000-0000-0000-0000-000000000000" },
+    }, null, 2)}\n`, "utf8");
+    const registry = mutatedRegistry("manifest-disagrees", REAL_AGENT_REGISTRY, (document) => {
+      document.setIn(["agents", victim, "project_path"], repo);
+    });
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--json"]));
+    const row = data.rows.find((item) => item.agent_id.value === victim);
+    assert.ok(row, "the row must still be emitted");
+    assert.equal(row.manifest.present, true, "the manifest must be seen");
+    assert.equal(row.manifest.agrees, false, "a contradicting manifest must be recorded as disagreeing");
+    assert.ok(row.manifest.notes.length > 0, "the disagreement must be described");
+    assert.ok(
+      data.findings.some((item) => item.code === "manifest-disagrees" && item.agent_id === victim),
+      "the disagreement must be a finding",
+    );
+    // The values themselves: the registry's, or nothing. Never the manifest's.
+    assert.notEqual(row.board.value?.identifier, "NOTREAL", "a manifest value must never become a field value");
+    assert.notEqual(row.board.value?.workspace, "elsewhere");
+    assert.notEqual(row.project_id.value, "not-the-registry-slug");
+    if (declared) assert.equal(row.board.value?.identifier, declared, "the registry's value stands");
+    assert.notEqual(row.board.source, null);
+    assert.doesNotMatch(String(row.board.source), /manifest|project\.json/i);
+  });
+
+  check("a manifest never FILLS a gap the registries left either", () => {
+    // The disagreement case above only exercises rows where the registry has a
+    // value to win with. The other half of "never a tiebreaker" is the row where
+    // the registry has nothing: a manifest that quietly supplies the missing
+    // binding would flip the cell from {value: null, state: "unresolved"} to a
+    // manifest-sourced value carrying a registry's name as its `source`, and the
+    // disagreement assertions would all still pass.
+    const repo = join(temp, "manifest-gapfill-repo");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, ".project.json"), `${JSON.stringify({
+      project_name: "gapfill",
+      project_slug: "manifest-only-slug",
+      ticket_provider: { type: "plane", workspace: "manifest-only-workspace", identifier: "MANONLY", board_id: "11111111-1111-1111-1111-111111111111" },
+    }, null, 2)}\n`, "utf8");
+    const victim = liveIds[0];
+    const registry = mutatedRegistry("manifest-gapfill", REAL_AGENT_REGISTRY, (document) => {
+      document.setIn(["agents", victim, "project_path"], repo);
+      document.deleteIn(["agents", victim, "plane"]);
+    });
+    const emptyProjects = rawCopy("no-projects-for-gapfill", "schema_version: 1\nprojects: {}\n");
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--project-registry", emptyProjects, "--json"]));
+    const row = data.rows.find((item) => item.agent_id.value === victim);
+    assert.ok(row, "the row must still be emitted");
+    assert.equal(row.manifest.present, true, "the manifest must be seen");
+    assert.equal(row.board.value, null, "a manifest value must never fill a registry gap");
+    assert.equal(row.board.state, "unresolved", "an unknown stays explicitly unresolved");
+    assert.equal(row.project_id.value, null, "nor may it supply a project id");
+    assert.equal(row.project_id.state, "unresolved");
+    assert.ok(
+      data.findings.some((item) => item.code === "board-binding-missing" && item.agent_id === victim),
+      "the gap must be reported as a gap",
+    );
+    assert.equal(
+      JSON.stringify(row).includes("MANONLY") || JSON.stringify(row).includes("manifest-only"),
+      false,
+      "no manifest value reached the row at all",
+    );
+  });
+
   check("the README documents the command, its flags, and the healthy/failed split", () => {
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
     assert.match(readme, /fleet inventory/, "the command must be documented");
@@ -932,6 +1202,8 @@ try {
     const body = entry.slice(0, entry.indexOf("\n### ") === -1 ? entry.length : entry.indexOf("\n### "));
     assert.match(body, /spec-1-2|story 1\.2|Story 1\.2/, "DW-1 must record what story 1.2 addressed");
   });
+} catch (error) {
+  if (!(error instanceof SkipSuite)) throw error;
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

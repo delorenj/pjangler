@@ -20396,6 +20396,13 @@ function formatFleetInventoryReport(inventory) {
     health.malformed_rows ? red(`${health.malformed_rows} malformed`) : dim("0 malformed")
   ];
   lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot(tally)}`);
+  const why = [
+    health.unresolved_rows ? yellow(`${health.unresolved_rows} unresolved`) : dim("0 unresolved"),
+    health.contract_violations ? red(`${health.contract_violations} contract violation${health.contract_violations === 1 ? "" : "s"}`) : dim("0 contract violations"),
+    health.permitted_conflicts ? dim(`${health.permitted_conflicts} permitted`) : dim("0 permitted"),
+    health.collection_errors ? red(`${health.collection_errors} unreadable store${health.collection_errors === 1 ? "" : "s"}`) : dim("0 unreadable stores")
+  ];
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot(why)}`);
   lines.push(`  ${joinDot([dim(inventory.scope.label), dim(inventory.contract_path), dim(`contract ${inventory.contract_version ?? "?"}`)])}`);
   section2(lines, "Stores");
   const storeWidth = inventory.stores.reduce((max, store) => Math.max(max, store.id.length), 0);
@@ -20444,20 +20451,31 @@ function formatFleetInventoryReport(inventory) {
   return lines.join("\n");
 }
 function formatFleetErrorReport(title, error) {
-  return [
+  const lines = [
     "",
     `  ${red(glyph.fail)} ${bold(title)}  ${dim(glyph.dot)}  ${red(error.code)}`,
-    `     ${dim(glyph.arrow)} ${dim(bounded3(error.message))}`,
-    ""
-  ].join("\n");
+    `     ${dim(glyph.arrow)} ${dim(bounded3(error.message))}`
+  ];
+  for (const [key, value] of Object.entries(sanitizeDetails2(error.details ?? {}))) {
+    if (value === null) continue;
+    lines.push(`     ${dim(glyph.arrow)} ${dim(`${key} ${bounded3(String(value))}`)}`);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 // src/fleet/inventory.ts
 var REGISTRY_MAX_BYTES = 16 * 1024 * 1024;
 var MAX_FINDINGS = 2e3;
 var MAX_CONFLICT_GROUPS = 500;
+var MAX_MANIFEST_NOTES = 10;
 var MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 var ROLE_RUNTIME_DIRNAME = "runtime";
+var ROW_INTEGRITY_CODES = /* @__PURE__ */ new Set([
+  "identity-conflict",
+  "agent-row-malformed",
+  "agent-id-not-a-string"
+]);
 var AGENT_STORE = "hermes-agent-registry";
 var PROJECT_STORE = "pjangler-project-registry";
 function isRecord7(value) {
@@ -20553,7 +20571,8 @@ function readYamlDocument(path, label) {
   if (stat.size > REGISTRY_MAX_BYTES) {
     throw new FleetError("INVALID_INPUT", `${label} exceeds ${REGISTRY_MAX_BYTES} bytes`, false, { path: shownPath(path) });
   }
-  const document = YAML10.parseDocument(readFileSync26(path, "utf8"), { uniqueKeys: false });
+  const text3 = readFileSync26(path, "utf8");
+  const document = YAML10.parseDocument(text3, { uniqueKeys: false });
   if (document.errors.length) {
     const first = document.errors[0];
     const at = first.linePos?.[0];
@@ -20564,14 +20583,30 @@ function readYamlDocument(path, label) {
       { path: shownPath(path) }
     );
   }
-  return document;
+  return { document, text: text3 };
+}
+function countCollectionRows(text3, collection) {
+  try {
+    const document = YAML10.parseDocument(text3, { uniqueKeys: false });
+    const contents = document.contents;
+    const pairs = contents && Array.isArray(contents.items) ? contents.items : [];
+    for (const pair of pairs) {
+      if (pair?.key?.value !== collection) continue;
+      return Array.isArray(pair.value?.items) ? pair.value.items.length : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 function readKeyedStore(path, label, collection) {
-  const document = readYamlDocument(path, label);
+  const { document, text: text3 } = readYamlDocument(path, label);
   const node = document.get(collection, true);
-  const items = node && typeof node === "object" && Array.isArray(node.items) ? node.items : [];
-  let sourceRows = 0;
-  for (const _item of items) sourceRows += 1;
+  const nodeIsMapping = Boolean(node) && typeof node === "object" && Array.isArray(node.items);
+  const items = nodeIsMapping ? node.items : [];
+  const collectionState = nodeIsMapping ? "ok" : node === void 0 || node === null ? "missing" : "not-a-mapping";
+  const counted = countCollectionRows(text3, collection);
+  const sourceRows = counted ?? items.length;
   const entries = [];
   const seen = /* @__PURE__ */ new Map();
   let salvaged = false;
@@ -20607,6 +20642,7 @@ function readKeyedStore(path, label, collection) {
     path,
     exists: true,
     parse: salvaged ? "salvaged" : "ok",
+    collection: collectionState,
     sourceRows,
     entries,
     duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => a < b ? -1 : 1),
@@ -20765,8 +20801,11 @@ function buildInventoryRow(entry, ctx) {
   let correlated;
   let basis = null;
   if (projectPath.value) {
-    correlated = ctx.projectsByRepoPath.get(resolve20(projectPath.value));
-    if (correlated) basis = "project_path";
+    const expanded = expandHome2(projectPath.value, ctx.home);
+    if (isAbsolute7(expanded)) {
+      correlated = ctx.projectsByRepoPath.get(resolve20(expanded));
+      if (correlated) basis = "project_path";
+    }
   }
   if (!correlated && repo.value) {
     correlated = ctx.projectsBySlug.get(repo.value);
@@ -20871,6 +20910,7 @@ function buildInventoryRow(entry, ctx) {
       `stored gateway unit ${bounded3(storedGateway)} is not the name the contract's service model derives`
     );
   }
+  const gatewayUnit = storedGateway ? field2(bounded3(storedGateway), unitOwner, "resolved") : unresolved(unitOwner);
   const plane = isRecord7(raw.plane) ? raw.plane : {};
   const boardOwner = own.ownerOf("agents.{agent_id}.plane.identifier");
   const binding = {
@@ -20950,11 +20990,20 @@ function buildInventoryRow(entry, ctx) {
       "the repository carries no .project.json to confirm the registries"
     );
   }
+  if (manifestNotes.length > MAX_MANIFEST_NOTES) {
+    note(
+      "manifest-notes-truncated",
+      "agents.{agent_id}.project_path",
+      projectPath.source,
+      "info",
+      `${manifestNotes.length - MAX_MANIFEST_NOTES} of ${manifestNotes.length} manifest notes dropped`
+    );
+  }
   const manifest = {
     path: classifyPath(manifestRead.path, {}),
     present: manifestRead.present,
     agrees,
-    notes: manifestNotes.slice(0, 10)
+    notes: manifestNotes.slice(0, MAX_MANIFEST_NOTES)
   };
   return {
     agent_id: entry.keyIsString && idSafe ? field2(agentId, agentNamespaceOwner, "resolved") : field2(agentId, agentNamespaceOwner, "unresolved"),
@@ -20972,6 +21021,7 @@ function buildInventoryRow(entry, ctx) {
     profile_path: profilePath,
     runtime_path: runtimePath,
     expected_units: expectedUnits,
+    gateway_unit: gatewayUnit,
     board,
     bloodbank_scope: bloodbankScope,
     bloodbank_target: bloodbankTarget,
@@ -21000,6 +21050,11 @@ var DIMENSIONS = {
   profileName: { key: "profile-name", field: "agents.{agent_id}.profile_name", kind: "agent" },
   boardIdentifier: { key: "board-identifier", field: "agents.{agent_id}.plane.identifier", kind: "agent" },
   bloodbankTarget: { key: "bloodbank-target", field: "agents.{agent_id}.bloodbank.target_agent_id", kind: "agent" },
+  // AC5's seventh dimension. The unit name that reaches systemd is the STORED
+  // one, and two agents can store the same one; the names derived from the
+  // contract's per-agent patterns are `f(agent_id)`, so a collision there is
+  // only ever a duplicate agent id, which `agentId` already reports.
+  gatewayUnit: { key: "gateway-unit", field: "agents.{agent_id}.systemd.gateway_unit", kind: "agent" },
   projectId: { key: "project-id", field: "projects.{slug}.slug", kind: "agent" },
   projectKey: { key: "project-key", field: "projects.{slug}", kind: "project" },
   projectRepoPath: { key: "project-repo-path", field: "projects.{slug}.repo_path", kind: "project" },
@@ -21052,11 +21107,12 @@ function detectConflicts(input) {
     claim(DIMENSIONS.profileName, row.profile_name.value, agentId);
     claim(DIMENSIONS.boardIdentifier, row.board.value?.identifier ?? null, agentId);
     claim(DIMENSIONS.bloodbankTarget, row.bloodbank_target.value, agentId);
+    claim(DIMENSIONS.gatewayUnit, row.gateway_unit.value, agentId);
     claim(DIMENSIONS.projectId, row.project_id.value, agentId);
   }
   for (const project of input.projects) {
     claim(DIMENSIONS.projectKey, project.slug, project.key);
-    claim(DIMENSIONS.projectRepoPath, project.repoPath ? resolve20(project.repoPath) : null, project.key);
+    claim(DIMENSIONS.projectRepoPath, normalizePathValue(project.repoPath ? shownPath(project.repoPath) : null), project.key);
     claim(DIMENSIONS.projectBoardId, project.boardId ? `${project.providerScope}/${project.boardId}` : null, project.key);
     claim(DIMENSIONS.projectIdentifier, project.identifier ? `${project.providerScope}/${project.identifier.toUpperCase()}` : null, project.key);
   }
@@ -21113,10 +21169,10 @@ function detectConflicts(input) {
 }
 var CONFLICT_FIELD_KEYS = {
   "agents.{agent_id}.repo": "repo",
-  "agents.{agent_id}.project_path": "repo_path",
   "agents.{agent_id}.profile_name": "profile_name",
   "agents.{agent_id}.plane.identifier": "board",
   "agents.{agent_id}.bloodbank.target_agent_id": "bloodbank_target",
+  "agents.{agent_id}.systemd.gateway_unit": "gateway_unit",
   "projects.{slug}.slug": "project_id",
   "agents.{agent_id}": "agent_id"
 };
@@ -21204,6 +21260,7 @@ function collectFleetInventory(options = {}) {
     activationOwner,
     projectsByRepoPath,
     projectsBySlug,
+    home,
     findings: [],
     droppedFindings: 0
   };
@@ -21214,7 +21271,21 @@ function collectFleetInventory(options = {}) {
       agent_id: null,
       source: authority.ownerOf("agents.{agent_id}.repo"),
       severity: "warn",
-      detail: stores.disagreement
+      detail: `${stores.disagreement}; this run treats ${shownPath(stores.agents.configuredPath)} as the configured store`
+    });
+  }
+  for (const [store, raw, collection] of [
+    [stores.agents, agentRaw, "agents"],
+    [stores.projects, projectRaw, "projects"]
+  ]) {
+    if (raw.collection === "ok") continue;
+    addFinding(ctx, {
+      code: "registry-collection-unreadable",
+      field: `${collection}.{key}`,
+      agent_id: null,
+      source: authority.ownerOf(`${collection}.{key}`),
+      severity: "error",
+      detail: raw.collection === "missing" ? `${store.id} declares no ${collection}: mapping; the file parsed but carries no fleet to inventory` : `${store.id}'s ${collection}: key is not a mapping; the file parsed but carries no fleet to inventory`
     });
   }
   if (layout.root === null) {
@@ -21311,7 +21382,7 @@ function collectFleetInventory(options = {}) {
   if (ctx.droppedFindings > 0) {
     truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
   }
-  let findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
+  const findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
   let reportedConflicts = conflicts;
   if (reportedConflicts.length > MAX_CONFLICT_GROUPS) {
     truncated.push(`conflicts: ${reportedConflicts.length - MAX_CONFLICT_GROUPS} of ${reportedConflicts.length} groups dropped`);
@@ -21320,7 +21391,7 @@ function collectFleetInventory(options = {}) {
   const malformedRows = allRows.filter((row) => row.malformed).length;
   const correlatedRows = allRows.filter((row) => row.project_id.value !== null).length;
   const unpermitted = conflicts.filter((group) => !group.permitted).length;
-  const contractViolations = ctx.findings.filter((finding2) => finding2.severity === "error" && finding2.code !== "identity-conflict" && !finding2.code.startsWith("agent-row")).length;
+  const contractViolations = ctx.findings.filter((finding2) => finding2.severity === "error" && !ROW_INTEGRITY_CODES.has(finding2.code)).length;
   const unresolvedRows = allRows.filter((row) => row.project_id.state !== "resolved" || row.profile_path.state !== "resolved" || row.role_dir.state !== "resolved").length;
   const totals = {
     source_rows: agentRaw.sourceRows,
@@ -21337,13 +21408,13 @@ function collectFleetInventory(options = {}) {
     findings: ctx.findings.length + ctx.droppedFindings
   };
   const health = {
-    healthy: unpermitted === 0 && malformedRows === 0 && contractViolations === 0 && truncated.length === 0 && agentRaw.parse === "ok" && projectRaw.parse === "ok" && totals.source_rows === totals.emitted_rows,
+    healthy: unpermitted === 0 && malformedRows === 0 && contractViolations === 0 && truncated.length === 0 && agentRaw.parse === "ok" && projectRaw.parse === "ok" && agentRaw.collection === "ok" && projectRaw.collection === "ok" && totals.source_rows === totals.emitted_rows,
     conflicts: unpermitted,
     permitted_conflicts: totals.permitted_conflict_groups,
     contract_violations: contractViolations,
     malformed_rows: malformedRows,
     unresolved_rows: unresolvedRows,
-    collection_errors: (agentRaw.parse === "ok" ? 0 : 1) + (projectRaw.parse === "ok" ? 0 : 1),
+    collection_errors: (agentRaw.parse === "ok" && agentRaw.collection === "ok" ? 0 : 1) + (projectRaw.parse === "ok" && projectRaw.collection === "ok" ? 0 : 1),
     truncated: truncated.length > 0
   };
   const agentAuthority = authorityFor(contract, AGENT_STORE);
@@ -21512,8 +21583,9 @@ function registerFleetCli(program2) {
       write(inventoryEnvelope(inventory), json, () => formatFleetInventoryReport(inventory));
     } catch (error) {
       const normalized = normalizeFleetError(error);
+      const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
       const envelope = fleetFailureEnvelope(INVENTORY_COMMAND, normalized, [
-        "Re-run without --json for the full report, or fix the reported store path"
+        contractFault ? "Run `pjangler fleet contract validate` -- the fault is in contracts/fleet-contract.yaml, not in a registry" : "Re-run without --json for the full report, or fix the reported store path"
       ]);
       try {
         write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized));

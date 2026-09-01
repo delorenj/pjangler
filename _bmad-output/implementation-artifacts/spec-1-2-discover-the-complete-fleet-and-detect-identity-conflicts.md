@@ -44,6 +44,163 @@ deferred:
     location: >-
       contracts/fleet-contract.yaml (authorities.*.writable_fields)
     severity: medium
+  - summary: >-
+      One store, three declared authorities, and `stores[].owner` reports the first.
+    evidence: |-
+      `authorityFor` returns the first authority whose `store` matches. The
+      contract declares three against `hermes-agent-registry`:
+      agent_operational_records (owner hermes-agent-registry),
+      board_identity_projection (owner PROJECT-REGISTRY) and bloodbank_activation.
+      So `data.stores[].owner` says hermes-agent-registry and silently hides the
+      one cross-store write the contract goes out of its way to call out. A
+      derived answer, in a module whose stated rule is that it never invents an
+      owner. Reporting the owner SET, or the authority ids, is the fix.
+    location: >-
+      src/fleet/inventory.ts (authorityFor / storeView)
+    severity: medium
+  - summary: >-
+      A missing PROJECT registry aborts the whole run instead of degrading.
+    evidence: |-
+      `readProjectRegistryRaw` throws NOT_FOUND before any row is built, so a
+      host with a Hermes registry but no ~/.config/pjangler/projects.yaml gets
+      exit 3 and NO inventory -- rather than 28 rows each carrying
+      `project-record-missing`, which is what the uncorrelated case already does
+      when the file merely lacks the record. Two consequences of the same choice:
+      `FleetStoreView.exists` can never be false and the `parse: "unreadable"`
+      fallback is unreachable, because `raw` is never null by the time
+      `storeView` is called.
+    location: >-
+      src/fleet/inventory.ts (readProjectRegistryRaw / storeView)
+    severity: medium
+  - summary: >-
+      The store env keys and both registry path resolvers are re-derived, not read.
+    evidence: |-
+      `envKeys` is the literal ["HERMES_AGENTS_REGISTRY","HERMES_FLEET_REGISTRY_FILE"]
+      / ["PJ_PROJECT_REGISTRY"], duplicating `authorities.*.store_env`, which the
+      contract already declares and `fleet contract validate` already projects.
+      `resolveInventoryStores` likewise reimplements the exported
+      `hermesAgentsRegistryPath` and `projectRegistryPath`, and diverges from both
+      (it adds the fleet-key fallback and applies expandHome). Same class as the
+      re-hardcoding the story's Always list forbids for unit patterns, one step
+      outside the three surfaces that list names.
+    location: >-
+      src/fleet/inventory.ts (resolveInventoryStores)
+    severity: low
+  - summary: >-
+      A duplicate-key conflict group names one participant, itself.
+    evidence: |-
+      `participants: [agentId]` for the duplicate-agent-id dimension, and the
+      same shape for duplicate project keys. The finding renders as
+      "candystore-pm is claimed by candystore-pm", the group cannot say WHICH two
+      rows collided, and `matchException`'s exact-set rule then forces an
+      operator to declare `participants: [<the-id-itself>]` to permit it.
+      Occurrences (index-qualified) rather than the key repeated.
+    location: >-
+      src/fleet/inventory.ts (detectConflicts, duplicate-key branches)
+    severity: medium
+  - summary: >-
+      Values are bounded BEFORE they are lstat'd, correlated, and matched.
+    evidence: |-
+      `scalar()` runs every registry value through `bounded()` (512-char cap, C0
+      stripped, CR/LF folded) and the bounded string is what `classifyPath`
+      lstats and what correlation looks up -- so a path longer than 512 chars, or
+      one containing a control character, is classified and correlated against a
+      value the registry does not contain, and reports `absent` for a directory
+      that exists. Agent identity keys are bounded to 128 in `readKeyedStore` and
+      `--agent` matches the truncated key, so an id longer than 128 chars is
+      inventoried but can never be selected: NOT_FOUND, exit 3, for a genuinely
+      registered agent.
+    location: >-
+      src/fleet/inventory.ts (scalar / readKeyedStore key bounding)
+    severity: medium
+  - summary: >-
+      `health.healthy` conflates fleet drift with an envelope presentation cap.
+    evidence: |-
+      `truncated.length === 0` is a conjunct of `healthy`, so a fleet of 1001
+      well-formed agents, or one that trips MAX_FINDINGS, gets the identical
+      UNHEALTHY verdict a real identity conflict produces. `health.truncated`
+      already exists as its own signal. Defensible as "you did not see all of
+      it", but the verdict should read from the fleet, and the two states should
+      not be indistinguishable to a consumer.
+    location: >-
+      src/fleet/inventory.ts (health.healthy)
+    severity: low
+  - summary: >-
+      Nothing drives the row cap, so FLEET_INVENTORY_MAX_ROWS is unproven.
+    evidence: |-
+      No case produces more than MAX_ROWS rows or more than MAX_FINDINGS
+      findings, so neither the rows clip nor its `truncated` note has ever
+      executed; the findings-clip assertion is conditional and never fires on a
+      28-agent fleet. The cap is exactly the code path whose first cut was
+      already wrong once in this story (it stopped pushing at the cap, so the
+      clip could never be recorded).
+    location: >-
+      tests/fleet-inventory-regressions.mjs
+    severity: medium
+  - summary: >-
+      `--agent` leaves `data.findings` fleet-wide, undocumented and unpinned.
+    evidence: |-
+      Findings are never filtered by scope, so `--agent pjangler-pm` returns
+      every other agent's findings. That is consistent with the
+      totals/health/conflicts rule and is probably right, but the README bullet
+      enumerates only `data.totals`, `data.health` and `data.conflicts`, and no
+      check pins the behaviour either way -- so it can flip silently.
+    location: >-
+      src/fleet/inventory.ts (scope filter) / README.md
+    severity: low
+  - summary: >-
+      The exported surface is inconsistent and partly uncallable in typed code.
+    evidence: |-
+      `readAgentRegistryRaw`/`readProjectRegistryRaw` are exported and barrelled
+      but their return type `RawStore` is not; `detectConflicts` is exported
+      while its `ConflictInput` parameter type is not, so it cannot be called
+      from typed code; `buildInventoryRow` and `ClassifyPathOptions` are exported
+      from the module but absent from `src/fleet/index.ts`; `FleetFindingSeverity`
+      is missing from the barrel while `FLEET_FINDING_SEVERITIES` is present.
+    location: >-
+      src/fleet/inventory.ts / src/fleet/index.ts
+    severity: low
+  - summary: >-
+      Two of the four live symlinked profile directories are reported; two are invisible.
+    evidence: |-
+      ~/.hermes/profiles holds four symlinks. Inventory is row-driven, and only
+      `delonet-company-reporter` and `hermes-agent-pm` are named by a registered
+      agent's profile_name, so those two raise `profile-path-symlinked`.
+      `intelliforia-voice-agent` and `stemjangler-adversarial-review` are
+      symlinks in the declared profile root that no row reaches, so the contract
+      violation they represent is reported by nothing. A profile-root sweep is
+      the missing half; AC8 is written per-row, so this is beyond it.
+    location: >-
+      src/fleet/inventory.ts (per-row profile classification)
+    severity: medium
+  - summary: >-
+      The tracked contract has no exercised managed-exception path.
+    evidence: |-
+      `FleetInventoryOptions.contract` exists in the core and is reachable from
+      no CLI caller (the command ships four flags by design, and --contract is
+      not one). The suite proves the exception mechanism by RELOCATING the built
+      bundle beside a mutated contract and leaning on the walk-up in
+      `resolveFleetContractPath`. That is a real end-to-end run, but it exercises
+      a synthetic package root; nothing exercises an exception against
+      contracts/fleet-contract.yaml itself.
+    location: >-
+      tests/fleet-inventory-regressions.mjs (packageWithContract)
+    severity: low
+  - summary: >-
+      The independence of `source_rows` is not observable from outside the CLI.
+    evidence: |-
+      This pass replaced the tautological count (items.length over the array the
+      row builder walks) with a genuinely separate parse, and PROVED it by
+      mutation: breaking the reader's node extraction now yields source_rows 28,
+      emitted_rows 0 and an UNHEALTHY verdict where it used to yield "healthy,
+      0 of 0". But no black-box check can inject a reader defect, so the suite
+      pins only the consequence (raw keys, duplicates included; an unreadable
+      collection is loud). A source-shape assertion was deliberately NOT added:
+      a text match would be green because the text matched, not because the
+      property held.
+    location: >-
+      src/fleet/inventory.ts (countCollectionRows) / tests/fleet-inventory-regressions.mjs
+    severity: low
 ---
 
 <intent-contract>
@@ -187,6 +344,35 @@ deferred:
 
 ## Review Triage Log
 
+### 2026-09-01 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 20: (high 2, medium 10, low 8)
+- defer: 12: (high 0, medium 6, low 6)
+- reject: 9: (high 0, medium 2, low 7)
+- addressed_findings:
+  - `[high]` `[patch]` A `agents.{agent_id}.project_path` conflict stamped the row's `repo_path` cell -- a different field, in a different store, under a different owner -- and on an uncorrelated row emitted `{value: null, state: "conflicted"}`, which the row's own value/state rule forbids. Removed the mapping; the group still reaches the row through `row.conflicts`. Pinned by a check that also asserts, across every row, that no cell is `conflicted` without a value.
+  - `[high]` `[patch]` A registry whose `agents:` key was missing, mistyped, or not a mapping reported "Fleet inventory healthy · 0 of 0 rows" at exit 0 -- the whole fleet vanishing behind a typo, one level above the count that exists to prevent it. Added a `registry-collection-unreadable` finding, wired it into `health.collection_errors` and `health.healthy`.
+  - `[medium]` `[patch]` `totals.source_rows` was `items.length` over the very array the row builder then walks, so the advertised `source_rows != emitted_rows` invariant was structurally unable to fire. Replaced with `countCollectionRows`, a separate parse reaching the node by a different route; verified by mutation (a broken reader now reports 28 vs 0, UNHEALTHY).
+  - `[medium]` `[patch]` AC5's seventh conflict dimension, the derived unit name, had no entry in `DIMENSIONS`. Added `agents.{agent_id}.systemd.gateway_unit` -- the name systemd actually sees, and the only one two distinct agents can collide on -- and emitted `gateway_unit` on the row so the existing drift finding names a value the envelope shows.
+  - `[medium]` `[patch]` `health.contract_violations` double-booked a malformed row: the `!startsWith("agent-row")` prefix match excluded `agent-row-malformed` but let `agent-id-not-a-string` and `agent-id-unsafe` through, so one bad row added one or two to a metric the exclusion exists to keep at zero. Replaced with an explicit `ROW_INTEGRITY_CODES` set.
+  - `[medium]` `[patch]` Correlation keyed the index with `resolve(expandHome(repo_path))` but looked up with `resolve(project_path)` -- no `expandHome` -- so a `~/...` spelling could never correlate, and a relative value silently resolved against the caller's working directory. Made both sides symmetric and refused non-absolute values outright.
+  - `[medium]` `[patch]` The control-character check injected escapes into `display_name` and `repo`, neither of which the human report renders (`display_name` is not even a row field), so it passed because the values were never emitted and would have stayed green with `bounded()` deleted. Now injects into rendered fields, proves they were rendered, and asserts the JSON surface too.
+  - `[medium]` `[patch]` `seedHome()` copied the operator's live registries unguarded, so on any host without them the ENOENT escaped the harness and the whole suite reported FAIL rather than SKIP -- indistinguishable from a regression. Added a suite-level guard that skips loudly, keeping the derive-from-real discipline intact.
+  - `[medium]` `[patch]` The `projects.{slug}.repo_path` dimension hashed `resolve(...)`, baking this host's `$HOME` into a group id the README promises is identical on every machine, while the agent-side path dimension deliberately hashes the home-redacted normalized value. Both now normalize the same way.
+  - `[medium]` `[patch]` AC10 names both override flags but only `--agent-registry`'s store view was ever asserted; swapping the project store's configured/inspected fields would have told automation a scratch copy was canonical with nothing failing. Added the matching assertions.
+  - `[medium]` `[patch]` Every failing case was asserted through `--json`; the human path an operator and `mise run fleet:inventory` actually take was unpinned, so a formatter fault there would fall through to the last-resort JSON at exit 6 with the suite green. Added human-path checks for both failure modes, following the sibling suite's own precedent.
+  - `[medium]` `[patch]` AC4 was pinned only by asserting no field's `source` string matched /manifest/ -- which a manifest-derived VALUE passes too, since `source` always comes from the contract's authority index. Added two value-level cases: a manifest that contradicts the registries, and one that tries to fill a gap they left. The gap-fill case was mutation-verified.
+  - `[low]` `[patch]` The README claimed a handed path is "classified with `lstat`, never followed", while `readManifest` opens `.project.json` through a symlinked `project_path`. Stated the guarantee that actually holds.
+  - `[low]` `[patch]` The README's exit table omitted 4 and 5, which `collectFleetInventory` produces by rethrowing a contract diagnostic's own code. Documented both, and where the fix lives.
+  - `[low]` `[patch]` The human failure report rendered code and message only, so the operator most likely to have fat-fingered a path was the one who could not see which path was tried. It now prints `error.details` through the same `sanitizeDetails` the JSON path uses.
+  - `[low]` `[patch]` `health.unresolved_rows`, `contract_violations`, `permitted_conflicts` and `collection_errors` were computed, shipped in JSON, and never rendered -- so a terminal operator saw THAT the fleet was unhealthy and never why. The report now carries them on the line under the verdict, and names the "19 unresolved" this spec's Verification section expects.
+  - `[low]` `[patch]` `manifest.notes` clipped with a bare `.slice(0, 10)` while every other cap in the module records what it dropped. Added a `manifest-notes-truncated` finding.
+  - `[low]` `[patch]` The env-disagreement finding said "the TypeScript reader would use the default path" on the exact branch where `configured_path` is set to the fleet key -- one run asserting two different canonical files. The detail now names the file this run actually treated as configured.
+  - `[low]` `[patch]` A contract fault produced `next_actions` telling the operator to fix a store path. Exit 4 and 5 now point at `pjangler fleet contract validate`.
+  - `[low]` `[patch]` `let findings` is never reassigned; made it `const`.
+
+
 ## Design Notes
 
 **Unhealthy is data, not a failure exit.** `validateFleetEnvelope` enforces `ok ⟺ error === null` **and** `ok ? data !== null : data === null` (`src/fleet/output.ts:303`). Reporting an unhealthy fleet as `ok:false` would therefore null out `data` on exactly the runs where the inventory matters most. So: a fleet with conflicts is `ok: true`, exit `0`, `data.health.healthy: false`. Only a *command* failure (unreadable registry, unknown `--agent`, bad flag) produces `ok:false` and a nonzero code. The human report must lead with the health verdict so this is not mistaken for "all clear".
@@ -238,8 +424,7 @@ exposes it as `pjangler fleet inventory [--agent <id>] [--project-registry
 <path>] [--agent-registry <path>] [--json]`. It reads both canonical registries
 plus each repository's `.project.json`, emits one row per raw Hermes agent entry
 with per-field authoritative-source provenance drawn from the contract, groups
-identity conflicts under stable ids across eleven dimensions, and reports
-independently counted totals.
+identity conflicts under stable ids, and reports independently counted totals.
 
 Five blockers in the existing fleet module were changed rather than worked
 around: `FLEET_COMMANDS` gained `fleet.inventory`; `validateFleetEnvelope`'s
@@ -251,28 +436,118 @@ from `cli.ts` to `output.ts`.
 Against the live fleet the command reports 28 source rows, 28 emitted, 9
 correlated / 19 uncorrelated, the two live conflict groups (`automatic-ai` under
 `agents.{agent_id}.repo`, `CANDYS` under `agents.{agent_id}.plane.identifier`),
-and the two symlinked profile directories that violate the contract's
-`symlink_allowed: false`. No exception entry is shipped for the live conflicts:
-detecting them is the deliverable, ruling on them is the operator's.
+and the two symlinked profile directories a registered agent points at, which
+violate the contract's `symlink_allowed: false`. No exception entry is shipped
+for the live conflicts: detecting them is the deliverable, ruling on them is the
+operator's.
 
-### Verification
+This follow-up review pass then fixed twenty defects in that work. The two that
+mattered most were both cases of the envelope asserting something untrue: a
+`project_path` conflict stamped a DIFFERENT field's cell (`repo_path`, in the
+other store, under the other owner) and could emit `{value: null, state:
+"conflicted"}`; and a registry whose `agents:` key was missing or mistyped
+reported "Fleet inventory healthy · 0 of 0 rows" at exit 0 -- the whole fleet
+vanishing behind a typo. The module's advertised independent row count was also
+a tautology (`items.length` over the array the row builder walks), AC5's
+unit-name dimension was missing entirely, and the suite failed rather than
+skipped on any machine without the operator's live registries.
 
-`npm run typecheck` clean; `npm run build` reproducible (two builds
-byte-identical); `node tests/fleet-inventory-regressions.mjs` 45 checks green;
-`npm test` 62/64, the two failures being DW-6's pre-existing curl-stub defect
-reproduced at its recorded signature; `npm run coverage:check` rose
-57.07 -> 58.14 percent lines without tripping the floor; `mise run
-fleet:inventory` builds then inventories.
+### Files changed
 
-The suite was mutation-tested rather than trusted for going green first time.
-Five deliberate breaks were each caught by the check that claims to cover them:
-`matchException` always returning null, `classifyPath` using `statSync` instead
-of `lstatSync`, the independent source-row count zeroed, malformed rows filtered
-out before row building, and conflict grouping on the raw declared path string
-instead of the normalized one.
+- `src/fleet/inventory.ts` -- the read-only core: tolerant store reads with
+  per-row salvage, an independent row count, contract-derived provenance, path
+  classification, conflict grouping, exception matching. This pass added
+  `countCollectionRows`, the unreadable-collection finding, the `gateway_unit`
+  field and dimension, `ROW_INTEGRITY_CODES`, symmetric correlation, and
+  host-independent project-path group ids.
+- `src/fleet/types.ts` -- the inventory vocabulary beside the contract's; this
+  pass added `FleetInventoryRow.gateway_unit` and `RawStore.collection`.
+- `src/fleet/output.ts` -- `fleet.inventory` in `FLEET_COMMANDS`, the per-command
+  required-data-key map, the promoted bound helpers, the inventory report; this
+  pass added the health line under the verdict and the detail lines on the
+  failure report.
+- `src/fleet/cli.ts` -- generalized `write()`, args-derived parser-failure
+  command id, the `inventory` subcommand and its guards; this pass made
+  `next_actions` point at the contract for exit 4 and 5.
+- `src/fleet/index.ts` -- barrel re-exports.
+- `tests/fleet-inventory-regressions.mjs` -- the suite: every case a real built
+  `dist/index.js` in a real subprocess, every registry case derived by mutating a
+  copy of a real registry, every invocation bracketed by a content+mtime
+  snapshot. This pass added nine checks and a host guard.
+- `scripts/run-tests.mjs` -- registers the suite.
+- `mise.toml` -- `fleet:inventory`, building first.
+- `README.md` -- the command, its flags, the exit taxonomy (now including 4 and
+  5), and the healthy/unhealthy/failed distinction.
+- `_bmad-output/implementation-artifacts/deferred-work.md` -- DW-1 records what
+  story 1.2 closed and what it still owes.
 
-Two defects in this story's own first cut were found and fixed before
-completion: the findings cap stopped pushing at `MAX_FINDINGS` so the clip could
-never be recorded in `truncated` (the exact "quietly short-changed" failure the
-field exists to prevent), and `contract_violations` was counted from the
-post-clip list.
+### Review findings breakdown
+
+- Patches applied: 20 (2 high, 10 medium, 8 low). Listed individually in the
+  Review Triage Log above.
+- Items deferred: 12, appended to this spec's `deferred` frontmatter. The ones
+  worth an operator's attention first: two of the four live symlinked profile
+  directories are reported by nothing because no registered row reaches them; a
+  missing project registry aborts the run instead of degrading to 28 uncorrelated
+  rows; and duplicate-key conflict groups name a single participant, itself.
+- Items rejected: 9. Chiefly: `requireValue` not refusing single-dash values (the
+  spec explicitly says mirror the `--contract` guards, which do the same); the
+  DW-13/DW-14 ledger duplication (the orchestrator owns the ledger, and this run
+  was told not to rewrite its entries); the spec/sprint-status status mismatch
+  (orchestrator bookkeeping); and assorted defensive guards for states no live
+  or plausible registry produces.
+
+### Follow-up review recommendation
+
+`true`. Patched findings by severity: high 2, medium 10, low 8. The high count
+alone sets it; the score `3 x 10 + 1 x 8` is 38, well past 5. Twenty patches in
+one pass on a 1300-line core is itself the argument for another look.
+
+### Verification performed
+
+- `npm run typecheck` -- clean.
+- `npm run build` -- reproducible; a second build byte-identical to the first.
+- `node dist/index.js fleet inventory` -- exit 0, `UNHEALTHY`, and the verdict
+  line now reads `19 unresolved · 2 contract violations · 0 permitted ·
+  0 unreadable stores`.
+- `node dist/index.js fleet inventory --json | cat` -- one complete envelope
+  through a real pipe; `source_rows` 28, `emitted_rows` 28, matching an
+  independent `YAML.parse` count of the live `agents` keys.
+- `--agent pjangler-pm` one row, scoped label, fleet-wide totals; `--agent nope`
+  NOT_FOUND exit 3; `--agent-registry /nonexistent.yaml` NOT_FOUND exit 3 with
+  the path shown and home-redacted on the human path; empty and option-shaped
+  flag values INVALID_INPUT exit 2.
+- `node tests/fleet-inventory-regressions.mjs` -- all checks green; and with
+  `HERMES_AGENTS_REGISTRY` pointed at a nonexistent file it SKIPS loudly and
+  exits 0, which is the behaviour the host guard was added for.
+- `npm test` -- 62/64. The two failures are `pjan-23-regressions` and
+  `pjan-67-trusted-lifecycle-regressions`, DW-6's pre-existing curl-stub defect,
+  failing at its recorded signature and untouched by this diff.
+- `npm run test:coverage && node scripts/coverage-ratchet.mjs` -- floor not
+  tripped; lines rose 57.07 -> 58.20 percent.
+- `mise run fleet:inventory` -- builds first, then inventories.
+- `git status --porcelain` after every read-only run -- no repository dirt.
+- Seven deliberate mutations were injected, rebuilt, and run against the suite.
+  Six were caught by the check that claims to cover them: restoring the
+  `project_path -> repo_path` stamp, dropping the unreadable-collection finding,
+  dropping the gateway-unit dimension, restoring the prefix-match violation
+  count, silencing the human error details, and letting a manifest fill a
+  registry gap. The seventh -- reverting the row count to share the reader's
+  array -- was NOT caught, and cannot be by a black-box suite; it was verified by
+  hand instead (the reverted build reports `0 of 0` and healthy where the fixed
+  build reports `0 of 28` and UNHEALTHY) and is recorded in the deferred list.
+
+### Residual risks
+
+- One review-introduced regression was caught by this suite mid-pass and fixed:
+  reading the registry bytes before `readYamlDocument`'s existence guard turned a
+  missing registry from NOT_FOUND/exit 3 into INTERNAL_ERROR/exit 6. It is worth
+  recording that the failure was found by an existing check rather than by
+  inspection.
+- Twelve deferred items remain; six are medium. None blocks the command, and none
+  is a wrong answer on the live fleet -- they are unreached surfaces, unexercised
+  caps, and derived answers in a module whose rule is not to derive.
+- Agent-namespace and profile-namespace provenance is still resolved by the modal
+  fallback rather than by a declared owner (the two pre-existing deferred entries
+  above). Declaring those namespaces is Story 1.1's surface, and this story's
+  Block If forbids inventing an owner here.
