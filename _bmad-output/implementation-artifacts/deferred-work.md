@@ -692,3 +692,11 @@ status: closed
 addressed: The `participants` arm is gone. `declaredRowClass` now matches on the concrete `source: agents.<agent_id>` and nothing else, compared as a WHOLE STRING -- `agents.alpha-pm` does not claim `agents.alpha-pm-2`, and the `{agent_id}` placeholder form still claims nobody, because a path shape is not an instance. The two rulings are now cleanly separated: `participants` authorizes a conflict OBSERVATION (and shows up as its `justification`), `source: agents.<id>` declares a lifecycle CLASS for the row.
 
 Pinned by `tests/fleet-health-regressions.mjs`: "a permitted identity conflict warns, is authorized, and is not fleet drift" asserts every row stays `managed_agent` under both the unruled and the ruled contract, and that the ruled agent's member class is `healthy` rather than `exception` -- the ruling authorized the observation, not the row. "a contract-declared lifecycle class puts its row in the exception bucket" asserts a PREFIX of a row path claims nothing. Mutation-checked both ways: restoring the `participants` arm turns the first case red, and matching on a prefix turns the second red.
+
+### DW-81: `npm run test:coverage` OOMs on Node's default heap.
+origin: review-deferred story-1.5
+location: package.json (test:coverage)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: MEASURED on this tree at story 1.5's review pass -- `npm run test:coverage` aborts with `node::OOMErrorHandler` / `Aborted (core dumped)` partway through the 67-suite sweep. It is a V8 HEAP limit, not system memory: 38 GB was available at the time. c8 accumulates V8 coverage JSON for every suite in one parent process, and the story added ~1000 lines of source to a report that already covered 88 files. `NODE_OPTIONS=--max-old-space-size=12288 npm run test:coverage` completes in 383 s and reports 88.04% lines / 81.50% functions / 78.35% branches, all above the floor, and `coverage-ratchet.mjs` exits 0. So the numbers are fine and the runner is not. CI has not hit it yet, which means the first person it blocks will be whoever runs the gate locally and reads the abort as a test failure. The fix is a `--max-old-space-size` in the script itself, or splitting the c8 merge; neither is a call worth making inside a story about health semantics.
+status: open

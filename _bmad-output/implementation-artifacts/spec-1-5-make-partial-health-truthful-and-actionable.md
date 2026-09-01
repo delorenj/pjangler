@@ -2,16 +2,75 @@
 title: 'Story 1.5: Make Partial Health Truthful and Actionable'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'd5caa98b8cd63ead5c7f0594d0b135c4b448e7c6'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md'
   - '{project-root}/contracts/fleet-contract.yaml'
 warnings: ['oversized', 'multiple-goals']
-deferred: []
+deferred:
+  - summary: >-
+      The output.ts <-> health.ts import cycle is prevented by a comment in both files,
+      not by structure.
+    evidence: |-
+      output.ts needs compareStatusFindings and the two sort keys; health.ts needs
+      bounded/redactHome. Safe today only because neither file calls the other at module
+      scope. A top-level initializer calling across it is a TypeError at import time, and
+      because every suite runs the esbuild BUNDLE it would surface as the whole CLI
+      failing to start rather than as a unit-test failure naming the line. Nothing
+      enforces the constraint -- no lint rule, no test, no build check. Extracting
+      bounded/redactHome into a shared module removes the cycle outright. Recorded as DW-77.
+    location: >-
+      src/fleet/health.ts, src/fleet/output.ts
+    severity: medium
+  - summary: >-
+      Two lifecycle values are unreachable until the observers that produce them exist.
+    evidence: |-
+      capability_readiness "blocked" needs a per-agent bloodbank observation in fail or
+      error; every bloodbank observation this build constructs is pass, warn or
+      unsupported, bloodbank is not provenance-fed, and its only mapped audit rule is
+      host-scoped so it never reaches an agent record. Story 1.10 owns the observer.
+      Recorded as DW-78.
+    location: >-
+      src/fleet/health.ts (agentLifecycle)
+    severity: low
+  - summary: >-
+      applicability "optional" is unreachable while the shipped contract requires all
+      nine domains.
+    evidence: |-
+      health_policy.required_domains lists all nine, so classifyObservation can never
+      derive "optional". The value is declared, validated and inert until a contract
+      marks some domain optional. Recorded as DW-79.
+    location: >-
+      contracts/fleet-contract.yaml (health_policy.required_domains)
+    severity: low
+  - summary: >-
+      AC9 names "unhealthy complete observation" as a category, but the verdict does not
+      partition that way.
+    evidence: |-
+      verdict resolves "unhealthy" whenever !healthy, regardless of completeness, so a
+      run that is both unhealthy and incomplete reports unhealthy. Deliberate -- a proven
+      failure is more actionable than an unread half -- and documented where the rule is
+      written, but it is not the partition the acceptance criterion describes.
+      Recorded as DW-80.
+    location: >-
+      src/fleet/health.ts (evaluateFleetHealth)
+    severity: low
+  - summary: >-
+      npm run test:coverage OOMs on Node's default V8 heap.
+    evidence: |-
+      MEASURED at this review pass: node::OOMErrorHandler / Aborted (core dumped) partway
+      through the 67-suite sweep, with 38 GB of system memory free -- it is the V8 heap,
+      not the machine. c8 accumulates coverage JSON for every suite in one parent process.
+      With --max-old-space-size=12288 it completes in 383 s at 88.04% lines and the
+      ratchet exits 0. The numbers are fine; the runner is not, and the first person it
+      blocks will read the abort as a test failure. Recorded as DW-81.
+    location: >-
+      package.json (test:coverage)
+    severity: low
 ---
 
 <intent-contract>
@@ -445,6 +504,34 @@ stable `finding_id`s.
 
 ## Review Triage Log
 
+### 2026-09-01 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 29: (high 1, medium 19, low 9)
+- defer: 5: (high 0, medium 1, low 4)
+- reject: 2: (high 0, medium 0, low 2)
+- addressed_findings:
+  - `[high]` `[patch]` `--baseline` compared nothing about scope, so a narrowed run reported every uncollected finding as `resolved`. MEASURED on the live fleet: `--agent 33god-pm --baseline <unfiltered>` emitted **648 transitions, all `resolved`**, across 27 agents the run never looked at. Now refused with `INVALID_INPUT` naming both scopes; `--live` deliberately excluded from the comparison because reading more than the baseline did IS a real transition.
+  - `[medium]` `[patch]` `validateHealthPolicy` was the only contract stage with no negative test. The guard itself works — I verified a typo'd freshness field is refused with its exact dotted path — so this was regression risk, not a live hole. 17 negative cases added, two mutation-checked, plus one asserting the unmutated contract still passes so the other 17 cannot be vacuous.
+  - `[medium]` `[patch]` `data.findings` was capped in arrival order at 2000 while three documents claimed it sorted first; contradictions append last, so they would have gone first. Now collected unbounded, sorted, then capped.
+  - `[medium]` `[patch]` The findings-truncation note was written before the contradiction loop could add findings, so a run could discard gating findings with `truncated: []` and `health.truncated: false` while `totals.findings` counted them. Written from the result now.
+  - `[medium]` `[patch]` `parseBaselineDocument` accepted any JSON carrying a `data` object, so a `fleet inventory` envelope validated and reported every current finding `appeared`. Now requires `command === "fleet.status"`.
+  - `[medium]` `[patch]` `snapshotOf` defaulted `domain` to `registry` and `severity` to `info` and cast `evidence` unchecked, manufacturing transitions from defaults in the one document whose purpose is comparison. Every axis now validated against its vocabulary, record dropped when unreadable, strings bounded.
+  - `[medium]` `[patch]` A clipped baseline diffed against an unclipped current run: byte-identical state emitted `appeared` for every observation of the agents the record cap dropped. A self-clipped baseline is now refused.
+  - `[medium]` `[patch]` `classifyMember` had no `retired` or `managed_shared_service` arm, so a contract-declared retired agent counted as healthy.
+  - `[medium]` `[patch]` `fleet status` and `fleet inventory` disagreed about a PERMITTED identity conflict — status set `fail` regardless of permission while inventory counted only unpermitted groups. A permitted conflict now `warn`s.
+  - `[medium]` `[patch]` `required_domains` was declared, validated, and gated nothing. Now a conjunct on fleet-completeness (see Deviations).
+  - `[medium]` `[patch]` `freshness: "unknown"` was emitted and read by nothing — "we did not look" reading as fine, at the freshness axis. Counted as `health.freshness_unknown`, gates `proven`, moves severity, reaches the headline.
+  - `[medium]` `[patch]` `lifecycle.observed_state`/`capability_readiness` were not scope-aware, so `--domain registry` made every agent read `discovered`. Both carry `out_of_scope` now.
+  - `[medium]` `[patch]` `boundTransitions` sliced a list ordered by `finding_id` — a sha256 prefix — so cap survival was arbitrary with respect to gating. Ranked before slicing.
+  - `[medium]` `[patch]` Stale readings were filtered out of the ranked report list because it drops `pass`, so the report showed a stale count with no way to find it.
+  - `[medium]` `[patch]` `health.unjustified` counts `warn`/`skip`/`unsupported`, but README, CHANGELOG, AC3 and a detail string all claimed every non-pass. The code was right; four texts fixed.
+  - `[medium]` `[patch]` `applicability` for a `skip` was derived from state alone, asserting non-applicability on nobody's authority and capping a skipped required domain at `low`. Derived from the justification now.
+  - `[medium]` `[patch]` T1: `FLEET_STATUS_MEMBER_PRECEDENCE`'s ORDER was pinned only by a regex over source text — swapping two entries reclassified every mixed agent with nothing red. Delta case added and mutation-checked.
+  - `[medium]` `[patch]` T2/T3/T4: `members.deferred`, the exception road through `fleet status`, and both transition caps were driven by no case at all.
+  - `[medium]` `[patch]` A field-level ruling silently granted a row-level class: `declaredRowClass` matched `matchException`'s `participants` list, so permitting a shared `profile_name` reclassified both rows to `intentionally_unmanaged` — an exemption stories 1.11/1.15 would have consumed. The `participants` arm is removed; DW-30's ledger text corrected to match.
+  - `[low]` `[patch]` Nine smaller items: a stale `pass` labelled approval-gated; the transitions section vanishing when nothing moved; the deleted `retrieval` line; `detectContradictions`' prose narrowed to its code (deliberately NOT widened — DW-75 records it already over-reports); the `observed`/`desired` comment made true; member-precedence comment and constant reconciled; `SCOPE_ORDER`/`FRESHNESS_PRECEDENCE` moved to `types.ts`; `freshness: "unknown"` driven in all three shapes; `dirname` instead of a hardcoded `"/"`.
+
 ## Design Notes
 
 **Why a third verdict instead of redefining `healthy`.** FR4 forbids the *aggregate result* from
@@ -552,3 +639,77 @@ the store read proves a symlinked profile while the audit half is unread.
   domains and confirm each one's `observed`, `owner` and `next_action` against the actual registry
   file, profile directory or repository on disk. A green suite over a synthetic fleet is not evidence
   that the real one is described correctly.
+
+## Auto Run Result
+
+Status: done
+Blocking condition: none
+
+### Summary of implemented change
+
+Story 1.4 could say what every domain observed; it could not say whether the
+answer was trustworthy. `health.healthy` was `fail === 0 && error === 0`, so a
+default run over the live fleet -- three of nine domains with no observer at all,
+every audit-fed domain `unobserved` -- still reported `healthy: true`. FR4
+forbids exactly that.
+
+This story adds `src/fleet/health.ts`, an evaluator that classifies every
+observation on four SEPARATE axes -- state, applicability, evidence strength and
+freshness -- and derives severity, repair class and one exact next action from
+real fields (`fixable`, `rule_scope`, the contract's execution authority) rather
+than from prose. A new optional `health_policy` contract block is the only thing
+that can JUSTIFY a skip, warning, deferred capability or managed exception, which
+is what finally puts DW-63's three self-authorizing `unsupported` literals behind
+declared policy.
+
+The aggregate gains a three-way `verdict` (`healthy`/`unhealthy`/`unproven`) plus
+`proven`, and the report headline, both adapters' next actions and
+`data.health.exit_category` all read from it -- so "healthy" can no longer be
+claimed over an unread fleet. `health.healthy` keeps its story-1.4 drift-only
+meaning beside it, deliberately: redefining it would have broken 1.4's pinned
+criterion that a clean scoped slice reads `healthy: true` and destroyed the
+provenance split between "the fleet is wrong" and "this run did not read it all".
+
+### Files changed
+
+- `contracts/fleet-contract.yaml` -- new `health_policy` root block; `schema_version` 1 -> 2, supported range widened to 1..2 so a schema-1 contract still loads and simply justifies nothing.
+- `src/fleet/health.ts` -- NEW. The evaluator: classification, freshness buckets, justification, member classes, contradiction detection, the gating-impact sort, the baseline diff, the aggregate.
+- `src/fleet/types.ts` -- thirteen new vocabulary tuples, the four axes on every observation and host finding, `FleetStatusLifecycle`/`Members`/`Transition`/`Finding`, and `FleetInventoryRow.classification` typed against the contract's class ids.
+- `src/fleet/contract.ts` -- sixth `validateHealthPolicy` stage beside the existing five.
+- `src/fleet/status.ts` -- threads the evaluator through the single observation construction point; reference instant captured once; the three `unsupported` literals now resolve against declared policy.
+- `src/fleet/inventory.ts` -- `declaredRowClass` resolves a row's lifecycle class from contract-declared entries (DW-30's second half).
+- `src/fleet/output.ts` -- report leads with the verdict; severity, repair, observed/desired and next action per finding; findings sorted before every cap.
+- `src/fleet/cli.ts`, `src/fleet/mcp.ts`, `src/fleet/index.ts` -- `--baseline`/`--exit-code` and their MCP equivalents.
+- `tests/fleet-health-regressions.mjs` -- NEW, host-independent end to end.
+- `tests/fleet-contract-regressions.mjs`, `tests/fleet-status-regressions.mjs`, `tests/mcp-server-regressions.mjs`, `scripts/run-tests.mjs` -- negative policy cases, a guard pinning 1.4's `healthy`, MCP parity, suite registration.
+- `package.json`, `tests/generated-project-lifecycle-regressions.mjs` -- sourcemaps dropped from the published tarball (DW-7); the size ceiling comes DOWN 2,000,000 -> 1,000,000.
+- `README.md`, `mise.toml`, `CHANGELOG.md`, `deferred-work.md` -- documentation and ledger.
+
+### Review findings breakdown
+
+29 patched (1 high, 19 medium, 9 low), 5 deferred, 2 rejected. No intent_gap and
+no bad_spec: the intent-alignment auditor independently confirmed the diff
+implements the reading the spec chose, coherently.
+
+Follow-up review recommended: **true** -- one patched finding was high severity,
+and the score (3 x 19 medium + 1 x 9 low = 66) is well over the threshold of 5.
+
+### Verification performed
+
+- `npm run typecheck && npm run build` -- clean.
+- `npm test` -- **67/67**, run three times across the pass. One `fleet-provenance-regressions` failure mid-pass did NOT reproduce on a clean tree: it was DW-70's attribution problem reading my own uncommitted edits, not a defect.
+- `npm run test:coverage` -- 88.04% lines / 81.50% functions / 78.35% branches, ratchet exits 0 and would raise the floor (left to CI). Note: the run OOMs on Node's default V8 heap and needs `--max-old-space-size`; recorded as DW-81.
+- **Stories 1.2/1.3 proven unregressed by running the baseline build beside the new one**, both pointed at the baseline contract: `fleet inventory` data byte-identical at 81,271 B, `fleet provenance` at 202,098 B. Pinning the contract was necessary -- the old build rejects schema 2 outright, which otherwise reads as total divergence.
+- H1 verified by measurement before and after: `--agent 33god-pm --baseline <unfiltered>` gave **648 false `resolved` transitions** before, `INVALID_INPUT` exit 2 after; the same-scope baseline still returns `transitions: []`.
+- Live fleet: `verdict: unhealthy`, `proven: false`, `exit_category: unhealthy`, 91 failed / 99 warned / 99 unjustified / 19 freshness-unknown / 0 stale / 0 contradictions, 28/28 agents `unhealthy`. `--exit-code` -> 10; without it -> 0. Two runs byte-identical; no timestamp, age or credential in `data`; repo clean after every run.
+- Packed tarball 758,896 bytes / 101 entries / zero `.map` paths, extracted and executed.
+- All 13 I/O matrix rows covered by checks that ran and passed.
+
+### Residual risks
+
+- **DW-75, and it is the one to watch.** `detectContradictions` groups on `(agent_id, domain, field)`, but `DOMAIN_FIELD` gives every rule in a domain one field path, so two true readings of different properties collide. All ten live instances are false positives with both sides true. `contradictions` is a conjunct of `complete`, so ten agents read incomplete partly as a measurement artefact -- in a story whose subject is that verdicts must be earned. It ships only because it fails SAFE, under-claiming proof. If that polarity ever inverts it stops being deferrable.
+- **DW-77** -- the `output.ts` <-> `health.ts` import cycle is prevented by a comment in both files, not by structure. A top-level initializer calling across it is a `TypeError` at import time that surfaces as the whole CLI failing to start. Extracting `bounded`/`redactHome` removes it and costs one file.
+- **DW-78/79** -- `capability_readiness: "blocked"` and `applicability: "optional"` are unreachable until stories 1.10 and a contract that marks some domain optional exist. Declared, validated, inert.
+- **DW-80** -- AC9 names "unhealthy COMPLETE observation" as a category, but `verdict` resolves `unhealthy` whenever `!healthy` regardless of completeness. A documented deliberate choice: a proven failure is more actionable than an unread half.
+- **AC5's "lifecycle state" is not correlated across runs.** `diffFindings` snapshots state, severity and evidence; the four-field lifecycle this story introduces is not in the transition set.
+- **The suite's fleet is synthetic.** AC10 asks for live reconciliation as completion evidence; that was done by hand (five findings across four domains, plus the ten DW-75 contradictions), but nothing re-runs it, so it decays.
