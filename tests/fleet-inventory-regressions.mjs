@@ -721,6 +721,26 @@ try {
     assert.equal(data.totals.observed, 1);
   });
 
+  check("a scoped run reports fleet health, never slice health", () => {
+    // An agent with no conflict of its own must not make the run look clean
+    // while the fleet is broken. Health, totals and conflicts stay fleet-wide;
+    // only `rows` is sliced, and `scope` says so.
+    const registry = mutatedRegistry("scoped-health", REAL_AGENT_REGISTRY, (document) => {
+      const [first, second, third] = document.get("agents").items.map((item) => item.key.value);
+      document.setIn(["agents", first, "profile_name"], "scoped-shared-profile");
+      document.setIn(["agents", second, "profile_name"], "scoped-shared-profile");
+      return third;
+    });
+    const ids = Object.keys(YAML.parse(readFileSync(registry, "utf8")).agents);
+    const bystander = ids[2];
+    const data = inventory(cli(["fleet", "inventory", "--agent-registry", registry, "--agent", bystander, "--json"]));
+    assert.equal(data.rows.length, 1);
+    assert.equal(data.rows[0].agent_id.value, bystander);
+    assert.deepEqual(data.rows[0].conflicts, [], "the bystander has no conflict of its own");
+    assert.equal(data.health.healthy, false, "a slice must not report healthy while the fleet is not");
+    assert.ok(data.conflicts.length >= 1, "conflict groups stay fleet-wide");
+  });
+
   check("--agent <unknown> is NOT_FOUND, exit 3, id bounded, no stack", () => {
     const result = cli(["fleet", "inventory", "--agent", "no-such-agent", "--json"]);
     assert.equal(result.status, 3);

@@ -118,10 +118,13 @@ on exactly the runs that matter. Only a *command* failure is nonzero:
 
 Two more things worth knowing:
 
-- **`--agent` scopes the rows, never the totals.** `data.rows` carries the one
-  agent and `data.scope` says the result is scoped, but `data.totals` still
-  reports the whole registered fleet, so a scoped run can never be mistaken for
-  a shrinking fleet.
+- **`--agent` scopes the rows, never the totals or the verdict.** `data.rows`
+  carries the one agent and `data.scope` says the result is scoped, but
+  `data.totals`, `data.health` and `data.conflicts` still describe the whole
+  registered fleet. A scoped run therefore reports `healthy: false` for a fleet
+  that is unhealthy elsewhere — deliberately, because a slice that could report
+  "healthy" while the fleet is broken is the one thing an aggregate must never
+  do.
 - **`--agent-registry` / `--project-registry` say which bytes to read, not which
   file is canonical.** `data.stores[].configured_path` keeps naming the
   configured store and `inspected_path` names the override.
