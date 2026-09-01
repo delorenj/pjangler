@@ -170,13 +170,29 @@ printf 'curl:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
 if env | grep -Fq '${fleetAuthoritySentinel}'; then
   printf 'authority-visible:curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 fi
+# plane.sh calls: curl -sS -o <body> -D <headers> -w '%{http_code}' -X <M> <url>
+# and captures stdout as the status. Honour -o/-D/-w, or the JSON body lands on
+# stdout where the status belongs and the caller reports "invalid HTTP status".
+out=""; hdr=""; wfmt=""; prev=""
+for a in "$@"; do
+  case "$prev" in
+    -o) out="$a" ;;
+    -D) hdr="$a" ;;
+    -w) wfmt="$a" ;;
+  esac
+  prev="$a"
+done
 case "$*" in
   *'-X GET'*projects/trusted-positive-board/*)
-    printf '%s\n' '{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
-  *'-X GET'*) printf '%s\n' '{"results":[]}' ;;
-  *'-X POST'*) printf '%s\n' '{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
-  *) printf '%s\n' '{}' ;;
+    payload='{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
+  *'-X GET'*) payload='{"results":[]}' ;;
+  *'-X POST'*) payload='{"id":"trusted-positive-board","identifier":"TRUST"}' ;;
+  *) payload='{}' ;;
 esac
+if [ -n "$hdr" ]; then printf 'HTTP/1.1 200\r\n\r\n' > "$hdr"; fi
+if [ -n "$out" ]; then printf '%s\n' "$payload" > "$out"; else printf '%s\n' "$payload"; fi
+if [ -n "$wfmt" ]; then printf '%s' "$wfmt" | sed 's/%{http_code}/200/'; fi
+exit 0
 `);
 
 mkdirSync(dirname(templateConfig), { recursive: true });

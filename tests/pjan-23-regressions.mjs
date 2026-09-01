@@ -111,6 +111,9 @@ import json, os, sys
 
 argv = sys.argv[1:]
 method, url, body, headers = "GET", "", "", []
+# -o/-D/-w take a value. Skipping them as valueless flags made their filename
+# parse as the URL and sent the body to stdout, where plane.sh reads the code.
+out_file = hdr_file = write_fmt = None
 i = 0
 while i < len(argv):
     a = argv[i]
@@ -120,6 +123,12 @@ while i < len(argv):
         headers.append(argv[i + 1]); i += 2
     elif a == "-d":
         body = argv[i + 1]; i += 2
+    elif a == "-o":
+        out_file = argv[i + 1]; i += 2
+    elif a == "-D":
+        hdr_file = argv[i + 1]; i += 2
+    elif a == "-w":
+        write_fmt = argv[i + 1]; i += 2
     elif a.startswith("-"):
         i += 1
     else:
@@ -129,9 +138,23 @@ with open(os.environ["PJAN23_LOG"], "a") as fh:
     fh.write(json.dumps({"method": method, "url": url, "body": body, "headers": sorted(headers)}) + "\\n")
 
 table = json.load(open(os.environ["PJAN23_RESPONSES"]))
+def emit(payload, status):
+    if hdr_file:
+        with open(hdr_file, "w") as fh:
+            fh.write("HTTP/1.1 %d\\r\\n\\r\\n" % status)
+    if out_file:
+        with open(out_file, "w") as fh:
+            fh.write(payload)
+    else:
+        sys.stdout.write(payload)
+    # Real curl writes -w LAST, after the body has gone to -o. plane.sh captures
+    # stdout and expects exactly the status there.
+    if write_fmt:
+        sys.stdout.write(write_fmt.replace("%{http_code}", str(status)))
+
 for entry in table:
     if entry["method"] == method and entry["match"] in url:
-        sys.stdout.write(entry["body"])
+        emit(entry["body"], int(entry.get("status", 200)))
         sys.exit(0)
 sys.stderr.write("curl stub: no fixture for %s %s\\n" % (method, url))
 sys.exit(22)
