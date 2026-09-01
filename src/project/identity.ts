@@ -589,7 +589,7 @@ function resolveBoardByHint(
   );
   if (!names.size) return {};
   const byName = matches((board) => names.has(board.name.trim().toLowerCase()));
-  const unique = new Map(byName.map((board) => [`${board.workspace} ${board.id}`, board]));
+  const unique = new Map(byName.map((board) => [`${board.workspace}\u0000${board.id}`, board]));
   if (unique.size === 1) return { board: [...unique.values()][0] };
   if (unique.size > 1) {
     return { refusal: `board name matches ${unique.size} boards (${describe([...unique.values()])})` };

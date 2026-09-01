@@ -1120,16 +1120,24 @@ try {
     assert.equal(result.stdout.includes("[2J"), false, "an escape sequence reached the report");
   });
 
-  check("the fleet module carries no raw NUL byte", () => {
+  check("no TypeScript source carries a raw NUL byte", () => {
     // A literal NUL makes GNU grep treat the file as binary. The machine-wide
     // pre-commit secret scan greps the unified diff, so one NUL anywhere in
     // that stream silently no-ops the whole scan for the commit carrying it.
-    const fleetDir = join(ROOT, "src", "fleet");
-    for (const name of readdirSync(fleetDir)) {
-      if (!name.endsWith(".ts")) continue;
-      const bytes = readFileSync(join(fleetDir, name));
-      assert.equal(bytes.includes(0), false, `${name} carries a raw NUL byte; write it as a \\u0000 escape`);
-    }
+    // Scoped to all of src/, not just src/fleet: the first one found here was
+    // in src/fleet/contract.ts, the second in src/project/identity.ts, and both
+    // were the same idea -- a NUL used as a composite-map-key separator.
+    const offenders = [];
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.name.endsWith(".ts")) continue;
+        if (readFileSync(full).includes(0)) offenders.push(relative(ROOT, full));
+      }
+    };
+    walk(join(ROOT, "src"));
+    assert.deepEqual(offenders, [], `raw NUL byte in TypeScript source; write it as a \\u0000 escape:\n${offenders.join("\n")}`);
   });
 
   check("the suite is registered in the test runner", () => {
