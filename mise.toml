@@ -34,6 +34,16 @@ description = "Validate the tracked fleet authority and managed-state contract (
 depends = ["build"]
 run = "node {{config_root}}/dist/index.js fleet contract validate"
 
+# Inventories the two canonical REGISTRIES, not the contract file. Strictly
+# read-only: it opens no service, no process, and no network, and writes nothing.
+# An unhealthy fleet still exits 0 -- only a command failure is nonzero.
+[tasks."fleet:inventory"]
+description = "Inventory every registered Hermes agent and report identity conflicts (read-only)"
+# `depends` matters: without a build this task's failure mode on a fresh clone is
+# ERR_MODULE_NOT_FOUND, not the fleet report it exists to give.
+depends = ["build"]
+run = "node {{config_root}}/dist/index.js fleet inventory"
+
 [tasks."fleet:check"]
 description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"

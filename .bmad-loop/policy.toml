@@ -17,7 +17,14 @@ workflow_stall_nudges_cap = 3 # total (never-restored) stall nudges for an injec
 # finished but uncommitted -- the ceiling cost a whole story's session and
 # bought nothing. These stories carry ~10 Given/When/Then AC blocks each and
 # genuinely need the room.
-max_tokens_per_story = 6000000
+# Raised again 6M -> 20M on 2026-09-01. 6M was still short: story 1.1's
+# REVIEW ALONE cost 5,636,486 weighted, and story 1.2 crossed 6.3M with its
+# second review pass still running. Each review fans out four adversarial
+# agents at ~150k apiece against a ~10-AC-block story, so dev+review really
+# does land in the 7-10M range. A ceiling under that does not save anything --
+# it kills a finished-but-uncommitted story and forces a manual recovery,
+# which is exactly what happened to 1.1.
+max_tokens_per_story = 20000000
 cache_read_weight = 0.1      # cache reads bill at ~0.1x input on all vendors; 1.0 = count raw
 
 [verify]

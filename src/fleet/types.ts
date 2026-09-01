@@ -228,3 +228,219 @@ export function fleetExitCode(code: FleetErrorCode): number {
     case "INTERNAL_ERROR": return 6;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Fleet inventory (story 1.2)
+//
+// The contract above says who OWNS a field. Everything below says what the
+// stores actually CONTAIN and where they disagree. The two vocabularies live in
+// one file on purpose: an inventory row exists to carry a value together with
+// the contract-declared authority that owns it, and splitting them would make
+// it possible to add a reported field with no declared owner.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on rows carried in one inventory envelope.
+ *
+ * Deliberately not `MAX_ITEMS` (100) from the envelope's generic list bound:
+ * running the rows array through `boundedValue` would silently drop agent 101
+ * of a growing fleet, which is the exact failure an inventory exists to
+ * prevent. Rows are capped here, at a fleet-shaped number, and every clip is
+ * recorded in `truncated` and flips `health.truncated`.
+ */
+export const FLEET_INVENTORY_MAX_ROWS = 1000;
+
+/**
+ * What is known about one reported value.
+ *
+ * `resolved`   the owning store gave a usable value and everything this command
+ *              can check about it checks out.
+ * `unresolved` absent, blank, unusable, or a referent this command could not
+ *              correlate or classify as ok. Never a guess.
+ * `conflicted` the value is claimed by more than one agent.
+ * `unobserved` this command deliberately does not look. Expected unit names are
+ *              expectations, not observations -- probing systemd is story 1.8.
+ */
+export const FLEET_FIELD_STATES = ["resolved", "unresolved", "conflicted", "unobserved"] as const;
+export type FleetFieldState = (typeof FLEET_FIELD_STATES)[number];
+
+/** One reported value, its contract-declared authority owner, and what is known about it. */
+export interface FleetFieldValue<T = string> {
+  value: T | null;
+  /** The `owner` the contract declares for this field path, or null if it declares none. */
+  source: string | null;
+  state: FleetFieldState;
+}
+
+/**
+ * What a declared path IS, established by `lstat` and never by following it.
+ *
+ * A symlink is reported as a symlink with its target recorded beside it; the
+ * target is evidence, never a substitute for the declared value.
+ */
+export const FLEET_PATH_CLASSIFICATIONS = [
+  "ok", "absent", "relative", "symlink", "outside-root", "not-a-directory", "unreadable", "undeclared",
+] as const;
+export type FleetPathClassification = (typeof FLEET_PATH_CLASSIFICATIONS)[number];
+
+export interface FleetPathView {
+  /** The value as declared, bounded and home-redacted. Never a realpath. */
+  declared: string | null;
+  classification: FleetPathClassification;
+  /** Bounded link target when `classification` is `symlink`, else null. */
+  link_target: string | null;
+}
+
+/** The board binding an agent row stores. Projected from the project registry. */
+export interface FleetBoardBinding {
+  workspace: string | null;
+  project_id: string | null;
+  identifier: string | null;
+}
+
+/**
+ * A repository `.project.json`, read as a third opinion and nothing more.
+ *
+ * It is never the `source` of a field and never a tiebreaker between the two
+ * registries: a manifest that disagrees produces a finding, not a value.
+ */
+export interface FleetManifestEvidence {
+  path: FleetPathView;
+  present: boolean;
+  /** null when there is no manifest to agree or disagree with. */
+  agrees: boolean | null;
+  notes: string[];
+}
+
+/** One row per raw `agents:` entry, whatever shape that entry turned out to be. */
+export interface FleetInventoryRow {
+  agent_id: FleetFieldValue<string>;
+  classification: FleetFieldValue<string>;
+  correlation: FleetFieldValue<string>;
+  project_id: FleetFieldValue<string>;
+  repo: FleetFieldValue<string>;
+  repo_path: FleetFieldValue<string>;
+  role: FleetFieldValue<string>;
+  role_dir: FleetFieldValue<string>;
+  profile_name: FleetFieldValue<string>;
+  profile_path: FleetFieldValue<string>;
+  runtime_path: FleetFieldValue<string>;
+  expected_units: FleetFieldValue<string[]>;
+  /** The unit name the registry STORES, as opposed to the ones the contract derives. */
+  gateway_unit: FleetFieldValue<string>;
+  board: FleetFieldValue<FleetBoardBinding>;
+  bloodbank_scope: FleetFieldValue<string>;
+  bloodbank_target: FleetFieldValue<string>;
+  activation: FleetFieldValue<boolean>;
+  /** The contract's declared execution-authority field path, reported not evaluated. */
+  activation_field: FleetFieldValue<string>;
+  manifest: FleetManifestEvidence;
+  paths: Record<string, FleetPathView>;
+  /** Ids of every conflict group this row participates in. */
+  conflicts: string[];
+  /** Codes of every finding raised against this row. */
+  findings: string[];
+  malformed: boolean;
+}
+
+/**
+ * Two or more claimants on one value of one field path.
+ *
+ * `participants` are the claimants (agent ids, or project-registry record keys
+ * for a registry-internal duplicate). `owners` are the authority owners the
+ * contract declares for the field path. AC5 wants the group to name both.
+ */
+export interface FleetConflictGroup {
+  id: string;
+  field: string;
+  dimension: string;
+  value: string;
+  participants: string[];
+  participant_kind: "agent" | "project";
+  owners: string[];
+  permitted: boolean;
+  exception_id: string | null;
+}
+
+export const FLEET_FINDING_SEVERITIES = ["error", "warn", "info"] as const;
+export type FleetFindingSeverity = (typeof FLEET_FINDING_SEVERITIES)[number];
+
+export interface FleetInventoryFinding {
+  code: string;
+  field: string;
+  agent_id: string | null;
+  source: string | null;
+  severity: FleetFindingSeverity;
+  detail: string;
+}
+
+/**
+ * Counted independently of row building.
+ *
+ * `source_rows` is counted from the raw `agents:` mapping keys in its own pass
+ * BEFORE any row is built, so a row-builder bug surfaces as
+ * `source_rows != emitted_rows` instead of as an inventory that quietly lost an
+ * agent.
+ */
+export interface FleetInventoryTotals {
+  source_rows: number;
+  emitted_rows: number;
+  /** Rows matching the current scope, before the row cap. */
+  selected: number;
+  /** Rows actually carried in `rows`, after the row cap. */
+  observed: number;
+  malformed_rows: number;
+  registered_agents: number;
+  project_records: number;
+  correlated: number;
+  uncorrelated: number;
+  conflict_groups: number;
+  permitted_conflict_groups: number;
+  findings: number;
+}
+
+export interface FleetInventoryHealth {
+  healthy: boolean;
+  conflicts: number;
+  permitted_conflicts: number;
+  contract_violations: number;
+  malformed_rows: number;
+  unresolved_rows: number;
+  collection_errors: number;
+  truncated: boolean;
+}
+
+export interface FleetStoreView {
+  id: string;
+  owner: string | null;
+  store: string | null;
+  env_keys: string[];
+  /** The canonical path, whatever `--*-registry` said. Bounded and home-redacted. */
+  configured_path: string;
+  /** The path actually opened. Equals `configured_path` unless overridden. */
+  inspected_path: string;
+  overridden: boolean;
+  exists: boolean;
+  source_rows: number;
+  parse: "ok" | "salvaged" | "unreadable";
+}
+
+export interface FleetInventoryScope {
+  kind: "fleet" | "agent";
+  agent_id: string | null;
+  label: string;
+}
+
+export interface FleetInventory {
+  contract_path: string;
+  contract_version: string | null;
+  scope: FleetInventoryScope;
+  stores: FleetStoreView[];
+  totals: FleetInventoryTotals;
+  health: FleetInventoryHealth;
+  rows: FleetInventoryRow[];
+  conflicts: FleetConflictGroup[];
+  findings: FleetInventoryFinding[];
+  /** Dotted paths where a bound clipped the reported value. */
+  truncated: string[];
+}

@@ -76,6 +76,81 @@ Two things about the tracked contract that are easy to trip over:
   They are still scanned for credentials and host paths, because a secret in an
   extension is still a secret in a tracked file.
 
+## Fleet inventory
+
+`pjangler fleet inventory` reads the two canonical registries — the Hermes agent
+registry and the PJangler project registry — plus each repository's
+`.project.json`, and answers the question neither store answers alone: what is
+the whole fleet, and where does it disagree with itself?
+
+```bash
+pjangler fleet inventory                                  # human report
+pjangler fleet inventory --json                           # fleet JSON v1 envelope
+pjangler fleet inventory --agent pjangler-pm --json       # one row, full-fleet totals
+pjangler fleet inventory --agent-registry ./copy.yaml     # inspect a copy
+pjangler fleet inventory --project-registry ./copy.yaml   # inspect a copy
+```
+
+It is strictly read-only. It opens no service, no process, and no network, and
+it creates no directory, project, role, profile, or registry row. Every declared
+path is classified with `lstat`, so a link is *seen* as a link: a symlinked
+profile directory is reported as a symlink with its target as evidence, and the
+target is never substituted for the declared value or used to derive one. (One
+read does traverse the filesystem's own links: the `.project.json` under an
+agent's `project_path` is opened by path. It is confirming evidence only — it can
+never become a field's `source` or its value — but a symlinked `project_path`
+does redirect which manifest is read. Nothing else is opened: a `project_path`
+the classifier calls `relative`, `absent`, `outside-root`, or `not-a-directory`
+is reported as `manifest-not-consulted` and no file is read for it, so the
+evidence an agent is judged against never depends on the directory you ran the
+command from.)
+
+Every emitted value carries `{value, source, state}`, where `source` is the
+authority owner `contracts/fleet-contract.yaml` declares for that field path and
+`state` is one of `resolved`, `unresolved`, `conflicted`, or `unobserved`. An
+unknown is an explicit `null` at `unresolved`, never a guess from a convenient
+basename. `.project.json` is read as confirming evidence only: it is never the
+`source` of a field and never a tiebreaker when the two registries disagree.
+
+**An unhealthy fleet is data, not a failure.** A fleet with identity conflicts
+exits `0` with `ok: true` and `data.health.healthy: false` — the envelope nulls
+`data` on `ok: false`, so reporting drift as a failure would blank the inventory
+on exactly the runs that matter. Only a *command* failure is nonzero:
+
+| exit | meaning |
+| --- | --- |
+| `0` | the command ran — read `data.health.healthy` for the verdict |
+| `2` | a malformed flag value, or a registry that could not be parsed |
+| `3` | a registry that is not there, or an `--agent` id that is not registered |
+| `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
+| `5` | the fleet contract declares a schema version this build does not support |
+| `6` | internal |
+
+Exit `4` and `5` come from the contract, not from a registry: the inventory
+validates `contracts/fleet-contract.yaml` before it reads anything, and refuses
+to attribute provenance against a contract it cannot trust. Run
+`pjangler fleet contract validate` for the diagnostic.
+
+Two more things worth knowing:
+
+- **`--agent` scopes the rows, never the totals or the verdict.** `data.rows`
+  carries the one agent and `data.scope` says the result is scoped, but
+  `data.totals`, `data.health` and `data.conflicts` still describe the whole
+  registered fleet. A scoped run therefore reports `healthy: false` for a fleet
+  that is unhealthy elsewhere — deliberately, because a slice that could report
+  "healthy" while the fleet is broken is the one thing an aggregate must never
+  do.
+- **`--agent-registry` / `--project-registry` say which bytes to read, not which
+  file is canonical.** `data.stores[].configured_path` keeps naming the
+  configured store and `inspected_path` names the override.
+
+An identity conflict is grouped under a stable id —
+`conflict:{field-path}:{12 hex}` — identical for every participant, on every
+machine, run after run. A group can be declared permitted by adding an entry to
+`classifications.intentionally_unmanaged.entries` in the contract whose `source`
+equals the group's field path and whose `participants` match the group's set
+exactly; a superset never absorbs a claimant nobody ruled on.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,
