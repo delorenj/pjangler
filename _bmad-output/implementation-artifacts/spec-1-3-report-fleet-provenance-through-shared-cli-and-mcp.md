@@ -2,16 +2,125 @@
 title: 'Story 1.3: Report Fleet Provenance Through Shared CLI and MCP'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-review'
+status: 'done'
 baseline_revision: '25fb40682a32f09364f041f2cf59d64fa7b6e38a'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md'
   - '{project-root}/contracts/fleet-contract.yaml'
 warnings: ['oversized', 'multiple-goals']
-deferred: []
+deferred:
+  - summary: >-
+      The whole provenance suite and the MCP fleet block skip on any host without the
+      operator's three live sources, taking host-independent checks with them.
+    evidence: |-
+      Every case derives from a copy of ~/.hermes/agents-registry.yaml,
+      ~/.config/pjangler/projects.yaml or ~/.config/hermes-agent-template/config.toml, so
+      the suite throws SkipSuite for its entire body when any is absent. On a fresh clone
+      or in CI the read-only, credential-exclusion, cancellation and CLI/MCP-parity
+      guarantees are verified by nothing, and the mise-gate, README and ledger checks --
+      none of which needs a live source -- go silent with them. Recorded as DW-54.
+    location: >-
+      tests/fleet-provenance-regressions.mjs (SkipSuite guard)
+    severity: medium
+  - summary: >-
+      sources[].parse reports the result of an lstat rather than of a parse, and its
+      declared "salvaged" state is produced by nothing.
+    evidence: |-
+      parse is set once from a stat: file, directory or symlink means "ok".
+      readConfiguredPin then swallows read failures with `catch { text = ""; }` and nothing
+      updates the field, so an unreadable or oversized template config reports
+      exists:true, parse:"ok" with every pin silently missing and no finding. Recorded as
+      DW-55.
+    location: >-
+      src/fleet/provenance.ts (resolveProvenanceSources, readConfiguredPin)
+    severity: medium
+  - summary: >-
+      The --agent id is validated only after the entire probe sweep has run.
+    evidence: |-
+      `fleet provenance --agent typo` spawns and reaps every deduplicated checkout probe
+      before failing NOT_FOUND, and behind a hanging checkout can exit 7 (TIMEOUT) instead
+      of the documented 3 -- making a typo indistinguishable from a slow fleet. Recorded as
+      DW-56.
+    location: >-
+      src/fleet/provenance.ts (collectFleetProvenance)
+    severity: low
+  - summary: >-
+      Provenance builds and discards a full inventory to read one integer, inheriting a
+      hard dependency on a store it never reads.
+    evidence: |-
+      collectFleetInventory is called solely for totals.registered_agents, which equals the
+      agentRaw.entries.length provenance already holds. The cost is a second registry
+      parse, an lstat plus .project.json read per agent, and (through readProjectRegistryRaw)
+      exit 3 with NO provenance on a host that has a Hermes registry but no
+      ~/.config/pjangler/projects.yaml. Compounds DW-51 and DW-15; recorded as DW-57.
+    location: >-
+      src/fleet/provenance.ts (collectFleetProvenance)
+    severity: medium
+  - summary: >-
+      withSignals removes its signal listeners without aborting its controller.
+    evidence: |-
+      A TIMEOUT or any throw escaping the body leaves in-flight probe children unaborted.
+      MEASURED and currently harmless: --deadline-ms 2500 behind a pid-recording hang shim
+      exits 7 with zero survivors, because each probe's own min(probeTimeoutMs,
+      remainingMs) timer kills its child first. Defence-in-depth that is redundant today,
+      which is why it is written down rather than patched blind. Recorded as DW-58.
+    location: >-
+      src/fleet/cli.ts (withSignals)
+    severity: low
+  - summary: >-
+      PROBE_MAX_BYTES counts UTF-16 code units, and the cleanliness probe buffers output it
+      only ever tests for emptiness.
+    evidence: |-
+      setEncoding("utf8") then `size += chunk.length` counts code units, so the cap is
+      inaccurate by up to 3x on non-ASCII paths. And `git status --porcelain` on a very
+      dirty tree is accumulated in full when the only read is `value === ""`, so a checkout
+      that is merely very dirty can trip the cap and report unobserved rather than dirty --
+      a wrong answer for the one input it most needs to get right. Recorded as DW-59.
+    location: >-
+      src/fleet/runtime.ts (probe)
+    severity: low
+  - summary: >-
+      MCP rejects an invalid value of a typed field at the protocol boundary, where the CLI
+      emits an INVALID_INPUT envelope.
+    evidence: |-
+      deadlineMs: 0 is a zod -32602 transport error with no envelope; --deadline-ms 0 is an
+      INVALID_INPUT envelope at exit 2. The matrix asks for both "same categories both
+      sides" and "bad flag value -> exit 2", which pull apart here. The existing case covers
+      an unknown KEY, not an invalid value of a known one. Which side gives is a contract
+      question, not a patch. Recorded as DW-60.
+    location: >-
+      src/fleet/mcp.ts (FLEET_TOOL_INPUT)
+    severity: low
+  - summary: >-
+      Three verification depths the ACs name and the suite does not reach: no network-call
+      assertion, no mid-probe deadline escalation, no zero-write snapshot on the MCP path.
+    evidence: |-
+      AC4 asks for a process trace with no execution AND no network call; non-execution is
+      proved with a real touch-sentinel shim, the network half by nothing. The
+      --deadline-ms 1 case is measured to spawn ZERO children (the budget is blown before
+      the first probe), so it proves the pre-spawn guard, not min(probeTimeoutMs,
+      remainingMs); --deadline-ms 2500 behind the same shim does exercise it and is
+      untested. AC13 says "any invocation", and the MCP fleet block takes no snapshot at
+      all, including for the aborted request. Recorded as DW-61.
+    location: >-
+      tests/fleet-provenance-regressions.mjs / tests/mcp-server-regressions.mjs
+    severity: low
+  - summary: >-
+      The .bmad-loop session timeout was raised 90 -> 240 min without fixing the
+      commit-detection bug its own comment names.
+    evidence: |-
+      The comment records that the orchestrator killed this story's dev session at the
+      handoff to review with the work committed and 63/65 suites green, then reported
+      committed=False and demanded a manual rollback. Raising the ceiling was the right
+      immediate call; the defect is in commit detection, which nothing in this diff
+      touches, so a 4-hour ceiling only widens the window before it recurs. The
+      orchestrator owns its own state. Recorded as DW-62.
+    location: >-
+      .bmad-loop/policy.toml (limits.session_timeout_min)
+    severity: low
 ---
 
 <intent-contract>
@@ -206,6 +315,32 @@ the same envelope.
 
 ## Review Triage Log
 
+### 2026-09-01 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 18: (high 0, medium 8, low 10)
+- defer: 9: (high 0, medium 3, low 6)
+- reject: 5: (high 0, medium 0, low 5)
+- addressed_findings:
+  - `[medium]` `[patch]` `fleet inventory --deadline-ms` was accepted, documented as "Fail with TIMEOUT if the whole run has not finished within this budget", and enforced nowhere -- inventory spawns no probe, so it never reached the pre-spawn budget check in `probe()`. Measured: `--deadline-ms 1` exited 0 with a full envelope. `remainingMs` is now called beside `throwIfCancelled` in the row loop; measured after: exit 7, `TIMEOUT`. New case: "fleet inventory enforces the deadline its own flag promises".
+  - `[medium]` `[patch]` A prototype-shaped positional word crashed the parser-failure envelope. `fleetParserFailureEnvelope`'s lookup table was a plain object literal, so `positional["constructor"]` answered with a function, that function became `command`, and `validateFleetEnvelope` threw `INTERNAL_ERROR` out of the very helper that guarantees one parseable envelope. Measured: `fleet constructor --json` printed a raw stack trace, wrote zero JSON bytes, exited 1 -- violating this story's own AC. Rebuilt on `Object.create(null)` with a `typeof` guard; measured after: a parseable `INVALID_INPUT` envelope at exit 2. New case covers five prototype keys.
+  - `[medium]` `[patch]` The probe environment inherited git's repository-redirection variables. `GIT_DIR` makes `git -C <path> rev-parse --show-toplevel` answer about a different repository, defeating the top-level-equality guard `probeCheckout` calls its load-bearing defence; `GIT_INDEX_FILE` could direct `status` at an index outside the probed tree. MEASURED against the pre-patch build: with an ambient `GIT_DIR`, `template.gitlink.desired` went from the real SHA to `missing` and the fact to `unobserved`. `probeEnv()` now deletes eleven such keys; measured after: `data` byte-identical with and without them. New case: "a redirected git environment cannot answer for a probed checkout".
+  - `[medium]` `[patch]` `releaseRoot` was `dirname(repo)` with no `~` expansion and no validation. A `~`-spelled `hermes_repo` (the live config already spells two sibling keys that way) or the unexpanded `HERMES_FLEET_REPO` fallback yielded `releaseRoot: null`, dropping `classifyExecutableFamily` through to the retired patterns -- which match `~/...` -- so every CORRECTLY pinned agent would report as retired drift. And a pin of `~/code/hermes-agent` yielded `~/code`, classifying every binary under it `pinned-release` and disarming the contract's own `(?:^|/)code/hermes-agent` pattern. Replaced with `deriveReleaseRoot`, which expands `~` and refuses a root equal to `/` or the home directory.
+  - `[medium]` `[patch]` `health.healthy` folded truncation into drift. It included `truncated.length === 0` under a comment reading "Drift only", so a clipped but entirely drift-free run reported `healthy: false` -- the exact conflation the two-verdict split exists to prevent, contradicting both the type's doc comment and the README ("healthy (drift-free)"). Clipping now belongs to `complete` alone.
+  - `[medium]` `[patch]` `totals.by_status` and `totals.facts` disagreed the moment anything was dropped. `facts` added `droppedFacts` while `by_status` counted only classified facts, so the suite's own stated invariant (`sum(by_status) === totals.facts`) held only while the 5000-fact cap did not engage. Split into `facts`, `classified_facts` and `dropped_facts`; the invariant is now asserted against `classified_facts` and is true at any scale. The unreachable post-filter truncation branch (`selected` is a filter of `ctx.facts`, which `addFact` already caps) was removed rather than left as reassuring dead code.
+  - `[medium]` `[patch]` `FLEET_PROVENANCE_STATUS_PRECEDENCE` was decoration. Declared in `types.ts`, re-exported from the barrel, documented as the model's precedence rule -- and read by nothing: `compareFact` hardcoded its own `["unobserved","unsupported","missing"]` loop, so reordering the constant moved no behaviour and failed no test. `compareFact` now iterates the constant, filtered to the statuses that are also side states.
+  - `[medium]` `[patch]` `tests/mcp-catalog-regressions.mjs` weakened an existing assertion unnecessarily. The tool-registration regex went from `server\.registerTool\(` to a bare `registerTool\(` so it could cover the fleet pair -- but `src/fleet/mcp.ts` registers through `server.registerTool(` exactly like `mcp-server.ts` does, so the widening bought nothing and cost seven pre-existing tools their guarantee that the call is made on the server. Prefix restored; both new tools still covered.
+  - `[medium]` `[patch]` A skipped case reported `ok`. `skip()` inside a `check()` body printed `SKIP <label>` and then, because the body returned normally, `check` printed `ok   <label>` for the same case -- counted in both tallies. Five cases call it that way; all five happen to run on this host, so the double-report was latent, and on a host without those conditions the suite would have reported success for verification that never happened. Added `skipCase()`, which throws a sentinel `check`/`checkAsync` recognise.
+  - `[low]` `[patch]` `parseDeadlineMs` accepted `0x10` and `1e3`. `Number()` coerces both and `Number.isInteger` agrees. Measured: `--deadline-ms 0x10` produced a 16ms deadline and exit 7; `1e3` produced 1000ms and exit 0. Now digits-only; both are `INVALID_INPUT` at exit 2, and both spellings are in the malformed-flag case.
+  - `[low]` `[patch]` A registry `profile_name` was substituted into a path template unchecked, so a row spelling `../../.ssh` would walk `profileDigest` out of the profile root and publish a sha256 of whatever it landed on. Now allowlisted to one path segment; a name that is not one reports `unsupported` rather than following it.
+  - `[low]` `[patch]` `hermes.checkout_identity` and `hermes.checkout_head` were attributed to `agents.{agent_id}.hermes.repo` while comparing `hermes_git_url` and `hermes_git_sha`, so `owner` and any consumer grouping by `field` filed the URL and SHA comparisons under the repo-path key. Each now carries the field it actually compares.
+  - `[low]` `[patch]` The malformed-flag case contained a tautology: `const shown = stdout.startsWith("{") ? errorCode(envelope(result)) : "INVALID_INPUT"` followed by `assert.equal(shown, "INVALID_INPUT")` compared a literal to itself on the human path, leaving only the exit status checked. Which path a case takes is now declared, not inferred from the output under test.
+  - `[low]` `[patch]` `NEVER_ABORTED`'s comment claimed the controller was retained in a closure. There is no closure -- it is discarded on the same line -- so the comment asserted a safety property a reader would believe. Corrected.
+  - `[low]` `[patch]` No CHANGELOG entry. `## [Unreleased] / ### Added` carries substantial entries for stories 1.1 and 1.2; story 1.3 added two commands, two MCP tools, two exit codes and a module and wrote nothing there. Added, in the established house style.
+  - `[low]` `[patch]` The README's `Fleet inventory` section was stale: it listed neither `--contract` nor `--deadline-ms`, and its exit table stopped at 6 though the command can now exit 7 and 8. The provenance section's exit table also called 3 "a source that is not there", true only of the registries. Both corrected.
+  - `[low]` `[patch]` `tests/fleet-inventory-regressions.mjs` asserted in prose that "`fleet inventory` has no `--contract` flag by design" -- false since this story added it. Rewritten to say why the relocation trick is kept anyway: it proves contract resolution through the DEFAULT walk-up, which the flag bypasses rather than exercises.
+  - `[medium]` `[patch]` Five demonstrated verification gaps closed with cases that fail when their subject breaks: `--contract` was threaded but nothing observed its effect (a reviewer showed deleting the threading failed no suite); no deadline large enough to SUCCEED was ever passed, so a sign flip in `createRunContext` would have left every deadline case green while turning the flag into a switch that fails at any value; `fleet.hermes_bin` and `fleet.hermes_repo` -- the host's own pin, which every per-agent fact is read against -- had no assertion, so crossing the env keys went unnoticed; `readSubmoduleUrl`, a hand-rolled `.gitmodules` parser whose output is the entire `desired` side of `template.remote_url`, had no reader; and the two adapters' hand-duplicated `next_actions` were compared by nothing, so the "two thin adapters" claim was untested for exactly the half that was copied.
+
 ## Design Notes
 
 **Desired is recorded, observed is live.** One rule for the whole model, and it is what makes
@@ -275,3 +410,113 @@ discards the rest, and never carries stderr.
 - `npm run test:coverage && node scripts/coverage-ratchet.mjs` -- expected: floor not tripped.
 - `mise run fleet:provenance` -- expected: builds first, then reports.
 - `git status --porcelain` after every run, plus the mtime of each probed repo's `.git/index` -- expected: unchanged (proves `--no-optional-locks` and read-only probing).
+
+## Auto Run Result
+
+Status: done
+Blocking condition: none
+
+### Summary of implemented change
+
+Story 1.3 adds a read-only provenance core (`src/fleet/provenance.ts`) that pairs
+every **recorded / pinned / declared** value with its **live** counterpart, each side
+naming its own source, in one of six statuses under the precedence
+`unobserved > unsupported > missing > dirty > mismatch > match`. It is exposed as
+`pjangler fleet provenance` and — with story 1.2's inventory — as the
+`pjangler_fleet_inventory` / `pjangler_fleet_provenance` MCP tools, two thin adapters
+over one core returning one envelope. `src/fleet/runtime.ts` gives it bounded,
+cancellable, deadline-aware probes that never execute the observed binary.
+
+This review pass triaged 51 findings from four parallel reviewers, applied 18 patches,
+deferred 9 to the ledger (DW-54…DW-62) and rejected 5. No `intent_gap` and no
+`bad_spec`: every finding was a leaf-level defect the spec's own design already
+implied, so nothing was re-derived.
+
+Three patches fixed defects measured directly against the pre-patch build:
+
+- `fleet inventory --deadline-ms` was documented as enforcing a TIMEOUT and enforced
+  nothing (`--deadline-ms 1` → exit 0). Now exit 7.
+- `fleet constructor --json` crashed with a raw stack trace, zero JSON bytes and exit 1
+  — the parser-failure envelope's own lookup table reached `Object.prototype`. Now a
+  parseable `INVALID_INPUT` envelope at exit 2.
+- An ambient `GIT_DIR` redirected every probe: pre-patch it turned
+  `template.gitlink.desired` from the real SHA into `missing`. Post-patch `data` is
+  byte-identical with and without it.
+
+### Files changed
+
+| file | change |
+| --- | --- |
+| `src/fleet/provenance.ts` | `deriveReleaseRoot` (expands `~`, refuses a root at `/` or `$HOME`); `compareFact` driven from the exported precedence constant; `healthy` no longer folds truncation; `classified_facts`/`dropped_facts` split; unreachable truncation branch removed; checkout identity/head attributed to the fields they compare; `profile_name` allowlisted to one path segment |
+| `src/fleet/runtime.ts` | new `probeEnv()` stripping eleven git repository-redirection variables; `NEVER_ABORTED` comment corrected |
+| `src/fleet/inventory.ts` | `remainingMs` called per row beside `throwIfCancelled`, so the deadline flag carries the guarantee it names |
+| `src/fleet/cli.ts` | null-prototype positional word map with a `typeof` guard; `parseDeadlineMs` digits-only |
+| `src/fleet/types.ts` | `FleetProvenanceTotals` gains `classified_facts`/`dropped_facts`; `healthy` doc corrected |
+| `tests/fleet-provenance-regressions.mjs` | `skipCase()` so a skipped case can no longer also report `ok`; malformed-flag tautology removed and `0x10`/`1e3` added; 9 new cases closing demonstrated gaps |
+| `tests/mcp-catalog-regressions.mjs` | `server\.` prefix restored — the widening that covered the fleet pair was unnecessary and cost 7 tools their guarantee |
+| `tests/fleet-inventory-regressions.mjs` | comment corrected: `--contract` exists now; the relocation is kept to prove the default walk-up |
+| `README.md` | inventory flags `--contract`/`--deadline-ms`, exits 7 and 8, exit-3 scope clarified |
+| `CHANGELOG.md` | the `feat(PJAN-94)` entry story 1.3 owed |
+| `.coverage-floor.json` | ratcheted — coverage rose on all four metrics |
+| `_bmad-output/implementation-artifacts/deferred-work.md` | DW-54 … DW-62 |
+| `dist/*` | rebuilt |
+
+### Review findings breakdown
+
+- **Patches applied:** 18 (medium 8, low 10)
+- **Deferred:** 9 (medium 3, low 6) — DW-54 … DW-62
+- **Rejected:** 5 — the intent's "21 legacy executables" parenthetical (the contract's
+  `~/[^\s]*hermes` pattern also matches the `~/.local/bin/hermes` symlink, so the live
+  count is 22; the prose is imprecise, the code is right); three separate import
+  statements from one module; the deliberate, documented `requireValue` copy in the MCP
+  adapter; and two style-only duplication notes already covered by DW-18.
+
+### Follow-up review recommendation
+
+`true`. Patched this pass: high 0, medium 8, low 10. Score = 3×8 + 1×10 = **34**, which
+is ≥ 5. The patch set is broad and touches the status model (`compareFact` precedence,
+`healthy`, the totals split), so an independent pass over it is warranted.
+
+### Verification performed
+
+| check | outcome |
+| --- | --- |
+| `npm run typecheck` | clean |
+| `npm run build` | `dist/index.js` 1.1mb, `dist/mcp-server.js` 897kb regenerated |
+| `node dist/index.js fleet provenance` | exit 0; 28 agents, 314 facts, `healthy:false`, `complete:false` |
+| `node dist/index.js fleet provenance --json \| cat` | one complete envelope through a real pipe, `ok:true` |
+| determinism | two runs byte-identical, including through a pipe |
+| `git ls-files --stage templates/hermes-agent` vs `template.gitlink.desired.value` | identical (`77d3a002…`) |
+| `--agent pjangler-pm --json` | exit 0, 17 facts scoped to one agent, `totals.agents` still 28 |
+| `--agent nope` / `--agent ""` / `--deadline-ms abc` / `0x10` / `1e3` | 3 / 2 / 2 / 2 / 2 |
+| `--deadline-ms 1` behind a hanging `git` shim | exit 7, `TIMEOUT`, `data: null` |
+| SIGINT behind a hanging shim | exit 8, `CANCELLED`, recorded child pid gone within 2s |
+| failing `git` shim | exit 0, `ok:true`, `complete:false`, `unobserved` 39→87, non-git facts unchanged |
+| credential scan | neither Plane key name nor value in the JSON, the report, or the findings |
+| `fleet inventory --json` vs the baseline build | `data` deep-equal — story 1.2's rows undisturbed |
+| CLI/MCP parity (independent raw stdio harness) | `command`/`data`/`error` deep-equal for both tools; `isError === !ok`; `NOT_FOUND` parity |
+| `node tests/fleet-provenance-regressions.mjs` | 40 cases, all ok |
+| `mcp-server` / `mcp-catalog` / `fleet-inventory` / `fleet-contract` suites | pass |
+| `npm test` | 65 attempted, 63 passed, 2 failed — `pjan-23` and `pjan-67`, the two pre-existing failures DW-6 records, unchanged |
+| `npm run test:coverage` + ratchet | lines/statements 57.07→**59.09**, functions 43.61→**44.94**, branches 72.22→**73.19**; floor raised, not tripped |
+| `mise run fleet:provenance` | builds first, then reports |
+| `git status --porcelain` after every run | clean throughout — nothing written |
+
+### Residual risks
+
+- **Nothing in this story is verified on a machine that is not this one.** The suite
+  skips wholesale without the operator's three live sources (DW-54), so a fresh clone
+  or CI proves none of the read-only, credential, cancellation or parity guarantees.
+  This is the largest single gap and it is mechanical to close.
+- **`sources[].parse` still reports a stat, not a parse** (DW-55): an unreadable
+  template config reads `parse: "ok"` beside a wall of `missing` facts.
+- **Provenance still fails entirely on a host with no project registry** (DW-51/DW-57),
+  from a command that reads nothing out of that store.
+- **Six correctly-pinned agents still report `mismatch`** because the pin is spelled
+  `https://` and the checkout's remote `git@` (DW-52). Reporting what it sees is the
+  right call; an operator cannot yet tell those six from the nine real ones.
+- **`healthy` semantics changed in this pass.** A clipped, drift-free run now reports
+  `healthy: true, complete: false` where it previously reported `healthy: false`. This
+  is the documented behaviour, but any consumer that read `healthy` as "nothing to look
+  at" will now see one more `true`. Not reachable on this fleet (nothing clips at 28
+  agents), and `complete` carries the signal.

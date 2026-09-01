@@ -228,14 +228,22 @@ function provenanceEnvelope(provenance: FleetProvenance, json: boolean): FleetEn
  * Parse `--deadline-ms` into the positive whole number the run context needs.
  *
  * Rejected here rather than in `createRunContext` so a typo is INVALID_INPUT
- * with the flag named, not an internal error from three layers down. `Number()`
- * rather than `parseInt`: `parseInt("5x")` is 5, which would silently accept a
- * deadline the caller did not write.
+ * with the flag named, not an internal error from three layers down.
+ *
+ * The DIGITS are matched first, and `Number()` only afterwards. `parseInt("5x")`
+ * is 5 -- the rejection this guard was written for -- but `Number()` has the
+ * same class of hole in the other direction: `Number("0x10")` is 16 and
+ * `Number("1e3")` is 1000, both integers, both accepted. Measured before this
+ * fix: `--deadline-ms 0x10` produced a 16ms deadline and exit 7, and
+ * `--deadline-ms 1e3` a 1000ms one. A caller who typed either did not mean a
+ * millisecond count in a base they never named, and the two spellings that
+ * silently succeed are worse than the one that loudly fails.
  */
 function parseDeadlineMs(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
-  const value = Number(raw.trim());
-  if (!Number.isInteger(value) || value <= 0) {
+  const text = raw.trim();
+  const value = Number(text);
+  if (!/^\d+$/u.test(text) || !Number.isSafeInteger(value) || value <= 0) {
     throw new FleetError("INVALID_INPUT", "--deadline-ms must be a positive whole number of milliseconds");
   }
   return value;
@@ -303,8 +311,23 @@ export function fleetParserFailureEnvelope(args: readonly string[]): FleetEnvelo
   // Positional-only, and a MAP rather than a chain of ternaries: an option VALUE
   // may legally be `provenance` (`--agent provenance` is an unlucky but valid
   // id), so scanning the whole argv would mislabel a validate failure.
-  const positional: Record<string, string> = { inventory: INVENTORY_COMMAND, provenance: PROVENANCE_COMMAND };
-  const command = (words[1] !== undefined ? positional[words[1]] : undefined) ?? VALIDATE_COMMAND;
+  //
+  // NULL-PROTOTYPE, and that is the whole point of building it with
+  // `Object.create(null)`. A plain object literal inherits `Object.prototype`,
+  // so `positional["constructor"]` answers with a FUNCTION rather than
+  // `undefined`, that function becomes the envelope's `command`, and
+  // `validateFleetEnvelope` then throws `INTERNAL_ERROR` out of the very helper
+  // that exists to guarantee one parseable envelope. Measured before this fix:
+  // `fleet constructor --json` printed a raw stack trace, wrote zero JSON bytes
+  // and exited 1 -- outside the command's own exit taxonomy. The words are
+  // attacker-shaped by definition (Commander has already rejected them), so the
+  // lookup table must not have a prototype to reach.
+  const positional: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
+    inventory: INVENTORY_COMMAND,
+    provenance: PROVENANCE_COMMAND,
+  });
+  const candidate = words[1] !== undefined ? positional[words[1]] : undefined;
+  const command = typeof candidate === "string" ? candidate : VALIDATE_COMMAND;
   return fleetFailureEnvelope(command, new FleetError("INVALID_INPUT", "Invalid fleet command arguments"));
 }
 

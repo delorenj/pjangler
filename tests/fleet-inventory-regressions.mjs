@@ -245,13 +245,18 @@ function realAgentIds(path) {
 /**
  * A relocated package root carrying a mutated contract.
  *
- * `fleet inventory` has no `--contract` flag by design -- it inventories the
- * registries, not a candidate contract file. But the managed-exception mechanism
- * lives IN the contract, so proving it through the real built CLI needs the CLI
- * to resolve a different contract. `resolveFleetContractPath` walks up from the
- * running module for `package.json` + `contracts/fleet-contract.yaml`, so a copy
- * of the bundle beside a copy of the contract is the whole trick. `node_modules`
- * is symlinked because the bundle keeps its dependencies external.
+ * The managed-exception mechanism lives IN the contract, so proving it through
+ * the real built CLI needs the CLI to resolve a different contract.
+ * `resolveFleetContractPath` walks up from the running module for `package.json`
+ * + `contracts/fleet-contract.yaml`, so a copy of the bundle beside a copy of
+ * the contract is the whole trick. `node_modules` is symlinked because the
+ * bundle keeps its dependencies external.
+ *
+ * `fleet inventory` DOES now take `--contract` (story 1.3 added it to both fleet
+ * commands so the two adapters share one option surface). This relocation is
+ * kept anyway, and deliberately: it proves contract resolution through the
+ * DEFAULT path -- the walk-up every real invocation uses -- which the flag would
+ * bypass rather than exercise.
  */
 function packageWithContract(name, mutate) {
   const dir = join(temp, name);

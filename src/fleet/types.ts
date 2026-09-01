@@ -592,8 +592,18 @@ export interface FleetProvenanceSourceView {
 export interface FleetProvenanceTotals {
   /** Registered agents in the whole fleet, scope-independent. Equals the inventory's `registered_agents`. */
   agents: number;
-  /** Facts built, before the scope filter and the fact cap. */
+  /** Facts built, before the scope filter and the fact cap. `classified_facts + dropped_facts`. */
   facts: number;
+  /**
+   * Facts that reached a status bucket -- what `by_status` sums to, always.
+   *
+   * Held apart from `facts` because a fact dropped at the cap has no status:
+   * summing `by_status` against `facts` was an invariant that held only while
+   * the cap did not engage.
+   */
+  classified_facts: number;
+  /** Facts refused at `FLEET_PROVENANCE_MAX_FACTS`. Counted in `facts`, absent from `by_status`. */
+  dropped_facts: number;
   /** Facts actually carried in `facts`. */
   emitted_facts: number;
   probes: number;
@@ -602,7 +612,13 @@ export interface FleetProvenanceTotals {
 }
 
 export interface FleetProvenanceHealth {
-  /** Drift-free: no mismatch, no dirty, no missing, nothing clipped. */
+  /**
+   * Drift-free: no mismatch, no dirty, no missing.
+   *
+   * Clipping is deliberately NOT part of this. A truncated but drift-free run is
+   * `healthy: true, complete: false` -- which is the whole reason there are two
+   * verdicts rather than one.
+   */
   healthy: boolean;
   /** Everything that could be observed was: no `unobserved` fact and no failed probe. */
   complete: boolean;

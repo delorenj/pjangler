@@ -60,8 +60,11 @@ export interface FleetRunContextOptions {
  * A never-aborting signal, for callers that pass none.
  *
  * `AbortSignal.abort()` is the opposite (already aborted). A fresh controller's
- * signal is the "no cancellation was requested" value, and holding the
- * controller in the closure keeps it from being collected out from under it.
+ * signal is the "no cancellation was requested" value: nothing holds the
+ * controller, so nothing can ever abort it, which is exactly the property this
+ * constant exists to have. (An earlier version of this comment claimed the
+ * controller was retained in a closure. There is no closure -- the controller is
+ * discarded on the same line -- and a reader should not be told otherwise.)
  */
 const NEVER_ABORTED: AbortSignal = new AbortController().signal;
 
@@ -118,6 +121,50 @@ export interface FleetProbeResult {
 }
 
 /**
+ * Git's repository-redirection variables. Every one of them can make
+ * `git -C <path> ...` answer about a DIFFERENT repository than `<path>`.
+ *
+ * They are deleted rather than merely overridden because there is no correct
+ * value to override them with: `-C <path>` is the only repository selector this
+ * module wants, and any of these present in the ambient environment silently
+ * wins over it. `GIT_DIR` alone defeats the top-level-equality guard in
+ * `probeCheckout` -- the guard reads `rev-parse --show-toplevel`, which would
+ * answer with the redirected repository's toplevel and compare equal to nothing
+ * this command probed. `GIT_INDEX_FILE` is worse: it can point `status` at an
+ * index OUTSIDE the probed tree, which is a write to a path the read-only
+ * guarantee never covered.
+ *
+ * This is not hypothetical ambient state. A git hook, a `git` wrapper, and
+ * `direnv` all export `GIT_DIR`, and both this repo's own suites unset these
+ * keys in their isolation blocks -- the production path did not.
+ */
+const GIT_REDIRECTION_KEYS = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
+  "GIT_NAMESPACE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+] as const;
+
+/**
+ * The environment one probe child gets.
+ *
+ * `GIT_TERMINAL_PROMPT=0` is the one that keeps a run bounded: without it a
+ * checkout with an unauthenticated remote can block on a credential prompt
+ * forever behind the timeout. The pager overrides stop git from paging into a
+ * pipe nobody drains.
+ *
+ * `GIT_OPTIONAL_LOCKS=0` is deliberately NOT set. It would do the same job as
+ * the `--no-optional-locks` flag every caller passes -- and that is the problem:
+ * with both in place, deleting the flag changed nothing and the suite's
+ * index-mtime assertion stayed green. Measured. One mechanism, provably
+ * load-bearing, beats two that hide each other.
+ */
+export function probeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", PAGER: "cat" };
+  for (const key of GIT_REDIRECTION_KEYS) delete env[key];
+  return env;
+}
+
+/**
  * Run one bounded child and parse its stdout into a single value.
  *
  * Four deliberate choices:
@@ -156,17 +203,10 @@ export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: strin
         // envelope -- exit code set, process never leaving, because an active
         // handle kept the loop alive.
         detached: true,
-        // An observation probe has no business inheriting a pager, an editor,
-        // a credential helper, or a terminal. `GIT_TERMINAL_PROMPT=0` is the
-        // one that matters: without it a checkout with an unauthenticated
-        // remote can block on a credential prompt forever behind the timeout.
-        //
-        // `GIT_OPTIONAL_LOCKS=0` is deliberately NOT set. It would do the same
-        // job as the `--no-optional-locks` flag every caller passes -- and that
-        // is the problem: with both in place, deleting the flag changed nothing
-        // and the suite's index-mtime assertion stayed green. Measured. One
-        // mechanism, provably load-bearing, beats two that hide each other.
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", PAGER: "cat" },
+        // An observation probe has no business inheriting a pager, an editor, a
+        // credential helper, a terminal, or -- above all -- a redirected
+        // repository. See `probeEnv` for what is stripped and why.
+        env: probeEnv(),
       });
     } catch {
       settle({ outcome: "failed", value: null });

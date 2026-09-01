@@ -16653,6 +16653,15 @@ var FLEET_PROVENANCE_STATUSES = [
   "unsupported",
   "unobserved"
 ];
+var FLEET_PROVENANCE_STATUS_PRECEDENCE = [
+  "unobserved",
+  "unsupported",
+  "missing",
+  "dirty",
+  "mismatch",
+  "match"
+];
+var FLEET_PROVENANCE_SIDE_STATES = ["present", "missing", "unsupported", "unobserved"];
 var FLEET_PROVENANCE_MAX_FACTS = 5e3;
 var FLEET_PROVENANCE_MAX_PROBES = 500;
 
@@ -17332,6 +17341,24 @@ function remainingMs(ctx, now = Date.now) {
   if (left <= 0) throw new FleetError("TIMEOUT", "Fleet command exceeded its deadline before it completed");
   return left;
 }
+var GIT_REDIRECTION_KEYS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM"
+];
+function probeEnv(base = process.env) {
+  const env2 = { ...base, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", PAGER: "cat" };
+  for (const key of GIT_REDIRECTION_KEYS) delete env2[key];
+  return env2;
+}
 function probe(ctx, argv, cwd) {
   const [command, ...args] = argv;
   if (!command) return Promise.resolve({ outcome: "failed", value: null });
@@ -17349,17 +17376,10 @@ function probe(ctx, argv, cwd) {
         // envelope -- exit code set, process never leaving, because an active
         // handle kept the loop alive.
         detached: true,
-        // An observation probe has no business inheriting a pager, an editor,
-        // a credential helper, or a terminal. `GIT_TERMINAL_PROMPT=0` is the
-        // one that matters: without it a checkout with an unauthenticated
-        // remote can block on a credential prompt forever behind the timeout.
-        //
-        // `GIT_OPTIONAL_LOCKS=0` is deliberately NOT set. It would do the same
-        // job as the `--no-optional-locks` flag every caller passes -- and that
-        // is the problem: with both in place, deleting the flag changed nothing
-        // and the suite's index-mtime assertion stayed green. Measured. One
-        // mechanism, provably load-bearing, beats two that hide each other.
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat", PAGER: "cat" }
+        // An observation probe has no business inheriting a pager, an editor, a
+        // credential helper, a terminal, or -- above all -- a redirected
+        // repository. See `probeEnv` for what is stripped and why.
+        env: probeEnv()
       });
     } catch {
       settle({ outcome: "failed", value: null });
@@ -18331,7 +18351,10 @@ function collectFleetInventory(options = {}) {
   }
   const runContext = options.runContext;
   const allRows = agentRaw.entries.map((entry) => {
-    if (runContext) throwIfCancelled(runContext);
+    if (runContext) {
+      throwIfCancelled(runContext);
+      remainingMs(runContext);
+    }
     return buildInventoryRow(entry, ctx);
   });
   allRows.sort((a, b) => {
@@ -18522,9 +18545,13 @@ function present(value, source, extra = {}) {
 function absent(source, state, extra = {}) {
   return { value: null, source, state, family: null, classification: null, ...extra };
 }
+function isSideState(status) {
+  return FLEET_PROVENANCE_SIDE_STATES.includes(status);
+}
 function compareFact(desired, observed, mismatchStatus = "mismatch") {
-  for (const state of ["unobserved", "unsupported", "missing"]) {
-    if (desired.state === state || observed.state === state) return state;
+  for (const status of FLEET_PROVENANCE_STATUS_PRECEDENCE) {
+    if (!isSideState(status)) continue;
+    if (desired.state === status || observed.state === status) return status;
   }
   if (desired.value === null || observed.value === null) return "missing";
   return desired.value === observed.value ? "match" : mismatchStatus;
@@ -18555,7 +18582,7 @@ function resolveProvenanceSources(options) {
     file(SOURCE_AGENT_REGISTRY, "registry", stores.agents.configuredPath, stores.agents.inspectedPath)
   ];
 }
-function readConfiguredPin(sources) {
+function readConfiguredPin(sources, home = homedir13()) {
   const config = {};
   const configSource = sources.find((source) => source.id === SOURCE_TEMPLATE_CONFIG);
   if (configSource?.exists) {
@@ -18581,7 +18608,15 @@ function readConfiguredPin(sources) {
     }
   }
   const repo = config.hermes_repo ?? env2.HERMES_FLEET_REPO ?? null;
-  return { config, env: env2, releaseRoot: repo && isAbsolute8(repo) ? dirname16(repo) : null };
+  return { config, env: env2, releaseRoot: deriveReleaseRoot(repo, home) };
+}
+function deriveReleaseRoot(repo, home) {
+  if (!repo) return null;
+  const expanded = expandHome3(repo, home);
+  if (!isAbsolute8(expanded)) return null;
+  const parent = dirname16(expanded);
+  if (parent === expanded || parent === "/" || parent === home) return null;
+  return parent;
 }
 function classifyExecutableFamily(rawPath, pin, contract) {
   if (!rawPath) return null;
@@ -18928,7 +18963,8 @@ function addUnsupportedFacts(ctx, subject, profileTemplate) {
     observed: scaffoldEvidence,
     detail: "a deployed role scaffold records no template ref -- it renders no .copier-answers.yml and the repo-root one is CommonProject's, with no _commit -- so no comparison is possible and none is invented"
   });
-  const profilePath = profileName && profileTemplate ? profileTemplate.replaceAll("{profile_name}", profileName) : null;
+  const namedProfile = profileName !== null && /^[A-Za-z0-9._-]+$/u.test(profileName) && profileName !== "." && profileName !== ".." ? profileName : null;
+  const profilePath = namedProfile && profileTemplate ? profileTemplate.replaceAll("{profile_name}", namedProfile) : null;
   const generated = profilePath ? join33(profilePath, "config.yaml") : null;
   addFact(ctx, {
     id: "profile.render_generation",
@@ -18936,7 +18972,7 @@ function addUnsupportedFacts(ctx, subject, profileTemplate) {
     agent_id: agentId,
     field: "profiles.{profile_name}.config.yaml",
     desired: absent(SOURCE_PROFILE_TREE, "unsupported"),
-    observed: generated === null ? absent(SOURCE_PROFILE_TREE, "missing") : profileDigest(generated),
+    observed: generated === null ? absent(SOURCE_PROFILE_TREE, profileName !== null && namedProfile === null ? "unsupported" : "missing") : profileDigest(generated),
     detail: "a generated profile config carries only the GENERATED FILE marker -- no generation counter, digest, or sidecar -- so its bytes are the only stable evidence and nothing can be compared against a recorded render"
   });
 }
@@ -18955,6 +18991,8 @@ function profileDigest(path) {
 function addCheckoutFacts(ctx, subject, observation2) {
   const { agentId } = subject;
   const field3 = "agents.{agent_id}.hermes.repo";
+  const identityField = "agents.{agent_id}.hermes.git_url";
+  const headField = "agents.{agent_id}.hermes.git_sha";
   const pin = ctx.pin.config;
   const unobserved = (extra = {}) => absent(SOURCE_AGENT_CHECKOUT, "unobserved", { classification: observation2?.classification ?? null, ...extra });
   const reached = observation2 !== null && observation2.reached;
@@ -18968,7 +19006,7 @@ function addCheckoutFacts(ctx, subject, observation2) {
     id: "hermes.checkout_identity",
     scope: "agent",
     agent_id: agentId,
-    field: field3,
+    field: identityField,
     desired: pinSide(pin.hermes_git_url, SOURCE_TEMPLATE_CONFIG),
     observed: observedValue(reached ? observation2.remote : null),
     detail: reached ? why("its origin remote", observation2.remote !== null) ?? "the remote the declared checkout actually points at, against the configured pin" : `${why("its origin remote", false)}; no other repository's identity is reported for this agent`
@@ -18977,7 +19015,7 @@ function addCheckoutFacts(ctx, subject, observation2) {
     id: "hermes.checkout_head",
     scope: "agent",
     agent_id: agentId,
-    field: field3,
+    field: headField,
     desired: pinSide(pin.hermes_git_sha, SOURCE_TEMPLATE_CONFIG),
     observed: observedValue(reached ? observation2.head : null),
     detail: why("its HEAD", reached && observation2.head !== null) ?? "the commit the declared checkout has checked out, against the configured pin"
@@ -19036,7 +19074,7 @@ async function collectFleetProvenance(options) {
   const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
   throwIfCancelled(runContext);
   const sources = resolveProvenanceSources(options);
-  const pin = readConfiguredPin(sources);
+  const pin = readConfiguredPin(sources, home);
   const authority = buildAuthorityIndex(contract);
   const layout = resolveProfileLayout(contract, env2, home);
   const root = resolvePjanglerRoot();
@@ -19150,27 +19188,41 @@ async function collectFleetProvenance(options) {
     scope = { kind: "agent", agent_id: bounded2(wanted, 128), label: `scoped to agent ${bounded2(wanted, 128)}` };
   }
   const truncated = [];
-  let facts = selected;
-  if (facts.length > FLEET_PROVENANCE_MAX_FACTS) {
-    truncated.push(`facts: ${facts.length - FLEET_PROVENANCE_MAX_FACTS} of ${facts.length} facts dropped`);
-    facts = facts.slice(0, FLEET_PROVENANCE_MAX_FACTS);
-  }
+  const facts = selected;
   if (ctx.droppedFacts > 0) truncated.push(`facts: ${ctx.droppedFacts} of ${ctx.facts.length + ctx.droppedFacts} facts dropped`);
   if (ctx.droppedProbes > 0) truncated.push(`probes: ${ctx.droppedProbes} of ${ctx.probes.length + ctx.droppedProbes} probes dropped`);
   if (ctx.droppedFindings > 0) truncated.push(`findings: ${ctx.droppedFindings} of ${findings.length + ctx.droppedFindings} findings dropped`);
   const totals = {
+    // `facts` counts every fact BUILT, `classified_facts` every fact that
+    // reached a status bucket, and `dropped_facts` the difference. Before this
+    // they were one number: `facts` added `droppedFacts` while `by_status`
+    // counted only `ctx.facts`, so the suite's own stated invariant --
+    // "every fact lands in exactly one status bucket", asserted as
+    // `sum(by_status) === totals.facts` -- was true only while the 5000-fact cap
+    // did not engage, and would have started failing on the first fleet large
+    // enough to trip it. A dropped fact has no status; saying so is cheaper than
+    // an invariant that quietly stops holding at scale.
     agents: inventory.totals.registered_agents,
     facts: ctx.facts.length + ctx.droppedFacts,
+    classified_facts: ctx.facts.length,
+    dropped_facts: ctx.droppedFacts,
     emitted_facts: facts.length,
     probes: ctx.probes.length + ctx.droppedProbes,
     by_status: byStatus,
     findings: findings.length + ctx.droppedFindings
   };
   const health = {
-    // Drift only. `unsupported` is a declared, permanent gap in what this host
-    // records, and `unobserved` is a gap in what could be reached -- both are
-    // reported in their own counters and in `complete`, and neither is drift.
-    healthy: byStatus.mismatch === 0 && byStatus.dirty === 0 && byStatus.missing === 0 && truncated.length === 0,
+    // DRIFT ONLY, and that now means only drift. `unsupported` is a declared,
+    // permanent gap in what this host records, and `unobserved` is a gap in what
+    // could be reached -- both are reported in their own counters and in
+    // `complete`, and neither is drift.
+    //
+    // `truncated` used to be folded in here too, which made a clipped but
+    // entirely drift-free run report `healthy: false` -- exactly the conflation
+    // the two-verdict split exists to prevent, and a direct contradiction of
+    // both the type's own doc comment and the README ("healthy (drift-free)").
+    // Clipping is an incompleteness, so it belongs to `complete` alone.
+    healthy: byStatus.mismatch === 0 && byStatus.dirty === 0 && byStatus.missing === 0,
     complete: byStatus.unobserved === 0 && probeFailures === 0 && truncated.length === 0,
     mismatched: byStatus.mismatch,
     dirty: byStatus.dirty,

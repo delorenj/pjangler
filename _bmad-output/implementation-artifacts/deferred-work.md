@@ -425,3 +425,75 @@ source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
 severity: low
 reason: The spec requires the flag on both commands so the two adapters share one option surface, and it is honoured -- it is threaded into `collectFleetInventory`, which provenance calls. But no provenance FACT reads the project registry, so the only observable effect of the flag is which file a NOT_FOUND names. An operator could reasonably expect it to change the answer. Either provenance grows a project-correlated fact (story 1.6 territory), or the flag's no-op nature is documented at the flag rather than only here.
 status: open
+
+### DW-54: The whole provenance suite, and the MCP fleet block, skip on any host without the operator's three live sources.
+origin: review-deferred story-1.3
+location: tests/fleet-provenance-regressions.mjs (SkipSuite guard) / tests/mcp-server-regressions.mjs (fleet block)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: medium
+reason: Every case derives from a copy of `~/.hermes/agents-registry.yaml`, `~/.config/pjangler/projects.yaml` or `~/.config/hermes-agent-template/config.toml`, so the suite throws `SkipSuite` for its ENTIRE body when any is absent -- taking the mise-gate, README, ledger and source-text checks with it, none of which needs a live source. On a fresh clone or in CI the story's read-only, credential-exclusion, cancellation and CLI/MCP-parity guarantees are verified by nothing, and the suite prints one SKIP and exits 0. The skip is loud and the derive-from-real rule is deliberate (a fixture would confirm the assumption instead of testing it), so this is not a defect in the idiom -- it is that the host-independent cases are inside the host-gated block. Splitting them out is the fix and it is mechanical.
+status: open
+
+### DW-55: `sources[].parse` reports a stat, not a parse, and `salvaged` is unreachable.
+origin: review-deferred story-1.3
+location: src/fleet/provenance.ts (resolveProvenanceSources, readConfiguredPin)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: medium
+reason: `FleetProvenanceSourceView.parse` is typed `"ok" | "salvaged" | "unreadable" | "unread"`, but it is set once from an `lstat`: a path that is a file, directory or symlink is `"ok"`. `readConfiguredPin` then swallows read failures with `catch { text = ""; }` and nothing updates the field. A template config that exists but is unreadable, is a directory, or exceeds `CONFIG_MAX_BYTES` reports `exists: true, parse: "ok"` with every pin silently `missing` and no finding -- an operator reading `parse: ok` beside a wall of `missing` has been told the file was read. `"salvaged"` is produced by nothing at all. The fix is to set `parse` where the parse actually happens and emit a `provenance-source-unreadable` finding when an existing source yields no text.
+status: open
+
+### DW-56: The `--agent` id is validated after the whole probe sweep has run.
+origin: review-deferred story-1.3
+location: src/fleet/provenance.ts (collectFleetProvenance, the NOT_FOUND throw)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The `NOT_FOUND` check runs after `addTemplateFacts`, every deduplicated checkout probe and every per-agent fact have been built, so `fleet provenance --agent typo` spawns and reaps the full probe sweep before failing. Behind a hanging checkout it can exit 7 (`TIMEOUT`) rather than the documented 3, which makes a typo indistinguishable from a slow fleet. The envelope and exit code the matrix specifies are correct on a healthy host; the work avoided is not. Validating the id against `agentRaw.entries` before the first probe is a move, not a redesign.
+status: open
+
+### DW-57: Provenance builds and discards a full inventory to read one integer.
+origin: review-deferred story-1.3
+location: src/fleet/provenance.ts (collectFleetProvenance) / src/fleet/inventory.ts
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: medium
+reason: `collectFleetInventory` is called solely for `inventory.totals.registered_agents`, which is `allRows.length` -- identical to the `agentRaw.entries.length` provenance already holds. The cost is a second full registry parse plus an `lstat` and a `.project.json` read per agent, and, through `readProjectRegistryRaw`, the hard project-registry dependency recorded as DW-51: a host with a Hermes registry and no `~/.config/pjangler/projects.yaml` gets exit 3 and NO provenance from a command that reads nothing out of that store. Calling the inventory was the right call for `--project-registry` to mean the same thing on both commands (the story's Never list forbids rebuilding registry policy here); reading one integer out of the result is what makes the cost hard to justify. Compounds DW-51 and DW-15.
+status: open
+
+### DW-58: `withSignals` removes its listeners without aborting its controller.
+origin: review-deferred story-1.3
+location: src/fleet/cli.ts (withSignals)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The `finally` block calls `process.off` for both signals but never `controller.abort()`, so a `TIMEOUT` or any other throw escaping `body` leaves in-flight probe children unaborted. MEASURED, and it does not currently leak: `--deadline-ms 2500` behind a pid-recording hang shim exits 7 with zero survivors, because each probe's own `min(probeTimeoutMs, remainingMs)` timer kills its child first. So this is defence-in-depth that is currently redundant rather than an observable defect -- which is exactly why it should be written down instead of patched blind: `controller.abort()` in `finally` is one line, but the case that would prove it load-bearing does not exist yet.
+status: open
+
+### DW-59: `PROBE_MAX_BYTES` counts UTF-16 code units, and a dirty-tree probe buffers output it only tests for emptiness.
+origin: review-deferred story-1.3
+location: src/fleet/runtime.ts (probe)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: `child.stdout.setEncoding("utf8")` then `size += chunk.length` counts code units, not bytes, so the cap is name-inaccurate by up to 3x on non-ASCII paths. Separately, `git status --porcelain` on a very dirty tree is accumulated into `out` in full when the only thing ever read from it is `value === ""` -- so a checkout that is merely very dirty can trip the byte cap and be reported `unobserved` rather than `dirty`, which is a wrong answer for the one input it most needs to get right. Counting `Buffer.byteLength` and short-circuiting the cleanliness probe on its first byte are both small; neither is reachable on this fleet today.
+status: open
+
+### DW-60: MCP rejects an invalid VALUE at the protocol boundary, where the CLI emits an INVALID_INPUT envelope.
+origin: review-deferred story-1.3
+location: src/fleet/mcp.ts (FLEET_TOOL_INPUT) / src/fleet/cli.ts (parseDeadlineMs)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The matrix asks for "Bad flag value -> INVALID_INPUT, exit 2" AND "MCP parity -> same categories both sides", and on the MCP side those pull apart: `deadlineMs: 0` is a zod `-32602` transport error with no envelope, while `--deadline-ms 0` is an `INVALID_INPUT` envelope at exit 2. Rejecting at the schema is the MCP-appropriate answer and is probably right, but it is a divergence nothing tests -- the existing case covers an UNKNOWN KEY, not an invalid value of a known one. Either the divergence is stated in the tool description, or the schema loosens and the core rejects. Deciding which is a contract question, not a patch.
+status: open
+
+### DW-61: Three verification depths this story's ACs name and its suite does not reach.
+origin: review-deferred story-1.3
+location: tests/fleet-provenance-regressions.mjs / tests/mcp-server-regressions.mjs
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: (1) AC4 asks for a process trace containing no execution of the observed binary AND NO NETWORK CALL; non-execution is proved at the filesystem-sentinel surface (a real `touch <sentinel>` shim, asserted absent), but the network half has no assertion at any surface -- the guarantee is structural (a closed subcommand argv plus `GIT_TERMINAL_PROMPT=0`). (2) The `--deadline-ms 1` case is measured to spawn ZERO children: the budget is blown by contract load and `collectFleetInventory` before the first `probe()`, so it proves the pre-spawn guard, not the mid-probe escalation in `min(probeTimeoutMs, remainingMs)`; `--deadline-ms 2500` behind the same shim does exercise it and is untested. (3) AC13 says "any invocation" writes nothing, and `cliAt` snapshots around every CLI call -- but the MCP fleet block takes no snapshot at all, including for the aborted request. Same core, so the risk is low; the evidence is CLI-only.
+status: open
+
+### DW-62: The `.bmad-loop` session timeout was raised without fixing the commit detection it names.
+origin: review-deferred story-1.3
+location: .bmad-loop/policy.toml (limits.session_timeout_min)
+source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
+severity: low
+reason: The 90 -> 240 raise is justified in its own comment by a real event: the orchestrator killed story 1.3's dev session at the handoff to review, with the work committed and 63/65 suites green, then recorded `committed=False` and demanded a manual rollback. Raising the ceiling was the right immediate call and the reasoning is sound, but the defect it describes is a COMMIT-DETECTION bug in the orchestrator, and nothing in this story's diff touches it -- a 4-hour ceiling only widens the window before it recurs. Out of scope here (the orchestrator owns its own state), recorded so it is not lost.
+status: open

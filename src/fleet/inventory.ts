@@ -37,7 +37,7 @@ import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { loadFleetContract, resolveFleetContractPath, validateFleetContract } from "./contract";
 import { bounded, redactHome } from "./output";
-import { throwIfCancelled, type FleetRunContext } from "./runtime";
+import { throwIfCancelled, remainingMs, type FleetRunContext } from "./runtime";
 import {
   FLEET_INVENTORY_MAX_ROWS,
   FleetError,
@@ -1419,9 +1419,19 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
   // cancellation that is only noticed after the last row has been built is not a
   // cancellation. `throwIfCancelled` is a no-op when no caller supplied a
   // context, so the unbudgeted path is unchanged.
+  //
+  // `remainingMs` is checked BESIDE it, not instead of it. Inventory spawns no
+  // probe, so it never reaches the pre-spawn budget check inside `probe()` --
+  // and without this call `--deadline-ms`/`deadlineMs` was accepted, documented
+  // as "Fail with TIMEOUT if the whole run has not finished within this budget",
+  // and then enforced nowhere: `fleet inventory --deadline-ms 1` ran to
+  // completion and exited 0. A flag that names a guarantee has to carry it.
   const runContext = options.runContext;
   const allRows = agentRaw.entries.map((entry) => {
-    if (runContext) throwIfCancelled(runContext);
+    if (runContext) {
+      throwIfCancelled(runContext);
+      remainingMs(runContext);
+    }
     return buildInventoryRow(entry, ctx);
   });
   allRows.sort((a, b) => {

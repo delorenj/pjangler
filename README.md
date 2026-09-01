@@ -89,7 +89,13 @@ pjangler fleet inventory --json                           # fleet JSON v1 envelo
 pjangler fleet inventory --agent pjangler-pm --json       # one row, full-fleet totals
 pjangler fleet inventory --agent-registry ./copy.yaml     # inspect a copy
 pjangler fleet inventory --project-registry ./copy.yaml   # inspect a copy
+pjangler fleet inventory --contract ./candidate.yaml      # read a candidate contract
+pjangler fleet inventory --deadline-ms 30000              # bound the whole run
 ```
+
+`--contract` and `--deadline-ms` are shared with `pjangler fleet provenance`, and
+mean the same thing on both: the same options, the same defaults, the same
+envelope. `SIGINT` and `SIGTERM` cancel either command (exit `8`).
 
 It is strictly read-only. It opens no service, no process, and no network, and
 it creates no directory, project, role, profile, or registry row. Every declared
@@ -125,6 +131,8 @@ on exactly the runs that matter. Only a *command* failure is nonzero:
 | `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
 | `5` | the fleet contract declares a schema version this build does not support |
 | `6` | internal |
+| `7` | the run did not finish inside `--deadline-ms` |
+| `8` | the run was cancelled (`SIGINT`/`SIGTERM`, or an aborted MCP request) |
 
 Exit `4` and `5` come from the contract, not from a registry: the inventory
 validates `contracts/fleet-contract.yaml` before it reads anything, and refuses
@@ -218,7 +226,7 @@ mistaken for a complete one.
 | --- | --- |
 | `0` | the command ran — read `data.health.healthy` and `data.health.complete` for the verdicts |
 | `2` | a malformed flag value |
-| `3` | a source that is not there, or an `--agent` id that is not registered |
+| `3` | a **registry** that is not there, or an `--agent` id that is not registered — a missing template config or fleet env is a finding, not an exit |
 | `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
 | `5` | the fleet contract declares a schema version this build does not support |
 | `6` | internal |

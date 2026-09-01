@@ -82,10 +82,31 @@ let skipped = 0;
 /** Thrown to leave the suite body when the host cannot express any case at all. */
 class SkipSuite extends Error {}
 
+/** Thrown by `skipCase()` so `check()` cannot go on to report the case as `ok`. */
+class SkipCase extends Error {}
+
 /** A case the host cannot express. Loud, never silent. */
 function skip(label, reason) {
   skipped += 1;
   console.log(`  SKIP ${label}: ${reason}`);
+}
+
+/**
+ * Skip from INSIDE a `check()` body, and leave that body for good.
+ *
+ * `skip()` alone is not enough there. A body that called it and then `return`ed
+ * printed `SKIP <label>` and, because it returned normally, `check` went on to
+ * print `ok   <label>` for the very same case -- counted in both tallies and
+ * indistinguishable in the summary from a case that actually ran. Four cases
+ * call it this way (`a pinned-release executable matches`, `the recorded gitlink
+ * stays the index SHA`, `an unexpanded shell reference is classified`, `the
+ * configured pin equals an independent read`). On this host all four do run, so
+ * the double-report was latent -- on a host without those conditions the suite
+ * would have reported success for verification that never happened.
+ */
+function skipCase(label, reason) {
+  skip(label, reason);
+  throw new SkipCase(reason);
 }
 
 function check(label, body) {
@@ -93,6 +114,9 @@ function check(label, body) {
     body();
     console.log(`  ok   ${label}`);
   } catch (error) {
+    // A skip has already printed its own line and counted itself. Reporting it
+    // as a FAIL here would be as wrong as reporting it as an `ok`.
+    if (error instanceof SkipCase) return;
     failures += 1;
     console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
   }
@@ -110,6 +134,7 @@ async function checkAsync(label, body) {
     await body();
     console.log(`  ok   ${label}`);
   } catch (error) {
+    if (error instanceof SkipCase) return;
     failures += 1;
     console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
   }
@@ -555,8 +580,7 @@ try {
   check("the recorded gitlink stays the index SHA no matter where the worktree is", () => {
     const scratch = packageWithSubmodule("gitlink-case");
     if (scratch.added.status !== 0) {
-      skip("the recorded gitlink stays the index SHA", `git submodule add is unavailable here: ${String(scratch.added.stderr).split("\n")[0]}`);
-      return;
+      skipCase("the recorded gitlink stays the index SHA", `git submodule add is unavailable here: ${String(scratch.added.stderr).split("\n")[0]}`);
     }
     const submodule = join(scratch.dir, "templates", "hermes-agent");
     const recorded = /^160000 ([0-9a-f]{40})/.exec(git(scratch.dir, ["ls-files", "--stage", "templates/hermes-agent"]).stdout);
@@ -617,7 +641,7 @@ try {
   check("a pinned-release executable matches and is classified as the pinned family", () => {
     const data = provenance(cli(["fleet", "provenance", "--json"]));
     const matches = factsFor(data, "hermes.executable").filter((fact) => fact.status === "match");
-    if (matches.length === 0) { skip("a pinned-release executable matches", "no live agent points at the configured pin"); return; }
+    if (matches.length === 0) skipCase("a pinned-release executable matches", "no live agent points at the configured pin");
     for (const fact of matches) {
       assert.equal(fact.observed.family, "pinned-release", "the configured release root is checked BEFORE the retired patterns, which also match it");
     }
@@ -829,14 +853,33 @@ try {
       ["fleet", "provenance", "--deadline-ms", "abc", "--json"],
       ["fleet", "provenance", "--deadline-ms", "0", "--json"],
       ["fleet", "provenance", "--deadline-ms", "-5", "--json"],
+      // `Number()` accepts both of these and `Number.isInteger` agrees, so
+      // without a digits-only guard `0x10` silently became a 16ms deadline and
+      // `1e3` a 1000ms one -- a value the caller never wrote, in a base they
+      // never named. Measured before the guard: exit 7 and exit 0 respectively.
+      ["fleet", "provenance", "--deadline-ms", "0x10", "--json"],
+      ["fleet", "provenance", "--deadline-ms", "1e3", "--json"],
+      ["fleet", "provenance", "--deadline-ms", " ", "--json"],
       ["fleet", "provenance", "--contract", "", "--json"],
     ]) {
       const result = cli(args);
       // `--agent --json` makes the FLAG the value, so `options.json` stays false
-      // and the caller who asked for JSON gets an ANSI report. Both shapes are
-      // asserted through the human path as well.
-      const shown = result.stdout.trim().startsWith("{") ? errorCode(envelope(result)) : "INVALID_INPUT";
-      assert.equal(shown, "INVALID_INPUT", `${args.join(" ")} must be INVALID_INPUT`);
+      // and the caller who asked for JSON gets an ANSI report. That one case is
+      // asserted through the human path; every OTHER case promised JSON and must
+      // deliver a parseable envelope carrying the code.
+      //
+      // The previous form computed `startsWith("{") ? errorCode(...) : "INVALID_INPUT"`
+      // and then asserted the result equalled `"INVALID_INPUT"` -- so on the
+      // human path it compared a literal to itself and only the exit status was
+      // ever really checked. Which path a case takes is now DECLARED, not
+      // inferred from the output the case is supposed to be testing.
+      const humanPath = args[2] === "--agent" && args[3] === "--json";
+      if (humanPath) {
+        assert.ok(!result.stdout.trim().startsWith("{"), `${args.join(" ")} must render the human report, not JSON`);
+      } else {
+        assert.ok(result.stdout.trim().startsWith("{"), `${args.join(" ")} promised JSON and must emit an envelope`);
+        assert.equal(errorCode(envelope(result)), "INVALID_INPUT", `${args.join(" ")} must be INVALID_INPUT`);
+      }
       assert.equal(result.status, 2, `${args.join(" ")} must exit 2, got ${result.status}`);
     }
   });
@@ -883,10 +926,10 @@ try {
     // HERMES_FLEET_ENV on purpose. That is only safe while the construction
     // still resembles the real file, so where the real file IS reachable this
     // proves the key set has not drifted apart from it.
-    if (!existsSync(REAL_FLEET_ENV)) { skip("the constructed fleet env still has the shape the real one has", "the real fleet env is not reachable from this run"); return; }
+    if (!existsSync(REAL_FLEET_ENV)) skipCase("the constructed fleet env still has the shape the real one has", "the real fleet env is not reachable from this run");
     let realKeys;
     try { realKeys = [...readFileSync(REAL_FLEET_ENV, "utf8").matchAll(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1]); }
-    catch { skip("the constructed fleet env still has the shape the real one has", "the real fleet env is not readable from this run"); return; }
+    catch { skipCase("the constructed fleet env still has the shape the real one has", "the real fleet env is not readable from this run"); }
     const seededKeys = [...readFileSync(join(scratchHome, ".hermes", "fleet.env"), "utf8").matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1]);
     // Only the keys the CODE reads. `FLEET_ENV_KEYS` in the core is the
     // allowlist that is the credential guarantee, so it is also the exact set
@@ -914,8 +957,7 @@ try {
     assert.ok(fact, "the host pin facts must be reported");
     const seeded = readFileSync(join(scratchHome, ".hermes", "fleet.env"), "utf8");
     if (!/HERMES_FLEET_REGISTRY_FILE=\$/.test(seeded)) {
-      skip("an unexpanded shell reference is classified", "this host's fleet.env does not spell the registry file with a shell reference");
-      return;
+      skipCase("an unexpanded shell reference is classified", "this host's fleet.env does not spell the registry file with a shell reference");
     }
     assert.match(fact.observed.value, /^\$/, "the value must be reported verbatim");
     assert.equal(fact.observed.family, "shell-variable-reference");
@@ -991,7 +1033,7 @@ try {
     const configText = readFileSync(REAL_TEMPLATE_CONFIG, "utf8");
     const section = configText.slice(configText.indexOf("[fleet]"));
     const grepped = /^\s*hermes_git_sha\s*=\s*"([^"]+)"/m.exec(section.slice(0, section.indexOf("\n[", 1) === -1 ? section.length : section.indexOf("\n[", 1)));
-    if (!grepped) { skip("the configured pin equals an independent read", "this host's template config declares no [fleet] hermes_git_sha"); return; }
+    if (!grepped) skipCase("the configured pin equals an independent read", "this host's template config declares no [fleet] hermes_git_sha");
     const shaFacts = factsFor(data, "hermes.git_sha");
     assert.ok(shaFacts.length > 0, "the fleet must report a git_sha fact per agent");
     for (const fact of shaFacts) assert.equal(fact.desired.value, grepped[1], "the desired pin must equal an independent grep of the config");
@@ -1032,6 +1074,186 @@ try {
     assert.match(section, /\|\s*`8`\s*\|/, "exit 8 must be documented");
     assert.match(section, /desired/i, "the desired/observed rule is the model's one global rule");
     assert.ok(readme.includes("pjangler_fleet_provenance") && readme.includes("pjangler_fleet_inventory"), "both MCP tools must be listed");
+  });
+
+  // -- gaps a reviewer demonstrated: each of these fails if its subject breaks --
+
+  check("--contract is threaded, not merely accepted", () => {
+    // Deleting `contract: options.contract` at the two CLI call sites used to
+    // change nothing any suite could see: `--contract ""` still exited 2 from
+    // `requireValue`, and the flag-list assertions read source text. So the flag
+    // is proved here by its EFFECT -- the reported contract path and a fact the
+    // contract's own content decides.
+    const copy = join(temp, "candidate-contract.yaml");
+    const document = YAML.parseDocument(readFileSync(join(ROOT, "contracts", "fleet-contract.yaml"), "utf8"));
+    // Narrow the retired modes' `detect` patterns to one that matches nothing.
+    // `classifyExecutableFamily` asks the CONTRACT for the family it reports, so
+    // a contract whose patterns match no live path must stop naming a retired
+    // family -- while staying a VALID contract (emptying `retired` outright is
+    // rejected: the contract must still declare its superseded modes).
+    const retired = document.get("retired");
+    assert.ok(retired && retired.items.length > 0, "the tracked contract must declare retired modes");
+    for (const mode of retired.items) mode.set("detect", ["matches-no-path-on-any-host-xyzzy"]);
+    writeFileSync(copy, String(document), "utf8");
+
+    const tracked = provenance(cli(["fleet", "provenance", "--json"]));
+    const candidate = provenance(cli(["fleet", "provenance", "--contract", copy, "--json"]));
+
+    assert.notEqual(tracked.contract_path, candidate.contract_path, "the override must change the reported contract path");
+    assert.match(candidate.contract_path, /candidate-contract\.yaml$/, "the reported path must be the override");
+
+    const retiredFamilies = (data) => factsFor(data, "hermes.executable")
+      .map((fact) => fact.observed.family)
+      .filter((family) => family !== null && family !== "pinned-release" && family !== "unclassified");
+    assert.ok(retiredFamilies(tracked).length > 0, "the tracked contract must name a retired family for this fleet");
+    assert.equal(retiredFamilies(candidate).length, 0, "a contract whose detect patterns match nothing must name no retired family");
+    // The facts are still emitted -- only the CONTRACT-derived classification moved.
+    assert.equal(factsFor(candidate, "hermes.executable").length, factsFor(tracked, "hermes.executable").length, "the override changes classification, not which facts exist");
+
+    // And the same override on `fleet inventory`, whose flag is equally new.
+    const inventoryEnvelope = envelope(cli(["fleet", "inventory", "--contract", copy, "--json"]));
+    assert.equal(inventoryEnvelope.ok, true);
+    assert.match(inventoryEnvelope.data.contract_path, /candidate-contract\.yaml$/, "fleet inventory must honour --contract too");
+  });
+
+  check("a deadline large enough to finish lets the run finish, byte for byte", () => {
+    // Every other deadline case expects FAILURE, so flipping the sign in
+    // `createRunContext` -- or making `remainingMs` count the wrong way -- would
+    // have left them all green while turning the flag into a switch that fails
+    // at any value. The documented remedy in the failure guidance ("re-run with
+    // a larger --deadline-ms") can only mean something if a larger one works.
+    const unbounded = provenance(cli(["fleet", "provenance", "--json"]));
+    const bounded_ = provenance(cli(["fleet", "provenance", "--deadline-ms", "600000", "--json"]));
+    assert.deepEqual(bounded_, unbounded, "a generous deadline must not change the answer");
+  });
+
+  check("fleet inventory enforces the deadline its own flag promises", () => {
+    // The flag and the MCP `deadlineMs` argument both document "Fail with
+    // TIMEOUT if the whole run has not finished within this budget". Inventory
+    // spawns no probe, so it never reaches the pre-spawn budget check inside
+    // `probe()`: before `remainingMs` was called in the row loop,
+    // `fleet inventory --deadline-ms 1` ran to completion and exited 0.
+    const result = cli(["fleet", "inventory", "--deadline-ms", "1", "--json"]);
+    assert.equal(errorCode(envelope(result)), "TIMEOUT", "an already-blown deadline must fail the inventory run");
+    assert.equal(result.status, 7, `an inventory TIMEOUT must exit 7, got ${result.status}`);
+  });
+
+  check("the host pin facts compare the pair they name", () => {
+    // `fleet.hermes_bin` and `fleet.hermes_repo` had no assertion at all, so
+    // swapping the env keys in the `pairs` table -- reporting the launcher's
+    // repo against the config's bin -- flipped both to `mismatch` with nothing
+    // to notice. They are the host's own pin: the value every per-agent fact is
+    // read against.
+    const data = provenance(cli(["fleet", "provenance", "--json"]));
+    const seededText = readFileSync(join(scratchHome, ".hermes", "fleet.env"), "utf8");
+    const seeded = Object.fromEntries([...seededText.matchAll(/^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/gmu)].map(([, k, v]) => [k, v.trim()]));
+    for (const [id, envKey] of [["fleet.hermes_bin", "HERMES_FLEET_BIN"], ["fleet.hermes_repo", "HERMES_FLEET_REPO"]]) {
+      const fact = factFor(data, id);
+      assert.ok(fact, `${id} must be reported`);
+      assert.ok(seeded[envKey], `the scratch fleet env must seed ${envKey} for this case to mean anything`);
+      assert.equal(fact.observed.source, "hermes-fleet-env", `${id} must observe the fleet env`);
+      assert.equal(fact.desired.source, "hermes-template-config", `${id} must desire the template config`);
+      // Seeded from the config's own scalars, so agreement is the expected answer
+      // and a crossed pair would be visible as `mismatch`.
+      assert.equal(fact.status, "match", `${id} must match when the env is seeded from the config it is compared against`);
+    }
+  });
+
+  check("the template remote url is read from .gitmodules, not assumed", () => {
+    // `readSubmoduleUrl` is a hand-rolled `.gitmodules` section parser whose
+    // entire output is the `desired` side of `template.remote_url`. Making it
+    // return null unconditionally -- or flushing only the LAST section, an easy
+    // off-by-one that would keep working on a two-entry file -- turned the fact
+    // `missing` with nothing to catch it, because this fleet is already
+    // unhealthy for other reasons.
+    const data = provenance(cli(["fleet", "provenance", "--json"]));
+    const fact = factFor(data, "template.remote_url");
+    assert.ok(fact, "template.remote_url must be reported");
+    const declared = /\[submodule "templates\/hermes-agent"\][^[]*?url\s*=\s*(\S+)/s.exec(readFileSync(join(ROOT, ".gitmodules"), "utf8"));
+    assert.ok(declared, "the suite's own independent read of .gitmodules must find the url");
+    assert.equal(fact.desired.value, declared[1], "the desired side must be the url .gitmodules declares");
+    assert.notEqual(fact.status, "missing", "a declared url must not report as missing");
+  });
+
+  check("a truncation-free drifted fleet separates healthy from complete", () => {
+    // `healthy` used to include `truncated.length === 0`, so a clipped but
+    // entirely drift-free run reported `healthy: false` -- the exact conflation
+    // the two-verdict split exists to prevent, and a contradiction of both the
+    // type's doc comment and the README.
+    const data = provenance(cli(["fleet", "provenance", "--json"]));
+    const drifted = data.health.mismatched > 0 || data.health.dirty > 0 || data.health.missing > 0;
+    assert.equal(data.health.healthy, !drifted, "healthy must be exactly the absence of drift");
+    assert.equal(data.totals.classified_facts + data.totals.dropped_facts, data.totals.facts, "facts must split into classified and dropped");
+    const bucketed = Object.values(data.totals.by_status).reduce((sum, n) => sum + n, 0);
+    assert.equal(bucketed, data.totals.classified_facts, "every CLASSIFIED fact lands in exactly one status bucket");
+  });
+
+  check("a prototype-shaped command word still gets one parseable envelope", () => {
+    // The positional word map was a plain object literal, so
+    // `positional["constructor"]` answered with a function, that function became
+    // the envelope's `command`, and `validateFleetEnvelope` threw out of the very
+    // helper that exists to guarantee one parseable envelope. Measured before the
+    // fix: a raw stack trace, zero JSON bytes, exit 1.
+    for (const word of ["constructor", "toString", "__proto__", "valueOf", "hasOwnProperty"]) {
+      const result = cli(["fleet", word, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(parsed.ok, false, `fleet ${word} --json must fail as an envelope`);
+      assert.equal(typeof parsed.command, "string", `fleet ${word} --json must carry a string command`);
+      assert.equal(parsed.error.code, "INVALID_INPUT");
+      assert.ok(!result.stderr.includes("at validateFleetEnvelope"), `fleet ${word} --json must not print a stack trace`);
+      assert.notEqual(result.status, 1, `fleet ${word} --json must stay inside the exit taxonomy, got ${result.status}`);
+    }
+  });
+
+  check("a redirected git environment cannot answer for a probed checkout", () => {
+    // `GIT_DIR` makes `git -C <path> rev-parse` answer about a DIFFERENT
+    // repository, which defeats the top-level-equality guard that
+    // `probeCheckout` calls its load-bearing defence. A git hook, a `git`
+    // wrapper and direnv all export it. The probe env now deletes it, so the
+    // answer must be identical with and without it set.
+    const decoy = join(temp, "git-dir-decoy");
+    makeRepo(decoy, 1);
+    const clean = provenance(cli(["fleet", "provenance", "--json"]));
+    const redirected = provenance(cli(["fleet", "provenance", "--json"], {
+      GIT_DIR: join(decoy, ".git"),
+      GIT_WORK_TREE: decoy,
+    }));
+    assert.deepEqual(redirected, clean, "an ambient GIT_DIR/GIT_WORK_TREE must not change what a probe observes");
+  });
+
+  check("the CLI and the MCP adapter give the same guidance, not just the same data", () => {
+    // `next_actions` is a first-class envelope field the validator checks, and
+    // the two adapters build it from hand-duplicated strings. The parity case
+    // compares `command`, `data` and `error` only, so the copies could drift
+    // indefinitely while staying green -- and `next_actions` is exactly the half
+    // of "two thin adapters" that was copied.
+    // Scoped to the two SUCCESS-path builders, which `src/fleet/mcp.ts` says are
+    // "the CLI's own next_actions, reproduced exactly". The failure-path guidance
+    // is deliberately NOT compared: it names the surface the caller used
+    // (`--deadline-ms` on one side, `deadlineMs` on the other), so requiring it to
+    // be identical would forbid the one difference that is correct.
+    const guidance = (file) => {
+      const source = readFileSync(join(ROOT, "src", "fleet", file), "utf8");
+      const lines = [];
+      for (const fn of ["inventoryEnvelope", "provenanceEnvelope"]) {
+        const start = source.indexOf(`function ${fn}(`);
+        assert.notEqual(start, -1, `${file} must define ${fn} for this case to mean anything`);
+        const body = source.slice(start, source.indexOf("\n}", start));
+        for (const match of body.matchAll(/"((?:[^"\\]|\\.){30,})"/g)) lines.push(match[1]);
+      }
+      return lines.sort();
+    };
+    const fromCli = guidance("cli.ts");
+    const fromMcp = guidance("mcp.ts");
+    assert.ok(fromMcp.length >= 6, `the MCP adapter must carry its guidance strings for this case to mean anything, found ${fromMcp.length}`);
+    // SUBSET, not equality: the CLI carries one extra human-path line ("Re-run
+    // with --json for the complete row set") that it pops before emitting JSON,
+    // and which has no business existing on a protocol the caller reaches
+    // programmatically. Every string the MCP adapter DOES emit must still be the
+    // CLI's own.
+    for (const line of fromMcp) {
+      assert.ok(fromCli.includes(line), `the MCP adapter's guidance has drifted from the CLI's: "${line.slice(0, 70)}..."`);
+    }
   });
 
   check("the deferred-work ledger records what this story leaves behind", () => {

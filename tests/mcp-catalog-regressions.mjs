@@ -23,7 +23,13 @@ for (const tool of [
   "pjangler_fleet_inventory",
   "pjangler_fleet_provenance",
 ]) {
-  assert.match(registrations, new RegExp(`registerTool\\(\\s*[\"']${tool}[\"']`), `${tool} must be registered`);
+  // `server\.` is kept, not dropped. `src/fleet/mcp.ts` registers through
+  // `server.registerTool(` exactly like `mcp-server.ts` does, so widening the
+  // pattern to a bare `registerTool(` bought nothing and cost the seven
+  // pre-existing tools their guarantee that the call is made ON THE SERVER --
+  // any `registerTool("name"` text anywhere in either file would have satisfied
+  // it. A review that adds coverage must not quietly remove some.
+  assert.match(registrations, new RegExp(`server\\.registerTool\\(\\s*[\"']${tool}[\"']`), `${tool} must be registered on the server`);
 }
 
 // The wiring itself, not just the registration: a tool defined in a module

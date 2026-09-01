@@ -67,6 +67,8 @@ import { mapBounded, probe, remainingMs, throwIfCancelled, type FleetRunContext 
 import {
   FLEET_PROVENANCE_MAX_FACTS,
   FLEET_PROVENANCE_MAX_PROBES,
+  FLEET_PROVENANCE_SIDE_STATES,
+  FLEET_PROVENANCE_STATUS_PRECEDENCE,
   FLEET_PROVENANCE_STATUSES,
   FleetError,
   type FleetContract,
@@ -204,13 +206,34 @@ function absent(source: string | null, state: FleetProvenanceSideState, extra: P
  * value comparison, so `dirty` can never shadow a `mismatch` on the value beside
  * it.
  */
+/**
+ * Whether a status is also a state ONE SIDE can arrive in, rather than a verdict.
+ *
+ * The narrowed type is the INTERSECTION on purpose. `present` is a side state
+ * and not a status; `match`, `mismatch` and `dirty` are statuses and not side
+ * states. Only the three that are both may be read off a side.
+ */
+function isSideState(status: FleetProvenanceStatus): status is FleetProvenanceStatus & FleetProvenanceSideState {
+  return (FLEET_PROVENANCE_SIDE_STATES as readonly string[]).includes(status);
+}
+
 export function compareFact(
   desired: FleetProvenanceSide,
   observed: FleetProvenanceSide,
   mismatchStatus: FleetProvenanceStatus = "mismatch",
 ): FleetProvenanceStatus {
-  for (const state of ["unobserved", "unsupported", "missing"] as const) {
-    if (desired.state === state || observed.state === state) return state;
+  // Driven from the EXPORTED precedence constant, not from a second list spelled
+  // out here. Both existed before this change and only this one was live, so
+  // `FLEET_PROVENANCE_STATUS_PRECEDENCE` -- documented as the model's precedence
+  // rule and re-exported from the barrel for consumers to reason with -- could be
+  // reordered without moving any behaviour or failing any test. A constant that
+  // constrains nothing is decoration; reading it here is what makes it the rule.
+  //
+  // Only the SIDE STATES participate: `dirty`, `mismatch` and `match` are
+  // verdicts this function produces, never states a side can arrive in.
+  for (const status of FLEET_PROVENANCE_STATUS_PRECEDENCE) {
+    if (!isSideState(status)) continue;
+    if (desired.state === status || observed.state === status) return status;
   }
   if (desired.value === null || observed.value === null) return "missing";
   return desired.value === observed.value ? "match" : mismatchStatus;
@@ -288,7 +311,7 @@ export function resolveProvenanceSources(options: FleetProvenanceOptions): Prove
  * this command half-understood would be worse than no pin at all.
  * `readShellAssignments` is key-allowlisted, which is the credential guarantee.
  */
-export function readConfiguredPin(sources: readonly ProvenanceSource[]): ConfiguredPin {
+export function readConfiguredPin(sources: readonly ProvenanceSource[], home: string = homedir()): ConfiguredPin {
   const config: ConfiguredPin["config"] = {};
   const configSource = sources.find((source) => source.id === SOURCE_TEMPLATE_CONFIG);
   if (configSource?.exists) {
@@ -314,7 +337,45 @@ export function readConfiguredPin(sources: readonly ProvenanceSource[]): Configu
   }
 
   const repo = config.hermes_repo ?? env.HERMES_FLEET_REPO ?? null;
-  return { config, env, releaseRoot: repo && isAbsolute(repo) ? dirname(repo) : null };
+  return { config, env, releaseRoot: deriveReleaseRoot(repo, home) };
+}
+
+/**
+ * The directory a pinned release lives UNDER, or null when the pin does not
+ * name one.
+ *
+ * Two bugs this replaces, both of which flipped the whole fleet's verdict:
+ *
+ *   * `~` WAS NOT EXPANDED. `readConfiguredPin` keeps config values verbatim by
+ *     contract, and the live `config.toml` already spells `fleet_env` and
+ *     `registry_file` with `~`. A `hermes_repo` written that way -- or the
+ *     `HERMES_FLEET_REPO` fallback, which is unexpanded by definition -- failed
+ *     `isAbsolute` and produced `releaseRoot: null`. `classifyExecutableFamily`
+ *     then fell through to the contract's retired patterns, which match `~/...`
+ *     paths, and reported every CORRECTLY PINNED agent as retired drift with an
+ *     `error`-severity finding.
+ *   * THE PARENT WAS TAKEN UNCONDITIONALLY. `dirname` of a pin is only a
+ *     release root when the pin is a release. A pin of `/home/me/code/hermes-agent`
+ *     yielded `/home/me/code`, and every binary under `~/code/**` was then
+ *     classified `pinned-release` -- silently disarming the contract's own
+ *     `(?:^|/)code/hermes-agent` retired pattern, which is the exact drift the
+ *     command exists to find.
+ *
+ * The guard is deliberately shallow: a release root has to be a real directory
+ * with a parent above the home directory itself. Nothing here parses a version
+ * or a SHA out of the path -- inventing structure the pin does not promise is
+ * how the second bug was written in the first place.
+ */
+function deriveReleaseRoot(repo: string | null, home: string): string | null {
+  if (!repo) return null;
+  const expanded = expandHome(repo, home);
+  if (!isAbsolute(expanded)) return null;
+  const parent = dirname(expanded);
+  // `dirname("/")` is `/`, `dirname("/home")` is `/`. A root that shallow -- or
+  // one equal to the home directory -- would classify most of the filesystem as
+  // the pinned release, so it is refused rather than narrowed.
+  if (parent === expanded || parent === "/" || parent === home) return null;
+  return parent;
 }
 
 // ---------------------------------------------------------------------------
@@ -812,13 +873,25 @@ function addUnsupportedFacts(ctx: ProvenanceContext, subject: AgentSubject, prof
     detail: "a deployed role scaffold records no template ref -- it renders no .copier-answers.yml and the repo-root one is CommonProject's, with no _commit -- so no comparison is possible and none is invented",
   });
 
-  const profilePath = profileName && profileTemplate ? profileTemplate.replaceAll("{profile_name}", profileName) : null;
+  // `profile_name` is a REGISTRY value substituted into a path template, so it
+  // is checked against the shape a profile name may have before it becomes a
+  // path. A row spelling `../../.ssh` or `a/b` would otherwise walk
+  // `profileDigest` out of the profile root and publish a sha256 of whatever it
+  // landed on. The allowlist is deliberately narrower than "no `..`": a profile
+  // name is one path SEGMENT, and anything else is a registry the command has no
+  // business following.
+  const namedProfile = profileName !== null && /^[A-Za-z0-9._-]+$/u.test(profileName) && profileName !== "." && profileName !== ".."
+    ? profileName
+    : null;
+  const profilePath = namedProfile && profileTemplate ? profileTemplate.replaceAll("{profile_name}", namedProfile) : null;
   const generated = profilePath ? join(profilePath, "config.yaml") : null;
   addFact(ctx, {
     id: "profile.render_generation", scope: "agent", agent_id: agentId,
     field: "profiles.{profile_name}.config.yaml",
     desired: absent(SOURCE_PROFILE_TREE, "unsupported"),
-    observed: generated === null ? absent(SOURCE_PROFILE_TREE, "missing") : profileDigest(generated),
+    observed: generated === null
+      ? absent(SOURCE_PROFILE_TREE, profileName !== null && namedProfile === null ? "unsupported" : "missing")
+      : profileDigest(generated),
     detail: "a generated profile config carries only the GENERATED FILE marker -- no generation counter, digest, or sidecar -- so its bytes are the only stable evidence and nothing can be compared against a recorded render",
   });
 }
@@ -847,7 +920,16 @@ function profileDigest(path: string): FleetProvenanceSide {
 /** The three checkout facts, from one deduplicated probe of the declared repository. */
 function addCheckoutFacts(ctx: ProvenanceContext, subject: AgentSubject, observation: CheckoutObservation | null): void {
   const { agentId } = subject;
+  // The checkout's own field path -- the row key that named the DIRECTORY these
+  // facts probe. Used for the path classification and the dirty finding.
   const field = "agents.{agent_id}.hermes.repo";
+  // ...but each VALUE comparison is attributed to the field it actually compares.
+  // All three facts used to carry `hermes.repo`, so `owner` and any consumer
+  // grouping by `field` filed the origin-URL and HEAD comparisons under the
+  // repo-path field -- a fact saying which URL it read, labelled with the key
+  // that only ever held a directory.
+  const identityField = "agents.{agent_id}.hermes.git_url";
+  const headField = "agents.{agent_id}.hermes.git_sha";
   const pin = ctx.pin.config;
 
   const unobserved = (extra: Partial<FleetProvenanceSide> = {}): FleetProvenanceSide =>
@@ -865,7 +947,7 @@ function addCheckoutFacts(ctx: ProvenanceContext, subject: AgentSubject, observa
   };
 
   addFact(ctx, {
-    id: "hermes.checkout_identity", scope: "agent", agent_id: agentId, field,
+    id: "hermes.checkout_identity", scope: "agent", agent_id: agentId, field: identityField,
     desired: pinSide(pin.hermes_git_url, SOURCE_TEMPLATE_CONFIG),
     observed: observedValue(reached ? observation.remote : null),
     detail: reached
@@ -874,7 +956,7 @@ function addCheckoutFacts(ctx: ProvenanceContext, subject: AgentSubject, observa
   });
 
   addFact(ctx, {
-    id: "hermes.checkout_head", scope: "agent", agent_id: agentId, field,
+    id: "hermes.checkout_head", scope: "agent", agent_id: agentId, field: headField,
     desired: pinSide(pin.hermes_git_sha, SOURCE_TEMPLATE_CONFIG),
     observed: observedValue(reached ? observation.head : null),
     detail: why("its HEAD", reached && observation.head !== null)
@@ -952,7 +1034,7 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
   throwIfCancelled(runContext);
 
   const sources = resolveProvenanceSources(options);
-  const pin = readConfiguredPin(sources);
+  const pin = readConfiguredPin(sources, home);
   const authority = buildAuthorityIndex(contract);
   const layout = resolveProfileLayout(contract, env, home);
   const root = resolvePjanglerRoot();
@@ -1078,19 +1160,31 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
     scope = { kind: "agent", agent_id: bounded(wanted, 128), label: `scoped to agent ${bounded(wanted, 128)}` };
   }
 
+  // `selected` is a FILTER of `ctx.facts`, and `addFact` already refuses to push
+  // past the cap, so a post-filter `facts.length > FLEET_PROVENANCE_MAX_FACTS`
+  // branch could never run -- it looked like the truncation path while the real
+  // one is `droppedFacts` below. Removed rather than left as reassuring dead
+  // code that would report a second, different message for the same clip.
   const truncated: string[] = [];
-  let facts = selected;
-  if (facts.length > FLEET_PROVENANCE_MAX_FACTS) {
-    truncated.push(`facts: ${facts.length - FLEET_PROVENANCE_MAX_FACTS} of ${facts.length} facts dropped`);
-    facts = facts.slice(0, FLEET_PROVENANCE_MAX_FACTS);
-  }
+  const facts = selected;
   if (ctx.droppedFacts > 0) truncated.push(`facts: ${ctx.droppedFacts} of ${ctx.facts.length + ctx.droppedFacts} facts dropped`);
   if (ctx.droppedProbes > 0) truncated.push(`probes: ${ctx.droppedProbes} of ${ctx.probes.length + ctx.droppedProbes} probes dropped`);
   if (ctx.droppedFindings > 0) truncated.push(`findings: ${ctx.droppedFindings} of ${findings.length + ctx.droppedFindings} findings dropped`);
 
   const totals: FleetProvenanceTotals = {
+    // `facts` counts every fact BUILT, `classified_facts` every fact that
+    // reached a status bucket, and `dropped_facts` the difference. Before this
+    // they were one number: `facts` added `droppedFacts` while `by_status`
+    // counted only `ctx.facts`, so the suite's own stated invariant --
+    // "every fact lands in exactly one status bucket", asserted as
+    // `sum(by_status) === totals.facts` -- was true only while the 5000-fact cap
+    // did not engage, and would have started failing on the first fleet large
+    // enough to trip it. A dropped fact has no status; saying so is cheaper than
+    // an invariant that quietly stops holding at scale.
     agents: inventory.totals.registered_agents,
     facts: ctx.facts.length + ctx.droppedFacts,
+    classified_facts: ctx.facts.length,
+    dropped_facts: ctx.droppedFacts,
     emitted_facts: facts.length,
     probes: ctx.probes.length + ctx.droppedProbes,
     by_status: byStatus,
@@ -1098,10 +1192,17 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
   };
 
   const health: FleetProvenanceHealth = {
-    // Drift only. `unsupported` is a declared, permanent gap in what this host
-    // records, and `unobserved` is a gap in what could be reached -- both are
-    // reported in their own counters and in `complete`, and neither is drift.
-    healthy: byStatus.mismatch === 0 && byStatus.dirty === 0 && byStatus.missing === 0 && truncated.length === 0,
+    // DRIFT ONLY, and that now means only drift. `unsupported` is a declared,
+    // permanent gap in what this host records, and `unobserved` is a gap in what
+    // could be reached -- both are reported in their own counters and in
+    // `complete`, and neither is drift.
+    //
+    // `truncated` used to be folded in here too, which made a clipped but
+    // entirely drift-free run report `healthy: false` -- exactly the conflation
+    // the two-verdict split exists to prevent, and a direct contradiction of
+    // both the type's own doc comment and the README ("healthy (drift-free)").
+    // Clipping is an incompleteness, so it belongs to `complete` alone.
+    healthy: byStatus.mismatch === 0 && byStatus.dirty === 0 && byStatus.missing === 0,
     complete: byStatus.unobserved === 0 && probeFailures === 0 && truncated.length === 0,
     mismatched: byStatus.mismatch,
     dirty: byStatus.dirty,
