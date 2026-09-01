@@ -1450,7 +1450,15 @@ program
 try {
   await program.parseAsync();
 } catch (error) {
-  if (isNotebookJsonInvocation(commandArgs)) {
+  // Help and version are SUCCESSES that Commander reports by throwing, and it
+  // has already written the text. Checked first, before either JSON branch:
+  // below them, `--help --json` printed the usage block and then a failure
+  // envelope onto the same stdout and exited 2 -- two documents where the
+  // contract promises one, and a failure code for a request that worked.
+  if (error instanceof CommanderError
+      && (error.code === "commander.helpDisplayed" || error.code === "commander.version")) {
+    process.exitCode = error.exitCode;
+  } else if (isNotebookJsonInvocation(commandArgs)) {
     const envelope = notebookParserFailureEnvelope(commandArgs);
     process.stdout.write(renderNotebookJson(envelope));
     process.exitCode = notebookEnvelopeExitCode(envelope);

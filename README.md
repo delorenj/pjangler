@@ -61,6 +61,21 @@ found, `4` a contract that states something forbidden (dual field ownership, an
 incomplete lifecycle entry, a retired mode declared healthy), `5` a schema
 version this build cannot read, `6` internal.
 
+Two things about the tracked contract that are easy to trip over:
+
+- **It must be its own canonical serialization.** `contracts/fleet-contract.yaml`
+  is re-serialized through `yaml` and compared byte-for-byte, so a hand edit
+  with different indentation or a trailing blank line fails with exit `2` even
+  though the contract is perfectly valid. Re-save it through the round trip
+  (`node -e 'const Y=require("yaml"),f="contracts/fleet-contract.yaml",fs=require("fs");fs.writeFileSync(f,String(Y.parseDocument(fs.readFileSync(f,"utf8"))))'`)
+  and the diff disappears. A file passed with `--contract` owes nobody canonical
+  formatting: there the round trip is reported as `byte_stable`, not enforced.
+- **`x-`-prefixed keys are yours.** At any depth they round-trip verbatim, are
+  reported separately under `data.extensions`, and are never read as policy — so
+  provenance, ticket references and local annotations have somewhere to live.
+  They are still scanned for credentials and host paths, because a secret in an
+  extension is still a secret in a tracked file.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,

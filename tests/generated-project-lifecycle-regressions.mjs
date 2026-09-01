@@ -95,7 +95,13 @@ try {
     assert.equal(inventory.some((path) => path.startsWith(forbidden)), false, `packed development content: ${forbidden}`);
   }
   assert.equal(inventory.some((path) => path.includes("/__pycache__/") || path.endsWith(".pyc")), false, "packed artifact must exclude Python caches");
-  assert.ok(tarballBytes < 1_500_000, `packed tarball unexpectedly large: ${tarballBytes} bytes`);
+  // A backstop against development content leaking into the published package;
+  // the inventory assertions above are what actually enforce hygiene. Raised
+  // from 1_500_000 when the fleet contract module + contracts/fleet-contract.yaml
+  // (PJAN-92) pushed a package that was already at 1_491_670 bytes over the line.
+  // The real bulk is not source: dist/*.map is ~900 KB of the compressed
+  // tarball, about 59% of it. Shrink that before raising this again.
+  assert.ok(tarballBytes < 1_750_000, `packed tarball unexpectedly large: ${tarballBytes} bytes`);
 
   // Extract the real npm artifact and link only the already-installed dependency
   // tree. This exercises the packed files without a second registry/network hit.

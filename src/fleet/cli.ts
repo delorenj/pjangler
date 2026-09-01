@@ -29,6 +29,8 @@ const VALIDATE_COMMAND = "fleet.contract.validate";
 
 /** Notes carried in an authority view before the envelope's list cap applies. */
 const MAX_NOTES = 10;
+/** Matches `MAX_ITEMS` in output.ts, so every list in the envelope obeys one bound. */
+const MAX_LIST_ITEMS = 100;
 
 interface ValidateOptions {
   contract?: string;
@@ -60,6 +62,20 @@ function boundedNotes(notes: readonly string[] | undefined, context: BoundedCont
   const all = notes ?? [];
   if (all.length > MAX_NOTES) context.truncated.push(`${path}: ${all.length - MAX_NOTES} of ${all.length} notes dropped`);
   return all.slice(0, MAX_NOTES).map((note) => bounded(note));
+}
+
+/**
+ * Bound a declared string list and record the clip.
+ *
+ * `writable_fields`, `store_env` and `detect` were copied with a bare spread,
+ * so a contract with thousands of entries produced an envelope past every
+ * documented bound while `truncated` stayed empty -- the one list whose whole
+ * job is to say "you did not get all of it" was the one that could not say so.
+ */
+function cappedStrings(values: readonly string[] | undefined, context: BoundedContext, path: string): string[] {
+  const all = values ?? [];
+  if (all.length > MAX_LIST_ITEMS) context.truncated.push(`${path}: ${all.length - MAX_LIST_ITEMS} of ${all.length} items dropped`);
+  return all.slice(0, MAX_LIST_ITEMS).map((value) => bounded(value));
 }
 
 /**
@@ -99,21 +115,26 @@ export function inspectFleetContract(override?: string): FleetContractInspection
     contract_version: contract.contract_version,
     compatibility: { ...contract.compatibility },
     supported_schema_versions: { ...FLEET_SUPPORTED_SCHEMA_VERSIONS },
+    // Every string below is printed as a row of the human report AND carried in
+    // the envelope, so all of them go through `bounded` -- not just the prose
+    // ones. Unbounded, an escape sequence in a `--contract` file (a candidate
+    // file is operator input) reached the terminal raw, and a 30,000-character
+    // field reached the envelope whole.
     authorities: Object.entries(contract.authorities).map(([id, authority]) => ({
       id,
-      owner: authority.owner,
-      store: authority.store,
-      store_env: [...authority.store_env],
+      owner: bounded(authority.owner),
+      store: bounded(authority.store),
+      store_env: cappedStrings(authority.store_env, context, `authorities.${id}.store_env`),
       read_only: authority.read_only === true,
-      writable_fields: [...authority.writable_fields],
+      writable_fields: cappedStrings(authority.writable_fields, context, `authorities.${id}.writable_fields`),
       notes: boundedNotes(authority.notes, context, `authorities.${id}.notes`),
     })),
     projections: contract.projections.map((projection) => ({
-      field: projection.field,
-      source: projection.source,
-      target: projection.target,
-      direction: projection.direction,
-      writable_by: projection.writable_by,
+      field: bounded(projection.field),
+      source: bounded(projection.source),
+      target: bounded(projection.target),
+      direction: bounded(projection.direction),
+      writable_by: bounded(projection.writable_by),
     })),
     classifications: Object.entries(contract.classifications).map(([id, classification]) => ({
       id,
@@ -123,14 +144,14 @@ export function inspectFleetContract(override?: string): FleetContractInspection
     })),
     service_model: boundedValue(contract.service_model, context, "service_model") as Record<string, unknown>,
     activation: boundedValue(contract.activation, context, "activation") as Record<string, unknown>,
-    retired: contract.retired.map((mode) => ({
-      id: mode.id,
+    retired: contract.retired.map((mode, index) => ({
+      id: bounded(mode.id),
       reason: bounded(mode.reason),
-      superseded_by: mode.superseded_by,
-      detect: [...mode.detect],
+      superseded_by: bounded(mode.superseded_by),
+      detect: cappedStrings(mode.detect, context, `retired[${index}].detect`),
     })),
     extensions: extensions.map((extension) => ({
-      path: extension.path,
+      path: bounded(extension.path),
       value: boundedValue(extension.value, context, extension.path),
     })),
     truncated: context.truncated,
@@ -144,7 +165,9 @@ function validateEnvelope(inspection: FleetContractInspection): FleetEnvelopeV1 
     // Not "run the command you just ran". The useful next step after a clean
     // contract is the work the contract unblocks.
     return fleetSuccessEnvelope(VALIDATE_COMMAND, inspection, [
-      `Consume the declared authorities from ${FLEET_CONTRACT_RELATIVE_PATH} rather than re-deriving field ownership`,
+      // The file that was actually inspected, not the tracked one. Under
+      // `--contract` both next actions pointed at a file the caller never named.
+      `Consume the declared authorities from ${inspection.contract_path} rather than re-deriving field ownership`,
       "Record any new managed exception under a lifecycle class before adopting, retiring, or draining it",
     ]);
   }
@@ -155,7 +178,7 @@ function validateEnvelope(inspection: FleetContractInspection): FleetEnvelopeV1 
     diagnosticDetails(inspection.diagnostics, { contract_path: inspection.contract_path }),
   );
   return fleetFailureEnvelope(VALIDATE_COMMAND, error, [
-    `Edit ${FLEET_CONTRACT_RELATIVE_PATH} at the reported field paths, then re-run this command`,
+    `Edit ${inspection.contract_path} at the reported field paths, then re-run this command`,
   ]);
 }
 
@@ -205,6 +228,13 @@ export function registerFleetCli(program: Command): void {
         // named and reported success about it.
         if (options.contract !== undefined && options.contract.trim() === "") {
           throw new FleetError("INVALID_INPUT", "--contract was given an empty path");
+        }
+        // Commander binds the next argv token as the value, so
+        // `--contract --json` makes the FLAG the path: `options.json` stays
+        // false and a caller that asked for JSON got the ANSI human report for
+        // a file named `--json`. A path never starts with `--`.
+        if (options.contract !== undefined && options.contract.startsWith("--")) {
+          throw new FleetError("INVALID_INPUT", "--contract was given an option, not a path");
         }
         const inspection = inspectFleetContract(options.contract);
         const envelope = validateEnvelope(inspection);

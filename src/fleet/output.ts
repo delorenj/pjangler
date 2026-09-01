@@ -93,9 +93,17 @@ export interface FleetContractInspection {
   diagnostics: FleetDiagnostic[];
 }
 
-/** Strip control characters and cap length. Same rule as the notebook envelope. */
+/**
+ * Strip control characters and cap length. Same rule as the notebook envelope,
+ * plus one this surface needs: CR and LF fold to a space rather than survive.
+ * Every bounded string here is printed as one row of a report, so a newline
+ * inside a contract value let that value forge additional rows.
+ */
 export function bounded(value: string, max = MAX_STRING): string {
-  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "").slice(0, max);
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    .replace(/[\r\n]+/gu, " ")
+    .slice(0, max);
 }
 
 /**
@@ -132,7 +140,12 @@ export function redactHome(path: string, homes: readonly string[] = homeCandidat
     if (path === home) return "~";
     if (path.startsWith(`${home}/`)) return `~${path.slice(home.length)}`;
   }
-  return path.replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>");
+  // Kept in step with HOST_PATH in contract.ts: `/root` is a home directory
+  // too, and leaving it out meant `--contract /root/x.yaml` echoed the path
+  // back verbatim while `/home/someone/x.yaml` was redacted.
+  return path
+    .replace(/^\/(home|Users)\/[^/]+/u, "/$1/<redacted>")
+    .replace(/^\/root(?=\/|$)/u, "/root/<redacted>");
 }
 
 /**
@@ -249,10 +262,19 @@ function sanitizeDetails(details: Record<string, unknown>): Record<string, unkno
  */
 export function diagnosticDetails(diagnostics: readonly FleetDiagnostic[], extra: Record<string, unknown> = {}): Record<string, unknown> {
   const details: Record<string, unknown> = { ...extra, diagnostic_count: diagnostics.length };
-  const room = MAX_DETAILS - Object.keys(details).length;
-  diagnostics.slice(0, Math.max(0, room)).forEach((diagnostic, index) => {
+  // One slot held back for the marker below, so the clip can always announce
+  // itself. Without it a 30-finding contract produced 18 entries and a count of
+  // 30, and the only way to notice was to compare the two by hand -- the same
+  // "quietly short-changed" failure `truncated` exists to prevent on the
+  // success path.
+  const room = MAX_DETAILS - Object.keys(details).length - 1;
+  const shown = Math.max(0, Math.min(room, diagnostics.length));
+  diagnostics.slice(0, shown).forEach((diagnostic, index) => {
     details[`${index}:${diagnostic.path}`] = `${diagnostic.code}: ${diagnostic.message}`;
   });
+  if (shown < diagnostics.length) {
+    details.diagnostics_truncated = `showing ${shown} of ${diagnostics.length} findings; run without --json for the full report`;
+  }
   return details;
 }
 
@@ -360,7 +382,10 @@ export function formatFleetContractReport(inspection: FleetContractInspection): 
     const style = statusStyle(authority.read_only ? "skip" : "pass");
     const count = authority.read_only ? "read-only" : `${authority.writable_fields.length} writable field${authority.writable_fields.length === 1 ? "" : "s"}`;
     lines.push(`    ${style.color(style.glyph)}  ${authority.id.padEnd(authorityWidth)}  ${cyan(authority.owner.padEnd(ownerWidth))}  ${dim(count)}`);
-    lines.push(`       ${dim(glyph.arrow)} ${dim(`${authority.store} via ${authority.store_env.join(", ")}`)}`);
+    // A read-only authority (the process table) resolves from no env key at
+    // all; `via` with nothing after it read as a truncated line.
+    const resolvedBy = authority.store_env.length ? ` via ${bounded(authority.store_env.join(", "))}` : "";
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${bounded(authority.store)}${resolvedBy}`)}`);
   }
 
   section(lines, "Projections");

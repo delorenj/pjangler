@@ -50,6 +50,11 @@ const FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
 // walked straight through, and `/root` was never covered at all.
 const HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
 const SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+/** Longest `retired[].detect` pattern accepted. Long patterns are the ones that hurt. */
+const FLEET_DETECT_MAX_PATTERN_BYTES = 200;
+// A quantified group that itself contains a quantifier -- `(a+)+`, `(a*)*`,
+// `(?:ab+)*` -- is the classic exponential-backtracking shape.
+const NESTED_QUANTIFIER = /\((?:\?[:=!])?[^)]*[+*}][^)]*\)\s*[+*{]/u;
 // Credential-SHAPED values, not the word "secret" in prose. A key-name scan
 // alone let `store: "sk-live-..."` through, and a prose scan would flag every
 // note that explains why credentials are banned.
@@ -121,6 +126,22 @@ export function loadFleetContract(path: string): LoadedFleetContract {
   }
   const text = readFileSync(path, "utf8");
   return { path, text, document: YAML.parseDocument(text) };
+}
+
+/**
+ * Walk a dotted path into the policy tree, or `undefined` if it does not exist.
+ *
+ * Used to prove `retired[].superseded_by` names a real block of this contract
+ * rather than a section someone has since renamed.
+ */
+function resolveContractPath(root: unknown, path: string): unknown {
+  let node: unknown = root;
+  for (const segment of path.split(".")) {
+    if (!isRecord(node)) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(node, segment)) return undefined;
+    node = node[segment];
+  }
+  return node;
 }
 
 /** The serializer the byte-stable round trip is defined against. */
@@ -201,7 +222,15 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
   });
   if (parseErrors.length) return { diagnostics: parseErrors, contract: null, extensions: [] };
 
-  const { policy, extensions } = collectFleetExtensions(document.toJS() as unknown);
+  // `toJS()` still throws after a clean parse -- an alias bomb trips the
+  // library's own `maxAliasCount` only when the tree is materialised. Left
+  // unhandled it escaped the diagnostics pipeline entirely and surfaced as
+  // INTERNAL_ERROR/exit 6, which this taxonomy reserves for defects in US. A
+  // hostile input file is the caller's problem, and says so: INVALID_INPUT.
+  let tree: unknown;
+  try { tree = document.toJS() as unknown; }
+  catch { return { diagnostics: [{ code: "INVALID_INPUT", path: DOCUMENT_PATH, message: "contract could not be materialised (alias expansion or depth limit)" }], contract: null, extensions: [] }; }
+  const { policy, extensions } = collectFleetExtensions(tree);
   if (!isRecord(policy)) {
     return { diagnostics: [{ code: "INVALID_INPUT", path: DOCUMENT_PATH, message: "contract must be a mapping" }], contract: null, extensions };
   }
@@ -277,14 +306,25 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
   }
   if (findings.length) return findings;
 
-  // No host state, no credentials. `retired[].detect` is a detection vocabulary
-  // rather than a declaration, so the whole retired block is exempt from the
-  // host-path rule. Extensions are NOT exempt: an `x-` key is not policy, but a
-  // credential parked in one is still a credential in a tracked file.
+  // No host state, no credentials. Only `retired[].detect` is exempt from the
+  // host-path rule: it is a detection vocabulary rather than a declaration, so
+  // it has to be able to spell the very shapes the rule bans. Exempting the
+  // WHOLE retired block was too wide -- `id`, `reason` and `superseded_by` are
+  // ordinary prose, and a live-shaped key or another user's home directory
+  // parked in a `reason:` validated clean. Extensions are NOT exempt either: an
+  // `x-` key is not policy, but a credential in one is still a credential in a
+  // tracked file.
   const leaves: Array<{ path: string; text: string }> = [];
   for (const [key, value] of Object.entries(policy)) {
-    if (key === "retired") continue;
-    scalars(value, key, leaves);
+    if (key !== "retired") { scalars(value, key, leaves); continue; }
+    if (!Array.isArray(value)) { scalars(value, key, leaves); continue; }
+    value.forEach((entry: unknown, index: number) => {
+      if (!isRecord(entry)) { scalars(entry, `${key}[${index}]`, leaves); return; }
+      for (const [entryKey, entryValue] of Object.entries(entry)) {
+        if (entryKey === "detect") continue;
+        scalars(entryValue, `${key}[${index}].${entryKey}`, leaves);
+      }
+    });
   }
   for (const extension of extensions) {
     leaves.push({ path: extension.path, text: extension.path });
@@ -351,6 +391,7 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
   if (!Array.isArray(projections)) fail("projections", "projections must be a list");
   else {
     const seenPairs = new Map<string, number>();
+    const seenTargets = new Map<string, number>();
     projections.forEach((entry: unknown, index: number) => {
       const at = `projections[${index}]`;
       if (!isRecord(entry)) { fail(at, "projection must be a mapping"); return; }
@@ -375,6 +416,18 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
       const previous = seenPairs.get(pair);
       if (previous !== undefined) fail(`${at}`, `duplicate projection: ${pair} is already declared at projections[${previous}]`);
       else seenPairs.set(pair, index);
+
+      // One direction, one upstream. These two are the whole point of the
+      // block: the reverse pair makes a field bidirectional, and a second
+      // source feeding one target gives that field two upstream truths -- which
+      // is exactly the overlap this contract was written to end.
+      const reverse = seenPairs.get(`${target} -> ${source}`);
+      if (reverse !== undefined && reverse !== index) {
+        fail(`${at}.direction`, `a field pair may flow in one direction only; the reverse is declared at projections[${reverse}]`);
+      }
+      const fedBy = seenTargets.get(target);
+      if (fedBy !== undefined) fail(`${at}.target`, `${target} is already fed by projections[${fedBy}]`);
+      else seenTargets.set(target, index);
 
       // Referential integrity. Both ends must be fields some authority really
       // declares, and the target must be writable by the owner this projection
@@ -440,6 +493,13 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
       if (typeof value !== "string" || value.length === 0) fail(`service_model.per_agent.${key}`, `${key} must be a unit name pattern`);
       else if (!value.includes("{agent_id}")) fail(`service_model.per_agent.${key}`, "a per-agent unit pattern must carry the {agent_id} placeholder");
     }
+    // Three names for three roles. Collapsed to one string they all validate,
+    // and a provisioner then writes one unit where the contract declares two.
+    const unitNames = ["gateway_unit", "heartbeat_service", "heartbeat_timer"]
+      .map((key) => perAgent[key]).filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (unitNames.length === 3 && new Set(unitNames).size !== 3) {
+      fail("service_model.per_agent", "gateway_unit, heartbeat_service and heartbeat_timer must be three distinct patterns");
+    }
     const shared = isRecord(service.fleet_shared) ? service.fleet_shared : {};
     for (const key of ["bloodbank_gateway_unit", "bloodbank_gateway_profile", "command_subject", "target_field"] as const) {
       const value = shared[key];
@@ -447,12 +507,23 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
     }
     const layout = isRecord(service.profile_layout) ? service.profile_layout : {};
     if (typeof layout.root !== "string" || layout.root.length === 0) fail("service_model.profile_layout.root", "root must be a non-empty path pattern");
+    // Without the placeholder every profile resolves to one directory, which
+    // collapses profile identity exactly as a symlinked root would.
+    else if (!layout.root.includes("{profile_name}")) fail("service_model.profile_layout.root", "a profile root must carry the {profile_name} placeholder");
     // A symlinked profile root loses profile identity and shared auth, so the
     // contract may not leave that as a permitted shape.
     if (layout.symlink_allowed !== false) fail("service_model.profile_layout.symlink_allowed", "symlink_allowed must be declared false");
     for (const key of ["identity_file", "override_file", "generated_file"] as const) {
       const value = layout[key];
       if (typeof value !== "string" || value.length === 0) fail(`service_model.profile_layout.${key}`, `${key} must be a non-empty file name`);
+    }
+    // The override file is the operator-owned SSOT and the generated file is
+    // rewritten by the renderer. Declaring the same name for both tells the
+    // renderer to overwrite the only file a human is supposed to edit.
+    const layoutFiles = ["identity_file", "override_file", "generated_file"]
+      .map((key) => layout[key]).filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (layoutFiles.length === 3 && new Set(layoutFiles).size !== 3) {
+      fail("service_model.profile_layout", "identity_file, override_file and generated_file must be three distinct names");
     }
   }
 
@@ -516,10 +587,35 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
         const value = entry[key];
         if (typeof value !== "string" || value.length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
       }
-      if (typeof entry.id === "string") ids.add(entry.id);
+      // A duplicate id satisfies the completeness loop below with a stub, so a
+      // real mode can be deleted and the contract still validates -- taking its
+      // `detect` patterns, and therefore its detection, with it.
+      if (typeof entry.id === "string") {
+        if (ids.has(entry.id)) fail(`${at}.id`, `duplicate retired mode id: ${entry.id}`);
+        ids.add(entry.id);
+      }
+      // `superseded_by` is the only thing a RETIRED_MODE diagnostic tells an
+      // operator to do next. Unresolved, it rots silently on the first rename.
+      if (typeof entry.superseded_by === "string" && entry.superseded_by.length > 0
+          && resolveContractPath(policy, entry.superseded_by) === undefined) {
+        fail(`${at}.superseded_by`, `${entry.superseded_by} does not resolve to a declared contract path`);
+      }
       const detect = entry.detect;
       if (!stringList(detect) || detect.length === 0) { fail(`${at}.detect`, "detect must be a non-empty list of patterns"); return; }
       detect.forEach((pattern, patternIndex) => {
+        // Every pattern here runs against every scalar leaf in the contract.
+        // `--contract` is advertised for validating candidate files, so the
+        // pattern list is operator input: `^(a+)+$` against a 40-character note
+        // pinned a core and never returned. Refuse the shape rather than run it
+        // -- a validator that hangs gives a worse answer than one that says no.
+        if (pattern.length > FLEET_DETECT_MAX_PATTERN_BYTES) {
+          fail(`${at}.detect[${patternIndex}]`, `detect pattern exceeds ${FLEET_DETECT_MAX_PATTERN_BYTES} characters`);
+          return;
+        }
+        if (NESTED_QUANTIFIER.test(pattern)) {
+          fail(`${at}.detect[${patternIndex}]`, "detect pattern nests a quantifier inside a quantified group and may backtrack catastrophically");
+          return;
+        }
         try { new RegExp(pattern, "iu"); }
         catch { fail(`${at}.detect[${patternIndex}]`, "detect pattern is not a valid regular expression"); }
       });
@@ -647,7 +743,11 @@ function validateRetiredModes(contract: FleetContract): FleetDiagnostic[] {
       try { expression = new RegExp(pattern, "iu"); } catch { continue; }
       for (const leaf of leaves) {
         if (!expression.test(leaf.text)) continue;
-        const key = `${leaf.path} ${mode.id}`;
+        // `\u0000` as an ESCAPE, never a literal NUL byte. A raw NUL makes `file`
+        // call this source `data` and makes GNU grep treat it as binary -- which
+        // silently no-ops the machine-wide pre-commit secret scan, since that
+        // scan greps the unified diff, for every commit touching this file.
+        const key = `${leaf.path}\u0000${mode.id}`;
         if (seen.has(key)) continue;
         seen.add(key);
         findings.push({

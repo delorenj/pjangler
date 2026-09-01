@@ -100,6 +100,11 @@ const isolation = {
   HERMES_AGENTS_REGISTRY: join(scratchHome, ".hermes", "agents-registry.yaml"),
   HERMES_FLEET_REGISTRY_FILE: join(scratchHome, ".hermes", "agents-registry.yaml"),
   PJ_PROJECT_REGISTRY: join(scratchHome, ".config", "pjangler", "projects.yaml"),
+  // Both keys authorities.tracked_role_scaffold declares. Omitted, a loader that
+  // starts honouring either would resolve the developer's REAL scaffold and the
+  // zero-write snapshot below would never see the writes.
+  HERMES_TEMPLATE_RUNTIME_SCAFFOLD: join(scratchHome, ".hermes", "runtime-scaffold"),
+  RUNTIME_SCAFFOLD_DIR: join(scratchHome, ".hermes", "runtime-scaffold"),
   GIT_CEILING_DIRECTORIES: realpathSync(temp),
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_SYSTEM: "/dev/null",
@@ -805,7 +810,9 @@ try {
 
   check("a closed stdout is not an error", () => {
     // `... --json | head -1` closes the pipe mid-write.
-    const piped = spawnSync("sh", ["-c", `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet contract validate --json | head -1`], {
+    // `set -o pipefail` matters: without it the pipeline reports HEAD's status,
+    // which is 0 however the CLI died, so the assertion below could not fail.
+    const piped = spawnSync("sh", ["-c", `set -o pipefail; ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} fleet contract validate --json | head -1`], {
       cwd: temp, encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, ...isolation },
     });
@@ -853,6 +860,276 @@ try {
     cli(["fleet", "contract", "validate", "--json"]);
     cli(["fleet", "contract", "validate", "--contract", join(temp, "nope.yaml"), "--json"]);
     assert.deepEqual(snapshot(), baseline);
+  });
+
+  // -- rules that were implemented but never exercised ----------------------
+  // Each of these passed before only because every assertion read the TRACKED
+  // contract, which satisfies the rule. Deleting the rule left the suite green.
+
+  check("a symlinked profile root is refused", () => {
+    // The one profile shape the contract exists to refuse: a symlinked root
+    // loses profile identity and shared auth.
+    const path = mutated("symlink-allowed", (doc) => {
+      doc.setIn(["service_model", "profile_layout", "symlink_allowed"], true);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /symlink_allowed/);
+  });
+
+  check("collapsing the activation ladder is refused", () => {
+    // Dropping installed/healthy/routing_ready re-merges discovery into
+    // activation -- exactly what the retired mode activation-by-discovery names.
+    const path = mutated("collapsed-states", (doc) => {
+      doc.setIn(["activation", "states"], ["discovered", "activated"]);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /activation\.states/);
+  });
+
+  check("deleting a retired mode is refused, not silently accepted", () => {
+    // retired[] is where the detect patterns live, so deleting an entry deletes
+    // its detection. The completeness check is what stops that.
+    const path = mutated("dropped-retired", (doc) => {
+      const modes = doc.get("retired");
+      const index = modes.items.findIndex((item) => String(item.get("id")) === "per-agent-checkpoint-timer");
+      assert.notEqual(index, -1, "fixture assumption: the checkpoint-timer mode is declared");
+      modes.items.splice(index, 1);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /per-agent-checkpoint-timer/);
+  });
+
+  check("a duplicate retired id cannot stand in for the mode it shadows", () => {
+    const path = mutated("duplicate-retired", (doc) => {
+      const modes = doc.get("retired");
+      const index = modes.items.findIndex((item) => String(item.get("id")) === "per-agent-checkpoint-timer");
+      modes.items[index].set("id", "n8n-owned-truth");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /duplicate retired mode id/);
+  });
+
+  check("superseded_by must resolve to a real block of this contract", () => {
+    // It is the only next step a RETIRED_MODE diagnostic offers an operator;
+    // unresolved, it rots silently on the first rename.
+    const path = mutated("dangling-superseded", (doc) => {
+      doc.getIn(["retired", 0]).set("superseded_by", "service_model.fleet_shared.renamed_away");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /does not resolve/);
+  });
+
+  check("a credential-shaped KEY is rejected, not just a credential-shaped value", () => {
+    // The value half was covered. A short benign value under a key named
+    // session_token trips no value pattern, so only the key rule catches it.
+    const path = mutated("credential-key", (doc) => {
+      doc.setIn(["service_model", "fleet_shared", "session_token"], "abcd1234");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /credential-shaped keys/);
+  });
+
+  check("a credential in retired[].reason is still a credential", () => {
+    // retired[] was exempted wholesale from the credential scan so that detect
+    // could spell the banned shapes. Only detect is exempt now.
+    const path = mutated("credential-in-reason", (doc) => {
+      doc.getIn(["retired", 0]).set("reason", "leaked AKIAIOSFODNN7EXAMPLE while migrating");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /credential-shaped value/);
+  });
+
+  check("a host path in retired[].reason is still a host path", () => {
+    const path = mutated("host-path-in-reason", (doc) => {
+      // Assembled, never written literally: portable-test-paths-regressions
+      // fails the build on a machine-specific home path in a release suite.
+      const foreign = join("/", "home", "someone-else", "hermes");
+      doc.getIn(["retired", 0]).set("reason", `pinned to ${foreign} by hand`);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /absolute host path/);
+  });
+
+  check("a catastrophically backtracking detect pattern is refused, not run", () => {
+    // Every detect pattern runs against every scalar leaf. ^(a+)+$ against a
+    // 40-character note pinned a core and never returned; the CLI must answer.
+    const path = mutated("redos-detect", (doc) => {
+      doc.getIn(["retired", 0, "detect"]).add("^(a+)+$");
+      doc.setIn(["authorities", "project_identity", "notes"], ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"]);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2);
+    assert.match(JSON.stringify(parsed.error), /backtrack catastrophically/);
+  });
+
+  check("two projections may not feed one target", () => {
+    // One field, two upstream truths is the exact overlap this contract was
+    // written to end.
+    const path = mutated("forked-target", (doc) => {
+      const projections = doc.get("projections");
+      const clone = doc.createNode(projections.get(0).toJSON());
+      clone.set("source", "projects.{slug}.status");
+      clone.set("field", "forked_target");
+      projections.add(clone);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.match(JSON.stringify(parsed.error), /already fed by/);
+  });
+
+  check("a field pair may not flow in both directions", () => {
+    const path = mutated("reversed-pair", (doc) => {
+      const projections = doc.get("projections");
+      const first = projections.get(0);
+      const source = String(first.get("source"));
+      const target = String(first.get("target"));
+      const clone = doc.createNode(first.toJSON());
+      clone.set("source", target);
+      clone.set("target", source);
+      clone.set("field", "reversed_pair");
+      projections.add(clone);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.match(JSON.stringify(parsed.error), /one direction only|already fed by/);
+  });
+
+  check("the per-agent unit patterns must stay three distinct names", () => {
+    const path = mutated("collapsed-units", (doc) => {
+      doc.setIn(["service_model", "per_agent", "heartbeat_service"], "hermes-{agent_id}-gateway.service");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.match(JSON.stringify(parsed.error), /three distinct patterns/);
+  });
+
+  check("the generated profile file may not shadow the override SSOT", () => {
+    const path = mutated("collapsed-profile-files", (doc) => {
+      doc.setIn(["service_model", "profile_layout", "generated_file"], "config.delta.yaml");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.match(JSON.stringify(parsed.error), /three distinct names/);
+  });
+
+  check("a profile root without {profile_name} collapses profile identity", () => {
+    const path = mutated("shared-profile-root", (doc) => {
+      doc.setIn(["service_model", "profile_layout", "root"], "{HERMES_FLEET_HOME}/profiles");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.match(JSON.stringify(parsed.error), /\{profile_name\} placeholder/);
+  });
+
+  // -- promises the envelope made but could not keep ------------------------
+
+  check("--contract cannot swallow the flag that follows it", () => {
+    // Commander binds the next token as the value, so `--contract --json` made
+    // the FLAG the path and answered a JSON caller with the ANSI human report.
+    const result = cli(["fleet", "contract", "validate", "--contract", "--json"]);
+    assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+    assert.match(result.stdout, /an option, not a path/);
+  });
+
+  check("--help alongside --json is a success, and prints one document", () => {
+    // Help is a success Commander reports by throwing. Caught by the fleet JSON
+    // branch it printed usage text AND a failure envelope, then exited 2.
+    const result = cli(["fleet", "contract", "validate", "--help", "--json"]);
+    assert.equal(result.status, 0, `help must exit 0, got ${result.status}: ${result.stderr}`);
+    assert.equal(result.stdout.includes('"schema_version"'), false, "help must not be followed by an envelope");
+  });
+
+  check("an alias bomb is the caller's bad input, not our internal error", () => {
+    // toJS() throws after a clean parse when the library's maxAliasCount trips.
+    // Unhandled it surfaced as INTERNAL_ERROR/exit 6, which the taxonomy
+    // reserves for defects in us.
+    const lines = ["a0: &a0 [x, x, x, x, x, x, x, x, x, x]"];
+    for (let level = 1; level <= 8; level += 1) {
+      const previous = `*a${level - 1}`;
+      lines.push(`a${level}: &a${level} [${new Array(10).fill(previous).join(", ")}]`);
+    }
+    const path = rawCopy("alias-bomb", `${lines.join("\n")}\n`);
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    assert.equal(result.status, 2, "a hostile input file is exit 2, never exit 6");
+  });
+
+  check("a path under /root is redacted like any other home", () => {
+    // HOST_PATH in contract.ts counts /root as a home directory; redactHome did
+    // not, so the two answers to "what is a home" had drifted apart.
+    const result = cli(["fleet", "contract", "validate", "--contract", "/root/fleet-contract.yaml", "--json"]);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "NOT_FOUND");
+    assert.equal(parsed.error.details.contract_path, "/root/<redacted>/fleet-contract.yaml");
+  });
+
+  check("a clipped details map says so, instead of quietly under-reporting", () => {
+    // The human report lists every finding; details is capped. Without the
+    // marker a 30-finding contract showed 18 entries and a count of 30, and the
+    // only way to notice was to compare the two by hand.
+    const path = mutated("many-findings", (doc) => {
+      for (let index = 0; index < 30; index += 1) doc.set(`unknown_key_${index}`, "x");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path, "--json"]);
+    const parsed = envelope(result);
+    const details = parsed.error.details;
+    assert.ok(details.diagnostic_count >= 30, `expected at least 30 findings, got ${details.diagnostic_count}`);
+    assert.equal(typeof details.diagnostics_truncated, "string", "a clipped details map must announce the clip");
+    assert.match(details.diagnostics_truncated, /showing \d+ of \d+ findings/);
+  });
+
+  check("a control character in a contract cannot reach the terminal raw", () => {
+    // A candidate file is operator input, and every one of these strings is
+    // printed as a row of the human report.
+    const path = mutated("escape-injection", (doc) => {
+      doc.getIn(["projections", 0]).set("field", "clear[2Jscreen");
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", path]);
+    assert.equal(result.stdout.includes("[2J"), false, "an escape sequence reached the report");
+  });
+
+  check("the fleet module carries no raw NUL byte", () => {
+    // A literal NUL makes GNU grep treat the file as binary. The machine-wide
+    // pre-commit secret scan greps the unified diff, so one NUL anywhere in
+    // that stream silently no-ops the whole scan for the commit carrying it.
+    const fleetDir = join(ROOT, "src", "fleet");
+    for (const name of readdirSync(fleetDir)) {
+      if (!name.endsWith(".ts")) continue;
+      const bytes = readFileSync(join(fleetDir, name));
+      assert.equal(bytes.includes(0), false, `${name} carries a raw NUL byte; write it as a \\u0000 escape`);
+    }
   });
 
   check("the suite is registered in the test runner", () => {

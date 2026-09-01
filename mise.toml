@@ -29,6 +29,9 @@ run = "{{config_root}}/.mise/scripts/link-bins.sh"
 # touches a registry, profile, service, or process.
 [tasks."fleet:contract"]
 description = "Validate the tracked fleet authority and managed-state contract (read-only)"
+# `depends` matters: without a build this task's failure mode on a fresh clone is
+# ERR_MODULE_NOT_FOUND, not the categorized contract diagnostic it exists to give.
+depends = ["build"]
 run = "node {{config_root}}/dist/index.js fleet contract validate"
 
 [tasks."fleet:check"]
