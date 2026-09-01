@@ -140,6 +140,11 @@ _bmad/config.user.yaml
 .opencode/skills
 .kimi-code/skills
 
+# Runtime locks a running agent process rewrites. Excluded AFTER the broad
+# `!.claude/**` un-ignore above, which would otherwise sweep them back in.
+.claude/*.lock
+.claude/*.pid
+
 # esbuild sourcemaps: needed for coverage, rebuilt every time, published from CI
 dist/*.js.map
 # c8 output

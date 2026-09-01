@@ -1235,7 +1235,10 @@ try {
     const guidance = (file) => {
       const source = readFileSync(join(ROOT, "src", "fleet", file), "utf8");
       const lines = [];
-      for (const fn of ["inventoryEnvelope", "provenanceEnvelope"]) {
+      // `statusEnvelope` was added by story 1.4 and NOT added here, so the
+      // status command's five hand-duplicated guidance strings were outside every
+      // check that the two adapters agree.
+      for (const fn of ["inventoryEnvelope", "provenanceEnvelope", "statusEnvelope"]) {
         const start = source.indexOf(`function ${fn}(`);
         assert.notEqual(start, -1, `${file} must define ${fn} for this case to mean anything`);
         const body = source.slice(start, source.indexOf("\n}", start));
@@ -1245,7 +1248,7 @@ try {
     };
     const fromCli = guidance("cli.ts");
     const fromMcp = guidance("mcp.ts");
-    assert.ok(fromMcp.length >= 6, `the MCP adapter must carry its guidance strings for this case to mean anything, found ${fromMcp.length}`);
+    assert.ok(fromMcp.length >= 9, `the MCP adapter must carry its guidance strings for this case to mean anything, found ${fromMcp.length}`);
     // SUBSET, not equality: the CLI carries one extra human-path line ("Re-run
     // with --json for the complete row set") that it pops before emitting JSON,
     // and which has no business existing on a protocol the caller reaches

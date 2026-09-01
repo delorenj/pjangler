@@ -145,6 +145,18 @@ export interface FleetInventoryOptions {
    * inventory behaves exactly as it did before -- there is no implicit deadline.
    */
   runContext?: FleetRunContext;
+  /**
+   * Carry at most this many rows. Defaults to `FLEET_INVENTORY_MAX_ROWS`.
+   *
+   * Only the status core passes it, and it passes `Infinity`: status DERIVES a
+   * fleet verdict from these rows, so a bound on what the inventory CARRIES
+   * would move what status CONCLUDES. Measured on a 1021-row registry whose only
+   * malformed row sorted last: `health.healthy` true, `failed` 0,
+   * `domains[registry].state` "pass" -- and `--agent zzzz-broken` answered
+   * `NOT_FOUND` while `totals.agents` counted it. `fleet inventory` never passes
+   * this, so its own payload is unchanged.
+   */
+  rowCap?: number;
   env?: NodeJS.ProcessEnv;
   home?: string;
 }
@@ -1507,9 +1519,10 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
 
   const truncated: string[] = [];
   let rows = selectedRows;
-  if (rows.length > FLEET_INVENTORY_MAX_ROWS) {
-    truncated.push(`rows: ${rows.length - FLEET_INVENTORY_MAX_ROWS} of ${rows.length} rows dropped`);
-    rows = rows.slice(0, FLEET_INVENTORY_MAX_ROWS);
+  const rowCap = options.rowCap ?? FLEET_INVENTORY_MAX_ROWS;
+  if (rows.length > rowCap) {
+    truncated.push(`rows: ${rows.length - rowCap} of ${rows.length} rows dropped`);
+    rows = rows.slice(0, rowCap);
   }
   if (ctx.droppedFindings > 0) {
     truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);

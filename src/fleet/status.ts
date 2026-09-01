@@ -419,6 +419,12 @@ function boundedDetails(details: readonly unknown[] | undefined): string[] {
   return kept;
 }
 
+/** Where a state sits in the declared precedence. Lower is worse. */
+function stateRank(state: FleetStatusState): number {
+  const index = (FLEET_STATUS_STATE_PRECEDENCE as readonly FleetStatusState[]).indexOf(state);
+  return index === -1 ? FLEET_STATUS_STATE_PRECEDENCE.length : index;
+}
+
 /**
  * The worst state in a set, under the declared precedence.
  *
@@ -426,12 +432,6 @@ function boundedDetails(details: readonly unknown[] | undefined): string[] {
  * a precedence constant that no code iterates is decoration, and reordering it
  * has to move behaviour or it is not the rule it claims to be.
  */
-/** Where a state sits in the declared precedence. Lower is worse. */
-function stateRank(state: FleetStatusState): number {
-  const index = (FLEET_STATUS_STATE_PRECEDENCE as readonly FleetStatusState[]).indexOf(state);
-  return index === -1 ? FLEET_STATUS_STATE_PRECEDENCE.length : index;
-}
-
 export function rollUp(observations: readonly { state: FleetStatusState }[]): FleetStatusState {
   // `unsupported` STEPS ASIDE when the domain produced anything else, and this
   // is the one deliberate refinement of the raw precedence.
@@ -593,6 +593,8 @@ export interface FleetStatusContext {
   unexpectedDomainRules: Set<string>;
   /** Provenance fact ids already reported as carrying no declared domain. Same discipline. */
   unmappedFacts: Set<string>;
+  /** Host rule ids already reported as collected-but-not-reported under a domain filter. Same discipline. */
+  unreportedHostRules: Set<string>;
 }
 
 function addFinding(ctx: FleetStatusContext, finding: FleetInventoryFinding): void {
@@ -1037,7 +1039,18 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // registered-agent count. Collected UNSCOPED so `total_registered_agents` and
   // the conflict groups stay fleet-wide under a filter -- provenance's
   // precedent, and the reason a scoped answer cannot claim a fleet verdict.
-  const inventory = collectFleetInventory({ ...options, agentId: undefined, runContext });
+  // `rowCap: Infinity` for the same reason the agent cap counts every selected
+  // agent: a bound on what the envelope CARRIES must never move what it
+  // CONCLUDES. `collectFleetInventory` clips its own rows at
+  // `FLEET_INVENTORY_MAX_ROWS` (1000), and status counts health, `by_state` and
+  // the domain rollups out of the rows it is handed -- so past 1000 rows a
+  // failing agent was never built, never counted, and not even retrievable:
+  // measured on a 1021-row registry whose only malformed row sorted last,
+  // `healthy: true, failed: 0, registry "pass"`, `totals.agents: 1021` beside
+  // `totals.observations: 1000`, and `--agent zzzz-broken` -> NOT_FOUND exit 3.
+  // Status still clips what it EMITS (`agents[]`, and each record's
+  // observations); it no longer clips what it reasons over.
+  const inventory = collectFleetInventory({ ...options, agentId: undefined, rowCap: Number.POSITIVE_INFINITY, runContext });
   const rowsById = new Map<string, FleetInventoryRow>();
   for (const row of inventory.rows) {
     const id = row.agent_id.value;
@@ -1059,6 +1072,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     unmappedRules: new Set<string>(),
     unexpectedDomainRules: new Set<string>(),
     unmappedFacts: new Set<string>(),
+    unreportedHostRules: new Set<string>(),
   };
 
   // NOTHING OBSERVED IS NOT A CLEAN BILL. Measured on an `agents: {}` registry:
@@ -1103,6 +1117,16 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       // The same rule as the domain gate, one level down: under `--agent` no
       // checkout belonging to another agent may be probed.
       probeAgentIds: scope.kind === "agent" ? agentIds : undefined,
+      // And the same rule one level ACROSS: the template probes feed only
+      // `template_scaffold`, the checkout probes only `release_provenance`, so a
+      // run scoped to one must not spawn the other's probes and discard the
+      // facts. Measured before this: `--domain template_scaffold` and
+      // `--domain release_provenance` ran the identical probe set,
+      // `{checkout: 3, gitlink: 1, submodule: 1}`.
+      probeFamilies: [
+        ...(domainSet.has("template_scaffold") ? ["template" as const] : []),
+        ...(domainSet.has("release_provenance") ? ["checkout" as const] : []),
+      ],
       runContext,
     });
     provenanceFacts = provenance.facts;
@@ -1303,7 +1327,39 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
             detail: `the project-scoped rule ${ruleId} maps to domain ${domain}, which AUDIT_PER_AGENT_DOMAINS in src/fleet/status.ts does not list; a --domain ${domain} run spawns no audit child and would not report it`,
           });
         }
-        if (!domainSet.has(domain)) continue;
+        if (!domainSet.has(domain)) {
+          // COLLECTED, THEN DROPPED -- the asymmetry that made the filtered run
+          // the silent one. When no child spawns, the P9 block above says
+          // `audit-host-rules-not-collected` and points at an unfiltered run.
+          // When a child DOES spawn (the selected domain is audit-fed), every
+          // host rule for an unselected domain arrived and was thrown away with
+          // no finding and no truncation note. Measured on the live fleet:
+          // `--domain template_scaffold --live` spawned 28 children, reported
+          // the 2 notebook rules, and discarded `systemd.sentinel` (fail),
+          // `hermes.registry-parity` (fail), `hermes.profile-wiring` (fail) and
+          // `hermes.fleet-config` -- `findings: []`, `truncated: []`. An empty
+          // `data.host` then reads as "this machine is clean", which is the one
+          // thing it must never be able to mean.
+          if (scopeOfRule === "host" && !ctx.unreportedHostRules.has(ruleId)) {
+            ctx.unreportedHostRules.add(ruleId);
+            addFinding(ctx, {
+              code: "audit-host-rules-not-reported",
+              field: DOMAIN_FIELD[domain],
+              agent_id: null,
+              source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
+              severity: "warn",
+              // NO STATE IS CLAIMED HERE, deliberately. This fires on the first
+              // repository that reports the rule, and `hostByRule` resolves the
+              // fleet's reading of a host rule WORST-WINS across repositories --
+              // so the state visible at this point may be the best reading, not
+              // the one that matters. Naming it would re-introduce exactly the
+              // first-wins mask that let a `pass` from one repo hide a `fail`
+              // from another.
+              detail: `the host-scoped rule ${ruleId} ran, but its domain ${domain} is not selected, so data.host does not carry its result; run without --domain to see every host finding`,
+            });
+          }
+          continue;
+        }
         const owner = recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? null;
         const state = ruleState(rule.status);
         if (scopeOfRule === "host") {
@@ -1327,7 +1383,13 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
             summary: bounded(redactHome(nonEmptyString(rule.summary) ?? nonEmptyString(rule.title) ?? ruleId)),
             details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
             finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
-            retrieval: retrievalFor(null, domain, true),
+            // A retrieval that returns nothing is worse than none. `--domain
+            // registry|systemd|bloodbank --live` spawns no child (they are not in
+            // `AUDIT_PER_AGENT_DOMAINS`), so the narrowed command comes back with
+            // `data.host: []` -- measured on the live fleet for 4 of 6 host
+            // findings, each of which named exactly that command. Those domains
+            // get the unfiltered invocation, which is the one that collects them.
+            retrieval: retrievalFor(null, AUDIT_PER_AGENT_DOMAINS.has(domain) ? domain : null, true),
           };
           if (accumulated === undefined) {
             hostByRule.set(ruleId, { finding: candidate, states: new Map([[state, 1]]) });

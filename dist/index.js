@@ -20910,10 +20910,11 @@ function probeEnv(base = process.env) {
   for (const key of GIT_REDIRECTION_KEYS) delete env2[key];
   return env2;
 }
-function probe(ctx, argv, cwd) {
+async function probe(ctx, argv, cwd) {
   const [command, ...args] = argv;
-  if (!command) return Promise.resolve({ outcome: "failed", value: null });
-  return runBoundedChild(ctx, command, args, { cwd });
+  if (!command) return { outcome: "failed", value: null };
+  const { outcome, value } = await runBoundedChild(ctx, command, args, { cwd });
+  return { outcome, value };
 }
 function captureSelf(ctx, entry, args, cwd, env2, timeoutMs) {
   return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, timeoutMs, keepStdoutOnFailure: true });
@@ -21983,9 +21984,10 @@ function collectFleetInventory(options = {}) {
   }
   const truncated = [];
   let rows = selectedRows;
-  if (rows.length > FLEET_INVENTORY_MAX_ROWS) {
-    truncated.push(`rows: ${rows.length - FLEET_INVENTORY_MAX_ROWS} of ${rows.length} rows dropped`);
-    rows = rows.slice(0, FLEET_INVENTORY_MAX_ROWS);
+  const rowCap = options.rowCap ?? FLEET_INVENTORY_MAX_ROWS;
+  if (rows.length > rowCap) {
+    truncated.push(`rows: ${rows.length - rowCap} of ${rows.length} rows dropped`);
+    rows = rows.slice(0, rowCap);
   }
   if (ctx.droppedFindings > 0) {
     truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
@@ -22674,12 +22676,16 @@ async function collectFleetProvenance(options) {
       detail: `the host template config declares no [fleet] ${key}; there is no pin to compare any agent against and none is invented`
     });
   }
-  await addTemplateFacts(ctx, root);
+  const families = options.probeFamilies === void 0 ? null : new Set(options.probeFamilies);
+  const wantsTemplateProbes = families === null || families.has("template");
+  const wantsCheckoutProbes = families === null || families.has("checkout");
+  if (wantsTemplateProbes) await addTemplateFacts(ctx, root);
   addHostPinFacts(ctx);
   const subjects = agentSubjects(agentRaw.entries);
   const byCanonical = /* @__PURE__ */ new Map();
   const probeScope = options.probeAgentIds === void 0 ? null : new Set(options.probeAgentIds);
   for (const subject of subjects) {
+    if (!wantsCheckoutProbes) break;
     if (probeScope !== null && !probeScope.has(subject.agentId)) continue;
     const declared = nonEmptyString2(subject.hermes.repo);
     if (declared === null) continue;
@@ -23348,7 +23354,7 @@ async function collectFleetStatus(options) {
     );
   }
   const contract = validation.contract;
-  const inventory = collectFleetInventory({ ...options, agentId: void 0, runContext });
+  const inventory = collectFleetInventory({ ...options, agentId: void 0, rowCap: Number.POSITIVE_INFINITY, runContext });
   const rowsById = /* @__PURE__ */ new Map();
   for (const row of inventory.rows) {
     const id = row.agent_id.value;
@@ -23367,7 +23373,8 @@ async function collectFleetStatus(options) {
     droppedFindings: 0,
     unmappedRules: /* @__PURE__ */ new Set(),
     unexpectedDomainRules: /* @__PURE__ */ new Set(),
-    unmappedFacts: /* @__PURE__ */ new Set()
+    unmappedFacts: /* @__PURE__ */ new Set(),
+    unreportedHostRules: /* @__PURE__ */ new Set()
   };
   if (inventory.totals.registered_agents === 0) {
     addFinding3(ctx, {
@@ -23398,6 +23405,16 @@ async function collectFleetStatus(options) {
       // The same rule as the domain gate, one level down: under `--agent` no
       // checkout belonging to another agent may be probed.
       probeAgentIds: scope.kind === "agent" ? agentIds : void 0,
+      // And the same rule one level ACROSS: the template probes feed only
+      // `template_scaffold`, the checkout probes only `release_provenance`, so a
+      // run scoped to one must not spawn the other's probes and discard the
+      // facts. Measured before this: `--domain template_scaffold` and
+      // `--domain release_provenance` ran the identical probe set,
+      // `{checkout: 3, gitlink: 1, submodule: 1}`.
+      probeFamilies: [
+        ...domainSet.has("template_scaffold") ? ["template"] : [],
+        ...domainSet.has("release_provenance") ? ["checkout"] : []
+      ],
       runContext
     });
     provenanceFacts = provenance.facts;
@@ -23553,7 +23570,27 @@ async function collectFleetStatus(options) {
             detail: `the project-scoped rule ${ruleId} maps to domain ${domain}, which AUDIT_PER_AGENT_DOMAINS in src/fleet/status.ts does not list; a --domain ${domain} run spawns no audit child and would not report it`
           });
         }
-        if (!domainSet.has(domain)) continue;
+        if (!domainSet.has(domain)) {
+          if (scopeOfRule === "host" && !ctx.unreportedHostRules.has(ruleId)) {
+            ctx.unreportedHostRules.add(ruleId);
+            addFinding3(ctx, {
+              code: "audit-host-rules-not-reported",
+              field: DOMAIN_FIELD[domain],
+              agent_id: null,
+              source: recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? ctx.authority.ownerOf(DOMAIN_FIELD[domain]),
+              severity: "warn",
+              // NO STATE IS CLAIMED HERE, deliberately. This fires on the first
+              // repository that reports the rule, and `hostByRule` resolves the
+              // fleet's reading of a host rule WORST-WINS across repositories --
+              // so the state visible at this point may be the best reading, not
+              // the one that matters. Naming it would re-introduce exactly the
+              // first-wins mask that let a `pass` from one repo hide a `fail`
+              // from another.
+              detail: `the host-scoped rule ${ruleId} ran, but its domain ${domain} is not selected, so data.host does not carry its result; run without --domain to see every host finding`
+            });
+          }
+          continue;
+        }
         const owner = recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? null;
         const state = ruleState(rule.status);
         if (scopeOfRule === "host") {
@@ -23566,7 +23603,13 @@ async function collectFleetStatus(options) {
             summary: bounded3(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId)),
             details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
             finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
-            retrieval: retrievalFor(null, domain, true)
+            // A retrieval that returns nothing is worse than none. `--domain
+            // registry|systemd|bloodbank --live` spawns no child (they are not in
+            // `AUDIT_PER_AGENT_DOMAINS`), so the narrowed command comes back with
+            // `data.host: []` -- measured on the live fleet for 4 of 6 host
+            // findings, each of which named exactly that command. Those domains
+            // get the unfiltered invocation, which is the one that collects them.
+            retrieval: retrievalFor(null, AUDIT_PER_AGENT_DOMAINS.has(domain) ? domain : null, true)
           };
           if (accumulated === void 0) {
             hostByRule.set(ruleId, { finding: candidate, states: /* @__PURE__ */ new Map([[state, 1]]) });

@@ -2,10 +2,10 @@
 title: 'Story 1.4: Deliver Parse-Safe Registry-Wide Fleet Status'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-review'
+status: 'done'
 baseline_revision: '564d40bf81205476735fb5a2ac91c8ed68e17256'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md'
@@ -85,6 +85,32 @@ deferred:
       DW-68.
     location: >-
       src/fleet/status.ts (collectFleetStatus)
+    severity: low
+  - summary: >-
+      The recipe audit rules the --live path invokes omit `--no-optional-locks` on
+      their own git calls.
+    evidence: |-
+      Every probe in the fleet namespace passes it (all 13 git invocations of a run
+      logged through a PATH shim), and with a reconciled index a plain run and a
+      `--live` run both leave this repo's `.git/index` byte-identical across three
+      build/run cycles. `src/parity/rules.ts:2901,:2922,:6118` do not pass it. No
+      observable write resulted -- `ls-files` does not refresh a clean index -- so it
+      is latent, not reproduced. Recorded as DW-69.
+    location: >-
+      src/parity/rules.ts:2901
+    severity: low
+  - summary: >-
+      The whole-suite zero-write assertion still covers a machine-shared surface it
+      cannot attribute to the command.
+    evidence: |-
+      Measured mid-run: `.pjan-67-trusted-lifecycle-FmLEQj` and
+      `.pjan-67-trusted-lifecycle-R2bRQf` appeared in this repo root while a case was
+      invoking the CLI, created by another process. The check now measures tracked
+      content rather than stat bytes, ignores other suites' scratch dirs, and runs once
+      with wording naming both causes -- which removes the misattribution but not the
+      shared surface. Recorded as DW-70.
+    location: >-
+      tests/fleet-status-regressions.mjs (snapshotShared)
     severity: low
 ---
 
@@ -367,6 +393,29 @@ drain — and the audit command adopts it, because the status core parses its st
 `totals.agents > 0` conjunct is the one exception -- it is redundant with the collection-error
 half of the same fix and is kept as defence in depth, said so in the code.
 
+### 2026-09-01 - Review pass 2
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 10 (high 1, medium 5, low 4)
+- defer: 2 (low)
+- reject: 12
+- addressed_findings:
+  - `[high]` `[patch]` **The INVENTORY row cap moved the fleet verdict, and the clip note's own escape hatch 404'd.** `collectFleetInventory` clips rows at `FLEET_INVENTORY_MAX_ROWS` (1000); status derives health from the rows it is handed. Measured on a 1021-row registry whose only malformed row sorts last: `healthy: true, failed: 0, by_state.fail: 0, domains[registry].state: "pass"`, `totals.agents: 1021` beside `totals.observations: 1000` -- and `--agent zzzz-broken`, the retrieval the truncation note promises, answered `NOT_FOUND` exit 3. The 500-agent-cap fix from pass 1 could not see this: the largest fixture in the suite was 520 rows, below the cap. Status now passes `rowCap: Infinity` and clips only what it emits. Measured after: `observations: 1021`, `healthy: false`, `failed: 1`, `registry fail`, and the scoped retrieval reaches the row.
+  - `[medium]` `[patch]` **A filtered `--live` run discarded host findings it had already collected.** `--domain template_scaffold --live` spawned 28 children and threw away `systemd.sentinel`, `hermes.registry-parity` and `hermes.profile-wiring` -- three host-scoped fails -- with `findings: []` and `truncated: []`, while the no-child case already explained its empty `data.host`. The case that HAD the data was the silent one. Now one `audit-host-rules-not-reported` per rule, claiming NO state, because host rules resolve worst-wins across repositories and this fires on the first one; asserting the absence of a state word is part of the case.
+  - `[medium]` `[patch]` **The zero-write proof was red for the wrong reason, ~50% of fresh-build runs.** It fingerprinted this repo's `.git/index` BYTES around all ~50 invocations, and `dist/` is tracked -- so `npm run build` left the index stat-dirty and the first reader reconciled it, which the proof reported as the command writing to a protected root. Localized only after making failures name the differing key: `gitindex:/home/delorenj/code/33GOD/pjangler`. The command is not the writer (13/13 git calls pass `--no-optional-locks`, verified through a PATH shim; reconciled index byte-identical after plain and `--live` runs, three cycles). Now measures tracked CONTENT (`ls-files --stage`), asserts this repo once per suite rather than per call, ignores other suites' scratch dirs, and prints the differing path. Four consecutive fresh-build runs green.
+  - `[medium]` `[patch]` **`--agent` probe scoping was pinned by an assertion that could not fail.** Every agent in the fixture declares the same `hermes.repo` and provenance dedupes checkouts by realpath, so one probe existed, its target contained no slug, and the seven-iteration loop was vacuous -- reverting the scoping, or inverting it to skip the selected agent, left everything green. New case uses distinct per-agent real checkouts and asserts the POSITIVE half. Mutation-checked: inverting the scope now reports two foreign targets.
+  - `[medium]` `[patch]` **`provenanceState`'s drift -> `fail` mapping was pinned by nothing.** The fixture's declared checkout is never `git init`ed, so no fact reached `fail`; `mismatch` and `dirty` both to `warn` kept all 35 cases green (verified by mutation). New case builds a real checkout whose HEAD cannot match the pin and a second one left dirty, asserts the HEAD comparison is `fail` by summary (two observations carry that field), and pins dirtiness as a DELTA against the clean checkout. The domain rolls up to `unobserved`, not `fail` -- a fresh `git init` has no origin remote -- so the fail is pinned in `domains[].counts`, which is the honest place.
+  - `[medium]` `[patch]` **`next_actions` was outside every check that the two adapters agree.** Zero assertions in either suite; the parity loop compares `command`/`data`/`error` only, and `next_actions` lives in the envelope. Story 1.3's guidance-parity case exists for exactly this and was scoped to `inventoryEnvelope`/`provenanceEnvelope`, never extended to `statusEnvelope`. Extended, plus a case asserting a `--json` caller is not told to re-run with `--json`. Both mutation-checked.
+  - `[low]` `[patch]` **4 of 6 host findings named a `retrieval` that returned nothing.** For `registry`/`systemd`/`bloodbank` the narrowed command spawns no child, so it comes back `data.host: []` -- measured on the live fleet. Those now carry the unfiltered `--live` invocation, and the case RUNS the emitted command and asserts the finding comes back.
+  - `[low]` `[patch]` **Filters constrained collection per agent and per source group, never per domain.** `--domain template_scaffold` and `--domain release_provenance` ran the identical probe set `{checkout: 3, gitlink: 1, submodule: 1}`, each discarding the other family's facts. `collectFleetProvenance` gained `probeFamilies`; `fleet provenance` never passes it and its payload is unchanged (314 facts, same probes).
+  - `[low]` `[patch]` `probe()` declared `FleetProbeResult` and returned `runBoundedChild`'s wider `FleetCaptureResult`, handing every caller two keys its type does not mention -- narrowed at the boundary.
+  - `[low]` `[patch]` `stateRank` carried `rollUp`'s JSDoc: two stacked blocks, the first describing a function five lines below it.
+
+**Mutation-checked.** Each fix reverted in isolation, rebuilt, suite re-run: the inventory cap, the dropped-host-rule finding, the host retrieval, the probe-family gate, the `--agent` probe scope, the drift mapping, the `--json` guidance pop, and the MCP guidance parity each turn their own case red. One earlier "survived" reading was a defect in the mutation harness, not the suite: the anchor matched `inventoryEnvelope`'s identical `pop()` line first, so the status builder was never mutated.
+
+**Rejected (12), the substantive ones and why:** a duplicate agent id dropped with no finding -- the kept row carries `row.conflicts` and inventory reports the conflict group, so nothing disappears silently; `writeStdout` resolving on `close` and `exitAfterFlush` returning after its 30 s bound -- both are declared, bounded behaviours and neither reproduced (a 3 MB stderr write measured `writableLength: 0`, and the real error path exits in 0.1 s through a pipe); `guardBrokenPipe`'s non-EPIPE rethrow being crash-equivalent -- that is the intent, a full disk must not read as success; two coexisting broken-pipe guards -- `ignoreBrokenPipe` is named as the mechanism in this spec's own I/O matrix; the CHANGELOG's single-paragraph entries -- that is this file's established form for every entry in it, not this story's defect; `agents.{agent_id}` read as a leaked template -- it is the contract's own field-path notation, matched by `normalizeFieldPath`.
+
 ## Design Notes
 
 **Why the recipe audit runs as a child process.** `runAudit` is synchronous and calls `spawnSync`
@@ -559,3 +608,108 @@ the truncation.
   be captured by automation and both still truncate through a pipe.
 - **The audit child's environment allowlist can go stale** (DW-66). A rule that
   later reads a new environment key will see it unset rather than fail loudly.
+
+## Review Pass 2 Result
+
+Status: done
+Blocking condition: none
+
+### What this pass changed
+
+Ten patches, one of them high severity, plus two low-severity deferrals. No intent
+gap and no spec defect: every finding was an implementation or verification bug
+against an intent contract that was already clear about it.
+
+Three of the ten are the same shape as the pass-1 headline defect -- **a bound or a
+filter moving what the command CONCLUDES**:
+
+- The **inventory row cap** (1000) clipped the rows status reasons over, so past
+  1000 registry rows a failing agent was invisible to `health`, `by_state` and the
+  domain rollups, and `--agent <id>` -- the retrieval the clip note itself
+  promises -- answered `NOT_FOUND` for a row `totals.agents` was counting.
+  Pass 1 fixed the 500-agent RECORD cap and could not have seen this: the largest
+  fixture in the suite was 520 rows.
+- A **filtered `--live` run** spawned all 28 audit children and discarded three
+  host-scoped fails with no finding and no truncation note, while the case where no
+  child spawns already explained itself. The run holding the data was the silent one.
+- **Filters constrained collection** per agent and per source group but not per
+  domain, so `--domain template_scaffold` and `--domain release_provenance` ran the
+  identical probe set and each discarded the other family's facts.
+
+Five more were assertions that could not fail -- `--agent` probe scoping pinned
+against a fixture where every agent shares one checkout path, the drift-to-`fail`
+mapping pinned by a fixture that is never `git init`ed, and `next_actions` outside
+every adapter-parity check including the one story 1.3 added for exactly this.
+
+### The gate that was lying
+
+The zero-write proof went red on four different cases across this session with the
+tree clean and the source unmutated, then green three runs in a row. It was not
+random: it fingerprinted this repository's `.git/index` BYTES around all ~50
+invocations, and `dist/` is tracked here -- so `npm run build`, the command the
+acceptance criteria pair with `npm test`, leaves the index stat-dirty and the first
+reader afterwards reconciles it. Under a full `npm test` one of the 50 preceding
+suites absorbs that, which is why it looked like flake.
+
+The command is not the writer, and that is measured rather than assumed: all 13 git
+invocations of a run pass `--no-optional-locks` (logged through a PATH shim), and
+with the index reconciled a plain run and a `--live` run both leave it
+byte-identical across three build/run cycles. The proof now measures the index's
+tracked CONTENT, asserts this repository once per suite instead of per invocation,
+ignores other suites' scratch directories, and names the differing path when it
+fails. Four consecutive fresh-build runs green, where the same condition failed
+about half the time before.
+
+The per-invocation, byte-level proof over every scratch repository -- the half that
+actually catches a probe missing `--no-optional-locks` -- is unchanged: those
+repositories live under the suite's isolated temp tree, which is digested file by
+file around every call.
+
+### Files changed in this pass
+
+- `src/fleet/inventory.ts` -- `rowCap` option; only the status core passes it.
+- `src/fleet/provenance.ts` -- `probeFamilies` option; only the status core passes it.
+- `src/fleet/status.ts` -- collect unclipped; `audit-host-rules-not-reported`; host
+  retrieval widened for host-only-live domains; per-family probe gate; misplaced JSDoc.
+- `src/fleet/runtime.ts` -- `probe()` narrowed to its declared return type.
+- `tests/fleet-status-regressions.mjs` -- 7 new cases; the zero-write proof split
+  into attributable and shared halves; the dead index-fingerprint helper removed.
+- `tests/fleet-provenance-regressions.mjs` -- guidance parity extended to `statusEnvelope`.
+- `README.md` -- the filtered-`--live` host-finding rule, and per-family filtering.
+- `CHANGELOG.md`, `deferred-work.md` (DW-69, DW-70), `.gitignore` (`.claude/*.lock`).
+
+### Verification performed
+
+- `npx tsc --noEmit` -- clean.
+- `npm run build` -- clean.
+- `npm test` -- **66/66 suites pass, 0 failures.** The DW-6 pair (`pjan-23`,
+  `pjan-67`) that failed at the start of this pass also passed here; no claim is
+  made that this pass fixed them.
+- `npm run test:coverage` + `node scripts/coverage-ratchet.mjs` -- floor not
+  tripped; would raise lines/statements 60.20 -> 60.30, functions 46.14 -> 46.18,
+  branches 73.46 -> 73.76.
+- `node tests/fleet-status-regressions.mjs` immediately after `npm run build`,
+  four times -- green every time.
+- Live commands re-run: report, `--json | cat` (540 869 B, parses), `--live --json | cat`
+  (871 589 B, 6 host findings, 6 unique rule ids, none leaked into an agent record),
+  `--agent pjangler-pm`, `--agent nope` (exit 3), `--domain bogus` (exit 2),
+  `--live --deadline-ms 1` (exit 7), two consecutive runs byte-identical,
+  `audit --json` complete and parsing through a file, a pipe and a `spawn`,
+  `audit --json | head -c 10` with no stack trace, `fleet provenance --json`
+  unchanged at 314 facts.
+- Every fix reverted in isolation, rebuilt, and confirmed to turn its own case red.
+- `git status --porcelain` clean after the run.
+
+### Residual risks added by this pass
+
+- **`rowCap: Infinity` means status holds every registry row in memory.** At the
+  live fleet's 28 rows and the 1021-row test fixture this is not measurable. A
+  registry orders of magnitude larger would want a streaming count instead of an
+  unclipped array.
+- **`probeFamilies` is a second collection-narrowing option only one caller
+  passes** (the first was `probeAgentIds`, DW-65). The two commands now differ in
+  two ways in whether a scope constrains collection.
+- **The whole-suite shared assertion can still go red for external reasons**
+  (DW-70). It now says so in its own message rather than blaming the command.
+- **The recipe audit's git calls still omit `--no-optional-locks`** (DW-69). Latent
+  rather than reproduced, and owned by `src/parity/rules.ts`.

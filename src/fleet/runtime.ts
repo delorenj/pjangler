@@ -230,10 +230,17 @@ export function probeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
  *     WHY, and "the probe was killed" and "the probe said no" are different
  *     answers to an operator.
  */
-export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: string): Promise<FleetProbeResult> {
+export async function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: string): Promise<FleetProbeResult> {
   const [command, ...args] = argv;
-  if (!command) return Promise.resolve({ outcome: "failed", value: null });
-  return runBoundedChild(ctx, command, args, { cwd });
+  if (!command) return { outcome: "failed", value: null };
+  // NARROWED, not widened. `runBoundedChild` returns a `FleetCaptureResult`,
+  // which also carries `code` and `overflow` -- structural typing accepts that
+  // silently, so every existing `probe` caller was receiving two keys its
+  // declared type does not mention. A caller that spread a probe result into a
+  // payload would have put them into a document the suite asserts is
+  // byte-identical across runs and adapters.
+  const { outcome, value } = await runBoundedChild(ctx, command, args, { cwd });
+  return { outcome, value };
 }
 
 /**

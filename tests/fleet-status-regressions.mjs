@@ -79,7 +79,7 @@ const temp = mkdtempSync(join(tmpdir(), "fleet-status-"));
 /**
  * Where the injected CLI entries live, and where they record what they saw.
  *
- * Deliberately OUTSIDE `temp`: `snapshot()` walks `temp` and asserts it is
+ * Deliberately OUTSIDE `temp`: `snapshotIsolated()` walks `temp` and asserts it is
  * byte-identical before and after every invocation, so a shim appending its own
  * pid or environment inside it would be indistinguishable from the command
  * writing there.
@@ -362,41 +362,62 @@ function snapshotTree(label, root, entries = {}) {
   return entries;
 }
 
-function fileFingerprint(path) {
-  if (!existsSync(path)) return "absent";
-  const stat = lstatSync(path);
-  return `${createHash("sha256").update(readFileSync(path)).digest("hex")}:${stat.mtimeMs}`;
-}
+// The PROBED-REPOSITORY index check that used to live here is not gone, it
+// moved: every scratch repository is under `temp`, and `snapshotTree` digests
+// each file's bytes -- `.git/index` included -- around EVERY invocation. So the
+// defect the old helper existed for (a probe missing `--no-optional-locks`,
+// which refreshes an index in place and shows up in no diff) is still caught per
+// call, at full byte fidelity, on the repositories this suite controls. What it
+// also did, and could not do honestly, was fingerprint THIS repository's index
+// bytes: see `snapshotShared`.
 
 /**
- * Every repository this command probes, by its `.git/index`.
+ * The surfaces a difference is ATTRIBUTABLE to the command under test.
  *
- * This is the assertion that catches a missing `--no-optional-locks`: a plain
- * `git status` refreshes the index in place, which changes nothing a diff would
- * show and everything about whether this command is read-only.
+ * This suite's own isolated scratch tree, and the tracked contract. Nothing else
+ * on the machine writes either, so a change here is the command's and an
+ * assertion about it can be trusted.
  */
-function gitIndexFingerprints(entries = {}) {
-  const candidates = [ROOT, join(ROOT, "templates", "hermes-agent"), ...BASE_SLUGS.map((slug) => join(reposRoot, slug))];
-  for (const candidate of candidates) {
-    const dot = join(candidate, ".git");
-    let indexPath = join(dot, "index");
-    try {
-      if (lstatSync(dot).isFile()) {
-        const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, "utf8"));
-        if (pointer) indexPath = join(resolve(candidate, pointer[1].trim()), "index");
-      }
-    } catch { /* no .git here; recorded as absent below */ }
-    entries[`gitindex:${candidate}`] = fileFingerprint(indexPath);
-  }
-  return entries;
-}
-
-function snapshot() {
+function snapshotIsolated() {
   const entries = {};
   snapshotTree("temp", temp, entries);
   snapshotTree("contracts", join(ROOT, "contracts"), entries);
-  gitIndexFingerprints(entries);
+  return entries;
+}
+
+/** Other suites' scratch directories in this repo root. Provably not this command's output. */
+const FOREIGN_SCRATCH = /^\.(pjan|fleet|notebook|momo|project)-/u;
+
+/**
+ * The surfaces that are REAL to check and NOT attributable to one invocation.
+ *
+ * This repository's own `.git/index` and its top-level direntries. Worth
+ * checking -- a command that writes the repo it runs in rather than the isolated
+ * HOME is exactly the defect -- but this machine runs parallel agents by design,
+ * so any of them can move both between two readings. Measured during one run of
+ * this suite: `.pjan-67-trusted-lifecycle-FmLEQj` and
+ * `.pjan-67-trusted-lifecycle-R2bRQf` appeared in this root while a case was
+ * mid-invocation, created by a different process. Asserted ONCE for the whole
+ * suite instead of around all ~50 invocations, so one external write produces one
+ * honestly-worded failure rather than a random case going red.
+ */
+function snapshotShared() {
+  const entries = {};
+  // The index's CONTENT, not its bytes. `.git/index` carries stat data beside
+  // the tracked entries, so a build that rewrites tracked `dist/*` and any later
+  // reader that reconciles it both change the file while changing nothing about
+  // what is tracked or staged. `ls-files --stage` is mode, object id, stage and
+  // path -- exactly "was this repository modified" -- so a real `git add` still
+  // moves it and stat churn does not.
+  for (const repo of [ROOT, join(ROOT, "templates", "hermes-agent")]) {
+    if (!existsSync(join(repo, ".git"))) { entries[`staged:${repo}`] = "absent"; continue; }
+    const listed = git(repo, ["--no-optional-locks", "ls-files", "--stage"]);
+    entries[`staged:${repo}`] = listed.status === 0
+      ? createHash("sha256").update(listed.stdout).digest("hex")
+      : `unreadable:${listed.status}`;
+  }
   for (const entry of readdirSync(ROOT, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    if (FOREIGN_SCRATCH.test(entry.name)) continue;
     entries[`root:${entry.name}`] = entry.isDirectory() ? "dir" : entry.isSymbolicLink() ? "link" : "file";
   }
   return entries;
@@ -410,7 +431,7 @@ function snapshot() {
  * truncation defect the harness is here to detect.
  */
 function cli(args, extraEnv = {}, cwd = workdir) {
-  const before = snapshot();
+  const before = snapshotIsolated();
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
@@ -418,8 +439,16 @@ function cli(args, extraEnv = {}, cwd = workdir) {
     maxBuffer: 64 * 1024 * 1024,
     env: { ...process.env, ...isolation, ...extraEnv },
   });
-  const after = snapshot();
-  assert.deepEqual(after, before, `pj ${args.join(" ")} wrote to a protected root`);
+  const after = snapshotIsolated();
+  // NAME THE PATHS, do not just assert inequality: `check()` prints the first
+  // line of a failure, so a bare "wrote to a protected root" told an operator
+  // nothing about WHICH root.
+  if (JSON.stringify(after) !== JSON.stringify(before)) {
+    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => before[key] !== after[key]);
+    for (const key of changed) console.log(`       ${key}: ${before[key] ?? "<missing>"} -> ${after[key] ?? "<missing>"}`);
+    assert.fail(`pj ${args.join(" ")} wrote to a protected root: ${changed.join(", ")}`);
+  }
   return result;
 }
 
@@ -572,6 +601,31 @@ try {
     throw new SkipCase("unbuilt");
   }
   seedScratch();
+
+  // RECONCILE THIS REPO'S INDEX BEFORE ANY CASE SNAPSHOTS IT.
+  //
+  // The zero-write proof fingerprints this repository's own `.git/index`, and
+  // `dist/` is TRACKED here -- so `npm run build`, the command the acceptance
+  // criteria pair with `npm test`, leaves that index stat-dirty. The first
+  // process to read it afterwards reconciles the stat data and writes it back,
+  // and the proof then reported that as the command under test writing to a
+  // protected root. It looked like flake: red on four different cases across one
+  // session, green three runs in a row in between, because a full `npm test` has
+  // 50 suites ahead of this one and whichever of them touches git first absorbs
+  // the reconcile.
+  //
+  // MEASURED, and the CLI is NOT the writer. Every git probe passes
+  // `--no-optional-locks` (verified by logging all 13 invocations of a run
+  // through a PATH shim), and with the index already reconciled a plain run and
+  // a `--live` run both leave it BYTE-IDENTICAL -- three build/run cycles,
+  // stable each time. `ls-files --stage` and `status --porcelain` do not
+  // reconcile it, which is exactly what `--no-optional-locks` buys; only an
+  // explicit refresh does.
+  //
+  // So the test does it, once, deliberately, before it starts measuring. The
+  // proof is unweakened: every case still asserts the command changed nothing.
+  git(ROOT, ["update-index", "--refresh"]);
+  const sharedAtStart = snapshotShared();
 
   // -- AC1: every agent, every domain, one complete envelope -----------------
 
@@ -936,7 +990,7 @@ record(join(HERE, "pids"), process.pid + "\\n");
 setTimeout(() => {}, 120000);
 `);
     resetEntry(hang);
-    const before = snapshot();
+    const before = snapshotIsolated();
     const captured = await new Promise((settle) => {
       const child = spawn(process.execPath, [CLI, "fleet", "status", "--live", "--json"], {
         cwd: workdir,
@@ -949,7 +1003,7 @@ setTimeout(() => {}, 120000);
       const guard = setTimeout(() => child.kill("SIGKILL"), 90_000);
       child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, out }); });
     });
-    assert.deepEqual(snapshot(), before, "a cancelled run must still have written nothing");
+    assert.deepEqual(snapshotIsolated(), before, "a cancelled run must still have written nothing");
     assert.equal(captured.code, 8, `expected exit 8, got ${captured.code}`);
     const parsed = JSON.parse(captured.out);
     assert.equal(parsed.error?.code, "CANCELLED");
@@ -1476,6 +1530,285 @@ process.exit(0);
     const ledger = readFileSync(join(ROOT, "_bmad-output", "implementation-artifacts", "deferred-work.md"), "utf8");
     assert.match(ledger, /spec-1-4-deliver-parse-safe-registry-wide-fleet-status/u, "the ledger must name this story's spec as a source");
     assert.match(ledger, /process\.exit\(\)/u, "the ledger must record the remaining unflushed exits");
+  });
+
+  // -- Review pass 2: bounds, filters, and the assertions that could not fail -
+
+  check("the INVENTORY row cap cannot move the fleet verdict either", () => {
+    // The agent-cap case above proves `FLEET_STATUS_MAX_AGENTS` (500) does not
+    // move the verdict. It could not see the SECOND bound one level down:
+    // `collectFleetInventory` clips its own rows at `FLEET_INVENTORY_MAX_ROWS`
+    // (1000), and status counts health out of the rows it is handed. Measured on
+    // the pre-fix build with this exact registry: `healthy: true, failed: 0,
+    // by_state.fail: 0, domains[registry].state: "pass"`, `totals.agents: 1021`
+    // beside `totals.observations: 1000` -- and `--agent zzzz-broken` answered
+    // NOT_FOUND at exit 3 for a row `totals.agents` was counting. 520 rows, the
+    // largest fixture that existed, is below the cap and cannot reach this.
+    const slugs = Array.from({ length: 1020 }, (unused, index) => `bulk${String(index).padStart(4, "0")}`);
+    const agents = join(temp, "rowcap-agents.yaml");
+    const projects = join(temp, "rowcap-projects.yaml");
+    writeAgentRegistryWith(agents, slugs, "  zzzz-broken: not-a-mapping");
+    writeProjectRegistry(projects, slugs);
+    const args = ["fleet", "status", "--domain", "registry", "--json", "--agent-registry", agents, "--project-registry", projects];
+    const data = status(cli(args));
+
+    assert.ok(slugs.length + 1 > 1000, "the fixture must exceed FLEET_INVENTORY_MAX_ROWS or it proves nothing");
+    assert.equal(data.totals.agents, slugs.length + 1, "totals must count every registered row");
+    assert.equal(
+      data.totals.observations, slugs.length + 1,
+      "every row past the inventory cap must still be OBSERVED and counted, not merely counted",
+    );
+    assert.equal(data.health.healthy, false, "a failing row past the inventory cap must still make the fleet unhealthy");
+    assert.equal(data.health.failed, 1);
+    assert.equal(data.totals.by_state.fail, 1, "by_state must see the row the inventory would have clipped");
+    assert.equal(data.domains[0].state, "fail", "and so must the domain rollup");
+
+    // The truncation note promises this command works. It must.
+    assert.match(
+      data.truncated.join(" "), /--agent <id>/u,
+      "the clip note must name the retrieval it promises",
+    );
+    const scoped = status(cli([...args, "--agent", "zzzz-broken"]));
+    assert.equal(scoped.agents.length + scoped.health.failed >= 1, true);
+    assert.equal(scoped.health.healthy, false, "the promised retrieval must reach a row past the inventory cap");
+    assert.equal(scoped.health.failed, 1);
+
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("a filtered --live run says which host rules it collected and did not report", () => {
+    // The mirror of `audit-host-rules-not-collected`, and the half that was
+    // silent. When no child spawns, the run explains the empty `data.host`. When
+    // a child DOES spawn -- because the selected domain is audit-fed -- every
+    // host rule belonging to an unselected domain arrived and was dropped with no
+    // finding and no note. Measured on the live fleet before this:
+    // `--domain template_scaffold --live` spawned 28 children and discarded
+    // `systemd.sentinel` (fail), `hermes.registry-parity` (fail) and
+    // `hermes.profile-wiring` (fail) into `findings: []`, `truncated: []`.
+    const shim = entry("host-dropped", syntheticReport([HOST_FAIL_RULE, PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    // `template_scaffold` is audit-fed, so children DO spawn; HOST_FAIL_RULE is
+    // `hermes.profile-wiring`, whose domain is `profile` -- not selected.
+    const data = status(cli(
+      ["fleet", "status", "--domain", "template_scaffold", "--live", "--json"],
+      { PJ_FLEET_CLI_ENTRY: shim },
+    ));
+    assert.ok(invocationsOf(shim).length > 0, "the fixture requires the audit child to have actually run");
+    assert.equal(data.host.length, 0, "no host finding belongs to the selected domain in this fixture");
+    const dropped = data.findings.filter((finding) => finding.code === "audit-host-rules-not-reported");
+    assert.equal(dropped.length, 1, `the dropped host rule must be named exactly once, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
+    assert.match(dropped[0].detail, /hermes\.profile-wiring/u, "the finding must name the rule");
+    assert.match(dropped[0].detail, /profile/u, "and the domain that would have carried it");
+    // NO STATE MAY BE CLAIMED. `hostByRule` resolves a host rule worst-wins
+    // across repositories; this finding fires on the first one, so naming its
+    // state would re-introduce the first-wins mask a previous pass removed.
+    assert.equal(/\b(pass|fail|warn|skip)\b/u.test(dropped[0].detail), false, `the detail must claim no state: ${dropped[0].detail}`);
+  });
+
+  check("a domain filter constrains which probe FAMILY runs, not just which agent", () => {
+    // "Filters constrain collection" was enforced per agent and per source
+    // GROUP, never per domain. The template probes (gitlink, submodule) produce
+    // only `scaffold.*` facts and the checkout probes only `hermes.*` facts, so
+    // both families ran for either domain and one family's facts were then
+    // discarded. Measured before: `--domain template_scaffold` and
+    // `--domain release_provenance` ran the IDENTICAL probe set,
+    // `{checkout: 3, gitlink: 1, submodule: 1}`.
+    const kinds = (data) => {
+      const counts = {};
+      for (const probe of data.probes) counts[probe.kind] = (counts[probe.kind] ?? 0) + 1;
+      return counts;
+    };
+    const scaffold = kinds(status(cli(["fleet", "status", "--domain", "template_scaffold", "--json"])));
+    const release = kinds(status(cli(["fleet", "status", "--domain", "release_provenance", "--json"])));
+    const both = kinds(status(cli(["fleet", "status", "--json"])));
+
+    assert.equal(scaffold.checkout, undefined, `--domain template_scaffold must spawn no checkout probe, got ${JSON.stringify(scaffold)}`);
+    assert.equal(release.gitlink, undefined, `--domain release_provenance must spawn no template probe, got ${JSON.stringify(release)}`);
+    assert.equal(release.submodule, undefined, "nor a submodule probe");
+    // Non-vacuous in the other direction: each family must still RUN for its own
+    // domain, or "spawns nothing" would pass by spawning nothing at all.
+    assert.ok((scaffold.gitlink ?? 0) > 0, `the template family must still run for its own domain, got ${JSON.stringify(scaffold)}`);
+    assert.ok((release.checkout ?? 0) > 0, `the checkout family must still run for its own domain, got ${JSON.stringify(release)}`);
+    // And an unfiltered run is unchanged: it collects both.
+    assert.ok((both.gitlink ?? 0) > 0 && (both.checkout ?? 0) > 0, `an unfiltered run must collect both families, got ${JSON.stringify(both)}`);
+  });
+
+  check("a host finding's retrieval actually returns that finding", () => {
+    // `retrieval` is a promise: run this and you get this record. For a host
+    // finding whose domain is not in `AUDIT_PER_AGENT_DOMAINS` the narrowed
+    // command spawns no child at all, so it returned `data.host: []` -- measured
+    // for 4 of 6 host findings on the live fleet, each naming exactly the command
+    // that could not return it.
+    const shim = entry("host-retrieval", syntheticReport([
+      { ...HOST_FAIL_RULE, id: "systemd.sentinel" },
+      PROJECT_PASS_RULE,
+    ]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const finding = data.host.find((item) => item.rule_id === "systemd.sentinel");
+    assert.ok(finding, `the host finding must be reported, got ${JSON.stringify(data.host.map((h) => h.rule_id))}`);
+    assert.equal(
+      /--domain (registry|systemd|bloodbank)\b/u.test(finding.retrieval), false,
+      `a host retrieval must not narrow to a domain that spawns no child: ${finding.retrieval}`,
+    );
+    // RUN IT. An assertion about the string's shape is not the promise.
+    const argv = finding.retrieval.replace(/^pjangler /u, "").split(" ");
+    const again = status(cli(argv, { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.ok(
+      again.host.some((item) => item.rule_id === "systemd.sentinel"),
+      `the retrieval returned no host finding: ${finding.retrieval} -> ${JSON.stringify(again.host.map((h) => h.rule_id))}`,
+    );
+  });
+
+  check("next_actions is emitted, and --json is not told to re-run with --json", () => {
+    // `next_actions` had ZERO assertions in either suite, and the MCP parity loop
+    // compares only `command`, `data` and `error` -- so the field is outside
+    // everything that checks the two adapters agree. The CLI builder also drops
+    // its last element by POSITION on the `--json` path.
+    const human = envelope(cli(["fleet", "status", "--json"]));
+    assert.ok(Array.isArray(human.next_actions) && human.next_actions.length > 0, "an envelope must carry next_actions");
+    assert.equal(
+      human.next_actions.some((action) => /--json/u.test(action)), false,
+      `a caller already reading JSON must not be told to re-run with --json: ${JSON.stringify(human.next_actions)}`,
+    );
+    // The guidance must still SAY something specific about this run's verdict.
+    assert.ok(human.next_actions.join(" ").length > 20, "next_actions must not be empty guidance");
+  });
+
+  check("--agent probes the selected agent's checkout and NO other", () => {
+    // The existing `--agent` case asserted that no non-selected slug appeared in
+    // any probe target -- against a fixture where EVERY agent declares the same
+    // `hermes.repo` (`.../releases/abc`) and provenance dedupes checkouts by
+    // realpath. One probe existed, its target contained no slug at all, and the
+    // seven-iteration loop was vacuous: reverting the scoping entirely, or
+    // inverting it to skip the selected agent, left every assertion green.
+    // Distinct checkouts per agent are what make the guarantee observable.
+    const slugs = ["one", "two", "three"];
+    for (const slug of slugs) {
+      const repo = join(temp, "checkouts", slug);
+      mkdirSync(repo, { recursive: true });
+      assert.equal(git(repo, ["init", "--quiet"]).status, 0, `git init failed in ${repo}`);
+      writeFileSync(join(repo, "README.md"), `# ${slug}\n`, "utf8");
+      assert.equal(git(repo, ["add", "-A"]).status, 0);
+      assert.equal(git(repo, ["commit", "--quiet", "-m", "seed"]).status, 0);
+    }
+    const agents = join(temp, "distinct-agents.yaml");
+    const projects = join(temp, "distinct-projects.yaml");
+    const rows = {};
+    for (const slug of slugs) {
+      rows[`${slug}-pm`] = { ...agentRow(slug), hermes: { ...agentRow(slug).hermes, repo: join(temp, "checkouts", slug) } };
+    }
+    writeFileSync(agents, YAML.stringify({ schema_version: 1, agents: rows }), "utf8");
+    writeProjectRegistry(projects, slugs);
+    const base = ["fleet", "status", "--domain", "release_provenance", "--json", "--agent-registry", agents, "--project-registry", projects];
+
+    const all = status(cli(base));
+    const allTargets = all.probes.filter((probe) => probe.kind === "checkout").map((probe) => probe.target);
+    for (const slug of slugs) {
+      assert.ok(
+        allTargets.some((target) => target.endsWith(`/${slug}`)),
+        `an unfiltered run must probe ${slug}'s checkout; got ${JSON.stringify(allTargets)}`,
+      );
+    }
+
+    const scoped = status(cli([...base, "--agent", "two-pm"]));
+    const scopedTargets = scoped.probes.filter((probe) => probe.kind === "checkout").map((probe) => probe.target);
+    // THE POSITIVE HALF, which is what was missing: the selected agent's own
+    // checkout must have been read.
+    assert.equal(scopedTargets.length, 1, `exactly one checkout may be probed under --agent, got ${JSON.stringify(scopedTargets)}`);
+    assert.ok(scopedTargets[0].endsWith("/two"), `the SELECTED agent's checkout must be the one probed, got ${scopedTargets[0]}`);
+
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("proven drift and a dirty checkout are fails, and they move health", () => {
+    // `provenanceState` maps `mismatch` and `dirty` to `fail`, which is what lets
+    // a wrong-build agent move `data.health.healthy` -- the single question this
+    // command exists to answer. Nothing pinned it: the base fixture's declared
+    // checkout is a plain directory that is never `git init`ed, so every
+    // git-derived fact comes back missing/unobserved and no fact in the suite
+    // reached `fail`. Changing `case "mismatch": return "fail"` to `"warn"` left
+    // all 35 cases green (verified by mutation).
+    const driftRepo = join(temp, "drift", "clean");
+    const dirtyRepo = join(temp, "drift", "dirty");
+    for (const repo of [driftRepo, dirtyRepo]) {
+      mkdirSync(repo, { recursive: true });
+      assert.equal(git(repo, ["init", "--quiet"]).status, 0, `git init failed in ${repo}`);
+      writeFileSync(join(repo, "README.md"), "# drift\n", "utf8");
+      assert.equal(git(repo, ["add", "-A"]).status, 0);
+      assert.equal(git(repo, ["commit", "--quiet", "-m", "seed"]).status, 0);
+    }
+    // Uncommitted change in one of them -- `hermes.checkout_clean` desires
+    // "clean" and carries `mismatchStatus: "dirty"`.
+    writeFileSync(join(dirtyRepo, "README.md"), "# drift, edited\n", "utf8");
+
+    const agents = join(temp, "drift-agents.yaml");
+    const projects = join(temp, "drift-projects.yaml");
+    const rows = {
+      "clean-pm": { ...agentRow("clean"), hermes: { ...agentRow("clean").hermes, repo: driftRepo } },
+      "dirty-pm": { ...agentRow("dirty"), hermes: { ...agentRow("dirty").hermes, repo: dirtyRepo } },
+    };
+    writeFileSync(agents, YAML.stringify({ schema_version: 1, agents: rows }), "utf8");
+    writeProjectRegistry(projects, ["clean", "dirty"]);
+    const data = status(cli([
+      "fleet", "status", "--domain", "release_provenance", "--json",
+      "--agent-registry", agents, "--project-registry", projects,
+    ]));
+
+    // The template config pins `hermes_git_sha = "0"*40`; a real checkout's HEAD
+    // is not that, so the comparison is a PROVEN mismatch rather than a gap.
+    // Matched on the summary, not the field: TWO observations carry
+    // `hermes.git_sha` -- the row's recorded sha against the pin, and the live
+    // checkout's HEAD against the pin -- and only the second is the drift.
+    const clean = agentNamed(data, "clean-pm");
+    const head = clean.observations.find((item) => /the commit the declared checkout has checked out/u.test(item.summary));
+    assert.ok(head, `the live HEAD comparison must be observed, got ${JSON.stringify(clean.observations.map((o) => o.summary.slice(0, 40)))}`);
+    assert.equal(head.state, "fail", `a proven HEAD mismatch must be a fail, not a warn: got ${head.state}`);
+
+    // The domain ROLLS UP to `unobserved`, not `fail` -- a fresh `git init` has
+    // no origin remote, so `hermes.git_url` is unobserved and `unobserved`
+    // outranks `fail` in the declared precedence. That is correct, and it is why
+    // the fail has to be pinned in the COUNTS rather than in the rollup.
+    const domain = data.domains.find((item) => item.domain === "release_provenance");
+    assert.ok(domain, "the selected domain must be emitted");
+    assert.ok(domain.counts.fail >= 1, `the domain counts must carry the fail, got ${JSON.stringify(domain.counts)}`);
+
+    // `dirty` -> `fail`, pinned as a DELTA against the clean checkout rather
+    // than as an absolute: the same fixture's clean repo must report `pass` for
+    // the same comparison, or "some observation is a fail" would be satisfied by
+    // the HEAD mismatch both agents share and pin nothing about dirtiness.
+    const cleanliness = (agent) => {
+      const found = agent.observations.find((item) => /uncommitted changes/u.test(item.summary));
+      assert.ok(found, `the working-tree comparison must be observed for ${agent.agent_id}`);
+      return found.state;
+    };
+    assert.equal(cleanliness(clean), "pass", "a committed checkout must report clean");
+    assert.equal(cleanliness(agentNamed(data, "dirty-pm")), "fail", "a dirty declared checkout must be a fail");
+
+    assert.equal(data.health.healthy, false, "proven drift must make the fleet unhealthy");
+    assert.ok(data.health.failed >= 1, "and it must be counted");
+
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("no invocation in this suite wrote to this repository", () => {
+    // The whole-suite half of the zero-write proof. Every `cli()` call already
+    // asserts the isolated scratch tree and the tracked contract are untouched;
+    // this covers the two surfaces a single invocation cannot be held
+    // responsible for -- this repo's own `.git/index` and its top-level
+    // direntries -- once, at the end, where an external writer produces ONE
+    // clearly-worded failure instead of turning a random case red.
+    const after = snapshotShared();
+    const changed = [...new Set([...Object.keys(sharedAtStart), ...Object.keys(after)])]
+      .filter((key) => sharedAtStart[key] !== after[key]);
+    for (const key of changed) console.log(`       ${key}: ${sharedAtStart[key] ?? "<missing>"} -> ${after[key] ?? "<missing>"}`);
+    assert.deepEqual(
+      changed, [],
+      `this repository changed while the suite ran -- either an invocation wrote to it, or a concurrent process in this repo did: ${changed.join(", ")}`,
+    );
   });
 
   // -- Live-source cases: the ONLY ones allowed to skip -----------------------

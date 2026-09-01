@@ -547,3 +547,19 @@ source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
 severity: low
 reason: Without `--live`, every audit-fed domain receives an explicit `unobserved` observation naming the flag, and `unobserved` outranks `fail` -- correctly, because nothing may be claimed about a half that was not read. The consequence is that on a DEFAULT run `profile` reads `unobserved` for an agent whose profile directory is a symlink, even though the store read alone proves the failure. Nothing is hidden: the `fail` observation is emitted, `data.domains[].counts` shows it, and `health.failed` counts it -- but the single-word domain state under-reports what the run actually knows. A later story may want a separate "observed so far" state, or to rank `fail` above `unobserved` when the failure came from a source that WAS read.
 status: open
+
+### DW-69: The recipe audit's own git calls omit `--no-optional-locks`.
+origin: review-deferred story-1.4
+location: src/parity/rules.ts:2901, :2922, :6118
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: The fleet namespace's own probes all pass `--no-optional-locks` -- verified by logging all 13 git invocations of a `fleet status --json` run through a PATH shim -- and with a reconciled index a plain run and a `--live` run both leave this repository's `.git/index` byte-identical across three build/run cycles. The audit rules the `--live` path invokes as children do NOT pass the flag on their `git ls-files --stage` calls. It did not produce an observable write in any measurement here (`ls-files` does not refresh a clean index), so this is a latent inconsistency rather than a reproduced defect: a rule that later reaches for `git status` or `git diff` on that path would refresh the index of a repository the caller was told is only being read. The flag belongs on every git call in `src/parity/rules.ts`, which is that file's owner to change.
+status: open
+
+### DW-70: The whole-suite zero-write assertion cannot attribute a change to the command.
+origin: review-deferred story-1.4
+location: tests/fleet-status-regressions.mjs (snapshotShared)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: This repository's own `.git/index` and top-level direntries are worth checking -- a command that writes the repo it runs in rather than the isolated HOME is exactly the defect -- but this machine runs parallel agents by design and any of them can move both. Measured during one run of this suite: `.pjan-67-trusted-lifecycle-FmLEQj` and `.pjan-67-trusted-lifecycle-R2bRQf` appeared in this root mid-invocation, created by a different process. The check now measures tracked CONTENT rather than stat bytes, ignores other suites' dot-prefixed scratch directories, and runs once per suite with wording that names both possible causes -- which removes the misattribution but not the shared surface. A real fix needs either a run-level exclusive lock on the repo for the test suite, or a control measurement that proves the machine is quiet before the assertion is allowed to fail.
+status: open

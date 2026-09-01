@@ -170,6 +170,19 @@ export interface FleetProvenanceOptions extends FleetInventoryOptions {
    * checkout this run deliberately did not read.
    */
   probeAgentIds?: readonly string[];
+  /**
+   * Run only these probe families. Omitted, both run.
+   *
+   * The per-DOMAIN half of the same rule `probeAgentIds` enforces per agent. The
+   * `template` family (the gitlink and submodule probes) produces only
+   * `scaffold.*` facts, and the `checkout` family produces only `hermes.*` facts
+   * -- so a status run scoped to one of those two domains was spawning the other
+   * family's probes and discarding every fact they produced. Measured:
+   * `--domain template_scaffold` and `--domain release_provenance` ran the
+   * IDENTICAL probe set, `{checkout: 3, gitlink: 1, submodule: 1}`. Only the
+   * status core passes this; `fleet provenance` runs both, unchanged.
+   */
+  probeFamilies?: readonly ("template" | "checkout")[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1082,7 +1095,11 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
     });
   }
 
-  await addTemplateFacts(ctx, root);
+  const families = options.probeFamilies === undefined ? null : new Set(options.probeFamilies);
+  const wantsTemplateProbes = families === null || families.has("template");
+  const wantsCheckoutProbes = families === null || families.has("checkout");
+
+  if (wantsTemplateProbes) await addTemplateFacts(ctx, root);
   addHostPinFacts(ctx);
 
   const subjects = agentSubjects(agentRaw.entries);
@@ -1093,6 +1110,7 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
   const byCanonical = new Map<string, string>();
   const probeScope = options.probeAgentIds === undefined ? null : new Set(options.probeAgentIds);
   for (const subject of subjects) {
+    if (!wantsCheckoutProbes) break;
     if (probeScope !== null && !probeScope.has(subject.agentId)) continue;
     const declared = nonEmptyString(subject.hermes.repo);
     if (declared === null) continue;

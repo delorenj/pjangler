@@ -288,6 +288,16 @@ record, only to `data.host`. Filters constrain collection, so
 empty; the run says so with an `audit-host-rules-not-collected` finding naming
 the rule it did not collect. Run without `--domain` to get them.
 
+A `--domain` run whose selected domain *is* audit-fed does spawn children, and
+those children report every rule — including host-scoped rules for domains you
+did not select. Those results are not carried in `data.host` (only the selected
+domain is emitted), and the run says so too, with one
+`audit-host-rules-not-reported` finding per rule. **An empty `data.host` never
+means "this machine is clean"** on a filtered run; the findings say which reading
+you are not being shown. For the same reason a host finding's `retrieval` is the
+unfiltered `--live` invocation whenever its domain is one of the three above —
+the narrowed command could not return it.
+
 Story 1.8 owns the systemd observer, 1.9 the live-process observer, and 1.10
 Bloodbank routing readiness. Until then those domains say so, by name, rather
 than disappearing.
@@ -335,7 +345,10 @@ fully reported.
 
 Filters constrain **collection**, not just emission: `--domain registry` spawns
 no audit child and no provenance probe, and `--agent <id>` spawns neither for any
-other agent.
+other agent. It holds per probe FAMILY too — `--domain template_scaffold` runs
+the gitlink and submodule probes and no checkout probe, and
+`--domain release_provenance` the reverse — so a filtered run never pays for
+facts it would discard.
 
 ### Two verdicts
 
