@@ -644,3 +644,276 @@ export interface FleetProvenance {
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Fleet status (story 1.4)
+//
+// The inventory says what the stores CONTAIN; provenance says which BUILD each
+// agent runs. Neither answers "is the fleet correct?" in one invocation. That is
+// this block's vocabulary: nine observation domains, seven states under one
+// precedence, and two verdicts.
+//
+// Same file, same reason as the two blocks above: a reported status field cannot
+// exist without a declared owner beside it. The `FleetStatus*` prefix keeps every
+// name clear of the ones inventory and provenance already took.
+// ---------------------------------------------------------------------------
+
+/**
+ * The nine observation domains. Every one appears in every result.
+ *
+ * A domain may never disappear silently -- it is either observed or carries an
+ * explicit `unobserved`/`unsupported` observation with a reason. That is the one
+ * outcome this vocabulary exists to prevent.
+ *
+ * DELIBERATELY NOT the contract's `policy_domains`. That is a different,
+ * three-value axis (`systemd`, `bloodbank`, `profile`) declared per managed
+ * exception at `contracts/fleet-contract.yaml:274-285`; conflating the two would
+ * quietly widen a contract field that means something else. Widening the
+ * contract is story 1.1's authority.
+ */
+export const FLEET_STATUS_DOMAINS = [
+  "registry",
+  "project_binding",
+  "template_scaffold",
+  "profile",
+  "runtime",
+  "systemd",
+  "live_process",
+  "bloodbank",
+  "release_provenance",
+] as const;
+export type FleetStatusDomain = (typeof FLEET_STATUS_DOMAINS)[number];
+
+/**
+ * What one observation concluded.
+ *
+ * `pass`        observed, and in the state it should be in.
+ * `warn`        observed, imperfect, and NOT a gate -- matching `gatesProject`
+ *               in `src/recipes/types.ts`, where a warn has never gated a repo.
+ * `skip`        DECLARED NOT APPLICABLE. Does not reduce completeness.
+ * `fail`        observed, and wrong.
+ * `unsupported` no adapter exists in this release. Counted and visible, but it
+ *               cannot reduce `complete` -- a flag that is permanently false
+ *               says nothing.
+ * `unobserved`  applicable, and not read. Reduces `complete`.
+ * `error`       collection itself failed. Never silently a `pass`, never a
+ *               dropped agent.
+ */
+export const FLEET_STATUS_STATES = ["pass", "warn", "skip", "fail", "unsupported", "unobserved", "error"] as const;
+export type FleetStatusState = (typeof FLEET_STATUS_STATES)[number];
+
+/**
+ * Precedence, strongest first, applied WITHIN one domain and then ACROSS domains.
+ *
+ * `error` outranks everything: a domain whose collection failed may not report
+ * the state of the half that did work. `unobserved` outranks the observed states
+ * for the same reason provenance's does -- if it was not read, nothing may be
+ * claimed. `unsupported` sits above `fail` because "this release cannot see it"
+ * is a stronger statement about the ANSWER than any answer is.
+ *
+ * Read by `rollUp`, not merely declared: a precedence constant nothing iterates
+ * is decoration (the exact defect story 1.3's review found in
+ * `FLEET_PROVENANCE_STATUS_PRECEDENCE`).
+ */
+export const FLEET_STATUS_STATE_PRECEDENCE = [
+  "error", "unobserved", "unsupported", "fail", "warn", "skip", "pass",
+] as const satisfies readonly FleetStatusState[];
+
+/**
+ * Hard cap on agent records carried in one status envelope.
+ *
+ * DELIBERATELY BELOW `FLEET_INVENTORY_MAX_ROWS` (1000). A status record is an
+ * order of magnitude larger than an inventory row -- nine domains, each with one
+ * or more observations carrying bounded details -- so the fleet-shaped number is
+ * smaller here. It also has to be the cap that actually fires: at 1000 the
+ * inventory would clip first and this one could never be reached, which is a cap
+ * no test can prove and therefore a cap nobody should trust.
+ */
+export const FLEET_STATUS_MAX_AGENTS = 500;
+
+/** Cap on observations carried on ONE agent record. Every clip is recorded and retrievable. */
+export const FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT = 200;
+
+/** Cap on findings carried in one envelope, so a broken fleet stays one document. */
+export const FLEET_STATUS_MAX_FINDINGS = 2000;
+
+/** Cap on detail lines carried on one observation. Matches the envelope's own detail bound. */
+export const FLEET_STATUS_MAX_DETAILS = 20;
+
+/**
+ * How many recipe-audit children run at once.
+ *
+ * Measured: 18 real repositories audit in ~1.3 s in-process (35-410 ms each), so
+ * ~28 repositories as children is ~28 node startups. Four in flight keeps that
+ * near the in-process cost without turning an observation command into a load
+ * spike on the operator's own machine.
+ */
+export const FLEET_STATUS_AUDIT_CONCURRENCY = 4;
+
+/**
+ * One observation: one thing this run learned about one domain.
+ *
+ * `agent_id` is null for a FLEET-SCOPED observation -- something true of the
+ * fleet rather than of an agent (the tracked template's gitlink, the host pin).
+ * Those live on the domain rollup, never copied onto every agent record.
+ *
+ * `rule_scope` is `LifecycleScope` (`"project" | "host"`) when the observation
+ * came from a recipe rule, null otherwise. A `host` observation never reaches a
+ * per-agent record: that promotion is the exact category error PJAN-84 fixed.
+ *
+ * `finding_id` is a sha256 prefix over `(scope, agent_id, domain, rule_id, field,
+ * source)` -- the `conflictGroupId` idiom -- so an id is stable across runs and
+ * identical on the CLI and MCP paths. That is what turns the parity check into a
+ * deep equality rather than a resemblance. `source` is in the tuple because two
+ * sources routinely answer for the same `(agent, domain, field)` with no rule id
+ * between them, and without it they collided into one id.
+ *
+ * `retrieval` is the command that returns this observation on its own, so a
+ * clipped envelope always names the way to get the part it dropped.
+ */
+export interface FleetStatusObservation {
+  domain: FleetStatusDomain;
+  agent_id: string | null;
+  state: FleetStatusState;
+  /**
+   * What this observation is ABOUT: a recipe rule id, or a provenance fact id.
+   * Null only when it came from a plain store read.
+   *
+   * It carries the fact id as well as the rule id because `field` alone does not
+   * identify an observation: `hermes.git_sha` and `hermes.checkout_head` both
+   * compare `agents.{agent_id}.hermes.git_sha`, so without this the two would
+   * hash to one `finding_id` and any consumer joining on that id would silently
+   * merge them. MEASURED -- the suite's uniqueness case caught exactly that.
+   */
+  rule_id: string | null;
+  /** The recipe that owns `rule_id`, or the contract-declared authority for `field`. */
+  owner: string | null;
+  rule_scope: "project" | "host" | null;
+  /** The dotted field path or provenance fact id this observation is about. */
+  field: string;
+  summary: string;
+  details: string[];
+  finding_id: string;
+  /** Where the observation came from: a store read, a provenance fact, a recipe audit, or a declared gap. */
+  source: string;
+  retrieval: string;
+}
+
+/** One agent, every domain, with the per-domain rollup beside the raw observations. */
+export interface FleetStatusAgent {
+  agent_id: string;
+  observations: FleetStatusObservation[];
+  /** Every selected domain, rolled up under `FLEET_STATUS_STATE_PRECEDENCE`. */
+  domains: Partial<Record<FleetStatusDomain, FleetStatusState>>;
+  /** The worst domain state on this record. */
+  state: FleetStatusState;
+  healthy: boolean;
+  complete: boolean;
+  /** True when this record's observations were clipped; `retrieval` then names how to get them all. */
+  truncated: boolean;
+  retrieval: string;
+}
+
+/**
+ * One domain across the whole selection.
+ *
+ * `observations` carries the FLEET-SCOPED ones (`agent_id: null`) -- emitted
+ * exactly once, never copied onto 28 agent records.
+ */
+export interface FleetStatusDomainRollup {
+  domain: FleetStatusDomain;
+  state: FleetStatusState;
+  counts: Record<FleetStatusState, number>;
+  /** Agents carrying at least one observation in this domain. */
+  agents: number;
+  observations: FleetStatusObservation[];
+}
+
+/**
+ * One host-scoped rule result, reported ONCE for the machine.
+ *
+ * Deduped by rule id. It never reaches a per-agent record, never makes an agent
+ * or the fleet `healthy: false`, and is never promoted into a registry-wide
+ * claim: no amount of work in a repository can change a condition about $HOME,
+ * systemd, or the fleet registry.
+ */
+export interface FleetStatusHostFinding {
+  rule_id: string;
+  owner: string | null;
+  domain: FleetStatusDomain;
+  state: FleetStatusState;
+  summary: string;
+  details: string[];
+  finding_id: string;
+  retrieval: string;
+}
+
+export interface FleetStatusScope {
+  kind: "fleet" | "agent";
+  agent_id: string | null;
+  /** The single selected domain, or null for all nine. */
+  domain: FleetStatusDomain | null;
+  live: boolean;
+  label: string;
+  /** Registered agents in the whole fleet, scope-independent. */
+  total_registered_agents: number;
+  selected_agents: number;
+  selected_domains: FleetStatusDomain[];
+}
+
+export interface FleetStatusTotals {
+  /** Registered agents in the whole fleet. Equals the inventory's `registered_agents`. */
+  agents: number;
+  /** Agent records actually carried in `agents`, after the cap. */
+  emitted_agents: number;
+  /** Observations built, before the per-agent cap. */
+  observations: number;
+  /** Observations actually carried. */
+  emitted_observations: number;
+  host_findings: number;
+  findings: number;
+  /** Recipe-audit children this run intended to start. */
+  audits_attempted: number;
+  /** Recipe-audit children that returned a parseable report. */
+  audits_observed: number;
+  by_state: Record<FleetStatusState, number>;
+}
+
+export interface FleetStatusHealth {
+  /**
+   * No `fail` and no `error`, over every observation.
+   *
+   * Provenance's split, not the inventory's: clipping is deliberately NOT part
+   * of this. A truncated but drift-free run is `healthy: true, complete: false`,
+   * which is the whole reason there are two verdicts.
+   */
+  healthy: boolean;
+  /** No `unobserved`, no collection error, no truncation. `unsupported` does not reduce it. */
+  complete: boolean;
+  /** `complete`, AND unfiltered: every registered row and every applicable domain was observed. */
+  fleet_complete: boolean;
+  failed: number;
+  warned: number;
+  skipped: number;
+  unsupported: number;
+  unobserved: number;
+  errors: number;
+  /** Sources this run could not read at all -- a missing audit CLI, an unparseable child report. */
+  collection_errors: number;
+  truncated: boolean;
+}
+
+export interface FleetStatus {
+  contract_path: string;
+  contract_version: string | null;
+  scope: FleetStatusScope;
+  totals: FleetStatusTotals;
+  health: FleetStatusHealth;
+  agents: FleetStatusAgent[];
+  domains: FleetStatusDomainRollup[];
+  host: FleetStatusHostFinding[];
+  findings: FleetInventoryFinding[];
+  probes: FleetProbeRecord[];
+  /** Dotted paths where a bound clipped the reported value. */
+  truncated: string[];
+}

@@ -38,11 +38,14 @@ export {
 
 export {
   FLEET_DEFAULT_PROBE_TIMEOUT_MS,
+  captureSelf,
   createRunContext,
   mapBounded,
   probe,
+  probeEnv,
   remainingMs,
   throwIfCancelled,
+  type FleetCaptureResult,
   type FleetProbeResult,
   type FleetRunContext,
   type FleetRunContextOptions,
@@ -57,6 +60,21 @@ export {
   type ConfiguredPin,
   type FleetProvenanceOptions,
 } from "./provenance";
+
+export {
+  auditChildEnv,
+  auditRepository,
+  collectFleetStatus,
+  observeFromInventory,
+  observeFromProvenance,
+  resolveAuditCli,
+  resolveStatusScope,
+  rollUp,
+  type AuditObservationResult,
+  type FleetStatusContext,
+  type FleetStatusOptions,
+  type ResolvedStatusScope,
+} from "./status";
 
 export { registerFleetMcpTools } from "./mcp";
 
@@ -76,6 +94,7 @@ export {
   formatFleetErrorReport,
   formatFleetInventoryReport,
   formatFleetProvenanceReport,
+  formatFleetStatusReport,
   normalizeFleetError,
   redactHome,
   renderFleetJson,
@@ -108,6 +127,14 @@ export {
   FLEET_PROVENANCE_STATUSES,
   FLEET_PROVENANCE_STATUS_PRECEDENCE,
   FLEET_RETIRED_IDS,
+  FLEET_STATUS_AUDIT_CONCURRENCY,
+  FLEET_STATUS_DOMAINS,
+  FLEET_STATUS_MAX_AGENTS,
+  FLEET_STATUS_MAX_DETAILS,
+  FLEET_STATUS_MAX_FINDINGS,
+  FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT,
+  FLEET_STATUS_STATE_PRECEDENCE,
+  FLEET_STATUS_STATES,
   FLEET_SCHEMA_VERSION,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
   FleetError,
@@ -146,5 +173,15 @@ export {
   type FleetProvenanceTotals,
   type FleetRetiredMode,
   type FleetServiceModel,
+  type FleetStatus,
+  type FleetStatusAgent,
+  type FleetStatusDomain,
+  type FleetStatusDomainRollup,
+  type FleetStatusHealth,
+  type FleetStatusHostFinding,
+  type FleetStatusObservation,
+  type FleetStatusScope,
+  type FleetStatusState,
+  type FleetStatusTotals,
   type FleetStoreView,
 } from "./types";

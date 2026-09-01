@@ -157,6 +157,19 @@ const SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
 export interface FleetProvenanceOptions extends FleetInventoryOptions {
   /** The run's deadline and cancellation budget. Required: every probe is bounded by it. */
   runContext: FleetRunContext;
+  /**
+   * Restrict live checkout probes to these agent ids. Omitted, every declared
+   * checkout is probed.
+   *
+   * NOT a scope filter -- `agentId` is, and it filters EMISSION so totals stay
+   * fleet-wide. This constrains COLLECTION, and exists for one caller: the
+   * status core, whose contract is that a `--agent` scope must not spawn a probe
+   * for an agent it will not report. `fleet provenance` itself never passes it,
+   * so its own behaviour is unchanged; an agent outside the set simply reports
+   * `unobserved` with a `skipped` probe record, which is the honest answer for a
+   * checkout this run deliberately did not read.
+   */
+  probeAgentIds?: readonly string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1078,7 +1091,9 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
   // `~/.hermes/hermes-agent` on this fleet, and probing it 9 times would be 27
   // redundant child processes and 9 identical probe records.
   const byCanonical = new Map<string, string>();
+  const probeScope = options.probeAgentIds === undefined ? null : new Set(options.probeAgentIds);
   for (const subject of subjects) {
+    if (probeScope !== null && !probeScope.has(subject.agentId)) continue;
     const declared = nonEmptyString(subject.hermes.repo);
     if (declared === null) continue;
     const expanded = expandHome(declared, home);

@@ -9,6 +9,7 @@ import {
 import { collectFleetInventory } from "./inventory";
 import { collectFleetProvenance } from "./provenance";
 import { createRunContext, type FleetRunContext } from "./runtime";
+import { collectFleetStatus } from "./status";
 import {
   boundedContext,
   boundedNotes,
@@ -23,6 +24,7 @@ import {
   formatFleetErrorReport,
   formatFleetInventoryReport,
   formatFleetProvenanceReport,
+  formatFleetStatusReport,
   ignoreBrokenPipe,
   normalizeFleetError,
   redactHome,
@@ -30,11 +32,22 @@ import {
   type FleetContractInspection,
   type FleetEnvelopeV1,
 } from "./output";
-import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, fleetExitCode, type FleetDiagnostic, type FleetInventory, type FleetProvenance } from "./types";
+import {
+  FLEET_STATUS_DOMAINS,
+  FLEET_SUPPORTED_SCHEMA_VERSIONS,
+  FleetError,
+  fleetExitCode,
+  type FleetDiagnostic,
+  type FleetInventory,
+  type FleetProvenance,
+  type FleetStatus,
+} from "./types";
+import { writeStdout } from "../utils/stdout";
 
 const VALIDATE_COMMAND = "fleet.contract.validate";
 const INVENTORY_COMMAND = "fleet.inventory";
 const PROVENANCE_COMMAND = "fleet.provenance";
+const STATUS_COMMAND = "fleet.status";
 
 interface ValidateOptions {
   contract?: string;
@@ -51,6 +64,11 @@ interface InventoryOptions {
 }
 
 type ProvenanceOptions = InventoryOptions;
+
+interface StatusOptions extends InventoryOptions {
+  domain?: string;
+  live?: boolean;
+}
 
 /** An inspection with nothing learned yet, so a failure still renders a report. */
 function emptyInspection(contractPath: string, diagnostics: FleetDiagnostic[]): FleetContractInspection {
@@ -225,6 +243,33 @@ function provenanceEnvelope(provenance: FleetProvenance, json: boolean): FleetEn
 }
 
 /**
+ * The status success envelope. An unhealthy OR incomplete fleet is still `ok: true`.
+ *
+ * Third time, same rule, and it is the rule this whole namespace is built on:
+ * `validateFleetEnvelope` nulls `data` on `ok:false`, so reporting drift as a
+ * command failure would blank the report on exactly the runs that matter. Only a
+ * command failure -- an unreadable source, an unknown `--agent`/`--domain`, a bad
+ * flag, a blown deadline, a cancellation -- is `ok:false`.
+ */
+function statusEnvelope(status: FleetStatus, json: boolean): FleetEnvelopeV1 {
+  const nextActions = status.health.healthy && status.health.complete
+    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"]
+    : [
+      status.health.errors || status.health.collection_errors
+        ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read"
+        : status.health.failed
+          ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine"
+          : status.scope.live
+            ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+            : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved",
+      "Re-run with --json for the complete observation set",
+    ];
+  // A caller who already passed --json is reading this string IN the JSON.
+  if (json && nextActions.length > 1) nextActions.pop();
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, nextActions);
+}
+
+/**
  * Parse `--deadline-ms` into the positive whole number the run context needs.
  *
  * Rejected here rather than in `createRunContext` so a typo is INVALID_INPUT
@@ -325,6 +370,7 @@ export function fleetParserFailureEnvelope(args: readonly string[]): FleetEnvelo
   const positional: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
     inventory: INVENTORY_COMMAND,
     provenance: PROVENANCE_COMMAND,
+    status: STATUS_COMMAND,
   });
   const candidate = words[1] !== undefined ? positional[words[1]] : undefined;
   const command = typeof candidate === "string" ? candidate : VALIDATE_COMMAND;
@@ -383,7 +429,7 @@ export function registerFleetCli(program: Command): void {
           contract: options.contract,
           runContext,
         }));
-        write(inventoryEnvelope(inventory, json), json, () => formatFleetInventoryReport(inventory));
+        await write(inventoryEnvelope(inventory, json), json, () => formatFleetInventoryReport(inventory));
       } catch (error) {
         const normalized = normalizeFleetError(error);
         // Exit 4 and 5 come out of `collectFleetInventory` rethrowing a contract
@@ -394,8 +440,8 @@ export function registerFleetCli(program: Command): void {
             ? "Run `pjangler fleet contract validate` -- the fault is in contracts/fleet-contract.yaml, not in a registry"
             : "Re-run without --json for the full report, or fix the reported store path",
         ]);
-        try { write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized)); }
-        catch { emitLastResort(INVENTORY_COMMAND); }
+        try { await write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized)); }
+        catch { await emitLastResort(INVENTORY_COMMAND); }
       }
     });
 
@@ -422,7 +468,7 @@ export function registerFleetCli(program: Command): void {
           contract: options.contract,
           runContext,
         }));
-        write(provenanceEnvelope(provenance, json), json, () => formatFleetProvenanceReport(provenance));
+        await write(provenanceEnvelope(provenance, json), json, () => formatFleetProvenanceReport(provenance));
       } catch (error) {
         const normalized = normalizeFleetError(error);
         const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
@@ -434,8 +480,59 @@ export function registerFleetCli(program: Command): void {
               ? "Re-run with a larger --deadline-ms; no partial provenance is reported, because a partial one must never be mistaken for a complete one"
               : "Re-run without --json for the full report, or fix the reported source path",
         ]);
-        try { write(envelope, json, () => formatFleetErrorReport("Fleet provenance failed", normalized)); }
-        catch { emitLastResort(PROVENANCE_COMMAND); }
+        try { await write(envelope, json, () => formatFleetErrorReport("Fleet provenance failed", normalized)); }
+        catch { await emitLastResort(PROVENANCE_COMMAND); }
+      }
+    });
+
+  // The third observation command, on the SAME option surface plus the two this
+  // one owns. `--live` is an authorization, not a mode: it authorizes bounded,
+  // read-only host and network observation (the recipe-owned audit rules, whose
+  // bmad rule makes a real `npm view` call) and nothing else. Never mutation,
+  // process control, service changes, board changes, or Bloodbank activation.
+  fleet.command("status")
+    .description("Report every registered agent across all nine observation domains, in one read-only invocation")
+    .option("--agent <id>", "Report only this agent; totals still describe the whole fleet, and no child runs for any other agent")
+    .option("--domain <domain>", `Report only this domain (${FLEET_STATUS_DOMAINS.join(", ")})`)
+    .option("--live", "Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository")
+    .option("--project-registry <path>", "Inspect this project registry instead of the configured one")
+    .option("--agent-registry <path>", "Inspect this agent registry instead of the configured one")
+    .option("--contract <path>", "Validate and read this contract instead of the tracked one")
+    .option("--deadline-ms <ms>", "Fail with TIMEOUT if the whole run has not finished within this budget")
+    .option("--json", "Emit the fleet JSON v1 envelope")
+    .action(async (options: StatusOptions) => {
+      ignoreBrokenPipe();
+      const json = Boolean(options.json);
+      try {
+        const { deadlineMs } = fleetRunInputs(options);
+        // `--domain` gets the same guard as every other value flag. Commander
+        // binds the NEXT argv token, so `--domain --json` would otherwise make
+        // the flag the domain and hand a caller who asked for JSON an ANSI
+        // report about a domain named `--json`.
+        requireValue(options.domain, "--domain");
+        const status = await withSignals(deadlineMs, async (runContext) => collectFleetStatus({
+          agentId: options.agent,
+          domain: options.domain,
+          live: Boolean(options.live),
+          projectRegistry: options.projectRegistry,
+          agentRegistry: options.agentRegistry,
+          contract: options.contract,
+          runContext,
+        }));
+        await write(statusEnvelope(status, json), json, () => formatFleetStatusReport(status));
+      } catch (error) {
+        const normalized = normalizeFleetError(error);
+        const contractFault = fleetExitCode(normalized.code) === 4 || fleetExitCode(normalized.code) === 5;
+        const budgetFault = normalized.code === "TIMEOUT" || normalized.code === "CANCELLED";
+        const envelope = fleetFailureEnvelope(STATUS_COMMAND, normalized, [
+          contractFault
+            ? "Run `pjangler fleet contract validate` -- the fault is in contracts/fleet-contract.yaml, not in a registry"
+            : budgetFault
+              ? "Re-run with a larger --deadline-ms; no partial status is reported, because a partial one must never be mistaken for a complete one"
+              : "Re-run without --json for the full report, or fix the reported agent id, domain, or store path",
+        ]);
+        try { await write(envelope, json, () => formatFleetErrorReport("Fleet status failed", normalized)); }
+        catch { await emitLastResort(STATUS_COMMAND); }
       }
     });
 
@@ -443,7 +540,11 @@ export function registerFleetCli(program: Command): void {
     .description("Validate the fleet contract and report authorities, classes, service model, and retired modes")
     .option("--contract <path>", "Validate this contract instead of the tracked one")
     .option("--json", "Emit the fleet JSON v1 envelope")
-    .action((options: ValidateOptions) => {
+    // Async because `write()` now AWAITS the stdout drain. A sync action would
+    // return before the document had left the process, which is the truncation
+    // this story exists to remove -- and `src/index.ts` already awaits
+    // `program.parseAsync()`, so nothing above has to change.
+    .action(async (options: ValidateOptions) => {
       ignoreBrokenPipe();
       const json = Boolean(options.json);
       try {
@@ -462,7 +563,7 @@ export function registerFleetCli(program: Command): void {
         }
         const inspection = inspectFleetContract(options.contract);
         const envelope = validateEnvelope(inspection);
-        write(envelope, json, () => formatFleetContractReport(inspection));
+        await write(envelope, json, () => formatFleetContractReport(inspection));
       } catch (error) {
         const normalized = normalizeFleetError(error);
         let shown = "contract";
@@ -478,8 +579,8 @@ export function registerFleetCli(program: Command): void {
         // envelope it is handed. Outside this catch that escaped the action
         // handler and reached the top-level rethrow as a raw stack trace with
         // `process.exitCode` never set.
-        try { write(envelope, json, () => formatFleetContractReport(inspection)); }
-        catch { emitLastResort(VALIDATE_COMMAND); }
+        try { await write(envelope, json, () => formatFleetContractReport(inspection)); }
+        catch { await emitLastResort(VALIDATE_COMMAND); }
       }
     });
 }
@@ -493,15 +594,23 @@ export function registerFleetCli(program: Command): void {
  * `FleetContractInspection` and hardwiring `formatFleetContractReport` is what
  * would otherwise have forced a second near-identical copy.
  */
-function write(envelope: FleetEnvelopeV1, json: boolean, format: () => string): void {
-  if (json) process.stdout.write(renderFleetJson(envelope));
-  else process.stdout.write(`${format()}\n`);
+async function write(envelope: FleetEnvelopeV1, json: boolean, format: () => string): Promise<void> {
+  // AWAITED, and that is the whole change. `process.stdout` is ASYNCHRONOUS for
+  // a pipe on Linux, so `write()` only queues; anything that terminates the
+  // process before the queue drains loses the tail. Measured on this runtime: a
+  // 200 000-character document reached a file complete and a pipe at 131 072
+  // bytes, exit 0. This path was correct before only because nothing on it
+  // called `process.exit()` -- a property maintained by a COMMENT. Awaiting the
+  // drain makes it a property of the code, and it stays true if a later edit
+  // does call `process.exit`.
+  if (json) await writeStdout(renderFleetJson(envelope));
+  else await writeStdout(`${format()}\n`);
   process.exitCode = fleetEnvelopeExitCode(envelope);
 }
 
 /** Last resort when even rendering the failure envelope threw. */
-function emitLastResort(command: string): void {
-  process.stdout.write(`${JSON.stringify({
+async function emitLastResort(command: string): Promise<void> {
+  await writeStdout(`${JSON.stringify({
     schema_version: 1,
     ok: false,
     command,

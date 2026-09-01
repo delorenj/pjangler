@@ -56,6 +56,18 @@ description = "Report Hermes fleet provenance: recorded pins against live builds
 depends = ["build"]
 run = "node {{config_root}}/dist/index.js fleet provenance"
 
+# Answers "is the fleet correct?" in ONE invocation: every registered agent across
+# all nine observation domains. Strictly read-only. Without --live no recipe audit
+# child runs and no network call is made, and every audit-fed domain says so. An
+# unhealthy or incomplete fleet still exits 0 -- only a command failure, a blown
+# deadline, or a cancellation is nonzero.
+[tasks."fleet:status"]
+description = "Report registry-wide Hermes fleet status across all nine observation domains (read-only)"
+# `depends` matters: without a build this task's failure mode on a fresh clone is
+# ERR_MODULE_NOT_FOUND, not the fleet status it exists to give.
+depends = ["build"]
+run = "node {{config_root}}/dist/index.js fleet status"
+
 [tasks."fleet:check"]
 description = "Report Hermes fleet drift (wrappers, profile contract, registry symlinks)"
 run = "{{config_root}}/templates/hermes-agent/scripts/fleet-sync.sh"

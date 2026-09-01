@@ -524,7 +524,19 @@ try {
             `${name} must expose the CLI's option surface one-for-one`,
           );
         }
+        // PJAN Epic 1 / Story 1.4. Same shared surface plus the two flags this
+        // command owns, and no more: an option the MCP tool has and the CLI does
+        // not is how the two adapters stop being one core.
+        const statusTool = listed.tools.find((entry) => entry.name === "pjangler_fleet_status");
+        assert.ok(statusTool, "pjangler_fleet_status should be exposed by the MCP server");
+        assert.equal(statusTool.inputSchema.additionalProperties, false, "pjangler_fleet_status must reject unknown top-level arguments");
+        assert.deepEqual(
+          Object.keys(statusTool.inputSchema.properties ?? {}).sort(),
+          ["agent", "agentRegistry", "contract", "deadlineMs", "domain", "live", "projectRegistry"],
+          "pjangler_fleet_status must expose the CLI's option surface one-for-one",
+        );
         await expectInvalidParams("pjangler_fleet_provenance", { deadline_ms: 5 }, "a misspelled deadline_ms must not be silently dropped into an unbounded run");
+        await expectInvalidParams("pjangler_fleet_status", { domain: 5 }, "a non-string domain must be rejected at the protocol boundary");
 
         for (const [tool, command, argv, args] of [
           ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance"], {}],
@@ -532,6 +544,14 @@ try {
           ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--agent", "definitely-not-registered"], { agent: "definitely-not-registered" }],
           ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--agent-registry", join(fleetTmp, "not-a-registry.yaml")], { agentRegistry: join(fleetTmp, "not-a-registry.yaml") }],
           ["pjangler_fleet_provenance", "fleet.provenance", ["fleet", "provenance", "--deadline-ms", "1"], { deadlineMs: 1 }],
+          // Story 1.4: every scope the status command accepts, both adapters,
+          // one subprocess pair each. `data` deep-equality is only meaningful
+          // because the payload is deterministic by construction.
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status"], {}],
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "registry"], { domain: "registry" }],
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "bogus"], { domain: "bogus" }],
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--agent", "definitely-not-registered"], { agent: "definitely-not-registered" }],
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--live", "--deadline-ms", "1"], { live: true, deadlineMs: 1 }],
         ]) {
           const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
           const cli = cliEnvelope(argv, cleanEnv);
@@ -551,6 +571,21 @@ try {
         assert.equal(mcp.ok, true, "a failed probe is not a command failure");
         assert.equal(mcp.data.health.complete, false, "and the run must say it could not observe everything");
         assert.deepEqual(mcp.data, cli.data, "a partial probe must produce the same data on both adapters");
+      });
+
+      // Story 1.4: a partial COLLECTION has to agree across the adapters too.
+      // `PJ_FLEET_CLI_ENTRY` names a file that is not there, so every audit-fed
+      // domain is unobserved with a categorized reason -- on both sides,
+      // identically, or the two are not one core. It needs its own server,
+      // because the entry is read out of the SERVER's environment.
+      const missingEntryEnv = fleetEnvFor({ PJ_FLEET_CLI_ENTRY: join(fleetTmp, "no-such-cli-entry.mjs") });
+      await withFleetClient(missingEntryEnv, async (fleetClient) => {
+        const mcp = toolEnvelope(await fleetClient.callTool({ name: "pjangler_fleet_status", arguments: { live: true } }));
+        const cli = cliEnvelope(["fleet", "status", "--live"], missingEntryEnv);
+        assert.equal(mcp.ok, true, "a missing audit CLI is a collection error, not a command failure");
+        assert.equal(mcp.data.health.complete, false);
+        assert.ok(mcp.data.findings.some((finding) => finding.code === "audit-cli-unavailable"));
+        assert.deepEqual(mcp.data, cli.data, "a partial collection must produce the same data on both adapters");
       });
 
       // Cancellation: an aborted MCP request must report CANCELLED in the same

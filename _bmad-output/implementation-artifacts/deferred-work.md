@@ -497,3 +497,50 @@ source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
 severity: low
 reason: The 90 -> 240 raise is justified in its own comment by a real event: the orchestrator killed story 1.3's dev session at the handoff to review, with the work committed and 63/65 suites green, then recorded `committed=False` and demanded a manual rollback. Raising the ceiling was the right immediate call and the reasoning is sound, but the defect it describes is a COMMIT-DETECTION bug in the orchestrator, and nothing in this story's diff touches it -- a 4-hour ceiling only widens the window before it recurs. Out of scope here (the orchestrator owns its own state), recorded so it is not lost.
 status: open
+
+### DW-63: Three observation domains have no observer in this release and can only report a declared gap.
+origin: spec-deferred story-1.4
+location: src/fleet/status.ts (observeFromInventory)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: medium
+reason: `systemd`, `live_process` and the Bloodbank LIVENESS half of `bloodbank` are reported `unsupported` with a named reason and the story that owns them, because this story's Never list forbids implementing any of the three. Concretely: `systemd` carries the contract-derived expected unit names as evidence and observes nothing (story 1.8 owns canonical topology and service health); `live_process` observes nothing at all -- there is no `ps`, `pgrep` or `/proc` read anywhere in `src/` (story 1.9); `bloodbank` observes the stored routing RECORD and the strict activation flag, and reports routing readiness `unsupported` (story 1.10). The consequence a later story inherits: `health.complete` on this build is only ever about the domains that DO have an adapter, and three of the nine contribute a permanent `unsupported` to `totals.by_state` that no run can clear.
+status: open
+
+### DW-64: Thirty-four JSON-emitting `process.exit()` sites in src/index.ts are still unflushed.
+origin: spec-deferred story-1.4
+location: src/index.ts
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: medium
+reason: This story replaced four of the file's 38 `process.exit()` calls -- the audit action's two write sites and two exit sites -- with `writeStdout` + `exitAfterFlush`, because the status core parses `pjangler audit --json` and its truncation became a correctness dependency. The other 34 are unchanged and carry the same latent defect: on Linux `process.stdout` is asynchronous for a pipe, so `console.log(...)` followed by `process.exit(n)` discards whatever is still queued AND still reports the exit code it meant to. MEASURED on the pre-fix build: `node dist/index.js project doctor --json --registry <1500-project registry>` produced 300 218 valid bytes to a file, 131 072 INVALID bytes through `| cat`, and 146 176 INVALID bytes through a `spawn` capture -- exit 0 every time. `project doctor` and `project identity` are the two with a documented `--json` contract and the two most likely to be captured by automation. `src/utils/stdout.ts` is now the shared mechanism; converting the rest is mechanical and was left out only because this story's Execution list scopes it to the audit path.
+status: open
+
+### DW-65: `collectFleetProvenance` gained a collection-narrowing option that only one caller passes.
+origin: spec-deferred story-1.4
+location: src/fleet/provenance.ts (FleetProvenanceOptions.probeAgentIds)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: The story's own boundary -- "a `--agent`/`--domain` scope must not spawn probes or audit children for unselected agents and then hide the results" -- could not be met through the provenance core as story 1.3 shipped it: `collectFleetProvenance` collects the fleet UNSCOPED and filters for emission, so `agentId` reduces what is reported and nothing about what is probed. Rather than fork the traversal, an optional `probeAgentIds` was added; `fleet provenance` never passes it, so 1.3's behaviour and payload are unchanged. The debt is that `fleet provenance --agent X` still probes all 28 checkouts (DW-56's neighbour), and the two commands now differ in whether a scope constrains collection. Aligning them means deciding whether provenance's fleet-wide `probes[]` array is part of its contract.
+status: open
+
+### DW-66: The audit child receives an allowlisted environment, which is a list that can go stale.
+origin: spec-deferred story-1.4
+location: src/fleet/status.ts (AUDIT_CHILD_ENV_KEYS)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: "No literal credential in any child environment" is enforced structurally: the recipe-audit child receives only the ~25 keys `AUDIT_CHILD_ENV_KEYS` names, so `PLANE_33GOD_API_KEY` and anything like it never exists in that process. The trade is that a rule which later needs a new environment key will silently see it as unset rather than fail loudly -- and the failure mode is a wrong audit answer, not an error. It also makes test injection through the environment impossible (measured: a `PJ_SHIM_MODE` was stripped before the shim could read it), which is why the suite's injected entries discriminate on their own file path instead. A future story that adds an env-reading rule has to extend the list; nothing currently detects that it needs to.
+status: open
+
+### DW-67: `unsupported` steps aside in `rollUp`, which is a documented refinement of the declared precedence.
+origin: spec-deferred story-1.4
+location: src/fleet/status.ts (rollUp)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: The declared precedence is `error > unobserved > unsupported > fail > warn > skip > pass`, and `rollUp` iterates that constant. Applied literally to a MIXED domain it inverts into a lie: `template_scaffold` carries one permanent "a deployed role scaffold records no template ref" (`unsupported`) beside eighteen stale tracked assets (`fail`), and the raw precedence rolls that domain up to `unsupported` -- telling an operator this release cannot see the scaffold when it can see it and it is broken. It also contradicts the story's own acceptance criterion that a project-scoped `warn` rolls its domain up to `warn`. So an `unsupported` observation is filtered out of the candidate set when the domain produced anything else. The refinement is correct and tested, but it is a divergence from the one-line rule the spec states, and a later story that reasons from the constant alone will be surprised by it.
+status: open
+
+### DW-68: A domain rollup can read `unobserved` while a real failure sits underneath it.
+origin: spec-deferred story-1.4
+location: src/fleet/status.ts (collectFleetStatus)
+source_spec: `spec-1-4-deliver-parse-safe-registry-wide-fleet-status.md`
+severity: low
+reason: Without `--live`, every audit-fed domain receives an explicit `unobserved` observation naming the flag, and `unobserved` outranks `fail` -- correctly, because nothing may be claimed about a half that was not read. The consequence is that on a DEFAULT run `profile` reads `unobserved` for an agent whose profile directory is a symlink, even though the store read alone proves the failure. Nothing is hidden: the `fail` observation is emitted, `data.domains[].counts` shows it, and `health.failed` counts it -- but the single-word domain state under-reports what the run actually knows. A later story may want a separate "observed so far" state, or to rank `fail` above `unobserved` when the failure came from a source that WAS read.

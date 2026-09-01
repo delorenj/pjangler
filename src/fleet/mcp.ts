@@ -24,11 +24,13 @@ import {
   type FleetEnvelopeV1,
 } from "./output";
 import { collectFleetProvenance } from "./provenance";
-import { createRunContext } from "./runtime";
-import { FleetError, type FleetInventory, type FleetProvenance } from "./types";
+import { createRunContext, type FleetRunContext } from "./runtime";
+import { collectFleetStatus } from "./status";
+import { FLEET_STATUS_DOMAINS, FleetError, type FleetInventory, type FleetProvenance, type FleetStatus } from "./types";
 
 const INVENTORY_COMMAND = "fleet.inventory";
 const PROVENANCE_COMMAND = "fleet.provenance";
+const STATUS_COMMAND = "fleet.status";
 
 /**
  * The shared flag surface, one-for-one with the CLI's.
@@ -52,6 +54,29 @@ interface FleetToolArgs {
   agentRegistry?: string;
   contract?: string;
   deadlineMs?: number;
+  /** `fleet status` only. Rejected by the other two tools at the protocol boundary. */
+  domain?: string;
+  /** `fleet status` only. Authorizes bounded, read-only host and network observation. */
+  live?: boolean;
+}
+
+/**
+ * What every fleet core accepts. One shape, so the adapter cannot become the
+ * place a tool grows an option its CLI twin does not have.
+ *
+ * `domain` and `live` are optional here and ignored by the two cores that do not
+ * declare them -- widened from the inventory/provenance shape this was hardcoded
+ * to, which would otherwise have forced `fleet status` to be dispatched through
+ * a second, near-identical wrapper.
+ */
+interface FleetToolCollectInput {
+  agentId?: string;
+  projectRegistry?: string;
+  agentRegistry?: string;
+  contract?: string;
+  domain?: string;
+  live?: boolean;
+  runContext: FleetRunContext;
 }
 
 /**
@@ -92,7 +117,7 @@ async function runFleetTool<T>(
   command: string,
   args: FleetToolArgs,
   signal: AbortSignal,
-  collect: (input: { agentId?: string; projectRegistry?: string; agentRegistry?: string; contract?: string; runContext: ReturnType<typeof createRunContext> }) => Promise<T>,
+  collect: (input: FleetToolCollectInput) => Promise<T>,
   succeed: (value: T) => FleetEnvelopeV1,
   failureActions: (error: FleetError) => string[],
 ): Promise<FleetEnvelopeV1> {
@@ -101,12 +126,15 @@ async function runFleetTool<T>(
     requireValue(args.projectRegistry, "projectRegistry");
     requireValue(args.agentRegistry, "agentRegistry");
     requireValue(args.contract, "contract");
+    requireValue(args.domain, "domain");
     const runContext = createRunContext({ signal, deadlineMs: args.deadlineMs });
     const value = await collect({
       agentId: args.agent,
       projectRegistry: args.projectRegistry,
       agentRegistry: args.agentRegistry,
       contract: args.contract,
+      domain: args.domain,
+      live: args.live,
       runContext,
     });
     return succeed(value);
@@ -141,6 +169,24 @@ function provenanceEnvelope(provenance: FleetProvenance): FleetEnvelopeV1 {
       : provenance.health.missing
         ? "Record the missing values on the owning side; an absent pin is never a match"
         : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it"]);
+}
+
+/**
+ * The CLI's status guidance, reproduced exactly. Same rule as the two above.
+ *
+ * The CLI's extra human-path line ("Re-run with --json ...") is deliberately
+ * absent: a caller reaching this over a protocol already has the JSON.
+ */
+function statusEnvelope(status: FleetStatus): FleetEnvelopeV1 {
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.healthy && status.health.complete
+    ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"]
+    : [status.health.errors || status.health.collection_errors
+      ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read"
+      : status.health.failed
+        ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine"
+        : status.scope.live
+          ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+          : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 
 function budgetAwareActions(what: string): (error: FleetError) => string[] {
@@ -200,6 +246,39 @@ export function registerFleetMcpTools(server: ToolHost, asText: AsText): void {
         async (input) => collectFleetProvenance(input),
         provenanceEnvelope,
         budgetAwareActions("provenance"),
+      );
+      return { isError: !envelope.ok, ...asText(envelope) };
+    },
+  );
+
+  server.registerTool(
+    "pjangler_fleet_status",
+    {
+      title: "Report registry-wide Hermes fleet status",
+      description:
+        "Traverses the registry once and reports every registered agent across all nine observation domains -- registry, "
+        + `project_binding, template_scaffold, profile, runtime, systemd, live_process, bloodbank, release_provenance -- each `
+        + "either observed or carrying an explicit unobserved/unsupported reason. Host-scoped findings are reported once in "
+        + "data.host and never folded into an agent. Strictly read-only; `live` authorizes bounded read-only host and network "
+        + "observation (the recipe-owned audit rules) and nothing else. Returns the fleet JSON v1 envelope; an unhealthy or "
+        + "incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.",
+      inputSchema: z.strictObject({
+        ...FLEET_TOOL_INPUT,
+        // A plain string, matching the CLI, so an unknown value produces the
+        // SAME `INVALID_INPUT` envelope on both adapters rather than a zod
+        // -32602 transport error with no envelope at all on one of them. DW-60
+        // records that divergence for `deadlineMs`; there is no reason to add a
+        // second instance of it here.
+        domain: z.string().optional().describe(`Report only this domain: ${FLEET_STATUS_DOMAINS.join(", ")}.`),
+        live: z.boolean().optional().describe("Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository. Never mutation, process control, service changes, board changes, or Bloodbank activation."),
+      }),
+    },
+    async (args: unknown, extra: { signal: AbortSignal }) => {
+      const envelope = await runFleetTool(
+        STATUS_COMMAND, args as FleetToolArgs, extra.signal,
+        async (input) => collectFleetStatus({ ...input, runContext: input.runContext }),
+        statusEnvelope,
+        budgetAwareActions("status"),
       );
       return { isError: !envelope.ok, ...asText(envelope) };
     },

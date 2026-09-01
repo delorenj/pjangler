@@ -49,6 +49,7 @@ import { runChecklist } from "./describe/checklist";
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import { projectNotebookDryRunProjection } from "./recipes/NotebookRecipe";
 import { PJANGLER_VERSION } from "./utils/version";
+import { exitAfterFlush, writeStdout } from "./utils/stdout";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
@@ -1171,33 +1172,46 @@ program
   .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
   .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
-  .action((repo: string | undefined, options) => {
+  // Async, and every write is FLUSHED before the exit that follows it.
+  //
+  // `console.log(...)` + `process.exit(n)` is the truncation defect this epic
+  // exists to stop reproducing: on Linux `process.stdout` is asynchronous for a
+  // pipe, so the exit discards whatever is still queued -- and still exits 0.
+  // Measured on this runtime: a 200 000-character document reached a file
+  // complete and a pipe at 131 072 bytes.
+  //
+  // It matters MORE here than anywhere else in this file, because
+  // `pjangler fleet status --live` parses this command's stdout. A truncated
+  // audit report is no longer a latent bug in one command; it is a wrong answer
+  // about the whole fleet. `process.exit` is KEPT -- the audit's nonzero exit on
+  // a drifted repo is a documented part of its contract -- it just flushes first.
+  .action(async (repo: string | undefined, options) => {
     try {
       const profile = options.profile as string | undefined;
       const live = (options.live as boolean | undefined) ?? false;
       if (profile === "momo-lifecycle-plane") {
         const report = runMomoReadinessAudit(repo, live);
         if (options.json) {
-          console.log(JSON.stringify(report, null, 2));
+          await writeStdout(`${JSON.stringify(report, null, 2)}\n`);
         } else {
-          console.log(formatMomoReadinessReport(report));
+          await writeStdout(`${formatMomoReadinessReport(report)}\n`);
         }
-        process.exit(report.ready ? 0 : 1);
+        await exitAfterFlush(report.ready ? 0 : 1);
       }
       if (profile) {
         console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
-        process.exit(1);
+        await exitAfterFlush(1);
       }
       const report = runAudit(repo, options.registry as string | undefined);
       if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
+        await writeStdout(`${JSON.stringify(report, null, 2)}\n`);
       } else {
-        console.log(formatAuditReport(report));
+        await writeStdout(`${formatAuditReport(report)}\n`);
       }
-      process.exit(report.ok ? 0 : 1);
+      await exitAfterFlush(report.ok ? 0 : 1);
     } catch (err) {
       console.error(`${xmark} audit failed:`, err);
-      process.exit(1);
+      await exitAfterFlush(1);
     }
   });
 

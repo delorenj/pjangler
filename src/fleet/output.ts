@@ -26,11 +26,16 @@ import {
   type FleetProvenance,
   type FleetProvenanceFact,
   type FleetProvenanceStatus,
+  type FleetStatus,
+  type FleetStatusAgent,
+  type FleetStatusDomainRollup,
+  type FleetStatusObservation,
+  type FleetStatusState,
 } from "./types";
 import { bold, cyan, dim, glyph, gray, green, joinDot, padVisible, red, statusStyle, yellow } from "../utils/style";
 
 /** Commands allowed to produce a fleet envelope. */
-export const FLEET_COMMANDS = ["fleet.contract.validate", "fleet.inventory", "fleet.provenance"] as const;
+export const FLEET_COMMANDS = ["fleet.contract.validate", "fleet.inventory", "fleet.provenance", "fleet.status"] as const;
 
 /**
  * The `data` keys each command's success envelope must carry.
@@ -58,6 +63,13 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   "fleet.provenance": [
     "contract_path", "contract_version", "scope",
     "sources", "totals", "health", "facts", "probes", "findings", "truncated",
+  ],
+  // Same discipline again. Omitting a key here does not make the envelope
+  // smaller -- it makes `validateFleetEnvelope` wave the envelope through when a
+  // future edit drops the key, which is the one thing this table exists to stop.
+  "fleet.status": [
+    "contract_path", "contract_version", "scope",
+    "totals", "health", "agents", "domains", "host", "findings", "probes", "truncated",
   ],
 };
 
@@ -795,6 +807,186 @@ export function formatFleetProvenanceReport(provenance: FleetProvenance): string
     lines.push("");
     lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the sources on disk are complete")}`);
     for (const note of provenance.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Status report
+// ---------------------------------------------------------------------------
+
+/** How many agent records the human report prints before it says how many it withheld. */
+const REPORT_MAX_AGENTS = 40;
+/** How many actionable observations the human report lists. */
+const REPORT_MAX_OBSERVATIONS = 40;
+
+function statusGlyph(state: FleetStatusState): string {
+  if (state === "pass") return green(glyph.pass);
+  if (state === "fail" || state === "error") return red(glyph.fail);
+  if (state === "warn" || state === "unobserved") return yellow(glyph.warn);
+  return gray(glyph.skip);
+}
+
+function statusColor(state: FleetStatusState): (value: string | number) => string {
+  if (state === "pass") return green;
+  if (state === "fail" || state === "error") return red;
+  if (state === "warn" || state === "unobserved") return yellow;
+  return gray;
+}
+
+/** How badly an operator needs to look at this observation. Lower sorts first. */
+function actionRank(state: FleetStatusState): number {
+  const order: FleetStatusState[] = ["error", "fail", "unobserved", "warn", "unsupported", "skip", "pass"];
+  const index = order.indexOf(state);
+  return index === -1 ? order.length : index;
+}
+
+function observationLines(observation: FleetStatusObservation, width: number): string[] {
+  const subject = observation.agent_id
+    ? `${observation.agent_id} ${glyph.dot} ${observation.domain}`
+    : `fleet ${glyph.dot} ${observation.domain}`;
+  const style = statusColor(observation.state);
+  const lines = [
+    `    ${statusGlyph(observation.state)}  ${padVisible(bounded(subject), width)}  ${style(observation.state)}`
+    + `${observation.rule_id ? `  ${cyan(observation.rule_id)}` : ""}`,
+    `       ${dim(glyph.arrow)} ${dim(observation.summary)}`,
+  ];
+  // The retrieval command is the half an operator acts on when the envelope
+  // clipped, so it is printed for the observations they are most likely to
+  // chase and withheld from the ones that need no follow-up.
+  if (observation.state !== "pass" && observation.state !== "skip") {
+    lines.push(`       ${dim(glyph.arrow)} ${dim(observation.retrieval)}`);
+  }
+  return lines;
+}
+
+function agentLine(agent: FleetStatusAgent, width: number, domains: readonly FleetStatusDomainRollup[]): string[] {
+  const cells = domains.map((rollup) => {
+    const state = agent.domains[rollup.domain] ?? "unobserved";
+    return statusColor(state)(`${rollup.domain}=${state}`);
+  });
+  const head = `    ${statusGlyph(agent.state)}  ${padVisible(bounded(agent.agent_id), width)}  ${statusColor(agent.state)(agent.state)}`
+    + `  ${dim(glyph.dot)}  ${agent.healthy ? dim("healthy") : red("UNHEALTHY")}`
+    + `  ${dim(glyph.dot)}  ${agent.complete ? dim("complete") : yellow("incomplete")}`;
+  const lines = [head, `       ${dim(glyph.arrow)} ${joinDot(cells)}`];
+  if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
+  return lines;
+}
+
+/**
+ * Report in the `formatFleetProvenanceReport` house style. The caller prints it.
+ *
+ * The verdict leads, and its REASONS lead with it. An unhealthy or incomplete
+ * fleet exits 0 -- drift is data, not a command failure -- so an operator on the
+ * human path has to be able to see WHY, not only THAT. The two verdicts are
+ * deliberately separate: `healthy` is about the fleet being wrong, `complete` is
+ * about this run not having seen all of it, and a run that could not read half
+ * the domains must never read as a clean bill.
+ *
+ * The host block is printed apart from the agents, once, for the same reason it
+ * is stored apart: a condition about this MACHINE is not any repository's
+ * failure, and printing it 28 times would say otherwise.
+ */
+export function formatFleetStatusReport(status: FleetStatus): string {
+  const { health, totals, scope } = status;
+  const lines = [""];
+
+  const headline = health.healthy
+    ? `${green(glyph.pass)} ${bold("Fleet status healthy")}`
+    : `${red(glyph.fail)} ${bold("Fleet status UNHEALTHY")}`;
+  lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot([
+    `${totals.emitted_agents} of ${totals.agents} agents`,
+    `${totals.emitted_observations} of ${totals.observations} observations`,
+    health.complete ? green("complete") : yellow("INCOMPLETE"),
+    health.fleet_complete ? green("fleet-complete") : dim("not fleet-complete"),
+  ])}`);
+  const why = [
+    health.failed ? red(`${health.failed} failed`) : dim("0 failed"),
+    health.errors ? red(`${health.errors} errors`) : dim("0 errors"),
+    health.warned ? yellow(`${health.warned} warned`) : dim("0 warned"),
+    health.unobserved ? yellow(`${health.unobserved} unobserved`) : dim("0 unobserved"),
+    health.unsupported ? gray(`${health.unsupported} unsupported`) : dim("0 unsupported"),
+    health.skipped ? gray(`${health.skipped} skipped`) : dim("0 skipped"),
+    health.collection_errors ? red(`${health.collection_errors} collection error${health.collection_errors === 1 ? "" : "s"}`) : dim("0 collection errors"),
+  ];
+  lines.push(`  ${dim(glyph.arrow)} ${joinDot(why)}`);
+  lines.push(`  ${joinDot([dim(scope.label), dim(status.contract_path), dim(`contract ${status.contract_version ?? "?"}`)])}`);
+
+  section(lines, "Domains");
+  const domainWidth = status.domains.reduce((max, rollup) => Math.max(max, rollup.domain.length), 0);
+  for (const rollup of status.domains) {
+    const counts = Object.entries(rollup.counts)
+      .filter(([, count]) => count > 0)
+      .map(([state, count]) => statusColor(state as FleetStatusState)(`${count} ${state}`));
+    lines.push(`    ${statusGlyph(rollup.state)}  ${padVisible(rollup.domain, domainWidth)}  ${statusColor(rollup.state)(rollup.state)}  ${dim(`${rollup.agents} agent${rollup.agents === 1 ? "" : "s"}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${counts.length ? joinDot(counts) : dim("no observations")}`);
+    for (const observation of rollup.observations) {
+      lines.push(`       ${dim(glyph.arrow)} ${statusColor(observation.state)(observation.state)} ${dim(observation.summary)}`);
+    }
+  }
+
+  section(lines, "Host (this machine, reported once — never a repository's failure)");
+  if (status.host.length === 0) {
+    lines.push(`    ${dim(scope.live ? "none" : "not observed; pass --live to run the recipe-owned audit rules")}`);
+  }
+  const hostWidth = status.host.reduce((max, finding) => Math.max(max, finding.rule_id.length), 0);
+  for (const finding of status.host) {
+    lines.push(`    ${statusGlyph(finding.state)}  ${padVisible(finding.rule_id, hostWidth)}  ${statusColor(finding.state)(finding.state)}  ${dim(finding.domain)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.summary} ${glyph.dot} owner ${finding.owner ?? "undeclared"}`)}`);
+  }
+
+  section(lines, "Agents");
+  if (status.agents.length === 0) lines.push(`    ${dim("none")}`);
+  const agentWidth = status.agents.reduce((max, agent) => Math.max(max, agent.agent_id.length), 0);
+  for (const agent of status.agents.slice(0, REPORT_MAX_AGENTS)) {
+    for (const line of agentLine(agent, agentWidth, status.domains)) lines.push(line);
+  }
+  if (status.agents.length > REPORT_MAX_AGENTS) {
+    lines.push(`    ${dim(`... ${status.agents.length - REPORT_MAX_AGENTS} more agent(s); use --json for all of them`)}`);
+  }
+
+  section(lines, "Highest-priority observations");
+  // Ranked by how badly an operator needs to look, then by the stable sort key.
+  // Scanning 250 observations for the handful that need a decision is not a
+  // report; it is a dump with a verdict on top.
+  const ranked = status.agents
+    .flatMap((agent) => agent.observations)
+    .concat(status.domains.flatMap((rollup) => rollup.observations))
+    .filter((observation) => observation.state !== "pass" && observation.state !== "skip")
+    .sort((a, b) => (
+      actionRank(a.state) - actionRank(b.state)
+      || (a.agent_id ?? "") .localeCompare(b.agent_id ?? "")
+      || a.domain.localeCompare(b.domain)
+    ));
+  if (ranked.length === 0) lines.push(`    ${dim("none")}`);
+  const observationWidth = ranked.slice(0, REPORT_MAX_OBSERVATIONS).reduce((max, observation) => Math.max(
+    max,
+    (observation.agent_id ? `${observation.agent_id} ${glyph.dot} ${observation.domain}` : `fleet ${glyph.dot} ${observation.domain}`).length,
+  ), 0);
+  for (const observation of ranked.slice(0, REPORT_MAX_OBSERVATIONS)) {
+    for (const line of observationLines(observation, observationWidth)) lines.push(line);
+  }
+  if (ranked.length > REPORT_MAX_OBSERVATIONS) {
+    lines.push(`    ${dim(`... ${ranked.length - REPORT_MAX_OBSERVATIONS} more actionable observation(s); use --json for all of them`)}`);
+  }
+
+  section(lines, "Findings");
+  if (status.findings.length === 0) lines.push(`    ${dim("none")}`);
+  const codeWidth = status.findings.slice(0, REPORT_MAX_FINDINGS).reduce((max, item) => Math.max(max, item.code.length), 0);
+  for (const finding of status.findings.slice(0, REPORT_MAX_FINDINGS)) {
+    lines.push(`    ${findingGlyph(finding.severity)}  ${padVisible(finding.code, codeWidth)}  ${dim(finding.field)}${finding.agent_id ? `  ${cyan(finding.agent_id)}` : ""}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.detail} ${glyph.dot} owner ${finding.source ?? "undeclared"}`)}`);
+  }
+  if (status.findings.length > REPORT_MAX_FINDINGS) {
+    lines.push(`    ${dim(`... ${status.findings.length - REPORT_MAX_FINDINGS} more finding(s); use --json for all of them`)}`);
+  }
+
+  if (status.truncated.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the registries on disk are complete")}`);
+    for (const note of status.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
   }
 
   lines.push("");

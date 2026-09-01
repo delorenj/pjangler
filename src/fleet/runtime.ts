@@ -121,6 +121,32 @@ export interface FleetProbeResult {
 }
 
 /**
+ * A bounded child's full result, including the half `probe` deliberately drops.
+ *
+ * `code` is the process exit status (null when the child was killed or never
+ * ran). `value` is trimmed stdout, and unlike `FleetProbeResult` it SURVIVES a
+ * nonzero exit when the caller asked it to -- see `captureSelf`.
+ */
+export interface FleetCaptureResult extends FleetProbeResult {
+  code: number | null;
+}
+
+interface BoundedChildOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Keep stdout when the child exits nonzero.
+   *
+   * `probe` says no: a `git remote get-url origin` that exits 1 produced no
+   * value worth keeping. `captureSelf` says yes, because `pjangler audit`
+   * deliberately exits 1 on a drifted repository (`src/index.ts`) while printing
+   * the complete report -- and discarding it would throw away exactly the
+   * findings the caller spawned the child for.
+   */
+  keepStdoutOnFailure?: boolean;
+}
+
+/**
  * Git's repository-redirection variables. Every one of them can make
  * `git -C <path> ...` answer about a DIFFERENT repository than `<path>`.
  *
@@ -185,12 +211,49 @@ export function probeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
 export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: string): Promise<FleetProbeResult> {
   const [command, ...args] = argv;
   if (!command) return Promise.resolve({ outcome: "failed", value: null });
+  return runBoundedChild(ctx, command, args, { cwd });
+}
+
+/**
+ * Run one bounded child of THIS BUILD and keep its stdout whatever it exits with.
+ *
+ * `process.execPath` is the one deliberate absolute-path spawn in this module.
+ * Everything else spawns by name so `PATH` applies -- which is what makes the
+ * fake-`git` shim cases real. Here the opposite is required: a `node` picked off
+ * `PATH` could be a different runtime than the one running this process, and a
+ * status core that parses its own CLI's JSON must be parsing the SAME build's
+ * JSON. `entry` is the module path to run; the caller resolves it (and the
+ * documented `PJ_FLEET_CLI_ENTRY` seam is what lets a suite point it at a shim).
+ *
+ * The other half of the contract is `keepStdoutOnFailure`. `pjangler audit`
+ * exits 1 on a drifted repository BY DESIGN, with the full report on stdout;
+ * `probe` discards stdout on a nonzero exit, so routing this through `probe`
+ * would report every drifted repository as `outcome: "failed"` with its findings
+ * thrown away -- the exact opposite of what a status run is for.
+ */
+export function captureSelf(
+  ctx: FleetRunContext,
+  entry: string,
+  args: readonly string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<FleetCaptureResult> {
+  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env, keepStdoutOnFailure: true });
+}
+
+function runBoundedChild(
+  ctx: FleetRunContext,
+  command: string,
+  args: readonly string[],
+  options: BoundedChildOptions = {},
+): Promise<FleetCaptureResult> {
+  const { cwd, env, keepStdoutOnFailure = false } = options;
   // Checked BEFORE the spawn, so a cancelled or expired run never starts one
   // more child. `remainingMs` throws TIMEOUT and CANCELLED; both are command
   // failures and must escape rather than become a probe outcome.
   const budget = Math.min(ctx.probeTimeoutMs, remainingMs(ctx));
 
-  return new Promise<FleetProbeResult>((settle) => {
+  return new Promise<FleetCaptureResult>((settle) => {
     let child;
     try {
       child = spawn(command, [...args], {
@@ -205,18 +268,20 @@ export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: strin
         detached: true,
         // An observation probe has no business inheriting a pager, an editor, a
         // credential helper, a terminal, or -- above all -- a redirected
-        // repository. See `probeEnv` for what is stripped and why.
-        env: probeEnv(),
+        // repository. See `probeEnv` for what is stripped and why. A caller that
+        // needs a NARROWER environment (the audit child, which must carry no
+        // credential at all) passes its own.
+        env: env ?? probeEnv(),
       });
     } catch {
-      settle({ outcome: "failed", value: null });
+      settle({ outcome: "failed", value: null, code: null });
       return;
     }
 
     let out = "";
     let size = 0;
     let settled = false;
-    const finish = (result: FleetProbeResult): void => {
+    const finish = (result: FleetCaptureResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -237,10 +302,10 @@ export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: strin
       catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
     };
 
-    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", value: null }); }, budget);
+    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", value: null, code: null }); }, budget);
     timer.unref?.();
 
-    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", value: null }); };
+    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", value: null, code: null }); };
     // If the caller cancelled between the budget check and the spawn, the
     // listener fires immediately and the child is killed on its first tick.
     ctx.signal.addEventListener("abort", onAbort, { once: true });
@@ -248,13 +313,19 @@ export function probe(ctx: FleetRunContext, argv: readonly string[], cwd?: strin
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       size += chunk.length;
-      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", value: null }); return; }
+      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", value: null, code: null }); return; }
       out += chunk;
     });
-    child.on("error", () => finish({ outcome: "failed", value: null }));
+    child.on("error", () => finish({ outcome: "failed", value: null, code: null }));
     child.on("close", (code) => {
-      if (code !== 0) { finish({ outcome: "failed", value: null }); return; }
-      finish({ outcome: "ok", value: out.trim() });
+      if (code !== 0) {
+        // `keepStdoutOnFailure` is the whole reason this body was extracted from
+        // `probe`. The outcome still says `failed`; what changes is that the
+        // caller can read WHAT the child said before it said no.
+        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code });
+        return;
+      }
+      finish({ outcome: "ok", value: out.trim(), code });
     });
   });
 }

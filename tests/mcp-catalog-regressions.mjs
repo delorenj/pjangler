@@ -6,9 +6,9 @@ const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(resolve(root, "src", "mcp-server.ts"), "utf8");
 // The fleet tools register from their own module, so the catalog assertion has
 // to read that module too. Pointed only at `mcp-server.ts`, this check would
-// silently stop covering `pjangler_fleet_inventory` and
-// `pjangler_fleet_provenance` -- green because the text it greps no longer
-// contains them, not because they are gone.
+// silently stop covering `pjangler_fleet_inventory`,
+// `pjangler_fleet_provenance` and `pjangler_fleet_status` -- green because the
+// text it greps no longer contains them, not because they are gone.
 const fleetSource = readFileSync(resolve(root, "src", "fleet", "mcp.ts"), "utf8");
 const registrations = `${source}\n${fleetSource}`;
 
@@ -22,6 +22,7 @@ for (const tool of [
   "pjangler_project_show",
   "pjangler_fleet_inventory",
   "pjangler_fleet_provenance",
+  "pjangler_fleet_status",
 ]) {
   // `server\.` is kept, not dropped. `src/fleet/mcp.ts` registers through
   // `server.registerTool(` exactly like `mcp-server.ts` does, so widening the

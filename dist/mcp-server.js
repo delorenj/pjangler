@@ -5097,8 +5097,8 @@ var init_capture = __esm({
 });
 
 // src/mcp-server.ts
-import { existsSync as existsSync26, statSync as statSync8 } from "node:fs";
-import { basename as basename9, dirname as dirname17, join as join34, resolve as resolve20 } from "node:path";
+import { existsSync as existsSync27, statSync as statSync8 } from "node:fs";
+import { basename as basename9, dirname as dirname17, join as join35, resolve as resolve21 } from "node:path";
 import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -16664,6 +16664,32 @@ var FLEET_PROVENANCE_STATUS_PRECEDENCE = [
 var FLEET_PROVENANCE_SIDE_STATES = ["present", "missing", "unsupported", "unobserved"];
 var FLEET_PROVENANCE_MAX_FACTS = 5e3;
 var FLEET_PROVENANCE_MAX_PROBES = 500;
+var FLEET_STATUS_DOMAINS = [
+  "registry",
+  "project_binding",
+  "template_scaffold",
+  "profile",
+  "runtime",
+  "systemd",
+  "live_process",
+  "bloodbank",
+  "release_provenance"
+];
+var FLEET_STATUS_STATES = ["pass", "warn", "skip", "fail", "unsupported", "unobserved", "error"];
+var FLEET_STATUS_STATE_PRECEDENCE = [
+  "error",
+  "unobserved",
+  "unsupported",
+  "fail",
+  "warn",
+  "skip",
+  "pass"
+];
+var FLEET_STATUS_MAX_AGENTS = 500;
+var FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT = 200;
+var FLEET_STATUS_MAX_FINDINGS = 2e3;
+var FLEET_STATUS_MAX_DETAILS = 20;
+var FLEET_STATUS_AUDIT_CONCURRENCY = 4;
 
 // src/fleet/contract.ts
 var FLEET_CONTRACT_RELATIVE_PATH = join31("contracts", "fleet-contract.yaml");
@@ -17362,6 +17388,13 @@ function probeEnv(base = process.env) {
 function probe(ctx, argv, cwd) {
   const [command, ...args] = argv;
   if (!command) return Promise.resolve({ outcome: "failed", value: null });
+  return runBoundedChild(ctx, command, args, { cwd });
+}
+function captureSelf(ctx, entry, args, cwd, env2) {
+  return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, keepStdoutOnFailure: true });
+}
+function runBoundedChild(ctx, command, args, options = {}) {
+  const { cwd, env: env2, keepStdoutOnFailure = false } = options;
   const budget = Math.min(ctx.probeTimeoutMs, remainingMs(ctx));
   return new Promise((settle) => {
     let child;
@@ -17378,11 +17411,13 @@ function probe(ctx, argv, cwd) {
         detached: true,
         // An observation probe has no business inheriting a pager, an editor, a
         // credential helper, a terminal, or -- above all -- a redirected
-        // repository. See `probeEnv` for what is stripped and why.
-        env: probeEnv()
+        // repository. See `probeEnv` for what is stripped and why. A caller that
+        // needs a NARROWER environment (the audit child, which must carry no
+        // credential at all) passes its own.
+        env: env2 ?? probeEnv()
       });
     } catch {
-      settle({ outcome: "failed", value: null });
+      settle({ outcome: "failed", value: null, code: null });
       return;
     }
     let out = "";
@@ -17412,12 +17447,12 @@ function probe(ctx, argv, cwd) {
     };
     const timer = setTimeout(() => {
       kill();
-      finish({ outcome: "timeout", value: null });
+      finish({ outcome: "timeout", value: null, code: null });
     }, budget);
     timer.unref?.();
     const onAbort = () => {
       kill();
-      finish({ outcome: "cancelled", value: null });
+      finish({ outcome: "cancelled", value: null, code: null });
     };
     ctx.signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
@@ -17425,18 +17460,18 @@ function probe(ctx, argv, cwd) {
       size += chunk.length;
       if (size > PROBE_MAX_BYTES) {
         kill();
-        finish({ outcome: "failed", value: null });
+        finish({ outcome: "failed", value: null, code: null });
         return;
       }
       out += chunk;
     });
-    child.on("error", () => finish({ outcome: "failed", value: null }));
+    child.on("error", () => finish({ outcome: "failed", value: null, code: null }));
     child.on("close", (code) => {
       if (code !== 0) {
-        finish({ outcome: "failed", value: null });
+        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code });
         return;
       }
-      finish({ outcome: "ok", value: out.trim() });
+      finish({ outcome: "ok", value: out.trim(), code });
     });
   });
 }
@@ -18988,18 +19023,18 @@ function profileDigest(path) {
     return absent(SOURCE_PROFILE_TREE, "missing", { classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable" });
   }
 }
-function addCheckoutFacts(ctx, subject, observation2) {
+function addCheckoutFacts(ctx, subject, observation3) {
   const { agentId } = subject;
   const field3 = "agents.{agent_id}.hermes.repo";
   const identityField = "agents.{agent_id}.hermes.git_url";
   const headField = "agents.{agent_id}.hermes.git_sha";
   const pin = ctx.pin.config;
-  const unobserved = (extra = {}) => absent(SOURCE_AGENT_CHECKOUT, "unobserved", { classification: observation2?.classification ?? null, ...extra });
-  const reached = observation2 !== null && observation2.reached;
-  const observedValue = (value) => reached && value !== null ? present(value, SOURCE_AGENT_CHECKOUT, { classification: observation2.classification }) : unobserved();
+  const unobserved = (extra = {}) => absent(SOURCE_AGENT_CHECKOUT, "unobserved", { classification: observation3?.classification ?? null, ...extra });
+  const reached = observation3 !== null && observation3.reached;
+  const observedValue = (value) => reached && value !== null ? present(value, SOURCE_AGENT_CHECKOUT, { classification: observation3.classification }) : unobserved();
   const why = (what, present_) => {
-    if (observation2 === null) return "the row declares no hermes checkout to probe";
-    if (!reached) return `the declared checkout was not read (${observation2.reason ?? "unreachable"})`;
+    if (observation3 === null) return "the row declares no hermes checkout to probe";
+    if (!reached) return `the declared checkout was not read (${observation3.reason ?? "unreachable"})`;
     return present_ ? null : `the declared checkout was read, but ${what} could not be`;
   };
   addFact(ctx, {
@@ -19008,8 +19043,8 @@ function addCheckoutFacts(ctx, subject, observation2) {
     agent_id: agentId,
     field: identityField,
     desired: pinSide(pin.hermes_git_url, SOURCE_TEMPLATE_CONFIG),
-    observed: observedValue(reached ? observation2.remote : null),
-    detail: reached ? why("its origin remote", observation2.remote !== null) ?? "the remote the declared checkout actually points at, against the configured pin" : `${why("its origin remote", false)}; no other repository's identity is reported for this agent`
+    observed: observedValue(reached ? observation3.remote : null),
+    detail: reached ? why("its origin remote", observation3.remote !== null) ?? "the remote the declared checkout actually points at, against the configured pin" : `${why("its origin remote", false)}; no other repository's identity is reported for this agent`
   });
   addFact(ctx, {
     id: "hermes.checkout_head",
@@ -19017,8 +19052,8 @@ function addCheckoutFacts(ctx, subject, observation2) {
     agent_id: agentId,
     field: headField,
     desired: pinSide(pin.hermes_git_sha, SOURCE_TEMPLATE_CONFIG),
-    observed: observedValue(reached ? observation2.head : null),
-    detail: why("its HEAD", reached && observation2.head !== null) ?? "the commit the declared checkout has checked out, against the configured pin"
+    observed: observedValue(reached ? observation3.head : null),
+    detail: why("its HEAD", reached && observation3.head !== null) ?? "the commit the declared checkout has checked out, against the configured pin"
   });
   addFact(ctx, {
     id: "hermes.checkout_clean",
@@ -19026,28 +19061,28 @@ function addCheckoutFacts(ctx, subject, observation2) {
     agent_id: agentId,
     field: field3,
     desired: present("clean", SOURCE_PROVENANCE_POLICY),
-    observed: observedValue(reached && observation2.clean !== null ? observation2.clean ? "clean" : "dirty" : null),
+    observed: observedValue(reached && observation3.clean !== null ? observation3.clean ? "clean" : "dirty" : null),
     mismatchStatus: "dirty",
-    detail: why("its working tree state", reached && observation2.clean !== null) ?? "whether the declared checkout carries uncommitted changes"
+    detail: why("its working tree state", reached && observation3.clean !== null) ?? "whether the declared checkout carries uncommitted changes"
   });
-  if (reached && observation2.clean === false) {
+  if (reached && observation3.clean === false) {
     addFinding2(ctx, {
       code: "hermes-checkout-dirty",
       field: field3,
       agent_id: agentId,
       source: ctx.authority.ownerOf(field3),
       severity: "warn",
-      detail: `the declared checkout ${observation2.target} carries uncommitted changes; a dirty checkout is not a version anything can be pinned to`
+      detail: `the declared checkout ${observation3.target} carries uncommitted changes; a dirty checkout is not a version anything can be pinned to`
     });
   }
-  if (observation2 !== null && observation2.outcome !== "ok") {
+  if (observation3 !== null && observation3.outcome !== "ok") {
     addFinding2(ctx, {
       code: "provenance-probe-incomplete",
       field: field3,
       agent_id: agentId,
       source: ctx.authority.ownerOf(field3),
       severity: "warn",
-      detail: `the declared checkout ${observation2.target} could not be observed (${observation2.reason ?? observation2.outcome}); its identity facts are unobserved rather than assumed`
+      detail: `the declared checkout ${observation3.target} could not be observed (${observation3.reason ?? observation3.outcome}); its identity facts are unobserved rather than assumed`
     });
   }
 }
@@ -19118,7 +19153,9 @@ async function collectFleetProvenance(options) {
   addHostPinFacts(ctx);
   const subjects = agentSubjects(agentRaw.entries);
   const byCanonical = /* @__PURE__ */ new Map();
+  const probeScope = options.probeAgentIds === void 0 ? null : new Set(options.probeAgentIds);
   for (const subject of subjects) {
+    if (probeScope !== null && !probeScope.has(subject.agentId)) continue;
     const declared = nonEmptyString2(subject.hermes.repo);
     if (declared === null) continue;
     const expanded = expandHome3(declared, home);
@@ -19135,14 +19172,14 @@ async function collectFleetProvenance(options) {
   const observations = await mapBounded(targets, PROBE_CONCURRENCY, async ([, declared]) => probeCheckout(runContext, declared, home));
   const byDeclared = /* @__PURE__ */ new Map();
   targets.forEach(([canonical, declared], index) => {
-    const observation2 = observations[index];
-    byDeclared.set(canonical, observation2);
+    const observation3 = observations[index];
+    byDeclared.set(canonical, observation3);
     addProbe(ctx, {
-      id: `checkout:${observation2.target}`,
+      id: `checkout:${observation3.target}`,
       kind: "checkout",
-      target: observation2.target,
-      outcome: observation2.outcome,
-      reason: observation2.reason
+      target: observation3.target,
+      outcome: observation3.outcome,
+      reason: observation3.reason
     });
     void declared;
   });
@@ -19150,7 +19187,7 @@ async function collectFleetProvenance(options) {
     throwIfCancelled(runContext);
     addAgentRecordFacts(ctx, subject);
     const declared = nonEmptyString2(subject.hermes.repo);
-    let observation2 = null;
+    let observation3 = null;
     if (declared !== null) {
       const expanded = expandHome3(declared, home);
       let key;
@@ -19159,9 +19196,9 @@ async function collectFleetProvenance(options) {
       } catch {
         key = resolve19(expanded);
       }
-      observation2 = byDeclared.get(key) ?? null;
+      observation3 = byDeclared.get(key) ?? null;
     }
-    addCheckoutFacts(ctx, subject, observation2);
+    addCheckoutFacts(ctx, subject, observation3);
     addUnsupportedFacts(ctx, subject, layout.template);
   }
   ctx.facts.sort((a, b) => {
@@ -19253,9 +19290,832 @@ async function collectFleetProvenance(options) {
   };
 }
 
+// src/fleet/status.ts
+import { createHash as createHash10 } from "node:crypto";
+import { existsSync as existsSync26 } from "node:fs";
+import { homedir as homedir14 } from "node:os";
+import { isAbsolute as isAbsolute9, join as join34, resolve as resolve20 } from "node:path";
+init_project();
+var RULE_DOMAIN = Object.freeze({
+  // Tracked assets the CommonProject / Hermes template owns in a repository.
+  "secrets.env-op": "template_scaffold",
+  "mise.config-root": "template_scaffold",
+  "mise.versioning": "template_scaffold",
+  "skills.project-manifest": "template_scaffold",
+  "sot.agent-symlinks": "template_scaffold",
+  "bmad.scaffold": "template_scaffold",
+  "bmad.cli-roots": "template_scaffold",
+  "hermes.pm-scaffold": "template_scaffold",
+  "provenance.copier": "template_scaffold",
+  "notebook.skill-installed": "template_scaffold",
+  "notebook.hooks-projected": "template_scaffold",
+  // Version currency of a scaffolded dependency. DELIBERATELY NOT
+  // `release_provenance`: that domain is the HERMES release each agent runs, and
+  // it is fed by the provenance core alone -- filing a BMAD version check there
+  // would make `--live` change a domain whose whole definition is that it does
+  // not.
+  "bmad.version": "template_scaffold",
+  // The project's identity and its binding to a board / manifest.
+  "sot.project-json": "project_binding",
+  "notebook.configuration": "project_binding",
+  "notebook.binding": "project_binding",
+  "notebook.remote-notebook": "project_binding",
+  "notebook.overview-note": "project_binding",
+  "notebook.capture-receipts": "project_binding",
+  // Generated profile tree.
+  "hermes.runtime-singleton": "profile",
+  "hermes.profile-wiring": "profile",
+  // Ignored role-local runtime bytes.
+  "hermes.untracked-runtimes": "runtime",
+  // Shared-host service topology.
+  "systemd.sentinel": "systemd",
+  // The fleet-shared Bloodbank gateway's own configuration.
+  "hermes.fleet-config": "bloodbank",
+  // Registry parity between the two canonical stores.
+  "hermes.registry-parity": "registry"
+});
+var UNMAPPED_RULE_DOMAIN = "template_scaffold";
+var EXCLUDED_RULES = /* @__PURE__ */ new Set(["momo-lifecycle-plane"]);
+var AUDIT_PER_AGENT_DOMAINS = /* @__PURE__ */ new Set([
+  "template_scaffold",
+  "project_binding",
+  "profile",
+  "runtime"
+]);
+var PROVENANCE_FED_DOMAINS = /* @__PURE__ */ new Set([
+  "template_scaffold",
+  "release_provenance"
+]);
+var DOMAIN_FIELD = Object.freeze({
+  registry: "agents.{agent_id}",
+  project_binding: "agents.{agent_id}.plane.identifier",
+  template_scaffold: "scaffold",
+  profile: "profiles.{profile_name}",
+  runtime: "agents.{agent_id}.role_dir",
+  systemd: "agents.{agent_id}.systemd.gateway_unit",
+  live_process: "processes.{agent_id}",
+  bloodbank: "agents.{agent_id}.bloodbank.gateway_scope",
+  release_provenance: "agents.{agent_id}.hermes.bin"
+});
+var SOURCE_REGISTRY = "fleet-inventory";
+var SOURCE_PROVENANCE = "fleet-provenance";
+var SOURCE_AUDIT = "recipe-audit";
+var SOURCE_DECLARED_GAP = "declared-gap";
+var CLI_ENTRY_ENV = "PJ_FLEET_CLI_ENTRY";
+var AUDIT_CHILD_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_RUNTIME_DIR",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "HERMES_FLEET_HOME",
+  "HERMES_AGENTS_REGISTRY",
+  "HERMES_FLEET_REGISTRY_FILE",
+  "HERMES_FLEET_ENV",
+  "HERMES_TEMPLATE_CONFIG",
+  "HERMES_TEMPLATE_RUNTIME_SCAFFOLD",
+  "RUNTIME_SCAFFOLD_DIR",
+  "PJ_PROJECT_REGISTRY",
+  "NO_COLOR"
+];
+function isRecord7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function nonEmptyString3(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+function expandHome4(path, home) {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return join34(home, path.slice(2));
+  return path;
+}
+function shownPath3(path) {
+  return bounded2(redactHome(path));
+}
+function statusFindingId(scope, agentId, domain, ruleId, field3, source) {
+  const key = [scope, agentId ?? "", domain, ruleId ?? "", field3, source].join("\0");
+  return createHash10("sha256").update(key, "utf8").digest("hex").slice(0, 12);
+}
+function retrievalFor(agentId, domain, live) {
+  const parts = ["pjangler fleet status"];
+  if (agentId) parts.push(`--agent ${agentId}`);
+  if (domain) parts.push(`--domain ${domain}`);
+  if (live) parts.push("--live");
+  parts.push("--json");
+  return bounded2(parts.join(" "));
+}
+function boundedDetails(details) {
+  const all = (details ?? []).filter((item) => typeof item === "string");
+  const kept = all.slice(0, FLEET_STATUS_MAX_DETAILS).map((item) => bounded2(redactHome(item)));
+  if (all.length > FLEET_STATUS_MAX_DETAILS) {
+    kept[kept.length - 1] = bounded2(`... ${all.length - FLEET_STATUS_MAX_DETAILS} of ${all.length} detail line(s) dropped`);
+  }
+  return kept;
+}
+function rollUp(observations) {
+  const decisive = observations.some((observation3) => observation3.state !== "unsupported") ? observations.filter((observation3) => observation3.state !== "unsupported") : observations;
+  for (const state of FLEET_STATUS_STATE_PRECEDENCE) {
+    if (decisive.some((observation3) => observation3.state === state)) return state;
+  }
+  return "unobserved";
+}
+function ruleState(status) {
+  switch (status) {
+    case "pass":
+      return "pass";
+    case "fail":
+      return "fail";
+    case "warn":
+      return "warn";
+    case "skip":
+      return "skip";
+    // A rule that reports something this build does not know about is a
+    // collection error, not a pass: the audit contract changed under us.
+    default:
+      return "error";
+  }
+}
+function provenanceState(status) {
+  switch (status) {
+    case "match":
+      return "pass";
+    case "mismatch":
+      return "fail";
+    case "dirty":
+      return "fail";
+    case "missing":
+      return "warn";
+    case "unsupported":
+      return "unsupported";
+    case "unobserved":
+      return "unobserved";
+  }
+}
+function resolveStatusScope(options, registeredIds, totalRegisteredAgents) {
+  const live = options.live === true;
+  let domains = [...FLEET_STATUS_DOMAINS];
+  let selectedDomain = null;
+  const wantedDomain = options.domain?.trim();
+  if (wantedDomain !== void 0 && wantedDomain !== "") {
+    if (!FLEET_STATUS_DOMAINS.includes(wantedDomain)) {
+      throw new FleetError(
+        "INVALID_INPUT",
+        `--domain must be one of ${FLEET_STATUS_DOMAINS.join(", ")}`,
+        false,
+        { domain: bounded2(wantedDomain, 128) }
+      );
+    }
+    selectedDomain = wantedDomain;
+    domains = [selectedDomain];
+  }
+  let agentIds = [...registeredIds];
+  let kind = "fleet";
+  let agentId = null;
+  const wantedAgent = options.agentId?.trim();
+  if (wantedAgent !== void 0 && wantedAgent !== "") {
+    if (!registeredIds.includes(wantedAgent)) {
+      throw new FleetError("NOT_FOUND", "No agent with that id is registered", false, { agent_id: bounded2(wantedAgent, 128) });
+    }
+    agentIds = [wantedAgent];
+    kind = "agent";
+    agentId = bounded2(wantedAgent, 128);
+  }
+  const parts = [];
+  parts.push(agentId ? `scoped to agent ${agentId}` : "whole registered fleet");
+  parts.push(selectedDomain ? `domain ${selectedDomain} only` : "all nine domains");
+  parts.push(live ? "live host observation authorized" : "no live observation (--live not given)");
+  return {
+    scope: {
+      kind,
+      agent_id: agentId,
+      domain: selectedDomain,
+      live,
+      label: bounded2(parts.join(" \xB7 ")),
+      total_registered_agents: totalRegisteredAgents,
+      selected_agents: agentIds.length,
+      selected_domains: domains
+    },
+    agentIds,
+    domains
+  };
+}
+function addFinding3(ctx, finding2) {
+  if (ctx.findings.length >= FLEET_STATUS_MAX_FINDINGS) {
+    ctx.droppedFindings += 1;
+    return;
+  }
+  ctx.findings.push({ ...finding2, detail: bounded2(redactHome(finding2.detail)) });
+}
+function observation2(ctx, input) {
+  const scope = input.agentId === null ? "fleet" : "agent";
+  return {
+    domain: input.domain,
+    agent_id: input.agentId,
+    state: input.state,
+    rule_id: input.ruleId ?? null,
+    owner: input.owner !== void 0 ? input.owner : ctx.authority.ownerOf(input.field),
+    rule_scope: input.ruleScope ?? null,
+    field: bounded2(input.field),
+    summary: bounded2(redactHome(input.summary)),
+    details: boundedDetails(input.details),
+    finding_id: statusFindingId(scope, input.agentId, input.domain, input.ruleId ?? null, input.field, input.source),
+    source: input.source,
+    retrieval: retrievalFor(input.agentId, input.domain, ctx.live)
+  };
+}
+function observeFromInventory(ctx, row, domains) {
+  const agentId = row.agent_id.value ?? "";
+  const out = [];
+  if (domains.has("registry")) {
+    const field3 = "agents.{agent_id}";
+    const details = [];
+    let state = "pass";
+    let summary = "the registry row is well formed and correlated to a project record";
+    if (row.malformed) {
+      state = "fail";
+      summary = "the registry row is malformed; it was salvaged rather than read";
+    } else if (row.conflicts.length > 0) {
+      state = "fail";
+      summary = `this row participates in ${row.conflicts.length} identity conflict group(s)`;
+      details.push(...row.conflicts);
+    } else if (row.correlation.state !== "resolved") {
+      state = "warn";
+      summary = "the row is not correlated to a project-registry record";
+      details.push(`correlation is ${row.correlation.state}`);
+    }
+    if (row.findings.length) details.push(`row findings: ${row.findings.join(", ")}`);
+    out.push(observation2(ctx, { domain: "registry", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+  }
+  if (domains.has("project_binding")) {
+    const field3 = "agents.{agent_id}.plane.identifier";
+    const details = [];
+    let state = "pass";
+    let summary = "the row carries a board binding the repository manifest agrees with";
+    if (row.board.value === null) {
+      state = "warn";
+      summary = "the row stores no board binding";
+    } else if (row.manifest.agrees === false) {
+      state = "warn";
+      summary = ".project.json contradicts the registries; it is evidence, never a tiebreaker";
+      details.push(...row.manifest.notes);
+    } else if (row.project_id.state !== "resolved") {
+      state = "warn";
+      summary = `the row's project identity is ${row.project_id.state}`;
+    }
+    if (row.board.value) {
+      details.push(`workspace=${row.board.value.workspace ?? "-"} board=${row.board.value.project_id ?? "-"} identifier=${row.board.value.identifier ?? "-"}`);
+    }
+    out.push(observation2(ctx, { domain: "project_binding", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+  }
+  if (domains.has("profile")) {
+    const field3 = "agents.{agent_id}.profile_name";
+    const view = row.paths.profile_path;
+    const details = [];
+    let state = "pass";
+    let summary = `profile ${row.profile_name.value ?? "-"} resolves to a real directory`;
+    if (row.profile_name.value === null) {
+      state = "warn";
+      summary = "the row names no profile";
+    } else if (view?.classification === "symlink") {
+      state = "fail";
+      summary = `the profile directory is a symlink, and the contract declares service_model.profile_layout.symlink_allowed: false`;
+      details.push(`-> ${view.link_target ?? "an unreadable target"}`);
+    } else if (row.profile_path.state !== "resolved") {
+      state = "warn";
+      summary = `the profile directory is ${view?.classification ?? "undeclared"}`;
+    }
+    if (view?.declared) details.push(view.declared);
+    out.push(observation2(ctx, { domain: "profile", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+  }
+  if (domains.has("runtime")) {
+    const field3 = "agents.{agent_id}.role_dir";
+    const view = row.paths.runtime_path;
+    const details = [];
+    let state = "pass";
+    let summary = "the role-local runtime directory is present and is a real directory";
+    if (row.role_dir.value === null) {
+      state = "warn";
+      summary = "the row declares no role_dir, so no runtime directory can be derived";
+    } else if (row.runtime_path.state !== "resolved") {
+      state = "warn";
+      summary = `the expected runtime directory is ${view?.classification ?? "undeclared"}`;
+    }
+    if (view?.declared) details.push(view.declared);
+    out.push(observation2(ctx, { domain: "runtime", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+  }
+  if (domains.has("bloodbank")) {
+    const field3 = "agents.{agent_id}.bloodbank.gateway_scope";
+    const details = [
+      `gateway_scope=${row.bloodbank_scope.value ?? "-"}`,
+      `target_agent_id=${row.bloodbank_target.value ?? "-"}`,
+      `${row.activation_field.value ?? "activation"}=${row.activation.value === true ? "true" : row.activation.value === false ? "false" : "unresolved"}`
+    ];
+    let state = "pass";
+    let summary = "the row records a fleet-scoped Bloodbank routing target";
+    if (row.bloodbank_scope.value === null || row.bloodbank_target.value === null) {
+      state = "warn";
+      summary = "the row records an incomplete Bloodbank routing record";
+    } else if (row.activation.value === null) {
+      state = "warn";
+      summary = "the strict activation flag is absent or not a boolean; the contract's declared default is deny";
+    }
+    out.push(observation2(ctx, { domain: "bloodbank", agentId, state, field: field3, summary, details, source: SOURCE_REGISTRY }));
+    out.push(observation2(ctx, {
+      domain: "bloodbank",
+      agentId,
+      state: "unsupported",
+      field: "gateways.bloodbank.command_subject",
+      summary: "no Bloodbank liveness observer exists in this release; routing readiness is story 1.10",
+      details: ["the routing RECORD above is observed; whether the shared gateway can dispatch to it is not"],
+      source: SOURCE_DECLARED_GAP
+    }));
+  }
+  if (domains.has("systemd")) {
+    out.push(observation2(ctx, {
+      domain: "systemd",
+      agentId,
+      state: "unsupported",
+      field: "agents.{agent_id}.systemd.gateway_unit",
+      summary: "no systemd observer exists in this release; unit names are expectations, never observations",
+      details: [
+        ...(row.expected_units.value ?? []).map((unit) => `expected ${unit}`),
+        "canonical systemd topology and service health is story 1.8"
+      ],
+      source: SOURCE_DECLARED_GAP
+    }));
+  }
+  if (domains.has("live_process")) {
+    out.push(observation2(ctx, {
+      domain: "live_process",
+      agentId,
+      state: "unsupported",
+      field: "processes.{agent_id}",
+      summary: "no live-process observer exists in this release",
+      details: ["there is no ps, pgrep, or /proc read anywhere in this build; process attribution is story 1.9"],
+      source: SOURCE_DECLARED_GAP
+    }));
+  }
+  return out;
+}
+function observeFromProvenance(ctx, facts, agentId, domains) {
+  const out = [];
+  const mine = facts.filter((fact) => fact.agent_id === agentId);
+  if (domains.has("template_scaffold")) {
+    const scaffold = mine.filter((fact) => fact.id.startsWith("scaffold."));
+    for (const fact of scaffold) {
+      out.push(observation2(ctx, {
+        domain: "template_scaffold",
+        agentId,
+        state: provenanceState(fact.status),
+        field: fact.field,
+        owner: fact.owner,
+        ruleId: fact.id,
+        summary: fact.detail,
+        details: [
+          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
+          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
+        ],
+        source: SOURCE_PROVENANCE
+      }));
+    }
+    if (scaffold.length === 0) {
+      out.push(observation2(ctx, {
+        domain: "template_scaffold",
+        agentId,
+        state: "unobserved",
+        field: DOMAIN_FIELD.template_scaffold,
+        summary: "the provenance core reported no scaffold fact for this agent",
+        source: SOURCE_PROVENANCE
+      }));
+    }
+  }
+  if (domains.has("release_provenance")) {
+    const release = mine.filter((fact) => fact.id.startsWith("hermes.") || fact.id.startsWith("profile."));
+    for (const fact of release) {
+      out.push(observation2(ctx, {
+        domain: "release_provenance",
+        agentId,
+        state: provenanceState(fact.status),
+        field: fact.field,
+        owner: fact.owner,
+        ruleId: fact.id,
+        summary: fact.detail,
+        details: [
+          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
+          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
+        ],
+        source: SOURCE_PROVENANCE
+      }));
+    }
+    if (release.length === 0) {
+      out.push(observation2(ctx, {
+        domain: "release_provenance",
+        agentId,
+        state: "unobserved",
+        field: "agents.{agent_id}.hermes.bin",
+        summary: "the provenance core reported no release fact for this agent",
+        source: SOURCE_PROVENANCE
+      }));
+    }
+  }
+  return out;
+}
+function resolveAuditCli(env2 = process.env) {
+  const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
+  const entry = override ?? join34(resolvePjanglerRoot(), "dist", "index.js");
+  if (!isAbsolute9(entry)) return null;
+  return existsSync26(entry) ? entry : null;
+}
+function auditChildEnv(base = process.env) {
+  const env2 = {};
+  for (const key of AUDIT_CHILD_ENV_KEYS) {
+    const value = base[key];
+    if (typeof value === "string") env2[key] = value;
+  }
+  env2.GIT_TERMINAL_PROMPT = "0";
+  env2.GIT_PAGER = "cat";
+  env2.PAGER = "cat";
+  env2.NO_COLOR = "1";
+  return env2;
+}
+async function auditRepository(ctx, entry, repoPath, registryPath2, env2) {
+  const args = ["audit", repoPath, "--json"];
+  if (registryPath2) args.push("--registry", registryPath2);
+  const result2 = await captureSelf(ctx, entry, args, void 0, env2);
+  if (result2.outcome === "timeout") return { rules: null, outcome: "timeout", reason: "timeout" };
+  if (result2.outcome === "cancelled") {
+    throw new FleetError("CANCELLED", "Fleet command was cancelled before it completed");
+  }
+  const text2 = result2.value ?? "";
+  if (text2 === "") {
+    return { rules: null, outcome: "failed", reason: result2.outcome === "ok" ? "audit-empty-output" : "audit-no-output" };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch {
+    return { rules: null, outcome: "failed", reason: "audit-unparseable-json" };
+  }
+  if (!isRecord7(parsed) || !Array.isArray(parsed.rules)) {
+    return { rules: null, outcome: "failed", reason: "audit-report-shape-unknown" };
+  }
+  return { rules: parsed.rules.filter(isRecord7), outcome: "ok", reason: null };
+}
+async function collectFleetStatus(options) {
+  const runContext = options.runContext;
+  const env2 = options.env ?? process.env;
+  const home = options.home ?? homedir14();
+  const live = options.live === true;
+  throwIfCancelled(runContext);
+  const contractPath = resolveFleetContractPath(options.contract);
+  const loaded = loadFleetContract(contractPath);
+  const validation = validateFleetContract(loaded.document);
+  const firstDiagnostic = validation.diagnostics[0];
+  if (!validation.contract || firstDiagnostic) {
+    throw new FleetError(
+      firstDiagnostic?.code ?? "INVALID_INPUT",
+      `fleet contract is not usable: ${firstDiagnostic ? `${firstDiagnostic.path}: ${firstDiagnostic.message}` : "validation produced no contract"}`,
+      false,
+      { contract_path: shownPath3(contractPath) }
+    );
+  }
+  const contract = validation.contract;
+  const inventory = collectFleetInventory({ ...options, agentId: void 0, runContext });
+  const rowsById = /* @__PURE__ */ new Map();
+  for (const row of inventory.rows) {
+    const id = row.agent_id.value;
+    if (id !== null && !rowsById.has(id)) rowsById.set(id, row);
+  }
+  const registeredIds = [...rowsById.keys()].sort();
+  const { scope, agentIds, domains } = resolveStatusScope(options, registeredIds, inventory.totals.registered_agents);
+  const domainSet = new Set(domains);
+  const selectedAgents = new Set(agentIds);
+  const ctx = {
+    authority: buildAuthorityIndex(contract),
+    live,
+    observations: [],
+    findings: [],
+    probes: [],
+    droppedFindings: 0,
+    unmappedRules: /* @__PURE__ */ new Set(),
+    unexpectedDomainRules: /* @__PURE__ */ new Set()
+  };
+  const stores = resolveInventoryStores(options);
+  const agentRaw = readAgentRegistryRaw(stores.agents.inspectedPath);
+  const repoByAgent = /* @__PURE__ */ new Map();
+  for (const entry of agentRaw.entries) {
+    if (!selectedAgents.has(entry.key)) continue;
+    const raw = isRecord7(entry.value) ? entry.value : {};
+    const declared = nonEmptyString3(raw.project_path);
+    if (declared !== null) repoByAgent.set(entry.key, resolve20(expandHome4(declared, home)));
+  }
+  let provenanceFacts = [];
+  const needsProvenance = domains.some((domain) => PROVENANCE_FED_DOMAINS.has(domain));
+  if (needsProvenance) {
+    throwIfCancelled(runContext);
+    const provenance = await collectFleetProvenance({
+      ...options,
+      agentId: void 0,
+      // The same rule as the domain gate, one level down: under `--agent` no
+      // checkout belonging to another agent may be probed.
+      probeAgentIds: scope.kind === "agent" ? agentIds : void 0,
+      runContext
+    });
+    provenanceFacts = provenance.facts;
+    ctx.probes.push(...provenance.probes);
+  }
+  const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
+  const wantsAudit = live && auditFedSelected.length > 0;
+  const auditByAgent = /* @__PURE__ */ new Map();
+  let auditsAttempted = 0;
+  let auditsObserved = 0;
+  let auditEntry = null;
+  if (wantsAudit) {
+    auditEntry = resolveAuditCli(env2);
+    if (auditEntry === null) {
+      addFinding3(ctx, {
+        code: "audit-cli-unavailable",
+        field: SOURCE_AUDIT,
+        agent_id: null,
+        source: null,
+        severity: "error",
+        detail: `no built CLI to audit with (${CLI_ENTRY_ENV} names a file that is not there, or dist/index.js is not built); every audit-fed domain is unobserved rather than assumed`
+      });
+    } else {
+      const targets = [...new Set(repoByAgent.values())].sort();
+      auditsAttempted = targets.length;
+      remainingMs(runContext);
+      const childCli = auditEntry;
+      const childEnv = {
+        ...auditChildEnv(env2),
+        HERMES_AGENTS_REGISTRY: stores.agents.inspectedPath,
+        HERMES_FLEET_REGISTRY_FILE: stores.agents.inspectedPath
+      };
+      const results = await mapBounded(targets, FLEET_STATUS_AUDIT_CONCURRENCY, async (repoPath) => auditRepository(runContext, childCli, repoPath, options.projectRegistry, childEnv));
+      const byRepo = /* @__PURE__ */ new Map();
+      targets.forEach((repoPath, index) => {
+        const result2 = results[index];
+        byRepo.set(repoPath, result2);
+        if (result2.outcome === "ok") auditsObserved += 1;
+        ctx.probes.push({
+          id: `audit:${shownPath3(repoPath)}`,
+          kind: "audit",
+          target: shownPath3(repoPath),
+          outcome: result2.outcome === "ok" ? "ok" : result2.outcome === "timeout" ? "timeout" : "failed",
+          reason: result2.reason
+        });
+        if (result2.outcome !== "ok") {
+          addFinding3(ctx, {
+            code: `audit-${result2.outcome}`,
+            field: SOURCE_AUDIT,
+            agent_id: null,
+            source: null,
+            severity: "error",
+            detail: `the recipe audit of ${shownPath3(repoPath)} did not produce a report (${result2.reason ?? result2.outcome}); its audit-fed domains are ${result2.outcome === "timeout" ? "unobserved" : "error"} rather than assumed`
+          });
+        }
+      });
+      for (const [agentId, repoPath] of repoByAgent) {
+        const result2 = byRepo.get(repoPath);
+        if (result2) auditByAgent.set(agentId, result2);
+      }
+    }
+  }
+  const hostFindings = /* @__PURE__ */ new Map();
+  const agentRecords = [];
+  let totalObservations = 0;
+  let emittedObservations = 0;
+  const truncated = [];
+  const emitted = agentIds.slice(0, FLEET_STATUS_MAX_AGENTS);
+  if (agentIds.length > FLEET_STATUS_MAX_AGENTS) {
+    truncated.push(
+      `agents: ${agentIds.length - FLEET_STATUS_MAX_AGENTS} of ${agentIds.length} agent records dropped; retrieve one with \`pjangler fleet status --agent <id> --json\``
+    );
+  }
+  for (const agentId of emitted) {
+    throwIfCancelled(runContext);
+    const row = rowsById.get(agentId);
+    const own = [];
+    own.push(...observeFromInventory(ctx, row, domainSet));
+    if (needsProvenance) own.push(...observeFromProvenance(ctx, provenanceFacts, agentId, domainSet));
+    const audit = auditByAgent.get(agentId);
+    if (!live) {
+      for (const domain of auditFedSelected) {
+        own.push(observation2(ctx, {
+          domain,
+          agentId,
+          state: "unobserved",
+          field: DOMAIN_FIELD[domain],
+          summary: "the recipe-owned audit rules were not run; pass --live to authorize bounded read-only host observation",
+          details: ["a default run makes no network call, and the bmad version rule's `npm view` is a real one"],
+          source: SOURCE_AUDIT
+        }));
+      }
+    } else if (auditEntry === null || audit === void 0 || audit.outcome !== "ok") {
+      const failed = audit !== void 0 && audit.outcome === "failed";
+      const state = failed ? "error" : "unobserved";
+      const reason = auditEntry === null ? "audit-cli-unavailable" : audit === void 0 ? "no-project-path-recorded" : audit.reason ?? audit.outcome;
+      for (const domain of auditFedSelected) {
+        own.push(observation2(ctx, {
+          domain,
+          agentId,
+          state,
+          field: DOMAIN_FIELD[domain],
+          summary: `the recipe audit for this agent's repository could not be read (${reason})`,
+          details: ["every other agent's record is unaffected; a collection error is never a pass and never a dropped agent"],
+          source: SOURCE_AUDIT
+        }));
+      }
+    } else {
+      for (const rule of audit.rules ?? []) {
+        const ruleId = nonEmptyString3(rule.id);
+        if (ruleId === null || EXCLUDED_RULES.has(ruleId)) continue;
+        let domain = RULE_DOMAIN[ruleId];
+        if (domain === void 0) {
+          domain = UNMAPPED_RULE_DOMAIN;
+          if (!ctx.unmappedRules.has(ruleId)) {
+            ctx.unmappedRules.add(ruleId);
+            addFinding3(ctx, {
+              code: "audit-rule-unmapped",
+              field: SOURCE_AUDIT,
+              agent_id: null,
+              source: null,
+              severity: "warn",
+              detail: `the recipe rule ${ruleId} has no declared status domain; it is reported under ${UNMAPPED_RULE_DOMAIN} so it cannot disappear, and RULE_DOMAIN in src/fleet/status.ts is where it should be classified`
+            });
+          }
+        }
+        const scopeOfRule = rule.scope === "host" ? "host" : "project";
+        if (scopeOfRule === "project" && !AUDIT_PER_AGENT_DOMAINS.has(domain) && !ctx.unexpectedDomainRules.has(ruleId)) {
+          ctx.unexpectedDomainRules.add(ruleId);
+          addFinding3(ctx, {
+            code: "audit-domain-unexpected",
+            field: SOURCE_AUDIT,
+            agent_id: null,
+            source: null,
+            severity: "warn",
+            detail: `the project-scoped rule ${ruleId} maps to domain ${domain}, which AUDIT_PER_AGENT_DOMAINS in src/fleet/status.ts does not list; a --domain ${domain} run spawns no audit child and would not report it`
+          });
+        }
+        if (!domainSet.has(domain)) continue;
+        const owner = recipeRegistry.ownerOf(ruleId)?.recipe.metadata.id ?? null;
+        const state = ruleState(rule.status);
+        if (scopeOfRule === "host") {
+          if (!hostFindings.has(ruleId)) {
+            hostFindings.set(ruleId, {
+              rule_id: ruleId,
+              owner,
+              domain,
+              state,
+              summary: bounded2(redactHome(nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId)),
+              details: boundedDetails(Array.isArray(rule.details) ? rule.details : []),
+              finding_id: statusFindingId("host", null, domain, ruleId, DOMAIN_FIELD[domain], SOURCE_AUDIT),
+              retrieval: retrievalFor(null, domain, true)
+            });
+          }
+          continue;
+        }
+        own.push(observation2(ctx, {
+          domain,
+          agentId,
+          state,
+          field: DOMAIN_FIELD[domain],
+          owner,
+          ruleId,
+          ruleScope: "project",
+          summary: nonEmptyString3(rule.summary) ?? nonEmptyString3(rule.title) ?? ruleId,
+          details: Array.isArray(rule.details) ? rule.details : [],
+          source: SOURCE_AUDIT
+        }));
+      }
+    }
+    own.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : (a.rule_id ?? "") < (b.rule_id ?? "") ? -1 : (a.rule_id ?? "") > (b.rule_id ?? "") ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0);
+    totalObservations += own.length;
+    let kept = own;
+    let clipped = false;
+    if (own.length > FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT) {
+      clipped = true;
+      kept = own.slice(0, FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT);
+      truncated.push(`agents.${agentId}.observations: ${own.length - FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT} of ${own.length} observations dropped`);
+    }
+    emittedObservations += kept.length;
+    ctx.observations.push(...kept);
+    const byDomain = {};
+    for (const domain of domains) byDomain[domain] = rollUp(own.filter((item) => item.domain === domain));
+    agentRecords.push({
+      agent_id: agentId,
+      observations: kept,
+      domains: byDomain,
+      state: rollUp(own),
+      healthy: !own.some((item) => item.state === "fail" || item.state === "error"),
+      complete: !own.some((item) => item.state === "unobserved" || item.state === "error") && !clipped,
+      truncated: clipped,
+      retrieval: retrievalFor(agentId, domains.length === 1 ? domains[0] : null, live)
+    });
+  }
+  const fleetObservations = [];
+  if (needsProvenance) {
+    for (const fact of provenanceFacts) {
+      if (fact.scope !== "fleet") continue;
+      const domain = fact.id.startsWith("template.") ? "template_scaffold" : "release_provenance";
+      if (!domainSet.has(domain)) continue;
+      fleetObservations.push(observation2(ctx, {
+        domain,
+        agentId: null,
+        state: provenanceState(fact.status),
+        field: fact.field,
+        owner: fact.owner,
+        ruleId: fact.id,
+        summary: fact.detail,
+        details: [
+          `desired ${fact.desired.value ?? "-"} (${fact.desired.source ?? "no source"}/${fact.desired.state})`,
+          `observed ${fact.observed.value ?? "-"} (${fact.observed.source ?? "no source"}/${fact.observed.state})`
+        ],
+        source: SOURCE_PROVENANCE
+      }));
+    }
+    fleetObservations.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.summary < b.summary ? -1 : a.summary > b.summary ? 1 : 0);
+    ctx.observations.push(...fleetObservations);
+    totalObservations += fleetObservations.length;
+    emittedObservations += fleetObservations.length;
+  }
+  const host = [...hostFindings.values()].sort((a, b) => a.rule_id < b.rule_id ? -1 : a.rule_id > b.rule_id ? 1 : 0);
+  const domainRollups = domains.map((domain) => {
+    const perDomain = ctx.observations.filter((item) => item.domain === domain);
+    const counts = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
+    for (const item of perDomain) counts[item.state] += 1;
+    return {
+      domain,
+      state: rollUp(perDomain),
+      counts,
+      agents: new Set(perDomain.map((item) => item.agent_id).filter((id) => id !== null)).size,
+      observations: fleetObservations.filter((item) => item.domain === domain)
+    };
+  });
+  if (ctx.droppedFindings > 0) {
+    truncated.push(`findings: ${ctx.droppedFindings} of ${ctx.findings.length + ctx.droppedFindings} findings dropped`);
+  }
+  const findings = [...ctx.findings].sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : a.code < b.code ? -1 : a.code > b.code ? 1 : (a.agent_id ?? "") < (b.agent_id ?? "") ? -1 : (a.agent_id ?? "") > (b.agent_id ?? "") ? 1 : a.detail < b.detail ? -1 : a.detail > b.detail ? 1 : 0);
+  const probes = [...ctx.probes].sort((a, b) => a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.target < b.target ? -1 : a.target > b.target ? 1 : 0);
+  const byState = Object.fromEntries(FLEET_STATUS_STATES.map((state) => [state, 0]));
+  for (const item of ctx.observations) byState[item.state] += 1;
+  const collectionErrors = probes.filter((record) => record.outcome !== "ok" && record.kind === "audit").length + (wantsAudit && auditEntry === null ? 1 : 0);
+  const totals = {
+    agents: inventory.totals.registered_agents,
+    emitted_agents: agentRecords.length,
+    observations: totalObservations,
+    emitted_observations: emittedObservations,
+    host_findings: host.length,
+    findings: findings.length + ctx.droppedFindings,
+    audits_attempted: auditsAttempted,
+    audits_observed: auditsObserved,
+    by_state: byState
+  };
+  const health = {
+    healthy: byState.fail === 0 && byState.error === 0,
+    complete: byState.unobserved === 0 && byState.error === 0 && collectionErrors === 0 && truncated.length === 0,
+    fleet_complete: false,
+    failed: byState.fail,
+    warned: byState.warn,
+    skipped: byState.skip,
+    unsupported: byState.unsupported,
+    unobserved: byState.unobserved,
+    errors: byState.error,
+    collection_errors: collectionErrors,
+    truncated: truncated.length > 0
+  };
+  health.fleet_complete = health.complete && scope.kind === "fleet" && scope.domain === null && scope.live && totals.emitted_agents === totals.agents;
+  return {
+    contract_path: shownPath3(contractPath),
+    contract_version: contract.contract_version,
+    scope,
+    totals,
+    health,
+    agents: agentRecords,
+    domains: domainRollups,
+    host,
+    findings,
+    probes,
+    truncated
+  };
+}
+
 // src/fleet/mcp.ts
 var INVENTORY_COMMAND = "fleet.inventory";
 var PROVENANCE_COMMAND = "fleet.provenance";
+var STATUS_COMMAND = "fleet.status";
 var FLEET_TOOL_INPUT = {
   agent: z.string().optional().describe("Report only this agent; totals and the verdict still describe the whole fleet."),
   projectRegistry: z.string().optional().describe("Inspect this project registry instead of the configured one. Never rewrites the configured path."),
@@ -19274,12 +20134,15 @@ async function runFleetTool(command, args, signal, collect, succeed, failureActi
     requireValue(args.projectRegistry, "projectRegistry");
     requireValue(args.agentRegistry, "agentRegistry");
     requireValue(args.contract, "contract");
+    requireValue(args.domain, "domain");
     const runContext = createRunContext({ signal, deadlineMs: args.deadlineMs });
     const value = await collect({
       agentId: args.agent,
       projectRegistry: args.projectRegistry,
       agentRegistry: args.agentRegistry,
       contract: args.contract,
+      domain: args.domain,
+      live: args.live,
       runContext
     });
     return succeed(value);
@@ -19293,6 +20156,9 @@ function inventoryEnvelope(inventory) {
 }
 function provenanceEnvelope(provenance) {
   return fleetSuccessEnvelope(PROVENANCE_COMMAND, provenance, provenance.health.healthy && provenance.health.complete ? ["Consume data.facts as the fleet's proven provenance; every fact names the source of both sides"] : [provenance.health.mismatched ? "Repoint each mismatched agent at the configured pin, or move the pin -- data.facts names both sides and the authority that owns the field" : provenance.health.missing ? "Record the missing values on the owning side; an absent pin is never a match" : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it"]);
+}
+function statusEnvelope(status) {
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.healthy && status.health.complete ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its source, and the command that returns it alone"] : [status.health.errors || status.health.collection_errors ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read" : status.health.failed ? "Repair the failing observations in data.agents; data.host is separate on purpose -- no work in a repository can change a condition about this machine" : status.scope.live ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)" : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 function budgetAwareActions(what) {
   return (error) => [
@@ -19334,6 +20200,34 @@ function registerFleetMcpTools(server2, asText2) {
         async (input) => collectFleetProvenance(input),
         provenanceEnvelope,
         budgetAwareActions("provenance")
+      );
+      return { isError: !envelope.ok, ...asText2(envelope) };
+    }
+  );
+  server2.registerTool(
+    "pjangler_fleet_status",
+    {
+      title: "Report registry-wide Hermes fleet status",
+      description: `Traverses the registry once and reports every registered agent across all nine observation domains -- registry, project_binding, template_scaffold, profile, runtime, systemd, live_process, bloodbank, release_provenance -- each either observed or carrying an explicit unobserved/unsupported reason. Host-scoped findings are reported once in data.host and never folded into an agent. Strictly read-only; \`live\` authorizes bounded read-only host and network observation (the recipe-owned audit rules) and nothing else. Returns the fleet JSON v1 envelope; an unhealthy or incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.`,
+      inputSchema: z.strictObject({
+        ...FLEET_TOOL_INPUT,
+        // A plain string, matching the CLI, so an unknown value produces the
+        // SAME `INVALID_INPUT` envelope on both adapters rather than a zod
+        // -32602 transport error with no envelope at all on one of them. DW-60
+        // records that divergence for `deadlineMs`; there is no reason to add a
+        // second instance of it here.
+        domain: z.string().optional().describe(`Report only this domain: ${FLEET_STATUS_DOMAINS.join(", ")}.`),
+        live: z.boolean().optional().describe("Authorize bounded, read-only host and network observation: run the recipe-owned audit rules per repository. Never mutation, process control, service changes, board changes, or Bloodbank activation.")
+      })
+    },
+    async (args, extra) => {
+      const envelope = await runFleetTool(
+        STATUS_COMMAND,
+        args,
+        extra.signal,
+        async (input) => collectFleetStatus({ ...input, runContext: input.runContext }),
+        statusEnvelope,
+        budgetAwareActions("status")
       );
       return { isError: !envelope.ok, ...asText2(envelope) };
     }
@@ -19390,8 +20284,8 @@ function validateExternalEffectConsent(input, options) {
   return selected;
 }
 function resolveTargetDir(targetDir) {
-  const dir = resolve20(targetDir ?? process.cwd());
-  if (!existsSync26(dir)) {
+  const dir = resolve21(targetDir ?? process.cwd());
+  if (!existsSync27(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
   if (!statSync8(dir).isDirectory()) {
@@ -19402,7 +20296,7 @@ function resolveTargetDir(targetDir) {
 function resolvePjanglerRoot3() {
   let dir = dirname17(fileURLToPath9(import.meta.url));
   while (dir !== dirname17(dir)) {
-    if (existsSync26(join34(dir, "package.json")) && existsSync26(join34(dir, "templates", "commonproject", "copier.yml"))) {
+    if (existsSync27(join35(dir, "package.json")) && existsSync27(join35(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
     dir = dirname17(dir);
@@ -19499,7 +20393,7 @@ function projectPreflightFailure(plan, errors, audit) {
   };
 }
 function preflightExistingHermesScaffold(targetDir) {
-  if (!existsSync26(join34(targetDir, "agents", "hermes"))) return void 0;
+  if (!existsSync27(join35(targetDir, "agents", "hermes"))) return void 0;
   const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
   if (!owner) return "Hermes lifecycle owner is unavailable";
   const finding2 = owner.check.audit(lifecycleContext(targetDir, true));
@@ -19758,12 +20652,12 @@ server.registerTool(
       );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
-      const explicitTargetDir = input.targetDir ? resolve20(input.targetDir) : void 0;
-      const parentDir = resolve20(input.parentDir ?? (explicitTargetDir ? dirname17(explicitTargetDir) : process.cwd()));
-      if (!existsSync26(parentDir) || !statSync8(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
+      const explicitTargetDir = input.targetDir ? resolve21(input.targetDir) : void 0;
+      const parentDir = resolve21(input.parentDir ?? (explicitTargetDir ? dirname17(explicitTargetDir) : process.cwd()));
+      if (!existsSync27(parentDir) || !statSync8(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
-        explicitTargetDir ?? join34(parentDir, projectSlug),
+        explicitTargetDir ?? join35(parentDir, projectSlug),
         "Bootstrap target"
       );
       const overwrite = input.overwrite ?? input.force ?? false;
@@ -19775,7 +20669,7 @@ server.registerTool(
       if (externalEffects.ticketBoard && ticketProvider === "plane" && !boardId) {
         throw new Error("boardId or planeProjectId is required when skipPlane=false for Plane; keep skipPlane=true for safe local bootstrap");
       }
-      if (!dryRun && existsSync26(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
+      if (!dryRun && existsSync27(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
       const plan = planProjectInit({
         name: input.projectName,
         description: input.projectDescription,
@@ -19910,7 +20804,7 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
-        scaffold: !(input.targetDir && existsSync26(join34(resolve20(input.targetDir), ".git")))
+        scaffold: !(input.targetDir && existsSync27(join35(resolve21(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());

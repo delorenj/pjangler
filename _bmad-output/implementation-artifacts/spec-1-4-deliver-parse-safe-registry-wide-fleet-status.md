@@ -2,7 +2,7 @@
 title: 'Story 1.4: Deliver Parse-Safe Registry-Wide Fleet Status'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-progress'
+status: 'done'
 baseline_revision: '564d40bf81205476735fb5a2ac91c8ed68e17256'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -11,7 +11,81 @@ context:
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md'
   - '{project-root}/contracts/fleet-contract.yaml'
 warnings: ['oversized', 'multiple-goals']
-deferred: []
+deferred:
+  - summary: >-
+      Three of the nine domains have no observer in this release and can only report a
+      declared gap.
+    evidence: |-
+      `systemd`, `live_process` and the Bloodbank LIVENESS half of `bloodbank` are
+      reported `unsupported` with a named reason and the story that owns them, because
+      this story's Never list forbids implementing any of the three. Three of the nine
+      domains therefore contribute a permanent `unsupported` to `totals.by_state` that no
+      run can clear. Recorded as DW-63.
+    location: >-
+      src/fleet/status.ts (observeFromInventory)
+    severity: medium
+  - summary: >-
+      Thirty-four JSON-emitting process.exit() sites in src/index.ts are still unflushed.
+    evidence: |-
+      Four of the file's 38 were converted -- the audit action's two write sites and two
+      exit sites -- because the status core parses that command's stdout. The other 34
+      carry the same defect: measured pre-fix, `project doctor --json` over a
+      1500-project registry produced 300 218 valid bytes to a file and 131 072 INVALID
+      bytes through `| cat`, exit 0. `src/utils/stdout.ts` is now the shared mechanism;
+      converting the rest is mechanical. Recorded as DW-64.
+    location: >-
+      src/index.ts
+    severity: medium
+  - summary: >-
+      collectFleetProvenance gained a collection-narrowing option that only the status
+      core passes.
+    evidence: |-
+      Provenance collects the fleet unscoped and filters for emission, so `agentId`
+      reduces what is REPORTED and nothing about what is PROBED -- which this story's
+      "filters constrain collection" boundary requires. An optional `probeAgentIds` was
+      added; `fleet provenance` never passes it, so 1.3's payload is byte-identical. The
+      debt is that the two commands now differ in whether a scope constrains collection.
+      Recorded as DW-65.
+    location: >-
+      src/fleet/provenance.ts (FleetProvenanceOptions.probeAgentIds)
+    severity: low
+  - summary: >-
+      The audit child receives an allowlisted environment, which is a list that can go
+      stale.
+    evidence: |-
+      "No literal credential in any child environment" is enforced by an allowlist of ~25
+      keys rather than a filter, so a live Plane key never exists in that process. The
+      trade is that a rule which later needs a new key sees it unset rather than failing
+      loudly, and env-based test injection is impossible (measured: a PJ_SHIM_MODE was
+      stripped before the shim could read it). Recorded as DW-66.
+    location: >-
+      src/fleet/status.ts (AUDIT_CHILD_ENV_KEYS)
+    severity: low
+  - summary: >-
+      `unsupported` steps aside in rollUp, which is a documented refinement of the
+      declared precedence.
+    evidence: |-
+      Applied literally, `unsupported > fail` rolls a `template_scaffold` domain carrying
+      one permanent "no template ref is recorded" beside eighteen stale assets up to
+      `unsupported` -- and contradicts this story's own AC that a project-scoped `warn`
+      rolls its domain up to `warn`. So an `unsupported` observation is filtered out when
+      the domain produced anything else. Correct and tested, but a divergence from the
+      one-line rule the spec states. Recorded as DW-67.
+    location: >-
+      src/fleet/status.ts (rollUp)
+    severity: low
+  - summary: >-
+      A domain rollup can read `unobserved` while a real failure sits underneath it.
+    evidence: |-
+      Without `--live` every audit-fed domain carries an explicit `unobserved` marker and
+      `unobserved` outranks `fail`, so `profile` reads `unobserved` for an agent whose
+      profile directory is a symlink even though the store read alone proves the failure.
+      Nothing is hidden -- the `fail` observation is emitted and `health.failed` counts it
+      -- but the single-word domain state under-reports what the run knows. Recorded as
+      DW-68.
+    location: >-
+      src/fleet/status.ts (collectFleetStatus)
+    severity: low
 ---
 
 <intent-contract>
@@ -289,3 +363,112 @@ enter `data`: the child's `auditedAt` is dropped at the boundary and `repo` is `
 - `npm run test:coverage && node scripts/coverage-ratchet.mjs` -- expected: floor not tripped.
 - `mise run fleet:status` -- expected: builds first, then reports.
 - `git status --porcelain` after every run, plus each probed repo's `.git/index` mtime -- expected: unchanged.
+
+## Auto Run Result
+
+Status: done
+Blocking condition: none
+
+### Summary of implemented change
+
+Story 1.4 adds `src/fleet/status.ts`, a read-only core that traverses the registry
+ONCE and emits one aggregate plus one stable per-agent record covering **all nine**
+observation domains -- each either observed or carrying an explicit
+`unobserved`/`unsupported` reason, so a domain can never disappear silently. It is
+exposed through two equal thin adapters, `pjangler fleet status` and the MCP tool
+`pjangler_fleet_status`.
+
+Host-scoped rule results are reported once, deduped by rule id, in `data.host`:
+never folded into an agent record, never a registry-wide claim, never a reason an
+agent is unhealthy. That is the PJAN-84 category error, and repeating it fleet-wide
+would have undone it 28 times over.
+
+The recipe-owned audit rules feed it as **bounded child processes**. `runAudit` is
+synchronous and shells out with `spawnSync` and no timeout, so in process a single
+hung `systemctl` makes the whole-run deadline and SIGINT unimplementable. As a
+child it is killable, isolated, concurrency-capped, and receives a narrow
+allowlisted environment carrying no credential. The cost is that the status core
+now parses `pjangler audit --json`, which is why the flush fix is part of this
+story rather than adjacent cleanup.
+
+`src/utils/stdout.ts` replaces "just do not call `process.exit()`" -- a property
+maintained by a comment -- with an awaited drain: `writeStdout` (awaits the write
+callback and `"drain"`, swallows only EPIPE) and `exitAfterFlush` (drains stdout
+AND stderr, then exits). The fleet writer awaits it, and the `audit` command adopts
+both, keeping its documented nonzero exit on a drifted repository while removing
+the truncation.
+
+### Files changed
+
+| file | change |
+| --- | --- |
+| `src/utils/stdout.ts` | NEW. `writeStdout` / `exitAfterFlush`: the flush guarantee as an awaited drain rather than the absence of a call |
+| `src/fleet/status.ts` | NEW. `RULE_DOMAIN`, `DOMAIN_FIELD`, `AUDIT_PER_AGENT_DOMAINS`, `PROVENANCE_FED_DOMAINS`, `AUDIT_CHILD_ENV_KEYS`, `resolveStatusScope`, `observeFromInventory`, `observeFromProvenance`, `resolveAuditCli`, `auditChildEnv`, `auditRepository`, `rollUp`, `collectFleetStatus` |
+| `src/fleet/types.ts` | the nine domains, seven states, one precedence, five caps, and the `FleetStatus*` shapes |
+| `src/fleet/runtime.ts` | `probe`'s body extracted into `runBoundedChild`; new `captureSelf` (spawns `process.execPath`, KEEPS stdout on a nonzero exit) and `FleetCaptureResult` |
+| `src/fleet/output.ts` | `"fleet.status"` in `FLEET_COMMANDS` and `FLEET_COMMAND_DATA_KEYS`; `formatFleetStatusReport` |
+| `src/fleet/cli.ts` | `fleet status` registered; `write()` is async and awaits `writeStdout`; `contract validate`'s action is async; `status` added to the positional word map |
+| `src/fleet/mcp.ts` | `runFleetTool`'s `collect` input widened to `FleetToolCollectInput`; `pjangler_fleet_status` registered with `domain`/`live` |
+| `src/fleet/provenance.ts` | optional `probeAgentIds`, so a `--agent` scope does not probe another agent's checkout (DW-65) |
+| `src/fleet/index.ts` | the status surface, `captureSelf`, and the new type/const names re-exported |
+| `src/index.ts` | the `audit` action is async and flushes: `writeStdout` at both write sites, `exitAfterFlush` at all four exits |
+| `tests/fleet-status-regressions.mjs` | NEW, 35 cases. A SYNTHETIC fleet, so 33 of them run with no live source present (DW-54) |
+| `tests/mcp-server-regressions.mjs` | `pjangler_fleet_status` schema parity, five CLI/MCP subprocess pairs, and a partial-collection pair |
+| `tests/mcp-catalog-regressions.mjs` | the new tool name |
+| `scripts/run-tests.mjs` | the suite listed in `SUITES` |
+| `mise.toml` | `[tasks."fleet:status"]` with `depends = ["build"]` |
+| `README.md` | `## Fleet status` -- flags, the nine domains, the seven states, what `--live` does and does not authorize, the two verdicts, the exit taxonomy; plus the MCP tool list |
+| `CHANGELOG.md` | the `feat` and `fix` entries this story owes |
+| `.coverage-floor.json` | ratcheted -- coverage rose on all four metrics |
+| `_bmad-output/implementation-artifacts/deferred-work.md` | DW-63 ... DW-68 |
+| `dist/*` | rebuilt |
+
+### Verification performed
+
+| check | outcome |
+| --- | --- |
+| `npm run typecheck` | clean |
+| `npm run build` | `dist/index.js` 1.1mb, `dist/mcp-server.js` 934kb regenerated |
+| `node dist/index.js fleet status` | exit 0; 28 agents, 734 observations, all nine domains, `healthy:false`, `complete:false` |
+| `node dist/index.js fleet status --live` | exit 0 in ~1.8s; 28 audit children, 1042 observations, 6 host findings deduped, per-domain states differentiated |
+| `--json` through a real pipe | 540 921 bytes, byte-identical to the file capture, parses -- 8x past the 64 KiB buffer |
+| determinism | two runs byte-identical, with and without `--live` |
+| `--agent pjangler-pm --json` | one agent, `total_registered_agents` 28, scoped label, 3 probes (2 fleet-wide + its own), zero children for any other agent |
+| `--agent nope` / `--domain bogus` | exit 3 `NOT_FOUND` / exit 2 `INVALID_INPUT` naming the nine, both before any spawn |
+| `--domain systemd --live` / `--domain registry --live` | zero audit children, zero probes, one domain emitted |
+| `--live --deadline-ms 1` | exit 7, `TIMEOUT`, `data: null` |
+| SIGINT behind a hanging injected entry | exit 8, `CANCELLED`, 4 recorded child pids, zero survivors |
+| one repo's child hangs | that agent's audit-fed domains `unobserved` (`reason: timeout`), other 27 unaffected, exit 0 |
+| one repo's child prints non-JSON | that agent's audit-fed domains `error`, every other agent byte-identical to the clean run, exit 0 |
+| `PJ_FLEET_CLI_ENTRY` at a missing file | exit 0, all audit-fed domains `unobserved` (`audit-cli-unavailable`), inventory/provenance domains still fully reported |
+| `audit --json` at 3 711 514 bytes | complete and parsing through a shell pipe AND a `spawn` capture; still exits 1 on a drifted repo |
+| CLI/MCP parity | `command`/`data`/`error` deep-equal for five scopes plus a partial collection; `isError === !ok`; schema one-for-one |
+| credential exclusion | neither key name nor sentinel value in the JSON, the human report, the findings, or the audit child's environment |
+| `fleet inventory --json` / `fleet provenance --json` vs the baseline `HEAD` build | `data` deep-equal -- stories 1.2 and 1.3 undisturbed |
+| `node tests/fleet-status-regressions.mjs` | 35 cases, all ok |
+| the same suite with both live registries pointed at nonexistent paths | 33 ok, 2 skipped -- DW-54's gap closed by construction |
+| `npm test` | 66 attempted, 64 passed, 2 failed -- `pjan-23` and `pjan-67-trusted-lifecycle`, the two pre-existing failures DW-6 records, unchanged |
+| `npm run test:coverage` + ratchet | lines/statements 59.09 -> **60.20**, functions 44.94 -> **46.14**, branches 73.19 -> **73.46**; floor raised, not tripped |
+| `mise run fleet:status` | builds first, then reports |
+| zero-write snapshot around every invocation | content+mtime of the scratch tree, the tracked contract and every probed `.git/index` unchanged on all 35 cases, including the failing and cancelled ones |
+
+### Residual risks
+
+- **`health.complete` can never be true on this build.** `systemd`, `live_process`
+  and Bloodbank liveness have no observer (DW-63), and on the live fleet 13 agents
+  declare a `hermes.repo` that does not exist, so `release_provenance` carries 39
+  genuinely `unobserved` facts. `unsupported` deliberately does not reduce
+  `complete`, but `unobserved` does -- so the flag is honest and permanently false
+  until stories 1.8/1.9/1.10 land.
+- **A domain rollup can read `unobserved` while a real failure sits under it**
+  (DW-68). On a default run `profile` reads `unobserved` for the two symlinked
+  profile directories, because the audit half was not read. `health.failed` counts
+  them and `data.domains[].counts` shows them; the single-word state does not.
+- **`rollUp` refines the declared precedence** (DW-67). `unsupported` steps aside
+  when a domain produced anything else. Without it a `template_scaffold` domain
+  with 135 real failures reported `unsupported`.
+- **34 unflushed `process.exit()` JSON sites remain in `src/index.ts`** (DW-64).
+  `project doctor --json` and `project identity --json` are the two most likely to
+  be captured by automation and both still truncate through a pipe.
+- **The audit child's environment allowlist can go stale** (DW-66). A rule that
+  later reads a new environment key will see it unset rather than fail loudly.

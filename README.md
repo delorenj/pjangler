@@ -245,6 +245,116 @@ guessed: a deployed role scaffold carries no template ref (it renders no
 `GENERATED FILE -- DO NOT EDIT` marker — no generation counter, digest, or
 sidecar — so a sha256 of its bytes is the only stable evidence.
 
+## Fleet status
+
+`pjangler fleet status` answers the question the inventory and provenance
+commands do not: *is the fleet correct?* One read-only traversal of the registry
+reports every registered agent across **all nine observation domains**, plus one
+aggregate — in a single invocation.
+
+```bash
+pjangler fleet status                                   # human report
+pjangler fleet status --json                            # fleet JSON v1 envelope
+pjangler fleet status --live --json                     # authorize the recipe-owned audit rules
+pjangler fleet status --agent pjangler-pm --json        # one agent, full-fleet totals
+pjangler fleet status --domain profile --json           # one domain, nothing else collected
+pjangler fleet status --agent-registry ./copy.yaml      # inspect a copy
+pjangler fleet status --project-registry ./copy.yaml    # inspect a copy
+pjangler fleet status --contract ./candidate.yaml       # read a candidate contract
+pjangler fleet status --deadline-ms 60000               # bound the whole run
+```
+
+It is exposed as the `pjangler_fleet_status` MCP tool with the same options and
+the same envelope.
+
+### The nine domains, and what each observes today
+
+| domain | observed today | what `--live` adds |
+| --- | --- | --- |
+| `registry` | the agent row itself: well-formedness, identity conflicts, correlation to a project record | `hermes.registry-parity` (**host-scoped** → `data.host`) |
+| `project_binding` | the row's board binding and whether the repository's `.project.json` agrees | the notebook and `sot.project-json` rules |
+| `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide); `scaffold.template_ref` is `unsupported` — a deployed role scaffold records none | every tracked-asset parity rule |
+| `profile` | the generated profile directory, `lstat`ed and never followed; a symlink is a `fail`, because the contract declares `symlink_allowed: false` | `hermes.runtime-singleton`; `hermes.profile-wiring` (**host-scoped**) |
+| `runtime` | the role-local runtime directory derived from `role_dir` | `hermes.untracked-runtimes` |
+| `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**), never promoted to an agent |
+| `live_process` | `unsupported` — there is no `ps`, `pgrep`, or `/proc` read anywhere in this build | nothing |
+| `bloodbank` | the stored routing record and the strict activation flag; liveness is `unsupported` | `hermes.fleet-config` (**host-scoped**) |
+| `release_provenance` | every provenance fact for the agent: executable, checkout, remote, HEAD, cleanliness | nothing |
+
+Story 1.8 owns the systemd observer, 1.9 the live-process observer, and 1.10
+Bloodbank routing readiness. Until then those domains say so, by name, rather
+than disappearing.
+
+### Seven states, one precedence
+
+| state | meaning |
+| --- | --- |
+| `pass` | observed, and in the state it should be in |
+| `warn` | observed, imperfect, and not a gate |
+| `skip` | declared not applicable; does **not** reduce completeness |
+| `fail` | observed, and wrong |
+| `unsupported` | no adapter exists in this release; counted and visible, but it does **not** reduce completeness |
+| `unobserved` | applicable, and not read; **does** reduce completeness |
+| `error` | collection itself failed; never silently a `pass`, never a dropped agent |
+
+Within a domain and then across domains the precedence is
+`error` > `unobserved` > `unsupported` > `fail` > `warn` > `skip` > `pass`, with
+one refinement: `unsupported` steps aside when the domain produced anything
+else, so a permanent gap cannot mask a real failure beside it.
+
+### What `--live` does and does not authorize
+
+`--live` authorizes **bounded, read-only host and network observation**, and
+nothing else: it runs the recipe-owned audit rules per repository as bounded
+child processes, because one of them (`bmad.version`) makes a real `npm view`
+call. It never authorizes mutation, process control, service changes, board
+changes, or Bloodbank activation, and it does not conjure a systemd,
+live-process, or Bloodbank-liveness observer.
+
+Each repository is audited as a child of this build with a **narrow, allowlisted
+environment**, so no credential in your shell or in `~/.hermes/fleet.env` ever
+reaches it. Each child is time-boxed: one hung `systemctl` downgrades that
+repository's audit-fed domains to `unobserved` and leaves every other agent
+fully reported.
+
+Filters constrain **collection**, not just emission: `--domain registry` spawns
+no audit child and no provenance probe, and `--agent <id>` spawns neither for any
+other agent.
+
+### Two verdicts
+
+`data.health` reports `healthy` (no `fail` and no `error`) and `complete` (no
+`unobserved`, no collection error, no truncation) as two separate verdicts, plus
+`fleet_complete` — true only for an unfiltered `--live` run in which every
+registered row and every applicable domain was actually observed. A clipped but
+drift-free run is `healthy: true, complete: false`.
+
+**Host-scoped findings are reported once**, deduped by rule id, in `data.host`.
+They never reach a per-agent record and never make an agent or the fleet
+unhealthy: no amount of work in a repository can change a condition about this
+machine, so failing the repository for it is a category error.
+
+**An unhealthy fleet is data, not a failure.** It exits `0` with `ok: true` and
+`data.health.healthy: false`. Only a *command* failure is nonzero:
+
+| exit | meaning |
+| --- | --- |
+| `0` | the command ran — read `data.health.healthy` and `data.health.complete` for the verdicts |
+| `2` | a malformed flag value, or a `--domain` that is not one of the nine |
+| `3` | an `--agent` id that is not registered, or a registry that is not there |
+| `4` | the fleet contract declares a conflicting authority, an invalid class, or a live retired mode |
+| `5` | the fleet contract declares a schema version this build does not support |
+| `6` | internal |
+| `7` | the whole-run `--deadline-ms` budget expired; no partial result is reported |
+| `8` | the run was cancelled (`SIGINT`/`SIGTERM`, or an aborted MCP request); no audit child survives |
+
+`data` is deterministic: no timestamp, duration, pid, hostname, or ordering by
+completion — the audit child's `auditedAt` is dropped at the boundary and every
+path is home-redacted. Two runs over unchanged state produce byte-identical
+`data`, and every `--json` document is written through an **awaited stdout
+drain**, so it survives a file, a pty, a shell pipe, and a `spawn` capture
+identically at any size.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,
@@ -342,3 +452,4 @@ Exposed tools:
 - `pjangler_deploy_hermes_agent`
 - `pjangler_fleet_inventory`
 - `pjangler_fleet_provenance`
+- `pjangler_fleet_status`

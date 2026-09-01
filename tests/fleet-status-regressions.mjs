@@ -1,0 +1,1189 @@
+// PJAN Epic 1 / Story 1.4: parse-safe, registry-wide fleet status.
+//
+// Two defect classes, and the suite exists for both:
+//
+//   1. NOTHING ANSWERED "IS THE FLEET CORRECT?". Nine observation domains
+//      existed as scattered per-repository audits. The ways of aggregating them
+//      that look right are all wrong: a host-scoped rule promoted into a
+//      registry-wide claim (the category error PJAN-84 fixed), a domain that
+//      silently disappears when nothing observed it, an aggregate that reports
+//      `pass` for a domain it never read, and a `--agent` filter that probes the
+//      whole fleet and then hides the results.
+//   2. MACHINE OUTPUT TRUNCATED, SILENTLY, AT EXIT 0. `console.log(...)` +
+//      `process.exit(n)` loses whatever `process.stdout` still has queued, and
+//      on Linux stdout is ASYNCHRONOUS for a pipe. Measured on this runtime: a
+//      200 000-character document reached a file complete and a pipe at 131 072
+//      bytes, exit 0. `pjangler fleet status --live` PARSES `pjangler audit
+//      --json`, so that is no longer a latent bug in one command -- it is a
+//      wrong answer about the whole fleet.
+//
+// The bar, carried from stories 1.1-1.3 plus one lesson those stories taught:
+//
+//   * Every case runs the REAL built `dist/index.js` in a real subprocess over
+//     real OS pipes.
+//   * stdout is asserted non-empty and parseable BEFORE anything is asserted
+//     about its content.
+//   * Every invocation is bracketed by a content+mtime snapshot of the scratch
+//     tree, the tracked contract, and every probed repository's `.git/index`.
+//   * The child-failure, child-timeout, cancellation and unmapped-rule cases are
+//     driven through the DOCUMENTED `PJ_FLEET_CLI_ENTRY` seam against real
+//     subprocess spawns, never mocks.
+//   * DW-54 IS THE LESSON. Story 1.3's suite throws `SkipSuite` for its entire
+//     body when any of the operator's three live sources is absent, so on a
+//     fresh clone or in CI *nothing* is verified. Here the fleet is SYNTHETIC:
+//     every registry, project, repository, profile and audit report is
+//     constructed by this file. Only the handful of cases that assert against
+//     the operator's real fleet may skip.
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { join, relative, resolve } from "node:path";
+import YAML from "yaml";
+
+const ROOT = resolve(import.meta.dirname, "..");
+const CLI = join(ROOT, "dist", "index.js");
+const TRACKED_CONTRACT = join(ROOT, "contracts", "fleet-contract.yaml");
+
+/** The nine domains, spelled out here so a silent narrowing in source fails a test. */
+const DOMAINS = [
+  "registry", "project_binding", "template_scaffold", "profile", "runtime",
+  "systemd", "live_process", "bloodbank", "release_provenance",
+];
+/** Domains whose per-agent record the recipe audit can change. See AUDIT_PER_AGENT_DOMAINS. */
+const AUDIT_FED = ["template_scaffold", "project_binding", "profile", "runtime"];
+const DATA_KEYS = [
+  "contract_path", "contract_version", "scope",
+  "totals", "health", "agents", "domains", "host", "findings", "probes", "truncated",
+];
+/** Mirrors FLEET_STATUS_MAX_AGENTS / _MAX_OBSERVATIONS_PER_AGENT in src/fleet/types.ts. */
+const MAX_AGENTS = 500;
+const MAX_OBSERVATIONS = 200;
+
+/**
+ * The operator's real sources, derived and never written as a literal.
+ *
+ * `portable-test-paths-regressions` fails the build on a hardcoded `/home/<name>`
+ * in any `*-regressions.mjs`, and a literal would also make the suite a fiction
+ * on any other machine. Used ONLY by the skip-guarded live-source cases.
+ */
+const REAL_HOME = (() => { try { return userInfo().homedir; } catch { return homedir(); } })();
+const REAL_AGENT_REGISTRY = process.env.HERMES_AGENTS_REGISTRY?.trim() || join(REAL_HOME, ".hermes", "agents-registry.yaml");
+const REAL_PROJECT_REGISTRY = process.env.PJ_PROJECT_REGISTRY?.trim() || join(REAL_HOME, ".config", "pjangler", "projects.yaml");
+
+const temp = mkdtempSync(join(tmpdir(), "fleet-status-"));
+/**
+ * Where the injected CLI entries live, and where they record what they saw.
+ *
+ * Deliberately OUTSIDE `temp`: `snapshot()` walks `temp` and asserts it is
+ * byte-identical before and after every invocation, so a shim appending its own
+ * pid or environment inside it would be indistinguishable from the command
+ * writing there.
+ */
+const shimRoot = mkdtempSync(join(tmpdir(), "fleet-status-shims-"));
+
+const scratchHome = join(temp, "home");
+const reposRoot = join(temp, "repos");
+const workdir = join(temp, "work");
+
+let failures = 0;
+let skipped = 0;
+
+class SkipCase extends Error {}
+
+function skip(label, reason) {
+  skipped += 1;
+  console.log(`  SKIP ${label}: ${reason}`);
+}
+
+/**
+ * Skip from INSIDE a `check()` body, and leave that body for good.
+ *
+ * `skip()` alone printed `SKIP <label>` and then, because the body returned
+ * normally, `check` printed `ok   <label>` for the same case -- counted in both
+ * tallies. Carried from story 1.3's fix.
+ */
+function skipCase(label, reason) {
+  skip(label, reason);
+  throw new SkipCase(reason);
+}
+
+function check(label, body) {
+  try {
+    body();
+    console.log(`  ok   ${label}`);
+  } catch (error) {
+    if (error instanceof SkipCase) return;
+    failures += 1;
+    console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
+  }
+}
+
+async function checkAsync(label, body) {
+  try {
+    await body();
+    console.log(`  ok   ${label}`);
+  } catch (error) {
+    if (error instanceof SkipCase) return;
+    failures += 1;
+    console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A synthetic fleet: every source this suite reads is built here
+// ---------------------------------------------------------------------------
+
+/**
+ * Two obviously-fake secrets, so the credential case is real without a real key.
+ *
+ * The live `~/.hermes/fleet.env` carries `PLANE_33GOD_API_KEY` and
+ * `PLANE_AUTOMATICAI_API_KEY`. The scratch file keeps the KEY NAMES -- which is
+ * what the allowlists have to exclude -- and replaces the values, because
+ * writing a real credential into a file is what this repo forbids everywhere
+ * else and a sentinel proves the same property.
+ */
+const SECRET_SENTINEL = "pjan14-not-a-real-credential-0000";
+const CREDENTIAL_KEYS = ["PLANE_33GOD_API_KEY", "PLANE_AUTOMATICAI_API_KEY", "PJAN14_UNLISTED_SENTINEL"];
+
+const GIT_IDENTITY = ["-c", "user.email=suite@invalid", "-c", "user.name=Suite", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"];
+
+function git(cwd, args) {
+  return spawnSync("git", [...GIT_IDENTITY, ...args], {
+    cwd, encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+  });
+}
+
+/** A real repository with one commit, a role scaffold, and a `.project.json`. */
+function makeRepo(slug) {
+  const dir = join(reposRoot, slug);
+  mkdirSync(join(dir, "agents", "hermes", "pm"), { recursive: true });
+  writeFileSync(join(dir, "agents", "hermes", "pm", "role.yaml"), "role: pm\n", "utf8");
+  writeFileSync(join(dir, ".project.json"), `${JSON.stringify({
+    project_slug: slug,
+    ticket_provider: { type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}` },
+  }, null, 2)}\n`, "utf8");
+  assert.equal(git(dir, ["init", "--quiet"]).status, 0, `git init failed in ${dir}`);
+  writeFileSync(join(dir, "README.md"), `# ${slug}\n`, "utf8");
+  assert.equal(git(dir, ["add", "-A"]).status, 0);
+  assert.equal(git(dir, ["commit", "--quiet", "-m", "seed"]).status, 0);
+  return dir;
+}
+
+function agentRow(slug) {
+  return {
+    repo: slug,
+    role: "pm",
+    display_name: `${slug} PM`,
+    project_path: join(reposRoot, slug),
+    role_dir: join(reposRoot, slug, "agents", "hermes", "pm"),
+    profile_name: `${slug}-pm`,
+    provisioned_at: "2026-01-01T00:00:00.000Z",
+    plane: { workspace: "suite", project_id: `board-${slug}`, identifier: slug.toUpperCase() },
+    bloodbank: { enabled: false, gateway_scope: "fleet", target_agent_id: `${slug}-pm` },
+    systemd: { gateway_unit: `hermes-${slug}-pm-gateway.service` },
+    hermes: {
+      bin: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes"),
+      repo: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc"),
+      fleet_env: join(scratchHome, ".hermes", "fleet.env"),
+      git_url: "https://github.com/delorenj/hermes-agent.git",
+      git_ref: "main",
+      git_sha: "0".repeat(40),
+    },
+  };
+}
+
+/** A registry YAML file in `temp`, built from a list of agent slugs. */
+function writeAgentRegistry(path, slugs) {
+  const agents = {};
+  for (const slug of slugs) agents[`${slug}-pm`] = agentRow(slug);
+  writeFileSync(path, YAML.stringify({ schema_version: 1, agents }), "utf8");
+  return path;
+}
+
+function writeProjectRegistry(path, slugs) {
+  const projects = {};
+  for (const slug of slugs) {
+    projects[slug] = {
+      name: slug,
+      slug,
+      repo_path: join(reposRoot, slug),
+      status: "active",
+      ticket_provider: {
+        type: "plane", workspace: "suite",
+        identifier: slug.toUpperCase(), board_id: `board-${slug}`,
+      },
+    };
+  }
+  writeFileSync(path, YAML.stringify({ schema_version: 1, projects }), "utf8");
+  return path;
+}
+
+const BASE_SLUGS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+
+function seedScratch() {
+  mkdirSync(workdir, { recursive: true });
+  mkdirSync(join(scratchHome, ".hermes", "profiles"), { recursive: true });
+  mkdirSync(join(scratchHome, ".config", "pjangler"), { recursive: true });
+  mkdirSync(join(scratchHome, ".config", "hermes-agent-template"), { recursive: true });
+  const release = join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin");
+  mkdirSync(release, { recursive: true });
+  writeFileSync(join(release, "hermes"), "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(join(release, "hermes"), 0o755);
+
+  for (const slug of BASE_SLUGS) makeRepo(slug);
+
+  // One real profile directory per agent, and ONE of them a symlink -- the
+  // contract declares `service_model.profile_layout.symlink_allowed: false`, so
+  // that agent's `profile` domain must report `fail` from the store read alone,
+  // with no audit and no `--live`.
+  for (const slug of BASE_SLUGS) {
+    if (slug === "beta") continue;
+    const dir = join(scratchHome, ".hermes", "profiles", `${slug}-pm`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+  }
+  mkdirSync(join(scratchHome, ".hermes", "profiles", "shared"), { recursive: true });
+  symlinkSync(join(scratchHome, ".hermes", "profiles", "shared"), join(scratchHome, ".hermes", "profiles", "beta-pm"));
+
+  writeAgentRegistry(join(scratchHome, ".hermes", "agents-registry.yaml"), BASE_SLUGS);
+  writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"), BASE_SLUGS);
+
+  writeFileSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), [
+    "[fleet]",
+    `hermes_bin = "${join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes")}"`,
+    `hermes_repo = "${join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc")}"`,
+    'hermes_git_url = "https://github.com/delorenj/hermes-agent.git"',
+    'hermes_git_ref = "main"',
+    `hermes_git_sha = "${"0".repeat(40)}"`,
+    "",
+  ].join("\n"), "utf8");
+
+  // Every credential key by NAME with a sentinel value, so the exclusion cases
+  // are non-vacuous without a real secret ever touching disk.
+  writeFileSync(join(scratchHome, ".hermes", "fleet.env"), [
+    `HERMES_FLEET_HOME=${join(scratchHome, ".hermes")}`,
+    `HERMES_FLEET_BIN=${join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes")}`,
+    `HERMES_FLEET_REPO=${join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc")}`,
+    "HERMES_FLEET_REGISTRY_FILE=$HERMES_FLEET_HOME/agents-registry.yaml",
+    ...CREDENTIAL_KEYS.map((key) => `${key}=${SECRET_SENTINEL}`),
+    "",
+  ].join("\n"), "utf8");
+}
+
+const isolation = {
+  HOME: scratchHome,
+  XDG_CONFIG_HOME: join(scratchHome, ".config"),
+  XDG_DATA_HOME: join(scratchHome, ".local", "share"),
+  XDG_STATE_HOME: join(scratchHome, ".local", "state"),
+  XDG_CACHE_HOME: join(scratchHome, ".cache"),
+  HERMES_FLEET_HOME: join(scratchHome, ".hermes"),
+  HERMES_AGENTS_REGISTRY: join(scratchHome, ".hermes", "agents-registry.yaml"),
+  HERMES_FLEET_REGISTRY_FILE: join(scratchHome, ".hermes", "agents-registry.yaml"),
+  HERMES_FLEET_ENV: join(scratchHome, ".hermes", "fleet.env"),
+  HERMES_TEMPLATE_CONFIG: join(scratchHome, ".config", "hermes-agent-template", "config.toml"),
+  PJ_PROJECT_REGISTRY: join(scratchHome, ".config", "pjangler", "projects.yaml"),
+  HERMES_TEMPLATE_RUNTIME_SCAFFOLD: join(scratchHome, ".hermes", "runtime-scaffold"),
+  RUNTIME_SCAFFOLD_DIR: join(scratchHome, ".hermes", "runtime-scaffold"),
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  // TMPDIR can itself sit inside a git work tree on this machine, which would
+  // make an unrelated checkout answer for every scratch repository below.
+  GIT_CEILING_DIRECTORIES: realpathSync(temp),
+  TMPDIR: temp,
+  NO_COLOR: "1",
+  // The credential the audit child must never receive, present in the PARENT's
+  // environment so the allowlist has something to exclude.
+  PLANE_33GOD_API_KEY: SECRET_SENTINEL,
+};
+
+// ---------------------------------------------------------------------------
+// Zero-write proof
+// ---------------------------------------------------------------------------
+
+function snapshotTree(label, root, entries = {}) {
+  if (!existsSync(root)) { entries[`${label}:<absent>`] = "absent"; return entries; }
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const path = join(dir, entry.name);
+      const key = `${label}:${relative(root, path)}`;
+      const stat = lstatSync(path);
+      if (entry.isSymbolicLink()) { entries[key] = `link:${readlinkSync(path)}:${stat.mtimeMs}`; continue; }
+      if (entry.isDirectory()) { entries[key] = `dir:${stat.mtimeMs}`; walk(path); continue; }
+      if (!entry.isFile()) { entries[key] = `other:${stat.mode}:${stat.mtimeMs}`; continue; }
+      let digest;
+      try { digest = createHash("sha256").update(readFileSync(path)).digest("hex"); }
+      catch { digest = `unreadable:${stat.mode}:${stat.size}`; }
+      entries[key] = `${digest}:${stat.mtimeMs}`;
+    }
+  };
+  walk(root);
+  return entries;
+}
+
+function fileFingerprint(path) {
+  if (!existsSync(path)) return "absent";
+  const stat = lstatSync(path);
+  return `${createHash("sha256").update(readFileSync(path)).digest("hex")}:${stat.mtimeMs}`;
+}
+
+/**
+ * Every repository this command probes, by its `.git/index`.
+ *
+ * This is the assertion that catches a missing `--no-optional-locks`: a plain
+ * `git status` refreshes the index in place, which changes nothing a diff would
+ * show and everything about whether this command is read-only.
+ */
+function gitIndexFingerprints(entries = {}) {
+  const candidates = [ROOT, join(ROOT, "templates", "hermes-agent"), ...BASE_SLUGS.map((slug) => join(reposRoot, slug))];
+  for (const candidate of candidates) {
+    const dot = join(candidate, ".git");
+    let indexPath = join(dot, "index");
+    try {
+      if (lstatSync(dot).isFile()) {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, "utf8"));
+        if (pointer) indexPath = join(resolve(candidate, pointer[1].trim()), "index");
+      }
+    } catch { /* no .git here; recorded as absent below */ }
+    entries[`gitindex:${candidate}`] = fileFingerprint(indexPath);
+  }
+  return entries;
+}
+
+function snapshot() {
+  const entries = {};
+  snapshotTree("temp", temp, entries);
+  snapshotTree("contracts", join(ROOT, "contracts"), entries);
+  gitIndexFingerprints(entries);
+  for (const entry of readdirSync(ROOT, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    entries[`root:${entry.name}`] = entry.isDirectory() ? "dir" : entry.isSymbolicLink() ? "link" : "file";
+  }
+  return entries;
+}
+
+/**
+ * Run the built CLI and prove the run wrote nothing to a protected root.
+ *
+ * `maxBuffer` is set explicitly: the default would itself truncate a large
+ * capture, and a truncation introduced by the harness looks exactly like the
+ * truncation defect the harness is here to detect.
+ */
+function cli(args, extraEnv = {}, cwd = workdir) {
+  const before = snapshot();
+  const result = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
+    encoding: "utf8",
+    timeout: 180_000,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, ...isolation, ...extraEnv },
+  });
+  const after = snapshot();
+  assert.deepEqual(after, before, `pj ${args.join(" ")} wrote to a protected root`);
+  return result;
+}
+
+function envelope(result) {
+  assert.notEqual(result.stdout, "", "stdout was empty; a passing assertion on empty output proves nothing");
+  let parsed;
+  try { parsed = JSON.parse(result.stdout); }
+  catch (error) { assert.fail(`stdout is not one complete JSON document (${result.stdout.length} bytes): ${error.message}`); }
+  assert.equal(parsed.schema_version, 1, "envelope schema_version");
+  assert.equal(typeof parsed.command, "string");
+  return parsed;
+}
+
+function errorCode(parsed) {
+  assert.equal(parsed.ok, false, `expected a failure envelope, got ok:true with totals ${JSON.stringify(parsed.data?.totals)}`);
+  assert.notEqual(parsed.error, null, "a failure envelope must carry an error");
+  assert.equal(parsed.data, null, "a failure envelope must carry no data");
+  return parsed.error.code;
+}
+
+/** A successful status envelope with its invariants already checked. */
+function status(result) {
+  const parsed = envelope(result);
+  assert.equal(parsed.ok, true, `expected ok:true, got ${JSON.stringify(parsed.error)}`);
+  assert.equal(parsed.error, null, "ok envelopes carry no error");
+  assert.equal(parsed.command, "fleet.status");
+  for (const key of DATA_KEYS) assert.notEqual(parsed.data[key], undefined, `data.${key} must be present`);
+  return parsed.data;
+}
+
+function agentNamed(data, id) {
+  const found = data.agents.find((agent) => agent.agent_id === id);
+  assert.ok(found, `agent ${id} must be in data.agents`);
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Injected CLI entries: the documented PJ_FLEET_CLI_ENTRY observation seam
+// ---------------------------------------------------------------------------
+
+/**
+ * Write one injected entry and return its path.
+ *
+ * Entries live outside `temp` and record what they saw BESIDE THEMSELVES, so a
+ * shim's own bookkeeping can never be mistaken for the command under test
+ * writing to a protected root. Each behaviour gets its own FILE rather than
+ * reading a mode out of the environment: the audit child's environment is
+ * allowlisted by construction (that is the credential guarantee), so an
+ * `PJ_SHIM_MODE` would be stripped before the shim could read it -- measured.
+ */
+function entry(name, body) {
+  const dir = join(shimRoot, name);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "entry.mjs");
+  writeFileSync(path, body, "utf8");
+  return path;
+}
+
+const RECORD_PREAMBLE = `
+import { appendFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = process.argv[3] ?? "";
+appendFileSync(join(HERE, "invocations"), REPO + "\\n");
+writeFileSync(join(HERE, "child-env.json"), JSON.stringify(Object.keys(process.env).sort()));
+`;
+
+function invocationsOf(entryPath) {
+  const file = join(dirname_(entryPath), "invocations");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+}
+
+function childEnvKeys(entryPath) {
+  const file = join(dirname_(entryPath), "child-env.json");
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+}
+
+function resetEntry(entryPath) {
+  for (const name of ["invocations", "child-env.json", "pids"]) {
+    rmSync(join(dirname_(entryPath), name), { force: true });
+  }
+}
+
+function dirname_(path) {
+  return path.slice(0, path.lastIndexOf("/"));
+}
+
+/** An audit report this suite controls end to end, so scope and status are exact. */
+function syntheticReport(rules) {
+  return `${RECORD_PREAMBLE}
+const rules = ${JSON.stringify(rules)};
+const report = {
+  repo: REPO,
+  ok: rules.every((rule) => !(rule.status === "fail" && rule.scope !== "host")),
+  hostOk: rules.every((rule) => rule.scope !== "host" || rule.status === "pass" || rule.status === "skip"),
+  // A TIMESTAMP, deliberately. The status core has to drop it at the boundary or
+  // two runs over unchanged state stop being byte-identical.
+  auditedAt: new Date().toISOString(),
+  rules,
+};
+process.stdout.write(JSON.stringify(report, null, 2) + "\\n");
+process.exit(report.ok ? 0 : 1);
+`;
+}
+
+const HOST_FAIL_RULE = {
+  id: "hermes.profile-wiring", title: "Hermes profile wiring", status: "fail",
+  summary: "the shared profile root is wired to the wrong home", details: ["~/.hermes/profiles is not the configured root"],
+  fixable: false, scope: "host",
+};
+const PROJECT_WARN_RULE = {
+  id: "hermes.pm-scaffold", title: "Hermes orchestrator scaffold parity", status: "warn",
+  summary: "3 orchestrator scaffold issue(s) detected", details: ["stale agents/hermes/pm/hermes"],
+  fixable: true, scope: "project",
+};
+const PROJECT_PASS_RULE = {
+  id: "hermes.runtime-singleton", title: "Singleton runtime contract", status: "pass",
+  summary: "Singleton runtime contract satisfied", details: [], fixable: true, scope: "project",
+};
+const UNMAPPED_RULE = {
+  id: "totally.invented-rule", title: "A rule no domain table has heard of", status: "fail",
+  summary: "an unmapped rule must not disappear", details: [], fixable: false, scope: "project",
+};
+
+console.log("fleet status: nine domains, one traversal, one parse-safe document");
+
+try {
+  if (!existsSync(CLI)) {
+    // The ONLY unconditional skip in this suite, and it is about this checkout
+    // rather than about the host: with no build there is nothing to exercise.
+    skip("the whole suite", "dist/index.js is not built; run `npm run build` first");
+    throw new SkipCase("unbuilt");
+  }
+  seedScratch();
+
+  // -- AC1: every agent, every domain, one complete envelope -----------------
+
+  check("--json is one complete envelope carrying every declared data key", () => {
+    const result = cli(["fleet", "status", "--json"]);
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+    const data = status(result);
+    assert.equal(data.scope.kind, "fleet");
+    assert.equal(data.agents.length, BASE_SLUGS.length);
+    // Bigger than the 64 KiB pipe buffer, through a real OS pipe. Below that the
+    // truncation defect cannot fire and a green assertion proves nothing.
+    assert.ok(result.stdout.length > 65_536, `payload is only ${result.stdout.length} bytes; the defect cannot reach it`);
+  });
+
+  check("every registered agent appears exactly once and carries all nine domains", () => {
+    const data = status(cli(["fleet", "status", "--json"]));
+    const ids = data.agents.map((agent) => agent.agent_id);
+    assert.deepEqual([...ids].sort(), BASE_SLUGS.map((slug) => `${slug}-pm`).sort());
+    assert.equal(new Set(ids).size, ids.length, "an agent id must appear exactly once");
+    for (const agent of data.agents) {
+      assert.deepEqual(Object.keys(agent.domains).sort(), [...DOMAINS].sort(), `${agent.agent_id} must carry all nine domains`);
+      const observed = new Set(agent.observations.map((observation) => observation.domain));
+      for (const domain of DOMAINS) {
+        assert.ok(observed.has(domain), `${agent.agent_id} has no observation for ${domain}`);
+      }
+    }
+    assert.deepEqual(data.domains.map((rollup) => rollup.domain), DOMAINS, "data.domains must carry all nine, in order");
+    const inventory = JSON.parse(cli(["fleet", "inventory", "--json"]).stdout).data;
+    assert.equal(data.scope.total_registered_agents, inventory.totals.registered_agents);
+    assert.equal(data.totals.agents, inventory.totals.registered_agents);
+  });
+
+  check("every observation names a domain, a state, a source, an id, and the command that returns it", () => {
+    const data = status(cli(["fleet", "status", "--json"]));
+    const seenIds = new Map();
+    for (const agent of data.agents) {
+      for (const observation of agent.observations) {
+        assert.ok(DOMAINS.includes(observation.domain), `unknown domain ${observation.domain}`);
+        assert.ok(["pass", "warn", "skip", "fail", "unsupported", "unobserved", "error"].includes(observation.state), `unknown state ${observation.state}`);
+        assert.equal(observation.agent_id, agent.agent_id);
+        assert.ok(typeof observation.source === "string" && observation.source.length > 0);
+        assert.match(observation.finding_id, /^[0-9a-f]{12}$/u, "finding_id must be a sha256 prefix");
+        assert.match(observation.retrieval, /^pjangler fleet status /u, "every observation must name the command that returns it");
+        assert.ok(Array.isArray(observation.details));
+        // A stable id must be UNIQUE per observation, or a consumer joining on
+        // it silently merges two different findings into one.
+        const key = observation.finding_id;
+        assert.ok(!seenIds.has(key), `finding_id ${key} is shared by ${seenIds.get(key)} and ${observation.field}`);
+        seenIds.set(key, `${agent.agent_id}/${observation.domain}/${observation.field}`);
+      }
+    }
+  });
+
+  // -- AC2: no --live means no audit child, no network, and it says so --------
+
+  check("without --live no audit child runs and every audit-fed domain says why", () => {
+    const shim = entry("never-called", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.deepEqual(invocationsOf(shim), [], "a default run must spawn no audit child at all");
+    assert.equal(data.totals.audits_attempted, 0);
+    for (const agent of data.agents) {
+      for (const domain of AUDIT_FED) {
+        assert.equal(agent.domains[domain], "unobserved", `${agent.agent_id}.${domain} must be unobserved without --live`);
+      }
+      const reasons = agent.observations.filter((observation) => observation.source === "recipe-audit");
+      assert.ok(reasons.length >= AUDIT_FED.length, "each audit-fed domain must carry its own reason");
+      for (const reason of reasons) assert.match(reason.summary, /--live/u, "the reason must name --live");
+    }
+    assert.equal(data.health.complete, false, "a run that did not read the audit half is not complete");
+  });
+
+  check("a default run makes no network call and executes nothing off PATH", () => {
+    // A real sentinel, not an argument: any of these being invoked leaves a file
+    // behind, and its absence is the assertion.
+    const bin = join(shimRoot, "no-network-bin");
+    mkdirSync(bin, { recursive: true });
+    for (const name of ["npm", "curl", "wget"]) {
+      writeFileSync(join(bin, name), `#!/bin/sh\ntouch ${JSON.stringify(join(bin, `called-${name}`))}\nexit 0\n`, "utf8");
+      chmodSync(join(bin, name), 0o755);
+      rmSync(join(bin, `called-${name}`), { force: true });
+    }
+    const result = cli(["fleet", "status", "--json"], { PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(result.status, 0);
+    for (const name of ["npm", "curl", "wget"]) {
+      assert.equal(existsSync(join(bin, `called-${name}`)), false, `a default run invoked ${name}`);
+    }
+  });
+
+  // -- AC3 / AC4: host is not project ----------------------------------------
+
+  check("a host-scoped fail is reported once, keeps its scope, and fails no agent", () => {
+    const shim = entry("host-fail", syntheticReport([HOST_FAIL_RULE, PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    assert.equal(result.status, 0, "an unhealthy machine is data, not a command failure");
+    const data = status(result);
+    assert.equal(invocationsOf(shim).length, BASE_SLUGS.length, "one audit child per repository");
+    const host = data.host.filter((finding) => finding.rule_id === HOST_FAIL_RULE.id);
+    assert.equal(host.length, 1, `the host finding must be deduped to one, got ${data.host.length} entries`);
+    assert.equal(host[0].state, "fail");
+    assert.equal(host[0].domain, "profile");
+    assert.match(host[0].retrieval, /--live/u);
+    for (const agent of data.agents) {
+      const promoted = agent.observations.filter((observation) => observation.rule_id === HOST_FAIL_RULE.id);
+      assert.deepEqual(promoted, [], `${agent.agent_id} must not carry a host-scoped rule result`);
+      assert.equal(agent.observations.some((observation) => observation.rule_scope === "host"), false);
+    }
+    // The host fail must not reach `healthy`. `beta-pm`'s symlinked profile is a
+    // genuine project failure, so the fleet verdict is false for a reason that
+    // is NOT the host finding -- assert on the agents that have no other fail.
+    const clean = data.agents.filter((agent) => agent.agent_id !== "beta-pm");
+    for (const agent of clean) {
+      assert.equal(agent.healthy, true, `${agent.agent_id} must stay healthy despite a host-scoped fail`);
+    }
+  });
+
+  check("a project-scoped warn rolls its domain up to warn and keeps the agent healthy", () => {
+    const shim = entry("project-warn", syntheticReport([PROJECT_WARN_RULE, PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const agent = agentNamed(data, "alpha-pm");
+    assert.equal(agent.domains.template_scaffold, "warn", "a warn must roll the domain up to warn, not be masked");
+    assert.equal(agent.healthy, true, "a warn never gates healthy -- matching gatesProject in src/recipes/types.ts");
+    const observation = agent.observations.find((item) => item.rule_id === PROJECT_WARN_RULE.id);
+    assert.ok(observation, "the warn must be emitted as its own observation");
+    assert.equal(observation.rule_scope, "project");
+    assert.equal(observation.state, "warn");
+    assert.equal(observation.summary, PROJECT_WARN_RULE.summary);
+    assert.deepEqual(observation.details, PROJECT_WARN_RULE.details);
+    assert.ok(typeof observation.owner === "string" && observation.owner.length > 0, "the owner must be resolved from the rule id");
+  });
+
+  check("a rule no domain table has heard of is reported, not dropped", () => {
+    const shim = entry("unmapped", syntheticReport([UNMAPPED_RULE]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const agent = agentNamed(data, "alpha-pm");
+    const observation = agent.observations.find((item) => item.rule_id === UNMAPPED_RULE.id);
+    assert.ok(observation, "an unmapped rule must still reach the report");
+    assert.equal(observation.state, "fail");
+    const finding = data.findings.find((item) => item.code === "audit-rule-unmapped");
+    assert.ok(finding, "an unmapped rule must raise a finding so it cannot silently vanish");
+    assert.match(finding.detail, /totally\.invented-rule/u);
+    // ONE finding, not one per agent: eight repositories reported the same rule.
+    assert.equal(data.findings.filter((item) => item.code === "audit-rule-unmapped").length, 1);
+  });
+
+  check("the audit child's timestamp never reaches data", () => {
+    const shim = entry("timestamped", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    status(result);
+    // The shim stamps a real `new Date().toISOString()` into every report. If it
+    // survived, two runs would differ and the CLI/MCP parity check would become
+    // a resemblance.
+    assert.doesNotMatch(result.stdout, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/u, "no ISO timestamp may enter the envelope");
+    assert.doesNotMatch(result.stdout, /"auditedAt"/u, "auditedAt must be dropped at the boundary");
+  });
+
+  // -- AC5 / AC6: filters constrain COLLECTION, not just emission -------------
+
+  check("--agent reports one agent, keeps totals fleet-wide, and probes nobody else", () => {
+    const shim = entry("scoped", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--agent", "alpha-pm", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.equal(data.agents.length, 1);
+    assert.equal(data.agents[0].agent_id, "alpha-pm");
+    assert.equal(data.scope.selected_agents, 1);
+    assert.equal(data.scope.total_registered_agents, BASE_SLUGS.length);
+    assert.match(data.scope.label, /scoped to agent alpha-pm/u, "the label must say the result is scoped");
+    assert.equal(data.health.fleet_complete, false, "a scoped answer can never be fleet-complete");
+    assert.deepEqual(invocationsOf(shim), [join(reposRoot, "alpha")], "no audit child may run for another agent");
+    const probed = data.probes.filter((probe) => probe.kind === "checkout").map((probe) => probe.target);
+    for (const slug of BASE_SLUGS) {
+      if (slug === "alpha") continue;
+      assert.equal(probed.some((target) => target.includes(`/${slug}`)), false, `a checkout probe ran for ${slug}`);
+    }
+  });
+
+  check("--domain systemd emits one domain and spawns nothing at all", () => {
+    const shim = entry("domain-systemd", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--domain", "systemd", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    assert.equal(result.status, 0);
+    const data = status(result);
+    assert.deepEqual(data.domains.map((rollup) => rollup.domain), ["systemd"]);
+    assert.equal(data.domains[0].state, "unsupported", "no systemd observer exists in this release");
+    assert.deepEqual(invocationsOf(shim), [], "zero audit children");
+    assert.deepEqual(data.probes, [], "zero probes");
+    for (const agent of data.agents) {
+      assert.deepEqual(Object.keys(agent.domains), ["systemd"], "the other eight must not be implied");
+    }
+  });
+
+  check("--domain registry --live spawns no audit child and no provenance probe", () => {
+    const shim = entry("domain-registry", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--domain", "registry", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.deepEqual(data.domains.map((rollup) => rollup.domain), ["registry"]);
+    assert.deepEqual(invocationsOf(shim), [], "zero audit children");
+    assert.deepEqual(data.probes, [], "zero provenance probes");
+    assert.equal(data.scope.domain, "registry");
+  });
+
+  check("an unknown --agent fails NOT_FOUND before anything spawns", () => {
+    const shim = entry("never-for-typo", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--agent", "definitely-not-registered", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    assert.equal(result.status, 3, `a typo must exit 3, got ${result.status}`);
+    assert.equal(errorCode(envelope(result)), "NOT_FOUND");
+    assert.doesNotMatch(result.stderr, /at .*\n\s+at /u, "no stack trace");
+    // DW-56: story 1.3 validated --agent only AFTER the whole sweep, which made
+    // a typo behind a slow fleet exit 7 instead of 3.
+    assert.deepEqual(invocationsOf(shim), [], "the id must be rejected before a single child spawns");
+  });
+
+  check("an unknown --domain fails INVALID_INPUT and names the nine", () => {
+    const shim = entry("never-for-domain", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const result = cli(["fleet", "status", "--domain", "bogus", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    assert.equal(result.status, 2, `a bad domain must exit 2, got ${result.status}`);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "INVALID_INPUT");
+    for (const domain of DOMAINS) {
+      assert.ok(parsed.error.message.includes(domain), `the message must name ${domain}`);
+    }
+    assert.deepEqual(invocationsOf(shim), []);
+  });
+
+  check("an option-shaped or empty flag value is refused, not consumed", () => {
+    for (const args of [
+      ["fleet", "status", "--domain", "--json"],
+      ["fleet", "status", "--agent", ""],
+      ["fleet", "status", "--deadline-ms", "0x10", "--json"],
+      ["fleet", "status", "--deadline-ms", "1e3", "--json"],
+    ]) {
+      const result = cli(args);
+      assert.equal(result.status, 2, `${args.join(" ")} must exit 2, got ${result.status}`);
+    }
+  });
+
+  // -- AC7 / AC8: a broken child is a categorized error, never a pass ---------
+
+  check("a child that prints non-JSON errors ONE agent and leaves the rest byte-identical", () => {
+    const clean = entry("selective-clean", syntheticReport([PROJECT_PASS_RULE]));
+    const garbage = entry("selective-garbage", `${RECORD_PREAMBLE}
+if (REPO.endsWith("/alpha")) { process.stdout.write("this is not json at all\\n"); process.exit(0); }
+${syntheticReport([PROJECT_PASS_RULE]).slice(RECORD_PREAMBLE.length)}`);
+    resetEntry(clean);
+    resetEntry(garbage);
+    const baseline = status(cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: clean }));
+    const result = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: garbage });
+    assert.equal(result.status, 0, "a collection error is not a command failure");
+    const data = status(result);
+    const broken = agentNamed(data, "alpha-pm");
+    for (const domain of AUDIT_FED) {
+      assert.equal(broken.domains[domain], "error", `${domain} must be error, not pass`);
+    }
+    assert.equal(data.health.complete, false);
+    assert.ok(data.health.collection_errors >= 1, "the unparseable child must be counted");
+    assert.ok(data.findings.some((finding) => finding.code === "audit-failed"), "the collection error must be a finding");
+    const before = new Map(baseline.agents.map((agent) => [agent.agent_id, JSON.stringify(agent)]));
+    for (const agent of data.agents) {
+      if (agent.agent_id === "alpha-pm") continue;
+      assert.equal(JSON.stringify(agent), before.get(agent.agent_id), `${agent.agent_id} must be byte-identical to the clean run`);
+    }
+  });
+
+  await checkAsync("a child that hangs times out to unobserved, leaves no survivor, and exits 0", async () => {
+    const hang = entry("selective-hang", `${RECORD_PREAMBLE}
+import { appendFileSync as record } from "node:fs";
+if (REPO.endsWith("/alpha")) {
+  record(join(HERE, "pids"), process.pid + "\\n");
+  setTimeout(() => {}, 120000);
+} else {
+${syntheticReport([PROJECT_PASS_RULE]).slice(RECORD_PREAMBLE.length)}
+}`);
+    resetEntry(hang);
+    const result = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: hang });
+    assert.equal(result.status, 0, "a per-child timeout downgrades one agent; the run still succeeds");
+    const data = status(result);
+    const stalled = agentNamed(data, "alpha-pm");
+    for (const domain of AUDIT_FED) {
+      assert.equal(stalled.domains[domain], "unobserved", `${domain} must be unobserved after a timeout`);
+    }
+    const reason = stalled.observations.find((observation) => observation.source === "recipe-audit");
+    assert.match(reason.summary, /timeout/u, "the reason must name the timeout");
+    const probe = data.probes.find((item) => item.kind === "audit" && item.outcome === "timeout");
+    assert.ok(probe, "the timed-out child must be recorded as a probe");
+    assert.equal(probe.reason, "timeout");
+    for (const agent of data.agents) {
+      if (agent.agent_id === "alpha-pm") continue;
+      assert.notEqual(agent.domains.template_scaffold, "unobserved", `${agent.agent_id} must be unaffected`);
+    }
+    await new Promise((wake) => setTimeout(wake, 1500));
+    const pidFile = join(dirname_(hang), "pids");
+    const pids = existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim().split("\n").filter(Boolean) : [];
+    assert.ok(pids.length > 0, "the hanging child must actually have run for this case to mean anything");
+    const survivors = pids.filter((pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } });
+    assert.deepEqual(survivors, [], "no audit child may survive its own timeout");
+  });
+
+  check("a missing CLI entry is a categorized collection error, not a crash", () => {
+    const missing = join(shimRoot, "there-is-no-entry-here.mjs");
+    const result = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: missing });
+    assert.equal(result.status, 0, "no crash");
+    const data = status(result);
+    assert.equal(data.totals.audits_attempted, 0);
+    assert.ok(data.findings.some((finding) => finding.code === "audit-cli-unavailable"));
+    for (const agent of data.agents) {
+      for (const domain of AUDIT_FED) {
+        assert.equal(agent.domains[domain], "unobserved", `${domain} must be unobserved, never assumed`);
+      }
+      const reason = agent.observations.find((observation) => observation.source === "recipe-audit");
+      assert.match(reason.summary, /audit-cli-unavailable/u);
+      // The inventory and provenance halves are STILL fully reported.
+      assert.ok(["pass", "warn", "fail"].includes(agent.domains.registry), `registry must still be observed, got ${agent.domains.registry}`);
+      assert.notEqual(agent.domains.release_provenance, undefined);
+    }
+    assert.equal(data.health.complete, false);
+  });
+
+  // -- AC11: whole-run deadline and cancellation are COMMAND failures --------
+
+  check("a blown --deadline-ms is TIMEOUT at exit 7 with no partial result", () => {
+    const result = cli(["fleet", "status", "--live", "--deadline-ms", "1", "--json"]);
+    assert.equal(result.status, 7, `expected exit 7, got ${result.status}`);
+    const parsed = envelope(result);
+    assert.equal(errorCode(parsed), "TIMEOUT");
+    assert.equal(parsed.data, null, "no partial result may claim health");
+  });
+
+  check("a deadline large enough to succeed still succeeds", () => {
+    // Without this, a sign flip in `createRunContext` would leave every deadline
+    // case green while turning the flag into a switch that fails at any value.
+    const result = cli(["fleet", "status", "--deadline-ms", "180000", "--json"]);
+    assert.equal(result.status, 0, `a generous deadline must not fail: ${result.stderr}`);
+    status(result);
+  });
+
+  await checkAsync("SIGINT is CANCELLED at exit 8 and kills the children it started", async () => {
+    const hang = entry("cancel-hang", `${RECORD_PREAMBLE}
+import { appendFileSync as record } from "node:fs";
+record(join(HERE, "pids"), process.pid + "\\n");
+setTimeout(() => {}, 120000);
+`);
+    resetEntry(hang);
+    const before = snapshot();
+    const captured = await new Promise((settle) => {
+      const child = spawn(process.execPath, [CLI, "fleet", "status", "--live", "--json"], {
+        cwd: workdir,
+        env: { ...process.env, ...isolation, PJ_FLEET_CLI_ENTRY: hang },
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += chunk; });
+      const killer = setTimeout(() => child.kill("SIGINT"), 2500);
+      const guard = setTimeout(() => child.kill("SIGKILL"), 90_000);
+      child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, out }); });
+    });
+    assert.deepEqual(snapshot(), before, "a cancelled run must still have written nothing");
+    assert.equal(captured.code, 8, `expected exit 8, got ${captured.code}`);
+    const parsed = JSON.parse(captured.out);
+    assert.equal(parsed.error?.code, "CANCELLED");
+    assert.equal(parsed.data, null);
+    await new Promise((wake) => setTimeout(wake, 2000));
+    const pidFile = join(dirname_(hang), "pids");
+    const pids = existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim().split("\n").filter(Boolean) : [];
+    assert.ok(pids.length > 0, "a child must have been started for this case to mean anything");
+    const survivors = pids.filter((pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } });
+    assert.deepEqual(survivors, [], "no audit child may survive a cancellation");
+  });
+
+  // -- AC9 / AC10: the flush fix, at a payload the defect can reach -----------
+
+  await checkAsync("a >64 KiB envelope is byte-identical to a file, a pty, a pipe, and a spawn capture", async () => {
+    const args = ["fleet", "status", "--json"];
+    const env = { ...process.env, ...isolation };
+    const outFile = join(shimRoot, "status-file.json");
+    rmSync(outFile, { force: true });
+
+    const toFile = spawnSync("sh", ["-c", `exec "$0" "$@" > ${JSON.stringify(outFile)}`, process.execPath, CLI, ...args], { cwd: workdir, env, timeout: 180_000 });
+    assert.equal(toFile.status, 0, "the file capture must succeed");
+    const fileText = readFileSync(outFile, "utf8");
+    assert.ok(fileText.length > 65_536, `payload is only ${fileText.length} bytes; below the pipe buffer the defect cannot fire`);
+
+    const pipe = spawnSync("sh", ["-c", `"$0" "$@" | cat`, process.execPath, CLI, ...args], { cwd: workdir, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
+    const spawned = spawnSync(process.execPath, [CLI, ...args], { cwd: workdir, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
+
+    const captures = { file: fileText, pipe: pipe.stdout, spawn: spawned.stdout };
+    if (spawnSync("sh", ["-c", "command -v script"], { encoding: "utf8" }).status === 0) {
+      const ptyFile = join(shimRoot, "status-pty.json");
+      rmSync(ptyFile, { force: true });
+      const pty = spawnSync("script", ["-qec", `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} ${args.join(" ")} > ${JSON.stringify(ptyFile)}`, "/dev/null"], { cwd: workdir, env, timeout: 180_000 });
+      assert.equal(pty.status, 0, "the pty capture must succeed");
+      // A pty is line-disciplined, so LF is echoed as CRLF. The bytes this case
+      // is about are the DOCUMENT's; the terminal's line ending is not one of
+      // them, so it is normalized rather than asserted on.
+      captures.pty = readFileSync(ptyFile, "utf8").replace(/\r\n/gu, "\n");
+    } else {
+      skip("the pty capture", "`script` is not on this host");
+    }
+
+    for (const [name, text] of Object.entries(captures)) {
+      assert.ok(text.length > 0, `${name} captured nothing`);
+      assert.equal(text.endsWith("}\n"), true, `${name} must end in exactly one newline after the closing brace`);
+      assert.equal(text.endsWith("}\n\n"), false, `${name} must not end in two newlines`);
+      let parsed;
+      try { parsed = JSON.parse(text); }
+      catch (error) { assert.fail(`${name} (${text.length} bytes) is not one complete JSON document: ${error.message}`); }
+      assert.equal(parsed.ok, true);
+      assert.equal(text, fileText, `${name} differs from the file capture (${text.length} vs ${fileText.length} bytes)`);
+    }
+  });
+
+  check("pjangler audit --json survives a pipe and a spawn at a payload past the buffer", () => {
+    // The status core PARSES this child's stdout, so its truncation is a
+    // correctness dependency of this story rather than adjacent cleanup. The
+    // report is grown past 64 KiB by a repository with many role directories --
+    // `hermes.untracked-runtimes` reports one detail line per role.
+    const big = join(temp, "audit-scale");
+    if (!existsSync(big)) {
+      mkdirSync(big, { recursive: true });
+      for (let index = 0; index < 400; index += 1) {
+        const role = join(big, "agents", "hermes", `role-with-a-fairly-long-name-number-${index}`);
+        mkdirSync(role, { recursive: true });
+        writeFileSync(join(role, "role.yaml"), "role: pm\n", "utf8");
+      }
+      assert.equal(git(big, ["init", "--quiet"]).status, 0);
+    }
+    const env = { ...process.env, ...isolation };
+    const pipe = spawnSync("sh", ["-c", `"$0" "$@" | cat`, process.execPath, CLI, "audit", big, "--json"], { cwd: workdir, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
+    const spawned = spawnSync(process.execPath, [CLI, "audit", big, "--json"], { cwd: workdir, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000 });
+    assert.ok(pipe.stdout.length > 65_536, `the audit report is only ${pipe.stdout.length} bytes; below the buffer the defect cannot fire`);
+    for (const [name, text] of [["pipe", pipe.stdout], ["spawn", spawned.stdout]]) {
+      let parsed;
+      try { parsed = JSON.parse(text); }
+      catch (error) { assert.fail(`audit --json through a ${name} (${text.length} bytes) is truncated: ${error.message}`); }
+      assert.ok(Array.isArray(parsed.rules), `the ${name} capture must be a complete report`);
+    }
+    // The exit code is still the audit's own: 1 on a repository out of parity.
+    // The flush fix keeps forced termination and removes only the truncation.
+    assert.equal(pipe.status, 0, "the pipeline's status is `cat`'s");
+    assert.equal(spawned.status, 1, "a drifted repository still exits 1");
+  });
+
+  check("--json into a closed pipe writes no stack trace", () => {
+    const result = spawnSync("sh", ["-c", `"$0" "$@" | head -c 10`, process.execPath, CLI, "fleet", "status", "--json"], {
+      cwd: workdir, env: { ...process.env, ...isolation }, encoding: "utf8", timeout: 180_000,
+    });
+    assert.doesNotMatch(result.stderr ?? "", /EPIPE|Error:|at .*\n\s+at /u, `a closed pipe produced: ${result.stderr}`);
+  });
+
+  // -- AC13: bounds preserve the counts and name the way to the rest ----------
+
+  check("a fleet past the agent cap keeps its totals and names the retrieval", () => {
+    const slugs = Array.from({ length: MAX_AGENTS + 20 }, (unused, index) => `scale${index}`);
+    const agents = join(temp, "scale-agents.yaml");
+    const projects = join(temp, "scale-projects.yaml");
+    writeAgentRegistry(agents, slugs);
+    writeProjectRegistry(projects, slugs);
+    // `--domain registry` so the cap is exercised without 520 audit children --
+    // the cap is the subject, not the collection around it.
+    const data = status(cli([
+      "fleet", "status", "--domain", "registry", "--json",
+      "--agent-registry", agents, "--project-registry", projects,
+    ]));
+    assert.equal(data.totals.agents, slugs.length, "totals must count every registered agent");
+    assert.equal(data.totals.emitted_agents, MAX_AGENTS);
+    assert.equal(data.agents.length, MAX_AGENTS);
+    const note = data.truncated.find((item) => item.startsWith("agents:"));
+    assert.ok(note, `truncated must name the dotted path, got ${JSON.stringify(data.truncated)}`);
+    assert.match(note, /pjangler fleet status --agent <id> --json/u, "a clipped envelope must name how to get the rest");
+    assert.equal(data.health.complete, false, "a clipped run is not complete");
+    assert.equal(data.health.truncated, true);
+    rmSync(agents, { force: true });
+    rmSync(projects, { force: true });
+  });
+
+  check("an agent past the observation cap keeps its counts and carries a retrieval", () => {
+    // UNIQUE ids: `RecipeRegistry.register` refuses a duplicate rule id, so a
+    // report repeating one is a shape the real audit cannot produce and a cap
+    // proved against it would be proved against a fiction.
+    const rules = Array.from({ length: MAX_OBSERVATIONS + 60 }, (unused, index) => ({
+      id: `bulk.rule-${index}`, title: "bulk", status: "pass",
+      summary: `bulk observation ${index}`, details: [], fixable: false, scope: "project",
+    }));
+    const shim = entry("bulk", syntheticReport(rules));
+    resetEntry(shim);
+    const data = status(cli(["fleet", "status", "--agent", "alpha-pm", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const agent = agentNamed(data, "alpha-pm");
+    assert.equal(agent.truncated, true, "the clipped record must say so");
+    assert.equal(agent.observations.length, MAX_OBSERVATIONS);
+    assert.match(agent.retrieval, /^pjangler fleet status --agent alpha-pm /u, "a clipped record must carry the command that returns the rest");
+    assert.ok(data.totals.observations > data.totals.emitted_observations, "totals must still count everything");
+    assert.ok(data.truncated.some((item) => item.startsWith("agents.alpha-pm.observations:")), `truncated must name the dotted path, got ${JSON.stringify(data.truncated)}`);
+    assert.equal(agent.complete, false, "a clipped record is not complete");
+    // The clip alone must not move the health verdict: the rollup is computed
+    // from the FULL set, so a bound on what the envelope carries cannot change
+    // what it concludes.
+    assert.equal(agent.healthy, true, "clipping is an incompleteness, never a drift");
+  });
+
+  // -- AC14: credentials are excluded by construction -------------------------
+
+  check("no credential reaches the JSON, the report, the findings, or a child environment", () => {
+    const shim = entry("env-capture", syntheticReport([PROJECT_PASS_RULE]));
+    resetEntry(shim);
+    const json = cli(["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
+    const report = cli(["fleet", "status", "--live"], { PJ_FLEET_CLI_ENTRY: shim });
+    for (const [name, text] of [["--json", json.stdout], ["the human report", report.stdout]]) {
+      assert.equal(text.includes(SECRET_SENTINEL), false, `the sentinel value reached ${name}`);
+      for (const key of CREDENTIAL_KEYS) {
+        assert.equal(text.includes(key), false, `the credential key name ${key} reached ${name}`);
+      }
+    }
+    const keys = childEnvKeys(shim);
+    assert.ok(Array.isArray(keys) && keys.length > 0, "the shim must have recorded its environment for this case to mean anything");
+    for (const key of CREDENTIAL_KEYS) {
+      assert.equal(keys.includes(key), false, `the audit child received ${key}`);
+    }
+    assert.ok(keys.includes("HOME") && keys.includes("PATH"), "the child must still receive what an audit needs");
+  });
+
+  // -- AC15: determinism and zero writes --------------------------------------
+
+  check("two consecutive runs produce byte-identical data", () => {
+    const shim = entry("determinism", syntheticReport([PROJECT_WARN_RULE, HOST_FAIL_RULE]));
+    resetEntry(shim);
+    for (const args of [["fleet", "status", "--json"], ["fleet", "status", "--live", "--json"]]) {
+      const first = cli(args, { PJ_FLEET_CLI_ENTRY: shim });
+      const second = cli(args, { PJ_FLEET_CLI_ENTRY: shim });
+      assert.equal(first.stdout, second.stdout, `${args.join(" ")} is not byte-stable across two runs`);
+      const data = JSON.parse(first.stdout).data;
+      assert.equal(JSON.stringify(data), JSON.stringify(JSON.parse(second.stdout).data));
+    }
+  });
+
+  check("the human report leads with the verdict, its reasons, and the completeness split", () => {
+    const result = cli(["fleet", "status"]);
+    assert.notEqual(result.stdout, "", "the human report must not be empty");
+    assert.equal(result.status, 0, `an unhealthy fleet is data, not a failure exit: got ${result.status} ${result.stderr}`);
+    const out = result.stdout;
+    assert.match(out.split("\n").slice(0, 3).join("\n"), /Fleet status (healthy|UNHEALTHY)/u, "the verdict must lead");
+    for (const reason of ["failed", "errors", "warned", "unobserved", "unsupported", "skipped"]) {
+      assert.match(out, new RegExp(`\\d+ ${reason}`, "u"), `the verdict's reasons must name ${reason}`);
+    }
+    assert.ok(out.indexOf("Fleet status") < out.indexOf("Agents"), "the verdict must come before the agent dump");
+    for (const domain of DOMAINS) assert.ok(out.includes(domain), `the report must name the ${domain} domain`);
+    assert.match(out, /Host \(this machine/u, "the host block must be visibly separate from the agents");
+    assert.ok(out.indexOf("Domains") < out.indexOf("Agents"), "the per-domain rollup must precede the agents");
+  });
+
+  // -- The declared vocabulary is the code's, not a second copy ---------------
+
+  check("the nine status domains are not the contract's three policy_domains", () => {
+    const source = readFileSync(join(ROOT, "src", "fleet", "types.ts"), "utf8");
+    const block = source.slice(source.indexOf("FLEET_STATUS_DOMAINS"));
+    for (const domain of DOMAINS) {
+      assert.ok(block.includes(`"${domain}"`), `FLEET_STATUS_DOMAINS must declare ${domain}`);
+    }
+    // Parsed, not grepped: a `- ` list-item regex walks straight into the NEXT
+    // entry of the enclosing list, which is how this case first "found" an
+    // `id:` line among the policy domains.
+    const contract = YAML.parse(readFileSync(TRACKED_CONTRACT, "utf8"));
+    const policy = Object.values(contract.classifications ?? {})
+      .flatMap((classification) => classification.entries ?? [])
+      .flatMap((entry) => entry.policy_domains ?? []);
+    assert.ok(policy.length > 0, "the contract must declare policy_domains for this case to mean anything");
+    assert.deepEqual([...new Set(policy)].sort(), ["bloodbank", "profile", "systemd"], "the contract's axis is the three-value one");
+    // The story HALTS rather than widening the contract, so the tracked file
+    // must still not know about the six status domains that are not policy ones.
+    for (const domain of DOMAINS) {
+      if (["bloodbank", "profile", "systemd"].includes(domain)) continue;
+      assert.equal(policy.includes(domain), false, `the contract's policy_domains must not have grown ${domain}`);
+    }
+  });
+
+  check("the state precedence is read, not merely declared", () => {
+    const source = readFileSync(join(ROOT, "src", "fleet", "status.ts"), "utf8");
+    assert.match(source, /for \(const state of FLEET_STATUS_STATE_PRECEDENCE\)/u, "rollUp must iterate the exported precedence constant");
+    const types = readFileSync(join(ROOT, "src", "fleet", "types.ts"), "utf8");
+    const declared = /FLEET_STATUS_STATE_PRECEDENCE = \[\s*([^\]]+)\]/u.exec(types);
+    assert.ok(declared, "the precedence must be declared as a list");
+    const order = declared[1].split(",").map((item) => item.trim().replace(/"/gu, "")).filter(Boolean);
+    assert.deepEqual(order, ["error", "unobserved", "unsupported", "fail", "warn", "skip", "pass"]);
+  });
+
+  // -- The gates that make this reachable on a fresh clone -------------------
+
+  check("the suite, the mise task, the README and the MCP list all know about status", () => {
+    const runner = readFileSync(join(ROOT, "scripts", "run-tests.mjs"), "utf8");
+    assert.match(runner, /tests\/fleet-status-regressions\.mjs/u, "a suite not listed in SUITES never runs");
+    const mise = readFileSync(join(ROOT, "mise.toml"), "utf8");
+    const task = mise.slice(mise.indexOf('[tasks."fleet:status"]'));
+    assert.ok(task.startsWith('[tasks."fleet:status"]'), "mise must expose fleet:status");
+    assert.match(task.slice(0, 600), /depends = \["build"\]/u, "without a build the task fails with ERR_MODULE_NOT_FOUND, which teaches nothing");
+    const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+    assert.match(readme, /^## Fleet status$/mu, "the README must document the command");
+    const section = readme.slice(readme.indexOf("## Fleet status"), readme.indexOf("## Orienting in a repo"));
+    for (const domain of DOMAINS) assert.ok(section.includes(domain), `the README must name the ${domain} domain`);
+    for (const state of ["pass", "warn", "skip", "fail", "unsupported", "unobserved", "error"]) {
+      assert.ok(section.includes(`\`${state}\``), `the README must name the ${state} state`);
+    }
+    assert.match(section, /--live/u, "the README must say what --live does and does not authorize");
+    assert.match(readme, /- `pjangler_fleet_status`/u, "the MCP tool list must carry the new tool");
+  });
+
+  check("the deferred-work ledger records what this story leaves behind", () => {
+    const ledger = readFileSync(join(ROOT, "_bmad-output", "implementation-artifacts", "deferred-work.md"), "utf8");
+    assert.match(ledger, /spec-1-4-deliver-parse-safe-registry-wide-fleet-status/u, "the ledger must name this story's spec as a source");
+    assert.match(ledger, /process\.exit\(\)/u, "the ledger must record the remaining unflushed exits");
+  });
+
+  // -- Live-source cases: the ONLY ones allowed to skip -----------------------
+
+  check("the real fleet reports every registered agent across all nine domains", () => {
+    if (!existsSync(REAL_AGENT_REGISTRY) || !existsSync(REAL_PROJECT_REGISTRY)) {
+      skipCase("the real fleet reports every registered agent across all nine domains", "the operator's live registries are not on this host");
+    }
+    const registered = Object.keys(YAML.parse(readFileSync(REAL_AGENT_REGISTRY, "utf8"))?.agents ?? {});
+    if (registered.length === 0) skipCase("the real fleet reports every registered agent across all nine domains", "the live registry declares no agents");
+    const result = spawnSync(process.execPath, [CLI, "fleet", "status", "--json"], {
+      cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000,
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    assert.equal(result.status, 0, `the live fleet must report at exit 0: ${result.stderr}`);
+    const data = JSON.parse(result.stdout).data;
+    assert.deepEqual(data.agents.map((agent) => agent.agent_id).sort(), [...registered].sort());
+    assert.equal(data.scope.total_registered_agents, registered.length);
+    for (const agent of data.agents) {
+      assert.deepEqual(Object.keys(agent.domains).sort(), [...DOMAINS].sort());
+    }
+  });
+
+  check("the real audit CLI, spawned as a child, feeds the live fleet's domains", () => {
+    if (!existsSync(REAL_AGENT_REGISTRY) || !existsSync(REAL_PROJECT_REGISTRY)) {
+      skipCase("the real audit CLI, spawned as a child, feeds the live fleet's domains", "the operator's live registries are not on this host");
+    }
+    // No shim: this is the real `dist/index.js audit` path, on the real fleet.
+    const result = spawnSync(process.execPath, [CLI, "fleet", "status", "--live", "--json"], {
+      cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 300_000,
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    assert.equal(result.status, 0, `a live run must exit 0: ${result.stderr}`);
+    const data = JSON.parse(result.stdout).data;
+    assert.ok(data.totals.audits_attempted > 0, "a live run must spawn audit children");
+    assert.equal(data.totals.audits_observed, data.totals.audits_attempted, "every real audit child must return a parseable report");
+    const hostIds = data.host.map((finding) => finding.rule_id);
+    assert.equal(new Set(hostIds).size, hostIds.length, "the host block must be deduped by rule id");
+    assert.ok(hostIds.length > 0, "the live audit declares host-scoped rules; they must reach data.host");
+  });
+} catch (error) {
+  if (!(error instanceof SkipCase)) throw error;
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+  rmSync(shimRoot, { recursive: true, force: true });
+}
+
+if (failures) {
+  console.error(`\n${failures} fleet status check(s) failed`);
+  process.exit(1);
+}
+console.log(`fleet status regressions passed${skipped ? ` (${skipped} skipped)` : ""}`);
