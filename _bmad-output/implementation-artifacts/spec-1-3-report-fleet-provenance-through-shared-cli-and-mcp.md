@@ -2,7 +2,7 @@
 title: 'Story 1.3: Report Fleet Provenance Through Shared CLI and MCP'
 type: 'feature'
 created: '2026-09-01'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '25fb40682a32f09364f041f2cf59d64fa7b6e38a'
 review_loop_iteration: 0
 followup_review_recommended: false
