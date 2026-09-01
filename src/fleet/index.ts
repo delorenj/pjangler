@@ -23,6 +23,7 @@ export {
   classifyPath,
   collectFleetInventory,
   conflictGroupId,
+  declaredRowClass,
   detectConflicts,
   isSafePathSegment,
   matchException,

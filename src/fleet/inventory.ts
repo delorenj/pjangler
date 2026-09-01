@@ -43,6 +43,7 @@ import {
   FleetError,
   type FleetBoardBinding,
   type FleetConflictGroup,
+  type FleetClassificationId,
   type FleetContract,
   type FleetFieldState,
   type FleetFieldValue,
@@ -978,9 +979,14 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     agent_id: entry.keyIsString && idSafe
       ? field(agentId, agentNamespaceOwner, "resolved")
       : field(agentId, agentNamespaceOwner, "unresolved"),
-    // The lifecycle class of a registered row. It is `managed_agent` because the
-    // row exists in the registry the contract declares as its owner -- nothing
-    // here observes anything to decide otherwise.
+    // The DEFAULT lifecycle class. A registered row is `managed_agent` because
+    // it exists in the registry the contract declares as its owner, and a
+    // malformed one is `unclassified` because nothing about it could be read.
+    //
+    // Neither is the last word: `declaredRowClass` runs over the whole row set
+    // below and promotes any row the contract has recorded an entry for. It has
+    // to happen there rather than here because it is a read of contract POLICY
+    // about the fleet, not of the entry in front of us.
     classification: entry.malformed
       ? field("unclassified", agentNamespaceOwner, "unresolved")
       : field("managed_agent", agentNamespaceOwner, "resolved"),
@@ -1073,6 +1079,72 @@ interface ConflictInput {
   duplicateProjectKeys: string[];
   authority: FleetAuthorityIndex;
   contract: FleetContract;
+}
+
+/**
+ * The lifecycle classes a CONTRACT ENTRY can declare a registry row into,
+ * strongest first.
+ *
+ * Only these two, and the order is the rule: `retired` is a sighting of a mode
+ * the contract has withdrawn, `intentionally_unmanaged` is state an operator
+ * decided to observe and leave alone, and a row an operator has ruled on that
+ * ALSO matches a retired mode is a retired one -- reporting it as "leave it
+ * alone" would file the strongest statement under the weakest.
+ *
+ * `managed_agent` is the default and is declared by the row's existence, not by
+ * an entry. `managed_shared_service` describes state that is not a per-agent row
+ * at all, so no agent row can be declared into it. `unclassified` is what a
+ * malformed row gets and nothing may promote it.
+ */
+const DECLARED_ROW_CLASSES = ["retired", "intentionally_unmanaged"] as const;
+
+/**
+ * Does one classification entry claim THIS agent row?
+ *
+ * Two spellings, and both are exact:
+ *
+ *   `participants` contains the agent id -- the same convention `matchException`
+ *   already uses for a conflict-group ruling, so an operator writes one shape.
+ *
+ *   `source` is the CONCRETE row path `agents.<agent_id>`.
+ *
+ * The `{agent_id}` PLACEHOLDER form is deliberately not matched. It is the
+ * SHAPE of a path rather than an instance of one -- every authority block in the
+ * contract writes it that way -- so honouring it would let a single entry sweep
+ * the whole fleet into a class nobody ruled on, which is precisely the
+ * widening `matchException` refuses on a participant set.
+ */
+function entryClaimsAgent(entry: Record<string, unknown>, agentId: string): boolean {
+  const participants = Array.isArray(entry.participants)
+    ? entry.participants.filter((item): item is string => typeof item === "string")
+    : [];
+  if (participants.includes(agentId)) return true;
+  return nonEmptyString(entry.source) === `agents.${agentId}`;
+}
+
+/**
+ * The lifecycle class the CONTRACT declares for one agent row, or null.
+ *
+ * DW-30's second half. The first half typed the field against
+ * `FLEET_CLASSIFICATION_IDS`; this is what gives it something other than one of
+ * two constants to say. A row is `managed_agent` because it exists in the
+ * registry the contract declares as its owner -- unless the contract has
+ * recorded an entry that names it, which is the only thing that may say
+ * otherwise.
+ *
+ * The tracked contract declares zero entries in both classes today, so every
+ * live row still resolves `managed_agent` and `fleet inventory` output is
+ * unchanged. That is the point: this reads policy rather than inventing it.
+ */
+export function declaredRowClass(contract: FleetContract, agentId: string): FleetClassificationId | null {
+  for (const id of DECLARED_ROW_CLASSES) {
+    const entries = contract.classifications?.[id]?.entries ?? [];
+    for (const entry of entries) {
+      if (!isRecord(entry)) continue;
+      if (entryClaimsAgent(entry, agentId)) return id;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1494,37 +1566,32 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     row.conflicts.sort((a, b) => (a < b ? -1 : 1));
   }
 
-  // -- lifecycle class: resolved against the contract, not a literal ---------
+  // -- lifecycle class: resolved against the contract's DECLARED entries -----
   //
-  // DW-30. Every well-formed row used to get the bare string `managed_agent`
-  // and every malformed one `unclassified`, typed against nothing -- so a typo
-  // compiled and shipped, and the field could never report
-  // `intentionally_unmanaged` even though the contract declares the class and
-  // records real entries under it. A value that can only ever be one of two
-  // constants carries no information, and story 1.5 counts agents into six
-  // buckets two of which were therefore always empty.
+  // DW-30's second half. Every well-formed row used to get the bare string
+  // `managed_agent` and every malformed one `unclassified`, typed against
+  // nothing -- so a typo compiled and shipped, and the field could never report
+  // `intentionally_unmanaged` or `retired` even though the contract declares
+  // both classes and has entry lists for them. A value that can only ever be
+  // one of two constants carries no information.
   //
-  // A row whose EVERY identity conflict is covered by an
-  // `classifications.intentionally_unmanaged` entry is exactly what that class
-  // describes: state an operator has decided the control plane must observe,
-  // report, and leave alone. A row with one covered conflict and one unruled
-  // conflict is NOT -- an operator decision must never widen itself to absorb a
-  // claimant nobody ruled on, which is the same rule `matchException` already
-  // enforces on the participant set.
-  const groupsById = new Map(conflicts.map((group) => [group.id, group]));
+  // DECLARED, and only declared. This does not infer a class from an observed
+  // conflict, a permitted exception, or anything else this command noticed: an
+  // operator ruling recorded under `classifications.*.entries` is the one thing
+  // that may promote a row, and if the contract says nothing the row stays
+  // `managed_agent`. The shipped contract declares no entries in either class,
+  // so every live row resolves exactly as it did before.
+  //
+  // A MALFORMED row is never promoted. Nothing about it could be read, so there
+  // is no identity to match an entry against, and `unclassified` is the honest
+  // answer rather than a class an entry claimed for a row it may not be about.
   for (const row of allRows) {
     if (row.malformed) continue;
-    if (row.conflicts.length === 0) continue;
-    const groups = row.conflicts.map((id) => groupsById.get(id));
-    if (!groups.every((group) => group !== undefined && group.permitted)) continue;
-    row.classification = {
-      ...row.classification,
-      value: "intentionally_unmanaged",
-      // `resolved` stays: the class WAS resolved, from a contract entry that
-      // names these exact participants. The conflict is still reported and
-      // still visible; what changed is that the row says who decided it.
-      state: "resolved",
-    };
+    const id = row.agent_id.value;
+    if (id === null) continue;
+    const declared = declaredRowClass(contract, id);
+    if (declared === null) continue;
+    row.classification = { ...row.classification, value: declared, state: "resolved" };
   }
   for (const group of conflicts) {
     if (group.participant_kind !== "project") continue;

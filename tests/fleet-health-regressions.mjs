@@ -1028,6 +1028,99 @@ try {
     assert.ok(data.health.members.unhealthy >= 1, "a failing rule must put its agent in the unhealthy bucket");
   });
 
+  check("a contract-declared lifecycle class puts its row in the exception bucket", () => {
+    // DW-30's second half, proven by making the branch FIRE rather than by
+    // asserting it exists. `classifyMember` has an
+    // `else if (classification === "intentionally_unmanaged")` arm, and until
+    // `declaredRowClass` existed no input could reach it: every row was one of
+    // two literals, so the `exception` bucket had one live path and one dead
+    // one and could never be non-zero for a healthy agent.
+    //
+    // `source: agents.alpha-pm` rather than `participants` on purpose. Both
+    // spellings claim a row, but `participants` ALSO justifies a conflict
+    // group, which would reach the same bucket by the other road -- and a case
+    // that cannot tell the two roads apart proves neither.
+    const declared = writeContract("declared-class", policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = [{
+        id: "alpha-pm-observed-only",
+        kind: "managed-agent-exception",
+        owner: "hermes-agent-registry",
+        source: "agents.alpha-pm",
+        lifecycle_state: "accepted",
+        rationale: "This fixture declares alpha-pm as state the control plane observes and leaves alone.",
+        policy_domains: ["profile"],
+      }];
+    }));
+
+    // The contract has to still VALIDATE, or the case is proving that a broken
+    // contract is refused rather than that a declared class is honoured.
+    const validated = envelope(cli(["fleet", "contract", "validate", "--contract", declared, "--json"]));
+    assert.equal(validated.ok, true, `the declaring contract must validate: ${JSON.stringify(validated.error)}`);
+
+    const rows = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", declared]).stdout).data.rows;
+    const alphaRow = rows.find((row) => row.agent_id.value === "alpha-pm");
+    const betaRow = rows.find((row) => row.agent_id.value === "beta-pm");
+    assert.equal(alphaRow.classification.value, "intentionally_unmanaged", "the declared row must resolve to the declared class");
+    assert.equal(alphaRow.classification.state, "resolved");
+    assert.equal(betaRow.classification.value, "managed_agent", "and a row no entry names must be untouched");
+
+    const args = ["fleet", "status", "--json", "--domain", "registry", "--contract", declared];
+    const data = status(cli(args));
+    const alpha = agentNamed(data, "alpha-pm");
+    assert.equal(alpha.healthy, true, "the branch is only reachable for an otherwise-healthy agent");
+    assert.equal(alpha.member_class, "exception");
+    assert.equal(data.health.members.exception, 1);
+    assert.equal(agentNamed(data, "beta-pm").member_class, "healthy");
+    assert.equal(
+      Object.values(data.health.members).reduce((sum, count) => sum + count, 0),
+      data.scope.selected_agents,
+      "the six buckets must still sum to the selection",
+    );
+
+    // A DELTA against the identical run on a contract that declares nothing.
+    // Without it, `exception: 1` could be produced by anything about the
+    // fixture; with it, the entry is the only difference.
+    const undeclared = status(cli(["fleet", "status", "--json", "--domain", "registry", "--contract", cleanContract]));
+    assert.equal(agentNamed(undeclared, "alpha-pm").member_class, "healthy");
+    assert.equal(undeclared.health.members.exception, 0, "no entry, no exception");
+    assert.equal(undeclared.health.members.healthy, data.health.members.healthy + 1);
+
+    // `retired` is declarable on the same terms, and outranks the other class.
+    const retired = writeContract("declared-retired", policyContract((document) => {
+      document.classifications.retired.entries = [{
+        id: "beta-pm-retired-sighting",
+        kind: "retired-mode-sighting",
+        owner: "hermes-agent-registry",
+        source: "agents.beta-pm",
+        lifecycle_state: "retired",
+        rationale: "This fixture records beta-pm as a sighting of a mode the contract has withdrawn.",
+        policy_domains: ["systemd"],
+      }];
+    }));
+    const retiredRows = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", retired]).stdout).data.rows;
+    assert.equal(retiredRows.find((row) => row.agent_id.value === "beta-pm").classification.value, "retired");
+
+    // THE PLACEHOLDER FORM CLAIMS NOBODY. `agents.{agent_id}` is the SHAPE of a
+    // path -- every authority block in the contract spells it that way -- so
+    // honouring it would let one entry sweep the whole fleet into a class
+    // nobody ruled on.
+    const shaped = writeContract("declared-placeholder", policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = [{
+        id: "every-row-would-be-wrong",
+        kind: "managed-agent-exception",
+        owner: "hermes-agent-registry",
+        source: "agents.{agent_id}",
+        lifecycle_state: "accepted",
+        rationale: "A path shape is not an instance, and this entry must claim no row at all.",
+        policy_domains: ["profile"],
+      }];
+    }));
+    const shapedRows = JSON.parse(cli(["fleet", "inventory", "--json", "--contract", shaped]).stdout).data.rows;
+    for (const row of shapedRows) {
+      assert.equal(row.classification.value, "managed_agent", `${row.agent_id.value} was swept up by a path SHAPE`);
+    }
+  });
+
   check("a fleet clipped past the agent cap produces the same six counts as one under it", () => {
     // The cap is 500 records. 520 rows means 20 are never emitted -- and the
     // member counts must still describe all 520, which is the exact defect

@@ -18610,9 +18610,14 @@ function buildInventoryRow(entry, ctx) {
   };
   return {
     agent_id: entry.keyIsString && idSafe ? field2(agentId, agentNamespaceOwner, "resolved") : field2(agentId, agentNamespaceOwner, "unresolved"),
-    // The lifecycle class of a registered row. It is `managed_agent` because the
-    // row exists in the registry the contract declares as its owner -- nothing
-    // here observes anything to decide otherwise.
+    // The DEFAULT lifecycle class. A registered row is `managed_agent` because
+    // it exists in the registry the contract declares as its owner, and a
+    // malformed one is `unclassified` because nothing about it could be read.
+    //
+    // Neither is the last word: `declaredRowClass` runs over the whole row set
+    // below and promotes any row the contract has recorded an entry for. It has
+    // to happen there rather than here because it is a read of contract POLICY
+    // about the fleet, not of the entry in front of us.
     classification: entry.malformed ? field2("unclassified", agentNamespaceOwner, "unresolved") : field2("managed_agent", agentNamespaceOwner, "resolved"),
     correlation,
     project_id: projectId,
@@ -18664,6 +18669,22 @@ var DIMENSIONS = {
   projectBoardId: { key: "project-board-id", field: "projects.{slug}.ticket_provider.board_id", kind: "project" },
   projectIdentifier: { key: "project-identifier", field: "projects.{slug}.ticket_provider.identifier", kind: "project" }
 };
+var DECLARED_ROW_CLASSES = ["retired", "intentionally_unmanaged"];
+function entryClaimsAgent(entry, agentId) {
+  const participants = Array.isArray(entry.participants) ? entry.participants.filter((item) => typeof item === "string") : [];
+  if (participants.includes(agentId)) return true;
+  return nonEmptyString(entry.source) === `agents.${agentId}`;
+}
+function declaredRowClass(contract, agentId) {
+  for (const id of DECLARED_ROW_CLASSES) {
+    const entries = contract.classifications?.[id]?.entries ?? [];
+    for (const entry of entries) {
+      if (!isRecord6(entry)) continue;
+      if (entryClaimsAgent(entry, agentId)) return id;
+    }
+  }
+  return null;
+}
 function matchException(group, contract) {
   const entries = contract.classifications?.intentionally_unmanaged?.entries ?? [];
   for (const entry of entries) {
@@ -18988,20 +19009,13 @@ function collectFleetInventory(options = {}) {
     }
     row.conflicts.sort((a, b) => a < b ? -1 : 1);
   }
-  const groupsById = new Map(conflicts.map((group) => [group.id, group]));
   for (const row of allRows) {
     if (row.malformed) continue;
-    if (row.conflicts.length === 0) continue;
-    const groups = row.conflicts.map((id) => groupsById.get(id));
-    if (!groups.every((group) => group !== void 0 && group.permitted)) continue;
-    row.classification = {
-      ...row.classification,
-      value: "intentionally_unmanaged",
-      // `resolved` stays: the class WAS resolved, from a contract entry that
-      // names these exact participants. The conflict is still reported and
-      // still visible; what changed is that the row says who decided it.
-      state: "resolved"
-    };
+    const id = row.agent_id.value;
+    if (id === null) continue;
+    const declared = declaredRowClass(contract, id);
+    if (declared === null) continue;
+    row.classification = { ...row.classification, value: declared, state: "resolved" };
   }
   for (const group of conflicts) {
     if (group.participant_kind !== "project") continue;
