@@ -5,1490 +5,1922 @@ stepsCompleted:
   - step-03-create-stories
   - step-04-final-validation
 inputDocuments:
-  - _bmad-output/planning-artifacts/prds/prd-pjangler-project-notebook-2026-08-19/prd.md
-  - _bmad-output/planning-artifacts/prds/prd-pjangler-project-notebook-2026-08-19/addendum.md
-  - _bmad-output/specs/spec-project-notebook/SPEC.md
-  - _bmad-output/specs/spec-project-notebook/acceptance-contract.md
-  - _bmad-output/planning-artifacts/architecture/architecture-project-notebook-2026-08-19/ARCHITECTURE-SPINE.md
-  - _bmad-output/planning-artifacts/architecture/architecture-project-notebook-2026-08-19/reviews/review-resolution.md
-  - _bmad-output/planning-artifacts/architecture/architecture-project-notebook-2026-08-19/reviews/review-update-retention-resolution.md
+  - _bmad-output/planning-artifacts/fleet-convergence-live-assessment-2026-08-31.md
+  - templates/hermes-agent/docs/fleet-control-plane/prd.md
+  - templates/hermes-agent/docs/fleet-control-plane/architecture.md
+  - docs/architecture.md
+  - templates/hermes-agent/docs/architecture.md
+  - templates/hermes-agent/docs/operations.md
+  - skills/agent-fleet-operations/SKILL.md
+  - skills/agent-fleet-operations/references/fleet-self-check.md
+  - skills/agent-fleet-operations/references/hermes-fleet-updates.md
+  - skills/agent-fleet-operations/references/config-mutation-safety.md
+  - _bmad-output/implementation-artifacts/findings/PJAN-86.findings.json
 uxDesign: not-applicable
 project: pjangler
-ticket: PJAN-77
-status: final
+product: Registry-Wide Fleet Convergence Control Plane
+status: complete
+authorityOrder:
+  - product-owner-approved live assessment
+  - current fleet operational contracts and live evidence
+  - current pjangler and Hermes architecture
+  - historical fleet PRD and architecture
 ---
 
-# pjangler - Epic Breakdown
+# Registry-Wide Fleet Convergence Control Plane - Epic Breakdown
 
 ## Overview
 
-This document provides the complete epic and story breakdown for PJAN-77 Project Notebook, decomposing the finalized PRD, SPEC, acceptance contract, and Architecture Spine into implementation-sized, dependency-safe work. UX design is not applicable because the feature surface is CLI, lifecycle, hooks, and machine contracts.
+This document provides the complete epic and story breakdown for the
+Registry-Wide Fleet Convergence Control Plane, decomposing the product-owner
+approved live assessment, the historical Fleet Control Plane requirements, and
+current PJangler and Hermes operational contracts into implementable stories.
+
+The historical fleet PRD and architecture are baseline inputs only. The
+2026-08-31 live assessment and current operational contracts explicitly
+supersede n8n-centralized orchestration, old Hermes source paths, per-agent
+Bloodbank consumers, checkpoint timers, and any assumption that registry
+discovery grants execution authority.
 
 ## Requirements Inventory
 
 ### Functional Requirements
 
-- **FR-1 — Deterministic one-to-one binding:** PJangler can derive, persist, and resolve exactly one stable Notebook Binding for one canonical repository identity; display-name drift or rename never creates a second binding, and two projects cannot claim the same notebook ID.
-- **FR-2 — Notebook-aware project initialization:** `pj init` includes notebook configuration, binding, skill, hooks, Overview, and remote work in a zero-write Plan; Apply executes only authorized work, preserves truthful recovery state, and persists the Registry only after remote postconditions are known.
-- **FR-3 — Canonical configuration resolution:** Resolve global defaults and authoritative binding from the Project Registry, verify the Manifest's read-only binding projection, overlay Manifest policy, support YAML and PostgreSQL stores, preserve unknown fields, reject persistent credentials, and report value provenance safely.
-- **FR-4 — Idempotent creation and recovery:** Re-init and explicit create reconcile deterministic identity and durable operation evidence before mutation, converge after interruption or ambiguous responses without duplicates, and repair a display name without changing remote identity.
-- **FR-5 — Repository context and status:** Resolve an explicit or current registered repository and report structured local/observed binding health plus the shared capture-admission summary: nullable exact unresolved totals, numeric lower bounds, integrity evidence, finite caps, receiptless state, and active refusal history. Local-only status performs no remote contact; `retention-pressure` reflects only the current predicate, while a recovered marker is informational `capture-refused-history`.
-- **FR-6 — Companion Notebook creation and overview management:** Idempotently create or link the Companion Notebook, create one stable Overview Note, return conflicts for ambiguity, bound reads, and replace Overview content in place without changing its note ID.
-- **FR-7 — Note CRUD:** List, add, get, update, and explicitly confirmed delete are deterministic and notebook-scoped; stable note identity is preserved, foreign IDs are rejected, and generic deletion cannot delete the Overview Note.
-- **FR-8 — Notebook-scoped search:** Search only a complete scoped note list for the current Companion Notebook and return bounded, deterministic results or a successful empty collection without leaking other projects.
-- **FR-9 — Stable human and machine contracts:** Every public notebook operation has concise human output and an exact JSON-v1 contract with pure stdout, categorized symbolic errors/exits, safe diagnostics, and no credential disclosure.
-- **FR-10 — Global skill and project-scoped hook projection:** Install one canonical Project Notebook skill and idempotently project its Managed Hooks through the master fanout while preserving every foreign record, order, condition, comment, and extra key; only true supported session boundaries qualify.
-- **FR-11 — Once-per-session overview priming:** At supported SessionStart, establish the repository/session baseline first, emit the bounded Overview at most once with separate Notebook/Hindsight labeling and explicit drift/staleness, and fail open on every integration problem.
-- **FR-12 — True session-close capture:** At true SessionEnd and under one project lock, validate exact session identity, deduplicate an existing same-session receipt, apply the strict-before/equality-expired receiptless-baseline boundary, serialize the real queued candidate, prove state integrity, and admit only when prospective unresolved count and bytes fit both caps. A cap refusal creates no receipt or slow work, records one bounded hashed replay marker, states that the session was not captured, and fails open within budget; missing trustworthy provenance never gets guessed.
-- **FR-13 — Eligible Document synchronization:** Select changed version-controlled documentation from baseline-to-close Git evidence, exclude unsafe/ineligible content observably, preserve path/revision/digest/session provenance, and update stable derivatives rather than duplicating them.
-- **FR-14 — Factual summary with deterministic fallback:** Produce one evidence-grounded, bounded session summary with an optional low-cost summarizer or mandatory deterministic fallback, prohibit unsupported success/deployment claims, and deduplicate by session identity. Receipt recovery reuses the same receipt for exactly one operator-authorized attempt with no automatic loop; only succeeded receipts expire, unresolved receipts remain visible indefinitely, and v1 has no dismissal.
-- **FR-15 — Module-scoped audit:** Audit Project Notebook-owned configuration, binding, remote notebook, exact OverviewDescriptor freshness, skill, hooks, and captures without mutation; use pass/fail/warn/skip semantics, make remote skips explicit, share status admission/integrity semantics, preserve suspect or unresolved state, and participate in focused, ordinary, and final audits.
-- **FR-16 — Reviewable migration plan:** `pj notebook migrate` defaults to a pure Plan, selects only public Project Notebook rule IDs, separates local work from Live Actions, identifies blocked ambiguity, and exposes rule/state transitions in JSON.
-- **FR-17 — Idempotent, preservation-safe migration:** Apply selected owned repairs, preserve unrelated Manifest/Registry/hook/service content, verify postconditions, retain truthful recovery on failure, and make the second identical migration a zero-byte/zero-remote no-op.
-- **FR-18 — Runtime-only endpoint and authentication resolution:** Resolve an explicit hostname/loopback endpoint and runtime-only authentication, reject unsafe or missing configuration before mutation, and never persist or emit secret values or hardcoded LAN addresses.
-- **FR-19 — Bounded service calls and actionable failures:** Bound every service call and payload, retry only proven-safe logical operations, normalize auth/not-found/conflict/throttle/timeout/unavailable/protocol outcomes, fail hooks open, and return categorized CLI failures.
-- **FR-20 — Cross-project isolation:** Prove every read, result, mutation, hook action, capture, and migration belongs to the resolved binding; never use an unscoped object lookup or return unproven global-search data.
-- **FR-21 — Public contract evolution:** Declare JSON schema version 1, treat additive changes as compatible, require a major version or shim for breaking changes, and keep deprecated command forms functional for at least one minor release.
+FR1: PJangler can discover the complete fleet from the Hermes Agent Registry,
+resolve each agent's project, role, profile, runtime, service, board, and
+Bloodbank references, and report registry entries that cannot be resolved
+without silently dropping them.
+
+FR2: PJangler exposes a registry-wide `fleet status` operation that inspects
+all registered agents in one invocation and reports fleet aggregate health plus
+per-agent findings for registry, project binding, template/scaffold, profile,
+runtime, systemd, live process, Bloodbank, and release/provenance domains.
+
+FR3: Every fleet status result is available as concise human output and as one
+complete, parse-safe, versioned JSON document whose stdout is never truncated,
+polluted by progress/ANSI text, or invalidated by immediate process exit.
+
+FR4: Fleet status distinguishes project health, shared-host health, deferred
+capabilities, unmanaged observations, blocked observations, and collection
+errors; its aggregate result cannot claim healthy when an applicable required
+domain was skipped, truncated, stale, or left unobserved.
+
+FR5: The Project Registry and Hermes Agent Registry retain separate near-term
+authority, while PJangler defines and validates their explicit ownership,
+reference, projection, and update boundaries without requiring an immediate
+physical registry merger.
+
+FR6: PJangler validates global identity uniqueness and relationship integrity
+across project ID, repository path, agent ID, role, profile name, board binding,
+service unit, and Bloodbank target; duplicate ownership and conflicting
+cross-registry projections are first-class findings.
+
+FR7: The fleet contract supports explicit classifications for managed agents,
+managed specialist/shared services, intentionally unmanaged entries, retired
+entries, and unclassified observations, including ownership, rationale,
+source, lifecycle state, and applicable policy.
+
+FR8: PJangler reports the exact desired and observed provenance for every
+managed deployment, including PJangler version, fleet-contract/schema version,
+Hermes release/ref/SHA, template source and gitlink, scaffold manifest/version,
+profile render generation, and effective executable.
+
+FR9: PJangler validates tracked PM scaffold parity for every managed PM against
+the pinned canonical template, reports missing, stale, locally modified, and
+unexpected generated files separately, and never treats ignored runtime state
+as tracked scaffold content.
+
+FR10: PJangler validates every managed profile as a real contained directory
+with identity metadata, override-only `config.delta.yaml`, generated
+`config.yaml`, explicit Hindsight bank pin, canonical skills, and a passing
+canonical renderer check; profile symlinks and semantic render drift are
+distinct failures.
+
+FR11: PJangler inventories profile-root entries that are not ordinary
+registered agents, correlates them with live services/processes and declared
+exceptions, and produces adoption, exception, retirement, or manual-review
+recommendations without deleting ambiguous state.
+
+FR12: PJangler validates the canonical service topology: at most one per-agent
+messaging gateway service and one heartbeat timer/service pair, plus one
+fleet-shared Bloodbank gateway; per-agent Bloodbank consumers, checkpoint
+timers, duplicate gateways, and stale legacy units are reported as drift.
+
+FR13: Service health evaluation is capability-aware and time-bounded: a
+credential-less gateway is healthy only when explicitly deferred, disabled,
+and inactive; an enabled gateway requires stable `Result`, `ExecMainStatus`,
+restart count, and channel ownership evidence; heartbeat health requires a
+successful latest tick rather than timer activity alone.
+
+FR14: PJangler inventories live Hermes processes, attributes each process to a
+registered agent, managed exception, systemd unit, profile, and executable
+generation when possible, and reports duplicate, legacy, isolated, or
+unattributable processes that a systemd-only view would miss.
+
+FR15: PJangler validates Bloodbank routing metadata and the shared gateway
+independently from target activation. A target is eligible only when a strict
+explicit activation flag, fleet gateway scope, matching target ID, and nonblank
+registered profile all pass; discovery or successful provisioning never
+auto-enables a target.
+
+FR16: PJangler exposes `fleet reconcile` as a pure dry-run by default and can
+scope a plan to the entire fleet, selected agents, selected domains, a canary,
+or a bounded rollout wave without changing files, registries, services,
+processes, or external systems.
+
+FR17: A reconciliation plan is a versioned machine-readable artifact containing
+the observation snapshot/fingerprint, typed effects, ownership, dependencies,
+preconditions, expected postconditions, risk and reversibility classification,
+required approval gates, and reasons for every automatic, deferred, blocked,
+or manual action.
+
+FR18: Apply executes only an explicitly selected, still-current plan; it rejects
+stale observations and changed preconditions, honors dependency order and
+bounded concurrency, isolates an agent failure from unrelated agents, and
+records resumable per-effect outcomes.
+
+FR19: Registry, profile, configuration, and multi-file role mutations use their
+canonical lock domains, preserve unknown/extension metadata and stable
+timestamps, commit atomically, retain crash-recovery evidence, and restore or
+resume without overwriting newer concurrent state.
+
+FR20: Profile convergence uses the canonical base-plus-delta renderer and its
+shared lock for seed, absorb, render, channel, voice, recovery, and backfill
+paths; it can preview and apply all affected profiles while preserving
+intentional overrides and refusing unsafe symlink or concurrent states.
+
+FR21: Scaffold convergence fans the pinned canonical tracked assets to existing
+managed roles, preserves unrelated repository work and ignored runtime bytes,
+excludes generated caches/runtime droppings, verifies the recorded template
+gitlink rather than a mutable worktree, and makes an unchanged rerun byte-stable.
+
+FR22: Service reconciliation installs, updates, enables, disables, starts,
+stops, and removes only positively owned units according to declared capability
+state, then proves the bounded postconditions before persisting a healthy
+service state.
+
+FR23: Process reconciliation classifies isolated or legacy processes and can
+produce a bounded drain/restart plan, but requires explicit approval before
+terminating an unattributed or ambiguously owned process.
+
+FR24: Fleet rollout starts with PJangler and ssbnk canaries and proceeds in
+bounded waves. Each canary or wave has explicit entry criteria, stop conditions,
+postcondition checks, evidence, rollback/resume state, and an operator decision
+before dependent waves advance.
+
+FR25: Bloodbank activation is a separately selectable rollout action performed
+only after the target passes its activation contract and explicit operator
+approval; failure or rollback returns the target to default-deny without
+changing unrelated registry metadata.
+
+FR26: PJangler exposes one shared fleet application core through CLI and MCP
+adapters, with equivalent schemas, safety defaults, cancellation/deadline
+behavior, registry overrides, and status/reconcile semantics.
+
+FR27: PJangler can run recurring fleet checks without mutation, emit durable and
+attributable drift/health evidence, deduplicate unchanged findings, and surface
+new, worsened, recovered, deferred, and manually accepted states to downstream
+automation without making that automation a source of truth.
+
+FR28: CI and release gates consume the same fleet contracts to verify template
+cleanliness and pinning, machine-output validity, schema compatibility, focused
+and aggregate tests, package/version/tag/commit consistency, and absence of
+unresolved release-blocking fleet findings.
+
+FR29: Migration closeout produces a durable before/after report that maps every
+requirement and planned effect to tests and live evidence, records remaining
+exceptions and deferred activation, reconciles the owning ticket/epic status,
+and refuses to equate documentation, a successful command exit, or a started
+ticket with completion.
+
+FR30: The controller provides actionable diagnostics and next actions for every
+finding, including the owning registry/domain/repository and whether the repair
+is automatic, approval-gated, blocked, or routed to a separate owner.
 
 ### NonFunctional Requirements
 
-- **NFR-1 — Safety:** Dry-run performs zero local or remote writes; Live Actions require explicit authorization; ambiguity blocks instead of guessing.
-- **NFR-2 — Reliability:** Managed Hooks fail open and never prevent start/close; explicit CLI failures remain nonzero, categorized, and actionable.
-- **NFR-3 — Foreground performance:** SessionStart completes or fails open within two seconds p95 and SessionEnd enqueue returns within 250 milliseconds p95 on the target workstation; planning remains interactive.
-- **NFR-4 — Bounded data:** Prompt injection, excerpts, diffs, stdin, uploads, responses, lists, diagnostics, and successful-receipt retention have finite configured ceilings. Unresolved storage uses finite prospective count/byte admission gates rather than deletion or compaction; receiptless state has a separate finite baseline-created grace.
-- **NFR-5 — Security:** Raw credentials never enter tracked/persistent config, logs, errors, fixtures, payloads, JSON, receipts, or notebook content; secret-like documents are excluded before summarization or upload.
-- **NFR-6 — Isolation:** Every operation is constrained to the canonical repository's resolved Notebook Binding.
-- **NFR-7 — Observability:** Human/JSON output exposes safe operation, binding, outcome, retryability, exclusions, next actions, nullable exact/lower-bound admission evidence, current `retention-pressure`, informational `capture-refused-history`, and precedence-taking `state-integrity` without repository runtime state, raw session IDs, or secret-bearing payloads.
-- **NFR-8 — Compatibility:** Support Node.js 20+ TypeScript/ESM, thin adapters, the singleton recipe registry, current plan/apply transaction, YAML and PostgreSQL registries, and the existing global hook fanout.
-- **NFR-9 — Preservation and idempotency:** Preserve unrelated state, every unresolved receipt, every suspect entry, and every referenced baseline; make repeated logical init, hook delivery, refusal replay, note reconciliation, capture, document revision, and migration converge without duplicate durable outcomes.
-- **NFR-10 — Testability:** Run all behavior against isolated HOME/XDG/Registry and a fake Notebook Service without reading or mutating production operator data.
+NFR1: All inspection and planning commands are read-only by default. Mutation
+requires an explicit apply action and any destructive, external, process-stop,
+or Bloodbank-activation effect requires its own visible authorization.
+
+NFR2: The system is truthful under partial failure: collection errors,
+timeouts, missing tools, stale observations, skipped domains, and unproven
+postconditions remain visible and prevent false-green aggregate claims.
+
+NFR3: Human and machine output is deterministic for the same observation,
+stable-sorted, schema-versioned, UTF-8, bounded, and parseable through terminals,
+pipes, files, subprocess capture, MCP, and CI.
+
+NFR4: Reconciliation is idempotent and preservation-safe. An unchanged second
+run produces no writes, service churn, regenerated timestamps, metadata loss,
+duplicate external resources, or duplicate evidence events.
+
+NFR5: Mutations are crash-consistent and concurrency-safe, use finite lock and
+operation deadlines, release locks on process death, reject unsafe symlink and
+path states, and never roll back over a newer out-of-band write.
+
+NFR6: Ambiguous or unclassified profiles, runtimes, processes, services,
+registry rows, and operator data are preserved. The MVP performs no automatic
+runtime purge and no blind merge, deletion, adoption, or process termination.
+
+NFR7: Literal credentials never enter tracked files, plans, JSON output, logs,
+diagnostics, fixtures, process arguments, or broad child environments.
+Credentials remain in approved runtime injection or `op://` reference paths.
+
+NFR8: Fleet-wide operations use bounded concurrency, per-agent and global
+deadlines, cancellation, and resumable checkpoints so one hung repository,
+service manager query, renderer, or external adapter cannot stall or corrupt
+the entire fleet.
+
+NFR9: The status path remains useful offline and without n8n or external board
+availability. External observations are opt-in or explicitly marked stale/skip;
+systemd remains the local service manager and survival layer.
+
+NFR10: Status and reconcile evidence includes safe timestamps, provenance,
+observation generation, effect IDs, ownership, outcomes, restart/tick evidence,
+and next actions without exposing raw credentials, private payloads, or
+unbounded logs.
+
+NFR11: The architecture supports the current 28-agent fleet and growth without
+hard-coded agent lists or per-repository command orchestration; runtime and
+memory use scale predictably with registered agents and bounded observations.
+
+NFR12: CLI/MCP behavior remains compatible with Node.js 20+, TypeScript/ESM,
+the singleton recipe registry, current project plan/apply transactions, YAML
+and PostgreSQL project registry implementations, and existing Hermes template
+and Bloodbank contracts.
+
+NFR13: Tests run against isolated HOME, XDG, registries, repositories, profiles,
+process fixtures, and fake systemd/Bloodbank adapters. They must not read,
+mutate, stop, or activate production fleet state.
+
+NFR14: Release and rollout proof uses current files, recorded pins, live bounded
+service/process observations, and executable behavior; stale prose, cached
+board state, mutable submodule worktrees, and command success text are not
+sufficient evidence.
+
+NFR15: Operator-facing commands explain the fleet at progressively useful
+levels—summary, domain, agent, finding, and planned effect—without requiring
+the operator to correlate multiple raw registry dumps.
+
+NFR16: Host and repository paths are resolved from registries and configuration,
+canonicalized and contained before use, and never rely on obsolete hard-coded
+checkout paths or LAN addresses.
 
 ### Additional Requirements
 
-- **AR-1 — Hexagonal ownership:** `src/notebook/` owns Project Notebook domain/application behavior; Commander, `NotebookRecipe`, hooks, worker, and future transports are thin inbound adapters, while Registry, Manifest, Git, state, summarizer, Open Notebook, and projector are outbound ports.
-- **AR-2 — Singleton lifecycle composition:** Construct one `NotebookRecipe` immediately before `ProjectRecipe`, declare the `notebook` dependency, and use a dedicated non-recursive `runNotebookLifecycle(plan, mode, context)` seam for create and sync/re-init.
-- **AR-3 — Unified external transaction:** ProjectRecipe builds one fixed-order external tail—ticket provider, Notebook, then Hermes—stops at the first failed/blocked effect, latches `externalDispatchStarted` before any request, and forbids fresh-target deletion after that latch.
-- **AR-4 — Registry-only finalizer:** Withhold all Registry writes until one finalizer runs exactly once as the final mutation on both success and failure, persisting accumulated linked results or truthful planned/blocked recovery; no remote object is automatically deleted.
-- **AR-5 — Four authorities:** Git owns authoritative documents, Registry owns global defaults/binding, Manifest owns policy and a read-only binding mirror, Open Notebook owns note bodies, and XDG state owns baselines/journals/receipts.
-- **AR-6 — Lossless YAML:** Use YAML CST/path-aware mutation so bytes outside owned changed node spans—including comments, scalar style, order, and unknown nodes—remain identical; honor `PJ_PROJECT_REGISTRY`.
-- **AR-7 — Additive PostgreSQL support:** Add notebook and extension JSONB storage, singleton registry settings, and a partial unique nonempty notebook-ID index; preserve unknown fields semantically, leave legacy rows intact, and make dual-write failure observable without YAML data loss.
-- **AR-8 — Manifest preservation:** Parse the original JSON and replace only `notebook.binding` and explicitly changed policy keys; retain all unknown sibling and descendant fields.
-- **AR-9 — Binding marker:** Use canonical persisted project slug as identity and exact notebook description marker `pjangler.project.v1:<slug>`; never adopt by nonunique display name.
-- **AR-10 — RemoteMutationJournalV1:** Every notebook or note create advances an atomic, fsynced XDG journal through `prepared`, `possibly-dispatched`, `reconciled`, and `committed`, storing only safe identity/digest metadata.
-- **AR-11 — Ambiguous-create discipline:** Only transport proof that no bytes left permits a safe retry reset; an unresolved possibly-dispatched operation reconciles zero/one/many, creates only from a proved safe zero, adopts one, conflicts on many, and never blind-POSTs again.
-- **AR-12 — Bounded service boundary:** Validate all remote responses with typed schemas; impose connect/overall timeouts, abort propagation, request/response ceilings, finite safe retries, and redirect-origin rejection.
-- **AR-13 — Safe URL/auth contract:** Permit configured HTTPS hostnames or HTTP loopback only; reject userinfo, query/fragment, unsafe schemes, numeric non-loopback hosts, and cross-origin redirects; store only an authentication environment-variable name and read its value at call time.
-- **AR-14 — Scoped membership proof:** List notes with `notebook_id` before get/update/delete and expose no unscoped access methods; distinguish `CROSS_PROJECT` only when other binding ownership is already proven and otherwise return `NOT_FOUND` without probing.
-- **AR-15 — Local deterministic search:** Search only a complete scoped list; normalize NFKC plus Unicode lowercase, tokenize letters/numbers, require every distinct query token, score title matches at 10x body matches, and sort by score, update time, then ID. No upstream global/vector fallback is allowed in v1.
-- **AR-16 — Managed note envelope:** Prefix PJangler-created note bodies with a bounded base64url canonical-JSON `PjanglerNoteEnvelopeV1` marker and exact kinds `overview`, `user-note`, `document`, or `session-capture`; strip it from human excerpts.
-- **AR-17 — Stable note identities:** Address Overview by stored ID; derive document/session logical IDs deterministically; use a prepared-journal UUID for each user-note operation; preserve envelopes on managed updates, leave manual notes unmarked, and conflict on duplicate logical IDs.
-- **AR-18 — Exact CLI surface:** Implement only the accepted `status`, `create`, note list/add/get/update/delete/search, `overview`, capture list/retry, `audit`, and `migrate` grammar plus internal hook/worker entrypoints; payload uses stdin or a contained mode-0600 XDG file, never user/secret argv.
-- **AR-19 — JSON v1 schemas:** Emit one UTF-8 schema-v1 envelope plus newline, validate exact per-command `data` schemas before serialization, separate persisted `binding_state` from nullable observed `health`, place safe diagnostics on stderr, and keep stdout ANSI/progress-free.
-- **AR-20 — Stable exit contract:** Use exits 0 success/skip/fail-open, 2 invalid input, 3 configuration/auth, 4 object/conflict/isolation/drift, 5 retryable service, and 6 protocol/internal; enforce input→config/auth→scoped service→membership→mutation error precedence.
-- **AR-21 — Immutable observation:** Async command paths prepare bounded credential-free `NotebookObservation`; synchronous checks never hide network calls, fresh init can audit provisional plan state, ordinary audit skips remote without an observation, and focused audit/migrate re-observe explicitly.
-- **AR-22 — Seven owned rules:** Keep public IDs stable: `notebook.configuration`, `notebook.binding`, `notebook.remote-notebook`, `notebook.overview-note`, `notebook.skill-installed`, `notebook.hooks-projected`, and `notebook.capture-receipts`; migrate selects only these and verifies postconditions.
-- **AR-23 — Sole skill source:** `/home/delorenj/code/skillex/all-skills/project-notebook/` is the only hand-edited skill source; its `SKILL.md`, agent metadata, hook master/wrappers, projector, references, and tests are the canonical distribution unit.
-- **AR-24 — Digest-verified packaged skill:** Build/prepack rejects unsafe files and symlinks, exports the skill with `export-manifest.json` and `SHA256SUMS`, resolves validated source precedence, installs an immutable version-digest payload under XDG data, and replaces only an owned matching global skill link. A packed CLI must work without the developer Skillex checkout.
-- **AR-25 — Surgical global projector:** Own only commands beginning exactly `PJ_HOOK_OWNER=project-notebook.v1 ` plus the recognized event wrapper; update the earliest owned hook, remove only later owned duplicates, preserve all foreign groups/siblings/order/conditions/comments/extra keys, and make the second projection zero bytes.
-- **AR-26 — Hook coexistence:** Install only Claude `SessionStart` and `SessionEnd`, never `Stop`; prove a changing Bloodbank sync preserves parsed Project Notebook objects and relative order, a second Bloodbank sync changes zero bytes, and reverse Project Notebook reinstall preserves Bloodbank entries.
-- **AR-27 — Hook installation safety:** Projector check is pure; install validates/locks/re-reads, keeps a permission-restricted XDG recovery snapshot, atomically replaces only changed semantic owned state, and uninstall removes only marked entries/containers made empty by removal.
-- **AR-28 — OverviewDescriptorV1:** Compile identity, visible purpose or exact placeholder, ordered contained authoritative references, Git revision/content digests, missing-reference facts, and policy version; compare after baseline, warn `PROJECT NOTEBOOK OVERVIEW DRIFT`, label stale/truncated content, and update the same note ID in live migration.
-- **AR-29 — Exact session identity:** Derive lowercase-hex SHA-256 from exact UTF-8 `pjangler-session-v1`, NUL, project slug, NUL, client, NUL, nonempty client session ID; persist no raw client session ID.
-- **AR-30 — Baseline-first SessionStart:** Exclusive-create a complete/incomplete baseline before remote access whenever start or capture policy is enabled; never overwrite it on resume; both policies off does nothing, and missing/incomplete identity/evidence fails open but blocks capture.
-- **AR-31 — Once-only Overview claim:** Derive an atomic exclusive claim from the session key, emit at most one Overview, label Project Notebook separately from Hindsight, use a code-point-safe 4,000-character default ceiling, and always exit zero on hook integration failures.
-- **AR-32 — Restricted XDG state:** Store baselines, claims, refusal markers, admission locks, receipts, leases, journals, and ownership below `$XDG_STATE_HOME/pjangler/notebook/v1` with directories 0700, files 0600, no-follow containment, same-directory atomic writes/fsync, and no credentials or bodies. Only succeeded receipts have age-based expiry; unreferenced receiptless baseline/claim/refusal state uses its own finite baseline-created grace.
-- **AR-33 — SessionEnd durability and admission boundary:** Derive deterministic receipt/capture IDs from exact prefixed UTF-8 hashes of the session key and, under one bounded project lock, order same-receipt dedupe, equality-expired receiptless cleanup, real queued-candidate serialization, state-integrity proof, and prospective count/byte admission. Exclusive-create/fsync an admitted receipt before spawn; refusal performs no network, Git diff, upload, or summarizer work.
-- **AR-34 — Safe detached worker:** Spawn with `process.execPath`, argv array, `shell:false`, ignored stdio, detached/unref, and receipt ID only; claim via compare-and-swap lease, recover expired work within finite budget, and converge through idempotent remote journals.
-- **AR-35 — Receipt state and retry contract:** Implement exactly `queued`, `processing`, `succeeded`, `failed`, `retry-exhausted`, and `blocked-missing-baseline`. Only succeeded receipts expire; unresolved receipts are never automatically deleted, silently compacted, or dismissed. One direct retry reuses one failed/retry-exhausted receipt for exactly one operator-origin attempt whose failure returns directly to `retry-exhausted`; blocked-missing-baseline additionally requires an explicit validated committed Git reference.
-- **AR-36 — Git evidence and eligibility:** Use NUL-delimited non-shell Git evidence from recorded baseline to close; normalize physical repo-relative paths and exclude ignored/untracked-by-default/generated/binary/symlink escape/traversal/submodule/device/FIFO/socket/oversized/secret-like/unchanged content before prompts or service calls.
-- **AR-37 — Capture provenance and idempotency:** Derivative notes record repository identity, relative path, revision/digest, session, capture time, and policy; unchanged content no-ops, changed documents update stable note identity, and a session retry updates/no-ops one capture note.
-- **AR-38 — Summarizer boundary:** Parse trusted global config into fixed executable/argv, allowlist environment, send bounded redacted evidence on stdin with `shell:false`, require structured evidence citations, and reject unsupported deployment/success claims.
-- **AR-39 — Deterministic fallback:** On absent/timed-out/error/invalid summarizer output, produce fixed sections for eligible documents, other path names, verification evidence, unresolved/uncommitted work, and explicit insufficient evidence.
-- **AR-40 — Literal authorization:** Direct reads authorize only that read unless local-only; direct mutations authorize only the chosen mutation; delete also confirms; init/create/migrate remote effects require `--live`; hooks require planned durable Manifest policy, and explicit disable wins.
-- **AR-41 — Incremental rollout:** Land schema/adapter, lifecycle transaction, CLI, one isolated/live canary, packaged skill/hooks, start priming, receipt-only close, then capture worker and opt-in migrations; never auto-enable fleet-wide.
-- **AR-42 — Non-destructive rollback:** Disable capture, then priming, then project policy; remove only owned hooks/projections; preserve Registry/Manifest bindings, remote notebooks/notes, Git content, additive database columns, unresolved receipts, referenced baselines, and suspect entries. Rollback is never a hidden dismissal path.
-- **AR-43 — Isolated release evidence:** Require unit/domain, YAML and scratch-PG, fake-service, lifecycle failure injection, exact CLI/JSON, packed Node 20+, hooks, Bloodbank coexistence, capture/restart, both prospective cap boundaries, refusal replay/prune races, state-integrity corruption, pre-dirty/manual-ref limits, eligibility/security, and generated-project suites without production data.
-- **AR-44 — Quantified release gates:** Contract fixtures pass 100%; retries/migrations produce zero duplicate logical outcomes; every cap/integrity refusal creates no receipt and invokes no slow-work port; scans find zero credential disclosure/cross-project results; fresh healthy generated project completes under two minutes; hook p95 budgets pass; and staged quality evidence covers at least 20 captures with complete provenance, at least 95% supported factual claims, and zero unsupported deployment/success claims.
-- **AR-45 — Deferred boundaries:** Do not add MCP commands, unsupported hook clients, semantic/vector search, Open Notebook Sources/rich ingestion, multi-tenant auth, generalized outbox/admin UI, fleet bulk migration/default-on, destructive remote deletion, ambiguity force-clear, receipt dismissal, or operational down migration in v1.
-- **AR-46 — Receiptless replay and refusal marker:** `receiptless_session_retention_seconds` is measured from immutable baseline `created_at`; replay is valid strictly before expiry and equality is expired. A refused real candidate atomically creates or replaces one bounded `RetentionRefusalV1` keyed by the hashed session key without extending grace; admission fsync removes it, shadowing receipt dedupe ignores/removes it, and only elapsed unreferenced baseline/claim/refusal state may be pruned.
-- **AR-47 — Shared admission and integrity observation:** Hook, status, and `notebook.capture-receipts` share nullable exact totals, numeric lower bounds, unmeasurable count, safe entry evidence, finite caps, receiptless counts, and active refusal markers. `state-integrity` preserves suspect entries and precedes cap evaluation; `retention-pressure` is emitted only while the current exact predicate fails, while a now-fitting marker remains non-finding `capture-refused-history` until replay/removal or grace cleanup.
+- AR1: PJangler is the sole fleet control-plane policy owner. Repositories
+  remain independent, Hermes owns agent execution, systemd owns local service
+  lifecycle, and downstream workflow tools consume PJangler contracts rather
+  than storing competing fleet truth.
+- AR2: This is a brownfield epic. There is no greenfield starter-template
+  story; initial work must establish the fleet domain model, schemas,
+  observation boundary, and regression harness around current production
+  contracts.
+- AR3: The historical `fleet-contract.yaml` concept must be updated to describe
+  the current service model, authority boundaries, schema versions, provenance,
+  managed exceptions, activation state, and compatibility policy without
+  duplicating mutable runtime observations.
+- AR4: Project Registry owns project identity and project-to-board binding.
+  Hermes Agent Registry owns operational agent/profile/routing records.
+  Cross-registry projections must have one declared direction and a drift check;
+  no story may silently make both writable owners of the same field.
+- AR5: Registry discovery and Bloodbank execution authority are separate domain
+  concepts and separate mutations. Global reconciliation may validate or
+  preserve activation but cannot infer or automatically grant it.
+- AR6: One fleet application service should compose adapters for project
+  registry, Hermes registry, repository/parity, template provenance, profile
+  renderer, systemd, process inventory, Bloodbank, release state, and evidence.
+  CLI and MCP remain thin adapters to this same service.
+- AR7: Existing recipe-owned audit rules may be reused as observations, but a
+  host-scoped rule evaluated in one repository cannot be presented as a
+  registry-wide claim. The controller owns registry traversal and aggregation.
+- AR8: Machine output must set `process.exitCode` or otherwise allow stdout to
+  drain; tests must exercise payloads larger than the pipe buffer through real
+  CLI subprocess capture, file redirection, MCP, and failure exits. Snapshot and
+  plan schemas require canonical stable ordering, content digests or equivalent
+  generation fingerprints, additive version evolution, and explicit
+  compatibility rejection for breaking or stale plans.
+- AR9: Apply follows plan/apply transaction patterns already proven in
+  PJangler: validate before mutation, record typed effects, persist truth last,
+  preserve partial outcomes, and run postcondition observations against the
+  actual application path.
+- AR10: Profile mutations must use the canonical profile renderer and
+  per-profile lock. Registry-aware profile work follows the single lock order
+  `registry -> profile -> snapshot/check -> write/rollback -> unlock`.
+- AR11: Exact config rollback/recovery must preserve protected original state
+  and refuse unsafe hardlink, symlink, out-of-band replacement, or unverifiable
+  filesystem conditions before installing a candidate.
+- AR12: Canonical PM topology is one tracked PM role per repository, one real
+  named profile, ignored role-local runtime state, one messaging gateway, and
+  one heartbeat timer. Shared Bloodbank ingress is one fleet service.
+- AR13: A gateway with no verified channel credential is intentionally deferred
+  and must be disabled/inactive with inherited platform enablement explicitly
+  overridden false; a heartbeat may remain independently healthy.
+- AR14: Template/scaffold fanout must use the committed canonical template and
+  pinned pjangler gitlink, distribute every owned changed asset as one versioned
+  set, reject dirty or incomplete sources, and preserve all unrelated repository
+  and runtime state.
+- AR15: Extra profile and process classification precedes cleanup. The
+  `fleet-bloodbank-gateway` shared profile and other specialist profiles need
+  explicit kinds/policies rather than being forced into an ordinary PM shape.
+- AR16: Rollout state must be durable outside tracked target repositories,
+  support canary and bounded-wave selection, and survive interruption without
+  losing which effects were planned, applied, proven, failed, rolled back, or
+  deferred.
+- AR17: Continuous checks publish evidence/findings through the existing event
+  and ticket ownership conventions. They do not auto-open/close external issues
+  or mutate boards unless a separately authorized adapter action is selected.
+- AR18: n8n is optional future orchestration/visualization. No MVP acceptance
+  criterion may require n8n availability, generated n8n workflows, or n8n-owned
+  state.
+- AR19: PJAN-86 defect classes become regression inputs: summary truthfulness,
+  immediate post-deploy audit, deferred gateways, template/gitlink fidelity,
+  generated-profile semantics, service stabilization, extension-preserving
+  registry writes, safe path/lock behavior, and real full-live canary proof.
+- AR20: Migration closeout must reconcile package version, Git tag, commit
+  attribution, CI, template pins, live services/processes, renderer state,
+  registry state, and owning board evidence before the epic can be declared
+  complete.
 
 ### UX Design Requirements
 
-Not applicable. PJAN-77 introduces no graphical interface; human-readable CLI behavior and machine-readable JSON/error contracts are captured by FR-5 through FR-9, FR-21, AR-18 through AR-20, and their stories.
+Not applicable. This epic has CLI, MCP, daemon, registry, and operational
+evidence surfaces rather than a graphical UI. Operator comprehension,
+progressive detail, accessibility of plain-text output, and automation-safe
+machine output are captured in FR3, FR4, FR17, FR30, NFR3, and NFR15.
 
 ### FR Coverage Map
 
-- **FR-1:** Epic 1 — Pair each repository with one stable Companion Notebook.
-- **FR-2:** Epic 1 — Include notebook work in truthful `pj init` Plan/Apply.
-- **FR-3:** Epic 1 — Resolve and preserve authoritative Registry/Manifest configuration.
-- **FR-4:** Epic 1 — Retry and recover remote creation without duplicate notebooks.
-- **FR-5:** Epic 2 — Resolve repository context and inspect binding plus capture-admission/integrity status.
-- **FR-6:** Epic 2 — Create/link and manage the stable Overview Note.
-- **FR-7:** Epic 2 — Perform binding-validated note CRUD.
-- **FR-8:** Epic 2 — Search only the current Companion Notebook.
-- **FR-9:** Epic 2 — Consume stable human, JSON-v1, and exit contracts.
-- **FR-10:** Epic 4 — Install one canonical skill and coexistence-safe Managed Hooks.
-- **FR-11:** Epic 4 — Prime each supported session once with bounded, drift-labeled Overview context.
-- **FR-12:** Epic 5 — Deduplicate, validate, prospectively admit, refuse/replay, or durably enqueue one capture at a true session close.
-- **FR-13:** Epic 5 — Synchronize only safe Git-evidenced changed documentation with provenance.
-- **FR-14:** Epic 5 — Produce one evidence-grounded capture with deterministic fallback and same-receipt recovery without dismissal.
-- **FR-15:** Epic 3 — Audit only Project Notebook-owned local and observed remote state, including capture admission and integrity.
-- **FR-16:** Epic 3 — Review a selective, no-write Project Notebook migration plan.
-- **FR-17:** Epic 3 — Apply preservation-safe repairs and prove second-run idempotency.
-- **FR-18:** Epic 1 — Resolve safe endpoint/authentication at runtime only.
-- **FR-19:** Epic 1 — Use a bounded typed service boundary with actionable outcomes.
-- **FR-20:** Epic 2 — Prove repository binding membership for every note operation and result.
-- **FR-21:** Epic 2 — Evolve the public CLI/JSON contract compatibly.
+FR1: Epic 1 - Discover every registered fleet member and unresolved entry.
+FR2: Epic 1 - Inspect registry-wide health in one invocation.
+FR3: Epic 1 - Emit complete human and parse-safe versioned JSON status.
+FR4: Epic 1 - Preserve truthful aggregate semantics under partial observation.
+FR5: Epic 1 - Define separate Project and Hermes registry authorities.
+FR6: Epic 1 - Enforce global identity and relationship uniqueness.
+FR7: Epic 1 - Classify managed agents, exceptions, retired, and unknown state.
+FR8: Epic 1 - Report desired and observed fleet provenance.
+FR9: Epic 1 - Validate tracked PM scaffold parity fleet-wide.
+FR10: Epic 1 - Validate real generated base-plus-delta profiles.
+FR11: Epic 1 - Classify extra profile-root entries without blind deletion.
+FR12: Epic 1 - Validate canonical per-agent and shared service topology.
+FR13: Epic 1 - Prove capability-aware service health over a bounded window.
+FR14: Epic 1 - Attribute live Hermes processes and expose runtime sprawl.
+FR15: Epic 1 - Validate Bloodbank routing separately from activation authority.
+FR16: Epic 1 - Preview scoped fleet reconciliation without mutation.
+FR17: Epic 1 - Produce versioned, reviewable reconciliation plan artifacts.
+FR18: Epic 1 - Apply only current selected plans with resumable outcomes.
+FR19: Epic 1 - Mutate registry and config state transactionally and safely.
+FR20: Epic 1 - Converge generated profiles through the canonical renderer.
+FR21: Epic 1 - Fan out pinned tracked scaffolds without disturbing runtime/WIP.
+FR22: Epic 1 - Reconcile only positively owned systemd services and prove them.
+FR23: Epic 1 - Plan safe handling of isolated or legacy processes.
+FR24: Epic 1 - Roll out through canaries and bounded evidence-gated waves.
+FR25: Epic 1 - Activate Bloodbank targets only through separate approval.
+FR26: Epic 1 - Share one fleet core across equivalent CLI and MCP adapters.
+FR27: Epic 1 - Run recurring read-only checks and durable drift evidence.
+FR28: Epic 1 - Gate CI and releases on the same fleet contracts.
+FR29: Epic 1 - Close migration only with complete current evidence.
+FR30: Epic 1 - Provide actionable ownership and next actions for every finding.
 
 ## Epic List
 
-### Epic 1: Bootstrap a Trustworthy Companion Notebook
+### Epic 1: Registry-Wide Fleet Convergence Control Plane
 
-Jarad can run the normal PJangler project lifecycle and receive exactly one recoverable, correctly bound Companion Notebook without separate raw-service setup or configuration surgery.
+The operator can establish one authoritative fleet view, observe real health,
+plan and apply preservation-safe convergence, roll it out through canaries and
+bounded waves, activate Bloodbank targets separately, and continuously prove
+the resulting fleet.
 
-**FRs covered:** FR-1, FR-2, FR-3, FR-4, FR-18, FR-19
+The epic advances through five ordered delivery horizons that will be
+decomposed into independently verifiable, developer-sized stories:
 
-**Implementation boundary:** Delivers lossless Registry/Manifest support, the typed and bounded service adapter, `RemoteMutationJournalV1`, `NotebookRecipe`, and the single Registry-last external transaction/finalizer. It is independently usable through `pj init` and produces truthful planned/linked outcomes before any later note-management or hook capability exists.
+1. One Fleet, One Trustworthy Inventory
+2. Know the Fleet's Real Health
+3. Converge the Fleet Safely
+4. Roll Out with Canary Confidence
+5. Keep the Fleet Proven
 
-### Epic 2: Manage and Find Repository Knowledge Safely
+Each horizon leaves a usable operator outcome and enables the next; none is a
+single oversized story or a separate owning epic.
 
-Jarad and scripts can inspect the current binding, manage its Overview and notes, and search the repository's knowledge through stable human and JSON-v1 commands without leaking another project's content.
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7, FR8, FR9, FR10, FR11,
+FR12, FR13, FR14, FR15, FR16, FR17, FR18, FR19, FR20, FR21, FR22, FR23,
+FR24, FR25, FR26, FR27, FR28, FR29, FR30
 
-**FRs covered:** FR-5, FR-6, FR-7, FR-8, FR-9, FR-20, FR-21
+## Epic 1: Registry-Wide Fleet Convergence Control Plane
 
-**Implementation boundary:** Builds on the bound notebook from Epic 1 and completes the public CLI surface, membership proof, note envelopes/identities, deterministic scoped list/search, capture-admission status schema, JSON schemas, error precedence, and exit compatibility. It delivers complete direct notebook operations without requiring audit migration or agent hooks.
+The operator can establish one authoritative fleet view, observe real health,
+plan and apply preservation-safe convergence, roll it out through canaries and
+bounded waves, activate Bloodbank targets separately, and continuously prove
+the resulting fleet.
 
-### Epic 3: Detect and Repair Project Notebook Drift
+### Story 1.1: Define Fleet Authority and Managed-State Contract
 
-Jarad can audit an existing or newly initialized repository, review only Project Notebook-owned repairs, apply authorized local/live fixes without disturbing foreign state, and prove the second run is a no-op.
-
-**FRs covered:** FR-15, FR-16, FR-17
-
-**Implementation boundary:** Uses the lifecycle and CLI contracts from Epics 1–2 to deliver the seven stable owned rules, immutable observations, read-only capture-admission/integrity findings, local-only skips, selective migrations, preservation proofs, and postcondition audits. It does not require hook delivery or a running capture worker.
-
-### Epic 4: Start Agent Sessions with Bounded Project Context
-
-Jarad can install one canonical globally distributed skill whose coexistence-safe Claude SessionStart hook establishes a trustworthy baseline and emits the current repository's bounded Overview at most once, alongside rather than instead of Hindsight.
-
-**FRs covered:** FR-10, FR-11
-
-**Implementation boundary:** Delivers Skillex canonical source, digest-verified packed export and immutable runtime install, the surgical global projector, Bloodbank coexistence, true-boundary support matrix, restricted XDG state, exact session identity, Overview descriptor/drift proof, and fail-open performance evidence. It is useful with priming alone and does not require SessionEnd capture.
-
-### Epic 5: Close Agent Sessions with Durable Evidence
-
-Jarad can end a supported agent session without delay and either obtain one recoverable, evidence-grounded Session Capture or receive truthful bounded refusal/integrity evidence that preserves safe replay and recovery without deleting unresolved work.
-
-**FRs covered:** FR-12, FR-13, FR-14
-
-**Implementation boundary:** Builds on Epic 4's baseline/session identity and completes locked same-session dedupe, receiptless grace, real-candidate prospective admission, refusal-marker replay, integrity precedence, admitted receipt enqueue, leased detached worker, Git eligibility/security filters, document and capture idempotency, exact one-attempt retry, succeeded-only expiry, unresolved preservation, and staged quality evidence.
-
-## Epic 1: Bootstrap a Trustworthy Companion Notebook
-
-Jarad can run the normal PJangler project lifecycle and receive exactly one recoverable, correctly bound Companion Notebook without separate raw-service setup or configuration surgery.
-
-### Story 1.1: Resolve and Preserve a Planned Notebook Binding
-
-As a PJangler operator,
-I want notebook defaults, binding state, and repository policy resolved from their proper authorities,
-So that project bootstrap starts from a trustworthy, inspectable, and losslessly persisted configuration.
-
-**Requirements:** FR-1, FR-3, FR-18; NFR-1, NFR-5, NFR-8, NFR-9, NFR-10; AR-4, AR-5, AR-6, AR-8, AR-13, AR-40.
+As a fleet operator,
+I want a versioned and inspectable contract for fleet authority and managed-state classifications,
+So that every later observation and reconciliation uses the same owners, boundaries, and exception semantics.
 
 **Acceptance Criteria:**
 
-1. **Given** an isolated YAML Project Registry and registered repository with a `.project.json`
-   **When** the Project Notebook configuration is resolved
-   **Then** built-in safe defaults, global Registry defaults, Manifest policy, and explicit invocation options apply in that order
-   **And** an explicit disable wins for hook behavior while service URL and authentication never come from the Manifest.
+**Given** the tracked canonical fleet contract
+**When** PJangler loads and validates it
+**Then** it declares a schema version, contract version, supported compatibility range, canonical PM service model, and the authoritative owner for project identity/board binding, agent/profile/routing records, generated profile inputs, tracked role scaffold, systemd lifecycle, live process observations, and Bloodbank activation
+**And** no mutable runtime observation, credential, host-specific secret, or transient health result is stored in the contract.
 
-2. **Given** Registry binding fields and a Manifest binding projection
-   **When** their values differ
-   **Then** Registry `state`, `notebook_id`, `notebook_name`, and `overview_note_id` remain authoritative
-   **And** the mismatch is returned as Drift rather than silently copying Manifest values into the Registry.
+**Given** Project Registry and Hermes Agent Registry describe related fleet state
+**When** the authority rules are evaluated
+**Then** Project Registry is authoritative for project identity and project-to-board binding, Hermes Agent Registry is authoritative for operational agent/profile/routing records, and every shared projection has one declared direction
+**And** a field claimed as writable by both registries fails validation with the conflicting field path and both claimed owners instead of selecting one implicitly.
 
-3. **Given** unknown top-level, project, notebook-descendant, comment, key-order, and scalar-style content in YAML plus unknown Manifest fields
-   **When** an owned notebook value is applied
-   **Then** only the exact owned path changes
-   **And** bytes outside the changed YAML node spans and every unrelated JSON sibling/descendant remain identical.
+**Given** a fleet member or observed artifact
+**When** it is classified under the contract
+**Then** the supported lifecycle classes include managed agent, managed specialist/shared service, intentionally unmanaged, retired, and unclassified
+**And** every nonstandard managed class requires stable identity, kind, owner, source/provenance, lifecycle state, rationale/notes, and its applicable policy domains.
 
-4. **Given** `PJ_PROJECT_REGISTRY` points to an isolated Registry
-   **When** resolution, planning, or apply runs
-   **Then** that Registry is used instead of the operator default
-   **And** no test reads or mutates live Registry data.
+**Given** the current canonical runtime model
+**When** the contract is inspected
+**Then** it specifies one real named profile, ignored role-local runtime, one per-agent messaging gateway, one per-agent heartbeat timer/service pair, and one fleet-shared Bloodbank command gateway
+**And** per-agent Bloodbank consumers, checkpoint timers, n8n-owned truth, automatic activation-by-discovery, and obsolete hard-coded Hermes checkout paths are marked retired or invalid rather than accepted as alternate healthy modes.
 
-5. **Given** a configured service URL or authentication setting
-   **When** configuration is validated
-   **Then** HTTPS hostnames and HTTP loopback URLs with runtime auth environment-variable names are accepted
-   **And** userinfo, query/fragment, unsafe schemes, numeric non-loopback hosts, raw credential values, and hardcoded LAN endpoints are rejected with safe provenance and next actions.
+**Given** a target whose Bloodbank metadata is discoverable
+**When** the contract resolves its lifecycle and activation authorities
+**Then** discovery, installation, health, routing readiness, and execution activation are separate states
+**And** only the strict explicit activation field owned by the Hermes Agent Registry can grant execution authority.
 
-6. **Given** a canonical project slug and repository display-name change
-   **When** a planned binding is derived again
-   **Then** the slug remains the stable binding key and the existing remote ID remains the intended identity
-   **And** name change is represented as Drift, not a new binding.
+**Given** a contract containing an unknown schema version, missing authority, invalid classification, conflicting owner, or retired service mode
+**When** validation runs
+**Then** it returns a deterministic nonzero categorized result with safe field-level diagnostics
+**And** it performs zero registry, profile, repository, service, process, Bloodbank, or external writes.
 
-7. **Given** dry-run mode
-   **When** binding/configuration planning executes
-   **Then** no Registry, Manifest, filesystem, XDG, or remote byte changes
-   **And** the plan identifies value sources without revealing resolved credential values.
+**Given** a compatible contract containing namespaced extension metadata
+**When** PJangler reads, validates, and serializes it
+**Then** the extensions survive without semantic loss or becoming implicit policy
+**And** an unchanged round trip is byte-stable where PJangler owns serialization.
 
-### Story 1.2: Round-Trip Notebook State Through PostgreSQL
+**Given** the operator runs `pjangler fleet contract validate [--contract <path>] [--json]`
+**When** no contract override is provided
+**Then** the command resolves and validates the canonical tracked contract and human output reports its effective version, authorities, classifications, service model, and superseded modes
+**And** `--contract` supports isolated fixtures and operator inspection, while `--json` emits the versioned result.
 
-As an operator using PJangler's PostgreSQL RegistryStore,
-I want the same Notebook Binding and global defaults preserved as in YAML,
-So that backend choice cannot change project identity or destroy unrelated data.
+**Given** the operator runs the contract validation command against a malformed temporary contract
+**When** validation fails
+**Then** it fails before mutation with no credential or unbounded content in stdout or stderr
+**And** its categorized diagnostics identify the invalid contract field safely.
 
-**Requirements:** FR-3; NFR-8, NFR-9, NFR-10; AR-7.
+**Given** the focused automated test suite runs under isolated HOME/XDG and temporary registry paths
+**When** valid, extension-bearing, conflicting, malformed, retired-mode, and forward-incompatible fixtures are exercised
+**Then** schema, authority, classification, preservation, and zero-write behavior are proven
+**And** story completion additionally includes a real built CLI inspection of the tracked contract; documentation, typechecking, fixture-only mocks, ticket state, or exit code alone is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR5, FR7. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR6, NFR7, NFR12, NFR13, NFR14, NFR16.
 
-1. **Given** the pre-PJAN-77 PostgreSQL schema
-   **When** the additive migration runs
-   **Then** project notebook JSONB, project extension JSONB, singleton global notebook/settings storage, and a partial unique nonempty notebook-ID index exist
-   **And** legacy rows, including rows without a PJangler slug, remain intact.
+### Story 1.2: Discover the Complete Fleet and Detect Identity Conflicts
 
-2. **Given** unknown top-level, project-sibling, and notebook-descendant JSON values
-   **When** a Project Record and global settings are loaded and saved
-   **Then** complete notebook subtrees round-trip semantically
-   **And** extension values merge at their exact documented level without being copied into owned fields.
-
-3. **Given** two PJangler-owned project rows
-   **When** both attempt to bind the same nonempty `notebook_id`
-   **Then** the store rejects the second claim deterministically
-   **And** empty/unbound legacy rows are not incorrectly constrained.
-
-4. **Given** current dual-write behavior with YAML authoritative
-   **When** the PostgreSQL write is injected to fail
-   **Then** the failure is observable and categorized
-   **And** no successfully preserved YAML or unrelated PostgreSQL data is lost or falsely reported as synchronized.
-
-5. **Given** a scratch PostgreSQL instance and isolated YAML Registry fixtures
-   **When** equivalent bindings/defaults are round-tripped through each backend
-   **Then** owned semantic values and computed resolution outcomes match
-   **And** the test requires no production Registry or database.
-
-### Story 1.3: Call Open Notebook Through a Bounded Domain Port
-
-As a PJangler operator,
-I want Notebook Service calls hidden behind a validated, bounded adapter,
-So that service failures are actionable and cannot hang the lifecycle or expose credentials.
-
-**Requirements:** FR-18, FR-19; NFR-2, NFR-4, NFR-5, NFR-6, NFR-10; AR-12, AR-13, AR-14.
+As a fleet operator,
+I want PJangler to enumerate every agent and correlate its identities across the two registries,
+So that missing links, duplicate ownership, and unresolved members are visible before any health or repair claim is made.
 
 **Acceptance Criteria:**
 
-1. **Given** the local fake Open Notebook service
-   **When** the adapter performs health/auth checks, notebook list/create/update, or notebook-scoped note operations
-   **Then** request and response payloads are schema-validated into domain records
-   **And** raw vendor payloads never escape the adapter boundary.
+**Given** valid Project and Hermes Agent registries and the approved fleet authority contract from Story 1.1
+**When** the fleet inventory core runs
+**Then** it emits one stable inventory row for every raw Hermes registry agent entry, including agents with no matching Project Registry record
+**And** it reports the independently counted source-row total, emitted-row total, unresolved-row total, and collection errors so no entry can disappear silently.
 
-2. **Given** configured connect/overall deadlines, response ceilings, abort signals, and redirect policy
-   **When** the service hangs, returns an oversized response, or redirects to a different origin
-   **Then** the call terminates within its bound with a normalized safe outcome
-   **And** the client does not follow the unsafe redirect or include a body in diagnostics.
+**Given** one Hermes agent row
+**When** PJangler resolves its fleet identity
+**Then** the row includes the agent ID, lifecycle classification, project ID when linked, canonical repository path, role and role directory, profile name and contained profile path, expected runtime path, expected owned unit names, stored board binding, and Bloodbank scope/target/activation references
+**And** every value records its authoritative source or is explicitly null/unresolved rather than inferred from a convenient basename.
 
-3. **Given** fake responses for 401/403, 404, 409, 429, timeout, connection failure, malformed JSON, and invalid schema
-   **When** each response is processed
-   **Then** it maps respectively to stable authentication, not-found, conflict, throttled, timeout, unavailable, or remote-protocol categories
-   **And** retryability is explicit and does not depend solely on `/api/config` or auth-status metadata.
+**Given** an agent project path that can be correlated with a Project Registry entry and repository `.project.json`
+**When** the three identities agree under the declared projection rules
+**Then** the inventory records the relationship as resolved
+**And** the Manifest remains a read-only projection for this operation and is not promoted into a competing registry authority.
 
-4. **Given** runtime authentication is disabled by service status
-   **When** a request is sent
-   **Then** no Authorization header is added
-   **And** when effective runtime configuration requires auth, the environment value is read only at call time and never logged, serialized, journaled, or stored.
+**Given** an agent whose project is absent from the Project Registry, whose repository or Manifest is missing, or whose referenced role/profile path does not exist
+**When** discovery runs
+**Then** the agent remains in the inventory with field-level unresolved findings and the owning source/path
+**And** discovery continues for unrelated agents without creating a project, Manifest, role, profile, directory, registry row, or board.
 
-5. **Given** a read or proven-idempotent write that receives a retryable result
-   **When** retry policy is applied
-   **Then** attempts and delays remain finite
-   **And** create operations are excluded from generic retry and routed through crash-safe reconciliation.
+**Given** duplicate or conflicting project IDs, canonical repository paths, agent IDs, profile names, board bindings, derived unit names, or Bloodbank target IDs
+**When** global identity validation runs
+**Then** every participant remains visible and receives the same stable conflict group identifier plus the conflicting field and owners
+**And** the aggregate inventory is unhealthy unless the fleet contract explicitly permits that relationship through a matching managed-exception policy.
 
-6. **Given** the adapter's exported port
-   **When** a caller inspects its methods
-   **Then** note access accepts a resolved binding and no unscoped get/update/delete method is exposed
-   **And** all list counts, titles, bodies, and diagnostics honor centralized `NotebookLimitsV1` ceilings.
+**Given** a symlinked, relative, nonexistent, or out-of-root registry path
+**When** PJangler canonicalizes identity paths
+**Then** it applies the configured containment and classification policy without following an unsafe path for mutation
+**And** ambiguity is reported rather than silently retargeting an agent to a different repository, role, runtime, or profile.
 
-### Story 1.4: Reconcile Remote Creation After Crashes and Ambiguous Responses
+**Given** one invalid agent row among otherwise valid rows
+**When** inventory parsing and validation run
+**Then** PJangler returns a bounded safe diagnostic for that row, preserves its raw identity key in the result, and inventories all independently parseable rows
+**And** no malformed field value is executed, used as a service name without validation, or echoed as unbounded content.
 
-As a PJangler operator retrying interrupted work,
-I want durable remote-mutation evidence reconciled before another create request,
-So that a timeout or process crash never silently creates a duplicate notebook or note.
+**Given** the operator runs `pjangler fleet inventory [--agent <id>] [--project-registry <path>] [--agent-registry <path>] [--json]`
+**When** no filters are supplied
+**Then** the command reads the configured canonical registries and reports the full inventory; `--agent` selects exactly one known row or returns a categorized not-found result
+**And** registry overrides support isolated/operator inspection, remain read-only, and never change the configured canonical paths.
 
-**Requirements:** FR-1, FR-4, FR-19; NFR-1, NFR-7, NFR-9, NFR-10; AR-9, AR-10, AR-11, AR-16, AR-17, AR-32.
+**Given** the focused automated suite uses isolated HOME/XDG, temporary registries, repositories, manifests, and profile roots
+**When** complete, unlinked, missing, malformed, duplicate, exception-authorized, path-ambiguous, and filtered cases run
+**Then** counts, correlations, conflict groups, source provenance, deterministic ordering, partial-result behavior, and zero writes are proven
+**And** completion also includes a real built CLI run whose emitted rows and totals match an independent safe count of the current configured agent registry; documentation, mocks, ticket state, or command exit alone is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR1, FR6. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR16.
 
-1. **Given** a notebook or note create intent
-   **When** it is prepared and dispatched
-   **Then** a contained mode-0600 `RemoteMutationJournalV1` is atomically fsynced through `prepared` and `possibly-dispatched` before the POST can leave
-   **And** it stores only safe kind, project/binding identity, marker/logical ID, input digest, timestamps, candidate IDs, and outcome metadata—not request bodies or credentials.
+### Story 1.3: Report Fleet Provenance Through Shared CLI and MCP
 
-2. **Given** transport proof that no request bytes left the process
-   **When** the attempt fails
-   **Then** the prepared operation may be safely reset/retried within finite policy
-   **And** absence of that proof leaves the operation `possibly-dispatched`.
-
-3. **Given** an unresolved possibly-dispatched operation
-   **When** reconciliation finds zero, one, or multiple exact `pjangler.project.v1:<slug>`/logical-note markers
-   **Then** zero remains blocked unless a safe pre-dispatch retry is proven, one is adopted by stable ID, and many returns `CONFLICT`
-   **And** no blind second POST or arbitrary name-based adoption occurs.
-
-4. **Given** a candidate has been reconciled
-   **When** its binding or note ownership becomes durable
-   **Then** the journal advances through `reconciled` to `committed`
-   **And** a crash at every transition converges on restart without duplicate durable objects.
-
-5. **Given** a repository rename or two notebooks sharing a display name
-   **When** creation is retried
-   **Then** the stable marker and remote ID, not the display name, control adoption
-   **And** name Drift is repairable without replacing identity.
-
-6. **Given** an unresolved journal at command start
-   **When** status or recovery is evaluated
-   **Then** the operation remains visible with bounded category and exact next action
-   **And** it is never discarded by normal retention while unresolved.
-
-### Story 1.5: Plan Notebook Bootstrap Through the Singleton Recipe
-
-As a PJangler operator,
-I want `pj init` to show Project Notebook work through the existing recipe lifecycle,
-So that I can review every local and remote consequence before anything changes.
-
-**Requirements:** FR-2, FR-15; NFR-1, NFR-8; AR-1, AR-2, AR-21, AR-22.
+As a fleet operator or automation client,
+I want the same fleet inventory and provenance from CLI and MCP,
+So that I can identify exactly which contract, template, runtime, profile generation, and executable each managed agent actually uses.
 
 **Acceptance Criteria:**
 
-1. **Given** the production recipe catalog
-   **When** it is constructed
-   **Then** exactly one `NotebookRecipe` is registered immediately before the singleton `ProjectRecipe`
-   **And** `ProjectRecipe.metadata.dependencies` truthfully includes `notebook` without recursive invocation.
+**Given** the authoritative inventory from Story 1.2
+**When** PJangler collects desired and observed provenance
+**Then** the fleet result includes PJangler package version/source, fleet contract and schema versions, configured Hermes URL/ref/full SHA and release path, observed Hermes executable/repository identity, canonical template source/ref/SHA, recorded pjangler template gitlink, scaffold manifest/version, and profile render generation or digest when present
+**And** each desired and observed value identifies its source and reports match, mismatch, dirty, missing, unsupported, or unobserved without guessing.
 
-2. **Given** project create or sync/re-init
-   **When** `runNotebookLifecycle(plan, mode, context)` is called
-   **Then** it invokes the one Notebook dependency for both modes
-   **And** sync does not awaken unrelated create-only dependencies.
+**Given** the vendored Hermes template worktree contains newer bytes than the parent repository's recorded gitlink
+**When** provenance is collected
+**Then** the recorded gitlink remains the effective release provenance and the mutable worktree is reported separately as dirty/mismatched
+**And** tests or successful rendering from the mutable worktree cannot make the pinned deployment appear current.
 
-3. **Given** `pj init` dry-run
-   **When** the Project Notebook plan is built
-   **Then** proposed configuration, binding/projection, skill, hooks, Overview, and Live Actions appear in the Plan in deterministic order
-   **And** planning creates no files, Registry rows, hooks, journals, receipts, service calls, or remote objects.
+**Given** an agent launcher, fleet configuration, registry row, or systemd definition points at a legacy executable or checkout while the contract pins an immutable release
+**When** provenance correlation runs
+**Then** the inventory identifies the exact observed executable family and mismatch for that agent
+**And** it never executes the observed binary, fetches a remote, updates a checkout, or rewrites a launcher while inspecting provenance.
 
-4. **Given** missing endpoint configuration, missing `--live`, or an explicitly disabled policy
-   **When** the plan is evaluated
-   **Then** it reports `unconfigured`, `planned` with remote skip, or `disabled` respectively
-   **And** it never calls the state healthy or invents a service endpoint.
+**Given** optional provenance is absent or one bounded Git/filesystem probe fails
+**When** the collector completes
+**Then** the affected field is explicitly missing or unobserved with safe categorized evidence while independent agents and provenance domains remain available
+**And** the aggregate does not turn absence into a match or discard the affected inventory row.
 
-5. **Given** fresh init before Registry persistence
-   **When** synchronous recipe checks run
-   **Then** they use the provisional `NotebookPlan`, repo-local state, and any supplied immutable observation
-   **And** no check performs a hidden network request.
+**Given** the operator uses `pjangler fleet inventory ...` or `pjangler fleet provenance [--agent <id>] [--json]`
+**When** the command succeeds
+**Then** inventory retains the stable rows from Story 1.2 and the provenance command presents desired-versus-observed sources and mismatches at fleet or agent scope
+**And** both commands dispatch through the same fleet application core rather than rebuilding registry, identity, or provenance policy in Commander handlers.
 
-6. **Given** the recipe's public checks
-   **When** metadata is inspected
-   **Then** all seven stable `notebook.*` rule IDs belong to `NotebookRecipe`
-   **And** CLI, hook, and future transport adapters contain no duplicate policy or service orchestration.
+**Given** an MCP client calls `pjangler_fleet_inventory` or `pjangler_fleet_provenance`
+**When** it supplies the equivalent scope, registry overrides, cancellation, and deadline inputs
+**Then** the MCP tool dispatches through that same application core and returns the same versioned data schema, stable ordering, finding identifiers, and categorized outcomes as the corresponding CLI JSON `data`
+**And** the adapter adds only MCP protocol wrapping and guidance, never alternate defaults or policy.
 
-### Story 1.6: Finalize One Registry-Last External Transaction
+**Given** identical isolated inputs are sent through CLI and MCP
+**When** success, not-found, malformed-registry, partial-probe, timeout, and cancellation cases run
+**Then** normalized data and error categories are equivalent across adapters
+**And** cancellation/deadline propagation terminates bounded child probes without converting cancellation into healthy or leaving any child probe running.
 
-As a PJangler operator applying a bootstrap plan,
-I want all external effects and recovery state finalized in one ordered transaction,
-So that every failure leaves the repository truthful and safely retryable.
+**Given** provenance sources contain environment mappings, credential references, remote URLs, Git metadata, or unexpected file content
+**When** results and diagnostics are rendered
+**Then** only approved nonsecret provenance fields and bounded safe paths/identifiers appear
+**And** literal credential values, raw environment dumps, private payloads, and unbounded subprocess output never enter CLI or MCP results.
 
-**Requirements:** FR-2, FR-4; NFR-1, NFR-2, NFR-7, NFR-9; AR-3, AR-4, AR-21, AR-40.
+**Given** focused adapter and provenance tests run under isolated HOME/XDG, temporary registries/repos/profiles, recorded gitlinks, and fake executables
+**When** matching, dirty-worktree, stale-gitlink, legacy-executable, missing, partial-failure, timeout, cancellation, and CLI/MCP parity cases execute
+**Then** provenance truth, shared-core dispatch, schema equivalence, bounds, and zero mutation are proven
+**And** completion includes a built CLI result and a real stdio MCP call compared with independent safe reads of the current package, contract, template gitlink, and configured Hermes pin; documentation, mocked adapters alone, ticket state, or exit code is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR8, FR26. Primary NFRs: NFR1, NFR2, NFR3, NFR7, NFR8, NFR10, NFR12, NFR13, NFR14, NFR16.
 
-1. **Given** an applied Project Plan with multiple external effects
-   **When** external execution begins
-   **Then** one typed `ProjectExternalEffectPlan` executes ticket provider, Notebook, then Hermes in fixed order
-   **And** execution stops after the first failed or blocked effect while preserving its primary categorized outcome.
+### Story 1.4: Deliver Parse-Safe Registry-Wide Fleet Status
 
-2. **Given** any external adapter dispatch
-   **When** the adapter is about to receive the request
-   **Then** `externalDispatchStarted` is latched first and never resets in the transaction
-   **And** fresh-target recursive deletion is permitted only before the latch and no remote object is automatically deleted.
-
-3. **Given** a Notebook effect returns candidate notebook and Overview IDs
-   **When** the transaction considers a linked projection
-   **Then** an observation proves the notebook marker, scoped Overview membership/envelope, and owned metadata before linkage
-   **And** failed, ambiguous, or unobserved candidates retain planned/blocked recovery state.
-
-4. **Given** success or failure at any local/external/postcondition point
-   **When** mutation sequencing completes
-   **Then** one Registry-only finalizer runs exactly once as the last mutation
-   **And** it persists all accumulated linked results or truthful planned/blocked recovery before the command returns its outcome.
-
-5. **Given** remote success followed by Manifest update, scoped commit, Registry finalizer, or read-only audit failure
-   **When** the operator retries
-   **Then** marker/journal evidence is adopted and reconciled without deletion or duplicate creation
-   **And** existing repository user work is never auto-committed or rolled back.
-
-6. **Given** injected failures before dispatch, after each external effect, after candidate observation, during Manifest update, and during Registry finalization
-   **When** lifecycle regression tests run
-   **Then** mutation ordering, one-finalizer behavior, latch safety, and durable recovery match the architecture failure table
-   **And** dry-run remains byte-for-byte side-effect free.
-
-### Story 1.7: Prove Fresh Bootstrap and Retry Convergence
-
-As a PJangler operator creating a project,
-I want generated-project evidence that bootstrap creates one healthy pairing and safely converges on retry,
-So that the initial user journey is proven without risking production notebook data.
-
-**Requirements:** FR-1, FR-2, FR-3, FR-4, FR-18, FR-19; NFR-1, NFR-6, NFR-9, NFR-10; AR-41, AR-43, AR-44.
+As a fleet operator or automation client,
+I want one complete registry-wide status command with trustworthy human and JSON output,
+So that I can assess the whole fleet without scripting per-repository audits or working around truncated machine output.
 
 **Acceptance Criteria:**
 
-1. **Given** an isolated HOME, XDG state/data root, YAML Registry, generated repository, and fake Notebook Service
-   **When** `pj init` first plans and then applies with live authorization
-   **Then** exactly one marker-bearing Companion Notebook and one required Overview Note are created
-   **And** Registry and Manifest contain the same stable binding only after remote postconditions pass.
+**Given** the fleet contract, inventory, and provenance capabilities from Stories 1.1–1.3
+**When** the fleet status application service runs without a scope filter
+**Then** it traverses every inventory row and emits one aggregate plus one stable per-agent status record
+**And** it includes explicit domain observations or explicit unobserved/unsupported findings for registry, project binding, template/scaffold, profile, runtime, systemd, live process, Bloodbank, and release/provenance domains so no domain disappears silently.
 
-2. **Given** the successful generated project
-   **When** init is repeated and the explicit create/reconcile path is exercised
-   **Then** no duplicate notebook or Overview is created
-   **And** the second converged run changes zero owned bytes or remote objects.
+**Given** existing recipe-owned project or host audit rules can provide an observation
+**When** fleet status invokes them
+**Then** it calls their shared application APIs for the inventory row's exact repository and preserves rule ID, owner, scope, status, summary, and bounded details
+**And** a host-scoped rule evaluated from one repository is not promoted into a registry-wide claim unless the fleet collector independently proves its declared global coverage.
 
-3. **Given** injected missing config, pre-dispatch failure, ambiguous create timeout, Overview failure, remote candidate mismatch, and Registry-write failure
-   **When** each bootstrap scenario completes
-   **Then** persisted/computed state is truthful and includes an exact recovery action
-   **And** no scenario reports healthy without authorized remote proof.
+**Given** the operator runs `pjangler fleet status [--agent <id>] [--domain <domain>] [--live] [--json]`
+**When** no scope filter is supplied
+**Then** human output shows observation time, contract/version provenance, total/resolved/unresolved agent counts, domain pass/fail/warn/skip/unobserved/error counts, overall completeness/health, and the highest-priority actionable findings
+**And** the unfiltered result identifies itself as a complete-fleet observation only when every required registered row and applicable domain was actually observed.
 
-4. **Given** a duplicate notebook marker or duplicate Registry claim
-   **When** bootstrap reconciles
-   **Then** it returns a conflict and performs no destructive choice
-   **And** both candidates remain available for explicit operator resolution.
+**Given** the operator supplies an agent or domain filter
+**When** fleet status collects observations
+**Then** collection and child probes are constrained to the selected agents/domains rather than probing the entire fleet and hiding results afterward
+**And** the result reports total registered fleet size plus selected and observed scope counts, labels health as scoped rather than fleet-complete, and never implies unselected agents or domains were observed.
 
-5. **Given** the generated-project contract suite on Node.js 20+
-   **When** it is timed in the healthy fake-service environment
-   **Then** pairing completes within the two-minute product target
-   **And** all tests prove production Registry/notebook endpoints were neither required nor contacted.
+**Given** the operator supplies `--json`
+**When** status completes healthy, unhealthy, or partially observed
+**Then** stdout contains exactly one UTF-8 versioned JSON document followed by one newline, with stable ordering and no ANSI, progress, log, warning, or explanatory prose
+**And** stderr contains only bounded safe diagnostics while health/completeness/findings remain represented in the JSON result.
 
-## Epic 2: Manage and Find Repository Knowledge Safely
+**Given** the serialized JSON is larger than the platform pipe buffer
+**When** the real built CLI writes to a terminal, regular file, shell pipeline, and captured subprocess stdout
+**Then** every destination receives the complete identical JSON bytes and closing newline before process termination
+**And** the CLI uses a flush-safe completion path rather than requiring a temporary regular-file workaround.
 
-Jarad and scripts can inspect the current binding, manage its Overview and notes, and search the repository's knowledge through stable human and JSON-v1 commands without leaking another project's content.
+**Given** one repository audit, filesystem probe, or optional adapter fails, times out, or returns malformed data
+**When** unrelated rows and domains remain observable
+**Then** status returns their results plus a categorized collection error and explicit incomplete state for the failed scope
+**And** it never converts the error to pass, drops the agent, aborts all independent work, or emits malformed JSON.
 
-### Story 2.1: Inspect Repository Notebook Status Through a Stable Contract
+**Given** a fleet with many agents and findings
+**When** human or JSON output is produced
+**Then** collections and diagnostic fields enforce documented finite per-agent/per-finding bounds while preserving total counts, stable finding IDs, truncation metadata, and a retrieval scope for omitted detail
+**And** memory, child-process concurrency, and collection deadlines are bounded by configuration rather than the raw fleet size.
 
-As a PJangler operator or automation author,
-I want repository-aware notebook status in concise human and validated JSON forms,
-So that I can distinguish healthy, incomplete, drifted, and unavailable state without parsing prose.
+**Given** an MCP client calls `pjangler_fleet_status` with equivalent agent/domain scope, live-read authorization, registry overrides, cancellation, and deadline
+**When** the same isolated fleet observation is used
+**Then** MCP returns the same versioned normalized status data, ordering, health, completeness, counts, findings, and error categories as CLI JSON
+**And** cancellation stops all outstanding child probes and returns a nonhealthy categorized result without leaving a probe running.
 
-**Requirements:** FR-5, FR-9, FR-21; NFR-4, NFR-5, NFR-7, NFR-8; AR-18, AR-19, AR-20, AR-21, AR-35, AR-46, AR-47.
+**Given** status is invoked without `--live`
+**When** the fleet contains drift or missing optional external integrations
+**Then** the operation performs no local or external mutation and no implicit network request
+**And** external evidence is marked unobserved or stale rather than silently fetched or assumed healthy.
 
-**Acceptance Criteria:**
+**Given** the operator explicitly supplies `--live`
+**When** a supported external observation is applicable
+**Then** PJangler may perform only that adapter's bounded read-only observation under normal timeout, cancellation, credential-redaction, and scope rules
+**And** `--live` never authorizes local mutation, remote mutation, process control, service changes, board changes, or Bloodbank activation.
 
-1. **Given** an explicit repository argument or a current working directory inside a registered Git repository
-   **When** `pj notebook status` resolves its target
-   **Then** it returns the canonical project slug/path and authoritative binding
-   **And** running outside a registered repository returns `NOT_CONFIGURED` with an exact corrective next action instead of guessing.
+**Given** focused tests run under isolated HOME/XDG with temporary registries/repos and fake bounded probes
+**When** zero-agent, healthy, drifted, unresolved, malformed, timeout, cancellation, large-output, stable-order, filter, live-read, and CLI/MCP parity cases execute
+**Then** traversal, aggregation, output purity, flush safety, bounds, scoped collection, partial results, exits, and zero writes are proven
+**And** completion includes capturing and parsing a real built CLI fleet result larger than the pipe buffer plus a real stdio MCP status call against the configured fleet; snapshots, mocks, documentation, ticket state, a file-redirection-only result, or command exit alone is insufficient evidence.
 
-2. **Given** persisted states `disabled`, `planned`, or `linked` and optional local/remote observations
-   **When** status is computed
-   **Then** `binding_state` remains distinct from nullable observed `health`
-   **And** the complete outcomes unconfigured, disabled, planned, linked, healthy, drifted, unavailable, and blocked are represented without persisting computed health.
+Requirements owned: FR2, FR3. Primary NFRs: NFR1, NFR2, NFR3, NFR7, NFR8, NFR9, NFR10, NFR11, NFR12, NFR13, NFR14, NFR15.
 
-3. **Given** `--local-only`
-   **When** status runs
-   **Then** no service adapter is constructed or contacted, `remote_check` is `skip`, and `health` is null
-   **And** linked local state is never presented as remotely healthy.
+### Story 1.5: Make Partial Health Truthful and Actionable
 
-4. **Given** an empty or populated Project Notebook state directory
-   **When** status renders
-   **Then** `CaptureAdmissionSummaryV1` reports nullable exact unresolved count/bytes, numeric lower bounds, unmeasurable-entry count, bounded safe integrity evidence, both finite caps, receiptless/stale counts, and active refusal markers
-   **And** it reports receipt retryability and safe next actions without bodies, raw session IDs, absolute suspect paths, or credentials; an empty state is a successful zero-count result.
-
-5. **Given** human mode
-   **When** status succeeds or fails
-   **Then** output is concise and identifies operation, project, binding outcome, remote proof, and next action
-   **And** no raw vendor payload or secret-bearing header is shown.
-
-6. **Given** `--json`
-   **When** status serializes
-   **Then** stdout contains exactly one schema-version-1 envelope plus newline conforming to `notebook.status`
-   **And** stdout has no ANSI/progress text while bounded diagnostics use stderr.
-
-7. **Given** exact current usage and an active `RetentionRefusalV1`
-   **When** status recomputes the marker using its stored real `candidate_bytes` and the current caps
-   **Then** it emits `retention-pressure` only while the current prospective predicate still fails
-   **And** after both measures recover it retains the marker only in `active_refusals` as informational `capture-refused-history`, with no pressure finding or invented repository-wide admission boolean.
-
-8. **Given** an invalid, unreadable, or non-regular receipt entry prevents exact measurement
-   **When** status evaluates capture admission
-   **Then** `state-integrity` takes precedence, preserves the suspect entry, and reports null exacts, numeric lower bounds, an unmeasurable count, safe entry evidence, and exact local audit/repair actions
-   **And** it does not infer `retention-pressure` from incomplete evidence.
-
-### Story 2.2: Read and Replace the Stable Overview Note
-
-As a project operator,
-I want to inspect and update the designated Overview in place,
-So that agent-facing project context stays bounded and keeps one stable identity.
-
-**Requirements:** FR-6, FR-7, FR-9, FR-20; NFR-4, NFR-6, NFR-9; AR-14, AR-16, AR-17, AR-28, AR-40.
+As a fleet operator,
+I want fleet health to distinguish failure, incompleteness, deferral, and accepted exceptions with clear ownership and next actions,
+So that I never mistake a partial or merely running fleet for a proven healthy one.
 
 **Acceptance Criteria:**
 
-1. **Given** a linked binding with `overview_note_id`
-   **When** `pj notebook overview` reads it
-   **Then** a complete notebook-scoped note list first proves membership
-   **And** the command returns bounded content and stable metadata without exposing the envelope marker in human excerpts.
+**Given** fleet observations from Story 1.4
+**When** the health evaluator classifies a finding
+**Then** it uses the contract-defined states pass, fail, warn, skip, unobserved, and error plus explicit scope, applicability, freshness, and evidence strength
+**And** it keeps desired lifecycle state, observed runtime state, capability readiness, and execution activation as separate fields rather than collapsing them into one boolean.
 
-2. **Given** a contained readable file within configured size limits
-   **When** `pj notebook overview --set-file PATH` runs
-   **Then** direct invocation authorizes only this update and the service note is updated in place
-   **And** `overview_note_id`, Overview logical identity, and required envelope are preserved.
+**Given** an unfiltered fleet observation
+**When** aggregate health and completeness are calculated
+**Then** fleet-complete is true only when every registered row and every required applicable domain was observed within its freshness policy
+**And** fleet-healthy is true only when that complete observation contains no gating fail/error/unobserved result and every allowed skip, warning, deferred capability, or managed exception is justified by explicit contract policy.
 
-3. **Given** a replacement Overview
-   **When** its descriptor is compiled
-   **Then** it contains project identity, visible purpose or exact `Purpose not yet documented` placeholder, ordered contained authoritative references with Git revision/digest or missing status, and policy version
-   **And** no absolute path, credential, or unbounded source content enters the note.
+**Given** a scoped status result, stale observation, missing optional dependency, unsupported platform capability, intentionally deferred channel, accepted managed exception, or failed required probe
+**When** health is evaluated
+**Then** each condition receives its distinct truthful state and reason
+**And** none can be promoted to complete-fleet health, silently counted as pass, or treated as equivalent to explicit Bloodbank activation.
 
-4. **Given** an absent, foreign, duplicate-logical-ID, malformed, or oversized Overview
-   **When** read or replacement is attempted
-   **Then** the command returns the correct not-found, cross-project, conflict, remote-protocol, or invalid-input outcome according to error precedence
-   **And** no unrelated note is read or mutated.
+**Given** a timer is active, a gateway process exists, a deploy command exited zero, a board says complete, or a historical execution succeeded
+**When** required postcondition evidence is absent, stale, or contradictory
+**Then** the corresponding capability remains unproven or unhealthy according to its policy
+**And** success text, process presence, ticket state, or historical evidence never overrides current direct observations.
 
-5. **Given** a successful Overview read or replacement in JSON mode
-   **When** the result is serialized
-   **Then** it validates the exact `notebook.overview.get` or `.set` data schema
-   **And** the result reports `updated` and descriptor Drift without leaking raw marker internals.
+**Given** the same logical drift is observed repeatedly
+**When** findings are generated across runs, adapters, CLI, and MCP
+**Then** it retains a deterministic finding ID derived from stable agent/domain/rule identity rather than timestamp or prose
+**And** changing evidence, severity, lifecycle state, or resolution produces an explicit transition while unchanged findings remain correlatable.
 
-### Story 2.3: List and Add Binding-Owned Notes
+**Given** any nonpass finding
+**When** it is rendered in human or JSON status
+**Then** it identifies the affected agent or fleet scope, domain, authoritative owner, observed-versus-desired state, safe evidence, severity/priority, automatic/approval-gated/manual/blocked repair class, and at least one exact next action or owning board/domain route
+**And** the recommended command is dry-run/read-only unless the output explicitly labels the separate authorization required for mutation, process stop, external action, or activation.
 
-As a project operator,
-I want to list current notes and add a bounded note from text or a file,
-So that project knowledge can be managed without using the raw service API.
+**Given** findings from different agents and domains
+**When** the operator views the fleet summary
+**Then** they are stable-sorted by gating impact, severity, scope, agent, domain, and finding ID with bounded detail
+**And** the summary reports counts for healthy, unhealthy, incomplete, deferred, exception, and unclassified members without allowing one high-volume domain to hide a higher-priority blocker.
 
-**Requirements:** FR-7, FR-9, FR-19, FR-20; NFR-4, NFR-5, NFR-6, NFR-9; AR-10, AR-14, AR-16, AR-17, AR-18, AR-19, AR-40.
+**Given** one observation adapter throws, times out, is cancelled, or returns internally contradictory evidence
+**When** the evaluator receives the result
+**Then** it emits an error or integrity finding owned by that adapter/domain and marks the affected scope incomplete
+**And** it preserves all independent observations and exposes the contradiction rather than choosing the more favorable value.
 
-**Acceptance Criteria:**
+**Given** CLI or MCP returns scoped, incomplete, or unhealthy status
+**When** the process/protocol outcome is finalized
+**Then** the documented exit/error category distinguishes invalid input, unhealthy complete observation, incomplete/collection failure, timeout/cancellation, and internal protocol failure
+**And** machine clients can decide retry, investigation, or explicit planning without parsing human prose.
 
-1. **Given** a linked binding with a complete scoped note list
-   **When** `pj notebook list notes` runs
-   **Then** items sort by `updated_at` descending and ID ascending with bounded summaries
-   **And** pagination uses a bounded opaque base64url canonical-JSON cursor carrying schema version and last sort tuple.
+**Given** focused health-semantic tests run over a table of complete, scoped, stale, skipped, deferred, exception-authorized, failed, errored, contradictory, and recovered observations
+**When** aggregate and finding outputs are evaluated through both CLI JSON and MCP
+**Then** truth tables, stable IDs, transitions, sorting, ownership, next actions, exit categories, and zero mutation are proven
+**And** completion includes a real built fleet status whose aggregate/counts and at least a bounded sample of findings are independently reconciled to current registry/files/service evidence; snapshots, mocks, documentation, ticket state, or command exit alone is insufficient evidence.
 
-2. **Given** malformed, mismatched, or oversized cursor/limit input
-   **When** list validates arguments
-   **Then** it returns `INVALID_INPUT` before any remote request
-   **And** an empty valid list is exit 0 with `items: []` and `next_cursor: null`.
+Requirements owned: FR4, FR30. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR8, NFR9, NFR10, NFR14, NFR15.
 
-3. **Given** exactly one of bounded `--text` or a contained regular `--file`
-   **When** `pj notebook add note --title TEXT` runs
-   **Then** direct invocation authorizes one add, creates a prepared journal with a UUID operation ID, and writes a `user-note:v1:<operation-id>` envelope
-   **And** the returned note detail contains a stable remote identifier.
+### Story 1.6: Audit Tracked PM Scaffold Parity Fleet-Wide
 
-4. **Given** an add response is lost after possible dispatch
-   **When** the same binding/title/content digest is retried
-   **Then** the active unresolved journal and marker are reconciled before any POST
-   **And** one candidate is adopted, zero remains safely blocked, and multiple candidates conflict.
-
-5. **Given** one add has committed
-   **When** the operator intentionally adds identical title/content again
-   **Then** a new operation UUID creates a distinct user note
-   **And** this intentional duplicate content is not confused with an unresolved retry.
-
-6. **Given** a secret-like, oversized, traversing, symlink-escaping, binary, or non-regular input file
-   **When** add validates it
-   **Then** it rejects the request before summarization or remote contact with only a bounded safe reason
-   **And** no matching content enters logs, JSON, journals, or diagnostics.
-
-7. **Given** list/add JSON mode
-   **When** output is produced
-   **Then** it validates the exact list or note-detail schema and emits a pure single envelope
-   **And** service/progress diagnostics remain on stderr.
-
-### Story 2.4: Read and Update Only Proven Member Notes
-
-As a project operator,
-I want to retrieve or revise a note only after its notebook membership is proven,
-So that a guessed foreign note ID cannot cross the repository boundary.
-
-**Requirements:** FR-7, FR-9, FR-19, FR-20; NFR-5, NFR-6, NFR-9; AR-8, AR-14, AR-16, AR-17, AR-20.
+As a fleet operator,
+I want fleet status to compare every managed PM scaffold with the exact pinned canonical template,
+So that stale, incomplete, locally modified, or contaminated role deployments are visible before I plan a fanout.
 
 **Acceptance Criteria:**
 
-1. **Given** a note ID
-   **When** get or update begins
-   **Then** the adapter first consumes a complete list scoped by the resolved `notebook_id` and proves the ID is present
-   **And** it never issues an unscoped get/update request for an absent target.
+**Given** the fleet inventory and provenance model
+**When** the scaffold observer determines desired state
+**Then** it uses the parent repository's recorded Hermes template gitlink and the contract-declared render inputs/owned-asset manifest
+**And** it never substitutes newer bytes from a dirty submodule worktree, sibling checkout, mutable branch tip, or operator PATH.
 
-2. **Given** Registry/ownership evidence proves the absent ID belongs to another binding
-   **When** membership classification completes
-   **Then** the command returns `CROSS_PROJECT`
-   **And** without that proof it returns `NOT_FOUND` and does not probe the foreign object.
+**Given** one managed PM registry row
+**When** scaffold parity is evaluated
+**Then** PJangler resolves the exact repository and role directory from authoritative inventory fields, renders or derives the expected tracked assets in contained temporary state without running provisioning side effects, and compares content, file type, executable mode, and owned symlink target as applicable
+**And** it does not assume every role lives at a hard-coded `agents/hermes/pm` path when the validated registry supplies a different owned role directory.
 
-3. **Given** a managed note
-   **When** title or bounded content is updated
-   **Then** its remote ID, envelope kind, logical ID, and safe provenance remain unchanged except for explicitly allowed revision fields
-   **And** service-supplied revision metadata is returned.
+**Given** expected assets differ from the deployed role
+**When** findings are produced
+**Then** missing, stale-content, wrong-mode, wrong-type, unsafe-symlink, locally modified, and unexpected positively owned generated assets are reported separately with stable asset-relative paths and safe desired/observed digests
+**And** file bodies, credentials, unbounded diffs, and unrelated repository files are not emitted.
 
-4. **Given** an unmarked scoped manual service note
-   **When** it is updated
-   **Then** it remains unmarked and is not assigned fabricated PJangler ownership
-   **And** no other note content changes.
+**Given** ignored role-local runtime state, logs, caches, compiled Python artifacts, recovery state, or operator-owned files exist near the role
+**When** parity runs
+**Then** runtime state is checked only for the separate tracked/ignored boundary and is never compared as scaffold source
+**And** ignored runtime bytes and foreign role files are neither treated as desired tracked assets nor proposed for deletion by this read-only story.
 
-5. **Given** the scoped list times out, is throttled, unavailable, oversized, or malformed
-   **When** get/update evaluates the result
-   **Then** that service/protocol outcome wins over `NOT_FOUND` or `CROSS_PROJECT`
-   **And** no mutation request is dispatched.
+**Given** the canonical template source itself is missing, dirty, uninitialized, mismatched with the recorded gitlink, contains excluded runtime droppings, or cannot produce a deterministic render
+**When** the observer runs
+**Then** it emits a source-integrity error that marks scaffold observation incomplete for affected agents
+**And** it does not fall back to whatever source happens to render successfully or claim every deployed scaffold stale against an untrusted baseline.
 
-6. **Given** JSON mode
-   **When** get/update succeeds or fails
-   **Then** the exact note-detail or bounded error schema validates before serialization
-   **And** raw note/service bodies appear only in the allowed bounded data field, never diagnostics.
+**Given** a repository has unrelated modified or untracked work
+**When** scaffold parity is observed
+**Then** the worktree is not changed, stashed, reset, cleaned, committed, or conflated with scaffold-owned differences
+**And** the result identifies only overlaps with positively owned scaffold paths while recording that unrelated WIP was preserved.
 
-### Story 2.5: Delete a Note with Explicit Scope and Confirmation
+**Given** the existing `hermes.pm-scaffold` repository rule and the new fleet scaffold observer cover the same owned asset
+**When** they are evaluated for the same repository and pinned template generation
+**Then** they share one desired-state comparison or return equivalent normalized findings
+**And** a stale per-repository rule cannot report pass while the authoritative fleet manifest reports a contradictory scaffold generation without an integrity finding.
 
-As a project operator,
-I want destructive note deletion to require both ownership proof and explicit confirmation,
-So that automation cannot erase the Overview or another project's knowledge accidentally.
+**Given** the operator runs `pjangler fleet status --domain scaffold [--agent <id>] [--json]` or the equivalent MCP scope
+**When** observation completes
+**Then** status reports applicable, passing, drifted, incomplete, exception-authorized, and unobserved agent counts plus each agent's pinned source and asset summary
+**And** agent scoping constrains rendering/comparison work to that agent while retaining total registered and selected scope counts.
 
-**Requirements:** FR-7, FR-9, FR-20; NFR-1, NFR-6; AR-14, AR-17, AR-20, AR-40.
+**Given** focused tests use temporary Git repositories, recorded submodule gitlinks, deterministic render fixtures, role paths with spaces, dirty template worktrees, unrelated target WIP, runtime droppings, modes, symlinks, and missing assets
+**When** matching and every drift/source-integrity class execute
+**Then** source selection, owned-path comparison, digest safety, deterministic ordering, repository-rule equivalence, zero writes, and WIP/runtime preservation are proven
+**And** completion includes a built fleet scaffold status for the current configured PM fleet reconciled against an independent safe sample of the recorded template gitlink and deployed files; snapshots, mocked comparisons alone, documentation, ticket state, or command exit is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR9. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR6, NFR7, NFR8, NFR10, NFR13, NFR14, NFR16.
 
-1. **Given** interactive human mode without confirmation
-   **When** `pj notebook delete note NOTE_ID` is invoked
-   **Then** it prompts for explicit confirmation before any remote request
-   **And** a declined confirmation exits safely without mutation.
+### Story 1.7: Prove Generated Profile Health and Classify Extras
 
-2. **Given** non-interactive or JSON mode
-   **When** delete lacks `--yes`
-   **Then** it returns `INVALID_INPUT` before service contact
-   **And** `--yes` authorizes only deletion of that one requested note.
-
-3. **Given** `NOTE_ID` equals the binding's `overview_note_id` or resolves to an Overview envelope
-   **When** generic deletion is requested
-   **Then** deletion is rejected regardless of confirmation
-   **And** the next action points to Overview replacement rather than removal.
-
-4. **Given** a non-Overview note
-   **When** membership cannot be proven from a complete scoped list
-   **Then** the same not-found/cross-project and error-precedence rules as read/update apply
-   **And** no delete endpoint is called.
-
-5. **Given** confirmed scoped deletion succeeds
-   **When** output is rendered
-   **Then** the result contains exactly the deleted stable ID under the JSON-v1 schema or concise human confirmation
-   **And** any owned local note index is updated atomically without disturbing other identities.
-
-### Story 2.6: Search a Complete Scoped Note Set Locally
-
-As a project operator,
-I want deterministic text search over only my Companion Notebook,
-So that search is useful without trusting the service's global and incomplete search endpoint.
-
-**Requirements:** FR-8, FR-9, FR-20; NFR-4, NFR-6, NFR-9; AR-14, AR-15, AR-19, AR-20.
+As a fleet operator,
+I want fleet status to validate every registered named profile and classify every extra profile-root entry,
+So that generated-config drift, unsafe legacy topology, memory/skill identity errors, and legitimate specialist profiles are distinguished without deleting operator state.
 
 **Acceptance Criteria:**
 
-1. **Given** a bounded query and complete notebook-scoped note list
-   **When** `pj notebook search notes QUERY` runs
-   **Then** titles, marker-stripped bodies, and query use NFKC normalization plus Unicode lowercase and `/[\p{L}\p{N}]+/gu` tokenization
-   **And** every distinct query token is required for a result.
+**Given** a registered managed agent
+**When** the profile observer resolves its profile
+**Then** the profile path is derived from the authoritative profile name, contained beneath the configured profile root, and required to be a real directory rather than a symlink
+**And** a missing, linked, non-directory, escaped, case-colliding, or otherwise ambiguous profile is reported as a pre-mutation hard failure without following it into role/runtime state.
 
-2. **Given** matching notes
-   **When** scores are computed
-   **Then** exact-token title occurrences count ten times body occurrences
-   **And** results order by score descending, `updated_at` descending, then ID ascending with bounded excerpts beginning at the first body match.
+**Given** a real registered profile directory
+**When** profile structure is inspected
+**Then** it requires identity-only `profile.yaml`, override-only `config.delta.yaml`, generated `config.yaml`, explicit `hindsight/config.json` bank pin, and the immutable canonical skill core
+**And** it reports each missing, malformed, misowned, unsafe-linked, or identity-mismatched component separately without treating an inert `profile.yaml` config block as native inheritance.
 
-3. **Given** no matching notes
-   **When** the complete scoped list is searched
-   **Then** the command succeeds with an empty collection
-   **And** it does not reinterpret empty as an error.
+**Given** the fleet base config and a registered profile delta
+**When** generated configuration health is evaluated
+**Then** PJangler invokes the canonical profile renderer's read-only check semantics under a bounded deadline and records base/delta/generated digests or generation evidence plus drifted semantic sections
+**And** it never hand-edits, renders, absorbs, seeds, locks for mutation, or rewrites either config file during status.
 
-4. **Given** a fake upstream global search response contaminated by another notebook
-   **When** public v1 search executes
-   **Then** the global text/vector endpoint is not called at all
-   **And** no cross-project item can enter results even when its `parent_id` appears plausible.
+**Given** a shared-base change has not been rendered into one or more named profiles
+**When** fleet profile status runs
+**Then** every affected registered profile is reported drifted even if its repository-local `hermes.runtime-singleton` rule otherwise passes
+**And** contradictory renderer/parity results produce an integrity finding instead of selecting the greener result.
 
-5. **Given** the scoped list is incomplete, capped beyond allowed count, timed out, throttled, unavailable, or malformed
-   **When** search evaluates it
-   **Then** it returns the original bounded service/protocol error rather than a partial or empty result
-   **And** local/vector semantic fallback is not falsely advertised.
+**Given** a profile's Hindsight pin is missing, resolves to `custom`, uses a stale/case-changed/underscore alias, or does not match the contract-approved identity
+**When** identity-memory health is checked
+**Then** the exact observed bank ID and expected safe identity are reported without reading memory contents
+**And** the profile cannot be healthy merely because a generic `bank_id_template` exists.
 
-6. **Given** JSON mode
-   **When** search returns results
-   **Then** `next_cursor` is null, normalized query tokens and bounded summaries validate the exact schema, and stdout remains pure
-   **And** stable ordering fixtures cover Unicode normalization and tie cases.
+**Given** a registered profile has missing canonical skills or extra configured skills
+**When** skill membership is inspected
+**Then** removal/replacement of any immutable core skill is a failure while additive optional skills remain allowed and visible
+**And** symlink containment/source validation prevents a dangling or foreign path from satisfying required membership.
 
-### Story 2.7: Lock the Public CLI, JSON, Exit, and Packaging Contract
+**Given** an entry exists under the profile root but no ordinary agent row claims its exact profile identity
+**When** extra-entry classification runs
+**Then** PJangler correlates it with declared shared-service/specialist exceptions, systemd units, and live process references and classifies it as approved managed exception, intentionally unmanaged, retired candidate, unclassified, or debris candidate
+**And** shared profiles such as the fleet Bloodbank gateway are not forced into an ordinary PM shape when their explicit contract class defines a different policy.
 
-As an automation author,
-I want every delivered `pj notebook` command to obey one documented compatibility contract,
-So that scripts can upgrade PJangler without brittle prose parsing or hidden behavior changes.
+**Given** an unregistered profile-like entry is a backup-named directory, alias, symlink, incomplete standalone directory, or live process target
+**When** status reports it
+**Then** the entry remains untouched and receives bounded safe evidence plus adoption, exception, retirement, or manual-review guidance
+**And** no classification automatically deletes, renames, unlinks, merges, renders, stops, or adopts it.
 
-**Requirements:** FR-5 through FR-9, FR-18 through FR-21; NFR-4, NFR-5, NFR-8, NFR-10; AR-18, AR-19, AR-20, AR-43, AR-44, AR-45.
+**Given** the operator runs `pjangler fleet status --domain profile [--agent <id>] [--json]` or equivalent MCP scope
+**When** collection completes
+**Then** status reports registered profile totals, structurally healthy/drifted/incomplete counts, renderer health, memory/skill identity findings, and separately classified extra-root counts
+**And** agent scope checks only the selected registered profile while fleet scope alone performs complete extra-root classification and labels that coverage difference.
 
-**Acceptance Criteria:**
+**Given** profile or renderer files contain secret references, unexpected large values, or malformed YAML/JSON
+**When** diagnostics are produced
+**Then** output is limited to safe paths, field names, categories, sizes, and digests
+**And** credential values, complete configs, private memory, and unbounded parser/renderer output are never emitted.
 
-1. **Given** the accepted public grammar
-   **When** Commander help and parser tests run
-   **Then** status, create, note list/add/get/update/delete/search, Overview, capture list/retry, audit, and migrate forms match the Architecture Spine
-   **And** internal hook/worker entrypoints are labeled compatibility surfaces rather than public user commands.
+**Given** focused tests run with isolated profile roots, base configs, canonical renderer fixtures, real directories, symlinks, stale generations, malformed deltas, mismatched pins, core/extra skills, exceptions, aliases, backup names, and live-reference fixtures
+**When** all healthy and failure classes execute
+**Then** containment, structure, semantic drift, parity contradiction, identity, classification, bounds, deterministic output, and zero mutation are proven
+**And** completion includes built fleet profile status reconciled with the canonical renderer check and an independent safe inventory of the current profile root; snapshots, fake renderer results alone, documentation, ticket state, or command exit is insufficient evidence.
 
-2. **Given** every currently implemented data-returning command
-   **When** success, empty, no-op, and failure fixtures run
-   **Then** each output validates its exact command-specific JSON-v1 data/error schema before serialization
-   **And** `binding_state`, nullable `health`, safe `next_actions`, and one trailing newline remain stable.
+Requirements owned: FR10, FR11. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR16.
 
-3. **Given** invalid input, not configured/auth failure, object/conflict/isolation/drift, retryable service failure, or protocol/internal invariant failure
-   **When** the CLI exits
-   **Then** stable symbolic codes map to exits 2, 3, 4, 5, or 6 respectively while success/empty/no-op/local skip is 0
-   **And** exit 1 remains compatibility fallback only and is not emitted by new domain paths.
+### Story 1.8: Prove Canonical systemd Topology and Service Health
 
-4. **Given** malicious titles/payloads, ANSI text, oversized responses, credential-shaped fixtures, and absolute secret paths
-   **When** human/JSON/log renderers process them
-   **Then** bounds and redaction prevent control-sequence injection or credential/body disclosure
-   **And** the service payload is never interpolated into an executable shell or raw diagnostic.
-
-5. **Given** a backwards-compatible additive field/command or a breaking field/meaning/exit change
-   **When** compatibility checks evaluate it
-   **Then** additive consumers are required to ignore unknown fields
-   **And** a breaking change requires a major version or compatibility shim, while deprecated syntax remains functional with warning for at least one minor release.
-
-6. **Given** the built and packed CLI on Node.js 20+
-   **When** it runs in isolated HOME/XDG/Registry against the fake service
-   **Then** direct status, create, Overview, CRUD, and search contracts pass without a source checkout assumption
-   **And** no production endpoint or operator data is contacted.
-
-7. **Given** the full CRUD/search/error matrix
-   **When** contract tests run
-   **Then** success, empty, invalid input, auth, timeout, unavailable, conflict, malformed response, confirmation, foreign ID, and contaminated search fixtures pass 100%
-   **And** scans report zero raw credential disclosures and zero cross-project results.
-
-8. **Given** the v1 package and command surface
-   **When** exported commands, adapters, and help are inspected
-   **Then** no MCP command, unsupported-client lifecycle claim, semantic/vector search, rich/source ingestion, multi-tenant control, fleet bulk operation, destructive remote deletion, ambiguity force-clear, receipt dismissal, or down-migration behavior is exposed
-   **And** those deferred capabilities require separate product and safety design rather than hidden flags.
-
-## Epic 3: Detect and Repair Project Notebook Drift
-
-Jarad can audit an existing or newly initialized repository, review only Project Notebook-owned repairs, apply authorized local/live fixes without disturbing foreign state, and prove the second run is a no-op.
-
-### Story 3.1: Evaluate Seven Stable Notebook Ownership Rules
-
-As a PJangler operator,
-I want Project Notebook state evaluated by one stable set of recipe-owned checks,
-So that init, general audit, focused audit, and migration agree about Drift and ownership.
-
-**Requirements:** FR-15; NFR-1, NFR-4, NFR-5, NFR-7, NFR-8, NFR-9; AR-1, AR-21, AR-22, AR-35, AR-46, AR-47.
+As a fleet operator,
+I want fleet status to validate each agent's declared service topology and prove service health over time,
+So that enabled files, active timers, deferred gateways, crash loops, and retired units cannot be mistaken for a healthy managed runtime.
 
 **Acceptance Criteria:**
 
-1. **Given** the `NotebookRecipe` check catalog
-   **When** its public rule IDs are enumerated
-   **Then** it contains exactly `notebook.configuration`, `notebook.binding`, `notebook.remote-notebook`, `notebook.overview-note`, `notebook.skill-installed`, `notebook.hooks-projected`, and `notebook.capture-receipts`
-   **And** each ID has stable ownership, severity semantics, fixability, and safe next-action metadata.
+**Given** an ordinary managed PM agent
+**When** PJangler derives its desired systemd topology from the fleet contract and registry
+**Then** it expects one per-agent messaging gateway service and one heartbeat timer with its single paired oneshot service
+**And** any per-agent Bloodbank consumer, checkpoint timer/service, duplicate gateway, duplicate heartbeat, or other retired owned unit is reported as drift rather than an alternate deployment style.
 
-2. **Given** local Registry, Manifest, skill, hook, XDG journal/receipt, and provisional plan state
-   **When** checks execute synchronously
-   **Then** they perform no filesystem mutation or hidden network request
-   **And** fresh init can use plan/repository-local evidence before Registry persistence.
+**Given** the fleet-wide service model
+**When** shared units are inventoried
+**Then** exactly one declared fleet-shared Bloodbank gateway is correlated with its managed shared-service profile and registry/contract identity
+**And** an agent-scoped status neither requires nor invents a per-agent command-ingress process.
 
-3. **Given** an async caller with remote-read authorization
-   **When** it prepares `NotebookObservation`
-   **Then** the immutable observation records fetch time, binding, safe config/auth provenance, categorized health, bounded notebook/note/Overview metadata, and diagnostics
-   **And** it contains no credential, request/response body, or unbounded content.
+**Given** an installed or loaded unit associated with a registered agent
+**When** the systemd observer collects state
+**Then** it records bounded normalized `LoadState`, `UnitFileState`, `ActiveState`, `SubState`, `Result`, `ExecMainStatus`, `NRestarts`, fragment identity, effective executable family, and safe `HERMES_HOME`/profile identity
+**And** it validates that owned entrypoints and profile paths match the agent's pinned provenance without dumping the complete environment or credential values.
 
-4. **Given** ordinary `pj audit` without a supplied observation
-   **When** remote-owned rules run
-   **Then** they return `skip`, not `pass` or a hidden fetch
-   **And** local findings still participate in ordinary and final init audit.
+**Given** an agent has no verified Telegram or Slack credential and its lifecycle declares messaging deferred
+**When** gateway health is evaluated
+**Then** healthy-deferred requires the gateway to be disabled and inactive and the generated profile delta to explicitly set both unverified platforms disabled
+**And** a missing credential, inherited platform enablement, installed-but-enabled gateway, restart loop, or active gateway with no verified channel ownership cannot pass as deferred health.
 
-5. **Given** pass, fail, warn, or skip outcomes
-   **When** a finding is rendered
-   **Then** ownership, observed evidence, fixability, retryability, and an exact safe next action are explicit
-   **And** neither secrets nor foreign configuration bodies appear.
+**Given** an agent declares a verified messaging channel active
+**When** gateway health is evaluated over the configured bounded stabilization window
+**Then** the unit must remain enabled and active with successful result/status, stable restart count, correct pinned entrypoint/profile, and matching safe channel-identity evidence for the whole window
+**And** one successful `is-active` sample, a transient activating state, or a zero deploy exit cannot satisfy the postcondition.
 
-6. **Given** `notebook.capture-receipts` evaluates runtime state
-   **When** exact admission proof is available, unavailable, or represented by a prior refusal marker
-   **Then** it uses the same `CaptureAdmissionSummaryV1`, current-predicate pressure rule, informational history outcome, and state-integrity precedence as status
-   **And** it never adds a seventh receipt state or treats historical refusal as current pressure by itself.
+**Given** a heartbeat timer and paired oneshot service
+**When** heartbeat health is evaluated
+**Then** the timer must be enabled and active/waiting, its schedule must be within policy, and the latest completed oneshot must have successful `Result` and `ExecMainStatus` with current bounded evidence
+**And** the oneshot being inactive between ticks is normal while a missing/overdue tick, stuck activation, failed latest result, or checkpoint-only behavior that violates declared reconciliation policy is unhealthy.
 
-### Story 3.2: Run a Side-Effect-Free Focused Notebook Audit
+**Given** unit state changes during observation
+**When** repeated samples disagree or restart count increases
+**Then** PJangler reports unstable or crash-looping health with the sample window and safe transition summary
+**And** it does not persist or report the most favorable sample as final truth.
 
-As a project operator,
-I want `pj notebook audit` to inspect only notebook-owned local and authorized remote state,
-So that I can see precisely what drifted without changing anything.
+**Given** systemd user manager access is unavailable, a query times out, a unit property is malformed, or a referenced fragment/entrypoint path is unsafe
+**When** service collection runs
+**Then** the affected service domain is error/incomplete with a categorized finding while unrelated filesystem/profile domains remain available
+**And** status performs no daemon reload, enable, disable, start, stop, restart, reset-failed, or unit-file write.
 
-**Requirements:** FR-5, FR-15; NFR-1, NFR-4, NFR-6, NFR-7, NFR-9, NFR-10; AR-9, AR-21, AR-22, AR-28, AR-35, AR-46, AR-47.
+**Given** unit files or loaded units exist for unregistered identities
+**When** full-fleet topology is observed
+**Then** they are correlated with managed exceptions, retired entries, profiles, and processes when possible and otherwise reported unclassified
+**And** they remain untouched and are not assigned to the nearest matching agent name.
 
-**Acceptance Criteria:**
+**Given** the existing `systemd.sentinel` or `hermes.registry-parity` rule disagrees with the canonical topology/service observer
+**When** both cover the same agent and observation window
+**Then** PJangler emits an integrity finding with both normalized claims
+**And** a legacy expectation for consumers/checkpoints or an activity-only pass cannot override the current fleet contract.
 
-1. **Given** a registered target repository
-   **When** `pj notebook audit` runs normally
-   **Then** it prefetches one bounded observation and filters results to the `notebook` recipe
-   **And** no Registry, Manifest, hook, XDG, or remote state is mutated.
+**Given** the operator runs `pjangler fleet status --domain systemd [--agent <id>] [--json]` or equivalent MCP scope
+**When** the bounded observation completes
+**Then** output separates installed topology, desired capability state, current runtime state, stability proof, heartbeat latest-result proof, shared-service health, and unregistered-unit findings
+**And** agent scope queries only that agent's owned capability units while clearly labeling fleet-shared/unregistered coverage as unobserved unless requested.
 
-2. **Given** `--local-only`
-   **When** focused audit runs
-   **Then** it forbids adapter construction/contact and explicitly marks remote notebook and Overview checks `skip`
-   **And** local configuration, binding projection, skill, hooks, journals, and receipt integrity still evaluate.
+**Given** focused tests use a stateful fake systemd adapter and isolated unit/profile/channel fixtures
+**When** active, deferred, disabled, missing, duplicate, retired, crash-looping, activating, overdue/failed heartbeat, property-error, timeout, manager-unavailable, shared-gateway, unregistered-unit, and legacy-rule contradiction cases execute across multiple samples
+**Then** topology, capability semantics, stabilization, bounds, adapter cancellation, zero mutation, and deterministic status are proven
+**And** completion includes a bounded real user-systemd observation of the current registered gateways, heartbeat timers/latest services, and fleet-shared gateway reconciled with direct `systemctl --user show` evidence; mocks, one `is-active` sample, documentation, ticket state, or command exit alone is insufficient evidence.
 
-3. **Given** observed remote state
-   **When** remote notebook and Overview rules evaluate
-   **Then** they verify exact stable IDs, notebook marker/name/archive state, scoped Overview membership/envelope/bounds, and current descriptor reference digests
-   **And** zero/multiple marker candidates or Overview logical IDs report blocked/conflict rather than choosing one.
+Requirements owned: FR12, FR13. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR7, NFR8, NFR9, NFR10, NFR11, NFR13, NFR14, NFR16.
 
-4. **Given** missing config, missing binding, stale name, missing Overview, stale descriptor, missing skill, hook drift/duplicates, unresolved mutation journal, incomplete baseline, expired lease, or failed receipt
-   **When** audit runs
-   **Then** each condition maps to its owning rule and a precise fixable/blocked outcome
-   **And** unrelated recipe findings are absent from focused output.
+### Story 1.9: Attribute Live Hermes Processes and Expose Runtime Sprawl
 
-5. **Given** JSON mode
-   **When** audit completes
-   **Then** the exact `notebook.audit` schema returns rules, audit time, and remote-check state in one pure envelope
-   **And** Drift uses the documented symbolic code/exit without writing a repair.
-
-6. **Given** exact unresolved usage and active refusal markers
-   **When** `notebook.capture-receipts` audits them
-   **Then** it reports current totals/caps and recomputes each stored real candidate against current usage, emitting `retention-pressure` only for a predicate that still fails
-   **And** a now-fitting marker remains only in `active_refusals` as non-finding `capture-refused-history`, without synthesizing candidate bytes for any absent session.
-
-7. **Given** an invalid, unreadable, or non-regular state entry
-   **When** focused or local-only audit evaluates capture admission
-   **Then** `state-integrity` is a failing precedence outcome with null exact totals, numeric lower bounds, bounded safe entry identifiers/reasons, and exact in-place repair/re-run actions
-   **And** the suspect entry is preserved and no retention-pressure finding is emitted.
-
-8. **Given** succeeded, unresolved, referenced-baseline, and unreferenced receiptless fixtures
-   **When** audit evaluates retention and cleanup eligibility
-   **Then** only an elapsed succeeded receipt and equality-expired unreferenced receiptless state are eligible for their distinct cleanup paths
-   **And** queued, processing, failed, retry-exhausted, blocked-missing-baseline, journal-referenced, corrupt, and unreadable evidence is never proposed for deletion, compaction, or dismissal.
-
-### Story 3.3: Review a Selective Notebook Migration Plan
-
-As a PJangler operator,
-I want migration to begin with a no-write plan of only owned repairs,
-So that I can authorize local and remote effects independently and never trigger a global migrate-all.
-
-**Requirements:** FR-16; NFR-1, NFR-7, NFR-9; AR-20, AR-22, AR-40.
+As a fleet operator,
+I want every live Hermes-related process attributed to a registered agent, managed exception, service, profile, and executable generation when possible,
+So that legacy, duplicate, isolated, or unattributable runtimes cannot remain invisible behind registry and systemd health.
 
 **Acceptance Criteria:**
 
-1. **Given** focused audit findings
-   **When** `pj notebook migrate` runs without `--apply`
-   **Then** it selects only failing/fixable public `notebook.*` rule IDs from the same check objects
-   **And** it performs zero Registry, Manifest, hook, XDG, or remote writes.
+**Given** a point-in-time host process snapshot
+**When** the process observer identifies Hermes-related processes
+**Then** it captures a race-safe identity using PID plus process start identity, parent/process-group relationships, safe executable identity, cgroup/systemd unit when present, and only the allowlisted profile/runtime selectors needed for attribution
+**And** it never emits full command lines, prompts, environment blocks, credentials, private payloads, or unrelated process data.
 
-2. **Given** proposed repairs
-   **When** the Plan is rendered
-   **Then** local changes and Live Actions are separated with proposed state transitions, ownership, preconditions, and exact next actions
-   **And** it never selects another recipe or invokes global migrate-all.
+**Given** a process belongs to a registered per-agent gateway, heartbeat invocation, or the fleet-shared Bloodbank gateway
+**When** attribution runs
+**Then** it correlates the exact systemd unit, registry agent/shared-service identity, profile, expected executable provenance, and process role
+**And** child/watchdog/MCP descendants are grouped under their owning root process instead of being misreported as duplicate independent gateways.
 
-3. **Given** remote rename, adopt, Overview create/update, or other remote-needed repair
-   **When** `--live` is absent
-   **Then** the action remains planned/skipped and the binding does not become healthy
-   **And** generic synchronous migration reports the exact `pj notebook migrate --apply --live` path rather than pretending completion.
+**Given** an interactive CLI, isolated server, background worker, MCP/watchdog process, legacy launcher, or process without systemd ownership is running
+**When** it can be correlated by exact contained profile/runtime/executable evidence
+**Then** PJangler classifies its process kind and registered agent or declared managed exception with evidence strength
+**And** it does not infer ownership from substring, nearest name, current working directory basename, or a single ambiguous argument.
 
-4. **Given** duplicate markers, destructive ambiguity, unresolved possibly-dispatched mutation, or an absent required endpoint
-   **When** migration plans
-   **Then** the finding is blocked with safe evidence and no guessed action
-   **And** v1 never proposes remote deletion, ambiguity force-clear, or invented configuration.
+**Given** two independent roots claim the same singleton agent/profile capability, a process uses a legacy executable, a unit uses the wrong profile, or a registered active capability has no process
+**When** process and service observations are correlated
+**Then** fleet status emits duplicate-runtime, legacy-generation, identity-mismatch, or missing-process findings as applicable
+**And** contradictory service/process evidence remains visible rather than allowing either domain to overwrite the other.
 
-5. **Given** JSON mode
-   **When** the migration plan returns
-   **Then** `dry_run`, selected rule IDs, proposed results/state transitions, and changed-file predictions validate the exact `notebook.migrate` schema
-   **And** no secret value or complete foreign configuration is exposed.
+**Given** a Hermes-related process cannot be attributed safely
+**When** full-fleet process status runs
+**Then** it remains visible as unclassified with bounded safe executable/profile hints, start age, and evidence confidence
+**And** it is not assigned, signaled, reparented, restarted, or ignored merely because its profile is absent from the agent registry.
 
-### Story 3.4: Apply Repairs with Preservation and No-Op Proof
+**Given** a process exits, execs, or changes parentage during collection
+**When** its start identity or second bounded verification no longer matches
+**Then** the record is marked vanished/changed and excluded from stable-running claims
+**And** PID reuse cannot transfer ownership or health evidence to a different process.
 
-As a PJangler operator repairing an older repository,
-I want selected notebook migrations to preserve every foreign byte and verify their postconditions,
-So that repair is safe, recoverable, and idempotent.
+**Given** process metadata is permission-denied, malformed, oversized, or unavailable on the platform
+**When** collection runs
+**Then** the affected fields or process domain are explicitly inaccessible/unobserved with safe categorized evidence
+**And** fleet health does not silently treat an incomplete process table as proof that no unmanaged runtimes exist.
 
-**Requirements:** FR-15, FR-16, FR-17; NFR-1, NFR-2, NFR-4, NFR-6, NFR-9, NFR-10; AR-6 through AR-11, AR-22, AR-27, AR-28, AR-35, AR-40, AR-42, AR-43, AR-44, AR-46, AR-47.
+**Given** the operator runs `pjangler fleet status --domain process [--agent <id>] [--json]` or equivalent MCP scope
+**When** collection completes
+**Then** output reports root and grouped-child counts by managed agent, shared/specialist exception, interactive, isolated, legacy, duplicate, and unclassified class plus executable-generation mismatches
+**And** agent scope performs only the minimum host snapshot and attribution needed for that exact agent, labels unselected host processes unobserved, and does not imply complete-host process coverage.
 
-**Acceptance Criteria:**
+**Given** an isolated or legacy process is found
+**When** next actions are generated
+**Then** status offers read-only inspection/classification guidance and identifies the separate future drain-plan/approval path
+**And** this story never sends a signal, invokes a shutdown endpoint, changes a unit, deletes a pid/socket, or mutates registry/profile/runtime state.
 
-1. **Given** an approved plan and `--apply` without `--live`
-   **When** migration executes
-   **Then** only selected local Registry/Manifest/skill/hook/state repairs run
-   **And** remote-required rules remain explicit skips/blocked outcomes with truthful planned state.
+**Given** focused tests use synthetic process snapshots with PID reuse, parent/child trees, cgroups, exact and ambiguous profiles, legacy/current executables, permission failures, disappearing processes, duplicates, shared services, and secret-shaped argv/environment fields
+**When** attribution and redaction run
+**Then** grouping, identity safety, evidence confidence, conflict detection, bounds, scope labeling, deterministic output, and zero process control are proven
+**And** completion includes a bounded real process-domain status independently reconciled to a safe `/proc` or `ps`/systemd sample of current Hermes root processes and executable families; synthetic snapshots, documentation, ticket state, process presence alone, or command exit is insufficient evidence.
 
-2. **Given** `--apply --live` and unambiguous remote evidence
-   **When** selected remote repairs run
-   **Then** rename/reconcile/adopt/Overview recompile-update use stable markers, journals, scoped membership, and the existing Overview ID
-   **And** no notebook/note is blindly retried or deleted.
+Requirements owned: FR14. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR16.
 
-3. **Given** unrelated Registry/Manifest keys, YAML formatting/comments/order, foreign hook groups/siblings/keys, manual notes, and unrelated Notebook Service content
-   **When** migration applies
-   **Then** all unrelated state remains byte-identical where format permits and semantically identical otherwise
-   **And** only explicitly selected owned state changes.
+### Story 1.10: Prove Bloodbank Routing Readiness Without Granting Activation
 
-4. **Given** an injected failure during a local or live repair
-   **When** migration stops
-   **Then** it retains journals and truthful planned/blocked recovery state and reports categorized failure
-   **And** it does not persist healthy/linked postconditions that were not proven.
-
-5. **Given** all selected repairs complete
-   **When** migration re-observes and runs focused postcondition audit
-   **Then** no fixable Project Notebook finding remains before success is reported
-   **And** skipped remote proof remains skipped rather than green.
-
-6. **Given** the now-repaired repository
-   **When** the identical migration and audit run a second time
-   **Then** the migration is a no-op with zero local bytes and zero remote mutations
-   **And** the audit continues to pass all authorized owned postconditions.
-
-7. **Given** isolated pre-PJAN-77 repository fixtures for YAML and PostgreSQL
-   **When** dry-run, local apply, live apply, injected failure, and second-run scenarios execute
-   **Then** every preservation/idempotency assertion passes without production data
-   **And** rollback testing proves disable/uninstall preserves bindings, remote knowledge, foreign hooks, Git content, database columns, and unresolved recovery evidence.
-
-8. **Given** a selected `notebook.capture-receipts` migration with elapsed receiptless state
-   **When** local apply runs under the project state lock
-   **Then** it may prune only a baseline, claim, and refusal marker whose immutable baseline grace is expired and which has no receipt or mutation-journal reference
-   **And** it never expires unresolved receipts, removes suspect entries, dismisses recovery evidence, or extends grace by marker replacement.
-
-## Epic 4: Start Agent Sessions with Bounded Project Context
-
-Jarad can install one canonical globally distributed skill whose coexistence-safe Claude SessionStart hook establishes a trustworthy baseline and emits the current repository's bounded Overview at most once, alongside rather than instead of Hindsight.
-
-### Story 4.1: Establish an Exact, Trustworthy Session Baseline
-
-As a coding agent beginning work in an enabled project,
-I want SessionStart to record one trustworthy repository baseline before any remote context call,
-So that later capture has an exact change boundary even when Overview priming is disabled or fails.
-
-**Requirements:** FR-10, FR-11, FR-12; NFR-2, NFR-3, NFR-5, NFR-7, NFR-9; AR-18, AR-29, AR-30, AR-32.
+As a fleet operator,
+I want fleet status to prove the shared Bloodbank route and each target's readiness separately from execution activation,
+So that a discoverable agent remains default-deny until I explicitly authorize it and a historical success cannot masquerade as current routability.
 
 **Acceptance Criteria:**
 
-1. **Given** canonical project slug, client name, and a nonempty Claude `session_id`
-   **When** `pj notebook hook session-start` parses a bounded stdin payload or contained mode-0600 XDG payload file
-   **Then** it derives lowercase-hex SHA-256 over the exact UTF-8 sequence `pjangler-session-v1`, NUL, project slug, NUL, client, NUL, client session ID
-   **And** the raw client session ID and payload body are never persisted, logged, or placed in argv.
+**Given** a Hermes Agent Registry row
+**When** Bloodbank metadata is validated
+**Then** `enabled` must be a strict boolean, `gateway_scope` must equal the canonical fleet scope, `target_agent_id` must exactly equal the owning agent ID, and `profile_name` must be nonblank, unique, and resolve to that agent's registered profile
+**And** missing, coerced, duplicate, cross-owned, or contradictory values are field-level findings rather than inferred defaults.
 
-2. **Given** an enabled project where either `session_start_enabled` or `session_capture_enabled` is true
-   **When** SessionStart runs
-   **Then** it exclusive-creates and fsyncs one baseline before any Overview/service access
-   **And** the baseline records safe project/repository hash, client, start time, HEAD, eligible tracked path digests, Git-status digest, policy version, and completeness only.
+**Given** a target has structurally valid routing metadata
+**When** its Bloodbank lifecycle state is evaluated
+**Then** status separately reports discovered, configured, profile-resolved, gateway-ready, activation-ready, explicitly activated, and currently eligible states
+**And** `enabled: false` remains quarantined/default-deny without being called drift merely because every discovery/readiness check passes.
 
-3. **Given** a resumed or duplicate SessionStart with the same exact session key
-   **When** it sees an existing baseline
-   **Then** it never overwrites or advances that baseline
-   **And** concurrent delivery converges on one complete/incomplete file.
+**Given** a target has `enabled: true`
+**When** current eligibility is calculated
+**Then** eligibility requires the explicit registry flag plus canonical scope, exact target identity, resolved nonblank profile, healthy fleet-shared gateway, and every additional activation-contract precondition
+**And** any failed or unobserved prerequisite makes the target ineligible/blocked without rewriting the explicit activation choice.
 
-4. **Given** policy combinations for disabled project, start off/capture on, start on/capture off, both on, or both off
-   **When** SessionStart executes
-   **Then** the architecture policy matrix determines baseline and Overview eligibility exactly
-   **And** both policies off or project disabled performs no work while capture-on still records a baseline even if priming is off.
+**Given** role metadata, project projection, service discovery, profile existence, a past completed execution-journal row, or a historical command event implies the target once existed or ran
+**When** current activation is evaluated
+**Then** only the strict current Agent Registry activation field grants authority and historical evidence is labeled historical
+**And** no projection, successful provisioning, live process, or resolvable target can infer, persist, or auto-enable execution authority.
 
-5. **Given** missing/empty session ID, Git/limit/deadline failure, or incomplete evidence
-   **When** baseline creation cannot be trusted
-   **Then** the hook exits 0 with a bounded diagnostic and retains an incomplete reason where claimable
-   **And** it never substitutes current HEAD/mtime later as a guessed baseline.
+**Given** fleet command ingress is inspected
+**When** the service model is validated
+**Then** status requires the one declared fleet-shared Bloodbank gateway and correlates its profile, adapter, registry source, enabled/active/stability proof, and safe routing contract
+**And** every installed, active, enabled, or registry-declared per-agent Bloodbank consumer or filesystem inbox bridge is retired drift.
 
-6. **Given** XDG state path creation
-   **When** session metadata is written
-   **Then** no-follow containment, 0700 directories, 0600 files, same-directory temporary write, fsync, atomic rename/exclusive create, and bounded retention are enforced
-   **And** symlink escape, traversal, credentials, source bodies, transcripts, and diffs are rejected from state.
+**Given** the shared gateway is active but restart-unstable, loads a different registry/profile, cannot resolve a target, or exposes stale/malformed safe health metadata
+**When** routing readiness is evaluated
+**Then** affected target readiness and shared-gateway health are nonhealthy with the precise dependency finding
+**And** process presence or one active sample cannot satisfy routing readiness.
 
-### Story 4.2: Prime One Bounded Overview with Explicit Drift
+**Given** the operator runs `pjangler fleet status --domain bloodbank [--agent <id>] [--live] [--json]` or equivalent MCP scope
+**When** `--live` is absent
+**Then** PJangler uses only registry, profile, unit, process, and local safe gateway evidence and labels external broker/stream observations unobserved
+**And** it does not connect to NATS, publish a command, create a consumer, acknowledge a message, invoke Hermes, or mutate any target.
 
-As a coding agent starting a supported session,
-I want the repository's Overview emitted once with freshness evidence,
-So that I receive useful project context without duplicate prompts or stale content being presented as current.
+**Given** the operator explicitly supplies `--live`
+**When** the configured Bloodbank adapter supports bounded read-only health observation
+**Then** PJangler may verify safe broker/stream/consumer/gateway metadata under the selected scope, deadline, and cancellation rules
+**And** live-read authorization never publishes a command, changes activation, creates/deletes a consumer, acknowledges work, or treats a read as an execution smoke test.
 
-**Requirements:** FR-11; NFR-2, NFR-3, NFR-4, NFR-6, NFR-9; AR-28, AR-30, AR-31.
+**Given** human or JSON status is rendered
+**When** Bloodbank collection completes
+**Then** it reports shared-gateway health plus target counts for quarantined, activation-ready, activated-eligible, activated-blocked, invalid, duplicate, and unobserved states with exact owning findings/next actions
+**And** readiness and activation totals remain distinct in every aggregate.
 
-**Acceptance Criteria:**
+**Given** focused tests use isolated registry/profile/unit/process fixtures and a fake read-only Bloodbank adapter
+**When** false/true/nonboolean activation, mismatched/duplicate target, missing profile, healthy/unstable gateway, legacy consumers, historical journal evidence, offline, live-read, timeout, cancellation, and attempted-mutation cases execute
+**Then** default-deny semantics, eligibility dependencies, shared ingress, retired drift, bounds, CLI/MCP parity, and zero dispatch/mutation are proven
+**And** completion includes built local Bloodbank-domain status whose strict enabled/eligible counts are independently reconciled to the current agent registry and whose shared-gateway state is reconciled to bounded direct service evidence; a real command dispatch is neither required nor authorized by this story, and mocks, documentation, ticket state, or command exit alone are insufficient.
 
-1. **Given** a complete baseline and enabled `session_start_enabled` policy
-   **When** SessionStart prepares Overview delivery
-   **Then** it atomically exclusive-creates a claim from the exact session key
-   **And** a duplicate/resumed event neither emits the Overview twice nor rewrites the baseline.
+Requirements owned: FR15. Primary NFRs: NFR1, NFR2, NFR3, NFR6, NFR7, NFR8, NFR9, NFR10, NFR13, NFR14, NFR16.
 
-2. **Given** the stored OverviewDescriptor and current authoritative references
-   **When** descriptor proof runs after baseline creation
-   **Then** contained tracked reference revision/content digests are recomputed under bounds
-   **And** any difference emits `PROJECT NOTEBOOK OVERVIEW DRIFT` with bounded relative paths/reasons before stale-labeled content.
+### Story 1.11: Produce Scoped, Versioned Dry-Run Reconciliation Plans
 
-3. **Given** a current Overview
-   **When** it is emitted
-   **Then** output carries a clear Project Notebook/Notebook Service heading separate from Hindsight recall
-   **And** content is bounded to the effective limit (default 4,000 characters) at a code-point-safe boundary with explicit truncation labeling.
-
-4. **Given** missing binding, disabled priming, missing Overview, auth failure, timeout, malformed/oversized response, or descriptor failure
-   **When** SessionStart handles the condition
-   **Then** it returns exit 0 within the foreground deadline with one bounded actionable diagnostic
-   **And** the agent session and already-recorded baseline remain usable.
-
-5. **Given** controlled latency and injected failure fixtures
-   **When** SessionStart performance is sampled
-   **Then** successful priming or fail-open completes within two seconds p95 on the target profile
-   **And** every injected failure leaves the session usable with no unbounded output.
-
-6. **Given** `session_start_enabled` is false but capture remains enabled
-   **When** SessionStart runs
-   **Then** baseline creation still occurs while no adapter is contacted and no Overview claim/output is made
-   **And** explicit disable wins over all lower-precedence enables.
-
-### Story 4.3: Publish One Canonical Skill and Surgical Hook Projector
-
-As a PJangler operator,
-I want one globally discoverable Project Notebook skill to own the hook wrappers and projection logic,
-So that every client projection uses the same reviewed implementation without clobbering foreign hooks.
-
-**Requirements:** FR-10; NFR-1, NFR-5, NFR-8, NFR-9; AR-23, AR-25, AR-26, AR-27, AR-40.
+As a fleet operator,
+I want every proposed fleet repair expressed as a reviewable, versioned dry-run plan,
+So that I can understand exact effects, risks, dependencies, and approval boundaries before anything changes.
 
 **Acceptance Criteria:**
 
-1. **Given** the Skillex repository
-   **When** the skill is inspected
-   **Then** `/home/delorenj/code/skillex/all-skills/project-notebook/` is the sole hand-edited source containing `SKILL.md`, agent metadata, hook master/generated Claude fragment, thin start/end wrappers, projector, references, and projector tests
-   **And** no PJangler or generated client copy is treated as a second editable source.
+**Given** a current fleet status observation and findings
+**When** the reconciliation planner runs without an apply option
+**Then** it produces a versioned plan and performs zero target repository, registry, profile, config, service, process, Bloodbank, board, network-mutation, or external-system changes
+**And** every selected finding receives an explicit disposition: planned automatic effect, approval-gated effect, manual action, blocked action, deferred action, or no-op/already converged.
 
-2. **Given** the canonical hook master
-   **When** the Claude fragment is rendered
-   **Then** it contains exactly `PJ_HOOK_OWNER=project-notebook.v1 "$HOME/.agents/skills/project-notebook/hooks/session-start.sh"` at `SessionStart` timeout 3 and the corresponding `session-end.sh` command at true `SessionEnd` timeout 1, in master order
-   **And** it contains and modifies no `Stop` entry.
+**Given** the operator runs `pjangler fleet reconcile [--agent <id>...] [--domain <domain>...] [--finding <finding-id>...] [--live] [--out <path>] [--json]`
+**When** no selectors are supplied
+**Then** the command plans against a fresh complete-fleet local/offline observation and human output summarizes scope, effects, blockers, approvals, order, and expected postconditions
+**And** agent/domain/finding selectors constrain both observation and planning work while the result reports total registered size, selected scope, observed scope, and scoped-not-fleet-complete semantics.
 
-3. **Given** a live-like `~/.claude/settings.json` with foreign groups, matchers, siblings, order, conditions, comments/representable extra keys, and one/multiple/missing owned entries
-   **When** projector install runs under its advisory lock
-   **Then** it re-reads while locked, updates the earliest owned inner hook, removes only later owned duplicates, or appends a dedicated group when absent
-   **And** every foreign parsed object and relative order is preserved.
+**Given** `--live` is absent or present
+**When** plan inputs are collected
+**Then** it inherits Story 1.4's exact offline versus explicitly authorized bounded read-only observation contract
+**And** neither mode authorizes mutation, process control, service control, board changes, command dispatch, or Bloodbank activation.
 
-4. **Given** projector check, install, repeat install, and uninstall
-   **When** each mode executes
-   **Then** check is pure; install makes only the required owned change; the repeat changes zero bytes; and uninstall removes only recognized owned hooks/containers made empty by removal
-   **And** no Hindsight, Bloodbank, Git checkpoint, notification, CommonProject, or arbitrary prefix-similar command is removed.
+**Given** a plan is serialized
+**When** human, JSON, or explicit `--out` output is requested
+**Then** the machine artifact contains schema/contract versions, stable plan/content digest, creation/freshness metadata, selected scope, observation generation/fingerprints, desired provenance, effect IDs/types/owners, finding links, dependencies, preconditions, risk/reversibility class, required authorization, bounded expected changes, postconditions, and non-effect dispositions
+**And** stable effect identity and ordering derive from content rather than timestamps or display prose.
 
-5. **Given** projector mutation
-   **When** it writes live settings
-   **Then** it validates paths/JSON/recognized wrappers, takes a permission-restricted recovery snapshot under XDG state, and atomically replaces only changed content
-   **And** live settings and recovery state contain no credentials or repository runtime droppings.
+**Given** `--json`, `--out <path>`, or both are supplied
+**When** the validated plan is emitted
+**Then** `--json` writes the canonical plan document to stdout and `--out` atomically persists that same canonical document with no alternate file schema
+**And** when both are used, file bytes and stdout plan bytes before the required trailing-newline convention represent the same validated plan and content digest, while path/write receipts remain outside the plan payload in bounded stderr or human reporting.
 
-6. **Given** a repository without an enabled binding or with both hook policies disabled
-   **When** a globally installed wrapper fires
-   **Then** runtime scoping exits 0 without remote contact or state changes
-   **And** global installation alone never silently enables a repository.
+**Given** `--out <path>` is supplied
+**When** the destination is valid and absent
+**Then** PJangler atomically creates only the requested mode-0600 plan artifact after complete schema validation and reports its digest outside the canonical plan payload
+**And** it refuses symlinks, unsafe parents, existing destinations without an explicit future replacement contract, partial writes, credentials, file bodies, unbounded diffs, or mutable runtime payloads.
 
-7. **Given** the SessionEnd wrapper is globally present before capture rollout is enabled
-   **When** it invokes the implemented compatibility entrypoint for a repository whose capture policy/capability is disabled
-   **Then** the entrypoint exits 0 without enqueue, network, Git diff, upload, or summarizer work
-   **And** audit reports capture as disabled/deferred rather than allowing a dangling or failing hook command.
+**Given** the target repository contains unrelated modified/untracked work or a planned owned path overlaps current WIP
+**When** planning evaluates preservation risk
+**Then** unrelated WIP is recorded as preserved and never included as an effect
+**And** an overlap with an owned target records exact safe precondition evidence and is manual/blocked unless the applicable domain planner can prove a preservation-safe merge.
 
-### Story 4.4: Export and Install the Skill from a Packed CLI
+**Given** a finding is ambiguous, unclassified, destructive, external, process-stopping, activation-changing, unsupported by a current domain planner, or based on incomplete/stale evidence
+**When** the planner handles it
+**Then** it cannot become an automatic effect and instead records the precise approval/manual/blocker reason and required fresh evidence
+**And** it is never omitted merely to produce an all-automatic plan.
 
-As a PJangler user installing the published package,
-I want the canonical skill available even without the developer's Skillex checkout,
-So that generated projects receive verified hooks from the shipped CLI rather than an absolute workstation path.
+**Given** two planned effects touch the same authority or one effect's postcondition is another's precondition
+**When** the dependency graph is built
+**Then** effects are deduplicated, ordered by declared authority/lock/dependency rules, and rejected on cycles or incompatible writes
+**And** registry/profile lock order, shared-template-before-scaffold ordering, and service-after-config ordering are represented explicitly where applicable.
 
-**Requirements:** FR-10, FR-21; NFR-5, NFR-8, NFR-9, NFR-10; AR-23, AR-24, AR-27, AR-43.
+**Given** a second plan is generated from the same normalized observation, scope, contract, and planner versions
+**When** volatile presentation metadata is excluded
+**Then** its content digest, effect IDs, dispositions, and dependency order are identical
+**And** a changed observation, desired pin, contract, scope, precondition, or planner version changes the corresponding fingerprint/digest visibly.
 
-**Acceptance Criteria:**
+**Given** an MCP client requests equivalent reconciliation with apply disabled
+**When** identical isolated inputs are supplied
+**Then** it receives the same normalized plan schema, effects, dispositions, ordering, safety defaults, and errors as CLI JSON
+**And** MCP cannot smuggle an apply, activation, process-stop, or external-mutation authorization through unknown or adapter-only fields.
 
-1. **Given** build or prepack
-   **When** the export script reads the canonical Skillex source
-   **Then** it rejects symlinks, traversal, unsafe/generated/runtime/secret files, and source drift
-   **And** it writes deterministic `dist/assets/project-notebook-skill/`, `export-manifest.json`, and `SHA256SUMS` included by the existing package contract.
+**Given** focused tests run with isolated fleet observations, repositories with WIP, conflicts, incomplete findings, unsafe paths, dependent/cyclic effects, unsupported domains, live-read fixtures, and large plans
+**When** every scope and disposition class executes
+**Then** zero target mutation, plan schema, canonical stdout/file equivalence, deterministic digests/order, bounds, safe plan-file creation, dependency/risk classification, CLI/MCP parity, and authorization separation are proven
+**And** completion includes a built dry-run plan for the current PJangler and ssbnk scope plus independently captured before/after hashes/service/registry state proving no target changes; snapshots, mocks, documentation, ticket state, or a successful command exit alone are insufficient evidence.
 
-2. **Given** runtime skill resolution
-   **When** PJangler locates a source
-   **Then** it validates precedence `PJ_PROJECT_NOTEBOOK_SKILL_ROOT`, then `PJ_SKILLS_REGISTRY_ROOT/all-skills/project-notebook`, then package-relative export
-   **And** it fails safely with reinstall/build guidance if no digest-valid source exists.
+Requirements owned: FR16, FR17. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR15, NFR16.
 
-3. **Given** a verified skill payload
-   **When** installation applies
-   **Then** it copies an immutable payload to `$XDG_DATA_HOME/pjangler/skills/project-notebook/<version>-<digest>` and owns only a matching `~/.agents/skills/project-notebook` link
-   **And** an existing foreign/custom link or path conflicts instead of being overwritten.
+### Story 1.12: Apply Only Current Plans with Resumable Outcomes
 
-4. **Given** the same verified version/digest is installed again
-   **When** resolver and projector run
-   **Then** immutable payload, owned link, and live hooks change zero bytes
-   **And** audit can distinguish source/export/link/hook Drift without partially installing anything.
-
-5. **Given** an npm-packed PJangler tarball on Node.js 20+ in isolated HOME/XDG with the developer Skillex checkout unavailable
-   **When** a project installs/checks the skill and invokes both wrappers against controlled payloads
-   **Then** digest verification, immutable install, command resolution, and fail-open behavior pass
-   **And** no production Registry, hook file, or Notebook Service is touched.
-
-### Story 4.5: Prove Hook Coexistence, Boundaries, and Canary Safety
-
-As an operator sharing global hooks among agent systems,
-I want Project Notebook installation and normal fanout updates to coexist deterministically,
-So that enabling session priming cannot erase or duplicate Bloodbank, Hindsight, or project-scoped behavior.
-
-**Requirements:** FR-10, FR-11; NFR-2, NFR-3, NFR-8, NFR-9, NFR-10; AR-25, AR-26, AR-27, AR-41, AR-42, AR-43, AR-44.
+As a fleet operator,
+I want PJangler to execute only the exact reviewed effects whose preconditions are still current and to retain resumable outcome evidence,
+So that interruption, drift, or one agent failure cannot cause blind retries, hidden partial work, or unrelated fleet damage.
 
 **Acceptance Criteria:**
 
-1. **Given** live-like settings seeded with canonical Project Notebook entries, Bloodbank publishers, and unrelated hooks
-   **When** a changing Bloodbank `sync.py` run updates its own generated entry
-   **Then** parsed Project Notebook objects and foreign relative group/sibling order remain equal and unduplicated
-   **And** a second identical Bloodbank sync changes zero bytes.
+**Given** the operator runs `pjangler fleet reconcile --apply <plan-path> [--effect <effect-id>...] [--resume <run-id>] [--json]`
+**When** the plan file is loaded
+**Then** PJangler requires the canonical schema, valid content digest, compatible contract/planner versions, safe regular-file path, and exact selected effects from Story 1.11
+**And** it never regenerates a more favorable plan, widens scope, adds effects, or treats human-rendered output as an executable plan.
 
-2. **Given** Bloodbank entries already installed
-   **When** Project Notebook install/reinstall/uninstall executes
-   **Then** every Bloodbank and other foreign entry survives with relative order intact
-   **And** exactly one Project Notebook command remains per supported event after reinstall and zero after owned uninstall.
+**Given** a valid plan before any effect dispatch
+**When** apply performs fresh bounded precondition observations
+**Then** a changed global authority/contract/pin invalidates the run before mutation, while an effect-specific changed fingerprint marks that effect and its dependents stale/blocked
+**And** independent current effects remain eligible only when their dependency graph and the operator's exact selection allow isolated continuation.
 
-3. **Given** CommonProject project-scoped hooks or an unsupported client such as Codex/Hermes/Copilot without proven true boundaries
-   **When** Project Notebook audit/projection evaluates them
-   **Then** global delivery is checked separately, duplicate project-local Project Notebook entries are prevented, and unsupported clients return audit `skip`
-   **And** a per-turn `Stop` is never relabeled as session close.
+**Given** no `--effect` selector or one or more selectors are supplied
+**When** apply determines execution scope
+**Then** no selector means all plan effects eligible under their recorded authorization class, while selectors execute only the named effects plus explicitly represented required dependencies
+**And** unknown, disposition-only, manual, blocked, destructive, external, process-stop, or activation effects are not executed by generic apply without their separate contract-defined authorization.
 
-4. **Given** all four start/capture policy combinations, duplicate SessionStart, missing session ID, missing Overview, timeout, malformed response, and Overview Drift fixtures
-   **When** hook contract tests run
-   **Then** baseline/claim/remote-contact/output behavior matches the architecture matrix exactly
-   **And** 100% of injected failures exit 0 and leave the agent session usable.
+**Given** apply is about to start a run
+**When** no matching completed run exists
+**Then** it creates a mode-0600 durable run journal outside tracked target repositories containing plan/run IDs, selected effect IDs, safe precondition fingerprints, dependency state, attempts, and per-effect lifecycle
+**And** the journal is fsynced before the first dispatch, contains no credential/file body/private payload, and cannot be redirected through a symlink or unsafe path.
 
-5. **Given** incremental rollout
-   **When** one isolated canary is planned and enabled
-   **Then** skill/hook actions are visible before apply, no repository is globally auto-enabled, and rollback disables policy then removes only owned hooks
-   **And** remote notebooks/notes, bindings, Git content, foreign hooks, and XDG recovery evidence are preserved.
+**Given** effects are ready to execute
+**When** the engine dispatches them
+**Then** it honors declared dependency and lock order, uses configured bounded concurrency only for independent agents/authorities, and records pending, running, succeeded, no-op, failed, blocked, cancelled, or outcome-unknown states durably
+**And** a failure stops its dependent branch without cancelling or rolling back unrelated successful branches unless the plan explicitly declares an atomic group.
 
-6. **Given** the hook release suite
-   **When** canonical render/export, packaged install, coexistence, idempotency, security, and performance fixtures run
-   **Then** all contract fixtures pass, the second projection is zero bytes, no secret finding occurs, and SessionStart meets its two-second p95 budget
-   **And** a read-only live compatibility check, if run, never substitutes for isolated evidence or mutates operator data.
+**Given** the process is interrupted, killed, times out, or loses an adapter response after a possible effect
+**When** the operator uses `--resume <run-id>` with the same canonical plan
+**Then** PJangler first re-observes the effect's preconditions and postconditions, adopts a proven success/no-op, retries only an effect proven not dispatched or explicitly retry-safe, and leaves ambiguous outcomes blocked for manual resolution
+**And** it never blind-replays a possibly dispatched service, registry, external, process, or activation effect.
 
-## Epic 5: Close Agent Sessions with Durable Evidence
+**Given** an already succeeded/no-op effect is selected again with unchanged postconditions
+**When** apply or resume runs
+**Then** the effect remains succeeded/no-op without repeating mutation or changing its original completion evidence
+**And** an idempotent rerun creates no duplicate registry row, timestamp churn, file replacement, service action, process action, external resource, or event.
 
-Jarad can end a supported agent session without delay and later find one recoverable, evidence-grounded Session Capture plus current derivatives of eligible changed documentation, even when remote service or summarizer work fails and retries occur.
+**Given** the operator cancels an active run
+**When** cancellation is received
+**Then** the engine stops dispatching new effects, propagates cancellation/deadlines to bounded active adapters, durably records each known or outcome-unknown state, and returns a resumable nonhealthy result
+**And** it leaves no child probe/effect process running after its defined bounded shutdown policy.
 
-### Story 5.1: Prospectively Admit or Refuse One Capture at True SessionEnd
+**Given** apply or resume completes fully or partially
+**When** human or JSON results are emitted
+**Then** output reports plan/run digests, selected scope, effect order, attempts, outcomes, blocked dependencies, current postcondition evidence, journal location/identity, and exact next actions with the same complete parse-safe semantics as fleet status
+**And** a successful process exit is possible only when every selected effect and dependency has a proven succeeded/no-op postcondition.
 
-As a coding agent ending a supported session,
-I want close handling to deduplicate, validate, and either durably admit one logical capture or refuse it truthfully within budget,
-So that agent shutdown remains usable without silently discarding prior recovery evidence or overstating what was captured.
+**Given** an MCP client requests apply or resume
+**When** it supplies the canonical plan/digest, explicit apply mode, exact effect selection, and equivalent authorization inputs
+**Then** it uses the same execution engine, journal, precondition checks, result schema, cancellation, and safety rules as CLI
+**And** MCP execution is noninteractive and fails closed rather than prompting, widening authorization, or accepting an implicit plan.
 
-**Requirements:** FR-12; NFR-2, NFR-3, NFR-4, NFR-5, NFR-7, NFR-9; AR-14, AR-29, AR-30, AR-32, AR-33, AR-35, AR-46, AR-47.
+**Given** focused tests use isolated plans, journals, temporary repositories, fake effects with dependencies, failures, delays, crashes, unknown outcomes, stale fingerprints, atomic groups, cancellation, and safe no-op/postcondition probes
+**When** fresh apply, partial apply, selective apply, interruption, resume, repeated resume, incompatible plan, and CLI/MCP parity cases run
+**Then** exact-plan execution, stale rejection, durable state transitions, dependency isolation, idempotency, bounded shutdown, result truth, and preservation are proven
+**And** completion includes a real built CLI apply/resume against an isolated disposable target with intentional process interruption and independently verified before/after/journal postconditions; production fleet mutation, mocks alone, documentation, ticket state, or command exit is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR18. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR15, NFR16.
 
-1. **Given** the same canonical project, client, and nonempty Claude session ID used at SessionStart
-   **When** true `SessionEnd` invokes `pj notebook hook session-close`
-   **Then** it derives the identical session key and lowercase-hex receipt/capture IDs from exact UTF-8 `pjangler-receipt-v1\0<session_key>` and `pjangler-capture-v1\0<session_key>` inputs
-   **And** no decoded-hash substitution, JSON framing, or raw client session ID is persisted.
+### Story 1.13: Make Fleet Mutations Crash- and Concurrency-Safe
 
-2. **Given** an enabled capture policy and the bounded per-project admission lock
-   **When** SessionEnd evaluates the fixed receipt path
-   **Then** a valid existing same-session receipt is deduplicated before any admission accounting and consumes no new count or bytes
-   **And** duplicate close never grants a retry; a malformed or mismatched same-ID entry instead takes the preserving `state-integrity` path.
-
-3. **Given** no same-session receipt and a receiptless baseline created at time `T`
-   **When** SessionEnd compares `now` with `T + receiptless_session_retention_seconds`
-   **Then** replay is eligible only while `now` is strictly before that boundary
-   **And** equality is expired: under the same lock only unreferenced baseline/Overview claim/refusal metadata may be pruned or ignored before normal missing-baseline handling, while any receipt or mutation-journal reference protects the baseline regardless of age.
-
-4. **Given** an eligible new-session candidate after the expiry check
-   **When** SessionEnd serializes it
-   **Then** `candidate_bytes` is the exact UTF-8 length of the canonical queued-receipt JSON plus one trailing line feed, using the bytes intended for exclusive creation
-   **And** admission occurs only when `current_unresolved_count + 1 <= max_count` and `current_unresolved_bytes + candidate_bytes <= max_bytes`, with succeeded receipts excluded from both unresolved measures.
-
-5. **Given** an invalid, unreadable, or non-regular entry prevents exact count or byte proof
-   **When** SessionEnd reaches integrity proof
-   **Then** `state-integrity` takes precedence, preserves every suspect entry, creates no receipt or refusal marker, invokes no worker/network/Git-diff/upload/summarizer work, and exits 0
-   **And** its bounded diagnostic reports nullable exacts, numeric lower bounds, unmeasurable count, safe relative/digested entry evidence, and exact local audit plus in-place repair/re-run actions.
-
-6. **Given** exact measurement proves the real candidate would exceed the count cap, byte cap, or both
-   **When** admission is refused
-   **Then** no receipt or worker is created and no network, Git diff, document read/upload, or summarizer port is called
-   **And** one bounded `RetentionRefusalV1` keyed by the lowercase-hex hashed `session_key` is atomically created or replaced with immutable baseline time, refusal time, exact reason, current usage, actual candidate bytes, both caps, and exact `capture list`/`capture retry` recovery actions; the hook states that this session was not captured and exits 0 within the foreground budget.
-
-7. **Given** a refused session is delivered again strictly before grace expiry
-   **When** current state is re-evaluated under the same lock
-   **Then** it reuses the unchanged baseline and real candidate, replaces the same marker without extending grace if still blocked, or exclusive-creates/fsyncs one receipt and removes the marker before worker spawn when both gates pass
-   **And** crash-safe receipt dedupe ignores/removes a shadowed marker, while a close after eligible cleanup follows normal missing-baseline behavior and never infers provenance.
-
-8. **Given** missing/empty session identity, disabled project/capture policy, or missing/incomplete baseline
-   **When** SessionEnd evaluates the event
-   **Then** disabled work exits 0 without enqueue and missing evidence follows the admitted `blocked-missing-baseline` recovery path where identity permits
-   **And** no mtime, reflog, current HEAD, or pre-existing uncommitted identity is guessed.
-
-9. **Given** normal, duplicate, refusal, integrity, and injected slow/failure fixtures
-   **When** SessionEnd foreground timing is sampled
-   **Then** every path returns within 250 milliseconds p95 on the target workstation and admitted work is durable before spawn
-   **And** all integration failures and not-captured outcomes remain bounded, exit 0, and leave agent shutdown usable.
-
-### Story 5.2: Process Receipts with a Recoverable Leased Worker
-
-As a project operator,
-I want capture work claimed and retried through durable leases,
-So that crashes and concurrent workers converge without duplicate processing or abandoned receipts.
-
-**Requirements:** FR-12, FR-14; NFR-2, NFR-4, NFR-5, NFR-7, NFR-9; AR-10, AR-32, AR-33, AR-34, AR-35, AR-46.
+As a fleet operator,
+I want every fleet effect to use canonical locks, atomic replacement, conflict detection, and durable recovery,
+So that concurrent agents, crashes, or out-of-band edits cannot lose registry, profile, configuration, or role state.
 
 **Acceptance Criteria:**
 
-1. **Given** a queued receipt
-   **When** SessionEnd starts the detached worker
-   **Then** it uses `process.execPath`, a fixed argv array, `shell:false`, ignored stdio, detached/unref, and receipt ID only
-   **And** no user content, credential, diff, transcript, or environment dump appears in argv.
+**Given** a planned mutating effect
+**When** the apply engine prepares it
+**Then** the effect declares every authority/mutation surface it will read and write, its canonical lock identity/order, snapshot/precondition strategy, atomic commit primitive, recovery strategy, and postcondition observer
+**And** an effect with an undeclared surface, unproven writer, conflicting lock order, or unsupported filesystem guarantee is blocked before any mutation.
 
-2. **Given** one or more workers race for a receipt
-   **When** lease acquisition occurs
-   **Then** compare-and-swap state permits exactly one live lease owner and atomically advances `queued` to `processing`
-   **And** another worker cannot process a nonexpired lease.
+**Given** a named profile mutation
+**When** its transaction begins
+**Then** PJangler requires a real contained profile directory and acquires the one canonical per-profile lock before reading any durable state that may be written back
+**And** registry-aware profile work follows exactly `registry lock -> profile lock -> snapshot/check -> write/rollback -> unlock`, while no path may reverse or recursively reacquire that order.
 
-3. **Given** a processing worker crashes or its lease expires
-   **When** recovery runs
-   **Then** work requeues only within the configured finite attempt budget
-   **And** exhausted work becomes `retry-exhausted` instead of looping indefinitely.
+**Given** a Project Registry, Hermes Agent Registry, distributable parent config, or other whole-file authority mutation
+**When** its transaction begins
+**Then** every controller writer/recovery path for that surface uses one canonical whole-window lock acquired before snapshot, existence checks, merge, or recovery
+**And** a helper-level lock cannot compensate for a top-level caller that read stale state before entering the lock.
 
-4. **Given** retryable failure, nonretryable/blocked missing baseline, successful completion, or explicit retry after correction
-   **When** the state machine advances
-   **Then** only the documented queued/processing/failed/retry-exhausted/blocked-missing-baseline/succeeded transitions occur
-   **And** state, timestamps, counters, categories, lease metadata, exclusions, and note IDs update atomically.
+**Given** any canonical lock is opened
+**When** ownership is acquired or times out
+**Then** the lock path is opened no-follow through a trusted contained parent, verified as a regular mode-0600 file, marked close-on-exec, held by a kernel lock, and governed by a finite validated timeout
+**And** invalid/nonfinite timeouts, symlink swaps, unsafe parents, inherited descriptors, or failed target revalidation fail closed before mutation while process death releases ownership without manual lock-file deletion.
 
-5. **Given** a Capture Receipt on disk
-   **When** its schema and permissions are inspected
-   **Then** it contains only safe project/session-key identity, baseline/end revision/status digest, attempts, lease/outcome, exclusion counts, stable note IDs, and bounded diagnostic
-   **And** it contains no raw client session ID, transcript, diff, source/note body, auth, full environment, or vendor response.
+**Given** an existing file will be replaced and the platform can meet the exact-recovery contract
+**When** a candidate is installed
+**Then** the transaction records original device/inode, content digest, mode, nanosecond mtime, link-safety evidence, and candidate fingerprint; creates/fsyncs protected same-directory recovery state; fully writes/fsyncs the candidate; atomically installs it; and fsyncs the directory
+**And** it rejects pre-existing unsafe hardlink topology, symlink components, cross-filesystem recovery, backup-like names, or a platform that cannot preserve/restore the required state before installing the candidate.
 
-6. **Given** remote note creation during processing
-   **When** a crash occurs before dispatch, after dispatch, after response, after ownership index update, or before journal commit
-   **Then** `RemoteMutationJournalV1` plus receipt/ownership state reconciles to one stable note
-   **And** a restart never blind-creates a duplicate.
+**Given** validation or a post-install step fails before commit
+**When** rollback runs
+**Then** the protected original is restored before any optional validator and its inode, bytes, mode, and mtime are verified
+**And** validator failure cannot prevent restoration or leave the unverified candidate at the canonical path.
 
-7. **Given** retention processing
-   **When** receipts age
-   **Then** only a `succeeded` receipt whose configured `updated_at + receipt_succeeded_retention_days` has elapsed may expire
-   **And** queued, processing, failed, retry-exhausted, blocked-missing-baseline, unresolved journals, and every baseline they reference remain visible indefinitely and are never automatically deleted, silently compacted, dismissed, or truncated to satisfy aggregate admission caps; no runtime state is written into the repository.
+**Given** an out-of-band writer changes the canonical target after snapshot or candidate installation
+**When** commit, rollback, or crash recovery compares current state
+**Then** compare-and-swap evidence prevents PJangler from overwriting the newer state, preserves recovery evidence, and marks the effect conflict/blocked
+**And** neither unconditional rollback nor last-writer-wins success is allowed.
 
-### Story 5.3: Inspect and Explicitly Recover Capture State
+**Given** a crash occurs at any transaction phase
+**When** apply resumes or a later run encounters prepared recovery state
+**Then** it acquires the same canonical locks, validates the durable journal/recovery record, proves whether original or candidate is canonical, and restores/adopts/blocks deterministically before starting new work
+**And** it never deletes unresolved recovery evidence or reports completion while mixed-generation multi-file state remains.
 
-As a PJangler operator,
-I want to list capture outcomes and explicitly retry recoverable work,
-So that background failures never disappear or require hand-editing state files.
+**Given** a registry or YAML/JSON profile/role update changes owned fields
+**When** the transaction serializes and commits
+**Then** unknown/extension metadata, unrelated keys, comments/style/order where the authority contract promises byte preservation, stable provisioning timestamps, and unmodified sibling files survive
+**And** an unchanged logical rerun is byte-identical and does not replace the inode merely to restamp state.
 
-**Requirements:** FR-5, FR-12, FR-14, FR-15; NFR-4, NFR-5, NFR-7, NFR-9; AR-18, AR-19, AR-20, AR-35, AR-40, AR-46, AR-47.
+**Given** multiple effects target independent agents and one effect targets registry plus profile
+**When** bounded concurrent apply runs
+**Then** independent effects can progress while overlapping surfaces serialize under their canonical locks and dependency order
+**And** contention yields a truthful bounded timeout or retry decision without deadlock, partial write, lost update, or widening the atomic group.
 
-**Acceptance Criteria:**
+**Given** current seed, renderer, absorb, channel, voice, backfill, registry, config-recovery, and role writers can touch a declared fleet surface
+**When** writer coverage is audited
+**Then** each top-level caller either participates in the canonical lock/transaction domain or causes affected controller effects to remain blocked with an exact unsupported-writer finding
+**And** no later domain reconciler may claim safe automatic apply until every concurrent writer for its surfaces is covered.
 
-1. **Given** receipts in multiple states
-   **When** `pj notebook capture list` runs with optional state filter
-   **Then** it returns bounded summaries sorted by created time descending then receipt ID ascending with opaque deterministic pagination
-   **And** summaries expose retryability/next action without bodies, raw session IDs, credentials, or unsafe absolute paths.
+**Given** transaction state or diagnostics are emitted
+**When** failures, conflicts, or recovery occur
+**Then** output contains only safe effect IDs, paths, phases, digests, metadata, and next actions
+**And** original/candidate bodies, credentials, environment dumps, and recovery contents remain private.
 
-2. **Given** no matching receipts
-   **When** capture list runs
-   **Then** it succeeds with an empty collection
-   **And** status and audit unresolved totals agree with the same state source without treating a refusal marker as a receipt.
+**Given** focused multiprocess tests exercise real top-level callers under isolated profile/registry/config/role roots
+**When** both lock orders, timeouts, holder death, symlink/hardlink attacks, out-of-band CAS races, validation failures, and crash injection at every recovery phase run
+**Then** no lost update, deadlock, unsafe follow, false completion, or partial canonical state occurs; exact restoration/preservation and idempotent cleanup are proven
+**And** completion includes a real built apply/resume against disposable files with concurrent writers and killed processes, independently verifying inode/bytes/mode/mtime/journal outcomes; helper-only tests, mocks, documentation, ticket state, or command exit alone are insufficient evidence.
 
-3. **Given** a `failed` or `retry-exhausted` receipt after operator correction
-   **When** `pj notebook capture retry RECEIPT_ID` is invoked
-   **Then** direct invocation authorizes exactly one compare-and-swap attempt on that same receipt, increments manual retry provenance, sets operator origin, and never creates a second receipt or session-capture identity
-   **And** failure returns directly to `retry-exhausted` with no automatically scheduled loop; duplicate SessionEnd, status, audit, or worker restart cannot grant that operator attempt.
+Requirements owned: FR19. Primary NFRs: NFR1, NFR2, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR13, NFR14, NFR16.
 
-4. **Given** `blocked-missing-baseline`
-   **When** retry is invoked without `--baseline`
-   **Then** it remains blocked with the exact explicit-baseline next action
-   **And** when a contained valid committed Git ref is supplied, that ref is recorded safely and the same receipt receives one operator-origin attempt that compares committed evidence only, excludes unknowable pre-existing uncommitted paths observably, and remains blocked if no trustworthy evidence remains.
+### Story 1.14: Converge Profiles Through the Canonical Renderer
 
-5. **Given** invalid receipt ID, foreign-project receipt, malformed state, invalid Git ref, or a receipt already `queued`, `processing`, or `succeeded`
-   **When** retry validates
-   **Then** it returns the correct invalid-input, not-found, cross-project, conflict, or internal outcome before worker spawn
-   **And** no foreign or in-flight receipt is modified.
-
-6. **Given** JSON mode
-   **When** list or retry returns
-   **Then** exact `CaptureReceiptSummaryV1` list/retry schemas validate in one pure envelope
-   **And** human and JSON next actions use the same categorized state.
-
-7. **Given** one or more active `RetentionRefusalV1` markers
-   **When** status or audit recomputes each stored real candidate against exact current usage and current caps
-   **Then** a still-failing predicate emits bounded `retention-pressure` with current usage, both caps, actual candidate bytes, and exact `pj notebook capture list` then `pj notebook capture retry` recovery actions
-   **And** a now-fitting marker remains only as informational `capture-refused-history` until SessionEnd replay admits/removes it or grace cleanup prunes it; it never appears in `capture list` as a receipt or state.
-
-8. **Given** any capture state or operator command surface in v1
-   **When** help, parsing, transition, audit, migration, rollback, and retention behavior are inspected
-   **Then** only `capture list` and one-attempt `capture retry` recovery are exposed
-   **And** there is no dismissal command, hidden dismissal transition, automatic unresolved deletion, or silent compaction path.
-
-### Story 5.4: Select Eligible Documents from Git Evidence Safely
-
-As a project operator,
-I want capture to consider only policy-eligible documentation changed during the session,
-So that durable knowledge stays relevant without exporting code, secrets, or unrelated files.
-
-**Requirements:** FR-13; NFR-4, NFR-5, NFR-6, NFR-9, NFR-10; AR-32, AR-36, AR-37.
+As a fleet operator,
+I want PJangler to plan and apply generated-profile convergence through the canonical base-plus-delta renderer,
+So that shared defaults propagate without losing agent overrides, channel state, memory identity, skills, or concurrent in-agent changes.
 
 **Acceptance Criteria:**
 
-1. **Given** a complete recorded start baseline and bounded close-time Git state
-   **When** the worker computes changed paths
-   **Then** it uses NUL-delimited machine Git output with no shell interpolation and compares baseline-to-close version-control evidence
-   **And** modification time alone never makes a file eligible.
+**Given** profile findings from Story 1.7
+**When** the profile domain planner runs
+**Then** it emits only typed profile effects needed for the selected agent(s), such as safe structure seed, absorb, delta repair, render, identity metadata, Hindsight pin, and canonical skill repair, with explicit dependencies and postconditions
+**And** it blocks legacy symlink, escaped path, ambiguous ownership, unclassified extra, unsafe writer, or unverifiable generated-state cases before mutation.
 
-2. **Given** default policy
-   **When** candidates are selected
-   **Then** only tracked changed `**/*.md` and `**/*.mdx` regular files are eligible
-   **And** configured globs may narrow that set but cannot override security exclusions or hard ceilings.
+**Given** a registered real profile has intentional generated `config.yaml` changes not represented by the current base plus delta
+**When** planning compares generated, base, and delta state
+**Then** it proposes an absorb-before-render effect only when the canonical renderer can prove a safe override delta
+**And** it never overwrites or silently discards an in-agent `/model`, onboarding, channel, voice, plugin, or other durable change merely to make renderer check pass.
 
-3. **Given** ignored, untracked-by-default, generated, binary, oversized, disallowed, unchanged, traversal, absolute, symlink-escaping, submodule-boundary, device, FIFO, socket, or other non-regular candidates
-   **When** filtering runs
-   **Then** each is excluded before summarizer or service access with a bounded reason code/path digest
-   **And** no excluded body enters memory beyond what its specific safety check requires.
+**Given** a shared fleet base change affects many profiles
+**When** the operator plans fleet or selected-agent profile convergence
+**Then** each affected profile receives its own fingerprinted effect chain and the plan reports selected/affected/unaffected/blocked totals plus semantic sections that will change
+**And** agent scoping does not render, absorb, seed, lock, or rewrite unselected profiles.
 
-4. **Given** secret-like content or path fixtures
-   **When** secret screening runs
-   **Then** the file is excluded before prompt construction or remote upload
-   **And** only the safe reason/path digest—not matched text—is stored or emitted.
+**Given** an approved profile effect chain is applied
+**When** it touches `config.delta.yaml` or generated `config.yaml`
+**Then** it invokes the canonical renderer/absorb implementation under the Story 1.13 per-profile transaction lock, revalidates base/delta/generated inputs after locking, and atomically commits the pair
+**And** controller code never recreates merge semantics, hand-edits generated config, duplicates fleet-owned `mcp_servers`/plugins into the delta, or treats `profile.yaml` as config inheritance.
 
-5. **Given** eligible documents and other changed paths
-   **When** evidence is assembled
-   **Then** eligible evidence contains bounded content plus repository-relative path/revision-or-digest IDs while other changes contribute names only
-   **And** every path resolves within the physical canonical repository and current binding.
+**Given** profile identity, memory pin, or required-skill repair is included
+**When** apply executes
+**Then** identity-only `profile.yaml`, exact Hindsight bank pin, and contract-declared immutable canonical skill core converge through their positively owned paths while additive optional skills and unrelated profile state remain intact
+**And** an identity rename or registry-aware change obeys registry-before-profile order and cannot merge two agents into one memory bank.
 
-6. **Given** a missing/incomplete baseline or end-evidence failure
-   **When** eligibility cannot be proven
-   **Then** automatic document upload remains blocked or the receipt fails with a retryable categorized outcome as appropriate
-   **And** no partial list is treated as complete evidence.
+**Given** Telegram or Slack is unverified/deferred for the agent
+**When** profile convergence renders the result
+**Then** the delta continues to explicitly disable that platform and preserves valid `op://` mappings/verified identity without reading or emitting secret values
+**And** profile convergence cannot enable a channel, validate/rotate a credential, or change Bloodbank activation as an incidental side effect.
 
-7. **Given** a tracked Eligible Document was already dirty at SessionStart
-   **When** its close-time content identity matches the recorded start identity or proves an additional in-session change
-   **Then** the unchanged pre-session dirt is excluded from attribution, while only the additionally changed identity is eligible with start/end provenance
-   **And** neither current worktree state nor modification time is substituted for the recorded pre-dirty baseline.
+**Given** channel, voice, renderer, absorb, seed, or backfill work races the same profile
+**When** the real top-level callers contend
+**Then** all participate in the canonical lock domain, re-read durable inputs after locking, and either preserve both nonconflicting changes or return a bounded conflict/timeout without lost update
+**And** process death or crash recovery converges through the Story 1.13 transaction journal without manual lock deletion or mixed generations.
 
-8. **Given** recovery uses an explicit manual `--baseline GIT_REF`
-   **When** document evidence is selected
-   **Then** comparison is limited to that validated contained committed reference
-   **And** paths whose pre-existing uncommitted start identity is unknowable are excluded with a bounded reason; if no trustworthy evidence remains, the same receipt stays `blocked-missing-baseline`.
+**Given** one profile fails validation, lock acquisition, render, postcondition, or recovery
+**When** a multi-agent apply continues
+**Then** that agent's dependent effects stop and remain resumable while independent profile chains may complete
+**And** the failed profile's exact pre-state or protected recovery evidence is preserved rather than replaced with a partial candidate.
 
-### Story 5.5: Upsert Provenance-Bearing Document Derivatives
+**Given** an effect reports success
+**When** postconditions are observed
+**Then** the profile is a real contained directory with valid identity metadata, delta, generated config equal to the canonical base-plus-delta render, exact memory pin, contract-declared immutable canonical skill core, preserved optional state, and no unresolved recovery record
+**And** the fleet profile status and canonical renderer check agree; contradiction makes the effect failed/incomplete.
 
-As a project operator,
-I want changed eligible documents mirrored as stable notebook derivatives,
-So that searchable context stays current while Git remains the authoritative source.
+**Given** the same approved plan is applied after all postconditions already hold
+**When** profile effects are re-observed
+**Then** every effect is no-op with byte-identical delta/generated/identity/pin state and no timestamp, lock, service, registry, or marker churn
+**And** unregistered/ambiguous extra profiles remain untouched.
 
-**Requirements:** FR-13, FR-19, FR-20; NFR-4, NFR-5, NFR-6, NFR-9; AR-10, AR-14, AR-16, AR-17, AR-37.
+**Given** focused tests use isolated base/profile roots and real canonical renderer/top-level caller entrypoints
+**When** stale base generations, safe/unsafe absorb, seed races, channel/voice interleavings, memory aliases, core/optional skills, symlinks, malformed YAML, lock timeout, crash phases, partial fleet failure, and idempotent reruns execute
+**Then** plan accuracy, merge semantics, lock ordering, exact recovery, override/channel/skill preservation, postcondition truth, and zero secret exposure are proven
+**And** completion includes a built dry-run plan for current drifted profiles plus real apply/resume against disposable copied profiles reconciled by the canonical renderer check; mutating the production fleet before the canary story, mocks alone, documentation, ticket state, or command exit is insufficient evidence.
 
-**Acceptance Criteria:**
+Requirements owned: FR20. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR16.
 
-1. **Given** an eligible document
-   **When** its derivative identity is created
-   **Then** logical ID is the architecture's SHA-256 over version, project slug, and normalized repository-relative path
-   **And** its envelope records project identity, source path, revision/content digest, AR-29's lowercase-hex hashed session key, capture time, and policy version, never the raw client session ID.
+### Story 1.15: Converge Tracked Scaffolds Without Disturbing Runtime or WIP
 
-2. **Given** no existing matching document logical ID
-   **When** the derivative is created
-   **Then** scoped marker reconciliation and `RemoteMutationJournalV1` guard the POST
-   **And** stable service note ID is recorded in ownership/receipt before journal commit.
-
-3. **Given** one existing derivative with the same path and content digest
-   **When** capture processes it again
-   **Then** the operation is a no-op with no remote mutation
-   **And** receipt provenance can reference the existing stable note.
-
-4. **Given** one existing derivative with the same path but changed digest
-   **When** capture applies
-   **Then** the same remote note is updated in place with the new source document plus preserved managed identity/envelope
-   **And** Git/source content itself is never rewritten.
-
-5. **Given** duplicate logical IDs, unproven scoped membership, ambiguous dispatch, or a service failure
-   **When** upsert cannot converge safely
-   **Then** the operation conflicts/fails with a bounded categorized receipt outcome
-   **And** no candidate is guessed, deleted, or written into another binding.
-
-6. **Given** a captured derivative
-   **When** security and provenance validation runs
-   **Then** every required provenance field is complete and no credential, absolute path, ignored content, or generated/source-code body is present
-   **And** search/read rendering strips the envelope from human excerpts while retaining machine identity.
-
-### Story 5.6: Produce One Factual Session Capture with Deterministic Fallback
-
-As a project operator reviewing completed work,
-I want one concise capture grounded in changes and verification evidence,
-So that the notebook records what actually happened without inventing success when a model is unavailable or overconfident.
-
-**Requirements:** FR-14; NFR-2, NFR-4, NFR-5, NFR-7, NFR-9; AR-17, AR-34, AR-38, AR-39.
+As a fleet operator,
+I want PJangler to update only positively owned PM scaffold assets from the pinned canonical template,
+So that existing agents receive one coherent generation without overwriting unrelated repository work or mutable runtime state.
 
 **Acceptance Criteria:**
 
-1. **Given** eligible document evidence, other changed path names, bounded transcript metadata, verification evidence, and observed unresolved work
-   **When** a configured low-cost summarizer is allowed
-   **Then** PJangler invokes a trusted fixed executable/argv with allowlisted environment, bounded redacted stdin, `shell:false`, and finite timeout
-   **And** no user content or credential becomes shell syntax, argv, or ambient environment leakage.
+**Given** scaffold findings from Story 1.6
+**When** the scaffold domain planner runs
+**Then** it derives a deterministic desired render from the parent repository's recorded clean template gitlink and exact registered agent/role inputs
+**And** it blocks missing/uninitialized/mismatched/dirty source, nondeterministic render, or manifest disagreement instead of using a sibling checkout, mutable worktree, branch tip, or PATH fallback.
 
-2. **Given** summarizer output
-   **When** it is validated
-   **Then** it conforms to `CaptureSummaryV1`, each factual statement cites supplied evidence IDs, and observed changes, verification, and unresolved work remain separate
-   **And** deployment/success claims without corresponding verification evidence are rejected.
+**Given** a selected managed role
+**When** its candidate scaffold is prepared
+**Then** rendering occurs in contained temporary state with provisioning hooks/external effects disabled and produces a validated owned-asset manifest containing relative path, file type, mode, safe symlink target, and content digest
+**And** caches, `__pycache__`, bytecode, logs, runtime state, credentials, recovery files, and other generated droppings are rejected from both source and candidate.
 
-3. **Given** absent configuration, timeout, process error, malformed schema, missing citations, unsafe claim, or oversized output
-   **When** summarization cannot be accepted
-   **Then** deterministic fallback is selected without failing the capture solely because the model failed
-   **And** it lists changed eligible documents, other path names, verification evidence, unresolved/uncommitted work, and an explicit insufficient-evidence statement.
+**Given** the target repository has missing or stale owned assets
+**When** planning compares candidate and target
+**Then** it emits typed create/update/mode/link effects with exact precondition digests and a bounded path-level summary
+**And** unexpected assets are removable only when current manifest/provenance positively proves PJangler ownership and unchanged state; otherwise they are preserved and manual/blocked.
 
-4. **Given** the exact session capture logical ID derived from the session key
-   **When** its note is reconciled/upserted
-   **Then** zero candidates creates once under a journal, one updates/no-ops the same stable note, and multiple candidates conflict
-   **And** repeated worker/retry delivery never creates a second logical Session Capture.
+**Given** a target owned path contains local modifications or has changed since plan observation
+**When** apply revalidates it
+**Then** the effect performs a preservation-safe merge only when the domain contract can prove it lossless and deterministic, otherwise it blocks that asset/agent before replacement
+**And** it never resolves the conflict by reset, checkout, stash, clean, blind overwrite, or copying the canonical file over user changes.
 
-5. **Given** all document and session-note upserts succeed
-   **When** the worker finalizes
-   **Then** the receipt atomically becomes `succeeded` with safe note IDs, exclusion counts, and summary mode
-   **And** service/summarizer failure instead records bounded failed/retry state without changing source files or blocking the already-ended agent session.
+**Given** unrelated modified/untracked files, submodules, branches, or commits exist in the target repository
+**When** scaffold apply runs
+**Then** their bytes, index/worktree state, refs, and submodule state remain unchanged and are recorded as preserved
+**And** only planned owned paths may appear in the resulting repository delta; the controller does not implicitly commit, push, merge, rebase, or switch branches as part of the scaffold file effect.
 
-6. **Given** the final session note
-   **When** content is inspected
-   **Then** its managed envelope records project/session identity and safe provenance while the human body contains only bounded evidence-grounded summary
-   **And** it contains no raw transcript, credential, full diff, unsupported deployment claim, or unrelated project data.
+**Given** ignored `agents/hermes/<role>/runtime/` state or explicit owned-state profile links exist
+**When** scaffold apply prepares, commits, rolls back, or verifies a candidate
+**Then** every runtime byte and allowed owned-state link target remains untouched and ignored/untracked
+**And** runtime paths, nested repositories, profile directories, sessions, memories, logs, databases, sockets, and credentials are outside the scaffold transaction.
 
-### Story 5.7: Prove Capture Safety, Recovery, Performance, and Quality
+**Given** multiple owned files form one scaffold generation
+**When** apply executes the agent's effect group
+**Then** it uses Story 1.13 transaction/recovery primitives to stage and validate the complete candidate, commit files in the declared atomic group, and retain durable per-path recovery evidence until postconditions pass
+**And** interruption or failure cannot leave a falsely successful mixed generation; recovery restores/adopts/blocks deterministically without touching unrelated paths.
 
-As a PJangler operator deciding whether to enable session capture by default,
-I want staged evidence across failures, retries, and real session-like samples,
-So that default-on behavior is gated by trustworthy provenance and measurable factual quality.
+**Given** multiple agents are selected
+**When** one repository has a conflict, unsafe path, render failure, or postcondition failure
+**Then** that agent's scaffold group stops and remains resumable while independent agent groups may complete under bounded concurrency
+**And** the failure never changes the canonical template, parent gitlink, another repository, or global profile/runtime state.
 
-**Requirements:** FR-12, FR-13, FR-14, FR-15; NFR-2 through NFR-10; AR-35 through AR-47.
+**Given** an agent scaffold effect reports success
+**When** postconditions run
+**Then** every expected owned asset matches candidate content/type/mode/link target, no forbidden generated asset was installed, runtime remains ignored/untracked, and fleet scaffold status agrees with the pinned generation
+**And** the resulting Git delta contains only selected owned scaffold paths and is retained as explicit evidence for the later canary/checkpoint workflow.
+
+**Given** the same approved plan is applied after the scaffold already matches
+**When** preconditions/postconditions are re-observed
+**Then** every effect is no-op with byte-identical files, modes, links, repository index/WIP, runtime, and timestamps where no write is needed
+**And** no render marker, registry timestamp, service action, commit, or evidence duplication is created.
+
+**Given** focused tests use real deterministic renders and temporary Git targets with path spaces, unrelated WIP, owned-path edits, symlink/type/mode drift, forbidden droppings, runtime payloads, stale gitlinks, crashes, partial fleet failure, and idempotent reruns
+**When** plan/apply/resume execute
+**Then** source fidelity, manifest ownership, conflict handling, atomic generation, exact recovery, path safety, Git/WIP/runtime preservation, postcondition truth, and zero secret exposure are proven
+**And** completion includes a built dry-run plan for current scaffold drift plus real apply/resume against disposable repository copies whose Git/runtime before/after inventories are independently verified; production fleet fanout before the canary story, mocks alone, documentation, ticket state, or command exit is insufficient evidence.
+
+Requirements owned: FR21. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR16.
+
+### Story 1.16: Reconcile Positively Owned Services and Prove Postconditions
+
+As a fleet operator,
+I want PJangler to reconcile only declared fleet-owned systemd units to their intended capability state and prove the result over time,
+So that stale units, deferred gateways, and active services converge without disturbing foreign services or reporting transient success.
 
 **Acceptance Criteria:**
 
-1. **Given** isolated HOME/XDG/Registry, generated repositories, and fake service/summarizer fixtures
-   **When** duplicate close, concurrent admissions/workers, worker crash/restart, expired lease, every remote journal crash point, service/model outage, bounded retry, and explicit recovery scenarios run
-   **Then** each session converges on at most one receipt, one session capture, and one derivative per logical document path
-   **And** source repositories and production operator data remain untouched.
+**Given** systemd findings from Story 1.8
+**When** the service domain planner runs
+**Then** it emits typed effects for positively owned unit-file install/update/removal, daemon reload, enable/disable, start/stop/restart, and durable service-state projection with exact unit/precondition fingerprints and dependencies
+**And** unknown, unregistered, ambiguously owned, foreign, or unsafe-path units remain manual/blocked rather than becoming deletion or control effects.
 
-2. **Given** missing/empty session ID, missing/incomplete baseline, duplicate SessionStart/SessionEnd, unsupported client/Stop, and all start/capture policy combinations
-   **When** lifecycle tests run
-   **Then** exact session identity, baseline preservation, blocked-missing-baseline recovery, fail-open exit, and no-work cases match the architecture
-   **And** no per-turn event triggers a session capture.
+**Given** an agent's profile, scaffold, executable, channel, or registry prerequisite is not yet current
+**When** service effects are ordered
+**Then** unit-file and runtime-control effects depend on the exact prerequisite postconditions and cannot run first
+**And** shared daemon reload is deduplicated/batched only where doing so preserves each agent's dependency and recovery boundaries.
 
-3. **Given** ignored/untracked/generated/binary/traversal/symlink/submodule/device/secret/oversized/malicious path and payload fixtures
-   **When** eligibility, summarization, output, receipts, and service calls are scanned
-   **Then** every exclusion is bounded/observable and zero raw credential/body disclosures or path escapes occur
-   **And** zero cross-project note results or mutations occur.
+**Given** an agent has no verified messaging credential and declares gateway deferred
+**When** the service plan is applied
+**Then** the owned gateway converges to installed as applicable, disabled, inactive, and nonfailed while the independently healthy heartbeat remains enabled/active
+**And** PJangler never starts a credential-less gateway or leaves it enabled to restart-loop merely because a unit file exists.
 
-4. **Given** supported SessionStart/SessionEnd hooks under healthy and injected slow/failure loads
-   **When** foreground timings are measured
-   **Then** SessionStart meets two seconds p95 and every SessionEnd dedupe, admitted enqueue, retention refusal, or integrity-refusal path meets 250 milliseconds p95
-   **And** 100% of injected integration failures leave the agent session usable.
+**Given** an agent declares a verified active messaging capability
+**When** gateway effects run
+**Then** the unit file points to the selected pinned executable and real named profile, is enabled, and is started/restarted only after configuration/channel postconditions pass
+**And** success requires the full bounded stability proof from Story 1.8 rather than one active sample or zero `systemctl` exit.
 
-5. **Given** at least 20 staged Session Captures spanning changed docs, no-op sessions, fallback summaries, failed verification, and retry/restart cases
-   **When** quality evidence is audited
-   **Then** 100% of synchronized derivatives have complete path/digest/session provenance, at least 95% of factual claims trace to diff or verification evidence, and zero unsupported deployment/success claims appear
-   **And** note volume, prompt size, cosmetic freshness, and local-only green status are not counted as success.
+**Given** an agent heartbeat is managed
+**When** heartbeat effects run
+**Then** the timer and paired oneshot definition converge to the contract, the timer is enabled/active/waiting, and a completed current tick succeeds within policy
+**And** a checkpoint-only, overdue, failed, stuck, or never-run heartbeat cannot be persisted as healthy.
 
-6. **Given** the full generated-project journey with packed CLI and canonical hooks
-   **When** init, binding, CRUD/search, SessionStart, SessionEnd, audit/migrate, retry, and second-run scenarios execute
-   **Then** all contract fixtures pass 100%, one healthy binding is achieved under two minutes, retries/migration add zero logical duplicates, and repeated owned projections/migrations change zero bytes
-   **And** the developer Skillex checkout and all production endpoints are unavailable to the fixture.
+**Given** a positively owned retired per-agent consumer/checkpoint or duplicate unit is present
+**When** its removal effect is authorized and applied
+**Then** PJangler first proves the unit stopped/inactive and disabled, removes only the exact owned fragment/metadata, reloads systemd, and proves absence plus canonical replacement topology
+**And** query errors, ambiguous ownership, failed stop/disable, or uncertain post-state preserve the unit and registry metadata and leave the effect blocked/resumable.
 
-7. **Given** the staged quality gate has not passed
-   **When** rollout policy is evaluated
-   **Then** capture remains explicit per-project opt-in and no fleet-wide default enable occurs
-   **And** after evidence passes, rollout still follows one-canary incremental enablement with non-destructive rollback.
+**Given** a plan contains unit-file mutation but no runtime control, or contains start/stop/restart/disable/remove actions
+**When** the operator applies it
+**Then** file-only automatic effects follow their recorded class while runtime-control effects require the explicit repeatable authorization `--authorize service-control`
+**And** `--apply`, `--live`, MCP invocation, or prior service state cannot imply that authorization or widen it to unselected units.
 
-8. **Given** count-cap, byte-cap, both-cap, equality-boundary, and concurrent distinct-session fixtures
-   **When** SessionEnd performs locked admission
-   **Then** same-session receipt dedupe occurs before accounting, the exact canonical queued JSON plus trailing-LF byte cost drives both prospective inequalities, and succeeded receipts are excluded from unresolved totals
-   **And** every genuine cap refusal creates no receipt, starts no worker, calls no network/Git-diff/upload/summarizer port, says the session was not captured, and records the exact bounded hashed marker/actions.
+**Given** an owned unit file must change
+**When** the effect installs or restores it
+**Then** Story 1.13 atomic/recovery rules preserve exact previous bytes/mode and reject symlink/unsafe paths before daemon reload
+**And** failed validation/reload restores or retains protected evidence before any attempt to run the candidate unit.
 
-9. **Given** start-only, repeated-refusal, replay, marker-shadow, close-versus-prune, and referenced-baseline fixtures
-   **When** time is strictly before or exactly at `created_at + receiptless_session_retention_seconds`
-   **Then** replay before the boundary reuses one immutable baseline, continued refusal replaces one marker without extending grace, successful admission removes it, and equality is expired
-   **And** cleanup prunes only unreferenced receiptless baseline/claim/refusal state while every receipt- or journal-referenced baseline survives regardless of age; a post-prune close never invents provenance.
+**Given** a systemd command times out, is cancelled, loses its response, or the service changes state during apply
+**When** the effect outcome is uncertain
+**Then** the run journal records outcome-unknown and re-observes unit-file, enabled, active, result/status, restart, and latest-tick postconditions before retry/adoption
+**And** it never blind-repeats a possible stop/start/remove or reports the most favorable sample.
 
-10. **Given** recovery reduces unresolved usage below both caps without replaying the refused close
-    **When** status and audit run read-only
-    **Then** they emit no `retention-pressure` for a now-fitting stored candidate while retaining bounded informational `capture-refused-history` in `active_refusals`
-    **And** a later in-grace close replay admits one receipt and removes the marker; neither command synthesizes candidate bytes for an absent session or mutates state.
+**Given** service postconditions pass
+**When** contract-owned role/registry declarative or provisioning state is projected
+**Then** only those owned fields and, if defined by the contract, a bounded proof receipt/reference are updated transactionally after direct proof while unknown metadata and stable timestamps are preserved
+**And** transient systemd observations such as `ActiveState`, restart count, current result, and latest tick remain owned by systemd and the run journal/evidence rather than being persisted as competing registry truth.
 
-11. **Given** invalid, unreadable, and non-regular receipt-state fixtures
-    **When** hook, status, audit, migration, and repair/re-run paths execute
-    **Then** `state-integrity` precedes pressure with matching null exacts, numeric lower bounds, unmeasurable counts, safe evidence/actions, no receipt/refusal/worker/slow work, and preservation of every suspect entry
-    **And** fixtures also prove succeeded-only expiry, indefinite unresolved/reference preservation, one operator-authorized same-receipt attempt with no automatic loop, explicit committed-ref recovery limits, and the complete absence of dismissal behavior.
+**Given** service state is proven but a declarative projection fails
+**When** the run outcome is recorded
+**Then** the proven live outcome remains in the journal/evidence and the declarative projection is visibly stale/resumable
+**And** PJangler neither rewrites observed reality as planned nor blindly rolls back a healthy service.
+
+**Given** multiple selected agents share the user manager
+**When** one service fails or restarts unexpectedly
+**Then** its dependency branch stops while unrelated agents continue only within bounded concurrency and no fleet-shared gateway is restarted unless explicitly selected
+**And** cancellation leaves no controller child running and records every known/unknown unit outcome.
+
+**Given** the same approved service plan runs after all desired postconditions hold
+**When** effects are re-observed
+**Then** they are no-op with no unit-file rewrite, daemon reload, enable/disable/start/stop/restart, registry timestamp churn, or duplicate evidence
+**And** bounded health proof may refresh observation evidence without mutating service state.
+
+**Given** focused tests use a stateful fake systemd manager plus isolated owned/foreign unit fixtures
+**When** active, deferred, missing, changed, retired, duplicate, crash-looping, late-failing, failed reload, uncertain response, projection failure, cancellation, and idempotent cases run
+**Then** planning, explicit authorization, ownership, ordering, atomic files, outcome recovery, stabilization, projection truth, and foreign-service preservation are proven
+**And** completion includes built plan/apply/resume against uniquely named disposable user units with direct multi-sample `systemctl --user show` proof and cleanup; production agent units remain unchanged until the canary story, and mocks, one active sample, documentation, ticket state, or command exit are insufficient.
+
+Requirements owned: FR22. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR9, NFR10, NFR13, NFR14, NFR16.
+
+### Story 1.17: Plan and Execute Safe Legacy-Process Drains
+
+As a fleet operator,
+I want isolated, duplicate, or legacy Hermes processes drained through an exact reviewed process-control plan,
+So that runtime sprawl can be removed without signaling the wrong PID, killing interactive work, or deleting preserved agent state.
+
+**Acceptance Criteria:**
+
+**Given** process findings from Story 1.9
+**When** the process domain planner evaluates a candidate
+**Then** it requires a stable PID/start identity, exact executable/profile/ownership evidence, process kind, parent/group/cgroup context, desired replacement/postcondition, and a contract-approved drain strategy
+**And** ambiguous, unclassified, permission-inaccessible, vanished, interactive/foreground, or insufficiently evidenced processes remain manual/blocked rather than becoming signal effects.
+
+**Given** a process is owned by a systemd service
+**When** a drain is planned
+**Then** PJangler routes control through the Story 1.16 owned service effect and its `service-control` authorization instead of signaling a systemd child directly
+**And** direct-process effects are reserved for proven isolated/legacy roots with no live service owner.
+
+**Given** a duplicate or legacy root has a required current replacement
+**When** effects are ordered
+**Then** drain depends on the replacement's profile/config/service readiness and current bounded health proof
+**And** the old process is not stopped first when doing so would remove the agent's only proven required capability.
+
+**Given** a direct isolated-process drain is included in a reviewed plan
+**When** the operator applies it
+**Then** the effect requires the exact repeatable authorization `--authorize process-stop`, revalidates PID/start/executable/profile/parent identity immediately before action, and uses an argument-safe native process adapter rather than a shell command
+**And** generic `--apply`, `--live`, MCP invocation, name matching, or prior process presence cannot imply or widen that authorization.
+
+**Given** graceful shutdown is supported
+**When** the drain begins
+**Then** PJangler uses the contract-approved graceful request/signal, records dispatch durably, and waits through a finite stabilization window for the exact root and owned descendants to exit without respawn
+**And** it does not remove pid files, sockets, profiles, runtime directories, sessions, memories, logs, repositories, registry rows, or unit files as a shortcut.
+
+**Given** the process does not exit within the graceful deadline
+**When** escalation is considered
+**Then** forced termination is a separate planned risk class requiring explicit `--authorize process-kill`, a second immediate identity check, and proof that no unrelated processes share the selected group/cgroup
+**And** without that exact authorization/evidence the effect stops as blocked with the process preserved.
+
+**Given** the PID exits, is reused, execs, reparents, or changes executable/profile before either graceful or force dispatch
+**When** identity is revalidated
+**Then** PJangler sends no signal to the changed identity and records stale/vanished/conflict as appropriate
+**And** a later process can never inherit an earlier plan's authorization solely by reusing the PID.
+
+**Given** dispatch succeeds but the response is lost, cancellation occurs, or postcondition observation is incomplete
+**When** apply/resume handles the outcome
+**Then** it records outcome-unknown, re-observes the exact process identity and replacement health, and adopts proven exit or blocks ambiguity
+**And** it never blind-repeats a signal or reports success from signal syscall/command exit alone.
+
+**Given** a process exits and then respawns during the bounded proof window
+**When** postconditions are evaluated
+**Then** drain is nonhealthy with the new process identity and likely owning service/supervisor evidence
+**And** PJangler does not chase successive PIDs or expand the plan to an unselected supervisor automatically.
+
+**Given** a drain succeeds
+**When** final status runs
+**Then** the exact legacy/duplicate root and owned descendants are absent for the whole stabilization window, the intended replacement remains healthy when required, and registry/profile/runtime bytes are unchanged
+**And** process and service domains agree; any contradiction keeps the effect incomplete.
+
+**Given** the same plan is resumed after a proven successful drain
+**When** the old process remains absent and replacement postconditions hold
+**Then** the effect is idempotent no-op with no signal, service action, file deletion, registry change, or duplicate event
+**And** historical process evidence remains clearly historical rather than a live finding.
+
+**Given** focused tests launch disposable process trees with controlled identities, PID-change simulations, systemd-owned fixtures, graceful/forced behavior, respawn supervisors, response loss, cancellation, and unrelated group members
+**When** planning/apply/resume execute with and without each authorization
+**Then** routing, identity revalidation, authorization, bounded shutdown, escalation separation, no blind retry, postcondition proof, and state preservation are proven
+**And** completion includes a built plan-only classification of current live legacy/isolated candidates plus real drain/resume of uniquely identifiable disposable processes; no production Hermes process is stopped before the canary story, and mocks, documentation, ticket state, a signal return, or command exit alone are insufficient.
+
+Requirements owned: FR23. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR13, NFR14, NFR16.
+
+### Story 1.18: Roll Out Through Canaries and Evidence-Gated Waves
+
+As a fleet operator,
+I want convergence applied first to PJangler and then ssbnk before bounded approved waves,
+So that controller self-proof and a true downstream application-path canary stop a bad generation before it spreads across the fleet.
+
+**Acceptance Criteria:**
+
+**Given** a reviewed complete-fleet or multi-agent reconciliation plan
+**When** the operator runs `pjangler fleet rollout create --plan <plan-path> --out <rollout-path> [--wave-size <count>] [--json]`
+**Then** PJangler creates a validated mode-0600 rollout artifact whose first agent wave contains only the contract-declared PJangler controller canary, whose second agent wave contains only the contract-declared ssbnk downstream canary, and whose later waves are bounded, stable, and dependency-ordered
+**And** unclassified/blocked agents and separately authorized Bloodbank activation effects are excluded rather than silently placed into a normal wave.
+
+**Given** a plan contains fleet-shared prerequisite effects that cannot be scoped to one agent
+**When** rollout ordering is built
+**Then** they appear in an explicit shared-prerequisite stage with their own risk, authorization, proof, and stop boundary before both single-agent canary waves
+**And** no global effect is disguised as a canary-local change or applied merely because a later agent wave was approved.
+
+**Given** the rollout artifact is serialized
+**When** it is reviewed or resumed
+**Then** it contains plan/contract/provenance digests, the ordered PJangler-then-ssbnk canary identities, wave membership, effect dependencies, entry criteria, required authorizations, stop conditions, expected postconditions, current decisions, attempts, outcomes, evidence references, and next eligible transition
+**And** membership/order cannot change without creating a new digest and explicit operator decision.
+
+**Given** PJangler or ssbnk has unrelated WIP, an unsafe branch/worktree state, unresolved recovery, stale plan input, unhealthy controller dependency, red CI/release prerequisite, or a gating pre-canary finding
+**When** that single-agent canary's entry criteria are evaluated
+**Then** the canary is blocked before mutation with exact preservation/evidence requirements
+**And** rollout never stashes, resets, cleans, switches, merges, rebases, overwrites, or drops that WIP to force entry.
+
+**Given** entry criteria pass
+**When** the operator runs `pjangler fleet rollout advance --rollout <rollout-path> --wave <wave-id> [--authorize <class>...] [--json]`
+**Then** only that exact wave's current effects execute through Stories 1.12–1.17 with their recorded authorization classes, locks, journals, bounds, and domain postconditions
+**And** approval of one wave or effect class never authorizes a later wave, process kill, external action, or Bloodbank activation.
+
+**Given** an agent in the active wave changes profile, scaffold, service, or process state
+**When** its postconditions are evaluated
+**Then** built fleet status proves selected domains directly, canonical renderer check agrees, systemd remains stable through the full window, process ownership is current, Bloodbank readiness is observed without activation, repository delta is limited to planned owned paths, and runtime/WIP inventories remain preserved
+**And** deploy output, command exit, unit activity, mocks, or a board transition cannot substitute for those checks.
+
+**Given** tracked repository files changed during a successful wave
+**When** wave closeout is attempted
+**Then** the exact scoped delta must be attributed to the owning ticket and landed through the existing verified Git checkpoint/push workflow with commit and remote-ref evidence before the wave is complete
+**And** unrelated WIP is neither included in that checkpoint nor left altered by the controller; any required Git mutation is explicit in the reviewed workflow rather than an implicit scaffold effect.
+
+**Given** any shared prerequisite or wave member fails, becomes unstable, mutates unplanned state, produces contradictory status, cannot land its tracked delta, or creates a new gating finding
+**When** the stop condition fires
+**Then** no dependent or later wave starts, successful independent outcomes and all failure/recovery evidence remain durable, and the rollout exposes resume/replan/rollback options appropriate to each proven state
+**And** it does not blindly roll back healthy state, retry outcome-unknown effects, or widen the wave to repair the blocker.
+
+**Given** the PJangler controller canary succeeds and is explicitly closed/advanced
+**When** the next transition is evaluated
+**Then** only the single-agent ssbnk downstream canary becomes eligible after fresh precondition validation
+**And** no broader fleet wave can start from PJangler success alone.
+
+**Given** the ssbnk downstream canary succeeds and is explicitly closed/advanced
+**When** the first broader wave becomes eligible
+**Then** PJangler requires an explicit operator decision based on current evidence from both ordered canaries and freshly validates that broader wave's plan preconditions
+**And** time passage, a scheduler, prior global approval, or historical canary health cannot auto-advance the rollout.
+
+**Given** a later bounded wave succeeds
+**When** subsequent waves advance
+**Then** the same entry, authorization, direct-proof, landing, stop, and explicit-decision boundaries apply to every wave
+**And** concurrency never exceeds the artifact's limit or places agents sharing an unsafe authority/lock/failure domain into parallel execution.
+
+**Given** the rollout is interrupted or the controller restarts
+**When** `rollout advance` is rerun against the same artifact
+**Then** it reconciles plan run journals and live postconditions, resumes only the selected current wave, and preserves all prior decisions/evidence
+**And** it cannot recreate, skip, reorder, or mark a wave complete from stale local progress text.
+
+**Given** Bloodbank target activation states before rollout
+**When** any shared prerequisite, either canary, or normal convergence wave executes
+**Then** every target's strict activation boolean remains byte-identical unless a separately reviewed activation-only plan is selected under the fleet contract's Bloodbank activation boundary
+**And** rollout success is readiness/convergence proof, never implicit command-execution authority.
+
+**Given** focused tests use an isolated multi-agent fleet with shared prerequisites, ordered single-agent PJangler and ssbnk canaries, bounded later waves, WIP, failures, crashes, unstable services, plan drift, Git checkpoint fixtures, and authorization classes
+**When** create/advance/stop/resume/replan paths execute
+**Then** fixed PJangler-then-ssbnk canary order, each explicit close/advance gate, artifact durability, wave bounds, stop propagation, evidence requirements, Git/WIP/runtime preservation, and unchanged activation are proven
+**And** story completion includes the real ticketed PJangler controller canary closed first and the real ticketed ssbnk downstream canary closed second through the supported built CLI, each with committed/pushed scoped changes and direct profile/scaffold/systemd/process/Bloodbank-readiness proof before any broader production wave; simulation, documentation, ticket state, or command exit alone is insufficient evidence.
+
+Requirements owned: FR24. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR10, NFR11, NFR13, NFR14, NFR15, NFR16.
+
+### Story 1.19: Activate Bloodbank Targets Through a Separate Approval Gate
+
+As a fleet operator,
+I want each Bloodbank target activated or deactivated through its own explicit reviewed plan and live proof,
+So that convergence never grants command-execution authority and failed activation returns safely to default-deny.
+
+**Acceptance Criteria:**
+
+**Given** one or more agents have completed their required convergence wave
+**When** the operator runs `pjangler fleet bloodbank activate --agent <id>... [--out <plan-path>] [--json]`
+**Then** PJangler creates an activation-only canonical reconciliation plan for the exact named agents and performs no registry write or command dispatch
+**And** the command requires at least one explicit agent ID, accepts no implicit all-fleet target, and cannot include unrelated profile/scaffold/service/process effects.
+
+**Given** activation is planned for an agent
+**When** readiness preconditions are evaluated
+**Then** current complete evidence must prove exact registry/profile identity, canonical scope/target, unique target ownership, healthy generated profile, healthy stable fleet-shared gateway using the current registry, no retired per-agent consumer, and every contract-defined ingress policy prerequisite
+**And** missing, stale, incomplete, duplicate, contradictory, or historically-only evidence blocks activation rather than being waived by a successful convergence wave.
+
+**Given** an activation plan is reviewed
+**When** the operator applies it
+**Then** changing `bloodbank.enabled` requires the exact authorization `--authorize bloodbank-activation`, revalidates every precondition under the Agent Registry lock, and changes only the strict authoritative activation field plus any contract-declared one-way role projection/proof reference
+**And** generic `--apply`, `--live`, service/process authorization, MCP invocation, a resolvable profile, or prior execution can never imply or widen activation authority.
+
+**Given** activation metadata is committed
+**When** the Agent Registry and any declared projection are updated
+**Then** Story 1.13 transaction rules preserve all unrelated/extension metadata and stable provisioning fields, publish the registry change atomically, and retain default-deny on incomplete recovery
+**And** an unchanged rerun is byte-stable with no timestamp, service, profile, or evidence churn.
+
+**Given** the shared gateway caches or reloads registry state
+**When** activation postconditions are observed
+**Then** PJangler uses the gateway's contract-defined safe refresh/observation path and proves that its current registry generation resolves the exact target as eligible
+**And** any required service reload/control is a separately planned `service-control` effect rather than an implicit activation side effect.
+
+**Given** the operator chooses to prove the real command journey
+**When** the activation plan includes a bounded smoke invocation
+**Then** dispatch requires the additional exact authorization `--authorize bloodbank-smoke-dispatch`, publishes one canonical uniquely correlated command with required actor/schema fields, and waits under deadline for the gateway's started plus terminal completed/failed lifecycle evidence
+**And** activation authorization alone never publishes a command, while historical journal/events or a broker acknowledgement cannot substitute for this invocation's current terminal evidence.
+
+**Given** registry activation succeeds but gateway eligibility or an authorized smoke invocation fails, times out, is cancelled, or has an ambiguous terminal outcome
+**When** activation recovery runs
+**Then** PJangler returns the newly changed target to strict `enabled: false`, proves the gateway no longer treats it as eligible, preserves the failed/unknown command evidence, and leaves the run nonhealthy/resumable
+**And** it never leaves a newly authorized but unproven target enabled merely because the registry write succeeded.
+
+**Given** a target was already explicitly enabled before the selected plan
+**When** a later smoke proof fails
+**Then** the plan follows its recorded pre-state/compensation policy and never silently revokes pre-existing authority that the operator did not select for deactivation
+**And** it reports the target activated-but-blocked/unhealthy with exact manual/deactivation next actions.
+
+**Given** the operator runs `pjangler fleet bloodbank deactivate --agent <id>... [--out <plan-path>] [--json]`
+**When** the separately reviewed plan is applied with `--authorize bloodbank-activation`
+**Then** the exact targets converge to strict false, the shared gateway proves them ineligible, and no command is dispatched
+**And** profiles, services, runtime state, other agents, and routing identity metadata remain unchanged.
+
+**Given** multiple explicit agents are selected
+**When** one activation fails
+**Then** its compensation/default-deny branch completes before it is final while independent agents follow their own effects only within bounded concurrency
+**And** no batch-level success is reported unless every selected target has a proven final enabled/disabled state and gateway eligibility that matches it.
+
+**Given** activation/deactivation status is rendered
+**When** plan/apply/recovery completes
+**Then** human and JSON results separately report requested authority, registry state, gateway-observed eligibility, smoke-dispatch authorization/use, correlated lifecycle outcome, compensation, and exact next actions
+**And** credentials, prompts/responses beyond bounded test identifiers, raw broker payloads, or unrelated agent events are not exposed.
+
+**Given** focused tests use isolated registries/profiles, a stateful shared-gateway adapter, fake broker/events, transaction crashes, stale readiness, duplicate targets, cached generations, smoke success/failure/timeout, pre-enabled targets, compensation, deactivation, and partial batches
+**When** plan/apply/resume run with every authorization combination
+**Then** exact targeting, default-deny, authority separation, registry preservation, gateway refresh, lifecycle correlation, compensation, idempotency, and zero unintended dispatch are proven
+**And** completion includes a real operator-selected canary target activated through the built CLI, one separately authorized bounded command journey with current terminal event proof, and explicit final desired activation state reconciled from registry plus gateway; mocks, old journal rows, documentation, ticket state, broker ack, or command exit alone are insufficient evidence.
+
+Requirements owned: FR25. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR9, NFR10, NFR13, NFR14, NFR16.
+
+### Story 1.20: Continuously Detect and Publish Fleet Drift
+
+As a fleet operator,
+I want recurring read-only fleet checks to retain durable finding transitions and publish bounded downstream evidence,
+So that new drift, worsening health, recovery, and deliberate exceptions remain visible without turning a scheduler, event bus, or ticket system into fleet truth.
+
+**Acceptance Criteria:**
+
+**Given** the inventory, health, and adapter capabilities from Stories 1.1–1.10
+**When** the operator or a scheduler runs `pjangler fleet monitor run [--live] [--publish-events] [--json]`
+**Then** PJangler performs a fresh complete-fleet observation through the same status application core and applies the same authority, completeness, deadline, cancellation, and stable-finding semantics
+**And** its only default durable writes are the bounded controller-owned local evidence ledger and transactional event outbox defined by this story; only explicit `--publish-events` may additionally publish the sanitized committed finding-transition events defined below, while repository, registry, profile, scaffold, service, process, activation, board, repair, agent-dispatch, and other external-system mutations remain forbidden.
+
+**Given** `monitor run` is invoked without or with `--live` and without or with `--publish-events`
+**When** observation and side-effect permissions are selected
+**Then** the default remains local/offline/no-network, `--live` permits only supported bounded read-only external observations, and neither mode implies event publication
+**And** only `--publish-events` authorizes the defined finding-transition publication after local evidence commits; no flag combination authorizes reconcile/apply, process signals, service control, Bloodbank dispatch/activation, ticket/board mutation, repair, or any other external write.
+
+**Given** a monitor run starts
+**When** its result is made durable
+**Then** PJangler atomically records a mode-0600 run plus finding-transition generation outside tracked target repositories with run ID, contract/status schema versions, observation generation/time, source commit/package/provenance, registered/observed scope, completeness, finding IDs, safe evidence digests/references, prior/current state, disposition source, and outcome
+**And** it stores no credential, file body, prompt/response, raw broker payload, unbounded log, or private environment value and refuses unsafe path/symlink/ownership states before writing.
+
+**Given** the same normalized finding remains unchanged across runs
+**When** the later generation is committed
+**Then** PJangler retains the deterministic finding ID and open occurrence, updates bounded last-seen/run references and occurrence count, and emits no duplicate transition or downstream outbox item
+**And** timestamp, prose wording, adapter ordering, or repeated scheduler delivery cannot manufacture a new logical finding.
+
+**Given** a finding appears, becomes more severe/gating/incomplete, or returns after a proven recovery
+**When** transitions are evaluated against the last committed applicable generation
+**Then** it is classified as new or worsened with prior/current normalized state, attributable scope/domain/owner, safe evidence, and exact next action
+**And** a recurrence after recovery starts a new occurrence generation while preserving its stable logical finding ID and full prior history.
+
+**Given** a previously open finding is absent from current observations
+**When** recovery is evaluated
+**Then** PJangler records recovered only when a fresh complete observation of the same applicable agent/domain/rule positively proves the healthy postcondition
+**And** scope filtering, skipped/unobserved domains, adapter failure, cancellation, stale evidence, missing inventory rows, or an incomplete run can never close or recover the finding.
+
+**Given** a finding is reported as deferred or manually accepted
+**When** the monitor resolves that disposition
+**Then** it requires a current validated authoritative record naming the exact finding/rule scope, owner/actor, rationale, creation evidence, and bounded expiry or review condition, and emits the deferred/accepted state separately from health
+**And** the monitor cannot infer acceptance from age, ticket state, silence, successful publication, or a prior plan; invalid, expired, revoked, or scope-mismatched dispositions remain active and produce an actionable transition.
+
+**Given** a run is partial, cancelled, times out, crashes, or encounters contradictory evidence
+**When** the generation is finalized or recovered
+**Then** its durable record remains explicitly nonhealthy/incomplete, independently observed findings remain attributable, open findings without complete re-observation remain unresolved, and exact retry/investigation actions are retained
+**And** it never rewrites the prior complete generation, fabricates recovery, or publishes an all-healthy aggregate from the partial run.
+
+**Given** the operator runs `pjangler fleet monitor schedule --calendar <systemd-calendar> [--live] [--publish-events] --out <plan-path> [--json]`
+**When** the schedule is validated
+**Then** PJangler creates a canonical no-mutation plan for the controller-owned `pjangler-fleet-monitor.service` and `.timer` only, with a validated calendar, absolute built executable, explicit local-or-live observation mode, explicit `publish_events` enabled/disabled state, evidence paths, deadlines, missed-run policy, hardening, and postconditions
+**And** the service invokes `monitor run` directly without a shell, embedded credential, n8n dependency, per-agent unit, or repository-local runtime file; a nonpublishing schedule's installed command omits `--publish-events`.
+
+**Given** a reviewed monitor schedule plan
+**When** it is applied through Story 1.12
+**Then** unit installation/enable/start follows Story 1.16's systemd ownership and transaction rules and requires the separate `--authorize service-control` permission, while a schedule whose recorded `publish_events` is enabled additionally requires the distinct exact `--authorize evidence-publish`
+**And** a publishing schedule is blocked rather than installed or enabled without both authorizations, a nonpublishing schedule installs a command that omits `--publish-events`, scheduling approval cannot authorize fleet mutation, and schedule removal or cadence/mode/publication change requires its own newly reviewed plan while preserving existing evidence.
+
+**Given** a scheduled run fires while another monitor run holds the controller lock
+**When** single-flight handling occurs
+**Then** the later invocation exits within a bounded deadline with a durable overlap/skipped outcome and does not start duplicate probes or transition publication
+**And** a crashed holder releases or leaves safely recoverable lock state without allowing two writers to corrupt the evidence generation.
+
+**Given** one or more committed finding transitions are ready for downstream automation
+**When** a run explicitly authorized with `--publish-events` processes the transactional outbox
+**Then** PJangler first commits authoritative local observation/transition evidence and only then publishes the sanitized versioned contract-declared transition events through the existing event convention, with stable delivery/deduplication keys and references back to the committed evidence generation
+**And** a run without `--publish-events` performs no publication, while publication or acknowledgement cannot alter health/disposition truth, auto-apply a repair, dispatch an agent command, activate a target, or open/close/mutate an external ticket or board.
+
+**Given** the event transport is unavailable, rejects a message, times out, or returns an ambiguous acknowledgement
+**When** the monitor closes the run
+**Then** committed observation evidence remains authoritative, publication is reported degraded with its outbox item pending/outcome-unknown as appropriate, and retries reuse the same delivery identity
+**And** it never drops the transition, generates a duplicate logical event, rolls back the fleet observation, or accepts downstream state as proof of delivery or recovery.
+
+**Given** the operator runs `pjangler fleet monitor status [--json]`
+**When** schedule/evidence health is inspected
+**Then** output reports configured cadence/mode, unit/timer state, last started/committed/complete generations, observation freshness/completeness, active and transition counts, overdue/overlap state, outbox backlog/oldest age, and exact next actions with deterministic bounded human/JSON semantics
+**And** missing evidence, an overdue timer, a stale complete generation, or pending/unknown publication prevents a false-green monitor aggregate without changing the underlying current fleet finding states.
+
+**Given** focused tests use isolated HOME/XDG, registries, repositories, profiles, evidence ledgers, a stateful systemd adapter, fake clocks/events, repeated and reordered findings, severity changes, complete and partial recovery, deferred/accepted expiry, overlapping runs, crashes, unsafe paths, transport failures, ambiguous acknowledgement, retries, and large JSON output
+**When** run/schedule/apply/status/recovery paths execute through CLI and equivalent MCP monitor operations across local, `--live`, and `--publish-events` combinations and both schedule authorization classes
+**Then** zero target mutation, exact transitions, deduplication, completeness rules, disposition authority, atomic durability, single-flight bounds, schedule authorization, explicit publication authority, outbox retry identity, adapter parity, and parse-safe output are proven
+**And** completion includes the real built CLI plus a disposable real user-systemd monitor timer against isolated registries/evidence paths, observed invoking at least two bounded runs that demonstrate a finding transition and unchanged deduplication before the timer is returned to its recorded prior state; mocks, documentation, ticket state, event acknowledgement, timer activity, or command exit alone are insufficient evidence.
+
+Requirements owned: FR27. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR7, NFR8, NFR9, NFR10, NFR11, NFR12, NFR13, NFR14, NFR15, NFR16.
+
+### Story 1.21: Enforce Fleet-Aware CI and Release Gates
+
+As a fleet operator,
+I want CI and every release path gated by the same versioned fleet contracts and current evidence,
+So that a package cannot ship with broken machine interfaces, stale template pins, incompatible schemas, red tests, or unresolved release-blocking fleet findings.
+
+**Acceptance Criteria:**
+
+**Given** the tracked fleet contract and a tracked versioned fleet-gate policy
+**When** either gate loads its requirements
+**Then** the policy declares required build/test/output/schema/template/package/provenance checks, evidence freshness/completeness bounds, release-blocking finding classes, non-waivable classes, and compatible policy/contract versions
+**And** an unknown version, missing required check, contradictory rule, or policy that attempts to redefine registry/runtime/activation truth fails closed before running or publishing a favorable gate result.
+
+**Given** a developer or CI runner invokes `pjangler fleet gate ci [--ref <git-ref>] [--out <path>] [--json]`
+**When** no ref or a ref is supplied
+**Then** PJangler resolves the candidate once to an immutable commit (defaulting to the checked-out CI/local `HEAD`), records that commit, and evaluates it in a clean isolated candidate checkout with its recorded submodule/gitlink state
+**And** it never stashes, resets, cleans, checks out over, commits, tags, or otherwise changes the caller's current worktree or unrelated WIP; any uncommitted caller changes are explicitly outside the candidate and reported as such.
+
+**Given** the CI gate runs in a pull-request, branch, or local environment
+**When** fleet checks execute
+**Then** they use isolated HOME/XDG/registries/profiles/repositories and deterministic fixtures rather than production fleet state, systemd, processes, Bloodbank, boards, n8n, or mutable sibling checkouts
+**And** the result identifies itself as a hermetic candidate gate, never as proof that the current deployed fleet is healthy or converged.
+
+**Given** the candidate contains the canonical template and other declared submodules/generated inputs
+**When** template cleanliness and pinning are checked
+**Then** every required gitlink is initialized at the candidate's exact recorded commit, clean, compatible with the fleet contract, and the sole source for packaged/rendered fleet assets
+**And** a dirty, missing, uninitialized, mismatched, unreachable, substituted, or working-tree-only template state blocks the gate instead of being repaired, fetched from an unrecorded source, or accepted from a sibling checkout.
+
+**Given** fleet CLI and MCP machine interfaces are release surfaces
+**When** the CI gate exercises their declared contract suite
+**Then** real built contract/status/plan/apply-result/rollout/monitor/gate JSON outputs and MCP structured results validate against their versioned schemas for success, unhealthy, partial, cancellation, and categorized-failure cases with stable ordering
+**And** real subprocess capture, pipes, redirection, and payloads larger than the pipe buffer prove one complete UTF-8 document and stdout drain; snapshots, direct function calls, or a zero exit alone cannot satisfy the check.
+
+**Given** the current schemas and their supported predecessor fixtures
+**When** compatibility checks run
+**Then** additive compatible evolution remains readable and deterministically normalized, while removed/renamed required fields, changed authority semantics, ambiguous defaults, or unsupported breaking versions are rejected with the required version/migration action
+**And** a breaking plan/evidence/result contract cannot pass merely because current producer and consumer code changed together.
+
+**Given** the gate policy's focused and aggregate suite manifest
+**When** build validation runs
+**Then** the exact candidate completes dependency/lockfile validation, typecheck, production build, focused fleet-domain regressions, CLI/MCP contract tests, transaction/crash tests, renderer/template tests, and the aggregate repository suite with no required test silently omitted, skipped, quarantined, or allowed to fail
+**And** test results, commands, versions, durations, and safe artifact digests are attributable to the candidate commit rather than reused from an earlier checkout or workflow run.
+
+**Given** any required tool is absent, a check times out/cancels/crashes, a result is malformed/truncated, a test report is missing, or independent checks disagree
+**When** gate aggregation runs
+**Then** the affected check is error/incomplete and the overall gate blocks while preserving every independent outcome and exact next action
+**And** optional/skipped semantics are allowed only where the tracked policy explicitly marks a check nonrequired; infrastructure trouble never becomes pass.
+
+**Given** a gate completes
+**When** human, `--json`, and/or `--out` output is requested
+**Then** PJangler emits one canonical versioned gate document with candidate commit, contract/policy versions, check IDs/outcomes, schema and test evidence, template gitlinks, package/evidence inputs when applicable, blockers, safe provenance/digests, completeness, and exact next actions
+**And** `--json`/`--out` follow Story 1.11's canonical stdout/file equivalence and safe atomic file rules, with a successful exit only when every required check is proven pass.
+
+**Given** a release candidate has been built into an exact local npm tarball
+**When** the operator or release automation runs `pjangler fleet gate release --ref <git-ref> --tag <tag> --package <tarball> --fleet-evidence <generation> [--live] [--out <path>] [--json]`
+**Then** the release gate first requires a passing CI-gate document for the same immutable commit/policy/content inputs or reruns that gate, and performs zero version bump, commit, tag creation, remote push, package publication, service action, fleet mutation, event publication, or board mutation itself
+**And** `--live` authorizes only bounded read-only refresh of contract-declared external observations; it never implies `monitor --publish-events`, repair, activation, dispatch, or release mutation.
+
+**Given** the candidate ref, tag, package metadata, lockfile, build output, and tarball
+**When** release provenance is verified
+**Then** the package name/version and lockfile agree, the exact `v<version>` annotated tag peels to the candidate commit, the tarball name/manifest/content and release provenance identify that version and commit, declared template/gitlink assets match the candidate, and the recorded tarball integrity digest covers the bytes that would be published
+**And** an uncommitted build, lightweight/moved/mismatched tag, wrong version, rebuilt or substituted tarball, unexpected generated/runtime/backup file, missing packaged asset, secret-shaped content, or package assembled from another checkout blocks release.
+
+**Given** `--fleet-evidence <generation>` references Story 1.20 evidence
+**When** release-blocking fleet health is evaluated
+**Then** the generation must be authentic, current within policy, complete for every required registered scope/domain, produced under compatible contracts, and free of active unaccepted release-blocking findings and monitor/outbox integrity failures
+**And** missing/stale/partial evidence, an incomplete live refresh, an expired/revoked acceptance, or an unresolved non-waivable finding blocks release; valid deferred/accepted nonblocking findings remain visible with owner/rationale/expiry and are never erased to make the gate green.
+
+**Given** ticket, event, CI-provider, package-registry, or historical release state disagrees with current gate inputs
+**When** the release decision is made
+**Then** current candidate bytes, Git objects, contracts, tests, and fleet evidence govern the decision and the contradiction is an explicit blocker or warning according to policy
+**And** a green workflow badge, ticket state, event acknowledgement, existing npm version, mutable branch name, documentation, or prior successful gate cannot substitute for the exact current proof.
+
+**Given** `mise run release`, `mise run publish`, or the canonical GitHub release workflow reaches its first irreversible/external release step
+**When** it prepares to push a release commit/tag or publish/retry the npm tarball
+**Then** it invokes the built release gate at the last safe point using the exact commit, annotated tag, tarball bytes, CI-gate digest, and fleet-evidence generation, and revalidates that none changed after the gate
+**And** failure prevents the applicable push/publish, success pins the gate document and tarball digest to the release evidence, publish consumes only that exact tarball, and no bypass/continue-on-error path can skip the required gate.
+
+**Given** candidate/tag/tarball/policy/template/evidence inputs change after a passing gate
+**When** release automation resumes or retries
+**Then** the prior gate is stale by digest and the complete applicable gate reruns before any remaining external action
+**And** it never blesses a rebuilt tarball, retargeted tag, advanced branch, newer contract, or refreshed finding disposition under an older green result.
+
+**Given** focused tests use temporary Git repositories/submodules/tags, isolated npm packs, schema predecessor fixtures, large/malformed CLI output, red/skipped/cancelled suites, dirty/missing pins, package tampering, stale/partial fleet evidence, blocking/nonblocking/accepted findings, and release-resume input changes
+**When** CI/release gates and canonical workflow wrappers execute
+**Then** candidate isolation, preservation, required-check aggregation, schema compatibility, template fidelity, exact tarball/tag/commit consistency, evidence policy, TOCTOU invalidation, parse-safe output, and zero unauthorized external writes are proven
+**And** completion includes a real built CLI CI gate on the exact current commit, an actual `npm pack` tarball plus local annotated candidate tag exercised through the release gate, and a required canonical CI workflow run proving the gate is enforced before release side effects; mocks, documentation, ticket state, a green unrelated job, or command exit alone are insufficient evidence.
+
+Requirements owned: FR28. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR9, NFR10, NFR11, NFR12, NFR13, NFR14, NFR15, NFR16.
+
+### Story 1.22: Close the Migration with Current End-to-End Evidence
+
+As a fleet operator,
+I want migration closeout to reconcile every requirement and planned effect against current technical, release, repository, and board evidence,
+So that the epic is completed only when the managed fleet is proven converged and every remaining exception is explicit, owned, and bounded.
+
+**Acceptance Criteria:**
+
+**Given** the authoritative pre-migration live-assessment baseline and the completed artifacts from Stories 1.1–1.21
+**When** the operator runs `pjangler fleet closeout create --baseline <baseline> --rollout <rollout> --release-gate <gate> --fleet-evidence <generation> [--live] --out <report-path> [--json]`
+**Then** PJangler validates and content-addresses the exact baseline, contract, requirements, plans, run journals, rollout, monitor generation, release gate, Git/release references, and owning Project Registry/ticket binding before producing a report
+**And** the command performs no repository/registry/profile/scaffold/service/process/activation/package/Git/event/board mutation; `--live` authorizes only bounded read-only external observations and never event publication or implicit repair.
+
+**Given** `closeout create` is run without `--live`
+**When** completion eligibility is evaluated
+**Then** PJangler may produce a durable incomplete diagnostic report with all available mappings, gaps, and next actions, but it cannot report `ready-to-close`, technical-complete, administrative-complete, or finalize-eligible
+**And** every completion state and successful finalize requires a fresh complete full-live observation of every policy-required fleet scope/domain within its freshness bounds, collected or revalidated through the explicit `--live` path.
+
+**Given** the baseline is loaded
+**When** before/after comparison begins
+**Then** it retains the authoritative 2026-08-31 live-assessment decisions and supersession rules plus safe pre-migration inventory/provenance/health counts and evidence references under their original digests
+**And** stale n8n-centralized orchestration, obsolete source paths, per-agent Bloodbank consumer/checkpoint assumptions, or registry-discovery-as-activation claims cannot re-enter the target model through an older document.
+
+**Given** the epic defines FR1–FR30, NFR1–NFR16, and AR1–AR20
+**When** traceability is generated
+**Then** every requirement appears exactly once in a complete matrix linked to its owning Story 1.N, implementation commit/artifact, focused and aggregate tests, current direct/live proof where applicable, and final pass/deferred/accepted/blocked status
+**And** a missing, duplicate, prose-only, ticket-only, mock-only, command-exit-only, or evidence-free mapping blocks closeout rather than being marked complete or not applicable without an authoritative rationale.
+
+**Given** one or more reconciliation plans and rollout waves were executed
+**When** planned-effect traceability is evaluated
+**Then** every stable effect ID maps to its original finding, risk/authorization class, exact run/journal attempt, before/after fingerprints, outcome, postcondition proof, Git checkpoint where applicable, and final fleet observation
+**And** outcome-unknown, stale, unproven, compensated-but-unreconciled, unplanned mutation, unlanded tracked delta, skipped dependency, or missing journal state blocks closeout while preserved successful independent effects remain visible.
+
+**Given** a fresh complete full-live fleet evidence generation collected or revalidated through `--live`
+**When** managed-state completion is evaluated
+**Then** every contract-declared managed agent and specialist/shared service has a resolved unique identity, canonical authority relationships, current desired provenance, healthy applicable scaffold/profile/systemd/process/Bloodbank-readiness state, and complete bounded observation
+**And** no unclassified member, duplicate authority, legacy service/process generation, contradictory adapter claim, unresolved recovery, stale required domain, or false-green aggregate may remain.
+
+**Given** lifecycle exceptions and Bloodbank targets exist
+**When** closeout classifies them
+**Then** intentionally unmanaged, retired, deferred, and manually accepted states require current authoritative owner/rationale/scope/evidence plus bounded review/expiry conditions and cannot hide a non-waivable epic goal
+**And** Bloodbank readiness, registry activation, gateway-observed eligibility, and last proven command journey remain separate; each target's final strict desired activation state must match registry and gateway evidence without requiring every ready target to be enabled.
+
+**Given** PJangler, the canonical template, and downstream repositories were changed by the epic
+**When** repository closeout runs
+**Then** every fleet-owned change is attributed to its ticket, committed, pushed, reachable from the canonical remote branch, and reflected by the recorded template/gitlink pins, while `git unpushed` reports no detached, missing-upstream, uncommitted, or unpushed state for any touched repository
+**And** pre-existing unrelated WIP is either proven unchanged from its applicable baseline or independently attributed, committed/pushed/resolved by its owner with evidence outside fleet-owned deltas; it is never swept into a fleet commit, remaining ambiguous/unlanded WIP in a touched repository blocks closeout, and legitimate separately landed evolution does not fail merely because it differs from the original baseline.
+
+**Given** package and release evidence from Story 1.21
+**When** release alignment is checked
+**Then** package.json/lockfile version, annotated Git tag, tag target commit, canonical remote main ref, passing required CI gate/run, exact published npm tarball integrity/provenance, installed built CLI identity, and all deployed template/gitlink pins reconcile to the declared final release state
+**And** a green unrelated workflow, local-only commit/tag, repacked tarball, registry version without matching bytes/provenance, dirty template, stale installed CLI, or mutable branch name blocks closeout.
+
+**Given** the owning Plane epic/story records are resolved through the Project Registry ticket-provider binding
+**When** administrative readiness is assessed
+**Then** every implementation story has its evidence references and technical completion state reconciled, the one owning epic identifies all 22 story outcomes and remaining bounded exceptions, and any board/API unavailability is reported as administrative-incomplete
+**And** ticket text, status, or checked boxes never substitute for technical proof, while no issue is created, edited, transitioned, or closed during `closeout create`.
+
+**Given** a closeout report is written
+**When** human, `--json`, and/or `--out` output is produced
+**Then** it is a versioned canonical before/after document with content digest, generation/freshness, input digests, complete requirement/effect matrices, fleet and activation summaries, repository/release/CI/board reconciliation, exceptions, blockers, evidence references, and exact next actions
+**And** `--json`/`--out` follow Story 1.11's canonical stdout/file equivalence and atomic safe-path rules, stable ordering and bounded redaction prevent secrets/private payloads/unbounded logs, and an incomplete report remains durable without claiming epic completion.
+
+**Given** the report has no technical, release, repository, evidence, or administrative blocker and includes a still-fresh complete full-live observation of every required scope/domain
+**When** the operator runs `pjangler fleet closeout finalize --report <report-path> [--authorize board-closeout] [--json]`
+**Then** PJangler revalidates the report digest, the complete full-live generation, and every freshness-sensitive input before declaring it technically complete, and without `--authorize board-closeout` returns `ready-to-close` without any external mutation
+**And** only the distinct exact authorization may invoke the provider adapter to perform the report's bounded owning-board completion transitions; it cannot mutate fleet state, expand issue scope, rewrite evidence, or create unrelated tickets.
+
+**Given** authorized board closeout runs
+**When** one or more exact transitions succeed, fail, time out, or have an ambiguous outcome
+**Then** PJangler records a durable idempotent closeout journal/receipt, re-reads each affected issue through the bound provider, and reports technical-complete/administrative-complete only when the observed final states match the report
+**And** partial or unknown board outcomes remain resumable and cannot roll back technical state, repeat a proven transition, close the parent ahead of required children, or turn the evidence report green retroactively.
+
+**Given** any contract, registry, runtime, process, activation, repository, template pin, CI, tag, package, published artifact, evidence disposition, or board state changes after a report is created
+**When** finalize or a later closeout status check runs
+**Then** the affected digest/freshness precondition invalidates the prior completion claim and requires a new closeout generation or exact administrative resume as applicable
+**And** prior reports and receipts remain immutable historical evidence rather than being overwritten to match the newer state.
+
+**Given** focused tests use isolated baseline/current snapshots, requirements and effect matrices, run/rollout/monitor journals, mixed lifecycle/activation states, temporary multi-repository remotes, dirty/unpushed/WIP fixtures, local annotated tags and tarballs, fake CI/npm/Plane adapters, crashes, stale evidence, partial board transitions, and post-report drift
+**When** create/finalize/resume/status paths run through CLI and equivalent MCP operations
+**Then** full traceability, current-state truth, offline-incomplete/full-live-complete boundaries, exception/activation separation, repository/release alignment, safe canonical reporting, digest invalidation, authorization isolation, idempotent administrative closeout, and preservation are proven
+**And** completion includes one real full-live complete-fleet observation after all waves, real built renderer/CLI/MCP/systemd/process/Bloodbank evidence, actual committed/pushed remote refs and clean touched-repository `git unpushed` proof, exact CI/tag/published-package reconciliation, and separately authorized owning-board read-back; documentation, mocks, ticket state, historical logs, or command exits alone are insufficient evidence.
+
+Requirements owned: FR29. Primary NFRs: NFR1, NFR2, NFR3, NFR4, NFR5, NFR6, NFR7, NFR8, NFR9, NFR10, NFR11, NFR12, NFR13, NFR14, NFR15, NFR16.

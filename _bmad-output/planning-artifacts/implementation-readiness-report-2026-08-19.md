@@ -18,7 +18,7 @@ inputDocuments:
     - _bmad-output/planning-artifacts/architecture/architecture-project-notebook-2026-08-19/reviews/review-resolution.md
     - _bmad-output/planning-artifacts/architecture/architecture-project-notebook-2026-08-19/reviews/review-update-retention-resolution.md
   epics:
-    - _bmad-output/planning-artifacts/epics.md
+    - _bmad-output/planning-artifacts/epics-project-notebook-2026-08-19.md
   ux: []
 uxApplicability: n/a-cli-lifecycle-hooks
 assessmentDate: 2026-08-19
@@ -58,7 +58,7 @@ Other architecture review files are supporting evidence, not alternate architect
 
 ### Selected epics and stories
 
-- `epics.md` — updated final whole document, 113,429 bytes.
+- `epics-project-notebook-2026-08-19.md` — updated final whole document, 113,429 bytes.
 
 No sharded epic index or competing epic document was found.
 
