@@ -76,6 +76,63 @@ Two things about the tracked contract that are easy to trip over:
   They are still scanned for credentials and host paths, because a secret in an
   extension is still a secret in a tracked file.
 
+## Fleet inventory
+
+`pjangler fleet inventory` reads the two canonical registries — the Hermes agent
+registry and the PJangler project registry — plus each repository's
+`.project.json`, and answers the question neither store answers alone: what is
+the whole fleet, and where does it disagree with itself?
+
+```bash
+pjangler fleet inventory                                  # human report
+pjangler fleet inventory --json                           # fleet JSON v1 envelope
+pjangler fleet inventory --agent pjangler-pm --json       # one row, full-fleet totals
+pjangler fleet inventory --agent-registry ./copy.yaml     # inspect a copy
+pjangler fleet inventory --project-registry ./copy.yaml   # inspect a copy
+```
+
+It is strictly read-only. It opens no service, no process, and no network; it
+creates no directory, project, role, profile, or registry row; and a path it is
+handed is classified with `lstat`, never followed. A symlinked profile directory
+is reported as a symlink with its target as evidence — the target is never
+substituted for the declared path.
+
+Every emitted value carries `{value, source, state}`, where `source` is the
+authority owner `contracts/fleet-contract.yaml` declares for that field path and
+`state` is one of `resolved`, `unresolved`, `conflicted`, or `unobserved`. An
+unknown is an explicit `null` at `unresolved`, never a guess from a convenient
+basename. `.project.json` is read as confirming evidence only: it is never the
+`source` of a field and never a tiebreaker when the two registries disagree.
+
+**An unhealthy fleet is data, not a failure.** A fleet with identity conflicts
+exits `0` with `ok: true` and `data.health.healthy: false` — the envelope nulls
+`data` on `ok: false`, so reporting drift as a failure would blank the inventory
+on exactly the runs that matter. Only a *command* failure is nonzero:
+
+| exit | meaning |
+| --- | --- |
+| `0` | the command ran — read `data.health.healthy` for the verdict |
+| `2` | a malformed flag value, or a registry that could not be parsed |
+| `3` | a registry that is not there, or an `--agent` id that is not registered |
+| `6` | internal |
+
+Two more things worth knowing:
+
+- **`--agent` scopes the rows, never the totals.** `data.rows` carries the one
+  agent and `data.scope` says the result is scoped, but `data.totals` still
+  reports the whole registered fleet, so a scoped run can never be mistaken for
+  a shrinking fleet.
+- **`--agent-registry` / `--project-registry` say which bytes to read, not which
+  file is canonical.** `data.stores[].configured_path` keeps naming the
+  configured store and `inspected_path` names the override.
+
+An identity conflict is grouped under a stable id —
+`conflict:{field-path}:{12 hex}` — identical for every participant, on every
+machine, run after run. A group can be declared permitted by adding an entry to
+`classifications.intentionally_unmanaged.entries` in the contract whose `source`
+equals the group's field path and whose `participants` match the group's set
+exactly; a superset never absorbs a claimant nobody ruled on.
+
 ## Orienting in a repo
 
 `describe` reads a repo and reports what it actually is — detected type,

@@ -14,18 +14,41 @@ import {
   FLEET_SCHEMA_VERSION,
   FleetError,
   fleetExitCode,
+  type FleetConflictGroup,
   type FleetDiagnostic,
   type FleetErrorCode,
   type FleetExtension,
+  type FleetFieldValue,
+  type FleetInventory,
+  type FleetInventoryFinding,
+  type FleetInventoryRow,
 } from "./types";
 import { bold, cyan, dim, glyph, gray, green, joinDot, padVisible, red, statusStyle, yellow } from "../utils/style";
 
 /** Commands allowed to produce a fleet envelope. */
-export const FLEET_COMMANDS = ["fleet.contract.validate"] as const;
+export const FLEET_COMMANDS = ["fleet.contract.validate", "fleet.inventory"] as const;
+
+/**
+ * The `data` keys each command's success envelope must carry.
+ *
+ * Per-command, not one hardcoded list. While `validate` was the only command,
+ * `validateFleetEnvelope` asserted its ten keys on EVERY `ok` envelope -- so the
+ * second command in the namespace could not emit a success envelope at all; it
+ * threw INTERNAL_ERROR out of `renderFleetJson` instead.
+ */
+const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
+  "fleet.contract.validate": [
+    "contract_path", "authorities", "projections", "classifications",
+    "service_model", "activation", "retired", "extensions", "truncated", "diagnostics",
+  ],
+  "fleet.inventory": ["stores", "totals", "health", "rows", "conflicts", "findings", "truncated"],
+};
 
 const MAX_STRING = 512;
 const MAX_DETAILS = 20;
 const MAX_NEXT_ACTIONS = 20;
+/** Notes carried in a view before the envelope's list cap applies. */
+const MAX_NOTES = 10;
 
 export interface FleetEnvelopeV1<T = unknown> {
   schema_version: 1;
@@ -168,6 +191,28 @@ const MAX_DEPTH = 6;
 const MAX_KEYS = 50;
 const MAX_ITEMS = 100;
 
+/**
+ * Bound a declared string list and record the clip.
+ *
+ * `writable_fields`, `store_env` and `detect` were once copied with a bare
+ * spread, so a contract with thousands of entries produced an envelope past
+ * every documented bound while `truncated` stayed empty -- the one list whose
+ * whole job is to say "you did not get all of it" was the one that could not
+ * say so.
+ *
+ * Lives here rather than in `cli.ts` because the inventory needs the same bound
+ * on the same terms, and two copies of a bound are two bounds.
+ */
+export function cappedStrings(values: readonly string[] | undefined, context: BoundedContext, path: string, max = MAX_ITEMS): string[] {
+  const all = values ?? [];
+  if (all.length > max) context.truncated.push(`${path}: ${all.length - max} of ${all.length} items dropped`);
+  return all.slice(0, max).map((value) => bounded(value));
+}
+
+export function boundedNotes(notes: readonly string[] | undefined, context: BoundedContext, path: string): string[] {
+  return cappedStrings(notes, context, path, MAX_NOTES);
+}
+
 /** Keep an open-keyed contract subtree inside the envelope's bounds. */
 export function boundedValue(value: unknown, context: BoundedContext = boundedContext(), path = "", depth = 0): unknown {
   const clip = (reason: string): void => { if (!context.truncated.includes(`${path}: ${reason}`)) context.truncated.push(`${path}: ${reason}`); };
@@ -304,7 +349,9 @@ export function validateFleetEnvelope(envelope: FleetEnvelopeV1): void {
   if (envelope.ok) {
     const data = envelope.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) invalid("data must be an object");
-    for (const key of ["contract_path", "authorities", "projections", "classifications", "service_model", "activation", "retired", "extensions", "truncated", "diagnostics"]) {
+    const required = FLEET_COMMAND_DATA_KEYS[envelope.command];
+    if (!required) invalid("command declares no required data keys");
+    for (const key of required!) {
       if ((data as Record<string, unknown>)[key] === undefined) invalid(`data.${key} is missing`);
     }
     return;
@@ -445,4 +492,153 @@ function describeTree(node: unknown, prefix = ""): string[] {
   walk(node, prefix);
   const width = flat.reduce((max, [path]) => Math.max(max, path.length), 0);
   return flat.map(([path, value]) => `${padVisible(path, width)}  ${cyan(value)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Inventory report
+// ---------------------------------------------------------------------------
+
+/** How many rows the human report prints before it says how many it withheld. */
+const REPORT_MAX_ROWS = 60;
+/** How many findings the human report lists in the "top findings" block. */
+const REPORT_MAX_FINDINGS = 25;
+
+function fieldCell(value: FleetFieldValue<unknown>): string {
+  const shown = value.value === null
+    ? "-"
+    : Array.isArray(value.value)
+      ? value.value.map((item) => String(item)).join(", ")
+      : typeof value.value === "object"
+        ? Object.entries(value.value as Record<string, unknown>).filter(([, item]) => item !== null).map(([key, item]) => `${key}=${String(item)}`).join(" ")
+        : String(value.value);
+  return bounded(shown || "-");
+}
+
+function stateColor(state: string): (value: string | number) => string {
+  if (state === "resolved") return green;
+  if (state === "conflicted") return red;
+  if (state === "unobserved") return gray;
+  return yellow;
+}
+
+function findingGlyph(severity: FleetInventoryFinding["severity"]): string {
+  if (severity === "error") return red(glyph.fail);
+  if (severity === "warn") return yellow(glyph.warn);
+  return dim(glyph.info);
+}
+
+function conflictLine(group: FleetConflictGroup): string {
+  const verdict = group.permitted
+    ? gray(`permitted${group.exception_id ? ` by ${bounded(group.exception_id)}` : ""}`)
+    : red("unpermitted");
+  return `    ${group.permitted ? gray(glyph.skip) : red(glyph.fail)}  ${bold(bounded(group.value))}  ${dim(glyph.dot)}  ${verdict}`;
+}
+
+function rowLines(row: FleetInventoryRow, idWidth: number): string[] {
+  const id = row.agent_id.value ?? "<unnamed>";
+  const state = row.conflicts.length ? "conflicted" : row.malformed ? "unresolved" : row.project_id.state;
+  const style = stateColor(state);
+  const head = `    ${style(state === "resolved" ? glyph.pass : state === "conflicted" ? glyph.fail : glyph.warn)}  `
+    + `${padVisible(bounded(id), idWidth)}  ${cyan(fieldCell(row.role))}  ${dim(fieldCell(row.project_id))}`;
+  const detail = joinDot([
+    dim(`profile ${fieldCell(row.profile_name)} (${row.profile_path.state})`),
+    dim(`role_dir ${row.paths.role_dir?.classification ?? "undeclared"}`),
+    dim(`bloodbank ${fieldCell(row.bloodbank_scope)}/${row.activation.value === true ? "activated" : "deny"}`),
+  ]);
+  const lines = [head, `       ${dim(glyph.arrow)} ${detail}`];
+  if (row.conflicts.length) lines.push(`       ${dim(glyph.arrow)} ${red(`conflicts: ${row.conflicts.join(", ")}`)}`);
+  if (row.findings.length) lines.push(`       ${dim(glyph.arrow)} ${dim(`findings: ${bounded(row.findings.join(", "))}`)}`);
+  return lines;
+}
+
+/**
+ * Report in the `formatFleetContractReport` house style. The caller prints it.
+ *
+ * The health verdict leads deliberately. An unhealthy fleet exits 0 -- conflicts
+ * are data, not a command failure -- so a report that opened with a row dump
+ * would let "the command worked" read as "the fleet is fine".
+ */
+export function formatFleetInventoryReport(inventory: FleetInventory): string {
+  const { health, totals } = inventory;
+  const lines = [""];
+
+  const headline = health.healthy
+    ? `${green(glyph.pass)} ${bold("Fleet inventory healthy")}`
+    : `${red(glyph.fail)} ${bold("Fleet inventory UNHEALTHY")}`;
+  const tally = [
+    `${totals.observed} of ${totals.source_rows} rows`,
+    health.conflicts ? red(`${health.conflicts} unpermitted conflict${health.conflicts === 1 ? "" : "s"}`) : green("0 unpermitted conflicts"),
+    health.malformed_rows ? red(`${health.malformed_rows} malformed`) : dim("0 malformed"),
+  ];
+  lines.push(`  ${headline}  ${dim(glyph.dot)}  ${joinDot(tally)}`);
+  lines.push(`  ${joinDot([dim(inventory.scope.label), dim(inventory.contract_path), dim(`contract ${inventory.contract_version ?? "?"}`)])}`);
+
+  section(lines, "Stores");
+  const storeWidth = inventory.stores.reduce((max, store) => Math.max(max, store.id.length), 0);
+  for (const store of inventory.stores) {
+    const style = statusStyle(store.exists && store.parse === "ok" ? "pass" : store.exists ? "warn" : "fail");
+    lines.push(`    ${style.color(style.glyph)}  ${padVisible(store.id, storeWidth)}  ${cyan(store.owner ?? "unowned")}  ${dim(`${store.source_rows} record${store.source_rows === 1 ? "" : "s"} · ${store.parse}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`configured ${store.configured_path}`)}`);
+    if (store.overridden) lines.push(`       ${dim(glyph.arrow)} ${yellow(`inspected ${store.inspected_path}`)}`);
+  }
+
+  section(lines, "Totals");
+  for (const [label, value] of Object.entries(totals)) {
+    lines.push(`    ${dim(glyph.bullet)} ${padVisible(label, 24)}  ${cyan(String(value))}`);
+  }
+  if (totals.source_rows !== totals.emitted_rows) {
+    lines.push(`    ${red(glyph.fail)} source_rows and emitted_rows disagree; a row was lost between counting and building`);
+  }
+
+  section(lines, "Conflict groups");
+  if (inventory.conflicts.length === 0) lines.push(`    ${dim("none")}`);
+  for (const group of inventory.conflicts) {
+    lines.push(conflictLine(group));
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${group.field} · owned by ${group.owners.join(", ") || "nobody declared"} · ${group.participants.join(", ")}`)}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(group.id)}`);
+  }
+
+  section(lines, "Agents");
+  const idWidth = inventory.rows.reduce((max, row) => Math.max(max, (row.agent_id.value ?? "").length), 0);
+  for (const row of inventory.rows.slice(0, REPORT_MAX_ROWS)) for (const line of rowLines(row, idWidth)) lines.push(line);
+  if (inventory.rows.length > REPORT_MAX_ROWS) {
+    lines.push(`    ${dim(`... ${inventory.rows.length - REPORT_MAX_ROWS} more row(s); use --json for all of them`)}`);
+  }
+
+  section(lines, "Findings");
+  if (inventory.findings.length === 0) lines.push(`    ${dim("none")}`);
+  const codeWidth = inventory.findings.slice(0, REPORT_MAX_FINDINGS).reduce((max, item) => Math.max(max, item.code.length), 0);
+  for (const finding of inventory.findings.slice(0, REPORT_MAX_FINDINGS)) {
+    lines.push(`    ${findingGlyph(finding.severity)}  ${padVisible(finding.code, codeWidth)}  ${dim(finding.field)}${finding.agent_id ? `  ${cyan(finding.agent_id)}` : ""}`);
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`${finding.detail} · owner ${finding.source ?? "undeclared"}`)}`);
+  }
+  if (inventory.findings.length > REPORT_MAX_FINDINGS) {
+    lines.push(`    ${dim(`... ${inventory.findings.length - REPORT_MAX_FINDINGS} more finding(s); use --json for all of them`)}`);
+  }
+
+  if (inventory.truncated.length) {
+    lines.push("");
+    lines.push(`  ${yellow(glyph.warn)} ${bold("Report clipped to envelope bounds")}  ${dim(glyph.dot)}  ${dim("the stores on disk are complete")}`);
+    for (const note of inventory.truncated) lines.push(`     ${dim(glyph.arrow)} ${dim(note)}`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * A command failure, in the same house style as the success reports.
+ *
+ * The human path still owes the operator a readable answer when the command
+ * itself failed: an unreadable registry, an unknown agent, a rejected flag. The
+ * error's message and code are already bounded and home-redacted by the time
+ * they reach here.
+ */
+export function formatFleetErrorReport(title: string, error: { code: string; message: string }): string {
+  return [
+    "",
+    `  ${red(glyph.fail)} ${bold(title)}  ${dim(glyph.dot)}  ${red(error.code)}`,
+    `     ${dim(glyph.arrow)} ${dim(bounded(error.message))}`,
+    "",
+  ].join("\n");
 }

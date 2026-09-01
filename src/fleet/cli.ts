@@ -6,34 +6,41 @@ import {
   serializeFleetContract,
   validateFleetContract,
 } from "./contract";
+import { collectFleetInventory } from "./inventory";
 import {
   boundedContext,
+  boundedNotes,
   boundedValue,
   bounded,
+  cappedStrings,
   diagnosticDetails,
   fleetEnvelopeExitCode,
   fleetFailureEnvelope,
   fleetSuccessEnvelope,
   formatFleetContractReport,
+  formatFleetErrorReport,
+  formatFleetInventoryReport,
   ignoreBrokenPipe,
   normalizeFleetError,
   redactHome,
   renderFleetJson,
-  type BoundedContext,
   type FleetContractInspection,
   type FleetEnvelopeV1,
 } from "./output";
-import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, type FleetDiagnostic } from "./types";
+import { FLEET_SUPPORTED_SCHEMA_VERSIONS, FleetError, type FleetDiagnostic, type FleetInventory } from "./types";
 
 const VALIDATE_COMMAND = "fleet.contract.validate";
-
-/** Notes carried in an authority view before the envelope's list cap applies. */
-const MAX_NOTES = 10;
-/** Matches `MAX_ITEMS` in output.ts, so every list in the envelope obeys one bound. */
-const MAX_LIST_ITEMS = 100;
+const INVENTORY_COMMAND = "fleet.inventory";
 
 interface ValidateOptions {
   contract?: string;
+  json?: boolean;
+}
+
+interface InventoryOptions {
+  agent?: string;
+  projectRegistry?: string;
+  agentRegistry?: string;
   json?: boolean;
 }
 
@@ -56,26 +63,6 @@ function emptyInspection(contractPath: string, diagnostics: FleetDiagnostic[]): 
     truncated: [],
     diagnostics,
   };
-}
-
-function boundedNotes(notes: readonly string[] | undefined, context: BoundedContext, path: string): string[] {
-  const all = notes ?? [];
-  if (all.length > MAX_NOTES) context.truncated.push(`${path}: ${all.length - MAX_NOTES} of ${all.length} notes dropped`);
-  return all.slice(0, MAX_NOTES).map((note) => bounded(note));
-}
-
-/**
- * Bound a declared string list and record the clip.
- *
- * `writable_fields`, `store_env` and `detect` were copied with a bare spread,
- * so a contract with thousands of entries produced an envelope past every
- * documented bound while `truncated` stayed empty -- the one list whose whole
- * job is to say "you did not get all of it" was the one that could not say so.
- */
-function cappedStrings(values: readonly string[] | undefined, context: BoundedContext, path: string): string[] {
-  const all = values ?? [];
-  if (all.length > MAX_LIST_ITEMS) context.truncated.push(`${path}: ${all.length - MAX_LIST_ITEMS} of ${all.length} items dropped`);
-  return all.slice(0, MAX_LIST_ITEMS).map((value) => bounded(value));
 }
 
 /**
@@ -182,6 +169,26 @@ function validateEnvelope(inspection: FleetContractInspection): FleetEnvelopeV1 
   ]);
 }
 
+/**
+ * The inventory's success envelope. An unhealthy fleet is still `ok: true`.
+ *
+ * `validateFleetEnvelope` enforces `ok ? data !== null : data === null`, so
+ * reporting conflicts as `ok: false` would null out `data` on exactly the runs
+ * where the inventory matters most. Only a COMMAND failure -- an unreadable
+ * registry, an unknown `--agent`, a bad flag -- is `ok: false`.
+ */
+function inventoryEnvelope(inventory: FleetInventory): FleetEnvelopeV1 {
+  const nextActions = inventory.health.healthy
+    ? ["Consume data.rows as the fleet's declared state; every value names the authority that owns it"]
+    : [
+      inventory.health.conflicts
+        ? "Rule on each unpermitted conflict group: repair the drift, or record it under classifications.intentionally_unmanaged"
+        : "Review data.findings; each names the owning registry and the field path to repair",
+      "Re-run with --json for the complete row set",
+    ];
+  return fleetSuccessEnvelope(INVENTORY_COMMAND, inventory, nextActions);
+}
+
 /** Whether these argv words are a fleet invocation that promised JSON. */
 export function isFleetJsonInvocation(args: readonly string[]): boolean {
   return args[0] === "fleet" && args.includes("--json");
@@ -195,11 +202,31 @@ export function isFleetJsonInvocation(args: readonly string[]): boolean {
  * automation that asked for `--json` in the first place. `notebook` already
  * solves this; the fleet namespace needs the same guarantee.
  */
-export function fleetParserFailureEnvelope(_args: readonly string[]): FleetEnvelopeV1<never> {
-  // One command in the namespace today, so there is nothing to disambiguate.
-  // The argument stays in the signature because the moment `fleet status` lands
-  // the envelope has to name which command failed, exactly as `notebook` does.
-  return fleetFailureEnvelope(VALIDATE_COMMAND, new FleetError("INVALID_INPUT", "Invalid fleet command arguments"));
+export function fleetParserFailureEnvelope(args: readonly string[]): FleetEnvelopeV1<never> {
+  // Now that the namespace has two commands the envelope has to name the one
+  // that failed. Derived from the positional words only: an option VALUE can be
+  // anything (`--agent inventory` is a legal, if unlucky, id), so scanning the
+  // whole argv for the word would mislabel a validate failure as an inventory
+  // one. Commander has already rejected these arguments, so the words are
+  // untrusted -- this only picks a label, never a code path.
+  const words = args.filter((arg) => !arg.startsWith("-"));
+  const command = words[1] === "inventory" ? INVENTORY_COMMAND : VALIDATE_COMMAND;
+  return fleetFailureEnvelope(command, new FleetError("INVALID_INPUT", "Invalid fleet command arguments"));
+}
+
+/**
+ * Refuse a path or id option that Commander bound to something that is not one.
+ *
+ * Two failures, both real. An explicitly-empty value (`--agent "$UNSET"`) used
+ * to fall through to the unscoped default and report success about a request
+ * nobody made. And Commander binds the NEXT argv token as the value, so
+ * `--agent --json` makes the flag the id: `options.json` stays false and a
+ * caller that asked for JSON gets an ANSI report about an agent named `--json`.
+ */
+function requireValue(value: string | undefined, flag: string): void {
+  if (value === undefined) return;
+  if (value.trim() === "") throw new FleetError("INVALID_INPUT", `${flag} was given an empty value`);
+  if (value.startsWith("--")) throw new FleetError("INVALID_INPUT", `${flag} was given an option, not a value`);
 }
 
 /**
@@ -212,8 +239,39 @@ export function fleetParserFailureEnvelope(_args: readonly string[]): FleetEnvel
  * meant to stop reproducing.
  */
 export function registerFleetCli(program: Command): void {
-  const fleet = program.command("fleet").description("Inspect the 33GOD fleet contract");
+  const fleet = program.command("fleet").description("Inspect the 33GOD fleet contract and the registered fleet");
   const contract = fleet.command("contract").description("Work with the fleet authority and managed-state contract");
+
+  // Hangs off `fleet`, not off `contract`: an inventory is a read of the two
+  // canonical registries, not a read of the contract file.
+  fleet.command("inventory")
+    .description("Inventory every registered agent and report identity conflicts (read-only)")
+    .option("--agent <id>", "Report only this agent; totals still describe the whole fleet")
+    .option("--project-registry <path>", "Inspect this project registry instead of the configured one")
+    .option("--agent-registry <path>", "Inspect this agent registry instead of the configured one")
+    .option("--json", "Emit the fleet JSON v1 envelope")
+    .action((options: InventoryOptions) => {
+      ignoreBrokenPipe();
+      const json = Boolean(options.json);
+      try {
+        requireValue(options.agent, "--agent");
+        requireValue(options.projectRegistry, "--project-registry");
+        requireValue(options.agentRegistry, "--agent-registry");
+        const inventory = collectFleetInventory({
+          agentId: options.agent,
+          projectRegistry: options.projectRegistry,
+          agentRegistry: options.agentRegistry,
+        });
+        write(inventoryEnvelope(inventory), json, () => formatFleetInventoryReport(inventory));
+      } catch (error) {
+        const normalized = normalizeFleetError(error);
+        const envelope = fleetFailureEnvelope(INVENTORY_COMMAND, normalized, [
+          "Re-run without --json for the full report, or fix the reported store path",
+        ]);
+        try { write(envelope, json, () => formatFleetErrorReport("Fleet inventory failed", normalized)); }
+        catch { emitLastResort(INVENTORY_COMMAND); }
+      }
+    });
 
   contract.command("validate")
     .description("Validate the fleet contract and report authorities, classes, service model, and retired modes")
@@ -238,7 +296,7 @@ export function registerFleetCli(program: Command): void {
         }
         const inspection = inspectFleetContract(options.contract);
         const envelope = validateEnvelope(inspection);
-        write(envelope, json, inspection);
+        write(envelope, json, () => formatFleetContractReport(inspection));
       } catch (error) {
         const normalized = normalizeFleetError(error);
         let shown = "contract";
@@ -254,14 +312,36 @@ export function registerFleetCli(program: Command): void {
         // envelope it is handed. Outside this catch that escaped the action
         // handler and reached the top-level rethrow as a raw stack trace with
         // `process.exitCode` never set.
-        try { write(envelope, json, inspection); }
-        catch { process.stdout.write(`${JSON.stringify({ schema_version: 1, ok: false, command: VALIDATE_COMMAND, data: null, error: { code: "INTERNAL_ERROR", message: "Fleet command could not render its own result", retryable: false, details: {} }, next_actions: [] }, null, 2)}\n`); process.exitCode = 6; }
+        try { write(envelope, json, () => formatFleetContractReport(inspection)); }
+        catch { emitLastResort(VALIDATE_COMMAND); }
       }
     });
 }
 
-function write(envelope: FleetEnvelopeV1, json: boolean, inspection: FleetContractInspection): void {
+/**
+ * One writer for both commands.
+ *
+ * Takes a formatter THUNK rather than a payload: the human report of a contract
+ * inspection and of a fleet inventory have nothing in common but the fact that
+ * one of them has to be produced only on the non-JSON path. Typing this to
+ * `FleetContractInspection` and hardwiring `formatFleetContractReport` is what
+ * would otherwise have forced a second near-identical copy.
+ */
+function write(envelope: FleetEnvelopeV1, json: boolean, format: () => string): void {
   if (json) process.stdout.write(renderFleetJson(envelope));
-  else process.stdout.write(`${formatFleetContractReport(inspection)}\n`);
+  else process.stdout.write(`${format()}\n`);
   process.exitCode = fleetEnvelopeExitCode(envelope);
+}
+
+/** Last resort when even rendering the failure envelope threw. */
+function emitLastResort(command: string): void {
+  process.stdout.write(`${JSON.stringify({
+    schema_version: 1,
+    ok: false,
+    command,
+    data: null,
+    error: { code: "INTERNAL_ERROR", message: "Fleet command could not render its own result", retryable: false, details: {} },
+    next_actions: [],
+  }, null, 2)}\n`);
+  process.exitCode = 6;
 }

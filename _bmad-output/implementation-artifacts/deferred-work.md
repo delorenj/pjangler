@@ -4,7 +4,9 @@ location: contracts/fleet-contract.yaml (authorities.*.writable_fields)
 source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: medium
 reason: Cross-checked contracts/fleet-contract.yaml against the live ~/.hermes/agents-registry.yaml. Undeclared: hindsight.*, reporting.*, internal_role_name, slack.{team_id,team_name,bot_user_id,bot_id,bot_username,workspace,status}, telegram.{bot_id,bot_username,status}, hermes.codex_home, systemd.{cron_tick_timer,artifact_bridge_timer,watchdog_timer,checkpoint_timer}, and gateways.bloodbank.legacy_profile_consumers. Story 1.1's ACs require declaring an owner per domain, not per live key, and Story 1.2 explicitly owns "reads the configured canonical registries" - so exhaustive field coverage belongs there, driven by real registry reads rather than by hand.
-status: open
+status: partially addressed by `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+addressed: Story 1.2 reads both canonical registries for real and attributes every value it emits through `buildAuthorityIndex`, which resolves owners from the contract's `writable_fields` and nothing else. Verified against the live 28-agent registry: every field path the inventory reads - agents.{agent_id}.{repo,role,project_path,role_dir,profile_name}, agents.{agent_id}.plane.{workspace,project_id,identifier}, agents.{agent_id}.bloodbank.{enabled,gateway_scope,target_agent_id}, agents.{agent_id}.systemd.gateway_unit, projects.{slug}.{slug,repo_path}, projects.{slug}.ticket_provider.{identifier,board_id,workspace} - resolves to exactly one declared owner, so the declarations are now anchored by live reads rather than only by a second copy in the tests (which is also what DW-11 asked for). The gap is no longer invisible either: an undeclared path yields `source: null` plus an `authority-owner-undeclared` finding instead of an invented owner.
+remaining: The DW-1 field list itself is untouched, because the inventory reads none of those keys. hindsight.*, reporting.*, internal_role_name, slack.*, telegram.*, hermes.codex_home, systemd.{cron_tick,artifact_bridge,watchdog,checkpoint}_timer and gateways.bloodbank.legacy_profile_consumers still carry no declared owner. They become load-bearing when a later story reads them: the retired timers in Story 1.8 (systemd topology), the messaging blocks in Story 1.10 (routing readiness), and gateways.bloodbank.legacy_profile_consumers wherever the retired per-agent consumer is finally drained. Declaring an owner is Story 1.1's surface, and this story's Block If forbids inventing one.
 
 ### DW-2: activation.routing_prerequisites is declared but no code evaluates it.
 origin: spec-deferred 4ae962bf1f82
@@ -92,4 +94,12 @@ location: tests/fleet-contract-regressions.mjs (the packed npm artifact check)
 source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: low
 reason: It shells out to `npm pack` against the live working tree, so a concurrent edit or an untracked stray changes what is packed, and it requires npm and tar on PATH with no skip path (unlike the root-user case, which skips properly). It is also the only case that bypasses the cli() wrapper, so the four-root zero-write snapshot is not applied to it. Packing from a `git archive` snapshot would fix all three.
+status: open
+
+### DW-13: The agent-row identity key has no declared owner of its own.
+origin: story-1.2 implementation
+location: contracts/fleet-contract.yaml (authorities.agent_operational_records.writable_fields) / src/fleet/inventory.ts (buildAuthorityIndex)
+source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts.md`
+severity: low
+reason: The contract declares `agents.{agent_id}.repo`, `.role`, `.role_dir` and so on, but never `agents.{agent_id}` itself - and the row KEY is a value the inventory has to attribute (it is the agent id, and it is one of AC5's conflict dimensions). `buildAuthorityIndex` therefore falls back to the modal owner of everything declared beneath the namespace, which answers `hermes-agent-registry` today because 20 of the 25 declared `agents.*` paths are that authority's. The answer is right, but it is derived rather than declared, and a future contract that moved enough `agents.*` paths to another authority would flip it silently. The same fallback covers `profiles.{profile_name}` (the profile directory, as opposed to the files inside it). Declaring the two namespaces explicitly is Story 1.1's surface; this story's Block If forbids inventing an owner here.
 status: open

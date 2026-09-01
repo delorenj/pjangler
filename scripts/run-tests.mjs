@@ -100,6 +100,7 @@ const SUITES = [
   "tests/pjan-84-orphan-adoption-regressions.mjs",
   "tests/fleet-shared-bloodbank-regressions.mjs",
   "tests/fleet-contract-regressions.mjs",
+  "tests/fleet-inventory-regressions.mjs",
   "tests/mcp-catalog-regressions.mjs",
   "tests/mcp-server-regressions.mjs",
   "tests/project-registry-regressions.mjs",
