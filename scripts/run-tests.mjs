@@ -17,7 +17,8 @@
 //   node scripts/run-tests.mjs                 # everything
 //   node scripts/run-tests.mjs pjan-67 pjan-86 # only suites matching a filter
 //   node scripts/run-tests.mjs --list          # print the suite list and exit
-//   node scripts/run-tests.mjs --no-typecheck  # skip the gate (debugging only)
+//   node scripts/run-tests.mjs --no-typecheck  # skip the typecheck gate (debugging only)
+//   node scripts/run-tests.mjs --no-build      # skip the rebuild (debugging only)
 
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -127,6 +128,7 @@ const args = process.argv.slice(2);
 const filters = args.filter((arg) => !arg.startsWith("-"));
 const listOnly = args.includes("--list");
 const skipTypecheck = args.includes("--no-typecheck");
+const skipBuild = args.includes("--no-build");
 
 /** A step is selected when it has no filters to satisfy or matches one. */
 const selects = (name) => filters.length === 0 || filters.some((f) => name.includes(f));
@@ -164,6 +166,27 @@ if (!skipTypecheck) {
         "every suite below would run against a dist that does not match this source.\n" +
         "No suite was attempted.",
     );
+    process.exit(1);
+  }
+  console.log(`ok (${duration(Date.now() - started)})`);
+}
+
+// Typecheck proves the SOURCE compiles. It does not put that source into dist/,
+// and every suite below runs dist/. Without this, a stale bundle lets all 67
+// suites pass while certifying code that is no longer in the tree -- the run
+// reports fiction just as loudly as an un-typechecked one does, and says so
+// just as confidently. CI already builds before invoking this runner
+// (`npm run build && c8 ... run-tests.mjs`), so only local runs were exposed --
+// which is exactly where a human forms the belief "tests pass" before pushing.
+if (!skipBuild) {
+  process.stdout.write("gate  build ... ");
+  const started = Date.now();
+  const build = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8" });
+  if (build.status !== 0) {
+    console.log(`FAIL (${duration(Date.now() - started)})`);
+    process.stdout.write(build.stdout ?? "");
+    process.stderr.write(build.stderr ?? "");
+    console.error("\nbuild failed. Every suite below runs dist/, so none was attempted.");
     process.exit(1);
   }
   console.log(`ok (${duration(Date.now() - started)})`);
