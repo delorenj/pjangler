@@ -159,6 +159,11 @@ const PINNED_TEMPLATE = (() => {
   return { gitlink, files };
 })();
 
+/** The canonical renderer's bytes at the committed gitlink, read through git objects and never from the worktree. */
+const PINNED_RENDERER = PINNED_TEMPLATE
+  ? spawnSync("git", ["show", `${PINNED_TEMPLATE.gitlink}:scripts/hermes-profile-config.py`], { cwd: join(ROOT, "templates", "hermes-agent"), encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }).stdout
+  : null;
+
 /** Write the pinned template's tree, unrendered, into a fixture submodule. */
 function writePinnedTemplateTree(submodule) {
   assert.ok(PINNED_TEMPLATE, "the tracked template must be readable at its committed gitlink for the fixture to have one");
@@ -236,6 +241,14 @@ function makePackageRoot(name, contractText) {
   mkdirSync(join(submodule, "template"), { recursive: true });
   writeFileSync(join(submodule, "README.md"), "# hermes-agent fixture\n", "utf8");
   writePinnedTemplateTree(submodule);
+  // The REAL renderer at the gitlink (story 1.7): the profile observer proves
+  // its worktree bytes against the pinned tree before it spawns, so the
+  // fixture submodule must carry the canonical script beside the lock helper
+  // the template tree already holds under `.scripts/lib/`.
+  assert.ok(PINNED_RENDERER, "the tracked template must carry scripts/hermes-profile-config.py at its committed gitlink");
+  mkdirSync(join(submodule, "scripts"), { recursive: true });
+  writeFileSync(join(submodule, "scripts", "hermes-profile-config.py"), PINNED_RENDERER);
+  chmodSync(join(submodule, "scripts", "hermes-profile-config.py"), 0o755);
   assert.equal(git(submodule, ["init", "--quiet"]).status, 0);
   assert.equal(git(submodule, ["add", "-A"]).status, 0);
   assert.equal(git(submodule, ["commit", "--quiet", "-m", "template"]).status, 0);
@@ -302,6 +315,46 @@ const ANCIENT_ISO = "2000-01-01T00:00:00.000Z";
 const scratchHome = join(temp, "home");
 const reposRoot = join(temp, "repos");
 const workdir = join(temp, "work");
+
+// ---------------------------------------------------------------------------
+// Renderer-clean profiles (story 1.7 / PJAN-109)
+//
+// The profile observer now gates every registered profile and proves it through
+// the canonical renderer's own check, so a fixture profile that carried only a
+// marker file reads as an identity miss, a delta miss, a pin miss and a missing
+// skill core. The FIXTURE is made clean, never the observer weakened: a fleet
+// base, six canonical skills, and per profile the identity file, an empty
+// delta, a generated config equal to the base, the bank pin, the skill links,
+// and the renderer's zero-byte lock PRE-CREATED so a check writes nothing.
+// ---------------------------------------------------------------------------
+const PROFILE_CORE_SKILLS = ["33god-projects", "delonet-conventions", "delonet-dotenv", "hermes-pm-template-maintenance", "hindsight", "subagent-driven-development"];
+
+function profileBase(home) {
+  return { model: { default: "fleet-model" }, skills: { external_dirs: [join(home, ".agents", "skills")] }, memory: { provider: "hindsight" } };
+}
+
+function seedProfileFixtures(home) {
+  mkdirSync(join(home, ".hermes", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".hermes", "config.yaml"), YAML.stringify(profileBase(home)), "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) {
+    mkdirSync(join(home, ".agents", "skills", skill), { recursive: true });
+    writeFileSync(join(home, ".agents", "skills", skill, "SKILL.md"), `# ${skill}\n`, "utf8");
+  }
+}
+
+function seedRendererCleanProfile(home, name) {
+  const dir = join(home, ".hermes", "profiles", name);
+  mkdirSync(join(dir, "hindsight"), { recursive: true });
+  mkdirSync(join(dir, "skills"), { recursive: true });
+  writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
+  writeFileSync(join(dir, "config.delta.yaml"), "{}\n", "utf8");
+  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify(profileBase(home))}`, "utf8");
+  writeFileSync(join(dir, "hindsight", "config.json"), `{\n  "bank_id": "agent-${name}"\n}\n`, "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) symlinkSync(join(home, ".agents", "skills", skill), join(dir, "skills", skill));
+  writeFileSync(join(home, ".hermes", "profiles", `.${name}.config.lock`), "");
+  return dir;
+}
+
 const SLUGS = ["alpha", "beta"];
 
 let RELEASE = "";
@@ -369,11 +422,10 @@ function seedScratch() {
   RELEASE = made.release;
   RELEASE_SHA = made.sha;
 
+  seedProfileFixtures(scratchHome);
   for (const slug of SLUGS) {
     makeRepo(reposRoot, slug);
-    const dir = join(scratchHome, ".hermes", "profiles", `${slug}-pm`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+    seedRendererCleanProfile(scratchHome, `${slug}-pm`);
   }
 
   writeAgentRegistry(join(scratchHome, ".hermes", "agents-registry.yaml"), SLUGS);
@@ -957,7 +1009,13 @@ try {
       assert.equal(readings.length, 2, `both readings must be kept, got ${readings.length}`);
       assert.deepEqual([...new Set(readings.map((item) => item.state))].sort(), ["fail", "pass"]);
       assert.deepEqual([...new Set(readings.map((item) => item.source))].sort(), ["fleet-inventory", "recipe-audit"]);
-      assert.equal(beta.domains.profile, "fail", "the worse state wins the rollup");
+      // The worse state wins the rollup across the two readings, and since
+      // story 1.7 the profile observer's four dependent fields behind a failed
+      // path gate are `unobserved` -- which outranks `fail` under the declared
+      // precedence, so the domain reads unobserved rather than fail. Both
+      // readings of the shared field are asserted above; the rollup is not
+      // where their contradiction shows.
+      assert.equal(beta.domains.profile, "unobserved", "unobserved outranks fail in the rollup: nothing beneath a symlinked profile was read");
 
       const finding = data.findings.filter((item) => item.code === "status-contradiction");
       assert.equal(finding.length, 1, `exactly one contradiction finding, got ${finding.length}`);
@@ -971,8 +1029,9 @@ try {
       assert.ok(readings.some((item) => item.state === "fail"), "and so does the unfavourable one");
     } finally {
       rmSync(symlinked, { force: true });
-      mkdirSync(symlinked, { recursive: true });
-      writeFileSync(join(symlinked, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+      // Restored renderer-CLEAN (story 1.7), so every later case reads the
+      // fleet this suite seeded rather than a marker-only profile.
+      seedRendererCleanProfile(scratchHome, "beta-pm");
       rmSync(shared, { recursive: true, force: true });
     }
   });
@@ -1108,8 +1167,9 @@ try {
       assert.ok(priority.includes("critical"), "and it must be shown with its severity");
     } finally {
       rmSync(symlinked, { force: true });
-      mkdirSync(symlinked, { recursive: true });
-      writeFileSync(join(symlinked, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+      // Restored renderer-CLEAN (story 1.7), so every later case reads the
+      // fleet this suite seeded rather than a marker-only profile.
+      seedRendererCleanProfile(scratchHome, "beta-pm");
       rmSync(shared, { recursive: true, force: true });
     }
   });
@@ -1453,8 +1513,9 @@ try {
       assert.equal(alpha.member_class, "incomplete", "and an agent with only the unread half is incomplete");
     } finally {
       rmSync(symlinked, { force: true });
-      mkdirSync(symlinked, { recursive: true });
-      writeFileSync(join(symlinked, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+      // Restored renderer-CLEAN (story 1.7), so every later case reads the
+      // fleet this suite seeded rather than a marker-only profile.
+      seedRendererCleanProfile(scratchHome, "beta-pm");
       rmSync(shared, { recursive: true, force: true });
     }
   });
@@ -1809,9 +1870,10 @@ try {
     writeFileSync(join(drifted, "README.md"), "# drifted\n", "utf8");
     assert.equal(git(drifted, ["add", "-A"]).status, 0);
     assert.equal(git(drifted, ["commit", "--quiet", "-m", "seed"]).status, 0);
-    const profile = join(scratchHome, ".hermes", "profiles", "drifted-pm");
-    mkdirSync(profile, { recursive: true });
-    writeFileSync(join(profile, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+    // Renderer-clean (story 1.7): the ruling is on the SCAFFOLD axis, so the
+    // profile must carry no failure of its own or the agent could never be an
+    // exception rather than unhealthy.
+    const profile = seedRendererCleanProfile(scratchHome, "drifted-pm");
     const agents = writeAgentRegistry(join(temp, "exception-agents.yaml"), [...SLUGS, "drifted"]);
     const projects = writeProjectRegistry(join(temp, "exception-projects.yaml"), [...SLUGS, "drifted"]);
     const argv = ["fleet", "status", "--live", "--json", "--agent-registry", agents, "--project-registry", projects];
@@ -1853,6 +1915,10 @@ try {
     assert.equal(after.health.failed, before.health.failed, "the fail is still counted");
     assert.equal(after.health.members.exception, before.health.members.exception + 1);
     assert.equal(after.health.members.unhealthy, before.health.members.unhealthy - 1);
+    // An unregistered profile left in the root would be an extra for every
+    // later fleet-scope sweep, so it goes with its lock.
+    rmSync(profile, { recursive: true, force: true });
+    rmSync(join(scratchHome, ".hermes", "profiles", ".drifted-pm.config.lock"), { force: true });
   });
 
   check("every declared vocabulary is exported and spelled the same in source", () => {

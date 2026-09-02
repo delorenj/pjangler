@@ -238,10 +238,11 @@ try {
     const out = result.stdout;
     assert.match(out, /Fleet contract valid/);
     // Story 1.5 bumped the tracked contract to schema 2 (`health_policy`) and
-    // story 1.6 to schema 3 (`scaffold_manifest`): each is a new ROOT key, and
-    // a new root key is a grammar change. The build still READS schema 1 and 2,
-    // which the supported-range line beside this one states.
-    assert.match(out, /schema 3/, "report must name the effective schema version");
+    // story 1.6 to schema 3 (`scaffold_manifest`) and story 1.7 to schema 4
+    // (`profile_manifest`): each is a new ROOT key, and a new root key is a
+    // grammar change. The build still READS schema 1 through 3, which the
+    // supported-range line beside this one states.
+    assert.match(out, /schema 4/, "report must name the effective schema version");
     assert.match(out, /contract 1\.\d+\.\d+/, "report must name the contract version");
     for (const owner of ["project-registry", "hermes-agent-registry", "hermes-profile-renderer", "hermes-agent-template", "hermes-fleet-provisioner", "fleet-observer"]) {
       assert.ok(out.includes(owner), `report must name authority owner ${owner}`);
@@ -274,7 +275,9 @@ try {
     assert.notEqual(parsed.data, null, "data must be populated on success");
     // Exact, not `>=`. The contract declares a fixed set; a loose bound would
     // stay green if a whole authority block were dropped.
-    assert.equal(parsed.data.authorities.length, 8, "envelope must carry exactly the declared authorities");
+    // Nine since story 1.7: `provisioned_profile_state` owns the three
+    // provisioned profile leaves beside the renderer's four.
+    assert.equal(parsed.data.authorities.length, 9, "envelope must carry exactly the declared authorities");
     assert.equal(parsed.data.projections.length, 6, "envelope must carry exactly the declared projections");
     assert.equal(parsed.data.classifications.length, 5, "envelope must carry five lifecycle classes");
     assert.equal(parsed.data.retired.length, 5, "envelope must carry exactly the declared retired modes");
@@ -666,7 +669,7 @@ try {
     const parsed = envelope(result);
     assert.equal(errorCode(parsed), "UNSUPPORTED_SCHEMA_VERSION");
     assert.equal(result.status, 5, `expected exit 5, got ${result.status}`);
-    assert.match(parsed.error.message, /supported range 1\.\.3/, "diagnostic must state the supported range");
+    assert.match(parsed.error.message, /supported range 1\.\.4/, "diagnostic must state the supported range");
     assert.equal(parsed.error.details.diagnostic_count, 1, "a version this build cannot read must not be partially applied");
   });
 
@@ -1362,7 +1365,7 @@ try {
     const result = cli(["fleet", "contract", "validate", "--json"]);
     const parsed = envelope(result);
     assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
-    assert.equal(parsed.data.schema_version, 3, "story 1.6 bumps the tracked contract to schema 3");
+    assert.equal(parsed.data.schema_version, 4, "story 1.6 bumped the tracked contract to schema 3 and story 1.7 to schema 4");
     const contract = YAML.parse(TRACKED_TEXT);
     const manifest = contract.scaffold_manifest;
     assert.ok(manifest, "the tracked contract must declare a scaffold_manifest or the rejections above prove nothing");
@@ -1373,6 +1376,92 @@ try {
     assert.equal(
       contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "scaffold.template_ref"), false,
       "the scaffold.template_ref deferral is gone: the observer answers it",
+    );
+  });
+
+  // -- profile_manifest: the eighth validation stage (story 1.7 / PJAN-109) --
+  //
+  // A manifest that names nothing real must fail to LOAD: a bank-id template
+  // with no placeholder would tell every profile to pin ONE bank, a `check`
+  // argv that never names the profile would check every profile and follow
+  // every symlink in the root, an absolute canonical directory would put a
+  // host path in a tracked file, and a limit above this build's ceiling would
+  // validate a memory problem.
+  const profileRejects = (name, mutate, path, hint) => {
+    check(`profile_manifest: ${name}`, () => {
+      const file = mutated(`profile-manifest-${name.replace(/[^a-z0-9]+/gu, "-")}`, (document) => {
+        mutate(document.get("profile_manifest"), document);
+      });
+      const result = cli(["fleet", "contract", "validate", "--contract", file, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", `expected INVALID_INPUT for ${name}`);
+      assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+      assert.ok(parsed.error.message.startsWith(`${path}:`), `the diagnostic must be addressed at ${path}, got ${parsed.error.message}`);
+      if (hint) assert.match(parsed.error.message, hint, `the diagnostic must say why: ${parsed.error.message}`);
+    });
+  };
+
+  profileRejects("a manifest that is not a mapping", (manifest, document) => {
+    document.set("profile_manifest", "yes please");
+  }, "profile_manifest", /must be a mapping/u);
+  profileRejects("an unknown key", (manifest) => {
+    manifest.setIn(["renderer", "timeout_seconds"], 5);
+  }, "profile_manifest.renderer.timeout_seconds", /unknown profile_manifest\.renderer key/u);
+  profileRejects("a bank-id template with no placeholder", (manifest) => {
+    manifest.setIn(["memory", "bank_id_template"], "agent-shared");
+  }, "profile_manifest.memory.bank_id_template", /must carry the \{profile_name\} placeholder/u);
+  profileRejects("a check argv that never names the profile", (manifest) => {
+    manifest.setIn(["renderer", "check_argv"], ["check", "--all"]);
+  }, "profile_manifest.renderer.check_argv", /exactly one argument/u);
+  profileRejects("a duplicate core skill", (manifest) => {
+    manifest.addIn(["skill_core", "required"], "hindsight");
+  }, "profile_manifest.skill_core.required[6]", /duplicate entry hindsight/u);
+  profileRejects("an absolute canonical directory", (manifest) => {
+    manifest.setIn(["skill_core", "canonical_dir"], "/srv/skills");
+  }, "profile_manifest.skill_core.canonical_dir", /placeholder, never an absolute host path/u);
+  profileRejects("a renderer in a different submodule from the scaffold's", (manifest) => {
+    manifest.setIn(["renderer", "submodule"], "templates/other");
+  }, "profile_manifest.renderer.submodule", /must equal scaffold_manifest\.template_submodule/u);
+  profileRejects("a limit above this build's ceiling", (manifest) => {
+    manifest.setIn(["limits", "max_root_entries"], 50000);
+  }, "profile_manifest.limits.max_root_entries", /may not exceed this build's ceiling/u);
+  profileRejects("a pin file under a leaf no authority declares", (manifest) => {
+    manifest.setIn(["memory", "pin_file"], "memory/pin.json");
+  }, "profile_manifest.memory.pin_file", /not declared writable by any authority/u);
+
+  check("profile_manifest: a schema-3 contract with no manifest still loads", () => {
+    // OPTIONAL, and that is load-bearing: a contract that predates the block is
+    // simply one that declares no generated-profile policy to prove. The
+    // observer then reports every field `unsupported` under capability
+    // `profile.manifest`; the contract itself must not be refused.
+    const file = mutated("schema-3-no-profile-manifest", (document) => {
+      document.delete("profile_manifest");
+      document.deleteIn(["authorities", "provisioned_profile_state"]);
+      document.set("schema_version", 3);
+      document.setIn(["compatibility", "max_schema_version"], 3);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", file, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `a schema-3 contract must still validate: ${JSON.stringify(parsed.error)}`);
+    assert.equal(parsed.data.schema_version, 3);
+  });
+
+  check("profile_manifest: the tracked manifest validates, owns three declared leaves, and the render_generation deferral is gone", () => {
+    const result = cli(["fleet", "contract", "validate", "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
+    const contract = YAML.parse(TRACKED_TEXT);
+    const manifest = contract.profile_manifest;
+    assert.ok(manifest, "the tracked contract must declare a profile_manifest or the rejections above prove nothing");
+    assert.equal(manifest.renderer.submodule, contract.scaffold_manifest.template_submodule);
+    assert.deepEqual(manifest.renderer.check_argv, ["check", "--profile", "{profile_name}"]);
+    assert.equal(manifest.skill_core.required.length, 6, "six core skills");
+    assert.deepEqual(contract.authorities.provisioned_profile_state.writable_fields, [
+      "profiles.{profile_name}.profile.yaml", "profiles.{profile_name}.hindsight.config.json", "profiles.{profile_name}.skills",
+    ]);
+    assert.equal(
+      contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "profile.render_generation"), false,
+      "the profile.render_generation deferral is gone: the observer answers it",
     );
   });
 
@@ -1433,7 +1522,7 @@ try {
     assert.equal(parsed.ok, true, `packed contract must validate: ${JSON.stringify(parsed.error)}`);
     assert.equal(packedRun.status, 0);
     assert.ok(parsed.data.contract_path.endsWith(join("package", "contracts", "fleet-contract.yaml")), `packed run resolved ${parsed.data.contract_path}, not its own contract`);
-    assert.equal(parsed.data.authorities.length, 8, "the packed contract must be the tracked one");
+    assert.equal(parsed.data.authorities.length, 9, "the packed contract must be the tracked one");
 
     // The canonical branch of the byte-stability rule, exercised where it can
     // be: the extracted package's own contract, resolved with no --contract

@@ -50,14 +50,14 @@ function wrapVisible(text2, width) {
   if (width <= 0) return [text2];
   const lines = [];
   let current = "";
-  for (const word of text2.split(/\s+/).filter(Boolean)) {
+  for (const word2 of text2.split(/\s+/).filter(Boolean)) {
     if (!current) {
-      current = word;
-    } else if (visibleWidth(current) + 1 + visibleWidth(word) <= width) {
-      current = `${current} ${word}`;
+      current = word2;
+    } else if (visibleWidth(current) + 1 + visibleWidth(word2) <= width) {
+      current = `${current} ${word2}`;
     } else {
       lines.push(current);
-      current = word;
+      current = word2;
     }
     while (visibleWidth(current) > width) {
       lines.push(current.slice(0, width));
@@ -2585,8 +2585,8 @@ function validateNoteEnvelope(value) {
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "PJangler note envelope contains an unknown field");
   if (envelope.source_path !== void 0 && (!isBoundedString(envelope.source_path, 1024) || envelope.source_path.startsWith("/") || envelope.source_path.includes("\0") || envelope.source_path.split(/[\\/]/u).includes(".."))) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Invalid PJangler source path");
   if (envelope.source_revision !== void 0 && !isBoundedString(envelope.source_revision, 256)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Invalid PJangler source revision");
-  for (const [name, digest] of [["content_sha256", envelope.content_sha256], ["session_key", envelope.session_key]]) {
-    if (digest !== void 0 && !/^[a-f0-9]{64}$/u.test(digest)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", `Invalid PJangler ${name}`);
+  for (const [name, digest2] of [["content_sha256", envelope.content_sha256], ["session_key", envelope.session_key]]) {
+    if (digest2 !== void 0 && !/^[a-f0-9]{64}$/u.test(digest2)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", `Invalid PJangler ${name}`);
   }
   if (envelope.captured_at !== void 0 && (typeof envelope.captured_at !== "string" || !Number.isFinite(Date.parse(envelope.captured_at)))) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Invalid PJangler capture timestamp");
   if (envelope.policy_version !== void 0 && !isBoundedString(envelope.policy_version, 128)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Invalid PJangler policy version");
@@ -3113,7 +3113,7 @@ function parseBaseline(value) {
   if (value.git_head !== null && (typeof value.git_head !== "string" || !GIT_OBJECT_RE.test(value.git_head))) return null;
   if (value.git_status_digest !== null && (typeof value.git_status_digest !== "string" || !RECEIPT_ID_RE.test(value.git_status_digest))) return null;
   if (!boundedString(value.policy_version, 128) || typeof value.complete !== "boolean") return null;
-  if (!isObject(value.tracked_path_digests) || Object.keys(value.tracked_path_digests).length > 1e3 || !Object.entries(value.tracked_path_digests).every(([path, digest]) => path.length > 0 && path.length <= 4096 && !path.includes("\0") && typeof digest === "string" && RECEIPT_ID_RE.test(digest))) return null;
+  if (!isObject(value.tracked_path_digests) || Object.keys(value.tracked_path_digests).length > 1e3 || !Object.entries(value.tracked_path_digests).every(([path, digest2]) => path.length > 0 && path.length <= 4096 && !path.includes("\0") && typeof digest2 === "string" && RECEIPT_ID_RE.test(digest2))) return null;
   if (!boundedStringArray(value.pre_dirty_paths, 2e3, 4096, true) || value.pre_dirty_paths.some((path) => path.includes("\0"))) return null;
   if (!Array.isArray(value.incomplete_reasons) || value.incomplete_reasons.length > 20 || !value.incomplete_reasons.every((reason) => boundedString(reason, 128))) return null;
   return value;
@@ -4551,13 +4551,13 @@ async function reconcileProjectNotebook(input) {
   const marker = projectNotebookMarker(input.projectSlug);
   const description = input.description?.trim() ? `${marker}
 ${input.description.trim()}` : marker;
-  const digest = mutationInputDigest({ kind: "notebook.create", marker, name: input.name, description });
+  const digest2 = mutationInputDigest({ kind: "notebook.create", marker, name: input.name, description });
   let journal = prepareRemoteMutation({
     root: input.stateRoot,
     projectSlug: input.projectSlug,
     kind: "notebook.create",
     logicalMarker: marker,
-    inputDigest: digest
+    inputDigest: digest2
   });
   const reconcile = async () => {
     input.beforeRemote?.();
@@ -4605,14 +4605,14 @@ async function reconcileManagedNote(input) {
     throw new NotebookError("INVALID_INPUT", "Managed note create requires an exact owned PJangler envelope");
   }
   const noteType = normalizeOpenNotebookNoteType(input.noteType);
-  const digest = input.inputDigest ?? mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content });
+  const digest2 = input.inputDigest ?? mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content });
   const dispatchDigest = mutationInputDigest({ kind: "note.create", notebook_id: input.notebookId, logical_id: input.logicalId, title: input.title, content: input.content, note_type: noteType });
   let journal = prepareRemoteMutation({
     root: input.stateRoot,
     projectSlug: input.projectSlug,
     kind: "note.create",
     logicalMarker: input.logicalId,
-    inputDigest: digest,
+    inputDigest: digest2,
     dispatchDigest,
     sessionKey: input.sessionKey,
     bindingId: input.notebookId,
@@ -4651,10 +4651,10 @@ async function reconcileManagedNote(input) {
     journal = rearmRemoteMutationAfterDefinitiveRejection({
       root: input.stateRoot,
       journal,
-      inputDigest: digest,
+      inputDigest: digest2,
       dispatchDigest,
       observedCandidateIds: candidates.map((item) => item.id),
-      ...input.noteType === void 0 && input.inputDigest === void 0 ? { legacyV114InputDigest: digest } : {}
+      ...input.noteType === void 0 && input.inputDigest === void 0 ? { legacyV114InputDigest: digest2 } : {}
     });
   }
   input.beforeRemote?.();
@@ -4770,7 +4770,7 @@ function validateClaims(value, items, noteMaxBytes) {
     const claimWords = words(claim.text);
     const cited = claim.evidence_ids.map((id) => byId.get(String(id)));
     const citedWords = words(cited.map((item) => `${item.path ?? ""} ${item.value ?? ""} ${item.content ?? ""}`).join(" "));
-    if (![...claimWords].some((word) => citedWords.has(word))) return null;
+    if (![...claimWords].some((word2) => citedWords.has(word2))) return null;
     rendered.push(`- ${claim.text.trim()} [${claim.evidence_ids.join(", ")}]`);
   }
   const result2 = rendered.join("\n");
@@ -5098,7 +5098,7 @@ var init_capture = __esm({
 
 // src/mcp-server.ts
 import { existsSync as existsSync27, statSync as statSync8 } from "node:fs";
-import { basename as basename9, dirname as dirname18, join as join36, resolve as resolve22 } from "node:path";
+import { basename as basename9, dirname as dirname19, join as join37, resolve as resolve23 } from "node:path";
 import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -5993,12 +5993,12 @@ function verifySealedPack(root, files, directories) {
   if (missing.length) {
     throw new Error(`Pack payload at ${root} is not covered by SHA256SUMS: ${JSON.stringify(missing.slice(0, 5))}`);
   }
-  for (const [path, digest] of files) {
-    if (expected.get(path) !== digest) throw new Error(`Pack digest mismatch at ${root}: ${path}`);
+  for (const [path, digest2] of files) {
+    if (expected.get(path) !== digest2) throw new Error(`Pack digest mismatch at ${root}: ${path}`);
   }
   for (const path of [...expected.keys()].sort()) {
     if (files.has(path)) continue;
-    const digest = expected.get(path);
+    const digest2 = expected.get(path);
     let actual;
     try {
       assertNoSymlinkComponents(root, path);
@@ -6009,7 +6009,7 @@ function verifySealedPack(root, files, directories) {
       }
       throw error;
     }
-    if (actual !== digest) throw new Error(`Pack digest mismatch at ${root}: ${path}`);
+    if (actual !== digest2) throw new Error(`Pack digest mismatch at ${root}: ${path}`);
   }
   const covered = /* @__PURE__ */ new Set();
   for (const path of files.keys()) {
@@ -6802,12 +6802,12 @@ function digestSkillEntry(root) {
       for (const name of readdirSync2(dir).sort()) {
         const full = join3(dir, name);
         const entryRel = rel ? `${rel}/${name}` : name;
-        const entryStat = lstatSync2(full);
-        if (entryStat.isSymbolicLink()) return false;
-        if (entryStat.isDirectory()) {
+        const entryStat2 = lstatSync2(full);
+        if (entryStat2.isSymbolicLink()) return false;
+        if (entryStat2.isDirectory()) {
           hash.update(`dir\0${entryRel}\0`);
           if (!walk(full, entryRel)) return false;
-        } else if (entryStat.isFile()) {
+        } else if (entryStat2.isFile()) {
           const content = readFileSync2(full);
           hash.update(`file\0${entryRel}\0${content.length}\0`);
           hash.update(content);
@@ -6857,8 +6857,8 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
 function planLegacyCommittedSkill(skillsDir, backupDir, registryRoots, name) {
   const backupTarget = join3(backupDir, name);
   const localDescription = (reason) => `${name} -> file://${backupTarget} (${reason}; kept local)`;
-  const digest = digestSkillEntry(join3(skillsDir, name));
-  if (!digest) {
+  const digest2 = digestSkillEntry(join3(skillsDir, name));
+  if (!digest2) {
     return { name, description: localDescription("entry is a symlink or is not byte-comparable") };
   }
   if (!registryRoots.length) {
@@ -6868,7 +6868,7 @@ function planLegacyCommittedSkill(skillsDir, backupDir, registryRoots, name) {
     for (const dir of SKILLS_REGISTRY_SKILL_DIRS) {
       const candidate = join3(root, dir, name);
       if (!existsSync2(candidate)) continue;
-      if (digestSkillEntry(candidate) !== digest) continue;
+      if (digestSkillEntry(candidate) !== digest2) continue;
       return {
         name,
         registryPath: `${dir}/${name}`,
@@ -8699,7 +8699,7 @@ function ownedRegistryEntries(registry, repoRoot) {
   }
   return owned;
 }
-function unprovisionedRoleAgents(registry, repoRoot, canonical2) {
+function unprovisionedRoleAgents(registry, repoRoot, canonical3) {
   const blockers = /* @__PURE__ */ new Map();
   const record = (agentId, roleDir, source) => {
     const current = blockers.get(agentId) ?? { roleDir, sources: /* @__PURE__ */ new Set() };
@@ -8708,12 +8708,12 @@ function unprovisionedRoleAgents(registry, repoRoot, canonical2) {
     blockers.set(agentId, current);
   };
   for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
-    if (canonical2.has(agentId)) continue;
+    if (canonical3.has(agentId)) continue;
     const roleDir = String(entry.role_dir ?? "");
     if (declaredRoleIsUnprovisioned(repoRoot, roleDir)) record(agentId, roleDir, "registry");
   }
   for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
-    if (canonical2.has(agentId)) continue;
+    if (canonical3.has(agentId)) continue;
     const configured = String(entry.role_dir ?? "");
     const roleDir = configured ? resolve3(repoRoot, configured) : "";
     if (declaredRoleIsUnprovisioned(repoRoot, configured)) record(agentId, roleDir, ".project.json");
@@ -9511,15 +9511,15 @@ function createProjectJsonChecks() {
         const droppedDetails = [];
         const path = join3(ctx.repoRoot, ".project.json");
         const existing = readProjectJson(ctx) ?? {};
-        const canonical2 = canonicalProjectJson(ctx);
+        const canonical3 = canonicalProjectJson(ctx);
         const preservedDetails = [];
-        for (const agentId of canonical2.unprovisioned) {
+        for (const agentId of canonical3.unprovisioned) {
           const roleDir = existing.agents?.[agentId]?.role_dir;
           preservedDetails.push(
             `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no role.yaml)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
           );
         }
-        for (const agentId of canonical2.dropped) {
+        for (const agentId of canonical3.dropped) {
           const entry = existing.agents?.[agentId];
           const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
           const declared = {
@@ -9532,7 +9532,7 @@ function createProjectJsonChecks() {
           const reason = validation.details.join("; ") || "invalid";
           droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
         }
-        const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson2 } = canonical2;
+        const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson2 } = canonical3;
         const merged = { ...existing, ...canonicalJson2 };
         const expected = `${JSON.stringify(merged, null, 2)}
 `;
@@ -10239,9 +10239,9 @@ function createHermesChecks() {
             { inLineage: () => true, modes: false }
           );
           for (const finding2 of findings) {
-            const word = finding2.kind === "stale-content" ? "stale" : finding2.kind;
+            const word2 = finding2.kind === "stale-content" ? "stale" : finding2.kind;
             const shown = relative2(ctx.repoRoot, join3(role.roleDir, ...finding2.path.split("/")));
-            details.push(`${prefix}: ${word} ${shown}${finding2.detail ? ` (${finding2.detail})` : ""}`);
+            details.push(`${prefix}: ${word2} ${shown}${finding2.detail ? ` (${finding2.detail})` : ""}`);
           }
           if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) details.push(`${prefix}: .gitmodules contains retired ${role.role} runtime submodule mapping`);
           if (!profileMetaInheritsDefault(join3(role.roleDir, "runtime", "profile.yaml"))) details.push(`${prefix}: runtime/profile.yaml missing inherited default config metadata`);
@@ -10845,9 +10845,9 @@ function createHermesChecks() {
           }
           return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath2}`, details: [], fixable: false };
         }
-        const canonical2 = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const canonical3 = new Set(roles.map((role) => role.agentId).filter(Boolean));
         const owned = ownedRegistryEntries(registry, ctx.repoRoot);
-        const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical2);
+        const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical3);
         if (unprovisioned.length) {
           return {
             id: "hermes.registry-parity",
@@ -10860,16 +10860,16 @@ function createHermesChecks() {
             fixable: false
           };
         }
-        if (canonical2.size === 0) {
+        if (canonical3.size === 0) {
           return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
         }
         for (const [agentId, entry] of owned) {
           const roleDir = String(entry?.role_dir ?? "");
-          if (!canonical2.has(agentId)) {
-            details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical2].join(", ")})`);
+          if (!canonical3.has(agentId)) {
+            details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical3].join(", ")})`);
           }
         }
-        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical2.has(id))) {
+        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical3.has(id))) {
           details.push(`.project.json declares agent "${extra}" that no role.yaml claims`);
         }
         for (const role of roles) {
@@ -10958,8 +10958,8 @@ function createHermesChecks() {
           return { id: finding2.id, title: finding2.title, status: "blocked", summary: "registry is not valid YAML", changedFiles, details };
         }
         const agents = doc?.agents ?? {};
-        const canonical2 = new Set(roles.map((role) => role.agentId).filter(Boolean));
-        const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical2);
+        const canonical3 = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical3);
         if (unprovisioned.length) {
           return {
             id: finding2.id,
@@ -10974,7 +10974,7 @@ function createHermesChecks() {
         }
         const fleetBin = fleetBinPath(ctx);
         let dirty = false;
-        if (canonical2.size === 0) {
+        if (canonical3.size === 0) {
           for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
             details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
           }
@@ -11036,7 +11036,7 @@ function createHermesChecks() {
           }
         }
         for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
-          if (canonical2.size > 0 && !canonical2.has(agentId)) {
+          if (canonical3.size > 0 && !canonical3.has(agentId)) {
             details.push(`drop stale/duplicate registry agent "${agentId}"`);
             delete agents[agentId];
             dropDeclaredAgent(ctx, agentId, changedFiles, details);
@@ -11056,8 +11056,8 @@ function createHermesChecks() {
             dirty = true;
           }
         }
-        if (canonical2.size > 0) {
-          for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical2.has(id))) {
+        if (canonical3.size > 0) {
+          for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical3.has(id))) {
             dropDeclaredAgent(ctx, extra, changedFiles, details);
           }
         }
@@ -13648,8 +13648,8 @@ function expectedPackedSkill() {
     assertOwnedSkillTree(candidate);
     const manifest = parsePackedManifest(candidate);
     if (!manifest) continue;
-    const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
-    return { source: candidate, manifest, digest };
+    const digest2 = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
+    return { source: candidate, manifest, digest: digest2 };
   }
   throw new NotebookError("NOT_CONFIGURED", "PJ\xE1ngler package has no verified Project Notebook skill export");
 }
@@ -13716,10 +13716,10 @@ function resolveProjectNotebookSkillSource(env2 = process.env) {
     return explicit;
   }
   if (env2.PJ_SKILLS_REGISTRY_ROOT) {
-    const canonical2 = resolve12(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
-    if (existsSync17(join23(canonical2, "SKILL.md"))) {
-      verifyProjectNotebookSkillExport(canonical2);
-      return canonical2;
+    const canonical3 = resolve12(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
+    if (existsSync17(join23(canonical3, "SKILL.md"))) {
+      verifyProjectNotebookSkillExport(canonical3);
+      return canonical3;
     }
   }
   try {
@@ -13787,16 +13787,16 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const source = input.source ?? resolveProjectNotebookSkillSource(env2);
   if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable");
   const manifest = verifyProjectNotebookSkillExport(source);
-  const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const digest2 = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
   if (!home || !resolve12(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
   const skillsRoot = join23(home, ".agents", "skills");
   const link = join23(skillsRoot, "project-notebook");
   const probe2 = probeCanonicalSkillexRootProjection(skillsRoot, link);
-  if (probe2.state === "adopted") return { installed: false, path: link, digest };
-  if (probe2.state === "declined") return { installed: false, path: link, digest, blocked: probe2.block };
+  if (probe2.state === "adopted") return { installed: false, path: link, digest: digest2 };
+  if (probe2.state === "declined") return { installed: false, path: link, digest: digest2, blocked: probe2.block };
   const dataRoot = resolve12(env2.XDG_DATA_HOME || join23(home, ".local", "share"), "pjangler", "skills", "project-notebook");
-  const payload = join23(dataRoot, `${PJANGLER_VERSION}-${digest}`);
+  const payload = join23(dataRoot, `${PJANGLER_VERSION}-${digest2}`);
   assertNoSymlinkComponents2(dirname11(dataRoot), true);
   mkdirSync7(dataRoot, { recursive: true, mode: 448 });
   assertNoSymlinkComponents2(dataRoot);
@@ -13851,7 +13851,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
     const foreign = (details) => ({
       installed: false,
       path: link,
-      digest,
+      digest: digest2,
       blocked: {
         code: "projection-foreign",
         summary: `${link} is customized or foreign; PJ\xE1ngler will not replace it`,
@@ -13870,11 +13870,11 @@ function installPackagedProjectNotebookSkill(input = {}) {
     } catch {
       return foreign(describeProjectNotebookSkillDrift(target));
     }
-    return { installed: false, path: link, digest };
+    return { installed: false, path: link, digest: digest2 };
   }
   symlinkSync2(payload, link, "dir");
   collectSupersededPayloads(dataRoot, [payload, link]);
-  return { installed: true, path: link, digest };
+  return { installed: true, path: link, digest: digest2 };
 }
 function collectSupersededPayloads(dataRoot, keep) {
   const kept = /* @__PURE__ */ new Set();
@@ -15193,8 +15193,8 @@ var ProjectRecipe = class extends Recipe {
       } else try {
         rmSync5(targetDir, { recursive: true, force: true });
         const insideTarget = (path) => {
-          const relative14 = relativePath(resolve14(targetDir), resolve14(path));
-          return relative14 === "" || !relative14.startsWith("..") && !isAbsolute6(relative14);
+          const relative15 = relativePath(resolve14(targetDir), resolve14(path));
+          return relative15 === "" || !relative15.startsWith("..") && !isAbsolute6(relative15);
         };
         const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
@@ -15635,15 +15635,15 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
     if (enterRe.test(content)) {
       content = content.replace(enterRe, (_m, head, close) => {
-        const sep8 = /[,[]\s*$/.test(head) ? "" : ",";
-        return `${head}${sep8}
+        const sep9 = /[,[]\s*$/.test(head) ? "" : ",";
+        return `${head}${sep9}
 ${enterAdds}${close}`;
       });
       const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
-          const sep8 = /[,[]\s*$/.test(head) ? "" : ",";
-          return `${head}${sep8}
+          const sep9 = /[,[]\s*$/.test(head) ? "" : ",";
+          return `${head}${sep9}
   "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
@@ -16780,7 +16780,7 @@ import { fileURLToPath as fileURLToPath8 } from "node:url";
 import YAML8 from "yaml";
 
 // src/fleet/types.ts
-var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 3 };
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 4 };
 var FLEET_SCHEMA_VERSION = 1;
 var FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version",
@@ -16793,9 +16793,10 @@ var FLEET_CONTRACT_ROOT_KEYS = [
   "activation",
   "retired",
   "health_policy",
-  "scaffold_manifest"
+  "scaffold_manifest",
+  "profile_manifest"
 ];
-var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest"];
+var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest"];
 var FLEET_HEALTH_POLICY_KEYS = [
   "required_domains",
   "deferred_capabilities",
@@ -16820,6 +16821,13 @@ var FLEET_SCAFFOLD_MANIFEST_KEYS = [
   "runtime_dir"
 ];
 var FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS = ["path", "reason"];
+var FLEET_PROFILE_MANIFEST_KEYS = ["renderer", "identity", "memory", "skill_core", "extras", "limits"];
+var FLEET_PROFILE_MANIFEST_RENDERER_KEYS = ["submodule", "script", "lock_helper", "check_argv", "lock_timeout_seconds", "lock_pattern"];
+var FLEET_PROFILE_MANIFEST_IDENTITY_KEYS = ["file", "allowed_keys", "inert_keys"];
+var FLEET_PROFILE_MANIFEST_MEMORY_KEYS = ["pin_file", "bank_id_template", "reserved_bank_ids"];
+var FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS = ["canonical_dir", "canonical_dir_env", "required", "source"];
+var FLEET_PROFILE_MANIFEST_EXTRAS_KEYS = ["ignored_patterns", "backup_patterns"];
+var FLEET_PROFILE_MANIFEST_LIMITS_KEYS = ["max_file_bytes", "max_root_entries", "max_unit_files", "max_extra_skills"];
 var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
 var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
 var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
@@ -16917,6 +16925,11 @@ var FLEET_STATUS_AUDIT_CONCURRENCY = 4;
 var FLEET_STATUS_SCAFFOLD_CONCURRENCY = 4;
 var FLEET_STATUS_MAX_ITEMS = 100;
 var FLEET_STATUS_MAX_WIP_OVERLAP = 20;
+var FLEET_STATUS_PROFILE_CONCURRENCY = 4;
+var PROFILE_MAX_FILE_BYTES = 1024 * 1024;
+var PROFILE_MAX_ROOT_ENTRIES = 5e3;
+var PROFILE_MAX_UNIT_FILES = 500;
+var PROFILE_MAX_EXTRA_SKILLS = 20;
 var FLEET_STATUS_EVIDENCE = ["direct", "declared", "derived", "absent"];
 var FLEET_STATUS_FRESHNESS_PRECEDENCE = [
   "stale",
@@ -16945,6 +16958,13 @@ var FLEET_STATUS_MEMBER_PRECEDENCE = [
   "healthy"
 ];
 var FLEET_STATUS_MAX_TRANSITIONS = 2e3;
+var FLEET_PROFILE_EXTRA_CLASSES = [
+  "approved-managed-exception",
+  "intentionally-unmanaged",
+  "retired-candidate",
+  "unclassified",
+  "debris-candidate"
+];
 
 // src/fleet/contract.ts
 var FLEET_CONTRACT_RELATIVE_PATH = join31("contracts", "fleet-contract.yaml");
@@ -17066,7 +17086,8 @@ function validateFleetContract(document) {
     () => sortDiagnostics(validateClassifications(policy)),
     () => sortDiagnostics(validateRetiredModes(policy)),
     () => sortDiagnostics(validateHealthPolicy(policy)),
-    () => sortDiagnostics(validateScaffoldManifest(policy))
+    () => sortDiagnostics(validateScaffoldManifest(policy)),
+    () => sortDiagnostics(validateProfileManifest(policy))
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -17797,6 +17818,171 @@ function validateScaffoldManifest(policy) {
   }
   return findings;
 }
+function declaredWritableFields(policy) {
+  const declared = /* @__PURE__ */ new Set();
+  const authorities = policy.authorities;
+  if (isRecord4(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord4(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field3 of entry.writable_fields) if (typeof field3 === "string") declared.add(field3);
+    }
+  }
+  return declared;
+}
+function profileLeafFor(relativePath2) {
+  return `profiles.{profile_name}.${relativePath2.replace(/\/+$/u, "").split("/").join(".")}`;
+}
+function validateProfileManifest(policy) {
+  const block = policy.profile_manifest;
+  if (block === void 0) return [];
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  if (!isRecord4(block)) {
+    fail("profile_manifest", "profile_manifest must be a mapping");
+    return findings;
+  }
+  const closed = (node, at, keys) => {
+    if (!isRecord4(node)) {
+      fail(at, `${at.split(".").pop()} must be a mapping`);
+      return false;
+    }
+    for (const key of Object.keys(node)) {
+      if (!keys.includes(key)) fail(`${at}.${key}`, `unknown ${at} key`);
+    }
+    for (const key of keys) {
+      if (node[key] === void 0) fail(`${at}.${key}`, `${key} is required`);
+    }
+    return true;
+  };
+  const nonEmpty = (value, at) => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      fail(at, "must be a non-empty string");
+      return false;
+    }
+    return true;
+  };
+  const uniqueList = (value, at, each) => {
+    if (!Array.isArray(value)) {
+      fail(at, "must be a list");
+      return [];
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    value.forEach((item, index) => {
+      const where = `${at}[${index}]`;
+      if (typeof item !== "string" || item.length === 0) {
+        fail(where, "must be a non-empty string");
+        return;
+      }
+      if (seen.has(item)) fail(where, `duplicate entry ${item}`);
+      seen.add(item);
+      each(item, where);
+      out.push(item);
+    });
+    return out;
+  };
+  closed(block, "profile_manifest", FLEET_PROFILE_MANIFEST_KEYS);
+  const declared = declaredWritableFields(policy);
+  const requireDeclared = (leaf, at) => {
+    if (!declared.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+  };
+  const renderer = block.renderer;
+  if (closed(renderer, "profile_manifest.renderer", FLEET_PROFILE_MANIFEST_RENDERER_KEYS)) {
+    for (const key of ["submodule", "script", "lock_helper"]) {
+      const value = renderer[key];
+      if (!relativeInside(value) || value.endsWith("/")) fail(`profile_manifest.renderer.${key}`, `${key} must be a relative path inside the repository`);
+    }
+    const scaffold = policy.scaffold_manifest;
+    if (isRecord4(scaffold) && typeof scaffold.template_submodule === "string" && typeof renderer.submodule === "string" && scaffold.template_submodule !== renderer.submodule) {
+      fail("profile_manifest.renderer.submodule", `must equal scaffold_manifest.template_submodule (${scaffold.template_submodule})`);
+    }
+    const argv = renderer.check_argv;
+    if (!Array.isArray(argv) || argv.length === 0 || !argv.every((item) => typeof item === "string" && item.length > 0)) {
+      fail("profile_manifest.renderer.check_argv", "check_argv must be a non-empty list of argument strings");
+    } else {
+      const named = argv.filter((item) => item.includes("{profile_name}")).length;
+      if (named !== 1) fail("profile_manifest.renderer.check_argv", "exactly one argument must carry the {profile_name} placeholder");
+      if (argv[0] !== "check") fail("profile_manifest.renderer.check_argv", "the first argument must be the read-only `check` subcommand");
+    }
+    const timeout = renderer.lock_timeout_seconds;
+    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout > 60) {
+      fail("profile_manifest.renderer.lock_timeout_seconds", "lock_timeout_seconds must be a positive number of seconds, at most 60");
+    }
+    if (nonEmpty(renderer.lock_pattern, "profile_manifest.renderer.lock_pattern")) {
+      if (!renderer.lock_pattern.includes("{profile_name}")) fail("profile_manifest.renderer.lock_pattern", "lock_pattern must carry the {profile_name} placeholder");
+      if (renderer.lock_pattern.includes("/")) fail("profile_manifest.renderer.lock_pattern", "lock_pattern must be one root entry name, never a path");
+    }
+  }
+  const identity = block.identity;
+  if (closed(identity, "profile_manifest.identity", FLEET_PROFILE_MANIFEST_IDENTITY_KEYS)) {
+    const file = identity.file;
+    if (!relativeInside(file) || file.endsWith("/") || file.includes("/")) fail("profile_manifest.identity.file", "file must be one file name inside the profile directory");
+    else requireDeclared(profileLeafFor(file), "profile_manifest.identity.file");
+    const allowed = uniqueList(identity.allowed_keys, "profile_manifest.identity.allowed_keys", (item, where) => {
+      if (!RENDER_INPUT_NAME.test(item)) fail(where, "a key name must be a lower-case identifier");
+    });
+    uniqueList(identity.inert_keys, "profile_manifest.identity.inert_keys", (item, where) => {
+      if (!RENDER_INPUT_NAME.test(item)) fail(where, "a key name must be a lower-case identifier");
+      if (allowed.includes(item)) fail(where, `${item} is already an allowed identity key`);
+    });
+  }
+  const memory = block.memory;
+  if (closed(memory, "profile_manifest.memory", FLEET_PROFILE_MANIFEST_MEMORY_KEYS)) {
+    const pin = memory.pin_file;
+    if (!relativeInside(pin) || pin.endsWith("/")) fail("profile_manifest.memory.pin_file", "pin_file must be a profile-relative file path");
+    else requireDeclared(profileLeafFor(pin), "profile_manifest.memory.pin_file");
+    if (nonEmpty(memory.bank_id_template, "profile_manifest.memory.bank_id_template")) {
+      if (!memory.bank_id_template.includes("{profile_name}")) fail("profile_manifest.memory.bank_id_template", "bank_id_template must carry the {profile_name} placeholder");
+    }
+    uniqueList(memory.reserved_bank_ids, "profile_manifest.memory.reserved_bank_ids", (item, where) => {
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(item)) fail(where, "a reserved bank id must be a lower-case identifier");
+    });
+  }
+  const core = block.skill_core;
+  if (closed(core, "profile_manifest.skill_core", FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS)) {
+    const dir = core.canonical_dir;
+    if (nonEmpty(dir, "profile_manifest.skill_core.canonical_dir")) {
+      if (!/^\{(?:HOME|HERMES_FLEET_HOME)\}\//u.test(dir)) fail("profile_manifest.skill_core.canonical_dir", "canonical_dir must start with the {HOME}/ or {HERMES_FLEET_HOME}/ placeholder, never an absolute host path");
+      else if (!relativeInside(dir.replace(/^\{[A-Z_]+\}\//u, ""))) fail("profile_manifest.skill_core.canonical_dir", "canonical_dir must not leave its placeholder root");
+    }
+    if (typeof core.canonical_dir_env !== "string" || !ENV_KEY.test(core.canonical_dir_env)) fail("profile_manifest.skill_core.canonical_dir_env", "canonical_dir_env must be an environment key");
+    const required = uniqueList(core.required, "profile_manifest.skill_core.required", (item, where) => {
+      if (!SAFE_SEGMENT.test(item) || item.includes("/")) fail(where, "a skill name must be one safe path segment");
+    });
+    if (required.length === 0) fail("profile_manifest.skill_core.required", "required must name at least one core skill");
+    nonEmpty(core.source, "profile_manifest.skill_core.source");
+    requireDeclared("profiles.{profile_name}.skills", "profile_manifest.skill_core");
+  }
+  const extras = block.extras;
+  if (closed(extras, "profile_manifest.extras", FLEET_PROFILE_MANIFEST_EXTRAS_KEYS)) {
+    const pattern = (item, where) => {
+      if (item.includes("/") || /^\*+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
+    };
+    const ignored = uniqueList(extras.ignored_patterns, "profile_manifest.extras.ignored_patterns", pattern);
+    if (ignored.length === 0) fail("profile_manifest.extras.ignored_patterns", "ignored_patterns must name the renderer's lock entries, or the observer's own footprint would be classified");
+    uniqueList(extras.backup_patterns, "profile_manifest.extras.backup_patterns", pattern);
+  }
+  const limits = block.limits;
+  if (closed(limits, "profile_manifest.limits", FLEET_PROFILE_MANIFEST_LIMITS_KEYS)) {
+    const ceilings = {
+      max_file_bytes: PROFILE_MAX_FILE_BYTES,
+      max_root_entries: PROFILE_MAX_ROOT_ENTRIES,
+      max_unit_files: PROFILE_MAX_UNIT_FILES,
+      max_extra_skills: PROFILE_MAX_EXTRA_SKILLS
+    };
+    for (const key of FLEET_PROFILE_MANIFEST_LIMITS_KEYS) {
+      const value = limits[key];
+      if (!Number.isSafeInteger(value) || Number(value) <= 0) fail(`profile_manifest.limits.${key}`, `${key} must be a positive whole number`);
+      else if (Number(value) > ceilings[key]) fail(`profile_manifest.limits.${key}`, `${key} may not exceed this build's ceiling of ${ceilings[key]}`);
+    }
+  }
+  const layout = isRecord4(policy.service_model) && isRecord4(policy.service_model.profile_layout) ? policy.service_model.profile_layout : null;
+  const generated = layout && typeof layout.generated_file === "string" ? layout.generated_file : null;
+  if (generated !== null) requireDeclared(profileLeafFor(generated), "profile_manifest.renderer");
+  return findings;
+}
 
 // src/fleet/output.ts
 import { homedir as homedir11, userInfo as userInfo2 } from "node:os";
@@ -17842,6 +18028,9 @@ var SOURCE_EVIDENCE = Object.freeze({
   "recipe-audit": "direct",
   // The scaffold observer reads git objects and role directories itself.
   "fleet-scaffold": "direct",
+  // The profile observer (story 1.7) lstats and reads the profile tree itself
+  // and runs the canonical renderer's own check against it.
+  "fleet-profile": "direct",
   "declared-gap": "absent"
 });
 var UNREAD_STATES = /* @__PURE__ */ new Set(["unobserved", "unsupported", "error"]);
@@ -18179,6 +18368,9 @@ function evaluateFleetHealth(input) {
     if (observation3.freshness === "unknown") freshnessUnknown += 1;
     if (needsJustification(observation3.state) && observation3.justification === null) unjustified += 1;
   }
+  for (const finding2 of input.hostFindings ?? []) {
+    if (needsJustification(finding2.state) && finding2.justification === null) unjustified += 1;
+  }
   const healthy = byState.fail === 0 && byState.error === 0;
   const complete = byState.unobserved === 0 && byState.error === 0 && input.collectionErrors === 0 && !input.truncated && input.contradictions === 0;
   const requiredObserved = [...input.policy.requiredDomains].every((domain) => {
@@ -18355,6 +18547,16 @@ async function probeRaw(ctx, argv, cwd, input) {
   if (!command) return { outcome: "failed", value: null };
   const { outcome, bytes } = await runBoundedChild(ctx, command, args, { cwd, input, raw: true });
   return { outcome, value: outcome === "ok" ? bytes : null };
+}
+async function probeText(ctx, command, argv, options = {}) {
+  if (!command) return { outcome: "failed", value: null, status: null };
+  const { outcome, value, code } = await runBoundedChild(ctx, command, argv, {
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    keepStdoutOnFailure: options.keepStdoutOnFailure ?? false
+  });
+  return { outcome, value, status: code };
 }
 function captureSelf(ctx, entry, args, cwd, env2, timeoutMs) {
   return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, timeoutMs, keepStdoutOnFailure: true });
@@ -18677,6 +18879,9 @@ function readAgentRegistryRaw(path) {
 }
 function readProjectRegistryRaw(path) {
   return readKeyedStore(path, "PJangler project registry", "projects");
+}
+function readAgentRegistryGatewaysRaw(path) {
+  return readKeyedStore(path, "Hermes agent registry", "gateways");
 }
 function resolveInventoryStores(options = {}) {
   const env2 = options.env ?? process.env;
@@ -19555,7 +19760,6 @@ function collectFleetInventory(options = {}) {
 }
 
 // src/fleet/provenance.ts
-import { createHash as createHash10 } from "node:crypto";
 import { existsSync as existsSync25, lstatSync as lstatSync14, readFileSync as readFileSync24, realpathSync as realpathSync9, statSync as statSync7 } from "node:fs";
 import { homedir as homedir13 } from "node:os";
 import { dirname as dirname16, isAbsolute as isAbsolute8, join as join33, resolve as resolve19 } from "node:path";
@@ -19566,7 +19770,6 @@ init_project();
 var MAX_FINDINGS2 = 2e3;
 var PROBE_CONCURRENCY = 4;
 var CONFIG_MAX_BYTES = 1024 * 1024;
-var PROFILE_CONFIG_MAX_BYTES = 4 * 1024 * 1024;
 var TEMPLATE_SUBMODULE_PATH = "templates/hermes-agent";
 var PIN_KEYS = ["hermes_bin", "hermes_repo", "hermes_git_url", "hermes_git_ref", "hermes_git_sha", "fleet_env", "registry_file"];
 var FLEET_ENV_KEYS = ["HERMES_FLEET_HOME", "HERMES_FLEET_REPO", "HERMES_FLEET_BIN", "HERMES_FLEET_REGISTRY_FILE"];
@@ -19577,7 +19780,6 @@ var SOURCE_TEMPLATE_SUBMODULE = "hermes-agent-template-submodule";
 var SOURCE_AGENT_REGISTRY = "hermes-agent-registry";
 var SOURCE_AGENT_CHECKOUT = "hermes-agent-checkout";
 var SOURCE_PROVENANCE_POLICY = "pjangler-fleet-provenance";
-var SOURCE_PROFILE_TREE = "hermes-profile-tree";
 var SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
 function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -19723,14 +19925,14 @@ async function probeCheckout(ctx, declared, home) {
       reason: toplevel.outcome === "timeout" ? "probe-timeout" : toplevel.outcome === "cancelled" ? "probe-cancelled" : "probe-failed"
     };
   }
-  const canonical2 = (path) => {
+  const canonical3 = (path) => {
     try {
       return realpathSync9(path);
     } catch {
       return resolve19(path);
     }
   };
-  if (canonical2(toplevel.value) !== canonical2(expanded)) {
+  if (canonical3(toplevel.value) !== canonical3(expanded)) {
     return { ...base, classification, outcome: "skipped", reason: "not-a-repository-root" };
   }
   const [remote, head, status] = await Promise.all([
@@ -19738,13 +19940,13 @@ async function probeCheckout(ctx, declared, home) {
     probe(ctx, gitArgv(expanded, ["rev-parse", "HEAD"])),
     probe(ctx, gitArgv(expanded, ["status", "--porcelain"]))
   ]);
-  const worst = [remote.outcome, head.outcome, status.outcome].find((outcome) => outcome !== "ok") ?? "ok";
+  const worst2 = [remote.outcome, head.outcome, status.outcome].find((outcome) => outcome !== "ok") ?? "ok";
   return {
     target,
     classification,
     reached: true,
-    outcome: worst,
-    reason: worst === "ok" ? null : worst === "timeout" ? "probe-timeout" : worst === "cancelled" ? "probe-cancelled" : "probe-failed",
+    outcome: worst2,
+    reason: worst2 === "ok" ? null : worst2 === "timeout" ? "probe-timeout" : worst2 === "cancelled" ? "probe-cancelled" : "probe-failed",
     remote: remote.outcome === "ok" ? remote.value : null,
     head: head.outcome === "ok" ? head.value : null,
     // `""` is the porcelain answer for a clean tree, so `status.value || null`
@@ -19999,33 +20201,6 @@ function addAgentRecordFacts(ctx, subject) {
     detail: "the fleet env file this agent's row records, against the one the host config declares"
   });
 }
-function addUnsupportedFacts(ctx, subject, profileTemplate) {
-  const { agentId, profileName } = subject;
-  const namedProfile = profileName !== null && /^[A-Za-z0-9._-]+$/u.test(profileName) && profileName !== "." && profileName !== ".." ? profileName : null;
-  const profilePath = namedProfile && profileTemplate ? profileTemplate.replaceAll("{profile_name}", namedProfile) : null;
-  const generated = profilePath ? join33(profilePath, "config.yaml") : null;
-  addFact(ctx, {
-    id: "profile.render_generation",
-    scope: "agent",
-    agent_id: agentId,
-    field: "profiles.{profile_name}.config.yaml",
-    desired: absent(SOURCE_PROFILE_TREE, "unsupported"),
-    observed: generated === null ? absent(SOURCE_PROFILE_TREE, profileName !== null && namedProfile === null ? "unsupported" : "missing") : profileDigest(generated),
-    detail: "a generated profile config carries only the GENERATED FILE marker -- no generation counter, digest, or sidecar -- so its bytes are the only stable evidence and nothing can be compared against a recorded render"
-  });
-}
-function profileDigest(path) {
-  try {
-    const stat = lstatSync14(path);
-    if (stat.isSymbolicLink()) return present("symlink", SOURCE_PROFILE_TREE, { classification: "symlink" });
-    if (!stat.isFile()) return present(`not-a-file`, SOURCE_PROFILE_TREE, { classification: "not-a-directory" });
-    if (stat.size > PROFILE_CONFIG_MAX_BYTES) return absent(SOURCE_PROFILE_TREE, "unobserved", { classification: "unreadable" });
-    return present(`sha256:${createHash10("sha256").update(readFileSync24(path)).digest("hex")}`, SOURCE_PROFILE_TREE, { classification: "ok" });
-  } catch (error) {
-    const code = error.code;
-    return absent(SOURCE_PROFILE_TREE, "missing", { classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable" });
-  }
-}
 function addCheckoutFacts(ctx, subject, observation3) {
   const { agentId } = subject;
   const field3 = "agents.{agent_id}.hermes.repo";
@@ -20178,9 +20353,9 @@ async function collectFleetProvenance(options) {
   remainingMs(runContext);
   const observations = await mapBounded(targets, PROBE_CONCURRENCY, async ([, declared]) => probeCheckout(runContext, declared, home));
   const byDeclared = /* @__PURE__ */ new Map();
-  targets.forEach(([canonical2, declared], index) => {
+  targets.forEach(([canonical3, declared], index) => {
     const observation3 = observations[index];
-    byDeclared.set(canonical2, observation3);
+    byDeclared.set(canonical3, observation3);
     addProbe(ctx, {
       id: `checkout:${observation3.target}`,
       kind: "checkout",
@@ -20206,7 +20381,6 @@ async function collectFleetProvenance(options) {
       observation3 = byDeclared.get(key) ?? null;
     }
     addCheckoutFacts(ctx, subject, observation3);
-    addUnsupportedFacts(ctx, subject, layout.template);
   }
   ctx.facts.sort((a, b) => {
     const rank = (fact) => fact.scope === "fleet" ? 0 : 1;
@@ -20299,17 +20473,38 @@ async function collectFleetProvenance(options) {
 
 // src/fleet/status.ts
 import { createHash as createHash11 } from "node:crypto";
-import { existsSync as existsSync26, readFileSync as readFileSync26 } from "node:fs";
+import { existsSync as existsSync26, readFileSync as readFileSync27 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
-import { isAbsolute as isAbsolute10, join as join35, resolve as resolve21 } from "node:path";
+import { isAbsolute as isAbsolute11, join as join36, resolve as resolve22 } from "node:path";
 
-// src/fleet/scaffold.ts
-import { lstatSync as lstatSync15, readFileSync as readFileSync25, readlinkSync as readlinkSync4, realpathSync as realpathSync10 } from "node:fs";
+// src/fleet/profile.ts
+import { createHash as createHash10 } from "node:crypto";
+import { lstatSync as lstatSync15, readFileSync as readFileSync25, readdirSync as readdirSync10, readlinkSync as readlinkSync4, realpathSync as realpathSync10 } from "node:fs";
 import { dirname as dirname17, isAbsolute as isAbsolute9, join as join34, relative as relative13, resolve as resolve20, sep as sep7 } from "node:path";
-var SCAFFOLD_MAX_ASSET_BYTES = 4 * 1024 * 1024;
-var SCAFFOLD_MAX_ROLE_ENTRIES = 5e3;
-var SCAFFOLD_LINEAGE_DEPTH = 12;
-var SCAFFOLD_PROBE_KIND = "scaffold";
+import YAML10 from "yaml";
+var PROFILE_PROBE_KIND = "profile";
+var PROFILE_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+var PROFILE_MARKER_WINDOW_BYTES = 800;
+var PROFILE_MAX_DRIFT_SECTIONS = 6;
+var PROFILE_MAX_UNIT_FILE_BYTES = 64 * 1024;
+var PROFILE_PYTHON_PROBE = "import sys, yaml; sys.exit(0 if sys.version_info >= (3, 11) else 3)";
+var PROFILE_SINGLETON_LINKS = [
+  "memories",
+  "sessions",
+  "workspace",
+  "logs",
+  "cron",
+  "plans",
+  "hooks",
+  "pairing",
+  "audio_cache",
+  "image_cache",
+  "SOUL.md",
+  "state.db",
+  "kanban.db"
+];
+var WORD = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$/u;
+var SECTION = /^[A-Za-z0-9_.-]{1,64}$/u;
 function gitArgv2(path, args) {
   return ["git", "--no-optional-locks", "-C", path, ...args];
 }
@@ -20322,6 +20517,901 @@ function canonical(path) {
 }
 function within(root, candidate) {
   return candidate === root || candidate.startsWith(`${root}${sep7}`);
+}
+function digest(bytes) {
+  return createHash10("sha256").update(bytes).digest("hex").slice(0, 12);
+}
+function word(value) {
+  return typeof value === "string" && WORD.test(value) ? value : "unparsed";
+}
+function entryStat(path) {
+  try {
+    const stat = lstatSync15(path);
+    if (stat.isSymbolicLink()) return { kind: "symlink", size: stat.size };
+    if (stat.isDirectory()) return { kind: "directory", size: stat.size };
+    if (stat.isFile()) return { kind: "file", size: stat.size };
+    return { kind: "other", size: stat.size };
+  } catch (error) {
+    const code = error.code;
+    return { kind: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable", size: 0 };
+  }
+}
+function readBounded(path, size, cap2) {
+  if (size > cap2) return { error: "too-large" };
+  try {
+    return { bytes: readFileSync25(path) };
+  } catch {
+    return { error: "unreadable" };
+  }
+}
+function globToRegExp2(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "(.*)").replace(/\?/gu, ".");
+  return new RegExp(`^${escaped}$`, "u");
+}
+function patternGlob(pattern) {
+  return globToRegExp2(pattern.replaceAll("{profile_name}", "*"));
+}
+function aliasKey(name) {
+  return name.toLowerCase().replaceAll("_", "-");
+}
+function aspect(state, items, observed, desired, summary) {
+  return { state, items, observed, desired, summary };
+}
+function worst(items, rank) {
+  let state = "pass";
+  const order = ["pass", "warn", "fail", "error"];
+  for (const item of items) {
+    const candidate = rank(item.kind);
+    if (order.indexOf(candidate) > order.indexOf(state)) state = candidate;
+  }
+  return state;
+}
+function rendererEnv(ctx) {
+  const env2 = {};
+  for (const key of ["PATH", "LANG"]) {
+    const value = ctx.env[key];
+    if (typeof value === "string") env2[key] = value;
+  }
+  env2.HOME = ctx.home;
+  env2.HERMES_FLEET_HOME = ctx.fleetHome;
+  env2.HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS = String(ctx.manifest.renderer.lock_timeout_seconds + RENDERER_LOCK_WAIT_MARGIN_SECONDS);
+  env2.PYTHONDONTWRITEBYTECODE = "1";
+  env2.PYTHONHASHSEED = "0";
+  env2.PYTHONIOENCODING = "utf-8";
+  return env2;
+}
+var RENDERER_LOCK_WAIT_MARGIN_SECONDS = 30;
+function rendererTimeoutMs(ctx) {
+  return Math.ceil(ctx.manifest.renderer.lock_timeout_seconds * 1e3) + 1e3;
+}
+function inspectRoot(ctx) {
+  if (ctx.root === null) {
+    return { state: "error", code: "layout-undeclared", detail: "the contract declares no service_model.profile_layout.root, so no profile root can be gated" };
+  }
+  const root = resolve20(ctx.root);
+  const expected = resolve20(ctx.fleetHome, "profiles");
+  if (root !== expected) {
+    return { state: "error", code: "renderer-layout-mismatch", detail: `the contract's profile root is ${ctx.shown(root)} while the canonical renderer reads ${ctx.shown(expected)}; the two must be one directory` };
+  }
+  const home = resolve20(ctx.home);
+  const base = within(home, root) ? home : dirname17(resolve20(ctx.fleetHome));
+  const segments = relative13(base, root).split(sep7).filter((segment) => segment !== "");
+  let cursor = base;
+  for (let index = 0; index < segments.length; index += 1) {
+    cursor = join34(cursor, segments[index]);
+    const last = index === segments.length - 1;
+    const stat = entryStat(cursor);
+    if (stat.kind === "absent") throw new RootGate("root-missing", `${ctx.shown(cursor)} does not exist; the profile root cannot be read`);
+    if (stat.kind === "unreadable") throw new RootGate("root-unreadable", `${ctx.shown(cursor)} could not be lstat'ed`);
+    if (stat.kind === "symlink") {
+      throw new RootGate(last ? "root-symlink" : "root-ancestor-symlink", `${ctx.shown(cursor)} is a symlink; every profile path beneath it would resolve through it and lose its identity (the contract declares symlink_allowed: false)`);
+    }
+    if (stat.kind !== "directory") throw new RootGate("root-not-a-directory", `${ctx.shown(cursor)} is not a directory`);
+  }
+  return { state: "ok", code: "ok", detail: `${ctx.shown(root)} is a real directory reached through real directories` };
+}
+var RootGate = class extends Error {
+  constructor(code, detail) {
+    super(detail);
+    this.code = code;
+    this.detail = detail;
+  }
+};
+function gateRoot(ctx) {
+  try {
+    return inspectRoot(ctx);
+  } catch (error) {
+    if (error instanceof RootGate) return { state: "error", code: error.code, detail: error.detail };
+    throw error;
+  }
+}
+async function inspectRenderer(ctx) {
+  const { manifest } = ctx;
+  const submodule = join34(ctx.pjanglerRoot, manifest.renderer.submodule);
+  const script = join34(submodule, manifest.renderer.script);
+  const target = ctx.shown(submodule);
+  const bad = (source, detail2, gitlink2, outcome = "failed") => ({
+    record: { source, python: "not-probed", gitlink: gitlink2, detail: detail2 },
+    submodule,
+    script,
+    probes: [{ id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome, reason: source }]
+  });
+  const unobserved = (step, outcome, gitlink2) => bad("renderer-source-unobserved", `the ${step} probe ${outcome === "timeout" ? "timed out" : "failed"} before the renderer source could be proven`, gitlink2, outcome);
+  const committed = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.renderer.submodule]));
+  throwIfCancelled(ctx.run);
+  if (committed.outcome === "timeout") return unobserved("ls-tree HEAD", "timeout", null);
+  const head = /^160000\s+commit\s+([0-9a-f]{40})\t/u.exec(committed.value ?? "");
+  if (!head) return bad("renderer-gitlink-missing", `HEAD of the package root records no gitlink for ${manifest.renderer.submodule}; the renderer has no committed pin to be proven against`, null);
+  const gitlink = head[1];
+  const staged = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-files", "--stage", "--", manifest.renderer.submodule]));
+  throwIfCancelled(ctx.run);
+  if (staged.outcome === "timeout") return unobserved("ls-files --stage", "timeout", gitlink);
+  const index = /^160000\s+([0-9a-f]{40})\s/u.exec(staged.value ?? "");
+  if (!index || index[1] !== gitlink) {
+    return bad("renderer-gitlink-unstable", `the index pins ${manifest.renderer.submodule} at ${index ? index[1].slice(0, 12) : "nothing"} while HEAD pins ${gitlink.slice(0, 12)}; a staged, uncommitted pin proves nothing`, gitlink);
+  }
+  const toplevel = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", "--show-toplevel"]));
+  throwIfCancelled(ctx.run);
+  if (toplevel.outcome === "timeout") return unobserved("rev-parse --show-toplevel", "timeout", gitlink);
+  if (toplevel.outcome !== "ok" || !toplevel.value || canonical(toplevel.value) !== canonical(submodule)) {
+    return bad("renderer-source-missing", `${manifest.renderer.submodule} is not an initialized submodule checkout; run git submodule update before the renderer can be proven`, gitlink);
+  }
+  const files = [manifest.renderer.script, manifest.renderer.lock_helper];
+  const expected = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", ...files.map((file) => `${gitlink}:${file}`)]));
+  throwIfCancelled(ctx.run);
+  if (expected.outcome === "timeout") return unobserved("rev-parse <gitlink>:<file>", "timeout", gitlink);
+  const ids = (expected.value ?? "").split("\n").map((line) => line.trim());
+  if (expected.outcome !== "ok" || ids.length !== files.length || !ids.every((id) => /^[0-9a-f]{40}$/u.test(id))) {
+    return bad("renderer-source-missing", `the tree at the committed gitlink ${gitlink.slice(0, 12)} does not carry both ${files.join(" and ")}; a changed renderer contract needs a human decision, not a guessed parser`, gitlink);
+  }
+  for (let position = 0; position < files.length; position += 1) {
+    const file = files[position];
+    const full = join34(submodule, file);
+    const stat = entryStat(full);
+    if (stat.kind === "absent") return bad("renderer-source-missing", `${file} is absent from the submodule worktree`, gitlink);
+    if (stat.kind !== "file") return bad("renderer-source-mismatched", `${file} in the submodule worktree is a ${stat.kind}, not the regular file the committed gitlink pins`, gitlink);
+    const read = readBounded(full, stat.size, manifest.limits.max_file_bytes);
+    if ("error" in read) return bad("renderer-source-mismatched", `${file} in the submodule worktree could not be read under the file cap (${read.error})`, gitlink);
+    if (blobId(read.bytes) !== ids[position]) {
+      return bad("renderer-source-mismatched", `${file} in the submodule worktree differs from the bytes at the committed gitlink ${gitlink.slice(0, 12)}; what runs must be what is pinned, so nothing runs`, gitlink);
+    }
+  }
+  const python = await probeText(ctx.run, "python3", ["-B", "-c", PROFILE_PYTHON_PROBE], { env: rendererEnv(ctx) });
+  throwIfCancelled(ctx.run);
+  let pythonCode = "ok";
+  if (python.outcome === "timeout") pythonCode = "renderer-python-unavailable";
+  else if (python.outcome === "cancelled") pythonCode = "renderer-python-unavailable";
+  else if (python.outcome !== "ok") {
+    pythonCode = python.status === null ? "renderer-python-unavailable" : python.status === 3 ? "renderer-python-too-old" : "renderer-pyyaml-missing";
+  }
+  const probes = [
+    { id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "ok", reason: null },
+    { id: `${PROFILE_PROBE_KIND}:python3`, kind: PROFILE_PROBE_KIND, target: "python3", outcome: python.outcome === "cancelled" ? "failed" : python.outcome, reason: pythonCode === "ok" ? null : pythonCode }
+  ];
+  const detail = pythonCode === "ok" ? `the renderer and its lock helper in the submodule worktree equal the bytes at the committed gitlink ${gitlink.slice(0, 12)}, and python3 with PyYAML is available` : `the renderer source is canonical at ${gitlink.slice(0, 12)} but no python3 with PyYAML at 3.11 or newer answered (${pythonCode}); no check can run`;
+  return { record: { source: "ok", python: pythonCode, gitlink, detail }, submodule, script, probes };
+}
+function readBase(ctx) {
+  const path = join34(ctx.fleetHome, ctx.generatedFile);
+  const stat = entryStat(path);
+  if (stat.kind === "absent") return { state: "missing", digest: null };
+  if (stat.kind === "symlink") return { state: "symlink", digest: null };
+  if (stat.kind !== "file") return { state: "not-a-file", digest: null };
+  const read = readBounded(path, stat.size, ctx.manifest.limits.max_file_bytes);
+  if ("error" in read) return { state: read.error, digest: null };
+  return { state: "ok", digest: digest(read.bytes) };
+}
+function readCanonicalCore(ctx, canonicalDir) {
+  const out = /* @__PURE__ */ new Map();
+  for (const name of ctx.manifest.skill_core.required) {
+    const path = join34(canonicalDir, name, "SKILL.md");
+    let real;
+    try {
+      real = realpathSync10(path);
+    } catch {
+      out.set(name, null);
+      continue;
+    }
+    const stat = entryStat(real);
+    if (stat.kind !== "file") {
+      out.set(name, null);
+      continue;
+    }
+    const read = readBounded(real, stat.size, ctx.manifest.limits.max_file_bytes);
+    out.set(name, "error" in read ? null : { digest: digest(read.bytes), real });
+  }
+  return out;
+}
+function resolveCanonicalDir(ctx) {
+  const override = ctx.env[ctx.manifest.skill_core.canonical_dir_env]?.trim();
+  if (override) {
+    const expanded = override.startsWith("~/") ? join34(ctx.home, override.slice(2)) : override;
+    if (isAbsolute9(expanded)) return resolve20(expanded);
+  }
+  return resolve20(ctx.manifest.skill_core.canonical_dir.replaceAll("{HOME}", ctx.home).replaceAll("{HERMES_FLEET_HOME}", ctx.fleetHome));
+}
+function unobservedAspect(code) {
+  return aspect("unobserved", [], "not observed", "observed beneath a real, contained, unambiguous profile directory", `not observed: the profile path gate failed (${code})`);
+}
+function erroredAspect(code, detail) {
+  return aspect("error", [], code, "observed beneath a real profile root", detail);
+}
+var PATH_RANK = (kind) => kind === "unreadable" ? "error" : "fail";
+var IDENTITY_RANK = (kind) => kind === "too-large" ? "error" : kind === "unknown-key" ? "warn" : kind === "inert-config-block" ? "pass" : "fail";
+var CONFIG_RANK = (kind) => kind === "base-missing" || kind === "too-large" || kind === "renderer-failed" || kind === "renderer-timeout" || kind === "renderer-unavailable" ? "error" : "fail";
+var BANK_RANK = (kind) => kind === "too-large" ? "error" : "fail";
+var SKILLS_RANK = (kind) => kind === "extra-skill" || kind === "source-unresolvable" ? "pass" : "fail";
+function emptyResult(input, path, dependents, probe2) {
+  return {
+    agentId: input.agentId,
+    profileName: input.profileName,
+    path,
+    identity: { ...dependents, keys: [] },
+    config: { ...dependents, renderer: { state: dependents.state === "error" ? "error" : "unobserved", sections: [] }, digests: { base: null, delta: null, generated: null } },
+    bank: { ...dependents, bankId: null, expectedBank: null },
+    skills: { ...dependents, corePresent: 0, coreMissing: [], extra: [], sourcesUnresolvable: 0 },
+    probe: probe2
+  };
+}
+async function inspectAgent(ctx, shared, input) {
+  const name = input.profileName;
+  const profileDir = name !== null && ctx.root !== null && isSafePathSegment(name) ? join34(ctx.root, name) : null;
+  const target = ctx.shown(profileDir ?? input.agentId);
+  const skipped = (reason) => ({ id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "skipped", reason });
+  if (shared.root.state !== "ok") {
+    const code = `root:${shared.root.code}`;
+    const path = { ...erroredAspect(code, `the profile root could not be gated (${shared.root.code}); nothing beneath it was read`), code };
+    return emptyResult(input, path, erroredAspect(code, `not observed: the profile root could not be gated (${shared.root.code})`), skipped(code));
+  }
+  const gate = (code, detail, summary) => {
+    const items = [{ path: name ?? "", kind: code, desired: "directory", observed: code, detail }];
+    const path = { ...aspect(PATH_RANK(code), items, code, "a real, contained, unambiguous profile directory under the declared root", summary), code };
+    return emptyResult(input, path, unobservedAspect(code), skipped(code));
+  };
+  if (name === null) return gate("unnamed", null, "the row names no profile, so no profile directory can be gated");
+  if (profileDir === null || !PROFILE_NAME_PATTERN.test(name)) {
+    return gate("name-unsafe", null, "the profile name is not one safe lower-case segment; Hermes would resolve its identity to the shared bank and nothing here may follow it");
+  }
+  const twin = (shared.rootEntries ?? []).find((entry) => entry !== name && entry.toLowerCase() === name.toLowerCase());
+  if (twin !== void 0) {
+    return gate("case-collision", `case-collision:${word(twin)}`, "another root entry equals this profile name case-insensitively; which directory Hermes resolves is ambiguous, so neither is read");
+  }
+  const dirStat = entryStat(profileDir);
+  if (dirStat.kind === "absent") return gate("missing", null, "the profile directory does not exist");
+  if (dirStat.kind === "symlink") return gate("symlink", null, "the profile directory is a symlink; the contract declares symlink_allowed: false and anything beneath it may belong to another agent");
+  if (dirStat.kind === "unreadable") return gate("unreadable", null, "the profile directory could not be lstat'ed");
+  if (dirStat.kind !== "directory") return gate("not-a-directory", null, `the profile entry is a ${dirStat.kind}, not a directory`);
+  const pathItems = [];
+  if (input.roleDir !== null) {
+    const runtime = resolve20(input.roleDir, "runtime");
+    for (const link of PROFILE_SINGLETON_LINKS) {
+      const full = join34(profileDir, link);
+      if (entryStat(full).kind !== "symlink") continue;
+      let pointed;
+      try {
+        pointed = resolve20(dirname17(full), readlinkSync4(full));
+      } catch {
+        continue;
+      }
+      if (!within(runtime, pointed)) {
+        pathItems.push({ path: link, kind: "misowned-link", desired: "a link into this agent's role-local runtime", observed: "a link elsewhere", detail: `misowned-link:${link}` });
+      }
+    }
+  }
+  const pathAspect = {
+    ...aspect(
+      pathItems.length > 0 ? "fail" : "pass",
+      pathItems,
+      pathItems.length > 0 ? "misowned-link" : "ok",
+      "a real, contained, unambiguous profile directory whose singleton links point into this agent's runtime",
+      pathItems.length > 0 ? `${pathItems.length} singleton link(s) in the profile directory point outside this agent's role-local runtime` : "the profile directory is real, contained, safely named and unambiguous"
+    ),
+    code: pathItems.length > 0 ? "misowned-link" : "ok"
+  };
+  const { manifest } = ctx;
+  const cap2 = manifest.limits.max_file_bytes;
+  const identityItems = [];
+  const identityKeys = [];
+  {
+    const file = manifest.identity.file;
+    const full = join34(profileDir, file);
+    const stat = entryStat(full);
+    if (stat.kind === "absent") identityItems.push({ path: file, kind: "missing", desired: "file", observed: "absent", detail: null });
+    else if (stat.kind === "symlink") identityItems.push({ path: file, kind: "symlink", desired: "file", observed: "symlink", detail: null });
+    else if (stat.kind !== "file") identityItems.push({ path: file, kind: "malformed", desired: "file", observed: stat.kind, detail: null });
+    else {
+      const read = readBounded(full, stat.size, cap2);
+      if ("error" in read) identityItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "malformed", desired: "file", observed: read.error, detail: null });
+      else {
+        let parsed;
+        let malformed = false;
+        try {
+          parsed = YAML10.parse(read.bytes.toString("utf8"));
+        } catch {
+          malformed = true;
+        }
+        if (malformed || parsed !== null && parsed !== void 0 && (typeof parsed !== "object" || Array.isArray(parsed))) {
+          identityItems.push({ path: file, kind: "malformed", desired: "a mapping of identity keys", observed: "not a mapping", detail: null });
+        } else {
+          const record = parsed ?? {};
+          for (const key of Object.keys(record).sort()) {
+            const shownKey = word(key);
+            identityKeys.push(shownKey);
+            if (manifest.identity.allowed_keys.includes(key)) continue;
+            if (manifest.identity.inert_keys.includes(key)) {
+              identityItems.push({ path: file, kind: "inert-config-block", desired: "identity keys only", observed: shownKey, detail: `inert-key:${shownKey}` });
+              continue;
+            }
+            identityItems.push({ path: file, kind: "unknown-key", desired: "identity keys only", observed: shownKey, detail: `unknown-key:${shownKey}` });
+          }
+          if ("name" in record && record.name !== name) {
+            identityItems.push({ path: file, kind: "identity-mismatch", desired: name, observed: word(record.name), detail: "identity-mismatch:name" });
+          }
+          if ("display_name" in record && input.displayName !== null && record.display_name !== input.displayName) {
+            identityItems.push({ path: file, kind: "identity-mismatch", desired: "the registry display_name", observed: "a different display_name", detail: "identity-mismatch:display_name" });
+          }
+        }
+      }
+    }
+  }
+  const identityState = worst(identityItems, IDENTITY_RANK);
+  const identityAspect = {
+    ...aspect(
+      identityState,
+      identityItems,
+      identityState === "pass" ? "identity keys only" : identityItems.map((item) => item.detail ?? item.kind).join(", "),
+      "an identity file carrying only the declared identity keys, naming this profile",
+      identityState === "pass" ? `${manifest.identity.file} carries ${identityKeys.length} identity key(s) and nothing Hermes reads as config` : `${manifest.identity.file}: ${identityItems.map((item) => item.detail ?? item.kind).join(", ")}`
+    ),
+    keys: identityKeys
+  };
+  const configItems = [];
+  const digests = { base: shared.base.digest, delta: null, generated: null };
+  let generatedBytes = null;
+  let generatedRegular = false;
+  let deltaRegular = false;
+  {
+    const file = ctx.generatedFile;
+    const full = join34(profileDir, file);
+    const stat = entryStat(full);
+    if (stat.kind === "absent") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: "absent", detail: null });
+    else if (stat.kind === "symlink") configItems.push({ path: file, kind: "generated-symlink", desired: "a generated file", observed: "symlink", detail: null });
+    else if (stat.kind !== "file") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: stat.kind, detail: null });
+    else {
+      const read = readBounded(full, stat.size, cap2);
+      if ("error" in read) configItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "generated-missing", desired: "a generated file", observed: read.error, detail: null });
+      else {
+        generatedRegular = true;
+        generatedBytes = read.bytes;
+        digests.generated = digest(read.bytes);
+        if (!read.bytes.subarray(0, PROFILE_MARKER_WINDOW_BYTES).toString("utf8").includes(ctx.generatedMarker)) {
+          configItems.push({ path: file, kind: "marker-missing", desired: "the generated-file marker", observed: "no marker", detail: null });
+        }
+      }
+    }
+    const deltaFile = ctx.overrideFile;
+    const deltaFull = join34(profileDir, deltaFile);
+    const deltaStat = entryStat(deltaFull);
+    if (deltaStat.kind === "absent") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "an override-only delta", observed: "absent", detail: null });
+    else if (deltaStat.kind === "symlink") configItems.push({ path: deltaFile, kind: "delta-symlink", desired: "a real file", observed: "symlink", detail: null });
+    else if (deltaStat.kind !== "file") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "a real file", observed: deltaStat.kind, detail: null });
+    else {
+      const read = readBounded(deltaFull, deltaStat.size, cap2);
+      if ("error" in read) configItems.push({ path: deltaFile, kind: read.error === "too-large" ? "too-large" : "delta-missing", desired: "a real file", observed: read.error, detail: null });
+      else {
+        deltaRegular = true;
+        digests.delta = digest(read.bytes);
+      }
+    }
+  }
+  let rendererState = "not-run";
+  const sections = [];
+  let probeRecord = skipped("renderer-not-run");
+  if (shared.base.state !== "ok") {
+    configItems.push({ path: ctx.generatedFile, kind: "base-missing", desired: "the fleet base config", observed: shared.base.state, detail: `base-${shared.base.state}` });
+    rendererState = "error";
+    probeRecord = skipped(`base-${shared.base.state}`);
+  } else if (shared.renderer.record.source !== "ok" || shared.renderer.record.python !== "ok") {
+    const code = shared.renderer.record.source !== "ok" ? shared.renderer.record.source : shared.renderer.record.python;
+    configItems.push({ path: ctx.generatedFile, kind: "renderer-unavailable", desired: "the canonical renderer at the committed gitlink", observed: code, detail: code });
+    rendererState = "error";
+    probeRecord = skipped(code);
+  } else if (!generatedRegular || !deltaRegular) {
+    rendererState = "fail";
+    probeRecord = skipped(configItems.map((item) => item.kind).join(","));
+  } else {
+    const argv = manifest.renderer.check_argv.map((arg) => arg.replaceAll("{profile_name}", name));
+    const result2 = await probeText(ctx.run, "python3", ["-B", shared.renderer.script, ...argv], {
+      cwd: shared.renderer.submodule,
+      env: rendererEnv(ctx),
+      timeoutMs: rendererTimeoutMs(ctx),
+      keepStdoutOnFailure: true
+    });
+    throwIfCancelled(ctx.run);
+    const text2 = result2.value ?? "";
+    if (result2.outcome === "timeout") {
+      configItems.push({ path: ctx.generatedFile, kind: "renderer-timeout", desired: "the renderer's check answering within its lock timeout", observed: "timeout", detail: "renderer-timeout" });
+      rendererState = "error";
+      probeRecord = { id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "timeout", reason: "renderer-timeout" };
+    } else if (result2.outcome === "ok" && text2.startsWith("OK:")) {
+      rendererState = "in-sync";
+      probeRecord = { id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "ok", reason: null };
+    } else if (result2.outcome === "failed" && result2.status === 1 && text2.startsWith("PROFILE CONFIG DRIFT:")) {
+      rendererState = "drifted";
+      probeRecord = { id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "ok", reason: "drifted" };
+      let why = null;
+      for (const line of text2.split("\n")) {
+        const match = /^\s+(\S+)\s+(.+?)\s*$/u.exec(line);
+        if (match && match[1] === name) {
+          why = match[2];
+          break;
+        }
+      }
+      if (why === null) {
+        configItems.push({ path: ctx.generatedFile, kind: "semantic-drift", desired: "deep_merge(base, delta)", observed: "drifted", detail: "unparsed" });
+      } else if (why.startsWith("drift in:")) {
+        for (const raw of why.slice("drift in:".length).split(",").map((item) => item.trim()).filter((item) => item !== "").slice(0, PROFILE_MAX_DRIFT_SECTIONS)) {
+          const section2 = SECTION.test(raw) ? raw : "unparsed";
+          sections.push(section2);
+          configItems.push({ path: ctx.generatedFile, kind: "semantic-drift", desired: "deep_merge(base, delta)", observed: `section ${section2}`, detail: section2 });
+        }
+        sections.sort();
+      } else if (why.includes("SYMLINK")) {
+        if (!configItems.some((item) => item.kind === "generated-symlink")) configItems.push({ path: ctx.generatedFile, kind: "generated-symlink", desired: "a generated file", observed: "symlink", detail: null });
+      } else if (why.includes("config.delta.yaml")) {
+        if (!configItems.some((item) => item.kind === "delta-missing")) configItems.push({ path: ctx.overrideFile, kind: "delta-missing", desired: "an override-only delta", observed: "absent", detail: null });
+      } else {
+        configItems.push({ path: ctx.generatedFile, kind: "semantic-drift", desired: "deep_merge(base, delta)", observed: "drifted", detail: "unparsed" });
+      }
+    } else {
+      configItems.push({
+        path: ctx.generatedFile,
+        kind: "renderer-failed",
+        desired: "OK or a drift report from the renderer's check",
+        observed: result2.status === null ? "killed" : `exit ${result2.status}`,
+        detail: "renderer-failed"
+      });
+      rendererState = "error";
+      probeRecord = { id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome: "failed", reason: "renderer-failed" };
+    }
+  }
+  const configState = worst(configItems, CONFIG_RANK);
+  const configAspect = {
+    ...aspect(
+      configState,
+      configItems,
+      rendererState === "in-sync" ? "in-sync" : configItems.map((item) => item.detail ?? item.kind).join(", "),
+      "config.yaml == deep_merge(base, config.delta.yaml), proven by the canonical renderer's check",
+      rendererState === "in-sync" ? "the generated config equals deep_merge(base, delta) by the canonical renderer's check" : `${ctx.generatedFile}: ${configItems.map((item) => item.detail ?? item.kind).join(", ")}`
+    ),
+    renderer: { state: rendererState, sections },
+    digests
+  };
+  const bankItems = [];
+  const expectedBank = manifest.memory.bank_id_template.replaceAll("{profile_name}", name);
+  let observedBank = null;
+  {
+    const file = manifest.memory.pin_file;
+    const full = join34(profileDir, ...file.split("/"));
+    const stat = entryStat(full);
+    if (stat.kind === "absent") bankItems.push({ path: file, kind: "pin-missing", desired: expectedBank, observed: "absent", detail: null });
+    else if (stat.kind === "symlink") bankItems.push({ path: file, kind: "pin-symlink", desired: expectedBank, observed: "symlink", detail: null });
+    else if (stat.kind !== "file") bankItems.push({ path: file, kind: "pin-malformed", desired: expectedBank, observed: stat.kind, detail: null });
+    else {
+      const read = readBounded(full, stat.size, cap2);
+      if ("error" in read) bankItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "pin-malformed", desired: expectedBank, observed: read.error, detail: null });
+      else {
+        let parsed;
+        let malformed = false;
+        try {
+          parsed = JSON.parse(read.bytes.toString("utf8"));
+        } catch {
+          malformed = true;
+        }
+        if (malformed || typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          bankItems.push({ path: file, kind: "pin-malformed", desired: expectedBank, observed: "not a JSON object", detail: null });
+        } else {
+          const record = parsed;
+          const id = record.bank_id;
+          if (id === void 0) {
+            bankItems.push({ path: file, kind: "bank-missing", desired: expectedBank, observed: "bank_id_template" in record ? "bank_id_template only" : "no bank_id", detail: "bank_id_template" in record ? "bank_id_template" : null });
+          } else if (typeof id !== "string") {
+            bankItems.push({ path: file, kind: "pin-malformed", desired: expectedBank, observed: "bank_id is not a string", detail: null });
+          } else {
+            observedBank = word(id);
+            if (id === expectedBank) {
+            } else if (manifest.memory.reserved_bank_ids.includes(id)) bankItems.push({ path: file, kind: "bank-custom", desired: expectedBank, observed: observedBank, detail: null });
+            else if (aliasKey(id) === aliasKey(expectedBank)) bankItems.push({ path: file, kind: "bank-alias", desired: expectedBank, observed: observedBank, detail: null });
+            else bankItems.push({ path: file, kind: "bank-mismatch", desired: expectedBank, observed: observedBank, detail: null });
+          }
+        }
+      }
+    }
+  }
+  const bankState = worst(bankItems, BANK_RANK);
+  const bankAspect = {
+    ...aspect(
+      bankState,
+      bankItems,
+      observedBank ?? bankItems.map((item) => item.observed ?? item.kind).join(", "),
+      expectedBank,
+      bankState === "pass" ? `the Hindsight bank is pinned to ${expectedBank}` : `${manifest.memory.pin_file}: ${bankItems.map((item) => item.kind).join(", ")}`
+    ),
+    bankId: observedBank,
+    expectedBank
+  };
+  const skillItems = [];
+  const coreMissing = [];
+  const extra = [];
+  let corePresent = 0;
+  let sourcesUnresolvable = 0;
+  {
+    const profileReal = canonical(profileDir);
+    const roots = [];
+    const addRoot = (path) => {
+      if (!roots.includes(path)) roots.push(path);
+    };
+    const skillsEntry = join34(profileDir, "skills");
+    const skillsStat = entryStat(skillsEntry);
+    let profileSkillsRoot = null;
+    if (skillsStat.kind === "directory") profileSkillsRoot = skillsEntry;
+    else if (skillsStat.kind === "symlink") {
+      let real = null;
+      try {
+        real = realpathSync10(skillsEntry);
+      } catch {
+        real = null;
+      }
+      if (real === null) skillItems.push({ path: "skills", kind: "core-dangling", desired: "a skills directory", observed: "dangling-symlink", detail: "core-dangling:skills" });
+      else if (within(shared.fleetHomeReal, real) || within(shared.canonicalReal, real)) profileSkillsRoot = real;
+      else skillItems.push({ path: "skills", kind: "core-foreign", desired: "a skills directory inside the fleet home or the canonical projection", observed: "a directory elsewhere", detail: "core-foreign:skills" });
+    }
+    if (profileSkillsRoot !== null) addRoot(profileSkillsRoot);
+    if (generatedBytes !== null) {
+      let config = null;
+      try {
+        config = YAML10.parse(generatedBytes.toString("utf8"));
+      } catch {
+        config = null;
+      }
+      const skills = typeof config === "object" && config !== null && !Array.isArray(config) ? config.skills : void 0;
+      const external = typeof skills === "object" && skills !== null && !Array.isArray(skills) ? skills.external_dirs : void 0;
+      if (Array.isArray(external)) {
+        external.forEach((entry, index) => {
+          if (typeof entry !== "string" || entry === "") {
+            sourcesUnresolvable += 1;
+            skillItems.push({ path: `skills.external_dirs[${index}]`, kind: "source-unresolvable", desired: "an absolute directory", observed: "not a path", detail: null });
+            return;
+          }
+          const expanded = entry === "~" ? ctx.home : entry.startsWith("~/") ? join34(ctx.home, entry.slice(2)) : entry;
+          if (!isAbsolute9(expanded)) {
+            sourcesUnresolvable += 1;
+            skillItems.push({ path: `skills.external_dirs[${index}]`, kind: "source-unresolvable", desired: "an absolute directory", observed: "relative", detail: null });
+            return;
+          }
+          addRoot(resolve20(expanded));
+        });
+      }
+    }
+    for (const skill of manifest.skill_core.required) {
+      const canonicalSkill = shared.canonicalCore.get(skill) ?? null;
+      if (canonicalSkill === null) {
+        skillItems.push({ path: `skills/${skill}`, kind: "canonical-missing", desired: "a readable canonical SKILL.md", observed: "absent", detail: `canonical-missing:${skill}` });
+        coreMissing.push(skill);
+        continue;
+      }
+      let decided = false;
+      for (const root of roots) {
+        const entry = join34(root, skill);
+        if (entryStat(entry).kind === "absent") continue;
+        decided = true;
+        let real = null;
+        try {
+          real = realpathSync10(join34(entry, "SKILL.md"));
+        } catch {
+          real = null;
+        }
+        if (real === null) {
+          skillItems.push({ path: `skills/${skill}`, kind: "core-dangling", desired: canonicalSkill.digest, observed: "dangling", detail: `core-dangling:${skill}` });
+          break;
+        }
+        const allowed = real === canonicalSkill.real || within(shared.canonicalReal, real) || within(shared.fleetHomeReal, real) || within(profileReal, real);
+        if (!allowed) {
+          skillItems.push({ path: `skills/${skill}`, kind: "core-foreign", desired: canonicalSkill.digest, observed: "outside every allowed root", detail: `core-foreign:${skill}` });
+          break;
+        }
+        const stat = entryStat(real);
+        const read = stat.kind === "file" ? readBounded(real, stat.size, cap2) : { error: "unreadable" };
+        const seen = "error" in read ? null : digest(read.bytes);
+        if (seen === canonicalSkill.digest) {
+          corePresent += 1;
+          break;
+        }
+        skillItems.push({ path: `skills/${skill}`, kind: "core-replaced", desired: canonicalSkill.digest, observed: seen ?? ("error" in read ? read.error : "unreadable"), detail: `core-replaced:${skill}` });
+        break;
+      }
+      if (!decided) {
+        skillItems.push({ path: `skills/${skill}`, kind: "core-missing", desired: canonicalSkill.digest, observed: "absent", detail: `core-missing:${skill}` });
+        coreMissing.push(skill);
+      }
+    }
+    if (profileSkillsRoot !== null) {
+      let entries = [];
+      try {
+        entries = readdirSync10(profileSkillsRoot).sort();
+      } catch {
+        entries = [];
+      }
+      const required2 = new Set(manifest.skill_core.required);
+      for (const entry of entries.slice(0, manifest.limits.max_root_entries)) {
+        if (required2.has(entry) || !isSafePathSegment(entry) || entry.startsWith(".")) continue;
+        let real = null;
+        try {
+          real = realpathSync10(join34(profileSkillsRoot, entry, "SKILL.md"));
+        } catch {
+          real = null;
+        }
+        if (real === null || entryStat(real).kind !== "file") continue;
+        extra.push(word(entry));
+      }
+    }
+    for (const item of skillItems) {
+      if ((item.kind === "core-replaced" || item.kind === "core-foreign" || item.kind === "core-dangling") && item.path.startsWith("skills/")) {
+        const skill = item.path.slice("skills/".length);
+        if (!coreMissing.includes(skill)) coreMissing.push(skill);
+      }
+    }
+    coreMissing.sort();
+    extra.sort();
+  }
+  const listedExtra = extra.slice(0, manifest.limits.max_extra_skills);
+  for (const skill of listedExtra) skillItems.push({ path: `skills/${skill}`, kind: "extra-skill", desired: null, observed: "present", detail: null });
+  const skillsState = worst(skillItems, SKILLS_RANK);
+  const required = manifest.skill_core.required.length;
+  const skillsAspect = {
+    ...aspect(
+      skillsState,
+      skillItems,
+      `${corePresent}/${required} core skills present by bytes`,
+      `every one of the ${required} core skills present by bytes through the roots Hermes loads`,
+      skillsState === "pass" ? `${corePresent}/${required} core skills resolve to the canonical bytes${extra.length ? `, ${extra.length} optional skill(s) beside them` : ""}` : `${corePresent}/${required} core skills resolve to the canonical bytes; ${coreMissing.join(", ")} do not`
+    ),
+    corePresent,
+    coreMissing,
+    extra: listedExtra,
+    sourcesUnresolvable
+  };
+  return {
+    agentId: input.agentId,
+    profileName: name,
+    path: pathAspect,
+    identity: identityAspect,
+    config: configAspect,
+    bank: bankAspect,
+    skills: skillsAspect,
+    probe: probeRecord
+  };
+}
+function unitReferences(ctx) {
+  const counts = /* @__PURE__ */ new Map();
+  const configHome = ctx.env.XDG_CONFIG_HOME?.trim() || join34(ctx.home, ".config");
+  const dir = join34(configHome, "systemd", "user");
+  let names = [];
+  try {
+    names = readdirSync10(dir).filter((name) => name.endsWith(".service") || name.endsWith(".timer")).sort();
+  } catch {
+    return counts;
+  }
+  for (const name of names.slice(0, ctx.manifest.limits.max_unit_files)) {
+    const full = join34(dir, name);
+    const stat = entryStat(full);
+    if (stat.kind !== "file" || stat.size > PROFILE_MAX_UNIT_FILE_BYTES) continue;
+    let text2;
+    try {
+      text2 = readFileSync25(full, "utf8");
+    } catch {
+      continue;
+    }
+    const seen = /* @__PURE__ */ new Set();
+    for (const match of text2.matchAll(/^\s*Environment=(?:"?)HERMES_HOME=([^"\n]+?)\/?(?:"?)\s*$/gmu)) {
+      const value = match[1].trim();
+      if (!isAbsolute9(value)) continue;
+      seen.add(resolve20(value));
+    }
+    for (const value of seen) counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts;
+}
+function declaredClaim(ctx, name) {
+  const entries = (id) => {
+    const block = ctx.classifications?.[id];
+    return block && Array.isArray(block.entries) ? block.entries.filter((entry) => typeof entry === "object" && entry !== null) : [];
+  };
+  const namedBy = (entry) => {
+    const source = typeof entry.source === "string" ? entry.source : "";
+    if (source === "gateways.bloodbank") return ctx.gatewayProfileName === name;
+    return source === `profiles.${name}`;
+  };
+  const shared = entries("managed_shared_service");
+  for (let index = 0; index < shared.length; index += 1) {
+    const entry = shared[index];
+    const domains = Array.isArray(entry.policy_domains) ? entry.policy_domains : [];
+    if (!domains.includes("profile") || !namedBy(entry)) continue;
+    return { klass: "approved-managed-exception", detail: `classifications.managed_shared_service.entries[${index}]` };
+  }
+  const unmanaged = entries("intentionally_unmanaged");
+  for (let index = 0; index < unmanaged.length; index += 1) {
+    if (namedBy(unmanaged[index])) return { klass: "intentionally-unmanaged", detail: `classifications.intentionally_unmanaged.entries[${index}]` };
+  }
+  const retired = entries("retired");
+  for (let index = 0; index < retired.length; index += 1) {
+    if (namedBy(retired[index])) return { klass: "retired-candidate", detail: `classifications.retired.entries[${index}]` };
+  }
+  return null;
+}
+function classifyExtra(ctx, root, name, registered, units) {
+  const full = join34(root, name);
+  const stat = entryStat(full);
+  let kind = "other";
+  let linkTarget = null;
+  let standalone = null;
+  let configSymlink = false;
+  if (stat.kind === "symlink") {
+    try {
+      linkTarget = ctx.shown(readlinkSync4(full));
+    } catch {
+      linkTarget = null;
+    }
+    let real = null;
+    try {
+      real = realpathSync10(full);
+    } catch {
+      real = null;
+    }
+    kind = real === null ? "dangling-symlink" : "symlink";
+  } else if (stat.kind === "file") {
+    kind = "file";
+  } else if (stat.kind === "directory") {
+    let children = [];
+    try {
+      children = readdirSync10(full);
+    } catch {
+      children = [];
+    }
+    kind = children.length === 0 ? "empty-directory" : "directory";
+    if (kind === "directory") {
+      const generated = entryStat(join34(full, ctx.generatedFile));
+      const delta = entryStat(join34(full, ctx.overrideFile));
+      const pin = entryStat(join34(full, ...ctx.manifest.memory.pin_file.split("/")));
+      standalone = generated.kind === "file" && delta.kind === "file" && pin.kind === "file" ? "complete" : "incomplete";
+      configSymlink = generated.kind === "symlink";
+    }
+  }
+  const byAlias = /* @__PURE__ */ new Map();
+  for (const registeredName of registered) byAlias.set(aliasKey(registeredName), registeredName);
+  let aliasOf = byAlias.get(aliasKey(name)) ?? null;
+  let backupPattern = null;
+  for (const pattern of ctx.manifest.extras.backup_patterns) {
+    const match = globToRegExp2(pattern).exec(name);
+    if (!match) continue;
+    backupPattern = pattern;
+    const stem = match[1];
+    if (aliasOf === null && typeof stem === "string" && stem !== "") aliasOf = byAlias.get(aliasKey(stem)) ?? null;
+    break;
+  }
+  let klass;
+  let detail;
+  const claim = declaredClaim(ctx, name);
+  if (claim !== null) {
+    klass = claim.klass;
+    detail = claim.detail;
+  } else if (kind === "file" || kind === "empty-directory" || kind === "dangling-symlink" || kind === "other") {
+    klass = "debris-candidate";
+    detail = kind;
+  } else if (backupPattern !== null) {
+    klass = "retired-candidate";
+    detail = `backup-pattern:${backupPattern}`;
+  } else if (aliasOf !== null) {
+    klass = "retired-candidate";
+    detail = `alias-of:${aliasOf}`;
+  } else if (configSymlink) {
+    klass = "retired-candidate";
+    detail = "config-symlink";
+  } else {
+    klass = "unclassified";
+    detail = null;
+  }
+  const guidance = klass === "approved-managed-exception" || klass === "intentionally-unmanaged" ? "exception" : klass === "retired-candidate" || klass === "debris-candidate" ? "retirement" : standalone === "complete" ? "adoption" : "manual-review";
+  return {
+    path: name,
+    class: klass,
+    kind,
+    link_target: linkTarget,
+    standalone,
+    alias_of: aliasOf,
+    unit_file_references: units.get(resolve20(full)) ?? 0,
+    process_reference: "unobserved",
+    guidance,
+    detail
+  };
+}
+async function collectProfileHealth(ctx) {
+  throwIfCancelled(ctx.run);
+  const root = gateRoot(ctx);
+  const renderer = await inspectRenderer(ctx);
+  const probes = [...renderer.probes];
+  let rootEntries = null;
+  let rootTruncated = false;
+  if (root.state === "ok" && ctx.root !== null) {
+    try {
+      const listed = readdirSync10(ctx.root).sort();
+      rootTruncated = listed.length > ctx.manifest.limits.max_root_entries;
+      rootEntries = listed.slice(0, ctx.manifest.limits.max_root_entries);
+    } catch {
+      rootEntries = null;
+    }
+  }
+  const canonicalDir = resolveCanonicalDir(ctx);
+  const shared = {
+    root,
+    renderer,
+    base: readBase(ctx),
+    canonicalDir,
+    canonicalReal: canonical(canonicalDir),
+    canonicalCore: readCanonicalCore(ctx, canonicalDir),
+    fleetHomeReal: canonical(ctx.fleetHome),
+    rootEntries
+  };
+  const results = await mapBounded(ctx.agents, FLEET_STATUS_PROFILE_CONCURRENCY, (input) => inspectAgent(ctx, shared, input));
+  const agents = /* @__PURE__ */ new Map();
+  for (const result2 of results) {
+    agents.set(result2.agentId, result2);
+    probes.push(result2.probe);
+  }
+  let extras = null;
+  let extrasReason = null;
+  if (!ctx.sweep) extrasReason = "agent-scope";
+  else if (root.state !== "ok") extrasReason = `root:${root.code}`;
+  else if (rootEntries === null) extrasReason = "root-unreadable";
+  else {
+    const ignored = ctx.manifest.extras.ignored_patterns.map(patternGlob);
+    const registered = new Set(ctx.registeredProfileNames);
+    const units = unitReferences(ctx);
+    const items = [];
+    for (const name of rootEntries) {
+      if (registered.has(name)) continue;
+      if (ignored.some((pattern) => pattern.test(name))) continue;
+      if (!isSafePathSegment(name)) {
+        items.push({ path: "unparsed", class: "unclassified", kind: "other", link_target: null, standalone: null, alias_of: null, unit_file_references: 0, process_reference: "unobserved", guidance: "manual-review", detail: "name-unsafe" });
+        continue;
+      }
+      items.push(classifyExtra(ctx, ctx.root, name, registered, units));
+    }
+    items.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    extras = { items, truncated: rootTruncated };
+  }
+  return { root, renderer: renderer.record, agents, extras, extrasReason, probes };
+}
+
+// src/fleet/scaffold.ts
+import { lstatSync as lstatSync16, readFileSync as readFileSync26, readlinkSync as readlinkSync5, realpathSync as realpathSync11 } from "node:fs";
+import { dirname as dirname18, isAbsolute as isAbsolute10, join as join35, relative as relative14, resolve as resolve21, sep as sep8 } from "node:path";
+var SCAFFOLD_MAX_ASSET_BYTES = 4 * 1024 * 1024;
+var SCAFFOLD_MAX_ROLE_ENTRIES = 5e3;
+var SCAFFOLD_LINEAGE_DEPTH = 12;
+var SCAFFOLD_PROBE_KIND = "scaffold";
+function gitArgv3(path, args) {
+  return ["git", "--no-optional-locks", "-C", path, ...args];
+}
+function canonical2(path) {
+  try {
+    return realpathSync11(path);
+  } catch {
+    return resolve21(path);
+  }
+}
+function within2(root, candidate) {
+  return candidate === root || candidate.startsWith(`${root}${sep8}`);
 }
 function parseBatch(output, keys) {
   const out = /* @__PURE__ */ new Map();
@@ -20351,7 +21441,7 @@ function parseBatch(output, keys) {
 }
 async function inspectSource(ctx) {
   const { manifest } = ctx;
-  const submodule = join34(ctx.pjanglerRoot, manifest.template_submodule);
+  const submodule = join35(ctx.pjanglerRoot, manifest.template_submodule);
   const target = ctx.shown(submodule);
   const empty = (integrity, detail, gitlink2, outcome = "failed") => ({
     record: { gitlink: gitlink2, integrity, detail, assets: 0 },
@@ -20361,7 +21451,7 @@ async function inspectSource(ctx) {
     probe: { id: `${SCAFFOLD_PROBE_KIND}:${target}`, kind: SCAFFOLD_PROBE_KIND, target, outcome, reason: integrity }
   });
   const unobserved = (step, outcome, gitlink2) => empty("source-unobserved", `the ${step} probe ${outcome === "timeout" ? "timed out" : "failed"} before the template source could be read`, gitlink2, outcome);
-  const committed = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.template_submodule]));
+  const committed = await probe(ctx.run, gitArgv3(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.template_submodule]));
   throwIfCancelled(ctx.run);
   if (committed.outcome === "timeout") return unobserved("ls-tree HEAD", "timeout", null);
   const head = /^160000\s+commit\s+([0-9a-f]{40})\t/u.exec(committed.value ?? "");
@@ -20369,39 +21459,39 @@ async function inspectSource(ctx) {
     return empty("gitlink-missing", `HEAD of the package root records no gitlink for ${manifest.template_submodule}; the template has no committed pin to compare against`, null);
   }
   const gitlink = head[1];
-  const staged = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-files", "--stage", "--", manifest.template_submodule]));
+  const staged = await probe(ctx.run, gitArgv3(ctx.pjanglerRoot, ["ls-files", "--stage", "--", manifest.template_submodule]));
   throwIfCancelled(ctx.run);
   if (staged.outcome === "timeout") return unobserved("ls-files --stage", "timeout", gitlink);
   const index = /^160000\s+([0-9a-f]{40})\s/u.exec(staged.value ?? "");
   if (!index || index[1] !== gitlink) {
     return empty("gitlink-unstable", `the index pins ${manifest.template_submodule} at ${index ? index[1].slice(0, 12) : "nothing"} while HEAD pins ${gitlink.slice(0, 12)}; a staged, uncommitted pin is not a version anything can be compared against`, gitlink);
   }
-  const toplevel = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", "--show-toplevel"]));
+  const toplevel = await probe(ctx.run, gitArgv3(submodule, ["rev-parse", "--show-toplevel"]));
   throwIfCancelled(ctx.run);
   if (toplevel.outcome === "timeout") return unobserved("rev-parse --show-toplevel", "timeout", gitlink);
-  if (toplevel.outcome !== "ok" || !toplevel.value || canonical(toplevel.value) !== canonical(submodule)) {
+  if (toplevel.outcome !== "ok" || !toplevel.value || canonical2(toplevel.value) !== canonical2(submodule)) {
     return empty("source-uninitialized", `${manifest.template_submodule} is not an initialized submodule checkout; run git submodule update to make the pinned template readable`, gitlink);
   }
-  const object = await probe(ctx.run, gitArgv2(submodule, ["cat-file", "-e", `${gitlink}^{commit}`]));
+  const object = await probe(ctx.run, gitArgv3(submodule, ["cat-file", "-e", `${gitlink}^{commit}`]));
   throwIfCancelled(ctx.run);
   if (object.outcome === "timeout") return unobserved("cat-file -e", "timeout", gitlink);
   if (object.outcome !== "ok") {
     return empty("source-missing-object", `the committed gitlink ${gitlink.slice(0, 12)} names a commit the submodule's object database does not hold; fetch the template before comparing against it`, gitlink);
   }
-  const worktreeHead = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", "HEAD"]));
+  const worktreeHead = await probe(ctx.run, gitArgv3(submodule, ["rev-parse", "HEAD"]));
   throwIfCancelled(ctx.run);
   if (worktreeHead.outcome === "timeout") return unobserved("rev-parse HEAD", "timeout", gitlink);
   if (worktreeHead.outcome !== "ok" || worktreeHead.value !== gitlink) {
     return empty("source-mismatched", `the template worktree is at ${worktreeHead.value ? worktreeHead.value.slice(0, 12) : "no commit"} while the parent commits ${gitlink.slice(0, 12)}; the checkout is not canonical`, gitlink);
   }
-  const dirty = await probe(ctx.run, gitArgv2(submodule, ["status", "--porcelain", "--untracked-files=no"]));
+  const dirty = await probe(ctx.run, gitArgv3(submodule, ["status", "--porcelain", "--untracked-files=no"]));
   throwIfCancelled(ctx.run);
   if (dirty.outcome === "timeout") return unobserved("status --porcelain", "timeout", gitlink);
   if (dirty.outcome !== "ok") return unobserved("status --porcelain", "failed", gitlink);
   if ((dirty.value ?? "") !== "") {
     return empty("source-dirty", `the template worktree carries modified tracked files; desired bytes are read from the committed gitlink ${gitlink.slice(0, 12)} and never from a dirty checkout, and the checkout must be clean before it is canonical`, gitlink);
   }
-  const tree = await probeRaw(ctx.run, gitArgv2(submodule, ["ls-tree", "-r", "-z", gitlink, "--", manifest.template_subdirectory]));
+  const tree = await probeRaw(ctx.run, gitArgv3(submodule, ["ls-tree", "-r", "-z", gitlink, "--", manifest.template_subdirectory]));
   throwIfCancelled(ctx.run);
   if (tree.outcome === "timeout") return unobserved("ls-tree -r", "timeout", gitlink);
   if (tree.outcome !== "ok" || tree.value === null) return unobserved("ls-tree -r", "failed", gitlink);
@@ -20450,7 +21540,7 @@ async function inspectSource(ctx) {
   const wanted = assets.filter((asset) => asset.rendered && !asset.presenceOnly && asset.type === "file");
   if (wanted.length > 0) {
     const ids = [...new Set(wanted.map((asset) => asset.sha))];
-    const batch = await probeRaw(ctx.run, gitArgv2(submodule, ["cat-file", "--batch"]), void 0, `${ids.join("\n")}
+    const batch = await probeRaw(ctx.run, gitArgv3(submodule, ["cat-file", "--batch"]), void 0, `${ids.join("\n")}
 `);
     throwIfCancelled(ctx.run);
     if (batch.outcome === "timeout") return unobserved("cat-file --batch", "timeout", gitlink);
@@ -20524,18 +21614,18 @@ async function scanAgent(ctx, source, input) {
     return fail("repository-unreadable:no-project-path");
   }
   setTarget(input.projectPath);
-  const toplevel = await probe(ctx.run, gitArgv2(input.projectPath, ["rev-parse", "--show-toplevel"]));
+  const toplevel = await probe(ctx.run, gitArgv3(input.projectPath, ["rev-parse", "--show-toplevel"]));
   throwIfCancelled(ctx.run);
   if (toplevel.outcome === "timeout") return fail("probe-timeout", "timeout");
   if (toplevel.outcome !== "ok" || !toplevel.value) return fail("repository-unreadable:not-a-repository", "failed");
-  const top = canonical(toplevel.value);
-  if (top !== canonical(input.projectPath)) return fail("repository-unreadable:not-a-repository-root");
+  const top = canonical2(toplevel.value);
+  if (top !== canonical2(input.projectPath)) return fail("repository-unreadable:not-a-repository-root");
   scan.top = top;
   let roleDir;
   if (input.roleDir !== null) {
-    roleDir = isAbsolute9(input.roleDir) ? resolve20(input.roleDir) : resolve20(input.projectPath, input.roleDir);
+    roleDir = isAbsolute10(input.roleDir) ? resolve21(input.roleDir) : resolve21(input.projectPath, input.roleDir);
   } else if (input.role !== null && input.role !== "" && input.role !== "." && input.role !== ".." && !input.role.includes("/")) {
-    roleDir = join34(input.projectPath, "agents", "hermes", input.role);
+    roleDir = join35(input.projectPath, "agents", "hermes", input.role);
   } else {
     return fail("role-unresolved");
   }
@@ -20544,29 +21634,29 @@ async function scanAgent(ctx, source, input) {
   let roleRel;
   let roleReal;
   try {
-    const stat = lstatSync15(roleDir);
+    const stat = lstatSync16(roleDir);
     if (stat.isSymbolicLink()) return fail("role-dir-symlink");
     if (!stat.isDirectory()) return fail("role-dir-not-a-directory");
-    roleReal = canonical(roleDir);
+    roleReal = canonical2(roleDir);
     if (roleReal === top) return fail("role-dir-is-repository-root");
-    if (!within(top, roleReal)) return fail("role-dir-outside-project");
-    roleRel = relative13(top, roleReal);
+    if (!within2(top, roleReal)) return fail("role-dir-outside-project");
+    roleRel = relative14(top, roleReal);
   } catch {
-    const lexical = resolve20(roleDir);
-    const project = resolve20(input.projectPath);
+    const lexical = resolve21(roleDir);
+    const project = resolve21(input.projectPath);
     if (lexical === project || lexical === top) return fail("role-dir-is-repository-root");
-    if (within(project, lexical)) roleRel = relative13(project, lexical);
-    else if (within(top, lexical)) roleRel = relative13(top, lexical);
+    if (within2(project, lexical)) roleRel = relative14(project, lexical);
+    else if (within2(top, lexical)) roleRel = relative14(top, lexical);
     else return fail("role-dir-outside-project");
     roleReal = lexical;
   }
-  const rolePosix = roleRel.split(sep7).join("/");
+  const rolePosix = roleRel.split(sep8).join("/");
   const pathspec = `:(literal)${rolePosix}`;
-  const tracked = await probeRaw(ctx.run, gitArgv2(top, ["ls-files", "-z", "--", pathspec]));
+  const tracked = await probeRaw(ctx.run, gitArgv3(top, ["ls-files", "-z", "--", pathspec]));
   throwIfCancelled(ctx.run);
   if (tracked.outcome === "timeout") return fail("probe-timeout", "timeout");
   if (tracked.outcome !== "ok" || tracked.value === null) return fail("repository-unreadable:probe-failed", "failed");
-  const status = await probeRaw(ctx.run, gitArgv2(top, ["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all", "--", pathspec]));
+  const status = await probeRaw(ctx.run, gitArgv3(top, ["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all", "--", pathspec]));
   throwIfCancelled(ctx.run);
   if (status.outcome === "timeout") return fail("probe-timeout", "timeout");
   if (status.outcome !== "ok" || status.value === null) return fail("repository-unreadable:probe-failed", "failed");
@@ -20595,22 +21685,22 @@ async function scanAgent(ctx, source, input) {
     if (xy !== "??" && rolePath !== null) scan.wipPaths.add(rolePath);
   }
   for (const asset of source.assets) {
-    const full = join34(roleReal, ...asset.rolePath.split("/"));
+    const full = join35(roleReal, ...asset.rolePath.split("/"));
     const seen = absent2();
     seen.wip = scan.wipPaths.has(asset.rolePath);
     try {
-      const stat = lstatSync15(full);
+      const stat = lstatSync16(full);
       seen.present = true;
       if (stat.isSymbolicLink()) {
         seen.type = "symlink";
-        const link = readlinkSync4(full);
+        const link = readlinkSync5(full);
         let resolvedTarget = null;
         try {
-          resolvedTarget = realpathSync10(resolve20(dirname17(full), link));
+          resolvedTarget = realpathSync11(resolve21(dirname18(full), link));
         } catch {
           resolvedTarget = null;
         }
-        seen.unsafeSymlink = isAbsolute9(link) || resolvedTarget !== null && !within(top, resolvedTarget);
+        seen.unsafeSymlink = isAbsolute10(link) || resolvedTarget !== null && !within2(top, resolvedTarget);
         seen.blobId = blobId(Buffer.from(link, "utf8"));
       } else if (stat.isDirectory()) {
         seen.type = "directory";
@@ -20620,7 +21710,7 @@ async function scanAgent(ctx, source, input) {
         if (stat.size > SCAFFOLD_MAX_ASSET_BYTES) seen.unreadable = "too-large";
         else {
           try {
-            seen.blobId = blobId(readFileSync25(full));
+            seen.blobId = blobId(readFileSync26(full));
           } catch {
             seen.unreadable = "unreadable";
           }
@@ -20659,7 +21749,7 @@ async function resolveLineage(ctx, source, scans, desiredByAgent) {
   });
   if (verbatimIds.size > 0) {
     const ids = [...verbatimIds].sort();
-    const check = await probeRaw(ctx.run, gitArgv2(source.submodule, ["cat-file", "--batch-check"]), void 0, `${ids.join("\n")}
+    const check = await probeRaw(ctx.run, gitArgv3(source.submodule, ["cat-file", "--batch-check"]), void 0, `${ids.join("\n")}
 `);
     throwIfCancelled(ctx.run);
     if (check.outcome !== "ok" || check.value === null) lineage.unobserved = true;
@@ -20675,7 +21765,7 @@ async function resolveLineage(ctx, source, scans, desiredByAgent) {
     const keys = [];
     const versions = /* @__PURE__ */ new Map();
     for (const templatePath of [...renderedNeeded.keys()].sort()) {
-      const log3 = await probe(ctx.run, gitArgv2(source.submodule, ["log", "--format=%H", "-n", String(SCAFFOLD_LINEAGE_DEPTH), gitlink, "--", templatePath]));
+      const log3 = await probe(ctx.run, gitArgv3(source.submodule, ["log", "--format=%H", "-n", String(SCAFFOLD_LINEAGE_DEPTH), gitlink, "--", templatePath]));
       throwIfCancelled(ctx.run);
       if (log3.outcome !== "ok") {
         lineage.unobserved = true;
@@ -20687,7 +21777,7 @@ async function resolveLineage(ctx, source, scans, desiredByAgent) {
       keys.push(...perPath);
     }
     if (keys.length > 0) {
-      const batch = await probeRaw(ctx.run, gitArgv2(source.submodule, ["cat-file", "--batch"]), void 0, `${keys.join("\n")}
+      const batch = await probeRaw(ctx.run, gitArgv3(source.submodule, ["cat-file", "--batch"]), void 0, `${keys.join("\n")}
 `);
       throwIfCancelled(ctx.run);
       if (batch.outcome !== "ok" || batch.value === null) lineage.unobserved = true;
@@ -20754,7 +21844,7 @@ async function collectScaffoldParity(ctx) {
   if (source.record.integrity !== "ok") {
     const detail = `source:${source.record.integrity}`;
     const agents2 = ctx.agents.map((input) => {
-      const roleDir = input.roleDir !== null ? isAbsolute9(input.roleDir) ? resolve20(input.roleDir) : input.projectPath === null ? null : resolve20(input.projectPath, input.roleDir) : input.projectPath !== null && input.role ? join34(input.projectPath, "agents", "hermes", input.role) : null;
+      const roleDir = input.roleDir !== null ? isAbsolute10(input.roleDir) ? resolve21(input.roleDir) : input.projectPath === null ? null : resolve21(input.projectPath, input.roleDir) : input.projectPath !== null && input.role ? join35(input.projectPath, "agents", "hermes", input.role) : null;
       const target = ctx.shown(roleDir ?? input.projectPath ?? input.agentId);
       probes.push({ id: `${SCAFFOLD_PROBE_KIND}:${target}`, kind: SCAFFOLD_PROBE_KIND, target, outcome: "skipped", reason: "source-unreadable" });
       return emptyAgentResult(input, erroredGroups(manifest, [], detail), detail, roleDir, input.roleDir !== null ? "registry" : "default");
@@ -20930,6 +22020,7 @@ var CAPABILITY_SYSTEMD = "unit_topology";
 var CAPABILITY_LIVE_PROCESS = "process_attribution";
 var CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
 var CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
+var CAPABILITY_PROFILE_MANIFEST = "profile.manifest";
 var FINDING_SEVERITY = Object.freeze({
   error: "critical",
   warn: "medium",
@@ -20956,6 +22047,39 @@ var SOURCE_AUDIT = "recipe-audit";
 var SOURCE_DECLARED_GAP = "declared-gap";
 var SOURCE_SCAFFOLD = "fleet-scaffold";
 var SCAFFOLD_SOURCE_RULE_ID = "scaffold.source";
+var SOURCE_PROFILE = "fleet-profile";
+var PROFILE_ROOT_RULE_ID = "profile.root";
+var PROFILE_RENDERER_RULE_ID = "profile.renderer";
+var PROFILE_EXTRAS_RULE_ID = "profile.extras";
+var PROFILE_FIELD_PATH = "profiles.{profile_name}";
+var PROFILE_FIELD_IDENTITY = "profiles.{profile_name}.profile.yaml";
+var PROFILE_FIELD_CONFIG = "profiles.{profile_name}.config.yaml";
+var PROFILE_FIELD_BANK = "profiles.{profile_name}.hindsight.config.json";
+var PROFILE_FIELD_SKILLS = "profiles.{profile_name}.skills";
+var PROFILE_RULE_DETAIL_PATTERNS = [
+  /config\.yaml is a symlink/u,
+  /not a rendered artifact/u,
+  /profile config missing/u,
+  /config\.delta\.yaml missing/u,
+  /must be a real file/u,
+  /identity-memory/u,
+  /profile dir is a symlink/u
+];
+var PROFILE_RULE_COVERED_KINDS = /* @__PURE__ */ new Set([
+  "symlink",
+  "generated-symlink",
+  "generated-missing",
+  "marker-missing",
+  "delta-missing",
+  "delta-symlink",
+  "pin-missing",
+  "pin-symlink",
+  "pin-malformed",
+  "bank-missing",
+  "bank-custom",
+  "bank-alias",
+  "bank-mismatch"
+]);
 var RULE_COVERED_CONTENT_GROUPS = /* @__PURE__ */ new Set([
   "scaffold.hermes",
   "scaffold.gitignore",
@@ -21002,7 +22126,7 @@ function nonEmptyString3(value) {
 }
 function expandHome4(path, home) {
   if (path === "~") return home;
-  if (path.startsWith("~/")) return join35(home, path.slice(2));
+  if (path.startsWith("~/")) return join36(home, path.slice(2));
   return path;
 }
 function shownPath3(path) {
@@ -21573,6 +22697,124 @@ function scaffoldRuleVerdict(rule) {
   const details = Array.isArray(rule.details) ? rule.details.filter((line) => typeof line === "string") : [];
   return details.some((line) => /: (?:missing|stale) (?!.*\/runtime\/)/u.test(line)) ? "fail" : null;
 }
+function observeFromProfile(ctx, input) {
+  const { agentId, result: result2 } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: [PROFILE_FIELD_PATH, PROFILE_FIELD_IDENTITY, PROFILE_FIELD_CONFIG, PROFILE_FIELD_BANK, PROFILE_FIELD_SKILLS].map((field3) => observation2(ctx, {
+        domain: "profile",
+        agentId,
+        state: "unsupported",
+        field: field3,
+        summary: "the fleet contract declares no profile_manifest, so no generated profile can be proven against the canonical renderer",
+        details: ["declare profile_manifest in the fleet contract (schema 4) to make this domain observable"],
+        source: SOURCE_PROFILE,
+        capability: CAPABILITY_PROFILE_MANIFEST,
+        observed: "not observed",
+        desired: "the profile gated, read, and proven through the canonical renderer's check"
+      })),
+      summary: null
+    };
+  }
+  if (result2 === void 0) {
+    return {
+      observations: [observation2(ctx, {
+        domain: "profile",
+        agentId,
+        state: "unobserved",
+        field: PROFILE_FIELD_PATH,
+        summary: "the profile observer produced no result for this agent",
+        source: SOURCE_PROFILE,
+        observed: "no result",
+        desired: "five profile observations for this agent"
+      })],
+      summary: null
+    };
+  }
+  const observations = [];
+  const emit = (field3, aspect2) => {
+    const items = aspect2.items.map((item) => ({
+      path: bounded2(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded2(item.desired, 64),
+      observed: item.observed === null ? null : bounded2(item.observed, 64),
+      detail: item.detail === null ? null : bounded2(item.detail),
+      wip: false
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${field3}].items: ${items.length - kept.length} of ${items.length} items dropped; the counts on this observation and on agents[].profile are computed over every item before the cap`
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}`;
+    });
+    const excepted = aspect2.state === "fail" && input.exception !== null;
+    observations.push(observation2(ctx, {
+      domain: "profile",
+      agentId,
+      state: aspect2.state,
+      field: field3,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_PROFILE,
+      summary: aspect2.summary,
+      details,
+      observed: aspect2.observed,
+      desired: aspect2.desired,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception.reason : null,
+      exceptionPolicy: excepted ? input.exception.path : null
+    }));
+  };
+  emit(PROFILE_FIELD_PATH, result2.path);
+  emit(PROFILE_FIELD_IDENTITY, result2.identity);
+  emit(PROFILE_FIELD_CONFIG, result2.config);
+  emit(PROFILE_FIELD_BANK, result2.bank);
+  emit(PROFILE_FIELD_SKILLS, result2.skills);
+  return {
+    observations,
+    summary: {
+      profile_name: result2.profileName,
+      path: { state: result2.path.state, code: bounded2(result2.path.code, 64) },
+      identity: { state: result2.identity.state, keys: result2.identity.keys.map((key) => bounded2(key, 64)) },
+      renderer: { state: result2.config.renderer.state, sections: result2.config.renderer.sections.map((section2) => bounded2(section2, 64)) },
+      digests: { ...result2.config.digests },
+      bank: {
+        observed: result2.bank.bankId === null ? null : bounded2(result2.bank.bankId, 64),
+        expected: result2.bank.expectedBank === null ? null : bounded2(result2.bank.expectedBank, 64),
+        state: result2.bank.state
+      },
+      skills: {
+        state: result2.skills.state,
+        core_present: result2.skills.corePresent,
+        core_missing: result2.skills.coreMissing.map((skill) => bounded2(skill, 64)),
+        extra: result2.skills.extra.map((skill) => bounded2(skill, 64)),
+        sources_unresolvable: result2.skills.sourcesUnresolvable
+      }
+    }
+  };
+}
+function profileRuleVerdict(rule) {
+  if (rule === void 0) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line) => typeof line === "string") : [];
+  return details.some((line) => PROFILE_RULE_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+function profileObserverDrift(result2) {
+  if (result2 === void 0) return null;
+  const shared = [result2.path, result2.config, result2.bank];
+  if (shared.some((aspect2) => aspect2.state === "error" || aspect2.state === "unobserved")) return null;
+  const subsetDrift = shared.some((aspect2) => aspect2.items.some((item) => PROFILE_RULE_COVERED_KINDS.has(item.kind)));
+  if (subsetDrift) return true;
+  const otherDrift = result2.identity.state === "fail" || result2.skills.state === "fail" || result2.config.items.some((item) => item.kind === "semantic-drift" || item.kind === "unparsed");
+  return otherDrift ? null : false;
+}
 function scaffoldObserverDrift(result2) {
   if (result2 === void 0 || result2.error !== null) return null;
   if (result2.groups.some((group) => group.state === "error" && (RULE_COVERED_CONTENT_GROUPS.has(group.group) || group.owned > 0))) return null;
@@ -21645,8 +22887,8 @@ function agentLifecycle(row, own, domains) {
 }
 function resolveAuditCli(env2 = process.env) {
   const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
-  const entry = override ?? join35(resolvePjanglerRoot(), "dist", "index.js");
-  if (!isAbsolute10(entry)) return null;
+  const entry = override ?? join36(resolvePjanglerRoot(), "dist", "index.js");
+  if (!isAbsolute11(entry)) return null;
   return existsSync26(entry) ? entry : null;
 }
 function auditChildEnv(base = process.env) {
@@ -21717,10 +22959,10 @@ async function collectFleetStatus(options) {
   let baselineText = null;
   let baselineShown = "";
   if (baselinePath !== null) {
-    const resolved = resolve21(expandHome4(baselinePath, home));
+    const resolved = resolve22(expandHome4(baselinePath, home));
     baselineShown = shownPath3(resolved);
     try {
-      baselineText = readFileSync26(resolved, "utf8");
+      baselineText = readFileSync27(resolved, "utf8");
     } catch {
       throw new FleetError(
         "INVALID_INPUT",
@@ -21765,17 +23007,24 @@ async function collectFleetStatus(options) {
   const repoByAgent = /* @__PURE__ */ new Map();
   const roleDirByAgent = /* @__PURE__ */ new Map();
   const rawRowByAgent = /* @__PURE__ */ new Map();
+  const profileNameByAgent = /* @__PURE__ */ new Map();
+  const displayNameByAgent = /* @__PURE__ */ new Map();
   for (const entry of agentRaw.entries) {
-    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const raw = isRecord8(entry.value) ? entry.value : {};
+    if (!profileNameByAgent.has(entry.key)) {
+      profileNameByAgent.set(entry.key, nonEmptyString3(raw.profile_name));
+      displayNameByAgent.set(entry.key, nonEmptyString3(raw.display_name));
+    }
+    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const declared = nonEmptyString3(raw.project_path);
-    if (declared !== null) repoByAgent.set(entry.key, resolve21(expandHome4(declared, home)));
+    if (declared !== null) repoByAgent.set(entry.key, resolve22(expandHome4(declared, home)));
     const declaredRoleDir = nonEmptyString3(raw.role_dir);
     roleDirByAgent.set(entry.key, declaredRoleDir === null ? null : expandHome4(declaredRoleDir, home));
     rawRowByAgent.set(entry.key, raw);
   }
   const policy = readHealthPolicy(contract);
   const manifest = domainSet.has("template_scaffold") ? contract.scaffold_manifest ?? null : null;
+  const profileManifest = domainSet.has("profile") ? contract.profile_manifest ?? null : null;
   const projectRawBySlug = /* @__PURE__ */ new Map();
   const manifestNeedsProjects = manifest !== null && Object.values(manifest.render_inputs).some((field3) => field3.startsWith("projects."));
   if (manifestNeedsProjects || policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
@@ -21950,6 +23199,59 @@ async function collectFleetStatus(options) {
     unobserved: 0
   };
   const ruleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+  const profileExceptionFor = (agentId) => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "profile" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let profileHealth = null;
+  if (profileManifest !== null) {
+    throwIfCancelled(runContext);
+    const layout = resolveProfileLayout(contract, env2, home);
+    const profileLayout = isRecord8(contract.service_model?.profile_layout) ? contract.service_model.profile_layout : {};
+    const gateways = readAgentRegistryGatewaysRaw(stores.agents.inspectedPath);
+    const bloodbank = gateways.entries.find((entry) => entry.key === "bloodbank");
+    profileHealth = await collectProfileHealth({
+      run: runContext,
+      pjanglerRoot: resolvePjanglerRoot(),
+      home,
+      env: env2,
+      fleetHome: env2.HERMES_FLEET_HOME?.trim() || join36(home, ".hermes"),
+      root: layout.root,
+      generatedMarker: nonEmptyString3(profileLayout.generated_marker) ?? "GENERATED FILE -- DO NOT EDIT",
+      generatedFile: nonEmptyString3(profileLayout.generated_file) ?? "config.yaml",
+      overrideFile: nonEmptyString3(profileLayout.override_file) ?? "config.delta.yaml",
+      manifest: profileManifest,
+      classifications: contract.classifications,
+      gatewayProfileName: bloodbank && isRecord8(bloodbank.value) ? nonEmptyString3(bloodbank.value.profile_name) : null,
+      registeredProfileNames: [...profileNameByAgent.values()].filter((name) => name !== null),
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        profileName: profileNameByAgent.get(agentId) ?? null,
+        displayName: displayNameByAgent.get(agentId) ?? null,
+        roleDir: roleDirByAgent.get(agentId) ?? null
+      })),
+      // Fleet scope only: an `--agent` run inspects one registered profile and
+      // never enumerates the root for extras.
+      sweep: scope.kind === "fleet",
+      shown: shownPath3
+    });
+    ctx.probes.push(...profileHealth.probes);
+  }
+  const profileCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    real: 0,
+    blocked_at_path: 0,
+    structurally_healthy: 0,
+    drifted: 0,
+    incomplete: 0,
+    exception_authorized: 0,
+    unobserved: 0
+  };
+  const profileRenderer = { checked: 0, in_sync: 0, drifted: 0, failed: 0, timeout: 0 };
+  const profileIdentity = { bank_ok: 0, bank_alias: 0, bank_custom: 0, bank_missing: 0, bank_mismatch: 0 };
+  const profileSkills = { core_complete: 0, core_missing: 0, core_replaced: 0, extras_seen: 0 };
+  const profileRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
   const auditByAgent = /* @__PURE__ */ new Map();
@@ -22082,6 +23384,111 @@ async function collectFleetStatus(options) {
       states: /* @__PURE__ */ new Map([[state, 1]])
     });
   }
+  const profileExtrasNotes = [];
+  if (profileHealth !== null) {
+    const hostRetrieval = retrievalFor(null, "profile", live);
+    const hostFinding = (ruleId, state, field3, summary, details, observed, desired, items) => {
+      const classification = classifyObservation({
+        domain: "profile",
+        state,
+        field: field3,
+        ruleId,
+        ruleScope: "host",
+        source: SOURCE_PROFILE,
+        capability: null,
+        evidence: null,
+        fixable: false,
+        exceptionId: null,
+        exceptionReason: null,
+        freshness: "not_applicable",
+        repo: null,
+        retrieval: hostRetrieval,
+        activationField: ctx.activationField,
+        activationOwner: ctx.activationOwner
+      }, ctx.policy);
+      hostByRule.set(ruleId, {
+        finding: {
+          rule_id: ruleId,
+          owner: ctx.authority.ownerOf(field3) ?? ctx.domainOwner("profile"),
+          domain: "profile",
+          state,
+          summary: bounded2(redactHome(summary)),
+          details: boundedDetails(details),
+          finding_id: statusFindingId("host", null, "profile", ruleId, field3, SOURCE_PROFILE),
+          retrieval: hostRetrieval,
+          applicability: classification.applicability,
+          evidence: classification.evidence,
+          freshness: classification.freshness,
+          severity: classification.severity,
+          repair: classification.repair,
+          observed: bounded2(redactHome(observed)),
+          desired: bounded2(desired),
+          next_action: classification.next_action,
+          next_action_class: classification.next_action_class,
+          justification: classification.justification,
+          ...items && items.length > 0 ? { items } : {}
+        },
+        states: /* @__PURE__ */ new Map([[state, 1]])
+      });
+    };
+    hostFinding(
+      PROFILE_ROOT_RULE_ID,
+      profileHealth.root.state === "ok" ? "pass" : "error",
+      PROFILE_FIELD_PATH,
+      profileHealth.root.detail,
+      [`root ${profileHealth.root.code}`],
+      profileHealth.root.code,
+      "the profile root is the directory the renderer reads, reached through real directories only"
+    );
+    const rendererOk = profileHealth.renderer.source === "ok" && profileHealth.renderer.python === "ok";
+    hostFinding(
+      PROFILE_RENDERER_RULE_ID,
+      rendererOk ? "pass" : "error",
+      PROFILE_FIELD_CONFIG,
+      profileHealth.renderer.detail,
+      [
+        `source ${profileHealth.renderer.source}`,
+        `python ${profileHealth.renderer.python}`,
+        `gitlink ${profileHealth.renderer.gitlink ?? "none recorded"}`
+      ],
+      rendererOk ? "ok" : profileHealth.renderer.source !== "ok" ? profileHealth.renderer.source : profileHealth.renderer.python,
+      "the renderer and its lock helper in the submodule worktree equal the bytes at the committed gitlink, and a python3 with PyYAML can run them"
+    );
+    if (profileHealth.extras !== null) {
+      const all = profileHealth.extras.items;
+      const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
+      if (all.length > kept.length) {
+        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}].items: ${all.length - kept.length} of ${all.length} items dropped; data.profile.extras.by_class is counted over every entry before the cap`);
+      }
+      if (profileHealth.extras.truncated) {
+        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}]: the profile root holds more than ${profileManifest.limits.max_root_entries} entries; the sweep stopped at the cap and data.profile.extras.truncated says so`);
+      }
+      const unruled = all.filter((item) => item.class !== "approved-managed-exception" && item.class !== "intentionally-unmanaged");
+      const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, all.filter((item) => item.class === klass).length]));
+      const spread = FLEET_PROFILE_EXTRA_CLASSES.filter((klass) => byClass[klass] > 0).map((klass) => `${byClass[klass]} ${klass}`).join(", ");
+      hostFinding(
+        PROFILE_EXTRAS_RULE_ID,
+        unruled.length === 0 ? "pass" : "warn",
+        PROFILE_FIELD_PATH,
+        all.length === 0 ? "the profile root holds no unregistered entry" : unruled.length === 0 ? `${all.length} unregistered profile-root entr${all.length === 1 ? "y is" : "ies are"} classified by the contract (${spread})` : `${unruled.length} of ${all.length} unregistered profile-root entries carry no contract classification (${spread}); each is a finding for an operator, never a licence to delete`,
+        kept.map((item) => `${item.class} ${item.path} (${item.kind}${item.alias_of ? `, alias of ${item.alias_of}` : ""}${item.standalone ? `, ${item.standalone}` : ""}, ${item.unit_file_references} unit ref(s), ${item.guidance})`),
+        spread || "no unregistered entries",
+        "every unregistered entry of the profile root claimed by a contract classification",
+        kept.map((item) => ({
+          path: bounded2(item.path, 128),
+          class: item.class,
+          kind: item.kind,
+          link_target: item.link_target === null ? null : bounded2(item.link_target),
+          standalone: item.standalone,
+          alias_of: item.alias_of === null ? null : bounded2(item.alias_of, 128),
+          unit_file_references: item.unit_file_references,
+          process_reference: item.process_reference,
+          guidance: item.guidance,
+          detail: item.detail === null ? null : bounded2(item.detail)
+        }))
+      );
+    }
+  }
   const agentRecords = [];
   let totalObservations = 0;
   let emittedObservations = 0;
@@ -22123,9 +23530,71 @@ async function collectFleetStatus(options) {
         } else scaffoldCounts.passing += 1;
       }
     }
+    let profileSummary = null;
+    const profileResult = profileHealth?.agents.get(agentId);
+    const profileObserved = profileManifest !== null && profileResult !== void 0;
+    if (domainSet.has("profile")) {
+      const profile2 = observeFromProfile(ctx, {
+        agentId,
+        result: profileResult,
+        manifestDeclared: profileManifest !== null,
+        exception: profileExceptionFor(agentId),
+        notes: agentNotes
+      });
+      own.push(...profile2.observations);
+      profileSummary = profile2.summary;
+      if (!profileObserved) profileCounts.unobserved += 1;
+      else {
+        const aspects = [profileResult.path, profileResult.identity, profileResult.config, profileResult.bank, profileResult.skills];
+        const gateFailed = profileResult.path.state !== "pass" && profileResult.path.code !== "misowned-link";
+        if (gateFailed) {
+          if (profileResult.path.state === "fail") profileCounts.blocked_at_path += 1;
+          else profileCounts.incomplete += 1;
+        } else {
+          profileCounts.real += 1;
+          if (aspects.some((aspect2) => aspect2.state === "error" || aspect2.state === "unobserved")) profileCounts.incomplete += 1;
+          else if (aspects.some((aspect2) => aspect2.state === "fail")) {
+            if (profileExceptionFor(agentId) !== null) profileCounts.exception_authorized += 1;
+            else profileCounts.drifted += 1;
+          } else profileCounts.structurally_healthy += 1;
+        }
+        switch (profileResult.config.renderer.state) {
+          case "in-sync":
+            profileRenderer.checked += 1;
+            profileRenderer.in_sync += 1;
+            break;
+          case "drifted":
+            profileRenderer.checked += 1;
+            profileRenderer.drifted += 1;
+            break;
+          default:
+            break;
+        }
+        if (profileResult.config.items.some((item) => item.kind === "renderer-failed")) {
+          profileRenderer.checked += 1;
+          profileRenderer.failed += 1;
+        }
+        if (profileResult.config.items.some((item) => item.kind === "renderer-timeout")) {
+          profileRenderer.checked += 1;
+          profileRenderer.timeout += 1;
+        }
+        if (profileResult.bank.state === "pass") profileIdentity.bank_ok += 1;
+        for (const item of profileResult.bank.items) {
+          if (item.kind === "bank-alias") profileIdentity.bank_alias += 1;
+          else if (item.kind === "bank-custom") profileIdentity.bank_custom += 1;
+          else if (item.kind === "bank-missing" || item.kind === "pin-missing") profileIdentity.bank_missing += 1;
+          else if (item.kind === "bank-mismatch") profileIdentity.bank_mismatch += 1;
+        }
+        if (profileResult.skills.state === "pass" && profileResult.skills.coreMissing.length === 0 && profileResult.path.state !== "unobserved") profileSkills.core_complete += 1;
+        profileSkills.core_missing += profileResult.skills.items.filter((item) => item.kind === "core-missing" || item.kind === "canonical-missing").length;
+        profileSkills.core_replaced += profileResult.skills.items.filter((item) => item.kind === "core-replaced").length;
+        profileSkills.extras_seen += profileResult.skills.extra.length;
+      }
+    }
     const audit = auditByAgent.get(agentId);
     if (!live) {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
+      if (profileObserved) profileRuleAgreement.not_compared += 1;
       for (const domain of auditFedSelected) {
         own.push(observation2(ctx, {
           domain,
@@ -22141,6 +23610,7 @@ async function collectFleetStatus(options) {
       }
     } else if (auditEntry === null || audit === void 0 || audit.outcome !== "ok") {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
+      if (profileObserved) profileRuleAgreement.not_compared += 1;
       const failed = audit !== void 0 && audit.outcome === "failed";
       const state = failed ? "error" : "unobserved";
       const reason = auditEntry === null ? "audit-cli-unavailable" : audit === void 0 ? "no-project-path-recorded" : audit.reason ?? audit.outcome;
@@ -22316,6 +23786,29 @@ async function collectFleetStatus(options) {
           }
         }
       }
+      if (profileObserved) {
+        const ruleVerdict = profileRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString3(rule.id) === "hermes.runtime-singleton"));
+        const observerDrift = profileObserverDrift(profileResult);
+        if (ruleVerdict === null || observerDrift === null) profileRuleAgreement.not_compared += 1;
+        else {
+          profileRuleAgreement.compared += 1;
+          if (ruleVerdict === "fail" === observerDrift) profileRuleAgreement.agree += 1;
+          else {
+            profileRuleAgreement.disagree += 1;
+            addFinding3(ctx, {
+              code: "profile-rule-disagreement",
+              domain: "profile",
+              field: PROFILE_FIELD_PATH,
+              agent_id: agentId,
+              source: ctx.domainOwner("profile"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rule hermes.runtime-singleton reports ${ruleVerdict} while the profile observer finds ${observerDrift ? "drift" : "no drift"} over the profile state both read (the profile directory, config.yaml, config.delta.yaml and the Hindsight bank pin); both readings are kept and neither is resolved silently`
+            });
+          }
+        }
+      }
     }
     own.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : (a.rule_id ?? "") < (b.rule_id ?? "") ? -1 : (a.rule_id ?? "") > (b.rule_id ?? "") ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0);
     totalObservations += own.length;
@@ -22355,9 +23848,11 @@ async function collectFleetStatus(options) {
       retrieval,
       lifecycle,
       member_class: memberClass,
-      scaffold: scaffoldSummary
+      scaffold: scaffoldSummary,
+      profile: profileSummary
     });
   }
+  truncated.push(...profileExtrasNotes);
   const fleetObservations = [];
   if (needsProvenance) {
     for (const fact of provenanceFacts) {
@@ -22434,6 +23929,7 @@ async function collectFleetStatus(options) {
   };
   const health = evaluateFleetHealth({
     observations: ctx.observations,
+    hostFindings: host,
     members,
     collectionErrors,
     contradictions: contradictions.length,
@@ -22456,6 +23952,35 @@ async function collectFleetStatus(options) {
     },
     rule_agreement: { ...ruleAgreement }
   };
+  const profile = !domainSet.has("profile") ? null : {
+    source: SOURCE_PROFILE,
+    root: profileHealth === null ? { state: "unsupported", code: "manifest-undeclared" } : { state: profileHealth.root.state === "ok" ? "pass" : "error", code: bounded2(profileHealth.root.code, 64) },
+    renderer: {
+      source: profileHealth === null ? "manifest-undeclared" : bounded2(profileHealth.renderer.source, 64),
+      python: profileHealth === null ? "not-probed" : bounded2(profileHealth.renderer.python, 64),
+      gitlink: profileHealth?.renderer.gitlink ?? null,
+      ...profileRenderer
+    },
+    agents: {
+      ...profileCounts,
+      unobserved: profileCounts.unobserved + (profileCounts.total_registered - profileCounts.selected)
+    },
+    identity: { ...profileIdentity },
+    skills: { ...profileSkills },
+    extras: (() => {
+      const items = profileHealth?.extras?.items ?? [];
+      const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, items.filter((item) => item.class === klass).length]));
+      return {
+        coverage: profileHealth?.extras ? "swept" : "not-swept",
+        reason: profileHealth === null ? "manifest-undeclared" : profileHealth.extras ? null : bounded2(profileHealth.extrasReason ?? "not-swept", 64),
+        entries_total: items.length,
+        by_class: byClass,
+        listed: Math.min(items.length, FLEET_STATUS_MAX_ITEMS),
+        truncated: profileHealth?.extras?.truncated ?? false
+      };
+    })(),
+    rule_agreement: { ...profileRuleAgreement }
+  };
   return {
     contract_path: shownPath3(contractPath),
     contract_version: contract.contract_version,
@@ -22469,6 +23994,7 @@ async function collectFleetStatus(options) {
     probes,
     transitions,
     scaffold,
+    profile,
     truncated
   };
 }
@@ -22653,7 +24179,7 @@ function validateExternalEffectConsent(input, options) {
   return selected;
 }
 function resolveTargetDir(targetDir) {
-  const dir = resolve22(targetDir ?? process.cwd());
+  const dir = resolve23(targetDir ?? process.cwd());
   if (!existsSync27(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
@@ -22663,12 +24189,12 @@ function resolveTargetDir(targetDir) {
   return dir;
 }
 function resolvePjanglerRoot3() {
-  let dir = dirname18(fileURLToPath9(import.meta.url));
-  while (dir !== dirname18(dir)) {
-    if (existsSync27(join36(dir, "package.json")) && existsSync27(join36(dir, "templates", "commonproject", "copier.yml"))) {
+  let dir = dirname19(fileURLToPath9(import.meta.url));
+  while (dir !== dirname19(dir)) {
+    if (existsSync27(join37(dir, "package.json")) && existsSync27(join37(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
-    dir = dirname18(dir);
+    dir = dirname19(dir);
   }
   throw new Error("Unable to resolve pjangler root");
 }
@@ -22762,7 +24288,7 @@ function projectPreflightFailure(plan, errors, audit) {
   };
 }
 function preflightExistingHermesScaffold(targetDir) {
-  if (!existsSync27(join36(targetDir, "agents", "hermes"))) return void 0;
+  if (!existsSync27(join37(targetDir, "agents", "hermes"))) return void 0;
   const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
   if (!owner) return "Hermes lifecycle owner is unavailable";
   const finding2 = owner.check.audit(lifecycleContext(targetDir, true));
@@ -23021,12 +24547,12 @@ server.registerTool(
       );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
-      const explicitTargetDir = input.targetDir ? resolve22(input.targetDir) : void 0;
-      const parentDir = resolve22(input.parentDir ?? (explicitTargetDir ? dirname18(explicitTargetDir) : process.cwd()));
+      const explicitTargetDir = input.targetDir ? resolve23(input.targetDir) : void 0;
+      const parentDir = resolve23(input.parentDir ?? (explicitTargetDir ? dirname19(explicitTargetDir) : process.cwd()));
       if (!existsSync27(parentDir) || !statSync8(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
-        explicitTargetDir ?? join36(parentDir, projectSlug),
+        explicitTargetDir ?? join37(parentDir, projectSlug),
         "Bootstrap target"
       );
       const overwrite = input.overwrite ?? input.force ?? false;
@@ -23173,7 +24699,7 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
-        scaffold: !(input.targetDir && existsSync27(join36(resolve22(input.targetDir), ".git")))
+        scaffold: !(input.targetDir && existsSync27(join37(resolve23(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());

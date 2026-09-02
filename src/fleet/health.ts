@@ -265,6 +265,9 @@ const SOURCE_EVIDENCE: Readonly<Record<string, FleetStatusEvidence>> = Object.fr
   "recipe-audit": "direct",
   // The scaffold observer reads git objects and role directories itself.
   "fleet-scaffold": "direct",
+  // The profile observer (story 1.7) lstats and reads the profile tree itself
+  // and runs the canonical renderer's own check against it.
+  "fleet-profile": "direct",
   "declared-gap": "absent",
 });
 
@@ -1071,6 +1074,17 @@ export interface FleetHealthInput {
   policy: FleetHealthPolicyView;
   /** Each selected domain's rolled-up state, for the required-domain gate. */
   domainStates: ReadonlyMap<FleetStatusDomain, FleetStatusState>;
+  /**
+   * The host findings, for the JUSTIFICATION gate only. Story 1.7.
+   *
+   * A host condition is never a fleet failure and never touches `healthy` or
+   * `complete` (PJAN-84's line). But an unjustified host `warn` -- the profile
+   * root's extras sweep finding an entry nobody has classified -- is a gap the
+   * contract has not authorized, and a fleet cannot claim PROOF over a gap:
+   * it counts into `unjustified` exactly as an agent's unjustified warn does,
+   * and an `allowed_warnings` entry naming the rule is what lifts it.
+   */
+  hostFindings?: readonly FleetStatusHostFinding[];
 }
 
 /**
@@ -1102,6 +1116,11 @@ export function evaluateFleetHealth(input: FleetHealthInput): FleetStatusHealth 
     if (observation.freshness === "stale") stale += 1;
     if (observation.freshness === "unknown") freshnessUnknown += 1;
     if (needsJustification(observation.state) && observation.justification === null) unjustified += 1;
+  }
+  // Host findings reach the justification gate and nothing else: never
+  // `byState`, never `healthy`, never `complete`.
+  for (const finding of input.hostFindings ?? []) {
+    if (needsJustification(finding.state) && finding.justification === null) unjustified += 1;
   }
 
   const healthy = byState.fail === 0 && byState.error === 0;

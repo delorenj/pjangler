@@ -238,12 +238,14 @@ completion. Two runs over unchanged state produce byte-identical `data`, which i
 what lets the MCP tool result be compared to the CLI `--json` envelope by
 equality rather than by resemblance.
 
-Two provenance questions this host records nothing to answer, and which are
-therefore reported as `unsupported` with their observed evidence rather than
-guessed: a deployed role scaffold carries no template ref (it renders no
-`.copier-answers.yml`), and a generated profile config carries only the
-`GENERATED FILE -- DO NOT EDIT` marker — no generation counter, digest, or
-sidecar — so a sha256 of its bytes is the only stable evidence.
+Two provenance questions this host records nothing to answer used to be
+reported here as `unsupported`: a deployed role scaffold carries no template
+ref, and a generated profile config carries only the `GENERATED FILE -- DO NOT
+EDIT` marker. Both are answered by `fleet status` observers now — scaffold
+parity compares the role against the template at the committed gitlink (story
+1.6), and profile health proves the generated config through the canonical
+renderer's own check (story 1.7) — so neither fact is carried by
+`fleet provenance` any more.
 
 ## Fleet status
 
@@ -276,7 +278,7 @@ the same envelope, including `baseline` and `exitCode`.
 | `registry` | the agent row itself: well-formedness, identity conflicts, correlation to a project record | `hermes.registry-parity` (**host-scoped** → `data.host`, unfiltered runs only†) |
 | `project_binding` | the row's board binding and whether the repository's `.project.json` agrees | the notebook and `sot.project-json` rules |
 | `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide), and **every managed role directory compared asset by asset against the template at the committed gitlink** — eight group observations per agent, typed per-asset `items`, `data.scaffold` and `agents[].scaffold` summaries (see *Scaffold parity* below) | every tracked-asset parity rule, plus a `scaffold-rule-disagreement` finding where `hermes.pm-scaffold` and the observer disagree |
-| `profile` | the generated profile directory, `lstat`ed and never followed; a symlink is a `fail`, because the contract declares `symlink_allowed: false` | `hermes.runtime-singleton`; `hermes.profile-wiring` (**host-scoped**) |
+| `profile` | the profile directory `lstat`ed by the inventory (a symlink is a `fail`, because the contract declares `symlink_allowed: false`), and **five observations per agent from the profile observer**: the path gated (real, contained, safely named, unambiguous), the identity file, the generated config proven by the canonical renderer's own `check` at the committed gitlink, the Hindsight bank pin, and the skill core by bytes — plus `data.profile`, `agents[].profile`, and in fleet scope one host sweep classifying every unregistered root entry (see *Profile health* below) | `hermes.runtime-singleton`, plus a `profile-rule-disagreement` finding where it and the observer disagree; `hermes.profile-wiring` (**host-scoped**) |
 | `runtime` | the role-local runtime directory derived from `role_dir` | `hermes.untracked-runtimes` |
 | `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**, unfiltered runs only†), never promoted to an agent |
 | `live_process` | `unsupported` — there is no `ps`, `pgrep`, or `/proc` read anywhere in this build | nothing |
@@ -379,6 +381,85 @@ directory while `data.scaffold.agents` keeps the fleet-wide totals. The role
 directory is the registry row's `role_dir`, defaulting to
 `<project_path>/agents/hermes/<role>` only when the row is silent
 (`agents[].scaffold.role_dir_source`), and must sit inside `project_path`.
+
+### Profile health
+
+`profile` proves every registered agent's generated profile, not merely that
+its directory exists. The contract's `profile_manifest` block (schema 4) is the
+policy: which renderer decides "generated config == deep_merge(base, delta)"
+and where its bytes are pinned (`renderer`), which keys an identity file may
+carry and which it may carry inertly (`identity`), how the Hindsight bank pin
+is spelled and which ids are never an identity (`memory`), which six skills are
+the immutable core and where the canonical copies live (`skill_core`), which
+root entries are the observer's own footprint or a backup (`extras`), and how
+much may be read (`limits`).
+
+Each agent gets **five observations, one per declared `profiles.{profile_name}`
+leaf**, in this order:
+
+| field | proves | fails when |
+| --- | --- | --- |
+| `profiles.{profile_name}` | the path **gate**: a real directory under the root, safely named, with no case-insensitive twin, whose singleton links point into this agent's own runtime | `symlink`, `missing`, `not-a-directory`, `name-unsafe`, `case-collision:<other>`, `misowned-link:<entry>` |
+| `profiles.{profile_name}.profile.yaml` | the identity file carries only identity keys and names this profile | `missing`, `symlink`, `malformed`, `identity-mismatch`; `unknown-key:<k>` is a `warn`; a `config:` block is recorded as `inert-config-block` and passes, because Hermes reads it nowhere |
+| `profiles.{profile_name}.config.yaml` | `config.yaml == deep_merge(base, config.delta.yaml)`, proven by running the **canonical renderer's own `check`** | `generated-symlink`, `generated-missing`, `marker-missing`, `delta-missing`, `delta-symlink`, and `semantic-drift` naming each drifted top-level section |
+| `profiles.{profile_name}.hindsight/config.json` | the bank pin is exactly `agent-<profile_name>` | `pin-missing`, `pin-symlink`, `pin-malformed`, `bank-missing` (a generic `bank_id_template` never satisfies it), `bank-custom`, `bank-alias` (case or `_`/`-` variant), `bank-mismatch` |
+| `profiles.{profile_name}.skills` | every core skill resolves **by bytes** — through the profile's `skills` entry or the generated config's `skills.external_dirs` — to a `SKILL.md` inside an allowed root that equals the canonical copy | `core-missing:<n>`, `core-replaced:<n>`, `core-dangling:<n>`, `core-foreign:<n>`; optional skills beside the core are listed as `extra-skill` |
+
+**Gate first, then look.** A profile that fails the gate is a `fail` on the
+first field and the other four are `unobserved` naming the gate code — not
+`error` (nothing failed to collect) and not `skip` (nothing authorizes
+skipping) — and nothing beneath the directory is read, because anything read
+through a symlinked or ambiguous profile may belong to another agent. The root
+itself is gated one level up (`profile.root` in `data.host`): no component of
+it below the home may be a symlink.
+
+**The renderer runs at canonical bytes or not at all.** `profile.renderer` in
+`data.host` reads `pass` only when the submodule worktree's copies of
+`scripts/hermes-profile-config.py` and its lock helper have the same blob ids
+as the tree at the **committed gitlink**, and a `python3` with PyYAML at 3.11
+or newer answers. Any other reading — `renderer-source-mismatched`,
+`renderer-source-missing`, `renderer-python-unavailable`, `renderer-pyyaml-missing`
+— is `error`, every selected agent's `config.yaml` field is `error`, and **no
+renderer child is spawned**. The renderer's `check` takes the profile's own
+persistent zero-byte lock (`profiles/.<name>.config.lock`, `flock`, created on
+first use) so a concurrent render cannot hand it a half-written file; that is
+its read semantics, not a mutation, and the observer bounds the wait so a held
+lock becomes a `renderer-timeout` on that one profile. Lock entries are skipped
+by the root sweep and never counted, so the observer's own footprint never
+changes its output.
+
+**Extras are findings, never a licence.** In fleet scope the profile root is
+enumerated once and every unregistered entry lands in exactly one class on the
+`profile.extras` host finding: `approved-managed-exception` (a
+`managed_shared_service` entry with `profile` in its policy domains claims it —
+the fleet Bloodbank gateway's profile), `intentionally-unmanaged` (an
+`intentionally_unmanaged` entry with `source: profiles.<name>`),
+`retired-candidate` (a backup shape, an alias of a registered name by case or
+`_`/`-`, or a directory whose `config.yaml` is a symlink), `debris-candidate` (a
+stray file, an empty directory, a dangling link), or `unclassified`. Each item
+carries bounded evidence — kind, a shown link target, whether a directory is a
+`complete` standalone profile, `alias_of`, how many user unit files name it as
+`HERMES_HOME`, `process_reference: "unobserved"` until story 1.9 — and a
+`guidance` of `adoption`, `exception`, `retirement` or `manual-review`. The
+finding is `pass` only when every entry is approved or intentionally unmanaged;
+otherwise it is `warn`, unjustified by design, and the fleet stays `unproven`
+until the operator classifies the entry in the contract. `--agent <id>` inspects
+one registered profile and never sweeps: `data.profile.extras.coverage` then
+reads `not-swept` and no `profile.extras` finding exists.
+
+Nothing emitted is a file body, a config value, a delta value, a memory, a
+timestamp or an absolute path: digests are 12-hex sha256 prefixes, sections and
+keys are names, and a bank id is an identifier. `data.profile` counts every
+selected agent before any cap (`real`, `blocked_at_path`,
+`structurally_healthy`, `drifted`, `incomplete`, `exception_authorized`,
+`unobserved`) beside the renderer, bank and skill tallies; under `--live`,
+`data.profile.rule_agreement` says how the observer and `hermes.runtime-singleton`
+agreed over the state both read (the directory, the two config files, the pin),
+and a disagreement is a gating `profile-rule-disagreement` finding with both
+readings kept. An operator ruling on one agent lives in
+`health_policy.agent_exceptions[]` with `domain: profile`, exactly as for a
+scaffold. A contract with no `profile_manifest` still loads; the domain then
+reads `unsupported` under capability `profile.manifest`.
 
 ### Seven states, one precedence
 

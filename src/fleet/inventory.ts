@@ -491,6 +491,18 @@ export function readProjectRegistryRaw(path: string): RawStore {
   return readKeyedStore(path, "PJangler project registry", "projects");
 }
 
+/**
+ * The agent registry's fleet-shared `gateways:` block, raw, keyed by gateway id.
+ *
+ * Read by the profile observer (story 1.7) for `gateways.bloodbank.profile_name`,
+ * the one registry value that can make a profile-root entry an approved
+ * managed exception. The same tolerant reader as the agent rows, so a registry
+ * without the block reads as `collection: "missing"` rather than throwing.
+ */
+export function readAgentRegistryGatewaysRaw(path: string): RawStore {
+  return readKeyedStore(path, "Hermes agent registry", "gateways");
+}
+
 // ---------------------------------------------------------------------------
 // Store resolution
 // ---------------------------------------------------------------------------

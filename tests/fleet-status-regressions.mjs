@@ -316,6 +316,46 @@ function writeAgentRegistryWith(path, slugs, extra) {
   return path;
 }
 
+
+// ---------------------------------------------------------------------------
+// Renderer-clean profiles (story 1.7 / PJAN-109)
+//
+// The profile observer now gates every registered profile and proves it through
+// the canonical renderer's own check, so a fixture profile that carried only a
+// marker file reads as an identity miss, a delta miss, a pin miss and a missing
+// skill core. The FIXTURE is made clean, never the observer weakened: a fleet
+// base, six canonical skills, and per profile the identity file, an empty
+// delta, a generated config equal to the base, the bank pin, the skill links,
+// and the renderer's zero-byte lock PRE-CREATED so a check writes nothing.
+// ---------------------------------------------------------------------------
+const PROFILE_CORE_SKILLS = ["33god-projects", "delonet-conventions", "delonet-dotenv", "hermes-pm-template-maintenance", "hindsight", "subagent-driven-development"];
+
+function profileBase(home) {
+  return { model: { default: "fleet-model" }, skills: { external_dirs: [join(home, ".agents", "skills")] }, memory: { provider: "hindsight" } };
+}
+
+function seedProfileFixtures(home) {
+  mkdirSync(join(home, ".hermes", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".hermes", "config.yaml"), YAML.stringify(profileBase(home)), "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) {
+    mkdirSync(join(home, ".agents", "skills", skill), { recursive: true });
+    writeFileSync(join(home, ".agents", "skills", skill, "SKILL.md"), `# ${skill}\n`, "utf8");
+  }
+}
+
+function seedRendererCleanProfile(home, name) {
+  const dir = join(home, ".hermes", "profiles", name);
+  mkdirSync(join(dir, "hindsight"), { recursive: true });
+  mkdirSync(join(dir, "skills"), { recursive: true });
+  writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
+  writeFileSync(join(dir, "config.delta.yaml"), "{}\n", "utf8");
+  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify(profileBase(home))}`, "utf8");
+  writeFileSync(join(dir, "hindsight", "config.json"), `{\n  "bank_id": "agent-${name}"\n}\n`, "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) symlinkSync(join(home, ".agents", "skills", skill), join(dir, "skills", skill));
+  writeFileSync(join(home, ".hermes", "profiles", `.${name}.config.lock`), "");
+  return dir;
+}
+
 const BASE_SLUGS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
 
 function seedScratch() {
@@ -334,11 +374,10 @@ function seedScratch() {
   // contract declares `service_model.profile_layout.symlink_allowed: false`, so
   // that agent's `profile` domain must report `fail` from the store read alone,
   // with no audit and no `--live`.
+  seedProfileFixtures(scratchHome);
   for (const slug of BASE_SLUGS) {
     if (slug === "beta") continue;
-    const dir = join(scratchHome, ".hermes", "profiles", `${slug}-pm`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+    seedRendererCleanProfile(scratchHome, `${slug}-pm`);
   }
   mkdirSync(join(scratchHome, ".hermes", "profiles", "shared"), { recursive: true });
   symlinkSync(join(scratchHome, ".hermes", "profiles", "shared"), join(scratchHome, ".hermes", "profiles", "beta-pm"));
@@ -1424,7 +1463,10 @@ process.exit(0);
     // symlink_allowed: false, so its profile domain is a guaranteed `fail`.
     const drifted = status(cli(["fleet", "status", "--domain", "profile", "--agent", "beta-pm", "--json"]));
     assert.equal(drifted.health.healthy, false, "a symlinked profile directory must make the fleet verdict false");
-    assert.equal(drifted.health.failed, 1);
+    // TWO fails since story 1.7: the inventory's lstat on `agents.{agent_id}.profile_name`
+    // and the profile observer's path gate on `profiles.{profile_name}` -- two
+    // true readings of two things, on two fields, never a contradiction.
+    assert.equal(drifted.health.failed, 2);
 
     const clean = status(cli(["fleet", "status", "--domain", "profile", "--agent", "alpha-pm", "--json"]));
     assert.equal(clean.health.healthy, true, "and a slice with no fail and no error must read true");

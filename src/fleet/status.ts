@@ -73,17 +73,21 @@ import {
   buildAuthorityIndex,
   collectFleetInventory,
   matchException,
+  readAgentRegistryGatewaysRaw,
   readAgentRegistryRaw,
   readProjectRegistryRaw,
   resolveInventoryStores,
+  resolveProfileLayout,
   type FleetAuthorityIndex,
   type FleetInventoryOptions,
 } from "./inventory";
 import { bounded, redactHome } from "./output";
+import { collectProfileHealth, type FleetProfileAgentResult, type FleetProfileHealth } from "./profile";
 import { collectFleetProvenance } from "./provenance";
 import { captureSelf, mapBounded, remainingMs, throwIfCancelled, type FleetRunContext } from "./runtime";
 import { collectScaffoldParity, type FleetScaffoldAgentResult, type FleetScaffoldParity } from "./scaffold";
 import {
+  FLEET_PROFILE_EXTRA_CLASSES,
   FLEET_STATUS_AUDIT_CONCURRENCY,
   FLEET_STATUS_DOMAINS,
   FLEET_STATUS_MAX_AGENTS,
@@ -101,13 +105,18 @@ import {
   type FleetFindingSeverity,
   type FleetInventoryRow,
   type FleetProbeRecord,
+  type FleetProfileExtraClass,
+  type FleetProfileManifest,
+  type FleetProfileSummary,
   type FleetProvenanceFact,
   type FleetScaffoldManifest,
   type FleetScaffoldSummary,
   type FleetStatus,
   type FleetStatusAgent,
+  type FleetStatusAgentProfile,
   type FleetStatusAgentScaffold,
   type FleetStatusObservationItem,
+  type FleetStatusProfileExtraItem,
   type FleetStatusDomain,
   type FleetStatusDomainRollup,
   type FleetStatusEvidence,
@@ -331,6 +340,13 @@ const CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
  * otherwise, exactly like the three above.
  */
 const CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
+/**
+ * The profile observer's own gap (story 1.7): a contract with no
+ * `profile_manifest` gives it nothing to prove against, so every selected
+ * agent's five profile fields are `unsupported` under this capability --
+ * unjustified unless the policy says otherwise, exactly like the four above.
+ */
+const CAPABILITY_PROFILE_MANIFEST = "profile.manifest";
 
 /** The inventory finding severity, mapped onto the status priority axis. */
 const FINDING_SEVERITY: Readonly<Record<FleetFindingSeverity, FleetStatusSeverity>> = Object.freeze({
@@ -378,6 +394,52 @@ const SOURCE_SCAFFOLD = "fleet-scaffold";
 
 /** The host-scoped rule id the source-integrity finding is filed under. */
 const SCAFFOLD_SOURCE_RULE_ID = "scaffold.source";
+
+/** The profile observer (story 1.7): the profile tree gated, read, and proven through the canonical renderer's check. */
+const SOURCE_PROFILE = "fleet-profile";
+/** The three host-scoped rule ids the profile observer files its fleet-wide findings under. */
+const PROFILE_ROOT_RULE_ID = "profile.root";
+const PROFILE_RENDERER_RULE_ID = "profile.renderer";
+const PROFILE_EXTRAS_RULE_ID = "profile.extras";
+
+/**
+ * The five fields the profile observer reports on, as `profiles.{profile_name}`
+ * leaves. NEVER `agents.{agent_id}.profile_name`: that is the inventory's own
+ * field for this domain, `detectContradictions` joins on `(agent, domain,
+ * field)`, and a path `fail` here beside the inventory's `lstat` would be
+ * reported as two sources disagreeing about one thing when they are two true
+ * readings of two things.
+ */
+const PROFILE_FIELD_PATH = "profiles.{profile_name}";
+const PROFILE_FIELD_IDENTITY = "profiles.{profile_name}.profile.yaml";
+const PROFILE_FIELD_CONFIG = "profiles.{profile_name}.config.yaml";
+const PROFILE_FIELD_BANK = "profiles.{profile_name}.hindsight.config.json";
+const PROFILE_FIELD_SKILLS = "profiles.{profile_name}.skills";
+
+/**
+ * The subset of the profile the `hermes.runtime-singleton` recipe rule ALSO
+ * reads, so the two can be checked for agreement under `--live`.
+ *
+ * The rule checks the profile directory is not a symlink, `config.yaml` is a
+ * real rendered file, `config.delta.yaml` is a real file, and the bank pin is
+ * present and exact. It parses no config, reads no identity file and no skill,
+ * so semantic drift, identity and skill findings are coverage it never had --
+ * an observer finding there is not a disagreement. The regexes are the rule's
+ * own detail lines (`src/parity/rules.ts`, `profileConfigFindings`).
+ */
+const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
+  /config\.yaml is a symlink/u,
+  /not a rendered artifact/u,
+  /profile config missing/u,
+  /config\.delta\.yaml missing/u,
+  /must be a real file/u,
+  /identity-memory/u,
+  /profile dir is a symlink/u,
+];
+const PROFILE_RULE_COVERED_KINDS: ReadonlySet<string> = new Set([
+  "symlink", "generated-symlink", "generated-missing", "marker-missing", "delta-missing", "delta-symlink",
+  "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
+]);
 
 /**
  * The subset of the scaffold the `hermes.pm-scaffold` recipe rule ALSO compares,
@@ -1402,6 +1464,177 @@ function scaffoldRuleVerdict(rule: Record<string, unknown> | undefined): "pass" 
   return details.some((line) => /: (?:missing|stale) (?!.*\/runtime\/)/u.test(line)) ? "fail" : null;
 }
 
+// ---------------------------------------------------------------------------
+// The profile observer's observations (story 1.7)
+// ---------------------------------------------------------------------------
+
+/** What `observeFromProfile` needs beyond the context. */
+interface ProfileObservationInput {
+  agentId: string;
+  /** The observer's result for this agent, or undefined when it never ran. */
+  result: FleetProfileAgentResult | undefined;
+  /** Whether the contract declares a `profile_manifest` at all. */
+  manifestDeclared: boolean;
+  /** The `health_policy.agent_exceptions` ruling for this agent in this domain, if any. */
+  exception: { path: string; reason: string } | null;
+  /** Where item clips are recorded. The caller adds them to `truncated` if the record is emitted. */
+  notes: string[];
+}
+
+/**
+ * Five observations per agent, on five `profiles.{profile_name}` leaves.
+ *
+ * Five fields, not one, and none shared with the inventory: the inventory's
+ * profile observation sits on `agents.{agent_id}.profile_name`, so a path
+ * `fail` here is never reported as a contradiction of its `lstat`;
+ * `authority.ownerOf` answers for every leaf (the renderer for the generated
+ * config, the template for the three provisioned leaves, the renderer by
+ * namespace majority for the directory itself); and `by_state` counts agents
+ * per aspect rather than files.
+ */
+function observeFromProfile(ctx: FleetStatusContext, input: ProfileObservationInput): {
+  observations: FleetStatusObservation[];
+  summary: FleetStatusAgentProfile | null;
+} {
+  const { agentId, result } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: [PROFILE_FIELD_PATH, PROFILE_FIELD_IDENTITY, PROFILE_FIELD_CONFIG, PROFILE_FIELD_BANK, PROFILE_FIELD_SKILLS].map((field) => observation(ctx, {
+        domain: "profile", agentId, state: "unsupported",
+        field,
+        summary: "the fleet contract declares no profile_manifest, so no generated profile can be proven against the canonical renderer",
+        details: ["declare profile_manifest in the fleet contract (schema 4) to make this domain observable"],
+        source: SOURCE_PROFILE,
+        capability: CAPABILITY_PROFILE_MANIFEST,
+        observed: "not observed",
+        desired: "the profile gated, read, and proven through the canonical renderer's check",
+      })),
+      summary: null,
+    };
+  }
+  if (result === undefined) {
+    return {
+      observations: [observation(ctx, {
+        domain: "profile", agentId, state: "unobserved",
+        field: PROFILE_FIELD_PATH,
+        summary: "the profile observer produced no result for this agent",
+        source: SOURCE_PROFILE,
+        observed: "no result",
+        desired: "five profile observations for this agent",
+      })],
+      summary: null,
+    };
+  }
+
+  const observations: FleetStatusObservation[] = [];
+  const emit = (field: string, aspect: { state: FleetStatusState; items: ReadonlyArray<{ path: string; kind: FleetStatusObservationItem["kind"]; desired: string | null; observed: string | null; detail: string | null }>; observed: string; desired: string; summary: string }): void => {
+    const items: FleetStatusObservationItem[] = aspect.items.map((item) => ({
+      path: bounded(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded(item.desired, 64),
+      observed: item.observed === null ? null : bounded(item.observed, 64),
+      detail: item.detail === null ? null : bounded(item.detail),
+      wip: false,
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${field}].items: ${items.length - kept.length} of ${items.length} items dropped; `
+        + "the counts on this observation and on agents[].profile are computed over every item before the cap",
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}`;
+    });
+    // An operator ruling covers DRIFT, never a collection error and never an
+    // unread field: an exception is a decision about the fleet, and an error
+    // is this run failing to read it, which no ruling can excuse.
+    const excepted = aspect.state === "fail" && input.exception !== null;
+    observations.push(observation(ctx, {
+      domain: "profile", agentId, state: aspect.state,
+      field,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_PROFILE,
+      summary: aspect.summary,
+      details,
+      observed: aspect.observed,
+      desired: aspect.desired,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception!.reason : null,
+      exceptionPolicy: excepted ? input.exception!.path : null,
+    }));
+  };
+  emit(PROFILE_FIELD_PATH, result.path);
+  emit(PROFILE_FIELD_IDENTITY, result.identity);
+  emit(PROFILE_FIELD_CONFIG, result.config);
+  emit(PROFILE_FIELD_BANK, result.bank);
+  emit(PROFILE_FIELD_SKILLS, result.skills);
+
+  return {
+    observations,
+    summary: {
+      profile_name: result.profileName,
+      path: { state: result.path.state, code: bounded(result.path.code, 64) },
+      identity: { state: result.identity.state, keys: result.identity.keys.map((key) => bounded(key, 64)) },
+      renderer: { state: result.config.renderer.state, sections: result.config.renderer.sections.map((section) => bounded(section, 64)) },
+      digests: { ...result.config.digests },
+      bank: {
+        observed: result.bank.bankId === null ? null : bounded(result.bank.bankId, 64),
+        expected: result.bank.expectedBank === null ? null : bounded(result.bank.expectedBank, 64),
+        state: result.bank.state,
+      },
+      skills: {
+        state: result.skills.state,
+        core_present: result.skills.corePresent,
+        core_missing: result.skills.coreMissing.map((skill) => bounded(skill, 64)),
+        extra: result.skills.extra.map((skill) => bounded(skill, 64)),
+        sources_unresolvable: result.skills.sourcesUnresolvable,
+      },
+    },
+  };
+}
+
+/**
+ * The `hermes.runtime-singleton` rule's verdict over the subset it and the
+ * profile observer both read, or null when it cannot be compared.
+ *
+ * A `fail` counts only when one of its detail lines is one of the profile
+ * checks: the rule also fails for its singleton-link and shared-seed checks,
+ * which the observer does not read the same way, and comparing those would
+ * report a disagreement about a thing only one side looked at.
+ */
+function profileRuleVerdict(rule: Record<string, unknown> | undefined): "pass" | "fail" | null {
+  if (rule === undefined) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line): line is string => typeof line === "string") : [];
+  return details.some((line) => PROFILE_RULE_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+
+/** Whether the profile observer found drift the rule would also have seen. Null when the shared subset was not fully read. */
+function profileObserverDrift(result: FleetProfileAgentResult | undefined): boolean | null {
+  if (result === undefined) return null;
+  // The rule reads the path, the two config files and the pin. An `error` or
+  // an `unobserved` on any of those is a partial reading, and a verdict over a
+  // partial reading is not one to hold the rule against.
+  const shared = [result.path, result.config, result.bank];
+  if (shared.some((aspect) => aspect.state === "error" || aspect.state === "unobserved")) return null;
+  const subsetDrift = shared.some((aspect) => aspect.items.some((item) => PROFILE_RULE_COVERED_KINDS.has(item.kind)));
+  if (subsetDrift) return true;
+  // Drift the rule never reads -- semantic drift the renderer found, an
+  // identity-file defect, a skill-core defect -- is not "no drift" either: a
+  // rule `pass` beside it is coverage the rule never had, and holding the two
+  // against each other would report agreement about a thing one side never
+  // looked at. Not compared.
+  const otherDrift = result.identity.state === "fail" || result.skills.state === "fail"
+    || result.config.items.some((item) => item.kind === "semantic-drift" || item.kind === "unparsed");
+  return otherDrift ? null : false;
+}
+
 /** Whether the observer found drift the rule would also have seen. Null when the comparison was incomplete. */
 function scaffoldObserverDrift(result: FleetScaffoldAgentResult | undefined): boolean | null {
   if (result === undefined || result.error !== null) return null;
@@ -1826,9 +2059,20 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // home-redacted, and a role directory has to be opened, not shown.
   const roleDirByAgent = new Map<string, string | null>();
   const rawRowByAgent = new Map<string, Record<string, unknown>>();
+  // The profile observer's per-row inputs (story 1.7), from the raw row for
+  // the same reason. EVERY row's profile name is kept, not only the selected
+  // ones: the root sweep skips exact registered names and detects aliases of
+  // them, and a `--agent` run must still know the whole fleet's names to gate
+  // one profile against a case-insensitive twin.
+  const profileNameByAgent = new Map<string, string | null>();
+  const displayNameByAgent = new Map<string, string | null>();
   for (const entry of agentRaw.entries) {
-    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const raw = isRecord(entry.value) ? entry.value : {};
+    if (!profileNameByAgent.has(entry.key)) {
+      profileNameByAgent.set(entry.key, nonEmptyString(raw.profile_name));
+      displayNameByAgent.set(entry.key, nonEmptyString(raw.display_name));
+    }
+    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const declared = nonEmptyString(raw.project_path);
     if (declared !== null) repoByAgent.set(entry.key, resolve(expandHome(declared, home)));
     const declaredRoleDir = nonEmptyString(raw.role_dir);
@@ -1840,6 +2084,10 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // The manifest is read only when the domain it feeds is selected: a
   // `--domain registry` run must not resolve render inputs it will never use.
   const manifest: FleetScaffoldManifest | null = domainSet.has("template_scaffold") ? contract.scaffold_manifest ?? null : null;
+  // The same gate for the profile manifest (story 1.7): read only when the
+  // profile domain is selected, so a `--domain registry` run spawns zero
+  // renderer children and reads zero profile bytes.
+  const profileManifest: FleetProfileManifest | null = domainSet.has("profile") ? contract.profile_manifest ?? null : null;
   // The PROJECT raw store, read only when a freshness policy or a scaffold
   // render input actually needs it. Every populated, declared timestamp in
   // either store lives on one side or the other, and reading a file nothing
@@ -2057,6 +2305,62 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   };
   const ruleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
 
+  // -- generated profile health, only when profile is selected ---------------
+  //
+  // Story 1.7. Every registered profile gated (real, contained, unambiguous),
+  // read (identity file, generated config, delta, bank pin, skills) and proven
+  // through the canonical renderer's own `check`, run at bytes proven identical
+  // to the committed gitlink; in fleet scope, every unregistered root entry
+  // classified. Gated on the domain exactly as the scaffold observer is.
+  const profileExceptionFor = (agentId: string): { path: string; reason: string } | null => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "profile" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let profileHealth: FleetProfileHealth | null = null;
+  if (profileManifest !== null) {
+    throwIfCancelled(runContext);
+    const layout = resolveProfileLayout(contract, env, home);
+    const profileLayout = isRecord(contract.service_model?.profile_layout) ? contract.service_model.profile_layout : {};
+    const gateways = readAgentRegistryGatewaysRaw(stores.agents.inspectedPath);
+    const bloodbank = gateways.entries.find((entry) => entry.key === "bloodbank");
+    profileHealth = await collectProfileHealth({
+      run: runContext,
+      pjanglerRoot: resolvePjanglerRoot(),
+      home,
+      env,
+      fleetHome: env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes"),
+      root: layout.root,
+      generatedMarker: nonEmptyString(profileLayout.generated_marker) ?? "GENERATED FILE -- DO NOT EDIT",
+      generatedFile: nonEmptyString(profileLayout.generated_file) ?? "config.yaml",
+      overrideFile: nonEmptyString(profileLayout.override_file) ?? "config.delta.yaml",
+      manifest: profileManifest,
+      classifications: contract.classifications,
+      gatewayProfileName: bloodbank && isRecord(bloodbank.value) ? nonEmptyString(bloodbank.value.profile_name) : null,
+      registeredProfileNames: [...profileNameByAgent.values()].filter((name): name is string => name !== null),
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        profileName: profileNameByAgent.get(agentId) ?? null,
+        displayName: displayNameByAgent.get(agentId) ?? null,
+        roleDir: roleDirByAgent.get(agentId) ?? null,
+      })),
+      // Fleet scope only: an `--agent` run inspects one registered profile and
+      // never enumerates the root for extras.
+      sweep: scope.kind === "fleet",
+      shown: shownPath,
+    });
+    ctx.probes.push(...profileHealth.probes);
+  }
+  // Counted over EVERY selected agent, before any cap, in the per-agent loop.
+  const profileCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    real: 0, blocked_at_path: 0, structurally_healthy: 0, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: 0,
+  };
+  const profileRenderer = { checked: 0, in_sync: 0, drifted: 0, failed: 0, timeout: 0 };
+  const profileIdentity = { bank_ok: 0, bank_alias: 0, bank_custom: 0, bank_missing: 0, bank_mismatch: 0 };
+  const profileSkills = { core_complete: 0, core_missing: 0, core_replaced: 0, extras_seen: 0 };
+  const profileRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+
   // -- the recipe audit, as bounded children ---------------------------------
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
@@ -2224,6 +2528,125 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     });
   }
 
+  // -- the profile observer's three host findings (story 1.7) ---------------
+  //
+  // The root gate and the renderer's integrity are facts about THIS MACHINE:
+  // its fleet home and its checkout of pjangler. The extras sweep is a fact
+  // about the shared profile root. All three are filed exactly as
+  // `scaffold.source` is -- once, in `data.host`, through the same classifier
+  // -- and their consequence for the agents rides on the agents' own records.
+  const profileExtrasNotes: string[] = [];
+  if (profileHealth !== null) {
+    const hostRetrieval = retrievalFor(null, "profile", live);
+    const hostFinding = (
+      ruleId: string,
+      state: FleetStatusState,
+      field: string,
+      summary: string,
+      details: readonly string[],
+      observed: string,
+      desired: string,
+      items?: FleetStatusProfileExtraItem[],
+    ): void => {
+      const classification = classifyObservation({
+        domain: "profile", state, field,
+        ruleId, ruleScope: "host", source: SOURCE_PROFILE,
+        capability: null, evidence: null, fixable: false,
+        exceptionId: null, exceptionReason: null,
+        freshness: "not_applicable",
+        repo: null,
+        retrieval: hostRetrieval,
+        activationField: ctx.activationField,
+        activationOwner: ctx.activationOwner,
+      }, ctx.policy);
+      hostByRule.set(ruleId, {
+        finding: {
+          rule_id: ruleId,
+          owner: ctx.authority.ownerOf(field) ?? ctx.domainOwner("profile"),
+          domain: "profile",
+          state,
+          summary: bounded(redactHome(summary)),
+          details: boundedDetails(details),
+          finding_id: statusFindingId("host", null, "profile", ruleId, field, SOURCE_PROFILE),
+          retrieval: hostRetrieval,
+          applicability: classification.applicability,
+          evidence: classification.evidence,
+          freshness: classification.freshness,
+          severity: classification.severity,
+          repair: classification.repair,
+          observed: bounded(redactHome(observed)),
+          desired: bounded(desired),
+          next_action: classification.next_action,
+          next_action_class: classification.next_action_class,
+          justification: classification.justification,
+          ...(items && items.length > 0 ? { items } : {}),
+        },
+        states: new Map([[state, 1]]),
+      });
+    };
+    hostFinding(
+      PROFILE_ROOT_RULE_ID,
+      profileHealth.root.state === "ok" ? "pass" : "error",
+      PROFILE_FIELD_PATH,
+      profileHealth.root.detail,
+      [`root ${profileHealth.root.code}`],
+      profileHealth.root.code,
+      "the profile root is the directory the renderer reads, reached through real directories only",
+    );
+    const rendererOk = profileHealth.renderer.source === "ok" && profileHealth.renderer.python === "ok";
+    hostFinding(
+      PROFILE_RENDERER_RULE_ID,
+      rendererOk ? "pass" : "error",
+      PROFILE_FIELD_CONFIG,
+      profileHealth.renderer.detail,
+      [
+        `source ${profileHealth.renderer.source}`,
+        `python ${profileHealth.renderer.python}`,
+        `gitlink ${profileHealth.renderer.gitlink ?? "none recorded"}`,
+      ],
+      rendererOk ? "ok" : profileHealth.renderer.source !== "ok" ? profileHealth.renderer.source : profileHealth.renderer.python,
+      "the renderer and its lock helper in the submodule worktree equal the bytes at the committed gitlink, and a python3 with PyYAML can run them",
+    );
+    if (profileHealth.extras !== null) {
+      const all = profileHealth.extras.items;
+      const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
+      if (all.length > kept.length) {
+        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}].items: ${all.length - kept.length} of ${all.length} items dropped; data.profile.extras.by_class is counted over every entry before the cap`);
+      }
+      if (profileHealth.extras.truncated) {
+        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}]: the profile root holds more than ${profileManifest!.limits.max_root_entries} entries; the sweep stopped at the cap and data.profile.extras.truncated says so`);
+      }
+      const unruled = all.filter((item) => item.class !== "approved-managed-exception" && item.class !== "intentionally-unmanaged");
+      const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, all.filter((item) => item.class === klass).length])) as Record<FleetProfileExtraClass, number>;
+      const spread = FLEET_PROFILE_EXTRA_CLASSES.filter((klass) => byClass[klass] > 0).map((klass) => `${byClass[klass]} ${klass}`).join(", ");
+      hostFinding(
+        PROFILE_EXTRAS_RULE_ID,
+        unruled.length === 0 ? "pass" : "warn",
+        PROFILE_FIELD_PATH,
+        all.length === 0
+          ? "the profile root holds no unregistered entry"
+          : unruled.length === 0
+            ? `${all.length} unregistered profile-root entr${all.length === 1 ? "y is" : "ies are"} classified by the contract (${spread})`
+            : `${unruled.length} of ${all.length} unregistered profile-root entries carry no contract classification (${spread}); each is a finding for an operator, never a licence to delete`,
+        kept.map((item) => `${item.class} ${item.path} (${item.kind}${item.alias_of ? `, alias of ${item.alias_of}` : ""}${item.standalone ? `, ${item.standalone}` : ""}, ${item.unit_file_references} unit ref(s), ${item.guidance})`),
+        spread || "no unregistered entries",
+        "every unregistered entry of the profile root claimed by a contract classification",
+        kept.map((item) => ({
+          path: bounded(item.path, 128),
+          class: item.class,
+          kind: item.kind,
+          link_target: item.link_target === null ? null : bounded(item.link_target),
+          standalone: item.standalone,
+          alias_of: item.alias_of === null ? null : bounded(item.alias_of, 128),
+          unit_file_references: item.unit_file_references,
+          process_reference: item.process_reference,
+          guidance: item.guidance,
+          detail: item.detail === null ? null : bounded(item.detail),
+        })),
+      );
+    }
+  }
+
   const agentRecords: FleetStatusAgent[] = [];
   let totalObservations = 0;
   let emittedObservations = 0;
@@ -2278,9 +2701,64 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       }
     }
 
+    // Story 1.7: the profile observer's five observations and per-agent
+    // summary. The same rule as the scaffold's: counted HERE, over every
+    // selected agent, before the record cap.
+    let profileSummary: FleetStatusAgentProfile | null = null;
+    const profileResult = profileHealth?.agents.get(agentId);
+    const profileObserved = profileManifest !== null && profileResult !== undefined;
+    if (domainSet.has("profile")) {
+      const profile = observeFromProfile(ctx, {
+        agentId,
+        result: profileResult,
+        manifestDeclared: profileManifest !== null,
+        exception: profileExceptionFor(agentId),
+        notes: agentNotes,
+      });
+      own.push(...profile.observations);
+      profileSummary = profile.summary;
+      if (!profileObserved) profileCounts.unobserved += 1;
+      else {
+        const aspects = [profileResult.path, profileResult.identity, profileResult.config, profileResult.bank, profileResult.skills];
+        const gateFailed = profileResult.path.state !== "pass" && profileResult.path.code !== "misowned-link";
+        if (gateFailed) {
+          if (profileResult.path.state === "fail") profileCounts.blocked_at_path += 1;
+          else profileCounts.incomplete += 1;
+        } else {
+          profileCounts.real += 1;
+          if (aspects.some((aspect) => aspect.state === "error" || aspect.state === "unobserved")) profileCounts.incomplete += 1;
+          else if (aspects.some((aspect) => aspect.state === "fail")) {
+            if (profileExceptionFor(agentId) !== null) profileCounts.exception_authorized += 1;
+            else profileCounts.drifted += 1;
+          } else profileCounts.structurally_healthy += 1;
+        }
+        switch (profileResult.config.renderer.state) {
+          case "in-sync": profileRenderer.checked += 1; profileRenderer.in_sync += 1; break;
+          case "drifted": profileRenderer.checked += 1; profileRenderer.drifted += 1; break;
+          default: break;
+        }
+        if (profileResult.config.items.some((item) => item.kind === "renderer-failed")) { profileRenderer.checked += 1; profileRenderer.failed += 1; }
+        if (profileResult.config.items.some((item) => item.kind === "renderer-timeout")) { profileRenderer.checked += 1; profileRenderer.timeout += 1; }
+        if (profileResult.bank.state === "pass") profileIdentity.bank_ok += 1;
+        for (const item of profileResult.bank.items) {
+          if (item.kind === "bank-alias") profileIdentity.bank_alias += 1;
+          else if (item.kind === "bank-custom") profileIdentity.bank_custom += 1;
+          else if (item.kind === "bank-missing" || item.kind === "pin-missing") profileIdentity.bank_missing += 1;
+          else if (item.kind === "bank-mismatch") profileIdentity.bank_mismatch += 1;
+        }
+        if (profileResult.skills.state === "pass" && profileResult.skills.coreMissing.length === 0 && profileResult.path.state !== "unobserved") profileSkills.core_complete += 1;
+        // A core skill absent from the canonical projection is missing for
+        // this profile too: nothing holds what it would resolve.
+        profileSkills.core_missing += profileResult.skills.items.filter((item) => item.kind === "core-missing" || item.kind === "canonical-missing").length;
+        profileSkills.core_replaced += profileResult.skills.items.filter((item) => item.kind === "core-replaced").length;
+        profileSkills.extras_seen += profileResult.skills.extra.length;
+      }
+    }
+
     const audit = auditByAgent.get(agentId);
     if (!live) {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
+      if (profileObserved) profileRuleAgreement.not_compared += 1;
       // Matrix row 1. Without `--live` the audit half was not read, so every
       // domain it feeds says so -- rather than reporting the store half as if
       // it were the whole answer.
@@ -2297,6 +2775,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       }
     } else if (auditEntry === null || audit === undefined || audit.outcome !== "ok") {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
+      if (profileObserved) profileRuleAgreement.not_compared += 1;
       const failed = audit !== undefined && audit.outcome === "failed";
       const state: FleetStatusState = failed ? "error" : "unobserved";
       const reason = auditEntry === null
@@ -2512,6 +2991,38 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           }
         }
       }
+
+      // -- rule agreement: the profile observer against `hermes.runtime-singleton`
+      //
+      // The same explicit check, for the same reason: the observer's fields
+      // are `profiles.{profile_name}.*` leaves and the rule's is
+      // `agents.{agent_id}.profile_name`, so they never meet in
+      // `detectContradictions`. Compared over the subset both read (the path,
+      // the two config files, the pin); semantic drift, the identity file and
+      // the skills are `not_compared` by construction.
+      if (profileObserved) {
+        const ruleVerdict = profileRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString(rule.id) === "hermes.runtime-singleton"));
+        const observerDrift = profileObserverDrift(profileResult);
+        if (ruleVerdict === null || observerDrift === null) profileRuleAgreement.not_compared += 1;
+        else {
+          profileRuleAgreement.compared += 1;
+          if ((ruleVerdict === "fail") === observerDrift) profileRuleAgreement.agree += 1;
+          else {
+            profileRuleAgreement.disagree += 1;
+            addFinding(ctx, {
+              code: "profile-rule-disagreement",
+              domain: "profile",
+              field: PROFILE_FIELD_PATH,
+              agent_id: agentId,
+              source: ctx.domainOwner("profile"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rule hermes.runtime-singleton reports ${ruleVerdict} while the profile observer finds ${observerDrift ? "drift" : "no drift"} over the profile state both read (the profile directory, config.yaml, config.delta.yaml and the Hindsight bank pin); both readings are kept and neither is resolved silently`,
+            });
+          }
+        }
+      }
     }
 
     // `(agent_id, domain, rule_id)` -- the declared sort key. Byte order, never
@@ -2587,8 +3098,11 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       lifecycle,
       member_class: memberClass,
       scaffold: scaffoldSummary,
+      profile: profileSummary,
     });
   }
+  // The extras clip belongs to the HOST finding, which is always emitted.
+  truncated.push(...profileExtrasNotes);
 
   // -- fleet-scoped observations, emitted once, on the domain they belong to --
   const fleetObservations: FleetStatusObservation[] = [];
@@ -2736,8 +3250,12 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   //
   // Host-scoped findings are in NONE of the three: a machine condition is not a
   // fleet failure, and reporting it as one is the category error PJAN-84 fixed.
+  // They DO reach the justification gate (story 1.7): an unjustified host warn
+  // -- an unclassified profile-root entry -- keeps the fleet from claiming
+  // proof, without ever making it unhealthy.
   const health = evaluateFleetHealth({
     observations: ctx.observations,
+    hostFindings: host,
     members,
     collectionErrors,
     contradictions: contradictions.length,
@@ -2771,6 +3289,44 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       rule_agreement: { ...ruleAgreement },
     };
 
+  // The fleet-level profile summary (story 1.7). `null` when the domain was
+  // not selected. `extras.coverage` says whether the root was swept at all:
+  // an `--agent` run inspects one registered profile and never enumerates the
+  // root, and says so rather than reading as an empty sweep.
+  const profile: FleetProfileSummary | null = !domainSet.has("profile")
+    ? null
+    : {
+      source: SOURCE_PROFILE,
+      root: profileHealth === null
+        ? { state: "unsupported", code: "manifest-undeclared" }
+        : { state: profileHealth.root.state === "ok" ? "pass" : "error", code: bounded(profileHealth.root.code, 64) },
+      renderer: {
+        source: profileHealth === null ? "manifest-undeclared" : bounded(profileHealth.renderer.source, 64),
+        python: profileHealth === null ? "not-probed" : bounded(profileHealth.renderer.python, 64),
+        gitlink: profileHealth?.renderer.gitlink ?? null,
+        ...profileRenderer,
+      },
+      agents: {
+        ...profileCounts,
+        unobserved: profileCounts.unobserved + (profileCounts.total_registered - profileCounts.selected),
+      },
+      identity: { ...profileIdentity },
+      skills: { ...profileSkills },
+      extras: (() => {
+        const items = profileHealth?.extras?.items ?? [];
+        const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, items.filter((item) => item.class === klass).length])) as Record<FleetProfileExtraClass, number>;
+        return {
+          coverage: profileHealth?.extras ? "swept" as const : "not-swept" as const,
+          reason: profileHealth === null ? "manifest-undeclared" : profileHealth.extras ? null : bounded(profileHealth.extrasReason ?? "not-swept", 64),
+          entries_total: items.length,
+          by_class: byClass,
+          listed: Math.min(items.length, FLEET_STATUS_MAX_ITEMS),
+          truncated: profileHealth?.extras?.truncated ?? false,
+        };
+      })(),
+      rule_agreement: { ...profileRuleAgreement },
+    };
+
   return {
     contract_path: shownPath(contractPath),
     contract_version: contract.contract_version,
@@ -2784,6 +3340,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     probes,
     transitions,
     scaffold,
+    profile,
     truncated,
   };
 }

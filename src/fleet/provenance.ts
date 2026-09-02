@@ -47,7 +47,6 @@
 // Bloodbank (stories 1.8/1.9/1.10); compare scaffold or profile CONTENT against
 // the template (stories 1.6/1.7); or repair, adopt, retire, or plan anything.
 
-import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -100,9 +99,6 @@ const PROBE_CONCURRENCY = 4;
 /** The host config file is a small generated TOML, not a data store. */
 const CONFIG_MAX_BYTES = 1024 * 1024;
 
-/** A generated profile config is a merged YAML file, not a data store. */
-const PROFILE_CONFIG_MAX_BYTES = 4 * 1024 * 1024;
-
 /** The tracked template submodule, as `.gitmodules` declares it. */
 const TEMPLATE_SUBMODULE_PATH = "templates/hermes-agent";
 
@@ -149,7 +145,6 @@ const SOURCE_AGENT_CHECKOUT = "hermes-agent-checkout";
  */
 const SOURCE_PROVENANCE_POLICY = "pjangler-fleet-provenance";
 const SOURCE_ROLE_SCAFFOLD = "hermes-agent-role-scaffold";
-const SOURCE_PROFILE_TREE = "hermes-profile-tree";
 
 /** A value spelled with an unexpanded shell reference; comparing it would mean expanding it. */
 const SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
@@ -867,70 +862,6 @@ function addAgentRecordFacts(ctx: ProvenanceContext, subject: AgentSubject): voi
   });
 }
 
-/**
- * The one provenance question this host records nothing to answer.
- *
- * A generated profile config carries only the header marker `GENERATED FILE --
- * DO NOT EDIT` -- no generation counter, digest, sidecar, or yaml key. So it is
- * `unsupported` with its observed evidence still reported, and it never counts
- * toward `match`. Closing the gap means adding a recorded ref at render time,
- * which is story 1.7.
- *
- * `scaffold.template_ref` used to be reported here on the same terms -- "a
- * deployed role scaffold records no template ref". Story 1.6 answered it a
- * different way: the scaffold observer (`src/fleet/scaffold.ts`) compares every
- * role directory against the template at the COMMITTED gitlink, asset by asset,
- * so a recorded ref is not needed to know whether a scaffold matches. The fact
- * is deleted rather than kept beside the real comparison, because one
- * permanent `unsupported` next to eight real observations is exactly the
- * rollup lie DW-67 records.
- */
-function addUnsupportedFacts(ctx: ProvenanceContext, subject: AgentSubject, profileTemplate: string | null): void {
-  const { agentId, profileName } = subject;
-
-  // `profile_name` is a REGISTRY value substituted into a path template, so it
-  // is checked against the shape a profile name may have before it becomes a
-  // path. A row spelling `../../.ssh` or `a/b` would otherwise walk
-  // `profileDigest` out of the profile root and publish a sha256 of whatever it
-  // landed on. The allowlist is deliberately narrower than "no `..`": a profile
-  // name is one path SEGMENT, and anything else is a registry the command has no
-  // business following.
-  const namedProfile = profileName !== null && /^[A-Za-z0-9._-]+$/u.test(profileName) && profileName !== "." && profileName !== ".."
-    ? profileName
-    : null;
-  const profilePath = namedProfile && profileTemplate ? profileTemplate.replaceAll("{profile_name}", namedProfile) : null;
-  const generated = profilePath ? join(profilePath, "config.yaml") : null;
-  addFact(ctx, {
-    id: "profile.render_generation", scope: "agent", agent_id: agentId,
-    field: "profiles.{profile_name}.config.yaml",
-    desired: absent(SOURCE_PROFILE_TREE, "unsupported"),
-    observed: generated === null
-      ? absent(SOURCE_PROFILE_TREE, profileName !== null && namedProfile === null ? "unsupported" : "missing")
-      : profileDigest(generated),
-    detail: "a generated profile config carries only the GENERATED FILE marker -- no generation counter, digest, or sidecar -- so its bytes are the only stable evidence and nothing can be compared against a recorded render",
-  });
-}
-
-/**
- * A generated profile config, as a digest and never as content.
- *
- * The file is mode 0600 and is a merge of the shared base with an operator-owned
- * delta. Carrying it would put profile content into an envelope; a sha256 of its
- * bytes is stable evidence that says "this exact render" without saying what is
- * in it.
- */
-function profileDigest(path: string): FleetProvenanceSide {
-  try {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink()) return present("symlink", SOURCE_PROFILE_TREE, { classification: "symlink" });
-    if (!stat.isFile()) return present(`not-a-file`, SOURCE_PROFILE_TREE, { classification: "not-a-directory" });
-    if (stat.size > PROFILE_CONFIG_MAX_BYTES) return absent(SOURCE_PROFILE_TREE, "unobserved", { classification: "unreadable" });
-    return present(`sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`, SOURCE_PROFILE_TREE, { classification: "ok" });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return absent(SOURCE_PROFILE_TREE, "missing", { classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable" });
-  }
-}
 
 /** The three checkout facts, from one deduplicated probe of the declared repository. */
 function addCheckoutFacts(ctx: ProvenanceContext, subject: AgentSubject, observation: CheckoutObservation | null): void {
@@ -1139,7 +1070,6 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
       observation = byDeclared.get(key) ?? null;
     }
     addCheckoutFacts(ctx, subject, observation);
-    addUnsupportedFacts(ctx, subject, layout.template);
   }
 
   // -- deterministic ordering ------------------------------------------------

@@ -287,6 +287,50 @@ export async function probeRaw(
   return { outcome, value: outcome === "ok" ? bytes : null };
 }
 
+/** What `probeText` needs beyond the argv: where, with what, for how long, and whether a nonzero exit keeps its report. */
+export interface FleetProbeTextOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  keepStdoutOnFailure?: boolean;
+}
+
+/** `probe`, keeping the exit status and -- when asked -- the stdout of a child that exited nonzero. */
+export interface FleetProbeTextResult extends FleetProbeResult {
+  /** The process exit status, null when the child was killed or never ran. */
+  status: number | null;
+}
+
+/**
+ * `probe`, for a child whose REPORT rides a nonzero exit.
+ *
+ * The canonical profile renderer's `check` prints `PROFILE CONFIG DRIFT:` and
+ * the drifted sections to stdout and then exits 1 -- by design, the same way
+ * `pjangler audit` does. `probe` discards stdout on a nonzero exit, so routing
+ * the renderer through it would report every drifted profile as `failed` with
+ * the drift report thrown away. This variant keeps the text when
+ * `keepStdoutOnFailure` says so, returns the exit status beside the outcome
+ * (exit 1 with a drift block and exit 1 with a FATAL on stderr are different
+ * answers, and stderr is never read), and takes the narrow `env`, `cwd` and
+ * `timeoutMs` a renderer child needs. Same budget, same kill rules, same byte
+ * cap, same argv-only spawn.
+ */
+export async function probeText(
+  ctx: FleetRunContext,
+  command: string,
+  argv: readonly string[],
+  options: FleetProbeTextOptions = {},
+): Promise<FleetProbeTextResult> {
+  if (!command) return { outcome: "failed", value: null, status: null };
+  const { outcome, value, code } = await runBoundedChild(ctx, command, argv, {
+    cwd: options.cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    keepStdoutOnFailure: options.keepStdoutOnFailure ?? false,
+  });
+  return { outcome, value, status: code };
+}
+
 /**
  * Run one bounded child of THIS BUILD and keep its stdout whatever it exits with.
  *

@@ -29,6 +29,13 @@ import {
   FLEET_FORBIDDEN_KEYS,
   FLEET_HEALTHY_CLASSIFICATIONS,
   FLEET_HEALTHY_SECTIONS,
+  FLEET_PROFILE_MANIFEST_EXTRAS_KEYS,
+  FLEET_PROFILE_MANIFEST_IDENTITY_KEYS,
+  FLEET_PROFILE_MANIFEST_KEYS,
+  FLEET_PROFILE_MANIFEST_LIMITS_KEYS,
+  FLEET_PROFILE_MANIFEST_MEMORY_KEYS,
+  FLEET_PROFILE_MANIFEST_RENDERER_KEYS,
+  FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS,
   FLEET_PROJECTION_KEYS,
   FLEET_RETIRED_IDS,
   FLEET_RETIRED_KEYS,
@@ -36,6 +43,10 @@ import {
   FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS,
   FLEET_STATUS_DOMAINS,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
+  PROFILE_MAX_EXTRA_SKILLS,
+  PROFILE_MAX_FILE_BYTES,
+  PROFILE_MAX_ROOT_ENTRIES,
+  PROFILE_MAX_UNIT_FILES,
   FleetError,
   type FleetContract,
   type FleetDiagnostic,
@@ -254,6 +265,7 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
     () => sortDiagnostics(validateRetiredModes(policy as unknown as FleetContract)),
     () => sortDiagnostics(validateHealthPolicy(policy)),
     () => sortDiagnostics(validateScaffoldManifest(policy)),
+    () => sortDiagnostics(validateProfileManifest(policy)),
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -1101,6 +1113,208 @@ function validateScaffoldManifest(policy: Record<string, unknown>): FleetDiagnos
       });
     }
   }
+
+  return findings;
+}
+
+/** The field paths every authority declares writable, for the manifest stages to root-check against. */
+function declaredWritableFields(policy: Record<string, unknown>): Set<string> {
+  const declared = new Set<string>();
+  const authorities = policy.authorities;
+  if (isRecord(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field of entry.writable_fields) if (typeof field === "string") declared.add(field);
+    }
+  }
+  return declared;
+}
+
+/** A profile-relative file path as the `profiles.{profile_name}.*` leaf that owns it: `hindsight/config.json` -> `hindsight.config.json`. */
+function profileLeafFor(relativePath: string): string {
+  return `profiles.{profile_name}.${relativePath.replace(/\/+$/u, "").split("/").join(".")}`;
+}
+
+/**
+ * Validate the optional `profile_manifest` block (schema 4).
+ *
+ * OPTIONAL: a schema-1..3 contract carries none and still loads; the profile
+ * observer then reports every selected agent's five profile fields
+ * `unsupported` with capability `profile.manifest`. What it may not do is
+ * carry a manifest that names nothing real: a renderer in a different
+ * submodule from the scaffold's, a bank-id template with no `{profile_name}`
+ * (then every profile would be told to pin the same bank), a `check_argv`
+ * that never names the profile, a canonical skill directory spelled as an
+ * absolute host path, a duplicate core skill, a file the observer would file
+ * under a leaf no authority declares, or a limit above the ceiling this build
+ * can honour. A policy that matches nothing must fail to load rather than
+ * prove nothing and report it as health.
+ */
+function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnostic[] {
+  const block = policy.profile_manifest;
+  if (block === undefined) return [];
+
+  const findings: FleetDiagnostic[] = [];
+  const fail = (path: string, message: string): void => { findings.push({ code: "INVALID_INPUT", path, message }); };
+  if (!isRecord(block)) {
+    fail("profile_manifest", "profile_manifest must be a mapping");
+    return findings;
+  }
+  const closed = (node: unknown, at: string, keys: readonly string[]): node is Record<string, unknown> => {
+    if (!isRecord(node)) { fail(at, `${at.split(".").pop()} must be a mapping`); return false; }
+    for (const key of Object.keys(node)) {
+      if (!keys.includes(key)) fail(`${at}.${key}`, `unknown ${at} key`);
+    }
+    for (const key of keys) {
+      if (node[key] === undefined) fail(`${at}.${key}`, `${key} is required`);
+    }
+    return true;
+  };
+  const nonEmpty = (value: unknown, at: string): value is string => {
+    if (typeof value !== "string" || value.trim().length === 0) { fail(at, "must be a non-empty string"); return false; }
+    return true;
+  };
+  const uniqueList = (value: unknown, at: string, each: (item: string, where: string) => void): string[] => {
+    if (!Array.isArray(value)) { fail(at, "must be a list"); return []; }
+    const seen = new Set<string>();
+    const out: string[] = [];
+    value.forEach((item: unknown, index: number) => {
+      const where = `${at}[${index}]`;
+      if (typeof item !== "string" || item.length === 0) { fail(where, "must be a non-empty string"); return; }
+      if (seen.has(item)) fail(where, `duplicate entry ${item}`);
+      seen.add(item);
+      each(item, where);
+      out.push(item);
+    });
+    return out;
+  };
+
+  closed(block, "profile_manifest", FLEET_PROFILE_MANIFEST_KEYS);
+  const declared = declaredWritableFields(policy);
+  const requireDeclared = (leaf: string, at: string): void => {
+    if (!declared.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+  };
+
+  // -- renderer ---------------------------------------------------------------
+  const renderer = block.renderer;
+  if (closed(renderer, "profile_manifest.renderer", FLEET_PROFILE_MANIFEST_RENDERER_KEYS)) {
+    for (const key of ["submodule", "script", "lock_helper"] as const) {
+      const value = renderer[key];
+      if (!relativeInside(value) || value.endsWith("/")) fail(`profile_manifest.renderer.${key}`, `${key} must be a relative path inside the repository`);
+    }
+    // ONE template, not two. The scaffold observer and the renderer read the
+    // same submodule at the same committed gitlink; a manifest naming another
+    // would let the renderer's bytes be pinned by nothing the scaffold pins.
+    const scaffold = policy.scaffold_manifest;
+    if (isRecord(scaffold) && typeof scaffold.template_submodule === "string" && typeof renderer.submodule === "string"
+        && scaffold.template_submodule !== renderer.submodule) {
+      fail("profile_manifest.renderer.submodule", `must equal scaffold_manifest.template_submodule (${scaffold.template_submodule})`);
+    }
+    const argv = renderer.check_argv;
+    if (!Array.isArray(argv) || argv.length === 0 || !argv.every((item: unknown) => typeof item === "string" && item.length > 0)) {
+      fail("profile_manifest.renderer.check_argv", "check_argv must be a non-empty list of argument strings");
+    } else {
+      const named = argv.filter((item: string) => item.includes("{profile_name}")).length;
+      // Exactly one: none would check every profile (and follow every
+      // symlink in the root); two would hand the renderer a second positional
+      // it has no parameter for.
+      if (named !== 1) fail("profile_manifest.renderer.check_argv", "exactly one argument must carry the {profile_name} placeholder");
+      if (argv[0] !== "check") fail("profile_manifest.renderer.check_argv", "the first argument must be the read-only `check` subcommand");
+    }
+    const timeout = renderer.lock_timeout_seconds;
+    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout > 60) {
+      fail("profile_manifest.renderer.lock_timeout_seconds", "lock_timeout_seconds must be a positive number of seconds, at most 60");
+    }
+    if (nonEmpty(renderer.lock_pattern, "profile_manifest.renderer.lock_pattern")) {
+      if (!renderer.lock_pattern.includes("{profile_name}")) fail("profile_manifest.renderer.lock_pattern", "lock_pattern must carry the {profile_name} placeholder");
+      if (renderer.lock_pattern.includes("/")) fail("profile_manifest.renderer.lock_pattern", "lock_pattern must be one root entry name, never a path");
+    }
+  }
+
+  // -- identity ---------------------------------------------------------------
+  const identity = block.identity;
+  if (closed(identity, "profile_manifest.identity", FLEET_PROFILE_MANIFEST_IDENTITY_KEYS)) {
+    const file = identity.file;
+    if (!relativeInside(file) || file.endsWith("/") || file.includes("/")) fail("profile_manifest.identity.file", "file must be one file name inside the profile directory");
+    else requireDeclared(profileLeafFor(file), "profile_manifest.identity.file");
+    const allowed = uniqueList(identity.allowed_keys, "profile_manifest.identity.allowed_keys", (item, where) => {
+      if (!RENDER_INPUT_NAME.test(item)) fail(where, "a key name must be a lower-case identifier");
+    });
+    uniqueList(identity.inert_keys, "profile_manifest.identity.inert_keys", (item, where) => {
+      if (!RENDER_INPUT_NAME.test(item)) fail(where, "a key name must be a lower-case identifier");
+      // A key cannot be both allowed identity and inert config: the observer
+      // would record it and ignore it in the same breath.
+      if (allowed.includes(item)) fail(where, `${item} is already an allowed identity key`);
+    });
+  }
+
+  // -- memory -----------------------------------------------------------------
+  const memory = block.memory;
+  if (closed(memory, "profile_manifest.memory", FLEET_PROFILE_MANIFEST_MEMORY_KEYS)) {
+    const pin = memory.pin_file;
+    if (!relativeInside(pin) || pin.endsWith("/")) fail("profile_manifest.memory.pin_file", "pin_file must be a profile-relative file path");
+    else requireDeclared(profileLeafFor(pin), "profile_manifest.memory.pin_file");
+    if (nonEmpty(memory.bank_id_template, "profile_manifest.memory.bank_id_template")) {
+      // Without the placeholder every profile would be told to pin ONE bank,
+      // which is the exact merge of private memories the pin exists to prevent.
+      if (!memory.bank_id_template.includes("{profile_name}")) fail("profile_manifest.memory.bank_id_template", "bank_id_template must carry the {profile_name} placeholder");
+    }
+    uniqueList(memory.reserved_bank_ids, "profile_manifest.memory.reserved_bank_ids", (item, where) => {
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(item)) fail(where, "a reserved bank id must be a lower-case identifier");
+    });
+  }
+
+  // -- skill core -------------------------------------------------------------
+  const core = block.skill_core;
+  if (closed(core, "profile_manifest.skill_core", FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS)) {
+    const dir = core.canonical_dir;
+    if (nonEmpty(dir, "profile_manifest.skill_core.canonical_dir")) {
+      // A PLACEHOLDER root, never an absolute host path: the contract is
+      // tracked and the canonical directory lives under whichever home runs it.
+      if (!/^\{(?:HOME|HERMES_FLEET_HOME)\}\//u.test(dir)) fail("profile_manifest.skill_core.canonical_dir", "canonical_dir must start with the {HOME}/ or {HERMES_FLEET_HOME}/ placeholder, never an absolute host path");
+      else if (!relativeInside(dir.replace(/^\{[A-Z_]+\}\//u, ""))) fail("profile_manifest.skill_core.canonical_dir", "canonical_dir must not leave its placeholder root");
+    }
+    if (typeof core.canonical_dir_env !== "string" || !ENV_KEY.test(core.canonical_dir_env)) fail("profile_manifest.skill_core.canonical_dir_env", "canonical_dir_env must be an environment key");
+    const required = uniqueList(core.required, "profile_manifest.skill_core.required", (item, where) => {
+      if (!SAFE_SEGMENT.test(item) || item.includes("/")) fail(where, "a skill name must be one safe path segment");
+    });
+    if (required.length === 0) fail("profile_manifest.skill_core.required", "required must name at least one core skill");
+    nonEmpty(core.source, "profile_manifest.skill_core.source");
+    requireDeclared("profiles.{profile_name}.skills", "profile_manifest.skill_core");
+  }
+
+  // -- extras -----------------------------------------------------------------
+  const extras = block.extras;
+  if (closed(extras, "profile_manifest.extras", FLEET_PROFILE_MANIFEST_EXTRAS_KEYS)) {
+    const pattern = (item: string, where: string): void => {
+      if (item.includes("/") || /^\*+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
+    };
+    const ignored = uniqueList(extras.ignored_patterns, "profile_manifest.extras.ignored_patterns", pattern);
+    if (ignored.length === 0) fail("profile_manifest.extras.ignored_patterns", "ignored_patterns must name the renderer's lock entries, or the observer's own footprint would be classified");
+    uniqueList(extras.backup_patterns, "profile_manifest.extras.backup_patterns", pattern);
+  }
+
+  // -- limits -----------------------------------------------------------------
+  const limits = block.limits;
+  if (closed(limits, "profile_manifest.limits", FLEET_PROFILE_MANIFEST_LIMITS_KEYS)) {
+    const ceilings: Record<(typeof FLEET_PROFILE_MANIFEST_LIMITS_KEYS)[number], number> = {
+      max_file_bytes: PROFILE_MAX_FILE_BYTES,
+      max_root_entries: PROFILE_MAX_ROOT_ENTRIES,
+      max_unit_files: PROFILE_MAX_UNIT_FILES,
+      max_extra_skills: PROFILE_MAX_EXTRA_SKILLS,
+    };
+    for (const key of FLEET_PROFILE_MANIFEST_LIMITS_KEYS) {
+      const value = limits[key];
+      if (!Number.isSafeInteger(value) || Number(value) <= 0) fail(`profile_manifest.limits.${key}`, `${key} must be a positive whole number`);
+      else if (Number(value) > ceilings[key]) fail(`profile_manifest.limits.${key}`, `${key} may not exceed this build's ceiling of ${ceilings[key]}`);
+    }
+  }
+
+  // The generated file the renderer proves is the one the service model names,
+  // and the observation about it lands on a declared leaf.
+  const layout = isRecord(policy.service_model) && isRecord(policy.service_model.profile_layout) ? policy.service_model.profile_layout : null;
+  const generated = layout && typeof layout.generated_file === "string" ? layout.generated_file : null;
+  if (generated !== null) requireDeclared(profileLeafFor(generated), "profile_manifest.renderer");
 
   return findings;
 }

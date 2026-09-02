@@ -140,6 +140,24 @@ function blobPrefix(text) {
 const TEMPLATE_REMOTE = "https://github.com/delorenj/hermes-agent-template.git";
 const HERMES_REMOTE = "https://github.com/delorenj/hermes-agent.git";
 
+/**
+ * The REAL renderer and lock helper at this repository's committed gitlink
+ * (story 1.7): the synthetic template carries them so the profile observer,
+ * which proves the worktree bytes against the pinned tree before it spawns,
+ * finds a canonical renderer in every fixture root. The lock helper lives
+ * under `template/.scripts/lib/`, so it is also a scaffold asset every clean
+ * role carries verbatim.
+ */
+const PINNED_GITLINK = /([0-9a-f]{40})/u.exec(git(ROOT, ["ls-tree", "HEAD", "--", "templates/hermes-agent"]).stdout)?.[1] ?? null;
+function pinnedBytes(path) {
+  assert.ok(PINNED_GITLINK, "this checkout must commit a gitlink for templates/hermes-agent");
+  const shown = spawnSync("git", ["show", `${PINNED_GITLINK}:${path}`], { cwd: join(ROOT, "templates", "hermes-agent"), encoding: "buffer", maxBuffer: 16 * 1024 * 1024 });
+  assert.equal(shown.status, 0, `git show ${PINNED_GITLINK.slice(0, 12)}:${path} must succeed`);
+  return shown.stdout;
+}
+const RENDERER_BYTES = pinnedBytes("scripts/hermes-profile-config.py");
+const LOCK_HELPER_BYTES = pinnedBytes("template/.scripts/lib/profile-config-lock.py");
+
 /** The template sources, by version. Presence-only assets deliberately carry control flow. */
 const SOUL_JINJA = "# {{ display_name }}\n\n{% if soul_tone == \"playful\" -%}\nplayful\n{%- else -%}\ndirect\n{%- endif %}\n";
 const ROLE_YAML_JINJA = "role: {{ role | tojson }}\nagent_id: {{ agent_id | tojson }}\nprovisioned: {{ '%Y' | strftime }}\n";
@@ -164,6 +182,7 @@ function templateFiles(version) {
     ".scripts/_lib.sh": { mode: 0o755, text: LIB_SH(version) },
     ".scripts/heartbeat.sh": { mode: 0o755, text: HEARTBEAT_SH },
     ".scripts/lib/fleet-env.sh": { mode: 0o644, text: FLEET_ENV_SH },
+    ".scripts/lib/profile-config-lock.py": { mode: 0o644, text: LOCK_HELPER_BYTES },
     ".runtime-scaffold/README.md": { mode: 0o644, text: RS_README },
     ".runtime-scaffold/.gitignore.jinja": { mode: 0o644, text: RS_GITIGNORE_JINJA },
   };
@@ -181,6 +200,7 @@ function writeTemplateTree(repo, files) {
   }
 }
 
+
 const templateSource = join(temp, "template-source");
 /** Commit ids of the synthetic template's history, filled by `seedTemplate`. */
 const COMMIT = { v1: "", v2: "", v3: "", contaminated: "", unsupported: "", bulk: "" };
@@ -191,6 +211,9 @@ function seedTemplate() {
   mkdirSync(templateSource, { recursive: true });
   gitOk(templateSource, ["init", "--quiet"]);
   writeFileSync(join(templateSource, "copier.yml"), "_subdirectory: template\n_templates_suffix: .jinja\n", "utf8");
+  mkdirSync(join(templateSource, "scripts"), { recursive: true });
+  writeFileSync(join(templateSource, "scripts", "hermes-profile-config.py"), RENDERER_BYTES);
+  chmodSync(join(templateSource, "scripts", "hermes-profile-config.py"), 0o755);
   for (const version of [1, 2, 3]) {
     writeTemplateTree(templateSource, templateFiles(version));
     gitOk(templateSource, ["add", "-A"]);
@@ -248,6 +271,7 @@ function cleanRoleFiles(slug, version = 3) {
     ".scripts/_lib.sh": { mode: 0o755, text: `#!/usr/bin/env bash\nlib_version() { echo ${version}; }\n` },
     ".scripts/heartbeat.sh": { mode: 0o755, text: "#!/usr/bin/env bash\necho heartbeat\n" },
     ".scripts/lib/fleet-env.sh": { mode: 0o644, text: "load_fleet_environment() { :; }\n" },
+    ".scripts/lib/profile-config-lock.py": { mode: 0o644, text: LOCK_HELPER_BYTES },
     ".runtime-scaffold/README.md": { mode: 0o644, text: "# runtime scaffold\n" },
     ".runtime-scaffold/.gitignore": { mode: 0o644, text: "auth.json\n*.pem\n" },
   };
@@ -287,6 +311,46 @@ function makeRepo(slug, { roleRel = join("agents", "hermes", "pm"), drift = () =
   gitOk(dir, ["commit", "--quiet", "-m", "seed"]);
   after(dir, roleDir);
   return { dir, roleDir };
+}
+
+
+// ---------------------------------------------------------------------------
+// Renderer-clean profiles (story 1.7 / PJAN-109)
+//
+// The profile observer now gates every registered profile and proves it through
+// the canonical renderer's own check, so a fixture profile that carried only a
+// marker file reads as an identity miss, a delta miss, a pin miss and a missing
+// skill core. The FIXTURE is made clean, never the observer weakened: a fleet
+// base, six canonical skills, and per profile the identity file, an empty
+// delta, a generated config equal to the base, the bank pin, the skill links,
+// and the renderer's zero-byte lock PRE-CREATED so a check writes nothing.
+// ---------------------------------------------------------------------------
+const PROFILE_CORE_SKILLS = ["33god-projects", "delonet-conventions", "delonet-dotenv", "hermes-pm-template-maintenance", "hindsight", "subagent-driven-development"];
+
+function profileBase(home) {
+  return { model: { default: "fleet-model" }, skills: { external_dirs: [join(home, ".agents", "skills")] }, memory: { provider: "hindsight" } };
+}
+
+function seedProfileFixtures(home) {
+  mkdirSync(join(home, ".hermes", "profiles"), { recursive: true });
+  writeFileSync(join(home, ".hermes", "config.yaml"), YAML.stringify(profileBase(home)), "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) {
+    mkdirSync(join(home, ".agents", "skills", skill), { recursive: true });
+    writeFileSync(join(home, ".agents", "skills", skill, "SKILL.md"), `# ${skill}\n`, "utf8");
+  }
+}
+
+function seedRendererCleanProfile(home, name) {
+  const dir = join(home, ".hermes", "profiles", name);
+  mkdirSync(join(dir, "hindsight"), { recursive: true });
+  mkdirSync(join(dir, "skills"), { recursive: true });
+  writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
+  writeFileSync(join(dir, "config.delta.yaml"), "{}\n", "utf8");
+  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify(profileBase(home))}`, "utf8");
+  writeFileSync(join(dir, "hindsight", "config.json"), `{\n  "bank_id": "agent-${name}"\n}\n`, "utf8");
+  for (const skill of PROFILE_CORE_SKILLS) symlinkSync(join(home, ".agents", "skills", skill), join(dir, "skills", skill));
+  writeFileSync(join(home, ".hermes", "profiles", `.${name}.config.lock`), "");
+  return dir;
 }
 
 const SLUGS = ["match", "stale", "oldwrap", "edited", "missing", "mode", "type", "link", "droppings", "wip", "presence", "noname", "spaced", "defaulted"];
@@ -354,11 +418,8 @@ function seedFleet() {
   ROLE_DIRS.spaced = makeRepo("spaced", { roleRel: join("agents", "hermes", "p m") }).roleDir;
   ROLE_DIRS.defaulted = makeRepo("defaulted").roleDir;
 
-  for (const slug of SLUGS) {
-    const dir = join(scratchHome, ".hermes", "profiles", `${slug}-pm`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
-  }
+  seedProfileFixtures(scratchHome);
+  for (const slug of SLUGS) seedRendererCleanProfile(scratchHome, `${slug}-pm`);
   writeAgentRegistry(join(scratchHome, ".hermes", "agents-registry.yaml"), SLUGS);
   writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"), SLUGS);
 

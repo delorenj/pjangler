@@ -11,7 +11,12 @@
 #   projects.*    PJangler project registry
 #   agents.*      Hermes agent registry, per-agent rows
 #   gateways.*    Hermes agent registry, fleet-shared gateway block
-#   profiles.*    generated Hermes profile tree
+#   profiles.*    generated Hermes profile tree. A leaf beneath
+#                 `profiles.{profile_name}` names a FILE inside that profile
+#                 directory with `/` spelled `.`: `profiles.{profile_name}.config.yaml`
+#                 is `config.yaml`, `profiles.{profile_name}.hindsight.config.json`
+#                 is `hindsight/config.json`, `profiles.{profile_name}.skills` is
+#                 the `skills` entry. `profile_manifest` says how each is proven.
 #   scaffold.*    tracked per-agent role scaffold. Each leaf is mapped to the
 #                 role-relative path it owns by `scaffold_manifest.groups`, so
 #                 `scaffold.gitignore` means `.gitignore` and
@@ -28,12 +33,12 @@
 # rather than be rejected as an unknown key, because rejecting it would hide the
 # very drift this contract exists to name.
 
-schema_version: 3
-contract_version: 1.2.0
+schema_version: 4
+contract_version: 1.3.0
 
 compatibility:
   min_schema_version: 1
-  max_schema_version: 3
+  max_schema_version: 4
 
 x-delonet/provenance:
   assessment: fleet-convergence-live-assessment-2026-08-31
@@ -146,6 +151,27 @@ authorities:
       - profiles.{profile_name}.config.delta.memory.provider
       - profiles.{profile_name}.config.delta.memory.memory_enabled
       - profiles.{profile_name}.config.delta.memory.user_profile_enabled
+
+  provisioned_profile_state:
+    owner: hermes-agent-template
+    store: hermes-profile-tree
+    store_env:
+      - HERMES_FLEET_HOME
+    notes:
+      - >-
+        The parts of a generated profile the template's provisioning scripts
+        write once and the renderer never touches: the identity file, the
+        explicit Hindsight bank pin, and the skill entries (six core skills
+        symlinked from the canonical projection, one copied by bytes).
+      - >-
+        Held apart from generated_profile_inputs so the renderer's three
+        rewritten leaves and the provisioner's three written leaves cannot be
+        claimed by one writer, and so `profiles.{profile_name}` still resolves
+        to the renderer by namespace majority (four leaves against three).
+    writable_fields:
+      - profiles.{profile_name}.profile.yaml
+      - profiles.{profile_name}.hindsight.config.json
+      - profiles.{profile_name}.skills
 
   tracked_role_scaffold:
     owner: hermes-agent-template
@@ -360,7 +386,10 @@ service_model:
 health_policy:
   # Domains an aggregate must have observed before it may claim proof. All nine
   # are required; the deferred_capabilities below are what carve out the halves
-  # no adapter exists for in this release.
+  # no adapter exists for in this release. Generated-profile health is no longer
+  # one of them: the profile observer (story 1.7) proves it through the
+  # canonical renderer's own check, so `profile.render_generation` is answered
+  # rather than deferred.
   required_domains:
     - registry
     - project_binding
@@ -397,13 +426,6 @@ health_policy:
         can dispatch to it is not. Routing readiness is a separate authority
         from the record and must never be inferred from it.
       owner_story: "1.10"
-    - domain: release_provenance
-      capability: profile.render_generation
-      reason: >-
-        A generated profile config carries only the generated-file marker. The
-        renderer records no generation identity, so nothing comparable exists
-        until generated profile health is proven.
-      owner_story: "1.7"
     - domain: release_provenance
       capability: fleet.registry_file
       reason: >-
@@ -529,6 +551,90 @@ scaffold_manifest:
   # Ignored role-local runtime. Never compared, never named, never proposed
   # for deletion; owned by nobody.
   runtime_dir: runtime
+
+# What a GENERATED profile should be, as POLICY about the profile tree rather
+# than a copy of any profile.
+#
+# The profile observer proves five things per registered agent -- the profile
+# path, the identity file, the generated config, the Hindsight bank pin and the
+# skill core -- and, over the whole fleet, classifies every unregistered entry
+# of the profile root. This block says what each proof compares against:
+# which renderer decides "generated config == deep_merge(base, delta)" and
+# where its bytes are pinned, which keys an identity file may carry, how the
+# bank pin is spelled, which skills are the immutable core, which root entries
+# are the observer's own footprint or a backup, and how much may be read.
+profile_manifest:
+  # The canonical renderer, inside the SAME submodule the scaffold manifest
+  # pins. It is executed from the submodule worktree only after both files'
+  # blob ids equal the blobs at the committed gitlink; it cannot be relocated
+  # (it loads its lock helper by relative path and refuses a symlink). `check`
+  # is its read-only drift gate: it takes the profile's own persistent lock
+  # (`lock_pattern` under the profile root, `O_CREAT`, zero bytes), compares
+  # parsed dicts, and reports drifted top-level sections on stdout with exit 1.
+  renderer:
+    submodule: templates/hermes-agent
+    script: scripts/hermes-profile-config.py
+    lock_helper: template/.scripts/lib/profile-config-lock.py
+    check_argv:
+      - check
+      - --profile
+      - "{profile_name}"
+    lock_timeout_seconds: 2
+    lock_pattern: ".{profile_name}.config.lock"
+  # `profile.yaml` is metadata ABOUT a profile. A `config:` block in it is read
+  # by nothing in Hermes and is recorded as inert, never as inheritance.
+  identity:
+    file: profile.yaml
+    allowed_keys:
+      - name
+      - display_name
+      - description
+      - description_auto
+      - role
+      - ui_meta
+    inert_keys:
+      - config
+  # The explicit bank pin. A generic `bank_id_template` never satisfies it, and
+  # the two reserved ids are what the resolver falls back to when identity is
+  # lost -- a profile pinned to either shares its private memory.
+  memory:
+    pin_file: hindsight/config.json
+    bank_id_template: "agent-{profile_name}"
+    reserved_bank_ids:
+      - custom
+      - hermes
+  # The six skills every deployed PM runs, by BYTES: a skill is present when a
+  # `SKILL.md` reachable through the profile's `skills` entry or the generated
+  # config's `skills.external_dirs` resolves inside an allowed root and equals
+  # the canonical copy. `source` names where the template declares the set.
+  skill_core:
+    canonical_dir: "{HOME}/.agents/skills"
+    canonical_dir_env: CANONICAL_SKILLS_DIR
+    required:
+      - 33god-projects
+      - delonet-conventions
+      - delonet-dotenv
+      - hermes-pm-template-maintenance
+      - hindsight
+      - subagent-driven-development
+    source: template/.scripts/10-hermes-profile.sh CORE_RUNTIME_SKILLS
+  # Root entries the sweep skips (the renderer's lock files: the observer's own
+  # footprint, never counted) and the shapes that make an entry a retired
+  # candidate.
+  extras:
+    ignored_patterns:
+      - ".{profile_name}.config.lock"
+    backup_patterns:
+      - "*.bak"
+      - "*.bak-*"
+      - "*.orig"
+      - "*~"
+      - "*-backup*"
+  limits:
+    max_file_bytes: 1048576
+    max_root_entries: 5000
+    max_unit_files: 500
+    max_extra_skills: 20
 
 activation:
   states:

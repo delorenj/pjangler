@@ -1,0 +1,1546 @@
+// PJAN Epic 1 / Story 1.7 (PJAN-109): generated profile health, proven, and
+// the profile root's extras classified.
+//
+// Before this story `pjangler fleet status --domain profile` proved almost
+// nothing: one `lstat` of the profile directory, generated-config health a
+// declared deferral, nothing validating the identity file, the Hindsight bank
+// pin or the skill core, and the profile root's unregistered entries reported
+// by nothing. This suite is the proof that the observer which replaces that:
+//
+//   * gates every profile path first (real, contained, safely named,
+//     unambiguous) and reads nothing beneath one that fails the gate;
+//   * proves the generated config through the CANONICAL renderer's own check,
+//     run at bytes proven identical to the committed gitlink -- the fixture
+//     submodule carries the REAL renderer and lock-helper bytes read from this
+//     repository's gitlink, so every case exercises the canonical check;
+//   * proves the bank pin exactly and the skill core by bytes;
+//   * classifies every unregistered root entry into one of five classes with
+//     bounded evidence, and never proposes deleting anything;
+//   * writes nothing, emits no body, value, memory, timestamp or absolute path,
+//     and produces byte-identical `data` across runs and adapters.
+//
+// The bar, carried from stories 1.4 through 1.6: every case runs the REAL built
+// `dist/index.js` in a real subprocess; stdout is asserted parseable before
+// anything else; every invocation is bracketed by a content+mtime snapshot of
+// the scratch tree and the tracked contract; the fleet, the profile root, the
+// package roots and the audit reports are all CONSTRUCTED here. Only the one
+// live AC11 case may skip.
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import YAML from "yaml";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const ROOT = resolve(import.meta.dirname, "..");
+const CLI = join(ROOT, "dist", "index.js");
+const MCP = join(ROOT, "dist", "mcp-server.js");
+const TRACKED_CONTRACT = join(ROOT, "contracts", "fleet-contract.yaml");
+const SUBMODULE = join(ROOT, "templates", "hermes-agent");
+
+/** The five declared leaves, in the byte order the observations sort in. */
+const FIELDS = {
+  path: "profiles.{profile_name}",
+  config: "profiles.{profile_name}.config.yaml",
+  bank: "profiles.{profile_name}.hindsight.config.json",
+  identity: "profiles.{profile_name}.profile.yaml",
+  skills: "profiles.{profile_name}.skills",
+};
+const FIELD_ORDER = [FIELDS.path, FIELDS.config, FIELDS.bank, FIELDS.identity, FIELDS.skills];
+const EXTRA_CLASSES = ["approved-managed-exception", "intentionally-unmanaged", "retired-candidate", "unclassified", "debris-candidate"];
+const CORE_SKILLS = ["33god-projects", "delonet-conventions", "delonet-dotenv", "hermes-pm-template-maintenance", "hindsight", "subagent-driven-development"];
+/** Mirrors FLEET_STATUS_MAX_ITEMS in src/fleet/types.ts. */
+const MAX_ITEMS = 100;
+const DATA_KEYS = [
+  "contract_path", "contract_version", "scope",
+  "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "profile", "truncated",
+];
+const SECRET_SENTINEL = "pjan109-not-a-real-credential-0000";
+
+const REAL_HOME = (() => { try { return userInfo().homedir; } catch { return homedir(); } })();
+const REAL_AGENT_REGISTRY = process.env.HERMES_AGENTS_REGISTRY?.trim() || join(REAL_HOME, ".hermes", "agents-registry.yaml");
+const REAL_PROJECT_REGISTRY = process.env.PJ_PROJECT_REGISTRY?.trim() || join(REAL_HOME, ".config", "pjangler", "projects.yaml");
+
+const temp = mkdtempSync(join(tmpdir(), "fleet-profile-"));
+/** Shims and recorders live OUTSIDE `temp`, so their own bookkeeping can never read as the command writing. */
+const shimRoot = mkdtempSync(join(tmpdir(), "fleet-profile-shims-"));
+const scratchHome = join(temp, "home");
+const reposRoot = join(temp, "repos");
+const workdir = join(temp, "work");
+const outside = join(temp, "outside");
+
+let failures = 0;
+let skipped = 0;
+
+class SkipCase extends Error {}
+
+function skip(label, reason) {
+  skipped += 1;
+  console.log(`  SKIP ${label}: ${reason}`);
+}
+
+function skipCase(label, reason) {
+  skip(label, reason);
+  throw new SkipCase(reason);
+}
+
+function check(label, body) {
+  try {
+    body();
+    console.log(`  ok   ${label}`);
+  } catch (error) {
+    if (error instanceof SkipCase) return;
+    failures += 1;
+    console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
+  }
+}
+
+async function checkAsync(label, body) {
+  try {
+    await body();
+    console.log(`  ok   ${label}`);
+  } catch (error) {
+    if (error instanceof SkipCase) return;
+    failures += 1;
+    console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
+  }
+}
+
+const GIT_IDENTITY = ["-c", "user.email=suite@invalid", "-c", "user.name=Suite", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"];
+
+function git(cwd, args, options = {}) {
+  return spawnSync("git", [...GIT_IDENTITY, ...args], {
+    cwd, encoding: options.encoding ?? "utf8", maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null",
+      XDG_CONFIG_HOME: join(temp, "no-xdg-config"), GIT_DIR: undefined, GIT_WORK_TREE: undefined,
+    },
+  });
+}
+
+function gitOk(cwd, args, why) {
+  const result = git(cwd, args);
+  assert.equal(result.status, 0, `${why ?? args.join(" ")} failed in ${cwd}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function sha256Prefix(bytes) {
+  return createHash("sha256").update(bytes).digest("hex").slice(0, 12);
+}
+
+// ---------------------------------------------------------------------------
+// The REAL renderer, read from this repository's committed gitlink
+// ---------------------------------------------------------------------------
+
+const GITLINK = /([0-9a-f]{40})/u.exec(git(ROOT, ["ls-tree", "HEAD", "--", "templates/hermes-agent"]).stdout)?.[1] ?? null;
+
+/** Bytes of one file at the committed gitlink, as a buffer. Never the worktree. */
+function pinned(path) {
+  assert.ok(GITLINK, "this checkout must commit a gitlink for templates/hermes-agent");
+  const shown = git(SUBMODULE, ["show", `${GITLINK}:${path}`], { encoding: "buffer" });
+  assert.equal(shown.status, 0, `git show ${GITLINK.slice(0, 12)}:${path} must succeed`);
+  return shown.stdout;
+}
+
+const RENDERER_REL = "scripts/hermes-profile-config.py";
+const LOCK_HELPER_REL = "template/.scripts/lib/profile-config-lock.py";
+const PROFILE_SCRIPT_REL = "template/.scripts/10-hermes-profile.sh";
+const RENDERER_BYTES = pinned(RENDERER_REL);
+const LOCK_HELPER_BYTES = pinned(LOCK_HELPER_REL);
+
+// ---------------------------------------------------------------------------
+// A synthetic template repository carrying the real renderer
+// ---------------------------------------------------------------------------
+
+const TEMPLATE_REMOTE = "https://github.com/delorenj/hermes-agent-template.git";
+const HERMES_REMOTE = "https://github.com/delorenj/hermes-agent.git";
+const templateSource = join(temp, "template-source");
+let TEMPLATE_HEAD = "";
+
+function seedTemplate() {
+  mkdirSync(join(templateSource, "scripts"), { recursive: true });
+  mkdirSync(join(templateSource, "template", ".scripts", "lib"), { recursive: true });
+  writeFileSync(join(templateSource, "copier.yml"), "_subdirectory: template\n_templates_suffix: .jinja\n", "utf8");
+  writeFileSync(join(templateSource, RENDERER_REL), RENDERER_BYTES);
+  chmodSync(join(templateSource, RENDERER_REL), 0o755);
+  writeFileSync(join(templateSource, LOCK_HELPER_REL), LOCK_HELPER_BYTES);
+  writeFileSync(join(templateSource, "template", "role.yaml.jinja"), "role: {{ role | tojson }}\n", "utf8");
+  gitOk(templateSource, ["init", "--quiet"]);
+  gitOk(templateSource, ["add", "-A"]);
+  gitOk(templateSource, ["commit", "--quiet", "-m", "template with the canonical renderer"]);
+  TEMPLATE_HEAD = gitOk(templateSource, ["rev-parse", "HEAD"]);
+}
+
+// ---------------------------------------------------------------------------
+// The fleet: a base config, canonical skills, one profile per matrix row
+// ---------------------------------------------------------------------------
+
+const fleetHome = join(scratchHome, ".hermes");
+const profilesRoot = join(fleetHome, "profiles");
+const canonicalSkills = join(scratchHome, ".agents", "skills");
+
+/** The fleet base. `external_dirs` carries the canonical dir (absolute) and one relative entry, as the live base does. */
+function baseConfig() {
+  return {
+    model: { default: "fleet-model", provider: "fleet" },
+    skills: { external_dirs: [canonicalSkills, "./agents/skills"], template_vars: true },
+    memory: { provider: "hindsight", memory_enabled: true },
+    mcp_servers: { hindsight: { command: "hindsight-mcp" } },
+  };
+}
+const BASE_TEXT = YAML.stringify(baseConfig());
+
+/** Hermes' own deep merge, replicated for the fixture: override wins, dicts recurse, a null override of a dict is ignored. */
+function deepMerge(base, override) {
+  const out = structuredClone(base);
+  for (const [key, value] of Object.entries(override ?? {})) {
+    if (key === "x-pjangler-merge") continue;
+    const current = out[key];
+    if (current && typeof current === "object" && !Array.isArray(current) && value && typeof value === "object" && !Array.isArray(value)) out[key] = deepMerge(current, value);
+    else if (current && typeof current === "object" && !Array.isArray(current) && value === null) continue;
+    else out[key] = structuredClone(value);
+  }
+  return out;
+}
+
+const GENERATED_HEADER = "# GENERATED FILE -- DO NOT EDIT\n";
+
+function generatedText(delta, base = baseConfig()) {
+  return GENERATED_HEADER + YAML.stringify(deepMerge(base, delta ?? {}));
+}
+
+function seedCanonicalSkills() {
+  for (const name of CORE_SKILLS) {
+    mkdirSync(join(canonicalSkills, name), { recursive: true });
+    writeFileSync(join(canonicalSkills, name, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n\nThe canonical ${name} skill.\n`, "utf8");
+  }
+  mkdirSync(join(canonicalSkills, "extra-tool"), { recursive: true });
+  writeFileSync(join(canonicalSkills, "extra-tool", "SKILL.md"), "---\nname: extra-tool\n---\n\n# extra-tool\n", "utf8");
+}
+
+/**
+ * A repository directory for one agent with a role-local runtime, so the
+ * profile's singleton links have somewhere of their own to point.
+ */
+function makeRepo(slug) {
+  const dir = join(reposRoot, slug);
+  const runtime = join(dir, "agents", "hermes", "pm", "runtime");
+  mkdirSync(join(runtime, "memories"), { recursive: true });
+  writeFileSync(join(runtime, "SOUL.md"), `# ${slug} soul\n`, "utf8");
+  writeFileSync(join(runtime, "memories", "MEMORY.md"), `secret memory ${SECRET_SENTINEL}\n`, "utf8");
+  writeFileSync(join(dir, ".project.json"), `${JSON.stringify({ project_slug: slug, ticket_provider: { type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}` } }, null, 2)}\n`, "utf8");
+  return { dir, roleDir: join(dir, "agents", "hermes", "pm"), runtime };
+}
+
+/**
+ * Seed one profile directory the way the template's provisioning would leave
+ * it: identity file, delta, generated config, bank pin, six core skill links,
+ * the copied PM skill, singleton links into the agent's own runtime, and the
+ * renderer's persistent zero-byte lock PRE-CREATED so a check writes nothing.
+ */
+function seedProfile(name, options = {}) {
+  const {
+    identity = { name, display_name: `${name.replace(/-pm$/u, "")} PM` },
+    identityText = null,
+    delta = {},
+    deltaText = null,
+    generated = null,
+    pin = { bank_id: `agent-${name}` },
+    pinText = null,
+    skills = "links",
+    links = null,
+    lock = true,
+    root = profilesRoot,
+  } = options;
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  if (identityText !== null) writeFileSync(join(dir, "profile.yaml"), identityText, "utf8");
+  else if (identity !== null) writeFileSync(join(dir, "profile.yaml"), YAML.stringify(identity), "utf8");
+  if (deltaText !== null) writeFileSync(join(dir, "config.delta.yaml"), deltaText, "utf8");
+  else if (delta !== null) writeFileSync(join(dir, "config.delta.yaml"), Object.keys(delta).length ? YAML.stringify(delta) : "{}\n", "utf8");
+  if (generated !== "none") writeFileSync(join(dir, "config.yaml"), generated ?? generatedText(delta ?? {}), "utf8");
+  if (pinText !== null) { mkdirSync(join(dir, "hindsight"), { recursive: true }); writeFileSync(join(dir, "hindsight", "config.json"), pinText, "utf8"); }
+  else if (pin !== null) { mkdirSync(join(dir, "hindsight"), { recursive: true }); writeFileSync(join(dir, "hindsight", "config.json"), `${JSON.stringify(pin, null, 2)}\n`, "utf8"); }
+  if (skills === "links") {
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    for (const skill of CORE_SKILLS) symlinkSync(join(canonicalSkills, skill), join(dir, "skills", skill));
+    mkdirSync(join(dir, "skills", "software-development", "subagent-driven-development"), { recursive: true });
+    cpSync(join(canonicalSkills, "subagent-driven-development", "SKILL.md"), join(dir, "skills", "software-development", "subagent-driven-development", "SKILL.md"));
+  } else if (typeof skills === "function") {
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    skills(join(dir, "skills"));
+  }
+  if (links !== null) {
+    for (const [entry, target] of Object.entries(links)) symlinkSync(target, join(dir, entry));
+  }
+  if (lock) writeFileSync(join(root, `.${name}.config.lock`), "");
+  return dir;
+}
+
+/** Every registered agent in the fixture, by profile name, with what makes its row special. */
+const AGENTS = [];
+const RUNTIMES = {};
+
+function register(name, rowOverrides = {}) {
+  AGENTS.push({ name, rowOverrides });
+}
+
+function seedFleet() {
+  mkdirSync(workdir, { recursive: true });
+  mkdirSync(profilesRoot, { recursive: true });
+  mkdirSync(join(scratchHome, ".config", "pjangler"), { recursive: true });
+  mkdirSync(join(scratchHome, ".config", "hermes-agent-template"), { recursive: true });
+  mkdirSync(join(scratchHome, ".config", "systemd", "user"), { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  const release = join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin");
+  mkdirSync(release, { recursive: true });
+  writeFileSync(join(release, "hermes"), "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(join(release, "hermes"), 0o755);
+  writeFileSync(join(fleetHome, "config.yaml"), BASE_TEXT, "utf8");
+  seedCanonicalSkills();
+
+  const repoFor = (name) => {
+    const made = makeRepo(name.replace(/-pm$/u, ""));
+    RUNTIMES[name] = made.runtime;
+    return made;
+  };
+  const ownLinks = (name) => ({ "SOUL.md": join(RUNTIMES[name], "SOUL.md"), memories: join(RUNTIMES[name], "memories") });
+
+  // -- the path gate ----------------------------------------------------------
+  repoFor("clean-pm"); seedProfile("clean-pm", { links: ownLinks("clean-pm") }); register("clean-pm");
+  repoFor("symlink-pm"); seedProfile("shared-profile", { identity: { name: "shared-profile" }, pin: { bank_id: "agent-shared-profile" }, lock: false });
+  symlinkSync(join(profilesRoot, "shared-profile"), join(profilesRoot, "symlink-pm")); register("symlink-pm");
+  repoFor("missing-pm"); register("missing-pm");
+  repoFor("file-pm"); writeFileSync(join(profilesRoot, "file-pm"), "not a directory\n", "utf8"); register("file-pm");
+  repoFor("twin-pm"); seedProfile("twin-pm", { links: ownLinks("twin-pm") }); mkdirSync(join(profilesRoot, "Twin-pm", "hindsight"), { recursive: true }); register("twin-pm");
+  repoFor("unsafe-pm"); register("unsafe-pm", { profile_name: "Unsafe-PM" });
+  repoFor("misowned-pm"); seedProfile("misowned-pm", { links: { "SOUL.md": join(RUNTIMES["clean-pm"], "SOUL.md"), memories: join(RUNTIMES["misowned-pm"], "memories") } }); register("misowned-pm");
+
+  // -- the generated config ---------------------------------------------------
+  repoFor("stale-pm");
+  seedProfile("stale-pm", {
+    links: ownLinks("stale-pm"),
+    delta: { token: SECRET_SENTINEL },
+    // Rendered from an OLDER base: one section differs, and its value is the sentinel.
+    generated: GENERATED_HEADER + YAML.stringify({ ...deepMerge(baseConfig(), { token: SECRET_SENTINEL }), model: { default: SECRET_SENTINEL, provider: "fleet" } }),
+  });
+  register("stale-pm");
+  repoFor("gensym-pm"); seedProfile("gensym-pm", { links: ownLinks("gensym-pm"), generated: "none" }); symlinkSync(join(fleetHome, "config.yaml"), join(profilesRoot, "gensym-pm", "config.yaml")); register("gensym-pm");
+  repoFor("marker-pm"); seedProfile("marker-pm", { links: ownLinks("marker-pm"), generated: YAML.stringify(deepMerge(baseConfig(), {})) }); register("marker-pm");
+  repoFor("nodelta-pm"); seedProfile("nodelta-pm", { links: ownLinks("nodelta-pm"), delta: null }); register("nodelta-pm");
+
+  // -- the bank pin -------------------------------------------------------------
+  repoFor("alias-pm"); seedProfile("alias-pm", { links: ownLinks("alias-pm"), pin: { bank_id: "agent-Alias-pm" } }); register("alias-pm");
+  repoFor("alias2-pm"); seedProfile("alias2-pm", { links: ownLinks("alias2-pm"), pin: { bank_id: "agent-alias2_pm" } }); register("alias2-pm");
+  repoFor("custom-pm"); seedProfile("custom-pm", { links: ownLinks("custom-pm"), pin: { bank_id: "custom" } }); register("custom-pm");
+  repoFor("template-pm"); seedProfile("template-pm", { links: ownLinks("template-pm"), pin: { bank_id_template: "agent-{profile}" } }); register("template-pm");
+  repoFor("nopin-pm"); seedProfile("nopin-pm", { links: ownLinks("nopin-pm"), pin: null }); register("nopin-pm");
+  repoFor("mismatch-pm"); seedProfile("mismatch-pm", { links: ownLinks("mismatch-pm"), pin: { bank_id: "agent-somebody-else" } }); register("mismatch-pm");
+  repoFor("pinbad-pm"); seedProfile("pinbad-pm", { links: ownLinks("pinbad-pm"), pinText: "{not json" }); register("pinbad-pm");
+  repoFor("pinlink-pm"); seedProfile("pinlink-pm", { links: ownLinks("pinlink-pm"), pin: null });
+  mkdirSync(join(profilesRoot, "pinlink-pm", "hindsight"), { recursive: true });
+  symlinkSync(join(profilesRoot, "clean-pm", "hindsight", "config.json"), join(profilesRoot, "pinlink-pm", "hindsight", "config.json"));
+  register("pinlink-pm");
+
+  // -- the skill core -----------------------------------------------------------
+  repoFor("skills-pm");
+  seedProfile("skills-pm", {
+    links: ownLinks("skills-pm"),
+    skills: (dir) => {
+      symlinkSync(join(canonicalSkills, "no-such-skill"), join(dir, "hindsight"));
+      mkdirSync(join(dir, "33god-projects"), { recursive: true });
+      writeFileSync(join(dir, "33god-projects", "SKILL.md"), `# a replaced copy\n\n${SECRET_SENTINEL}\n`, "utf8");
+      symlinkSync(join(canonicalSkills, "extra-tool"), join(dir, "extra-tool"));
+    },
+  });
+  register("skills-pm");
+  repoFor("foreign-pm");
+  mkdirSync(join(outside, "delonet-dotenv"), { recursive: true });
+  cpSync(join(canonicalSkills, "delonet-dotenv", "SKILL.md"), join(outside, "delonet-dotenv", "SKILL.md"));
+  seedProfile("foreign-pm", { links: ownLinks("foreign-pm"), skills: (dir) => { symlinkSync(join(outside, "delonet-dotenv"), join(dir, "delonet-dotenv")); } });
+  register("foreign-pm");
+
+  // -- the identity file --------------------------------------------------------
+  repoFor("noid-pm"); seedProfile("noid-pm", { links: ownLinks("noid-pm"), identity: null }); register("noid-pm");
+  repoFor("idlink-pm"); seedProfile("idlink-pm", { links: ownLinks("idlink-pm"), identity: null });
+  symlinkSync(join(profilesRoot, "clean-pm", "profile.yaml"), join(profilesRoot, "idlink-pm", "profile.yaml")); register("idlink-pm");
+  repoFor("idbad-pm"); seedProfile("idbad-pm", { links: ownLinks("idbad-pm"), identityText: "- a\n- list\n" }); register("idbad-pm");
+  repoFor("idunknown-pm"); seedProfile("idunknown-pm", { links: ownLinks("idunknown-pm"), identity: { name: "idunknown-pm", description: SECRET_SENTINEL, mystery: 1 } }); register("idunknown-pm");
+  repoFor("idconfig-pm"); seedProfile("idconfig-pm", { links: ownLinks("idconfig-pm"), identity: { name: "idconfig-pm", config: { inherit_from: "default", save_mode: "delta" } } }); register("idconfig-pm");
+  repoFor("idname-pm"); seedProfile("idname-pm", { links: ownLinks("idname-pm"), identity: { name: "somebody-else" } }); register("idname-pm");
+  repoFor("iddisplay-pm"); seedProfile("iddisplay-pm", { links: ownLinks("iddisplay-pm"), identity: { display_name: "Somebody Else" } }); register("iddisplay-pm");
+
+  // -- the profile root's extras ----------------------------------------------
+  seedProfile("clean-pm.bak", { identity: null, delta: null, generated: "none", pin: null, skills: null, lock: false });
+  symlinkSync(join(fleetHome, "config.yaml"), join(profilesRoot, "clean-pm.bak", "config.yaml"));
+  seedProfile("clean_pm", { identity: null, pin: null, skills: null, lock: false });
+  seedProfile("oldtopo", { identity: null, generated: "none", skills: null, lock: false });
+  symlinkSync(join(fleetHome, "config.yaml"), join(profilesRoot, "oldtopo", "config.yaml"));
+  mkdirSync(join(outside, "linked-profile"), { recursive: true });
+  writeFileSync(join(outside, "linked-profile", "config.yaml"), "x: 1\n", "utf8");
+  symlinkSync(join(outside, "linked-profile"), join(profilesRoot, "linked"));
+  mkdirSync(join(profilesRoot, "standalone"), { recursive: true });
+  writeFileSync(join(profilesRoot, "standalone", "config.yaml"), GENERATED_HEADER + "x: 1\n", "utf8");
+  writeFileSync(join(profilesRoot, "stray.txt"), "a stray file\n", "utf8");
+  mkdirSync(join(profilesRoot, "empty"), { recursive: true });
+  symlinkSync(join(profilesRoot, "no-such-target"), join(profilesRoot, "dangling"));
+  seedProfile("fleet-bloodbank-gateway", { identity: { name: "fleet-bloodbank-gateway", role: "gateway" }, pin: { bank_id: "agent-fleet-bloodbank-gateway" }, skills: null, lock: false });
+  seedProfile("unmanaged", { identity: null, pin: { bank_id: "agent-unmanaged" }, skills: null, lock: false });
+
+  // A user unit naming one extra entry's directory as its HERMES_HOME.
+  writeFileSync(join(scratchHome, ".config", "systemd", "user", "hermes-fleet-bloodbank-gateway.service"), [
+    "[Service]",
+    `Environment=HERMES_HOME=${join(profilesRoot, "fleet-bloodbank-gateway")}`,
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(join(scratchHome, ".config", "systemd", "user", "hermes-standalone-gateway.service"), [
+    "[Service]",
+    `Environment=HERMES_HOME=${join(profilesRoot, "standalone")}/`,
+    "",
+  ].join("\n"), "utf8");
+
+  writeAgentRegistry(join(fleetHome, "agents-registry.yaml"));
+  writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"));
+  writeFileSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), [
+    "[fleet]",
+    `hermes_bin = "${join(release, "hermes")}"`,
+    `hermes_repo = "${join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc")}"`,
+    `hermes_git_url = "${HERMES_REMOTE}"`,
+    'hermes_git_ref = "main"',
+    `hermes_git_sha = "${"0".repeat(40)}"`,
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(join(fleetHome, "fleet.env"), [
+    `HERMES_FLEET_HOME=${fleetHome}`,
+    `HERMES_FLEET_BIN=${join(release, "hermes")}`,
+    "HERMES_FLEET_REGISTRY_FILE=$HERMES_FLEET_HOME/agents-registry.yaml",
+    `PLANE_33GOD_API_KEY=${SECRET_SENTINEL}`,
+    "",
+  ].join("\n"), "utf8");
+}
+
+function agentRow(name, overrides = {}) {
+  const slug = name.replace(/-pm$/u, "");
+  return {
+    repo: slug,
+    role: "pm",
+    display_name: `${slug} PM`,
+    project_path: join(reposRoot, slug),
+    role_dir: join(reposRoot, slug, "agents", "hermes", "pm"),
+    profile_name: name,
+    provisioned_at: "2026-01-01T00:00:00.000Z",
+    plane: { workspace: "suite", project_id: `board-${slug}`, identifier: slug.toUpperCase() },
+    bloodbank: { enabled: false, gateway_scope: "fleet", target_agent_id: name },
+    systemd: { gateway_unit: `hermes-${name}-gateway.service` },
+    hermes: {
+      bin: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes"),
+      repo: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc"),
+      fleet_env: join(fleetHome, "fleet.env"),
+      git_url: HERMES_REMOTE,
+      git_ref: "main",
+      git_sha: "0".repeat(40),
+    },
+    ...overrides,
+  };
+}
+
+function writeAgentRegistry(path, agentList = AGENTS) {
+  const agents = {};
+  for (const { name, rowOverrides } of agentList) agents[name] = agentRow(name, rowOverrides);
+  writeFileSync(path, YAML.stringify({
+    schema_version: 1,
+    gateways: { bloodbank: { scope: "fleet", profile_name: "fleet-bloodbank-gateway", command_subject: "bloodbank.cmd.agent.invocation.start", target_field: "data.target_agent_id", systemd_unit: "hermes-fleet-bloodbank-gateway.service" } },
+    agents,
+  }), "utf8");
+  return path;
+}
+
+function writeProjectRegistry(path, agentList = AGENTS) {
+  const projects = {};
+  for (const { name } of agentList) {
+    const slug = name.replace(/-pm$/u, "");
+    projects[slug] = {
+      name: slug, slug, repo_path: join(reposRoot, slug), status: "active",
+      ticket_provider: { type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}` },
+    };
+  }
+  writeFileSync(path, YAML.stringify({ schema_version: 1, projects }), "utf8");
+  return path;
+}
+
+const isolation = {
+  HOME: scratchHome,
+  XDG_CONFIG_HOME: join(scratchHome, ".config"),
+  XDG_DATA_HOME: join(scratchHome, ".local", "share"),
+  XDG_STATE_HOME: join(scratchHome, ".local", "state"),
+  XDG_CACHE_HOME: join(scratchHome, ".cache"),
+  HERMES_FLEET_HOME: fleetHome,
+  HERMES_AGENTS_REGISTRY: join(fleetHome, "agents-registry.yaml"),
+  HERMES_FLEET_REGISTRY_FILE: join(fleetHome, "agents-registry.yaml"),
+  HERMES_FLEET_ENV: join(fleetHome, "fleet.env"),
+  HERMES_TEMPLATE_CONFIG: join(scratchHome, ".config", "hermes-agent-template", "config.toml"),
+  PJ_PROJECT_REGISTRY: join(scratchHome, ".config", "pjangler", "projects.yaml"),
+  HERMES_TEMPLATE_RUNTIME_SCAFFOLD: join(fleetHome, "runtime-scaffold"),
+  RUNTIME_SCAFFOLD_DIR: join(fleetHome, "runtime-scaffold"),
+  CANONICAL_SKILLS_DIR: undefined,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  // TMPDIR can itself sit inside a git work tree on this machine, which would
+  // make an unrelated checkout answer for every scratch repository below.
+  GIT_CEILING_DIRECTORIES: realpathSync(temp),
+  TMPDIR: temp,
+  NO_COLOR: "1",
+  // Present in the PARENT's environment so the narrow child environments have
+  // something to exclude; never allowed to reach any output.
+  PLANE_33GOD_API_KEY: SECRET_SENTINEL,
+};
+
+// ---------------------------------------------------------------------------
+// Package roots: the build relocated beside a template it pins
+// ---------------------------------------------------------------------------
+
+const TRACKED_TEXT = readFileSync(TRACKED_CONTRACT, "utf8");
+
+function contractDocument() {
+  return YAML.parse(TRACKED_TEXT);
+}
+
+function writeContract(name, document) {
+  const path = join(temp, `contract-${name}.yaml`);
+  writeFileSync(path, YAML.stringify(document, { lineWidth: 0 }), "utf8");
+  return path;
+}
+
+/** The tracked contract, mutated. */
+function policyContract(mutate = () => {}) {
+  const document = contractDocument();
+  mutate(document);
+  return document;
+}
+
+/**
+ * A relocated package root whose `templates/hermes-agent` is a clone of the
+ * synthetic template (carrying the REAL renderer bytes), with the gitlink
+ * COMMITTED in the root. `after` may then break it in whichever way a case needs.
+ */
+function makePackageRoot(name, contractText, { after = () => {} } = {}) {
+  const root = join(temp, name);
+  mkdirSync(join(root, "dist"), { recursive: true });
+  mkdirSync(join(root, "contracts"), { recursive: true });
+  mkdirSync(join(root, "templates", "commonproject"), { recursive: true });
+  cpSync(CLI, join(root, "dist", "index.js"));
+  cpSync(MCP, join(root, "dist", "mcp-server.js"));
+  symlinkSync(join(ROOT, "node_modules"), join(root, "node_modules"));
+  writeFileSync(join(root, "package.json"), `${JSON.stringify({ name: "pjangler-fixture", version: "0.0.0", type: "module" }, null, 2)}\n`, "utf8");
+  writeFileSync(join(root, "templates", "commonproject", "copier.yml"), "# fixture\n", "utf8");
+  writeFileSync(join(root, "contracts", "fleet-contract.yaml"), contractText, "utf8");
+
+  const submodule = join(root, "templates", "hermes-agent");
+  gitOk(root, ["clone", "--quiet", "--no-hardlinks", templateSource, submodule]);
+  gitOk(submodule, ["checkout", "--quiet", TEMPLATE_HEAD]);
+  gitOk(submodule, ["remote", "set-url", "origin", TEMPLATE_REMOTE]);
+  writeFileSync(join(root, ".gitmodules"), ['[submodule "templates/hermes-agent"]', "\tpath = templates/hermes-agent", `\turl = ${TEMPLATE_REMOTE}`, ""].join("\n"), "utf8");
+  gitOk(root, ["init", "--quiet"]);
+  gitOk(root, ["add", ".gitmodules", "templates/hermes-agent"]);
+  const staged = git(root, ["ls-files", "--stage", "--", "templates/hermes-agent"]).stdout;
+  assert.match(staged, new RegExp(`^160000 ${TEMPLATE_HEAD} 0\t`, "u"), `the fixture root must stage the gitlink at ${TEMPLATE_HEAD}, got ${JSON.stringify(staged)}`);
+  gitOk(root, ["commit", "--quiet", "-m", "pin the template"]);
+  after(root, submodule);
+  return root;
+}
+
+// ---------------------------------------------------------------------------
+// Zero-write proof and the CLI runner
+// ---------------------------------------------------------------------------
+
+function snapshotTree(label, root, entries = {}) {
+  if (!existsSync(root)) { entries[`${label}:<absent>`] = "absent"; return entries; }
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const path = join(dir, entry.name);
+      const key = `${label}:${relative(root, path)}`;
+      const stat = lstatSync(path);
+      if (entry.isSymbolicLink()) { entries[key] = `link:${readlinkSync(path)}:${stat.mtimeMs}`; continue; }
+      if (entry.isDirectory()) { entries[key] = `dir:${stat.mtimeMs}`; walk(path); continue; }
+      if (!entry.isFile()) { entries[key] = `other:${stat.mode}:${stat.mtimeMs}`; continue; }
+      let digest;
+      try { digest = createHash("sha256").update(readFileSync(path)).digest("hex"); }
+      catch { digest = `unreadable:${stat.mode}:${stat.size}`; }
+      entries[key] = `${digest}:${stat.mtimeMs}`;
+    }
+  };
+  walk(root);
+  return entries;
+}
+
+/** The scratch tree -- every profile, registry, repository and package root -- plus the tracked contract. */
+function snapshotIsolated() {
+  const entries = {};
+  snapshotTree("temp", temp, entries);
+  snapshotTree("contracts", join(ROOT, "contracts"), entries);
+  return entries;
+}
+
+const FOREIGN_SCRATCH = /^\.(pjan|fleet|notebook|momo|project)-/u;
+
+/** This repository's staged content, the submodule's status, and top-level direntries, asserted once for the suite. */
+function snapshotShared() {
+  const entries = {};
+  for (const repo of [ROOT, SUBMODULE]) {
+    if (!existsSync(join(repo, ".git"))) { entries[`staged:${repo}`] = "absent"; continue; }
+    const listed = git(repo, ["--no-optional-locks", "ls-files", "--stage"]);
+    entries[`staged:${repo}`] = listed.status === 0 ? createHash("sha256").update(listed.stdout).digest("hex") : `unreadable:${listed.status}`;
+  }
+  const porcelain = git(SUBMODULE, ["--no-optional-locks", "status", "--porcelain"]);
+  entries["submodule:porcelain"] = porcelain.status === 0 ? porcelain.stdout : `unreadable:${porcelain.status}`;
+  for (const entry of readdirSync(ROOT, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    if (FOREIGN_SCRATCH.test(entry.name)) continue;
+    entries[`root:${entry.name}`] = entry.isDirectory() ? "dir" : entry.isSymbolicLink() ? "link" : "file";
+  }
+  return entries;
+}
+
+function assertUnchanged(before, after, what) {
+  if (JSON.stringify(after) === JSON.stringify(before)) return;
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => before[key] !== after[key]);
+  for (const key of changed) console.log(`       ${key}: ${before[key] ?? "<missing>"} -> ${after[key] ?? "<missing>"}`);
+  assert.fail(`${what} wrote to a protected root: ${changed.join(", ")}`);
+}
+
+/** Run the CLI shipped INSIDE a package root, and prove the run wrote nothing. */
+function cliAt(packageRoot, args, extraEnv = {}, cwd = workdir) {
+  const before = snapshotIsolated();
+  const result = spawnSync(process.execPath, [join(packageRoot, "dist", "index.js"), ...args], {
+    cwd, encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, ...isolation, ...extraEnv },
+  });
+  assertUnchanged(before, snapshotIsolated(), `fixture pj ${args.join(" ")}`);
+  return result;
+}
+
+function envelope(result) {
+  assert.notEqual(result.stdout, "", "stdout was empty; a passing assertion on empty output proves nothing");
+  let parsed;
+  try { parsed = JSON.parse(result.stdout); }
+  catch (error) { assert.fail(`stdout is not one complete JSON document (${result.stdout.length} bytes): ${error.message}`); }
+  assert.equal(parsed.schema_version, 1, "envelope schema_version");
+  return parsed;
+}
+
+function errorCode(parsed) {
+  assert.equal(parsed.ok, false, `expected a failure envelope, got ok:true with totals ${JSON.stringify(parsed.data?.totals)}`);
+  assert.notEqual(parsed.error, null, "a failure envelope must carry an error");
+  assert.equal(parsed.data, null, "a failure envelope must carry no data");
+  return parsed.error.code;
+}
+
+function status(result) {
+  const parsed = envelope(result);
+  assert.equal(parsed.ok, true, `expected ok:true, got ${JSON.stringify(parsed.error)}`);
+  assert.equal(parsed.command, "fleet.status");
+  for (const key of DATA_KEYS) assert.notEqual(parsed.data[key], undefined, `data.${key} must be present`);
+  for (const finding of parsed.data.findings) {
+    assert.equal(finding.field.includes("-"), false, `a finding's field must be a dotted contract path, not a source id: ${finding.field}`);
+  }
+  return parsed.data;
+}
+
+function agentNamed(data, id) {
+  const found = data.agents.find((agent) => agent.agent_id === id);
+  assert.ok(found, `agent ${id} must be in data.agents (have ${data.agents.map((a) => a.agent_id).join(", ")})`);
+  return found;
+}
+
+/** The observer's observation for one declared leaf on one agent record. */
+function fieldOf(agent, field) {
+  const found = agent.observations.find((item) => item.source === "fleet-profile" && item.field === field);
+  assert.ok(found, `${agent.agent_id} must carry the ${field} observation`);
+  return found;
+}
+
+function itemsOf(observation) {
+  return observation.items ?? [];
+}
+
+function kindsOf(observation) {
+  return itemsOf(observation).map((item) => item.kind);
+}
+
+function hostNamed(data, ruleId) {
+  const found = data.host.find((finding) => finding.rule_id === ruleId);
+  assert.ok(found, `data.host must carry ${ruleId} (have ${data.host.map((f) => f.rule_id).join(", ")})`);
+  return found;
+}
+
+function textOf(value) {
+  return JSON.stringify(value);
+}
+
+// ---------------------------------------------------------------------------
+// Injected audit entries and PATH shims
+// ---------------------------------------------------------------------------
+
+function entry(name, body) {
+  const dir = join(shimRoot, name);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "entry.mjs");
+  writeFileSync(path, body, "utf8");
+  return path;
+}
+
+function syntheticReport(rules) {
+  return `
+const rules = ${JSON.stringify(rules)};
+const report = {
+  repo: process.argv[3] ?? "",
+  ok: rules.every((rule) => !(rule.status === "fail" && rule.scope !== "host")),
+  hostOk: true,
+  auditedAt: new Date().toISOString(),
+  rules,
+};
+process.stdout.write(JSON.stringify(report, null, 2) + "\\n");
+process.exit(report.ok ? 0 : 1);
+`;
+}
+
+const SINGLETON_RULE_PASS = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "pass", summary: "singleton runtime contract satisfied", details: [], fixable: true, scope: "project" };
+const SINGLETON_RULE_FAIL = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["config.delta.yaml missing — profile is not under base+delta inheritance: x"], fixable: true, scope: "project" };
+const SINGLETON_RULE_OTHER_FAIL = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["shared seed missing: auth.json"], fixable: true, scope: "project" };
+
+/** A PATH whose only `python3` is a script of the caller's choosing (or none), with a real `git` beside it. */
+function pathShim(name, python3Body) {
+  const dir = join(shimRoot, `path-${name}`);
+  mkdirSync(dir, { recursive: true });
+  const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realGit, "git must be on PATH");
+  if (!existsSync(join(dir, "git"))) symlinkSync(realGit, join(dir, "git"));
+  if (python3Body !== null) {
+    writeFileSync(join(dir, "python3"), python3Body, "utf8");
+    chmodSync(join(dir, "python3"), 0o755);
+  }
+  return dir;
+}
+
+const STATUS_ARGS = ["fleet", "status", "--domain", "profile", "--json"];
+
+console.log("fleet profile health: every registered profile gated, read and proven; every extra classified");
+
+try {
+  if (!existsSync(CLI) || !existsSync(MCP)) {
+    skip("the whole suite", "dist/ is not built; run `npm run build` first");
+    throw new SkipCase("unbuilt");
+  }
+  const python = spawnSync("python3", ["-B", "-c", "import sys, yaml; sys.exit(0 if sys.version_info >= (3, 11) else 3)"], { encoding: "utf8" });
+  if (python.status !== 0) {
+    skip("the whole suite", "python3 with PyYAML at 3.11 or newer is not on PATH; the canonical renderer cannot run");
+    throw new SkipCase("no python");
+  }
+  seedTemplate();
+  seedFleet();
+  git(ROOT, ["update-index", "--refresh"]);
+  const sharedAtStart = snapshotShared();
+
+  const mainRoot = makePackageRoot("pkg-main", YAML.stringify(policyContract(), { lineWidth: 0 }));
+  const REGISTERED = AGENTS.length;
+
+  // -- AC1: the path gate ------------------------------------------------------
+
+  check("a symlinked, missing, file, case-colliding or unsafely named profile fails the gate and nothing beneath is read", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    for (const [id, code] of [["symlink-pm", "symlink"], ["missing-pm", "missing"], ["file-pm", "not-a-directory"], ["twin-pm", "case-collision"], ["unsafe-pm", "name-unsafe"]]) {
+      const agent = agentNamed(data, id);
+      const path = fieldOf(agent, FIELDS.path);
+      assert.equal(path.state, "fail", `${id}: the gate is a fail, never an error`);
+      assert.equal(path.observed, code, `${id}: the gate code is the observed side`);
+      assert.deepEqual(kindsOf(path), [code]);
+      assert.equal(path.rule_scope, "project");
+      assert.equal(path.evidence, "direct");
+      for (const field of [FIELDS.identity, FIELDS.config, FIELDS.bank, FIELDS.skills]) {
+        const dependent = fieldOf(agent, field);
+        assert.equal(dependent.state, "unobserved", `${id} ${field} is unobserved behind a failed gate`);
+        assert.match(dependent.summary, new RegExp(`\\(${code}\\)`, "u"), `${id} ${field} names the gate code`);
+        assert.equal(dependent.items, undefined);
+      }
+      assert.equal(agent.profile.path.code, code);
+      assert.equal(agent.profile.renderer.state, "unobserved");
+      assert.equal(agent.profile.bank.observed, null);
+      // The inventory proves `installed` only where ITS lstat found a real
+      // directory (twin-pm); the observer's fail then demotes healthy to
+      // installed and never promotes discovered.
+      assert.equal(agent.lifecycle.observed_state, id === "twin-pm" ? "installed" : "discovered", `${id}: the observer's fail demotes the lifecycle, never promotes it`);
+    }
+    const twin = fieldOf(agentNamed(data, "twin-pm"), FIELDS.path);
+    assert.equal(itemsOf(twin)[0].detail, "case-collision:Twin-pm", "the colliding entry is named");
+    assert.equal(data.profile.agents.blocked_at_path, 5);
+    // Renderer children ran only for gate-passing profiles: no probe of kind
+    // profile targets a gated one with anything but `skipped`.
+    for (const id of ["symlink-pm", "missing-pm", "file-pm", "twin-pm", "unsafe-pm"]) {
+      const probes = data.probes.filter((probe) => probe.kind === "profile" && probe.target.endsWith(`/profiles/${id}`));
+      assert.ok(probes.every((probe) => probe.outcome === "skipped"), `${id}: ${JSON.stringify(probes)}`);
+    }
+    assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/clean-pm")).outcome, "ok", "the clean profile's renderer probe ran");
+  });
+
+  check("a clean profile reads five passes, an in-sync renderer, three digests and a pinned bank", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const agent = agentNamed(data, "clean-pm");
+    const fields = agent.observations.filter((item) => item.source === "fleet-profile");
+    assert.deepEqual(fields.map((item) => item.field), FIELD_ORDER, "five observations, one per declared leaf, in byte order");
+    for (const field of fields) {
+      assert.equal(field.state, "pass", `${field.field} must pass on a clean profile: ${JSON.stringify(field.items)}`);
+      // Informational items may ride a pass on the skills field only: the
+      // base's relative `./agents/skills` entry is recorded as unresolvable.
+      if (field.field === FIELDS.skills) assert.deepEqual(kindsOf(field), ["source-unresolvable"], "the relative external_dirs entry is recorded, never resolved");
+      else assert.equal(field.items, undefined, `${field.field} carries no items key on a pass`);
+      assert.equal(field.rule_id, null);
+      assert.equal(field.evidence, "direct");
+      assert.equal(field.justification, null);
+    }
+    assert.equal(fieldOf(agent, FIELDS.config).owner, "hermes-profile-renderer");
+    assert.equal(fieldOf(agent, FIELDS.identity).owner, "hermes-agent-template");
+    assert.equal(fieldOf(agent, FIELDS.bank).owner, "hermes-agent-template");
+    assert.equal(fieldOf(agent, FIELDS.skills).owner, "hermes-agent-template");
+    assert.equal(fieldOf(agent, FIELDS.path).owner, "hermes-profile-renderer", "the directory resolves to the renderer by namespace majority");
+    assert.equal(agent.profile.renderer.state, "in-sync");
+    assert.deepEqual(agent.profile.renderer.sections, []);
+    for (const side of ["base", "delta", "generated"]) assert.match(agent.profile.digests[side], /^[0-9a-f]{12}$/u, `${side} digest`);
+    assert.equal(agent.profile.digests.base, sha256Prefix(Buffer.from(BASE_TEXT, "utf8")));
+    assert.deepEqual(agent.profile.bank, { observed: "agent-clean-pm", expected: "agent-clean-pm", state: "pass" });
+    assert.deepEqual(agent.profile.skills, { state: "pass", core_present: 6, core_missing: [], extra: [], sources_unresolvable: 1 });
+    assert.deepEqual(agent.profile.identity, { state: "pass", keys: ["display_name", "name"] });
+    assert.equal(agent.domains.profile, "unobserved", "without --live the audit half is still unread");
+    assert.equal(agent.lifecycle.observed_state, "healthy", "a clean profile keeps the lifecycle the inventory proved");
+  });
+
+  check("a misowned singleton link is a path fail after the gate, and the dependents are still observed", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const agent = agentNamed(data, "misowned-pm");
+    const path = fieldOf(agent, FIELDS.path);
+    assert.equal(path.state, "fail");
+    assert.deepEqual(itemsOf(path).map((item) => [item.path, item.kind, item.detail]), [["SOUL.md", "misowned-link", "misowned-link:SOUL.md"]]);
+    assert.equal(agent.profile.path.code, "misowned-link");
+    assert.equal(fieldOf(agent, FIELDS.config).state, "pass", "the gate passed, so the config was still proven");
+    assert.equal(fieldOf(agent, FIELDS.bank).state, "pass");
+    assert.equal(textOf(agent).includes(SECRET_SENTINEL), false, "the other agent's memory was never read");
+  });
+
+  // -- AC2: the generated config through the canonical renderer ------------
+
+  check("a config rendered from an older base is semantic drift naming the section; a base edit flips a clean profile the same way", () => {
+    const first = status(cliAt(mainRoot, STATUS_ARGS));
+    const stale = agentNamed(first, "stale-pm");
+    const config = fieldOf(stale, FIELDS.config);
+    assert.equal(config.state, "fail");
+    assert.deepEqual(itemsOf(config), [{ path: "config.yaml", kind: "semantic-drift", desired: "deep_merge(base, delta)", observed: "section model", detail: "model", wip: false }]);
+    assert.equal(stale.profile.renderer.state, "drifted");
+    assert.deepEqual(stale.profile.renderer.sections, ["model"]);
+    assert.equal(fieldOf(stale, FIELDS.bank).state, "pass", "drift in the config says nothing about the pin");
+    assert.equal(fieldOf(agentNamed(first, "clean-pm"), FIELDS.config).state, "pass");
+    assert.equal(first.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/stale-pm")).reason, "drifted");
+
+    // The base edited in ONE section: every in-sync profile now drifts there.
+    const original = readFileSync(join(fleetHome, "config.yaml"));
+    writeFileSync(join(fleetHome, "config.yaml"), YAML.stringify({ ...baseConfig(), mcp_servers: { hindsight: { command: "hindsight-mcp-v2" } } }), "utf8");
+    try {
+      const second = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
+      const clean = agentNamed(second, "clean-pm");
+      assert.equal(fieldOf(clean, FIELDS.config).state, "fail");
+      assert.deepEqual(kindsOf(fieldOf(clean, FIELDS.config)), ["semantic-drift"]);
+      assert.deepEqual(clean.profile.renderer.sections, ["mcp_servers"]);
+      assert.notEqual(clean.profile.digests.base, agentNamed(first, "clean-pm").profile.digests.base, "the base digest moved");
+      assert.equal(clean.profile.digests.generated, agentNamed(first, "clean-pm").profile.digests.generated, "the generated digest did not");
+      assert.equal(second.profile.renderer.drifted, 1);
+      assert.equal(clean.lifecycle.observed_state, "installed", "a proven config failure demotes healthy to installed");
+    } finally {
+      writeFileSync(join(fleetHome, "config.yaml"), original);
+    }
+    const third = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.equal(fieldOf(agentNamed(third, "clean-pm"), FIELDS.config).state, "pass", "restored, the base proves in sync again");
+    // No digest of the drifted value, no body, no value anywhere.
+    assert.equal(first.agents.some((agent) => textOf(agent).includes("fleet-model")), false, "a config value reached the payload");
+    assert.equal(textOf(first).includes("hindsight-mcp"), false, "a config value reached the payload");
+  });
+
+  check("a symlinked generated config, a missing marker and a missing delta are their own kinds and the renderer is not spawned for them", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const gensym = agentNamed(data, "gensym-pm");
+    assert.deepEqual(kindsOf(fieldOf(gensym, FIELDS.config)), ["generated-symlink"]);
+    assert.equal(fieldOf(gensym, FIELDS.config).state, "fail");
+    assert.equal(gensym.profile.renderer.state, "fail");
+    assert.equal(gensym.profile.digests.generated, null, "a symlink is never read");
+    assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/gensym-pm")).outcome, "skipped");
+
+    const marker = agentNamed(data, "marker-pm");
+    assert.deepEqual(kindsOf(fieldOf(marker, FIELDS.config)), ["marker-missing"]);
+    assert.equal(marker.profile.renderer.state, "in-sync", "the renderer compares parsed dicts and still runs for a marker-less regular file");
+    assert.equal(fieldOf(marker, FIELDS.config).state, "fail");
+
+    const nodelta = agentNamed(data, "nodelta-pm");
+    assert.deepEqual(kindsOf(fieldOf(nodelta, FIELDS.config)), ["delta-missing"]);
+    assert.equal(nodelta.profile.renderer.state, "fail");
+    assert.equal(nodelta.profile.digests.delta, null);
+    assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/nodelta-pm")).outcome, "skipped");
+    assert.equal(data.profile.renderer.checked, data.profile.renderer.in_sync + data.profile.renderer.drifted + data.profile.renderer.failed + data.profile.renderer.timeout);
+  });
+
+  // -- AC3: renderer integrity -----------------------------------------------
+
+  check("a worktree renderer edited by one byte is renderer-source-mismatched, every config field errors, and no python3 is spawned", () => {
+    const root = makePackageRoot("pkg-mismatched", YAML.stringify(policyContract(), { lineWidth: 0 }), {
+      after: (packageRoot, submodule) => {
+        writeFileSync(join(submodule, RENDERER_REL), Buffer.concat([RENDERER_BYTES, Buffer.from("\n")]));
+      },
+    });
+    const recorder = join(shimRoot, "python3-invocations.log");
+    rmSync(recorder, { force: true });
+    const realPython = spawnSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+    const shim = pathShim("recording", `#!/bin/sh\nprintf '%s\\n' "$*" >> "${recorder}"\nexec "${realPython}" "$@"\n`);
+    const data = status(cliAt(root, STATUS_ARGS, { PATH: `${shim}:${process.env.PATH}` }));
+    const renderer = hostNamed(data, "profile.renderer");
+    assert.equal(renderer.state, "error");
+    assert.equal(renderer.observed, "renderer-source-mismatched");
+    assert.equal(renderer.domain, "profile");
+    assert.equal(renderer.owner, "hermes-profile-renderer");
+    assert.equal(data.profile.renderer.source, "renderer-source-mismatched");
+    assert.equal(data.profile.renderer.python, "not-probed");
+    assert.equal(data.profile.renderer.gitlink, TEMPLATE_HEAD, "the committed gitlink is still reported; the worktree is what is wrong");
+    for (const agent of data.agents) {
+      if (agent.profile.path.state !== "pass") continue;
+      const config = fieldOf(agent, FIELDS.config);
+      assert.equal(config.state, "error", `${agent.agent_id} config must be error behind a broken renderer`);
+      assert.ok(kindsOf(config).includes("renderer-unavailable"), `${agent.agent_id}: ${JSON.stringify(config.items)}`);
+      assert.equal(itemsOf(config).find((item) => item.kind === "renderer-unavailable").detail, "renderer-source-mismatched");
+      assert.equal(agent.profile.renderer.state, "error");
+      assert.equal(fieldOf(agent, FIELDS.bank).state === "unobserved", false, "the pin is still read; only the renderer is withheld");
+    }
+    assert.equal(existsSync(recorder), false, "no child named python3 was spawned");
+    assert.equal(data.probes.filter((probe) => probe.kind === "profile" && probe.outcome === "ok").length, 0, "zero successful profile probes behind a mismatched renderer");
+    assert.equal(data.probes.some((probe) => probe.kind === "profile" && probe.target === "python3"), false, "the interpreter was not even probed");
+    assert.equal(data.profile.agents.incomplete, data.profile.agents.real, "every real profile is incomplete, none drifted");
+    assert.notEqual(data.health.verdict, "healthy");
+  });
+
+  check("an uninitialized submodule is renderer-source-missing; a missing, old or yaml-less python is its own code", () => {
+    const contract = YAML.stringify(policyContract(), { lineWidth: 0 });
+    const uninitialized = makePackageRoot("pkg-uninitialized", contract, { after: (root, submodule) => { rmSync(submodule, { recursive: true, force: true }); mkdirSync(submodule); } });
+    const missing = status(cliAt(uninitialized, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.equal(missing.profile.renderer.source, "renderer-source-missing");
+    assert.equal(hostNamed(missing, "profile.renderer").state, "error");
+    assert.equal(fieldOf(agentNamed(missing, "clean-pm"), FIELDS.config).state, "error");
+
+    for (const [name, body, code] of [
+      ["absent", null, "renderer-python-unavailable"],
+      ["old", "#!/bin/sh\nexit 3\n", "renderer-python-too-old"],
+      ["noyaml", "#!/bin/sh\nexit 1\n", "renderer-pyyaml-missing"],
+    ]) {
+      const shim = pathShim(name, body);
+      const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { PATH: shim }));
+      assert.equal(data.profile.renderer.source, "ok", `${name}: the source is fine`);
+      assert.equal(data.profile.renderer.python, code, name);
+      assert.equal(hostNamed(data, "profile.renderer").state, "error", name);
+      assert.equal(hostNamed(data, "profile.renderer").observed, code, name);
+      const config = fieldOf(agentNamed(data, "clean-pm"), FIELDS.config);
+      assert.equal(config.state, "error", name);
+      assert.equal(itemsOf(config).find((item) => item.kind === "renderer-unavailable").detail, code, name);
+      assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target === "python3").reason, code, name);
+    }
+  });
+
+  check("a held profile lock is a bounded renderer-timeout for that profile, and the run still succeeds", () => {
+    const lock = join(profilesRoot, ".clean-pm.config.lock");
+    const holder = spawn("flock", [lock, "sleep", "30"], { detached: true, stdio: "ignore" });
+    try {
+      // Give flock a moment to take the lock before the renderer asks for it.
+      spawnSync("sh", ["-c", "sleep 0.3"]);
+      const started = Date.now();
+      const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 20_000, `the timeout must be bounded by the lock timeout plus a margin, took ${elapsed} ms`);
+      const config = fieldOf(agentNamed(data, "clean-pm"), FIELDS.config);
+      assert.equal(config.state, "error");
+      assert.deepEqual(kindsOf(config), ["renderer-timeout"]);
+      assert.equal(agentNamed(data, "clean-pm").profile.renderer.state, "error");
+      assert.equal(data.profile.renderer.timeout, 1);
+      assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/clean-pm")).outcome, "timeout");
+      assert.equal(hostNamed(data, "profile.renderer").state, "pass", "a held lock is one profile's condition, not the renderer's");
+    } finally {
+      try { process.kill(-holder.pid, "SIGKILL"); } catch { try { holder.kill("SIGKILL"); } catch { /* gone */ } }
+    }
+  });
+
+  // -- AC4: the bank pin ----------------------------------------------------------
+
+  check("pin variants read pass, bank-alias, bank-alias, bank-custom, bank-missing, pin-missing, bank-mismatch, pin-malformed, pin-symlink, with exact ids and no memory read", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const expect = (id, kind, observed) => {
+      const agent = agentNamed(data, id);
+      const bank = fieldOf(agent, FIELDS.bank);
+      if (kind === null) { assert.equal(bank.state, "pass", id); assert.equal(bank.items, undefined); }
+      else {
+        assert.equal(bank.state, "fail", `${id}: ${JSON.stringify(bank.items)}`);
+        assert.deepEqual(kindsOf(bank), [kind], id);
+        assert.equal(bank.desired, `agent-${id}`, `${id}: desired carries the exact expected id`);
+        if (observed !== undefined) assert.equal(bank.observed, observed, `${id}: observed carries the exact id`);
+      }
+      assert.equal(agent.profile.bank.expected, `agent-${id}`);
+    };
+    expect("clean-pm", null);
+    expect("alias-pm", "bank-alias", "agent-Alias-pm");
+    expect("alias2-pm", "bank-alias", "agent-alias2_pm");
+    expect("custom-pm", "bank-custom", "custom");
+    expect("template-pm", "bank-missing", "bank_id_template only");
+    expect("nopin-pm", "pin-missing", "absent");
+    expect("mismatch-pm", "bank-mismatch", "agent-somebody-else");
+    expect("pinbad-pm", "pin-malformed");
+    expect("pinlink-pm", "pin-symlink", "symlink");
+    assert.equal(itemsOf(fieldOf(agentNamed(data, "template-pm"), FIELDS.bank))[0].detail, "bank_id_template", "a generic template never satisfies the pin");
+    assert.deepEqual(data.profile.identity, { bank_ok: data.profile.identity.bank_ok, bank_alias: 2, bank_custom: 1, bank_missing: 2, bank_mismatch: 1 });
+    assert.equal(textOf(data).includes("secret memory"), false, "nothing under memories/ was read");
+  });
+
+  // -- AC5: the skill core by bytes -------------------------------------------
+
+  check("a dangling core link and a byte-different copy fail the core; the rest resolve through external_dirs; an optional skill is listed", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const agent = agentNamed(data, "skills-pm");
+    const skills = fieldOf(agent, FIELDS.skills);
+    assert.equal(skills.state, "fail");
+    const core = itemsOf(skills).filter((item) => item.kind !== "extra-skill" && item.kind !== "source-unresolvable");
+    assert.deepEqual(core.map((item) => [item.kind, item.detail]).sort(), [["core-dangling", "core-dangling:hindsight"], ["core-replaced", "core-replaced:33god-projects"]]);
+    const replaced = core.find((item) => item.kind === "core-replaced");
+    assert.match(replaced.desired, /^[0-9a-f]{12}$/u, "the canonical digest");
+    assert.match(replaced.observed, /^[0-9a-f]{12}$/u, "the observed digest");
+    assert.notEqual(replaced.desired, replaced.observed);
+    assert.deepEqual(agent.profile.skills.core_missing, ["33god-projects", "hindsight"]);
+    assert.equal(agent.profile.skills.core_present, 4, "the remaining four read present through skills.external_dirs");
+    assert.deepEqual(agent.profile.skills.extra, ["extra-tool"]);
+    assert.ok(kindsOf(skills).includes("extra-skill"));
+    assert.equal(agent.profile.skills.sources_unresolvable, 1, "the relative external_dirs entry is counted, not resolved");
+    assert.equal(textOf(agent).includes("a replaced copy"), false, "no SKILL.md body reaches the payload");
+
+    const foreign = agentNamed(data, "foreign-pm");
+    assert.deepEqual(itemsOf(fieldOf(foreign, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.kind, item.detail]), [["core-foreign", "core-foreign:delonet-dotenv"]]);
+    assert.equal(fieldOf(foreign, FIELDS.skills).state, "fail", "identical bytes outside every allowed root never count");
+    assert.equal(foreign.profile.skills.core_present, 5);
+    assert.equal(data.profile.skills.core_replaced, 1);
+    assert.ok(data.profile.skills.extras_seen >= 1);
+  });
+
+  // -- identity-file shapes ------------------------------------------------------
+
+  check("identity-file shapes: missing, symlink, malformed and a mismatched name fail; an unknown key warns; an inert config block is recorded and passes", () => {
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    const expect = (id, state, kinds) => {
+      const identity = fieldOf(agentNamed(data, id), FIELDS.identity);
+      assert.equal(identity.state, state, `${id}: ${JSON.stringify(identity.items)}`);
+      assert.deepEqual(kindsOf(identity), kinds, id);
+      return identity;
+    };
+    expect("noid-pm", "fail", ["missing"]);
+    expect("idlink-pm", "fail", ["symlink"]);
+    expect("idbad-pm", "fail", ["malformed"]);
+    const unknown = expect("idunknown-pm", "warn", ["unknown-key"]);
+    assert.equal(itemsOf(unknown)[0].detail, "unknown-key:mystery");
+    assert.equal(unknown.justification, null, "an unauthorized warn is unjustified");
+    assert.deepEqual(agentNamed(data, "idunknown-pm").profile.identity.keys, ["description", "mystery", "name"], "key NAMES only");
+    assert.equal(textOf(agentNamed(data, "idunknown-pm")).includes(SECRET_SENTINEL), false, "the description value never reaches the payload");
+    const inert = expect("idconfig-pm", "pass", ["inert-config-block"]);
+    assert.equal(itemsOf(inert)[0].detail, "inert-key:config");
+    assert.equal(itemsOf(inert)[0].observed, "config");
+    assert.equal(textOf(agentNamed(data, "idconfig-pm")).includes("inherit_from"), false, "the block is recorded as inert, never as inheritance and never by value");
+    const name = expect("idname-pm", "fail", ["identity-mismatch"]);
+    assert.equal(itemsOf(name)[0].detail, "identity-mismatch:name");
+    assert.equal(itemsOf(name)[0].desired, "idname-pm");
+    const display = expect("iddisplay-pm", "fail", ["identity-mismatch"]);
+    assert.equal(itemsOf(display)[0].detail, "identity-mismatch:display_name");
+    assert.equal(textOf(agentNamed(data, "iddisplay-pm")).includes("Somebody Else"), false, "the display value never reaches the payload");
+  });
+
+  // -- AC6: the extras sweep ------------------------------------------------------
+
+  check("fleet scope classifies every unregistered root entry into one of five classes with evidence and guidance, and leaves the root untouched", () => {
+    const rootBefore = snapshotTree("root", profilesRoot);
+    const data = status(cliAt(mainRoot, STATUS_ARGS));
+    assertUnchanged(rootBefore, snapshotTree("root", profilesRoot), "the sweep");
+    const extras = hostNamed(data, "profile.extras");
+    assert.equal(extras.state, "warn");
+    assert.equal(extras.domain, "profile");
+    assert.equal(extras.justification, null, "an unclassified extra is unjustified by design");
+    const byPath = Object.fromEntries((extras.items ?? []).map((item) => [item.path, item]));
+    const expected = {
+      "clean-pm.bak": ["retired-candidate", "directory", "retirement", "clean-pm"],
+      clean_pm: ["retired-candidate", "directory", "retirement", "clean-pm"],
+      oldtopo: ["retired-candidate", "directory", "retirement", null],
+      linked: ["unclassified", "symlink", "manual-review", null],
+      standalone: ["unclassified", "directory", "manual-review", null],
+      "Twin-pm": ["retired-candidate", "directory", "retirement", "twin-pm"],
+      "stray.txt": ["debris-candidate", "file", "retirement", null],
+      empty: ["debris-candidate", "empty-directory", "retirement", null],
+      dangling: ["debris-candidate", "dangling-symlink", "retirement", null],
+      "fleet-bloodbank-gateway": ["approved-managed-exception", "directory", "exception", null],
+      unmanaged: ["unclassified", "directory", "adoption", null],
+      "shared-profile": ["unclassified", "directory", "adoption", null],
+    };
+    assert.deepEqual(Object.keys(byPath).sort(), Object.keys(expected).sort(), "every unregistered, non-lock entry appears exactly once");
+    for (const [path, [klass, kind, guidance, alias]] of Object.entries(expected)) {
+      const item = byPath[path];
+      assert.equal(item.class, klass, `${path} class`);
+      assert.equal(item.kind, kind, `${path} kind`);
+      assert.equal(item.guidance, guidance, `${path} guidance`);
+      assert.equal(item.alias_of, alias, `${path} alias_of`);
+      assert.equal(item.process_reference, "unobserved", `${path}: live attribution is story 1.9`);
+      assert.ok(EXTRA_CLASSES.includes(item.class));
+    }
+    assert.equal(byPath["clean-pm.bak"].detail, "backup-pattern:*.bak");
+    assert.equal(byPath.clean_pm.detail, "alias-of:clean-pm");
+    assert.equal(byPath.oldtopo.detail, "config-symlink");
+    assert.equal(byPath["Twin-pm"].detail, "alias-of:twin-pm", "a case variant of a registered name is an alias, so a retired candidate");
+    assert.equal(byPath["fleet-bloodbank-gateway"].detail, "classifications.managed_shared_service.entries[0]");
+    assert.equal(byPath["fleet-bloodbank-gateway"].unit_file_references, 1);
+    assert.equal(byPath.standalone.unit_file_references, 1, "a trailing slash in the unit's HERMES_HOME still counts");
+    assert.equal(byPath.standalone.standalone, "incomplete");
+    assert.equal(byPath.unmanaged.standalone, "complete");
+    assert.equal(byPath.linked.standalone, null, "a symlink is classified, never followed");
+    assert.match(byPath.linked.link_target, /outside\/linked-profile$/u);
+    assert.equal(byPath.linked.link_target.startsWith("/"), false, "the link target is shown, never absolute");
+    assert.equal(byPath["clean-pm.bak"].standalone, "incomplete");
+    assert.equal(Object.values(byPath).some((item) => item.path.startsWith(".")), false, "the renderer's lock files are never listed");
+    assert.deepEqual(data.profile.extras, {
+      coverage: "swept", reason: null, entries_total: 12,
+      by_class: { "approved-managed-exception": 1, "intentionally-unmanaged": 0, "retired-candidate": 4, unclassified: 4, "debris-candidate": 3 },
+      listed: 12, truncated: false,
+    });
+    assert.equal(data.health.verdict, "unhealthy", "the fixture carries proven failures; the warn alone would make it unproven");
+    assert.doesNotMatch(textOf(extras), /\b(rm |git rm|delete |remove )\b/u, "nothing proposes deleting an entry");
+    assert.equal(extras.next_action_class, "read-only");
+  });
+
+  check("a root whose every extra is declared reads profile.extras pass, and the slice can be healthy", () => {
+    // A SECOND home with one clean agent, the declared gateway profile and one
+    // declared intentionally-unmanaged directory: the only way an extra becomes
+    // `pass` is a contract classification naming it.
+    const home2 = join(temp, "home2");
+    const fleet2 = join(home2, ".hermes");
+    const root2 = join(fleet2, "profiles");
+    mkdirSync(root2, { recursive: true });
+    mkdirSync(join(home2, ".config", "pjangler"), { recursive: true });
+    mkdirSync(join(home2, ".config", "hermes-agent-template"), { recursive: true });
+    writeFileSync(join(fleet2, "config.yaml"), BASE_TEXT, "utf8");
+    // The canonical projection is shared: the second home's `.agents/skills`
+    // resolves to the same directory the profile links point at.
+    mkdirSync(join(home2, ".agents"), { recursive: true });
+    symlinkSync(canonicalSkills, join(home2, ".agents", "skills"));
+    const repo = makeRepo("solo");
+    seedProfile("solo-pm", { root: root2, links: { "SOUL.md": join(repo.runtime, "SOUL.md"), memories: join(repo.runtime, "memories") } });
+    seedProfile("fleet-bloodbank-gateway", { root: root2, identity: { name: "fleet-bloodbank-gateway" }, pin: { bank_id: "agent-fleet-bloodbank-gateway" }, skills: null, lock: false });
+    seedProfile("keeper", { root: root2, identity: null, pin: null, skills: null, lock: false });
+    const soloFleet = [{ name: "solo-pm", rowOverrides: {} }];
+    writeAgentRegistry(join(fleet2, "agents-registry.yaml"), soloFleet);
+    writeProjectRegistry(join(home2, ".config", "pjangler", "projects.yaml"), soloFleet);
+    cpSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), join(home2, ".config", "hermes-agent-template", "config.toml"));
+    const declared = policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = [{
+        id: "keeper-profile", kind: "standalone-profile", owner: "operator", source: "profiles.keeper",
+        lifecycle_state: "kept", rationale: "an operator-run profile the control plane observes and leaves alone", policy_domains: ["profile"],
+      }];
+    });
+    const root = makePackageRoot("pkg-declared", YAML.stringify(declared, { lineWidth: 0 }));
+    const env2 = {
+      HOME: home2, XDG_CONFIG_HOME: join(home2, ".config"), HERMES_FLEET_HOME: fleet2,
+      HERMES_AGENTS_REGISTRY: join(fleet2, "agents-registry.yaml"), HERMES_FLEET_REGISTRY_FILE: join(fleet2, "agents-registry.yaml"),
+      HERMES_FLEET_ENV: join(fleet2, "no-fleet.env"), HERMES_TEMPLATE_CONFIG: join(home2, ".config", "hermes-agent-template", "config.toml"),
+      PJ_PROJECT_REGISTRY: join(home2, ".config", "pjangler", "projects.yaml"),
+    };
+    const data = status(cliAt(root, STATUS_ARGS, env2));
+    const extras = hostNamed(data, "profile.extras");
+    assert.equal(extras.state, "pass", JSON.stringify(extras.items));
+    const solo = agentNamed(data, "solo-pm");
+    for (const field of FIELD_ORDER) assert.equal(fieldOf(solo, field).state, "pass", `${field}: ${JSON.stringify(fieldOf(solo, field).items)}`);
+    assert.deepEqual((extras.items ?? []).map((item) => [item.path, item.class, item.guidance]).sort(), [
+      ["fleet-bloodbank-gateway", "approved-managed-exception", "exception"],
+      ["keeper", "intentionally-unmanaged", "exception"],
+    ]);
+    assert.equal((extras.items ?? []).find((item) => item.path === "keeper").detail, "classifications.intentionally_unmanaged.entries[0]");
+    assert.deepEqual(data.profile.extras.by_class, { "approved-managed-exception": 1, "intentionally-unmanaged": 1, "retired-candidate": 0, unclassified: 0, "debris-candidate": 0 });
+    assert.equal(data.profile.agents.structurally_healthy, 1);
+    assert.equal(agentNamed(data, "solo-pm").healthy, true);
+    assert.equal(data.health.healthy, true, "a clean profile behind a fully classified root has no proven failure");
+    assert.equal(data.health.unjustified, 0, "every non-pass is authorized");
+
+    // ONE unclassified entry beside them: the finding turns warn, health.healthy
+    // stays true (a host condition is never a fleet failure), and the fleet
+    // cannot claim proof until the operator classifies it in the contract.
+    mkdirSync(join(root2, "orphan", "hindsight"), { recursive: true });
+    const after = status(cliAt(root, STATUS_ARGS, env2));
+    const warned = hostNamed(after, "profile.extras");
+    assert.equal(warned.state, "warn");
+    assert.equal(warned.justification, null, "unjustified by design");
+    assert.equal((warned.items ?? []).find((item) => item.path === "orphan").class, "unclassified");
+    assert.equal(after.health.healthy, true, "a host warn never makes the fleet unhealthy");
+    assert.equal(after.health.unjustified, 1, "an unjustified host warn counts against proof");
+    assert.equal(after.health.verdict, "unproven");
+    assert.equal(after.health.proven, false);
+  });
+
+  // -- AC7: scoping ------------------------------------------------------------------
+
+  check("--agent inspects one profile, never sweeps, and keeps fleet totals; --domain registry spawns zero profile probes", () => {
+    const scoped = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.equal(scoped.profile.extras.coverage, "not-swept");
+    assert.equal(scoped.profile.extras.reason, "agent-scope");
+    assert.equal(scoped.profile.extras.entries_total, 0);
+    assert.equal(scoped.host.some((finding) => finding.rule_id === "profile.extras"), false, "no profile.extras host finding in agent scope");
+    assert.deepEqual(scoped.host.map((finding) => finding.rule_id).sort(), ["profile.renderer", "profile.root"]);
+    assert.deepEqual(scoped.profile.agents, {
+      total_registered: REGISTERED, selected: 1, real: 1, blocked_at_path: 0,
+      structurally_healthy: 1, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: REGISTERED - 1,
+    });
+    const profileProbes = scoped.probes.filter((probe) => probe.kind === "profile");
+    assert.ok(profileProbes.some((probe) => probe.target.endsWith("/profiles/clean-pm")), "the selected profile was read");
+    assert.ok(profileProbes.every((probe) => !probe.target.includes("/profiles/stale-pm")), "no other profile was read");
+    // The case-collision gate still knows the whole root in agent scope.
+    const twin = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "twin-pm"]));
+    assert.equal(agentNamed(twin, "twin-pm").profile.path.code, "case-collision");
+
+    const registry = status(cliAt(mainRoot, ["fleet", "status", "--domain", "registry", "--json"]));
+    assert.deepEqual(registry.probes.filter((probe) => probe.kind === "profile"), [], "zero profile probes");
+    assert.equal(registry.profile, null);
+    for (const agent of registry.agents) {
+      assert.ok("profile" in agent, "the key is present");
+      assert.equal(agent.profile, null);
+    }
+  });
+
+  // -- AC8: rule agreement under --live ------------------------------------------
+
+  check("under --live the observer and hermes.runtime-singleton agree, disagree, or are not compared -- by name", () => {
+    const passShim = entry("rule-pass", syntheticReport([SINGLETON_RULE_PASS]));
+    const failShim = entry("rule-fail", syntheticReport([SINGLETON_RULE_FAIL]));
+    const otherFailShim = entry("rule-other-fail", syntheticReport([SINGLETON_RULE_OTHER_FAIL]));
+    const live = (agent, shim) => status(cliAt(mainRoot, [...STATUS_ARGS, "--live", "--agent", agent], { PJ_FLEET_CLI_ENTRY: shim }));
+
+    const agree = live("clean-pm", passShim);
+    assert.deepEqual(agree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
+    assert.equal(agree.findings.some((finding) => finding.code === "profile-rule-disagreement"), false);
+
+    const disagree = live("nodelta-pm", passShim);
+    assert.deepEqual(disagree.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
+    const finding = disagree.findings.find((item) => item.code === "profile-rule-disagreement");
+    assert.ok(finding, "a disagreement is a finding");
+    assert.equal(finding.agent_id, "nodelta-pm");
+    assert.equal(finding.scope, "agent");
+    assert.equal(finding.severity, "error");
+    assert.equal(finding.status_severity, "high");
+    assert.equal(finding.gating, true);
+    assert.match(finding.detail, /reports pass while the profile observer finds drift/u);
+    const agent = agentNamed(disagree, "nodelta-pm");
+    assert.equal(agent.observations.find((item) => item.rule_id === "hermes.runtime-singleton").state, "pass", "the rule's reading stands");
+    assert.equal(fieldOf(agent, FIELDS.config).state, "fail", "and so does the observer's");
+    assert.equal(disagree.findings.some((item) => item.code === "status-contradiction"), false, "the two never meet in detectContradictions: different fields by design");
+
+    const reverse = live("clean-pm", failShim);
+    assert.deepEqual(reverse.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
+    assert.match(reverse.findings.find((item) => item.code === "profile-rule-disagreement").detail, /reports fail while the profile observer finds no drift/u);
+
+    // A rule fail about something the observer never reads is not compared.
+    const other = live("clean-pm", otherFailShim);
+    assert.deepEqual(other.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+    // Semantic drift alone is coverage the rule never had: not compared.
+    const semantic = live("stale-pm", passShim);
+    assert.deepEqual(semantic.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+    // A gated profile is a partial reading: not compared.
+    const gated = live("symlink-pm", passShim);
+    assert.deepEqual(gated.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+  });
+
+  // -- exceptions ride the existing axis ----------------------------------------
+
+  check("an agent_exceptions entry makes a drifted profile an exception and leaves health.healthy alone", () => {
+    const ruled = policyContract((document) => {
+      document.health_policy.agent_exceptions = [
+        { domain: "profile", agent_id: "stale-pm", reason: "this profile pins the older base on purpose", owner: "suite" },
+      ];
+    });
+    const root = makePackageRoot("pkg-exception", YAML.stringify(ruled, { lineWidth: 0 }));
+    const before = status(cliAt(mainRoot, STATUS_ARGS));
+    const after = status(cliAt(root, STATUS_ARGS));
+    const config = fieldOf(agentNamed(after, "stale-pm"), FIELDS.config);
+    assert.equal(config.state, "fail", "the drift is still reported and still fail");
+    assert.deepEqual(config.justification, { kind: "exception", policy: "health_policy.agent_exceptions[0]", reason: "this profile pins the older base on purpose", owner: null });
+    assert.equal(config.applicability, "exception");
+    assert.equal(fieldOf(agentNamed(after, "stale-pm"), FIELDS.bank).justification, null, "a passing field carries no ruling");
+    assert.equal(agentNamed(before, "stale-pm").member_class, "unhealthy");
+    assert.equal(agentNamed(after, "stale-pm").member_class, "exception");
+    assert.equal(after.profile.agents.exception_authorized, before.profile.agents.exception_authorized + 1);
+    assert.equal(after.profile.agents.drifted, before.profile.agents.drifted - 1);
+    assert.equal(after.health.healthy, before.health.healthy, "a ruling never changes health.healthy");
+    assert.equal(fieldOf(agentNamed(after, "nodelta-pm"), FIELDS.config).justification, null, "another agent's drift is untouched");
+  });
+
+  // -- caps, payloads, deadlines -----------------------------------------------------
+
+  check("the payload survives a real pipe past 64 KiB, and two runs plus the MCP tool are byte-identical with no secret, body, value or timestamp", () => {
+    const before = snapshotIsolated();
+    const piped = spawnSync("sh", ["-c", `"$0" "$@" | cat`, process.execPath, join(mainRoot, "dist", "index.js"), ...STATUS_ARGS], {
+      cwd: workdir, env: { ...process.env, ...isolation }, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000,
+    });
+    assertUnchanged(before, snapshotIsolated(), "the piped run");
+    assert.ok(piped.stdout.length > 65_536, `payload is only ${piped.stdout.length} bytes; below the pipe buffer the defect cannot fire`);
+    status(piped);
+    const first = cliAt(mainRoot, STATUS_ARGS);
+    const second = cliAt(mainRoot, STATUS_ARGS);
+    assert.equal(first.stdout, second.stdout, "data is not byte-stable across two runs, lock files included");
+    assert.equal(JSON.stringify(JSON.parse(first.stdout).data), JSON.stringify(JSON.parse(piped.stdout).data), "the piped run is the same data");
+    const human = cliAt(mainRoot, ["fleet", "status", "--domain", "profile"]);
+    for (const [name, text] of [["--json", first.stdout], ["the human report", human.stdout]]) {
+      assert.ok(text.length > 0, `${name} is empty`);
+      assert.equal(text.includes(SECRET_SENTINEL), false, `the planted secret reached ${name}`);
+      assert.equal(text.includes("fleet-model"), false, `a config value reached ${name}`);
+      assert.equal(text.includes("hindsight-mcp"), false, `a config value reached ${name}`);
+      assert.equal(text.includes("The canonical"), false, `a SKILL.md body reached ${name}`);
+      assert.equal(text.includes("secret memory"), false, `a memory reached ${name}`);
+      assert.equal(text.includes(GENERATED_HEADER.trim()), false, `the generated header reached ${name}`);
+      assert.equal(text.includes(profilesRoot), false, `an absolute profile path reached ${name}`);
+      assert.equal(text.includes(canonicalSkills), false, `an absolute canonical path reached ${name}`);
+      assert.doesNotMatch(text, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/u, `a timestamp reached ${name}`);
+    }
+    assert.match(human.stdout, /profile in-sync · bank ok · skills 6\/6/u, "the report prints the per-agent profile cell");
+    assert.match(human.stdout, /root ok · renderer ok · python ok/u, "the report prints the domain gates");
+    assert.match(human.stdout, /extras swept: \d+ unregistered entries/u, "the report prints the sweep");
+    assert.match(human.stdout, /profile\.extras/u, "the report prints the extras host finding");
+    assert.match(human.stdout, /semantic-drift config\.yaml/u, "the report prints typed items");
+  });
+
+  await checkAsync("the MCP tool returns the same data as the CLI, profile summaries included", async () => {
+    const cli = status(cliAt(mainRoot, STATUS_ARGS));
+    const env = { ...process.env, ...isolation };
+    const before = snapshotIsolated();
+    const transport = new StdioClientTransport({ command: process.execPath, args: [join(mainRoot, "dist", "mcp-server.js")], cwd: workdir, env });
+    const client = new Client({ name: "fleet-profile-suite", version: "1.0.0" });
+    await client.connect(transport);
+    let result;
+    try {
+      result = await client.callTool({ name: "pjangler_fleet_status", arguments: { domain: "profile" } });
+    } finally {
+      await client.close();
+    }
+    assertUnchanged(before, snapshotIsolated(), "the MCP run");
+    const text = result.content.map((item) => (item.type === "text" ? item.text : "")).join("");
+    const parsed = JSON.parse(text);
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(parsed.data, cli, "MCP data must deep-equal the CLI's");
+    assert.ok(parsed.data.profile, "data.profile is present over MCP");
+    assert.ok(parsed.data.agents.every((agent) => agent.profile !== null), "every agents[].profile is present over MCP");
+  });
+
+  check("a blown --deadline-ms is TIMEOUT at exit 7 with no partial result", () => {
+    const result = cliAt(mainRoot, [...STATUS_ARGS, "--deadline-ms", "1"]);
+    assert.equal(result.status, 7, `expected exit 7, got ${result.status}`);
+    assert.equal(errorCode(envelope(result)), "TIMEOUT");
+  });
+
+  // -- contracts: the manifest, and contracts that must not load -------------
+
+  check("a schema-3 contract with no profile_manifest loads and reports every field unsupported under profile.manifest", () => {
+    const bare = policyContract((document) => {
+      delete document.profile_manifest;
+      delete document.authorities.provisioned_profile_state;
+      document.schema_version = 3;
+      document.compatibility.max_schema_version = 3;
+    });
+    const root = makePackageRoot("pkg-no-manifest", YAML.stringify(bare, { lineWidth: 0 }));
+    const data = status(cliAt(root, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    const agent = agentNamed(data, "clean-pm");
+    const gaps = agent.observations.filter((item) => item.source === "fleet-profile");
+    assert.deepEqual(gaps.map((item) => item.field), FIELD_ORDER);
+    for (const gap of gaps) {
+      assert.equal(gap.state, "unsupported");
+      assert.match(gap.summary, /profile_manifest/u);
+      assert.equal(gap.justification, null, "unjustified: the tracked policy declares no such deferral");
+    }
+    assert.equal(agent.profile, null);
+    assert.equal(data.profile.root.code, "manifest-undeclared");
+    assert.equal(data.profile.agents.unobserved, REGISTERED, "nothing was observed");
+    assert.deepEqual(data.probes.filter((probe) => probe.kind === "profile"), [], "nothing is read without a manifest");
+    assert.equal(data.host.some((finding) => finding.rule_id.startsWith("profile.")), false);
+  });
+
+  check("fleet status refuses a manifest that names nothing real, before any probe", () => {
+    const cases = [
+      ["unknown-key", (document) => { document.profile_manifest.renderer.timeout_seconds = 5; }, /profile_manifest\.renderer\.timeout_seconds/u],
+      ["template-no-placeholder", (document) => { document.profile_manifest.memory.bank_id_template = "agent-shared"; }, /bank_id_template must carry/u],
+      ["duplicate-skill", (document) => { document.profile_manifest.skill_core.required.push("hindsight"); }, /duplicate entry hindsight/u],
+      ["absolute-canonical", (document) => { document.profile_manifest.skill_core.canonical_dir = "/srv/skills"; }, /canonical_dir must start with/u],
+      ["argv-no-profile", (document) => { document.profile_manifest.renderer.check_argv = ["check", "--all"]; }, /exactly one argument must carry/u],
+      ["argv-not-check", (document) => { document.profile_manifest.renderer.check_argv = ["render", "--profile", "{profile_name}"]; }, /read-only `check` subcommand/u],
+      ["other-submodule", (document) => { document.profile_manifest.renderer.submodule = "templates/other"; }, /must equal scaffold_manifest\.template_submodule/u],
+      ["limit-over-ceiling", (document) => { document.profile_manifest.limits.max_file_bytes = 2 * 1024 * 1024; }, /may not exceed this build's ceiling/u],
+      ["undeclared-pin-leaf", (document) => { document.profile_manifest.memory.pin_file = "memory/pin.json"; }, /not declared writable by any authority/u],
+      ["inert-and-allowed", (document) => { document.profile_manifest.identity.inert_keys.push("role"); }, /already an allowed identity key/u],
+    ];
+    for (const [name, mutate, hint] of cases) {
+      const path = writeContract(name, policyContract(mutate));
+      const result = cliAt(mainRoot, [...STATUS_ARGS, "--contract", path]);
+      assert.equal(result.status, 2, `${name}: a contract that lies must exit 2, got ${result.status}: ${result.stdout.slice(0, 300)}`);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", name);
+      assert.match(parsed.error.message, hint, name);
+      assert.match(parsed.error.message, /profile_manifest/u, name);
+    }
+  });
+
+  check("the tracked contract validates at schema 4, and its skill core equals the template's CORE_RUNTIME_SKILLS at the gitlink", () => {
+    // The TRACKED contract, which is its own canonical serialization; a
+    // fixture root's re-serialized copy is not, by design.
+    const result = cliAt(mainRoot, ["fleet", "contract", "validate", "--contract", TRACKED_CONTRACT, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, JSON.stringify(parsed.error));
+    assert.equal(parsed.data.schema_version, 4);
+    const contract = contractDocument();
+    assert.equal(contract.contract_version, "1.3.0");
+    assert.equal(contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "profile.render_generation"), false, "the profile.render_generation deferral is gone: the observer answers it");
+    assert.deepEqual(contract.authorities.provisioned_profile_state.writable_fields, [FIELDS.identity, FIELDS.bank, FIELDS.skills]);
+    // The skill core the contract declares IS the template's, read at the gitlink.
+    const script = pinned(PROFILE_SCRIPT_REL).toString("utf8");
+    const block = /CORE_RUNTIME_SKILLS=\(([^)]*)\)/u.exec(script);
+    assert.ok(block, "the template must declare CORE_RUNTIME_SKILLS");
+    const declared = block[1].split(/\s+/u).map((item) => item.trim()).filter(Boolean);
+    assert.deepEqual([...contract.profile_manifest.skill_core.required].sort(), [...declared].sort(), "profile_manifest.skill_core.required must equal the template's CORE_RUNTIME_SKILLS");
+    assert.equal(contract.profile_manifest.skill_core.source, `${PROFILE_SCRIPT_REL} CORE_RUNTIME_SKILLS`);
+    // And the singleton links the observer checks are the ones the rule provisions.
+    const rules = readFileSync(join(ROOT, "src", "parity", "rules.ts"), "utf8");
+    const entriesBlock = /const OWNED_PROFILE_ENTRIES = \[([^\]]*)\]/u.exec(rules);
+    const filesBlock = /const OWNED_PROFILE_FILES = \[([^\]]*)\]/u.exec(rules);
+    assert.ok(entriesBlock && filesBlock, "rules.ts must declare the owned profile entries and files");
+    const ruleLinks = [...`${entriesBlock[1]},${filesBlock[1]}`.matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
+    const observer = readFileSync(join(ROOT, "src", "fleet", "profile.ts"), "utf8");
+    const observerBlock = /PROFILE_SINGLETON_LINKS = \[([^\]]*)\]/u.exec(observer);
+    const observerLinks = [...observerBlock[1].matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
+    assert.deepEqual([...observerLinks].sort(), [...ruleLinks].sort(), "PROFILE_SINGLETON_LINKS must mirror the rule's OWNED_PROFILE_ENTRIES + OWNED_PROFILE_FILES");
+  });
+
+  // -- the gates that make this reachable on a fresh clone --------------------
+
+  check("the runner, the README, the mise task, the CHANGELOG and the ledger all know about profile health", () => {
+    const runner = readFileSync(join(ROOT, "scripts", "run-tests.mjs"), "utf8");
+    assert.match(runner, /tests\/fleet-profile-regressions\.mjs/u, "a suite not listed in SUITES never runs");
+    const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+    const section = readme.slice(readme.indexOf("## Fleet status"), readme.indexOf("## Orienting in a repo"));
+    assert.match(section, /^### Profile health$/mu, "the README must document profile health inside the fleet status section");
+    for (const field of ["profile.yaml", "config.yaml", "hindsight/config.json", "skills"]) assert.ok(section.includes(`\`${field}\``) || section.includes(field), `the README must name the ${field} field`);
+    for (const klass of EXTRA_CLASSES) assert.ok(section.includes(`\`${klass}\``), `the README must name the ${klass} class`);
+    assert.match(section, /not-swept/u, "the README must explain the coverage label");
+    assert.match(section, /lock/u, "the README must explain the renderer's lock semantics");
+    assert.match(section, /profile_manifest/u);
+    assert.match(section, /profile-rule-disagreement/u);
+    const mise = readFileSync(join(ROOT, "mise.toml"), "utf8");
+    const task = mise.slice(mise.indexOf('[tasks."fleet:status"]') - 1400, mise.indexOf('[tasks."fleet:status"]') + 400);
+    assert.match(task, /canonical renderer/u, "the fleet:status comment must say the profile is proven through the renderer");
+    const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+    assert.match(changelog, /`feat\(PJAN-109\)`/u, "the CHANGELOG must carry the story");
+    const ledger = readFileSync(join(ROOT, "_bmad-output", "implementation-artifacts", "deferred-work.md"), "utf8");
+    assert.match(ledger, /spec-1-7-prove-generated-profile-health-and-classify-extras/u, "the ledger must name this story's spec as a source");
+    for (const id of ["DW-25", "DW-28", "DW-31", "DW-63"]) {
+      const entryStart = ledger.indexOf(`### ${id}:`);
+      const entryEnd = ledger.indexOf("\n### DW-", entryStart + 1);
+      assert.ok(entryStart >= 0, `the ledger must still carry ${id}`);
+      assert.match(ledger.slice(entryStart, entryEnd === -1 ? undefined : entryEnd), /story 1\.7, PJAN-109/u, `${id} must record what this story did to it`);
+    }
+    // DW-81 is used twice, so the next free number was verified rather than assumed.
+    assert.equal((ledger.match(/^### DW-81:/gmu) ?? []).length, 2, "the ledger's double DW-81 is a known state this suite pins so the next writer counts too");
+    assert.match(ledger, /^### DW-90:/mu);
+    const provenance = readFileSync(join(ROOT, "src", "fleet", "provenance.ts"), "utf8");
+    assert.equal(provenance.includes("profile.render_generation"), false, "the provenance fact is deleted, not kept beside the observer");
+  });
+
+  check("no invocation in this suite wrote to this repository or its template submodule", () => {
+    assertUnchanged(sharedAtStart, snapshotShared(), "this suite");
+  });
+
+  // -- AC11: the live fleet, sampled independently ------------------------------
+
+  check("on the real fleet every unregistered root entry is classified, every symlink is reported, and the renderer reading agrees with an independent check", () => {
+    const label = "on the real fleet every unregistered root entry is classified, every symlink is reported, and the renderer reading agrees with an independent check";
+    if (!existsSync(REAL_AGENT_REGISTRY) || !existsSync(REAL_PROJECT_REGISTRY)) skipCase(label, "the operator's live registries are not on this host");
+    const realFleetHome = process.env.HERMES_FLEET_HOME?.trim() || join(REAL_HOME, ".hermes");
+    const realRoot = join(realFleetHome, "profiles");
+    if (!existsSync(realRoot) || !existsSync(join(realFleetHome, "config.yaml"))) skipCase(label, "the live profile root or fleet base is not on this host");
+    const registered = YAML.parse(readFileSync(REAL_AGENT_REGISTRY, "utf8"))?.agents ?? {};
+    if (!registered["pjangler-pm"]) skipCase(label, "the live registry has no pjangler-pm row");
+    if (!existsSync(join(realRoot, "pjangler-pm", "config.delta.yaml"))) skipCase(label, "the live pjangler-pm profile carries no delta");
+
+    const liveEnv = { ...process.env, NO_COLOR: "1" };
+    const porcelainBefore = git(SUBMODULE, ["status", "--porcelain"]).stdout;
+    const result = spawnSync(process.execPath, [CLI, ...STATUS_ARGS], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000, env: liveEnv });
+    assert.equal(result.status, 0, `the live fleet must report at exit 0: ${result.stderr}`);
+    assert.equal(git(SUBMODULE, ["status", "--porcelain"]).stdout, porcelainBefore, "the submodule worktree is untouched by a live run");
+    const data = JSON.parse(result.stdout).data;
+    assert.equal(data.profile.agents.total_registered, Object.keys(registered).length);
+    assert.equal(data.profile.renderer.source, "ok", `the live renderer must be canonical: ${JSON.stringify(data.profile.renderer)}`);
+    assert.equal(data.profile.renderer.gitlink, GITLINK);
+    assert.equal(data.profile.extras.coverage, "swept");
+
+    // Independently: every non-registered, non-lock root entry appears with a
+    // class, and every symlink entry is reported as one.
+    const registeredNames = new Set(Object.values(registered).map((row) => row?.profile_name).filter((name) => typeof name === "string"));
+    const extras = data.host.find((finding) => finding.rule_id === "profile.extras");
+    assert.ok(extras, "the live root has a sweep");
+    const listed = new Map((extras.items ?? []).map((item) => [item.path, item]));
+    let symlinksSeen = 0;
+    for (const name of readdirSync(realRoot)) {
+      if (/^\..+\.config\.lock$/u.test(name)) continue;
+      const stat = lstatSync(join(realRoot, name));
+      if (registeredNames.has(name)) {
+        if (stat.isSymbolicLink()) {
+          const agentId = Object.entries(registered).find(([, row]) => row?.profile_name === name)?.[0];
+          const agent = data.agents.find((candidate) => candidate.agent_id === agentId);
+          assert.ok(agent, `registered symlinked profile ${name} must have a record`);
+          assert.equal(agent.profile.path.code, "symlink", `${name} must read as a path fail`);
+          symlinksSeen += 1;
+        }
+        continue;
+      }
+      const item = listed.get(name);
+      assert.ok(item, `unregistered root entry ${name} must be classified`);
+      assert.ok(EXTRA_CLASSES.includes(item.class), `${name} carries a class`);
+      if (stat.isSymbolicLink()) { assert.ok(item.kind === "symlink" || item.kind === "dangling-symlink", `${name} must be reported as a symlink`); symlinksSeen += 1; }
+    }
+
+    // Independently: the canonical renderer's own check for pjangler-pm.
+    const check_ = spawnSync("python3", ["-B", join(SUBMODULE, RENDERER_REL), "check", "--profile", "pjangler-pm"], {
+      cwd: SUBMODULE, encoding: "utf8", timeout: 60_000,
+      env: { PATH: process.env.PATH, HOME: REAL_HOME, LANG: process.env.LANG ?? "C.UTF-8", HERMES_FLEET_HOME: realFleetHome, PYTHONDONTWRITEBYTECODE: "1", PYTHONHASHSEED: "0", PYTHONIOENCODING: "utf-8" },
+    });
+    const agent = data.agents.find((candidate) => candidate.agent_id === "pjangler-pm");
+    assert.ok(agent, "pjangler-pm must have a record");
+    if (check_.status === 0) {
+      assert.match(check_.stdout, /^OK:/u);
+      assert.equal(agent.profile.renderer.state, "in-sync", "the observer must agree with an independent in-sync check");
+    } else {
+      assert.match(check_.stdout, /^PROFILE CONFIG DRIFT:/u, `an independent check exited ${check_.status} without a drift block: ${check_.stderr}`);
+      assert.equal(agent.profile.renderer.state, "drifted", "the observer must agree with an independent drifted check");
+      const sections = /drift in: ([^\n]+)/u.exec(check_.stdout)?.[1]?.split(",").map((item) => item.trim()).sort() ?? [];
+      assert.deepEqual(agent.profile.renderer.sections, sections, "the observer names the same drifted sections");
+    }
+    console.log(`       live: ${data.profile.agents.total_registered} registered, ${data.profile.agents.real} real, ${data.profile.agents.blocked_at_path} blocked at path, renderer ${data.profile.renderer.source} at ${GITLINK.slice(0, 12)} (${data.profile.renderer.in_sync} in sync, ${data.profile.renderer.drifted} drifted), ${symlinksSeen} symlink(s) reported, extras ${JSON.stringify(data.profile.extras.by_class)}, pjangler-pm renderer ${agent.profile.renderer.state} == independent exit ${check_.status}`);
+  });
+} catch (error) {
+  if (!(error instanceof SkipCase)) throw error;
+} finally {
+  rmSync(temp, { recursive: true, force: true });
+  rmSync(shimRoot, { recursive: true, force: true });
+}
+
+if (failures) {
+  console.error(`\n${failures} fleet profile check(s) failed`);
+  process.exit(1);
+}
+console.log(`fleet profile regressions passed${skipped ? ` (${skipped} skipped)` : ""}`);

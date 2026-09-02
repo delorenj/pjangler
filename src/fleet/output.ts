@@ -90,7 +90,7 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   // future edit drops the key, which is the one thing this table exists to stop.
   "fleet.status": [
     "contract_path", "contract_version", "scope",
-    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "truncated",
+    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "profile", "truncated",
   ],
 };
 
@@ -890,6 +890,11 @@ function severityColor(severity: FleetStatusSeverity): (value: string | number) 
   return dim;
 }
 
+/** Item kinds that are imperfections rather than failures: painted yellow, not red. */
+const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set(["wrong-mode", "unexpected-owned", "unknown-key", "bank-alias"]);
+/** Item kinds that are information beside a pass: painted dim. */
+const REPORT_INFO_ITEM_KINDS: ReadonlySet<string> = new Set(["inert-config-block", "extra-skill", "source-unresolvable"]);
+
 /**
  * One observation, with the four axes and the one thing to do about it.
  *
@@ -924,13 +929,15 @@ function observationLines(observation: FleetStatusObservation, width: number): s
   if (observation.justification) {
     lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation.justification.policy}: ${observation.justification.reason}`)}`);
   }
-  // The typed items of a scaffold group: kind, role-relative path, and the
-  // desired -> observed pair (digest prefixes or type/mode words). Never a
-  // body, never an absolute path -- the items carry neither.
+  // The typed items of a scaffold group or a profile field: kind, relative
+  // path, and the desired -> observed pair (digest prefixes or identifier
+  // words). Never a body, never an absolute path -- the items carry neither.
   const items = observation.items ?? [];
   for (const item of items.slice(0, REPORT_MAX_ITEMS)) {
     const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"}${glyph.arrow}${item.observed ?? "-"}` : "";
-    const paint = item.kind === "incomplete" ? red : item.kind === "wrong-mode" || item.kind === "unexpected-owned" ? yellow : red;
+    const paint = item.kind === "incomplete"
+      ? red
+      : REPORT_SOFT_ITEM_KINDS.has(item.kind) ? yellow : REPORT_INFO_ITEM_KINDS.has(item.kind) ? dim : red;
     lines.push(`       ${dim(glyph.arrow)} ${paint(item.kind)} ${bounded(item.path)}${dim(pair)}${item.wip ? ` ${yellow("[wip]")}` : ""}${item.detail ? ` ${dim(`(${item.detail})`)}` : ""}`);
   }
   if (items.length > REPORT_MAX_ITEMS) {
@@ -987,6 +994,24 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
       dim(`gitlink ${agent.scaffold.source_gitlink ? agent.scaffold.source_gitlink.slice(0, 12) : "unreadable"}`),
     ];
     if (agent.scaffold.wip_overlap.length) cells.push(yellow(`${agent.scaffold.wip_overlap.length} wip overlap`));
+    lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells)}`);
+  }
+  // The profile cell: whether the generated config is in sync by the canonical
+  // renderer's check, whether the bank is pinned, and how much of the skill
+  // core resolves by bytes. Absent when the domain was not read.
+  if (agent.profile) {
+    const profile = agent.profile;
+    const renderer = profile.renderer.state;
+    const cells = [
+      profile.path.state === "pass" ? dim(`profile ${renderer}`) : red(`profile ${profile.path.code}`),
+      profile.bank.state === "pass" ? dim("bank ok") : profile.bank.state === "unobserved" ? dim("bank unobserved") : red(`bank ${profile.bank.observed ?? "unpinned"}`),
+      profile.skills.state === "pass"
+        ? dim(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`)
+        : profile.skills.state === "unobserved" ? dim("skills unobserved") : red(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`),
+    ];
+    if (renderer === "drifted" && profile.renderer.sections.length) cells.push(red(`drift in ${profile.renderer.sections.join(", ")}`));
+    if (profile.identity.state === "fail") cells.push(red("identity"));
+    else if (profile.identity.state === "warn") cells.push(yellow("identity warn"));
     lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells)}`);
   }
   if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
@@ -1082,6 +1107,56 @@ export function formatFleetStatusReport(status: FleetStatus): string {
       const source = status.scaffold.source;
       lines.push(`       ${dim(glyph.arrow)} ${source.integrity === "ok" ? green("source ok") : red(`source ${source.integrity}`)} ${dim(`gitlink ${source.gitlink ? source.gitlink.slice(0, 12) : "none"}`)}`);
       const agreement = status.scaffold.rule_agreement;
+      if (agreement.compared || agreement.disagree) {
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+          dim(`rule agreement ${agreement.agree}/${agreement.compared}`),
+          agreement.disagree ? red(`${agreement.disagree} disagree`) : dim("0 disagree"),
+          dim(`${agreement.not_compared} not compared`),
+        ])}`);
+      }
+    }
+    // The profile summary rides on its domain: the root and renderer gates,
+    // how many selected profiles are real and structurally healthy, and what
+    // the root sweep classified.
+    if (rollup.domain === "profile" && status.profile) {
+      const profile = status.profile;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        profile.root.state === "pass" ? green("root ok") : profile.root.state === "unsupported" ? gray(`root ${profile.root.code}`) : red(`root ${profile.root.code}`),
+        profile.renderer.source === "ok" ? green("renderer ok") : red(`renderer ${profile.renderer.source}`),
+        profile.renderer.python === "ok" ? dim("python ok") : profile.renderer.python === "not-probed" ? dim("python not probed") : red(`python ${profile.renderer.python}`),
+        dim(`gitlink ${profile.renderer.gitlink ? profile.renderer.gitlink.slice(0, 12) : "none"}`),
+      ])}`);
+      const counts = profile.agents;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`profiles ${counts.real} real of ${counts.selected} selected`),
+        counts.structurally_healthy ? green(`${counts.structurally_healthy} healthy`) : dim("0 healthy"),
+        counts.drifted ? red(`${counts.drifted} drifted`) : dim("0 drifted"),
+        counts.blocked_at_path ? red(`${counts.blocked_at_path} blocked at path`) : dim("0 blocked at path"),
+        counts.incomplete ? yellow(`${counts.incomplete} incomplete`) : dim("0 incomplete"),
+        counts.exception_authorized ? gray(`${counts.exception_authorized} exception`) : dim("0 exception"),
+        counts.unobserved ? yellow(`${counts.unobserved} unobserved`) : dim("0 unobserved"),
+      ])}`);
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`renderer checked ${profile.renderer.checked}`),
+        dim(`${profile.renderer.in_sync} in sync`),
+        profile.renderer.drifted ? red(`${profile.renderer.drifted} drifted`) : dim("0 drifted"),
+        profile.renderer.failed || profile.renderer.timeout ? red(`${profile.renderer.failed} failed, ${profile.renderer.timeout} timed out`) : dim("0 failed"),
+        dim(`bank ok ${profile.identity.bank_ok}`),
+        profile.identity.bank_alias || profile.identity.bank_custom || profile.identity.bank_missing || profile.identity.bank_mismatch
+          ? red(`bank ${profile.identity.bank_alias} alias, ${profile.identity.bank_custom} custom, ${profile.identity.bank_missing} missing, ${profile.identity.bank_mismatch} mismatch`)
+          : dim("bank 0 wrong"),
+        dim(`skill core complete ${profile.skills.core_complete}`),
+      ])}`);
+      const extras = profile.extras;
+      if (extras.coverage === "not-swept") {
+        lines.push(`       ${dim(glyph.arrow)} ${dim(`extras not swept (${extras.reason ?? "scoped"})`)}`);
+      } else {
+        const byClass = Object.entries(extras.by_class).filter(([, count]) => count > 0).map(([klass, count]) => (
+          klass === "approved-managed-exception" || klass === "intentionally-unmanaged" ? dim(`${count} ${klass}`) : yellow(`${count} ${klass}`)
+        ));
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([dim(`extras swept: ${extras.entries_total} unregistered entr${extras.entries_total === 1 ? "y" : "ies"}`), ...byClass])}${extras.truncated ? ` ${yellow("(root enumeration capped)")}` : ""}`);
+      }
+      const agreement = profile.rule_agreement;
       if (agreement.compared || agreement.disagree) {
         lines.push(`       ${dim(glyph.arrow)} ${joinDot([
           dim(`rule agreement ${agreement.agree}/${agreement.compared}`),

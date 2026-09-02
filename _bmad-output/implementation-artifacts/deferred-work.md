@@ -222,6 +222,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: medium
 reason: ~/.hermes/profiles holds four symlinks. Inventory is row-driven, and only `delonet-company-reporter` and `hermes-agent-pm` are named by a registered agent's profile_name, so those two raise `profile-path-symlinked`. `intelliforia-voice-agent` and `stemjangler-adversarial-review` are symlinks in the declared profile root that no row reaches, so the contract violation they represent is reported by nothing. A profile-root sweep is the missing half; AC8 is written per-row, so this is beyond it.
 status: open
+addressed (story 1.7, PJAN-109): the profile observer (`src/fleet/profile.ts`) sweeps the profile root in fleet scope, and all four live symlinks are reported. The two registered ones (`delonet-company-reporter`, `hermes-agent-pm`) are a path `fail` with code `symlink` on their own agent records, their four dependent fields `unobserved` naming the gate; the two unregistered ones (`intelliforia-voice-agent`, `stemjangler-adversarial-review`) are `unclassified` entries of kind `symlink` on the `profile.extras` host finding, each with its shown link target, `guidance: manual-review` and `process_reference: unobserved`. The sweep is fleet-scope only (`data.profile.extras.coverage` says `swept` or `not-swept`), enumerates the root once under `profile_manifest.limits.max_root_entries`, and skips only the renderer's own lock entries.
 
 ### DW-26: The tracked contract has no exercised managed-exception path.
 origin: spec-deferred 6d10ef420003
@@ -246,6 +247,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: medium
 reason: `classifyPath` lstats the leaf only. If `~/.hermes/profiles` itself were a symlink, every derived profile path would lstat through it to a real directory and classify `ok`, so the contract's `symlink_allowed: false` would be violated by the root and reported by nothing. Same blind spot as the profile-root sweep, one level up.
 status: open
+addressed (story 1.7, PJAN-109): `profile.root` in `data.host` lstats every component of the profile root below the home (or below the fleet home's parent when the fleet home lives elsewhere) and none may be a symlink: an ancestor is `root-ancestor-symlink`, the root itself `root-symlink`, and every selected agent's five profile fields are `error` naming the code with nothing beneath read. The inventory's leaf-only `classifyPath` is unchanged; the observer's gate is what now sees the ancestor.
 
 ### DW-29: `expected_units` discards which pattern produced which name.
 origin: spec-deferred 25f78968641a
@@ -279,6 +281,7 @@ source_spec: `spec-1-2-discover-the-complete-fleet-and-detect-identity-conflicts
 severity: low
 reason: `classifyPath` applies containment only when `root` is passed. `project_path` and `role_dir` pass none; `runtime_path` passes `role_dir` with a value built as `join(role_dir, "runtime")`, inside by construction; `profile_path` passes the profile root with a value built from a segment already forced through `isSafePathSegment`. AC8 names "a path outside the declared profile root" as a scenario and `FLEET_PATH_CLASSIFICATIONS` declares the state, but no call site or test can produce it. Either a declared profile path becomes readable input, or the AC is satisfied vacuously and should say so.
 status: open
+note (story 1.7, PJAN-109): still unreachable, and now by construction rather than by accident. The profile observer's path gate appends ONE segment to a root it has already proven real, and refuses the segment first (`isSafePathSegment` plus Hermes' own `^[a-z0-9][a-z0-9_-]{0,63}$`, reported as `name-unsafe`), so a registry value cannot escape the root and `outside-root` has nothing left to classify. Containment is proven by the gate, not by `classifyPath`; the classification stays declared and unproduced, and an AC that names it is satisfied vacuously, which this note says out loud rather than leaving for the next reader.
 
 ### DW-32: Malformed project-registry records are normalized in silence.
 origin: spec-deferred 6badffcd11ec
@@ -541,6 +544,7 @@ reason: `systemd`, `live_process` and the Bloodbank LIVENESS half of `bloodbank`
 status: open
 addressed: The three `unsupported` literals no longer authorize themselves. `health_policy.deferred_capabilities` in the tracked contract declares `systemd`/`unit_topology` (story 1.8), `live_process`/`process_attribution` (1.9) and `bloodbank`/`routing_liveness` (1.10), each with a reason and an owning story, and story 1.5's evaluator reports the same observations with `applicability: "deferred"`, `repair: "blocked"` and a `justification.policy` naming the entry. Remove an entry and the identical observation is reported unjustified and blocks `proven` -- pinned by a delta case in `tests/fleet-health-regressions.mjs`. The domains still have no observer; the gap is now authorized rather than assumed, and two more of the same kind (`scaffold.template_ref` for 1.6, `profile.render_generation` for 1.7) are declared beside them.
 addressed (story 1.6, PJAN-108): `template_scaffold` has a real observer. The `scaffold.template_ref` deferral is REMOVED from `health_policy.deferred_capabilities` and the provenance fact deleted: the scaffold observer compares every role directory against the template at the committed gitlink, so no recorded ref is needed. The three observer-less domains (`systemd`, `live_process`, Bloodbank liveness) and `profile.render_generation` remain declared deferrals for 1.8/1.9/1.10/1.7.
+addressed (story 1.7, PJAN-109): `profile.render_generation` is REMOVED from `health_policy.deferred_capabilities` and the provenance fact deleted (`addUnsupportedFacts`/`profileDigest` in `src/fleet/provenance.ts` are gone): the profile observer proves the generated config by running the canonical renderer's own `check` at bytes proven identical to the committed gitlink, so no recorded generation identity is needed. The three observer-less domains (`systemd`, `live_process`, Bloodbank liveness) remain declared deferrals for 1.8/1.9/1.10, and are now the only entries in the list.
 
 ### DW-64: Thirty-four JSON-emitting `process.exit()` sites in src/index.ts are still unflushed.
 origin: spec-deferred story-1.4
@@ -769,4 +773,44 @@ location: src/fleet/scaffold.ts (scanAgent, resolveLineage) / tests/fleet-scaffo
 source_spec: `spec-1-6-audit-tracked-pm-scaffold-parity-fleet-wide.md`
 severity: low
 reason: `SCAFFOLD_MAX_ROLE_ENTRIES` (5000) turns a role directory with more tracked or dirty entries into an agent-level `incomplete`, and a failed `cat-file --batch-check`/`log` during lineage resolution downgrades every stale/locally-modified item to `incomplete: lineage-unobserved` rather than guessing. Neither branch is driven by a case: the first needs a five-thousand-file role and the second a git that fails only on the lineage call. Both fail SAFE (incomplete, never a pass), which is why they ship; a PATH shim that fails `cat-file --batch-check` alone would make the second real.
+status: open
+
+### DW-90: The profile observer lists optional skills from the profile's own `skills` entry only.
+origin: spec-deferred story-1.7
+location: src/fleet/profile.ts (inspectAgent, extras)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: `agents[].profile.skills.extra` names the non-core skills whose `SKILL.md` sits under the profile's `skills` entry (real directory, or a symlink into the fleet home or the canonical projection), capped at `profile_manifest.limits.max_extra_skills`. Skills reachable ONLY through the generated config's `skills.external_dirs` -- the ~40 canonical ones every live profile loads -- are consulted for core membership and never listed as extras, because listing the whole canonical catalogue on 28 records would be 1 000 identical lines that say nothing about any one profile. `data.profile.skills.extras_seen` counts the same set. A consumer that wants "every skill this profile can load" needs a different question than "what sits beside the core in its own directory".
+status: open
+
+### DW-91: Two of the six core skills are absent from the canonical projection on the live host.
+origin: spec-deferred story-1.7
+location: ~/.agents/skills (the skillex projection), profile_manifest.skill_core.required
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: medium
+reason: MEASURED on the live fleet at closeout: `33god-projects` and `hermes-pm-template-maintenance` have no `SKILL.md` under `~/.agents/skills`, so every one of the 26 real profiles reads `profiles.{profile_name}.skills` `fail` with two `canonical-missing` items and `core_present: 4`. The template's provisioning script (`10-hermes-profile.sh`) would `die` on the same absence, so this is a fleet fact the observer surfaces rather than a defect in it; reported as `fail` and not `error` because no agent can run what nothing holds. The fix is the skillex projection's (publish the two skills) or the template's (drop them from `CORE_RUNTIME_SKILLS`, which the suite pins equal to the contract); it is not this observer's to make.
+status: open
+
+### DW-92: The singleton-link list is duplicated between the observer and the recipe rule.
+origin: spec-deferred story-1.7
+location: src/fleet/profile.ts (PROFILE_SINGLETON_LINKS) / src/parity/rules.ts (OWNED_PROFILE_ENTRIES, OWNED_PROFILE_FILES)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: The observer's misowned-link check needs the thirteen profile entries the template provisions as symlinks into the agent's own runtime, and the rule declares them as two `as const` arrays inside `src/parity/rules.ts`, a module that pulls the whole recipe world in. Importing it into a read-only observer was refused; the list is declared twice and `tests/fleet-profile-regressions.mjs` pins the two equal by reading both sources. That is a text-parity guard, not shared code: a third copy would need a third assertion. Lifting the list into a leaf module both import is the fix, and it touches the rule, which story 1.15 owns.
+status: open
+
+### DW-93: `unit_file_references` reads only `Environment=HERMES_HOME=` lines in user unit files.
+origin: spec-deferred story-1.7
+location: src/fleet/profile.ts (unitReferences)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: The extras sweep's unit-file evidence is a bounded text scan of `$XDG_CONFIG_HOME/systemd/user/*.{service,timer}` (at most `max_unit_files` files, 64 KiB each) for a literal `Environment=HERMES_HOME=<entry>` line, with an optional trailing slash and optional quoting. `EnvironmentFile=` indirection, drop-in directories (`unit.d/*.conf`), template instances (`hermes@.service`) and `ExecStart=env HERMES_HOME=...` spellings are not followed, so a reference through any of them counts as zero. Unit STATE is story 1.8's and unit files as a whole are its domain; this scan exists only so an extra entry a unit names is never called debris, and it errs toward zero rather than toward a guess.
+status: open
+
+### DW-94: A held profile lock is reported by killing the renderer, not by reading its own timeout.
+origin: spec-deferred story-1.7
+location: src/fleet/profile.ts (rendererEnv, rendererTimeoutMs)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: The renderer's lock helper gives up on a held `flock` with a FATAL on stderr and exit 1, and this observer never reads stderr -- so that exit is indistinguishable from any other renderer failure. To make a held lock the bounded `renderer-timeout` the story requires, the child is told (`HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS`) it may wait `lock_timeout_seconds + 30` while the observer's own child budget is `lock_timeout_seconds + 1` second, so the observer's SIGKILL arrives first. The consequence: a legitimately slow `check` -- three small files parsed, measured at well under 100 ms -- that took longer than the contract's 2 s plus one would also read `renderer-timeout`. A cleaner answer reads the helper's exit reason, which means the renderer contract growing a distinguishable exit code; that is the template's change, not this observer's.
 status: open

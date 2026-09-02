@@ -966,33 +966,19 @@ try {
 
   // -- AC10: the one gap this host records nothing for ------------------------
 
-  check("profile provenance is unsupported with its evidence still reported; the scaffold ref is the observer's now", () => {
+  check("neither deferred provenance question is carried any more: both are answered by fleet status observers", () => {
     const data = provenance(cli(["fleet", "provenance", "--json"]));
-    for (const id of ["profile.render_generation"]) {
-      const facts = factsFor(data, id);
-      assert.ok(facts.length > 0, `${id} must be reported for every agent`);
-      for (const fact of facts) {
-        assert.equal(fact.status, "unsupported", `${id} must never be counted as a match`);
-        assert.equal(fact.desired.state, "unsupported");
-        assert.equal(fact.desired.value, null, "an unsupported desired side must not invent a value");
-      }
-      assert.ok(facts.some((fact) => fact.observed.value !== null), `${id} must still report its observed evidence`);
-    }
-    // Story 1.6 (PJAN-108): `scaffold.template_ref` is DELETED, not kept. The
-    // scaffold observer in `fleet status` compares every role directory against
-    // the template at the committed gitlink, so no recorded ref is needed to
-    // know whether a scaffold matches -- and one permanent `unsupported` beside
-    // eight real observations was the rollup lie DW-67 records.
+    // Story 1.6 (PJAN-108) deleted `scaffold.template_ref`: the scaffold
+    // observer compares every role directory against the template at the
+    // committed gitlink, so no recorded ref is needed. Story 1.7 (PJAN-109)
+    // deleted `profile.render_generation` on the same terms: the profile
+    // observer proves the generated config through the canonical renderer's
+    // own check, so no recorded generation identity is needed either -- and
+    // one permanent `unsupported` beside five real observations was the
+    // rollup lie DW-67 records.
     assert.deepEqual(factsFor(data, "scaffold.template_ref"), [], "the deleted scaffold.template_ref fact must not come back");
-    // The profile digest is a hash of the bytes, never the bytes: the generated
-    // config is mode 0600 and is a merge of a shared base with an operator-owned
-    // delta.
-    const digests = factsFor(data, "profile.render_generation").map((fact) => fact.observed.value).filter(Boolean);
-    assert.ok(digests.some((value) => /^sha256:[0-9a-f]{64}$/.test(value)), "at least one rendered profile config must be digested");
-    assert.ok(
-      data.totals.by_status.unsupported >= factsFor(data, "profile.render_generation").length,
-      "every unsupported fact must be counted as unsupported, not folded into another bucket",
-    );
+    assert.deepEqual(factsFor(data, "profile.render_generation"), [], "the deleted profile.render_generation fact must not come back");
+    assert.equal(data.facts.some((fact) => fact.field.startsWith("profiles.")), false, "no profile-tree fact remains in provenance; the profile domain owns that tree");
   });
 
   // -- AC11: CLI and MCP are one core -----------------------------------------

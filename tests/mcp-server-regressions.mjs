@@ -567,6 +567,10 @@ try {
           // be identical on both adapters -- the comparison is by construction
           // through `collectFleetStatus`, and this is the equality that proves it.
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "template_scaffold"], { domain: "template_scaffold" }],
+          // Story 1.7 (PJAN-109): the profile observer runs under this domain
+          // and its `data.profile` summary plus every `agents[].profile` must
+          // be identical on both adapters, renderer probes included.
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "profile"], { domain: "profile" }],
         ]) {
           const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
           const cli = cliEnvelope(argv, cleanEnv);
@@ -577,6 +581,10 @@ try {
           if (args.domain === "template_scaffold" && mcp.ok) {
             assert.ok(mcp.data.scaffold, "data.scaffold must be present under --domain template_scaffold");
             assert.ok(mcp.data.agents.length > 0 && mcp.data.agents.every((agent) => agent.scaffold !== null), "every agent record must carry its scaffold summary");
+          }
+          if (args.domain === "profile" && mcp.ok) {
+            assert.ok(mcp.data.profile, "data.profile must be present under --domain profile");
+            assert.ok(mcp.data.agents.length > 0 && mcp.data.agents.every((agent) => agent.profile !== null), "every agent record must carry its profile summary");
           }
         }
 

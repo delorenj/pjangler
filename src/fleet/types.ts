@@ -10,15 +10,16 @@
  *
  * Bumped to 2 by story 1.5: `health_policy` is a new ROOT key, and a new root
  * key is a grammar change rather than a content one. Bumped to 3 by story 1.6
- * for the same reason: `scaffold_manifest` is a new root key. The build still
- * READS schema 1 and 2 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because a
- * contract without the newer blocks is simply one that authorizes no gap and
+ * for the same reason: `scaffold_manifest` is a new root key. Bumped to 4 by
+ * story 1.7, again for a new root key: `profile_manifest`. The build still
+ * READS schema 1 through 3 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because
+ * a contract without the newer blocks is simply one that authorizes no gap and
  * declares no manifest.
  */
-export const FLEET_CONTRACT_SCHEMA_VERSION = 3 as const;
+export const FLEET_CONTRACT_SCHEMA_VERSION = 4 as const;
 
 /** Inclusive range of contract schema versions this build accepts. */
-export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 3 } as const;
+export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 4 } as const;
 
 /** Envelope version for `pjangler fleet ...` machine output. */
 export const FLEET_SCHEMA_VERSION = 1 as const;
@@ -39,7 +40,7 @@ export const FLEET_SCHEMA_VERSION = 1 as const;
 export const FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version", "contract_version", "compatibility", "authorities",
   "projections", "classifications", "service_model", "activation", "retired",
-  "health_policy", "scaffold_manifest",
+  "health_policy", "scaffold_manifest", "profile_manifest",
 ] as const;
 
 /**
@@ -51,9 +52,12 @@ export const FLEET_CONTRACT_ROOT_KEYS = [
  * every non-pass unjustified rather than making the run fail. `scaffold_manifest`
  * (schema 3) is optional on the same terms: without it the scaffold observer
  * reports every agent's `template_scaffold` as `unsupported` with capability
- * `scaffold.manifest`, unjustified unless the policy says otherwise.
+ * `scaffold.manifest`, unjustified unless the policy says otherwise. And
+ * `profile_manifest` (schema 4) likewise: without it the profile observer
+ * reports every selected agent's five profile fields `unsupported` under
+ * capability `profile.manifest`.
  */
-export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest"] as const;
+export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest"] as const;
 
 /** Closed key set for `health_policy` and each of its five entry lists. */
 export const FLEET_HEALTH_POLICY_KEYS = [
@@ -81,6 +85,25 @@ export const FLEET_SCAFFOLD_MANIFEST_KEYS = [
   "groups", "presence_only", "excluded_patterns", "runtime_dir",
 ] as const;
 export const FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS = ["path", "reason"] as const;
+
+/**
+ * Closed key sets for the `profile_manifest` root block (schema 4) and each of
+ * its six sub-blocks.
+ *
+ * POLICY about a generated profile, never a copy of one: which renderer proves
+ * a generated config (and where its bytes are pinned), what an identity file
+ * may say, how the Hindsight bank pin is spelled, which skills are the
+ * immutable core and where the canonical copies live, which profile-root
+ * entries are the observer's own footprint or a backup, and the caps every
+ * read is bounded by. Nothing here carries a profile value.
+ */
+export const FLEET_PROFILE_MANIFEST_KEYS = ["renderer", "identity", "memory", "skill_core", "extras", "limits"] as const;
+export const FLEET_PROFILE_MANIFEST_RENDERER_KEYS = ["submodule", "script", "lock_helper", "check_argv", "lock_timeout_seconds", "lock_pattern"] as const;
+export const FLEET_PROFILE_MANIFEST_IDENTITY_KEYS = ["file", "allowed_keys", "inert_keys"] as const;
+export const FLEET_PROFILE_MANIFEST_MEMORY_KEYS = ["pin_file", "bank_id_template", "reserved_bank_ids"] as const;
+export const FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS = ["canonical_dir", "canonical_dir_env", "required", "source"] as const;
+export const FLEET_PROFILE_MANIFEST_EXTRAS_KEYS = ["ignored_patterns", "backup_patterns"] as const;
+export const FLEET_PROFILE_MANIFEST_LIMITS_KEYS = ["max_file_bytes", "max_root_entries", "max_unit_files", "max_extra_skills"] as const;
 
 export const FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"] as const;
 
@@ -304,6 +327,58 @@ export interface FleetScaffoldManifest {
   runtime_dir: string;
 }
 
+/**
+ * Policy about a GENERATED profile, so the profile observer knows what to
+ * prove and with what, without reading anything a profile contains.
+ *
+ * `renderer` names the canonical base-plus-delta renderer inside the tracked
+ * template submodule and the lock helper it insists on; the observer runs it
+ * only after both files' blob ids equal the committed gitlink's. `identity`
+ * says which keys a `profile.yaml` may carry and which it may carry INERTLY
+ * (a `config:` block Hermes reads nowhere). `memory` spells the Hindsight bank
+ * pin and the two ids that are never an identity. `skill_core` names the six
+ * immutable skills and the canonical directory their bytes are compared
+ * against. `extras` names the observer's own lock-file footprint (skipped and
+ * never counted) and the backup shapes a retired-candidate wears. `limits`
+ * bounds every read.
+ */
+export interface FleetProfileManifest {
+  renderer: {
+    submodule: string;
+    script: string;
+    lock_helper: string;
+    check_argv: string[];
+    lock_timeout_seconds: number;
+    lock_pattern: string;
+  };
+  identity: {
+    file: string;
+    allowed_keys: string[];
+    inert_keys: string[];
+  };
+  memory: {
+    pin_file: string;
+    bank_id_template: string;
+    reserved_bank_ids: string[];
+  };
+  skill_core: {
+    canonical_dir: string;
+    canonical_dir_env: string;
+    required: string[];
+    source: string;
+  };
+  extras: {
+    ignored_patterns: string[];
+    backup_patterns: string[];
+  };
+  limits: {
+    max_file_bytes: number;
+    max_root_entries: number;
+    max_unit_files: number;
+    max_extra_skills: number;
+  };
+}
+
 export interface FleetContract {
   schema_version: number;
   contract_version: string;
@@ -318,6 +393,8 @@ export interface FleetContract {
   health_policy?: FleetHealthPolicy;
   /** Optional. Absent on a schema-1/2 contract, which then declares no scaffold to compare against. */
   scaffold_manifest?: FleetScaffoldManifest;
+  /** Optional. Absent on a schema-1..3 contract, which then declares no generated-profile policy to prove. */
+  profile_manifest?: FleetProfileManifest;
 }
 
 /** One namespaced extension, kept out of policy and reported separately. */
@@ -953,6 +1030,31 @@ export const FLEET_STATUS_MAX_ITEMS = 100;
 /** Cap on `agents[].scaffold.wip_overlap` paths carried. The count beside it is uncapped. */
 export const FLEET_STATUS_MAX_WIP_OVERLAP = 20;
 
+/**
+ * How many profiles the profile observer inspects at once.
+ *
+ * Each agent costs a handful of `lstat`s, four bounded reads and ONE child --
+ * the canonical renderer's `check`, which takes that profile's own lock. Four
+ * in flight is the audit's number, and for the same reason: an observation
+ * command must not become a load spike on the operator's machine.
+ */
+export const FLEET_STATUS_PROFILE_CONCURRENCY = 4;
+
+/**
+ * CEILINGS on the profile observer's bounds. The tracked contract's
+ * `profile_manifest.limits` may lower any of them and may not exceed them: a
+ * policy that asked this observer to read a gigabyte would be validating a
+ * memory problem, not declaring one.
+ */
+/** Bytes of one profile file (`profile.yaml`, the delta, the generated config, the pin, a `SKILL.md`) this observer will read. */
+export const PROFILE_MAX_FILE_BYTES = 1024 * 1024;
+/** Entries of the profile root enumerated in one sweep. */
+export const PROFILE_MAX_ROOT_ENTRIES = 5000;
+/** Unit files scanned for `HERMES_HOME=` references when classifying an extra entry. */
+export const PROFILE_MAX_UNIT_FILES = 500;
+/** Optional (non-core) skills named on one agent's record. */
+export const PROFILE_MAX_EXTRA_SKILLS = 20;
+
 
 // ---------------------------------------------------------------------------
 // Fleet health (story 1.5)
@@ -1450,11 +1552,11 @@ export const FLEET_SCAFFOLD_SOURCE_CODES = [
 ] as const;
 export type FleetScaffoldSourceCode = (typeof FLEET_SCAFFOLD_SOURCE_CODES)[number];
 
-/** One asset item on a scaffold group observation. */
+/** One asset item on a scaffold group observation, or one typed item on a profile observation (story 1.7). */
 export interface FleetStatusObservationItem {
-  /** Role-relative, forward slashes. Never absolute. */
+  /** Role-relative or profile-relative, forward slashes. Never absolute. */
   path: string;
-  kind: FleetScaffoldItemKind;
+  kind: FleetScaffoldItemKind | FleetProfileItemKind;
   /** A 12-hex blob-id prefix or a type/mode word. Never a body. */
   desired: string | null;
   observed: string | null;
@@ -1544,6 +1646,8 @@ export interface FleetStatusAgent {
   member_class: FleetStatusMemberClass;
   /** The scaffold parity summary. Story 1.6. Always present; `null` when the domain was not selected. */
   scaffold: FleetStatusAgentScaffold | null;
+  /** The generated-profile health summary. Story 1.7. Always present; `null` when the domain was not selected. */
+  profile: FleetStatusAgentProfile | null;
 }
 
 /**
@@ -1591,6 +1695,14 @@ export interface FleetStatusHostFinding {
   next_action: string;
   next_action_class: FleetStatusNextActionClass;
   justification: FleetStatusJustification | null;
+  /**
+   * Typed extra-entry items, where the finding is `profile.extras` (story 1.7).
+   *
+   * ABSENT on every other host finding and on an empty sweep, capped at
+   * `FLEET_STATUS_MAX_ITEMS` with the clip recorded in `truncated`. Each item's
+   * `path` is the root entry's NAME, never an absolute path.
+   */
+  items?: FleetStatusProfileExtraItem[];
 }
 
 /**
@@ -1725,6 +1837,218 @@ export interface FleetStatus {
   transitions: FleetStatusTransition[];
   /** The fleet-level scaffold parity summary. Story 1.6. Always present; `null` when the domain was not selected. */
   scaffold: FleetScaffoldSummary | null;
+  /** The fleet-level generated-profile summary. Story 1.7. Always present; `null` when the domain was not selected. */
+  profile: FleetProfileSummary | null;
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Fleet profile health (story 1.7)
+//
+// `profile` used to observe one `lstat` of the profile directory and declare
+// generated-config health a deferral. The vocabulary below is what a read-only
+// observer reports when it gates the profile path, reads the identity file,
+// proves the generated config through the canonical renderer's own `check`
+// (run at bytes proven identical to the committed gitlink), reads the Hindsight
+// bank pin, proves the skill core by bytes, and -- in fleet scope -- classifies
+// every unregistered entry of the profile root.
+// ---------------------------------------------------------------------------
+
+/**
+ * What one profile item says. Each is a stable identifier word; the item's
+ * `path` names the profile-relative file or entry it is about and `detail`
+ * carries the subject (`unknown-key:foo`, `case-collision:Alpha-pm`) where the
+ * kind alone does not identify it. Never a file body, a config value, a delta
+ * value, a memory, or an absolute path.
+ */
+export const FLEET_PROFILE_ITEM_KINDS = [
+  // The path gate: the profile directory itself.
+  "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "unreadable", "misowned-link",
+  // The identity file.
+  "malformed", "unknown-key", "inert-config-block", "identity-mismatch",
+  // The generated config and its inputs.
+  "base-missing", "generated-missing", "generated-symlink", "marker-missing", "delta-missing", "delta-symlink",
+  "semantic-drift", "unparsed", "renderer-failed", "renderer-timeout", "renderer-unavailable", "too-large",
+  // The Hindsight bank pin.
+  "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
+  // The skill core.
+  "canonical-missing", "core-missing", "core-replaced", "core-dangling", "core-foreign", "extra-skill", "source-unresolvable",
+] as const;
+export type FleetProfileItemKind = (typeof FLEET_PROFILE_ITEM_KINDS)[number];
+
+/**
+ * The five classes an unregistered profile-root entry lands in. Exactly one.
+ *
+ * `approved-managed-exception`  a `managed_shared_service` entry with `profile`
+ *                               in its policy domains claims it (the fleet
+ *                               Bloodbank gateway's profile).
+ * `intentionally-unmanaged`     an `intentionally_unmanaged` entry with
+ *                               `source: profiles.<name>` claims it.
+ * `retired-candidate`           a `retired` entry claims it, OR it wears a
+ *                               backup shape, OR it is an alias of a registered
+ *                               name (case, `_`/`-`, backup suffix), OR its
+ *                               `config.yaml` is a symlink (the retired topology).
+ * `debris-candidate`            a stray file, an empty directory, a dangling link.
+ * `unclassified`                everything else -- a finding for an operator,
+ *                               never a licence to delete.
+ *
+ * Only the first two are `pass`; the rest are `warn`, unjustified by design
+ * until the operator classifies the entry in the contract.
+ */
+export const FLEET_PROFILE_EXTRA_CLASSES = [
+  "approved-managed-exception", "intentionally-unmanaged", "retired-candidate", "unclassified", "debris-candidate",
+] as const;
+export type FleetProfileExtraClass = (typeof FLEET_PROFILE_EXTRA_CLASSES)[number];
+
+/**
+ * What the profile PATH gate concluded. `ok` and `misowned-link` are post-gate
+ * (the directory is real, contained and unambiguous; `misowned-link` says one
+ * of its singleton links points into another agent's runtime). Every other
+ * code blocks: nothing beneath the directory is read and the four dependent
+ * fields are `unobserved` naming the code. `root:<code>` is the root gate's
+ * failure carried onto every agent.
+ */
+export const FLEET_PROFILE_PATH_CODES = [
+  "ok", "misowned-link", "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "unreadable", "root",
+] as const;
+export type FleetProfilePathCode = (typeof FLEET_PROFILE_PATH_CODES)[number];
+
+/**
+ * Why the canonical renderer could not be trusted or run, when it could not.
+ *
+ * `ok`                          the worktree copies of the script and its lock
+ *                               helper are regular files whose blob ids equal
+ *                               the blobs at the COMMITTED gitlink.
+ * `renderer-gitlink-missing`    the parent's HEAD records no gitlink for the submodule.
+ * `renderer-gitlink-unstable`   the index gitlink differs from HEAD's.
+ * `renderer-source-missing`     the submodule is not a repository root, or the
+ *                               pinned tree or the worktree lacks a file.
+ * `renderer-source-mismatched`  a worktree copy's bytes differ from the gitlink's.
+ * `renderer-source-unobserved`  a git probe failed or timed out.
+ * `renderer-layout-mismatch`    the contract's profile root is not `<fleet home>/profiles`,
+ *                               which is the only root the renderer reads.
+ * `renderer-python-unavailable` no `python3` on PATH (or the probe timed out).
+ * `renderer-python-too-old`     `python3` is older than 3.11.
+ * `renderer-pyyaml-missing`     `import yaml` fails.
+ *
+ * Any code but `ok` is a HOST finding (`profile.renderer`), marks every
+ * selected agent's `config.yaml` field `error`, and spawns NO renderer.
+ */
+export const FLEET_PROFILE_RENDERER_CODES = [
+  "ok", "renderer-gitlink-missing", "renderer-gitlink-unstable", "renderer-source-missing", "renderer-source-mismatched",
+  "renderer-source-unobserved", "renderer-layout-mismatch", "renderer-python-unavailable", "renderer-python-too-old",
+  "renderer-pyyaml-missing",
+] as const;
+export type FleetProfileRendererCode = (typeof FLEET_PROFILE_RENDERER_CODES)[number];
+
+/** What the renderer's `check` concluded for one profile. */
+export const FLEET_PROFILE_RENDERER_STATES = ["in-sync", "drifted", "fail", "error", "not-run", "unobserved"] as const;
+export type FleetProfileRendererState = (typeof FLEET_PROFILE_RENDERER_STATES)[number];
+
+/** The action an extra entry's class implies for an operator. Guidance, never an effect. */
+export const FLEET_PROFILE_EXTRA_GUIDANCE = ["adoption", "exception", "retirement", "manual-review"] as const;
+export type FleetProfileExtraGuidance = (typeof FLEET_PROFILE_EXTRA_GUIDANCE)[number];
+
+/**
+ * One unregistered profile-root entry, classified, with bounded safe evidence.
+ *
+ * `path` is the entry's NAME. `link_target` is bounded and home-redacted,
+ * present only for a symlink. `standalone` says whether a directory carries
+ * the three files a standalone profile needs; null for anything that is not a
+ * real directory (a symlink is classified, never followed). `alias_of` names
+ * the registered profile this entry is an alias of, if any.
+ * `unit_file_references` counts user unit files whose `HERMES_HOME=` names
+ * this entry. `process_reference` is `unobserved` in this release: live
+ * attribution is story 1.9.
+ */
+export interface FleetStatusProfileExtraItem {
+  path: string;
+  class: FleetProfileExtraClass;
+  kind: "directory" | "symlink" | "dangling-symlink" | "file" | "empty-directory" | "other";
+  link_target: string | null;
+  standalone: "complete" | "incomplete" | null;
+  alias_of: string | null;
+  unit_file_references: number;
+  process_reference: "unobserved";
+  guidance: FleetProfileExtraGuidance;
+  /** A stable category naming what classified it (`backup-pattern:*.bak`, `classifications.retired.entries[0]`), never a body. */
+  detail: string | null;
+}
+
+/** The per-agent profile summary. `null` when `profile` was not selected or no manifest is declared. */
+export interface FleetStatusAgentProfile {
+  profile_name: string | null;
+  path: { state: FleetStatusState; code: string };
+  identity: {
+    state: FleetStatusState;
+    /** The identity file's top-level key NAMES, sorted. Names only, never values. */
+    keys: string[];
+  };
+  renderer: {
+    state: FleetProfileRendererState;
+    /** Top-level sections the renderer reported drifted, sorted. At most six; an unparseable name is `unparsed`. */
+    sections: string[];
+  };
+  /** 12-hex sha256 prefixes of the base, delta and generated bytes. Null where a file was not read. */
+  digests: { base: string | null; delta: string | null; generated: string | null };
+  bank: {
+    /** The pinned bank id as read, an identifier word, or null. Never a memory. */
+    observed: string | null;
+    expected: string | null;
+    state: FleetStatusState;
+  };
+  skills: {
+    state: FleetStatusState;
+    core_present: number;
+    core_missing: string[];
+    /** Optional skills present beside the core, capped at `profile_manifest.limits.max_extra_skills`. */
+    extra: string[];
+    /** `skills.external_dirs` entries that are not absolute and so could not be resolved. */
+    sources_unresolvable: number;
+  };
+}
+
+/** The fleet-level profile summary under `data.profile`. `null` when `profile` was not selected. */
+export interface FleetProfileSummary {
+  source: string;
+  root: { state: FleetStatusState; code: string };
+  renderer: {
+    source: string;
+    python: string;
+    gitlink: string | null;
+    /** Profiles the renderer's `check` was actually run for. */
+    checked: number;
+    in_sync: number;
+    drifted: number;
+    failed: number;
+    timeout: number;
+  };
+  /** Counted over EVERY selected agent, before any envelope cap. */
+  agents: {
+    total_registered: number;
+    selected: number;
+    /** Selected agents whose profile passed the path gate. */
+    real: number;
+    blocked_at_path: number;
+    /** Real profiles whose five fields all pass. */
+    structurally_healthy: number;
+    drifted: number;
+    incomplete: number;
+    exception_authorized: number;
+    /** `total_registered - selected`, plus selected agents the observer never reached. */
+    unobserved: number;
+  };
+  identity: { bank_ok: number; bank_alias: number; bank_custom: number; bank_missing: number; bank_mismatch: number };
+  skills: { core_complete: number; core_missing: number; core_replaced: number; extras_seen: number };
+  extras: {
+    coverage: "swept" | "not-swept";
+    reason: string | null;
+    entries_total: number;
+    by_class: Record<FleetProfileExtraClass, number>;
+    listed: number;
+    truncated: boolean;
+  };
+  /** Under `--live`, how the observer and the `hermes.runtime-singleton` rule agreed over the subset both read. */
+  rule_agreement: { compared: number; agree: number; disagree: number; not_compared: number };
 }
