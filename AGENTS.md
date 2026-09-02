@@ -10,7 +10,7 @@ Source of truth for agent instructions. `CLAUDE.md` and `GEMINI.md` are symlinks
 
 No code changes without an active Plane ticket. The board binding is the
 `ticket_provider` block in `.project.json` (the single source of truth); the
-PM agent owns it and the Scrum Master (Ticket Sentinel) watches the same board.
+PM agent owns it and runs the Ticket Sentinel duties on its own heartbeat.
 
 ```
 Board:  pjangler (PJAN)

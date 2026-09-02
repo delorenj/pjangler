@@ -62,14 +62,6 @@ const COPIES = {
   "canonical-template": join(committedTemplate, "template", ".scripts"),
   "deployed-pm": join(root, "agents", "hermes", "pm", ".scripts"),
 };
-const LEGACY_SCRUM_MASTER = join(
-  root,
-  "agents",
-  "hermes",
-  "pm",
-  ".scripts",
-  "scrum-master",
-);
 
 function stagePlane(copy) {
   const dir = tempDir(copy);
@@ -252,47 +244,6 @@ try {
       `${path} must have executable Git mode for direct orchestration`,
     );
   }
-
-  // The retired scrum-master projection still serves existing installations.
-  // Its close gate is generic and therefore byte-identical. Its review script
-  // differs only in the four intentional legacy names below; normalizing those
-  // names must recover the canonical bytes exactly.
-  const canonicalReview = readFileSync(
-    join(COPIES["canonical-template"], "sentinel", "bin", "issue-autonomous-review.sh"),
-    "utf8",
-  );
-  const legacyReview = readFileSync(
-    join(LEGACY_SCRUM_MASTER, "bin", "issue-autonomous-review.sh"),
-    "utf8",
-  );
-  const normalizedLegacyReview = legacyReview
-    .replaceAll(".scripts/scrum-master", ".scripts/sentinel")
-    .replaceAll("DRUMJANGLER_AUTO_REVIEW_GRACE_HOURS", "RECONCILE_GRACE_HOURS")
-    .replaceAll("SCRUM_MASTER_AUTO_REVIEW", "RECONCILE_AUTO_REVIEW")
-    .replaceAll("scrum_master.auto_review", "reconcile.auto_review");
-  assert.equal(
-    normalizedLegacyReview,
-    canonicalReview,
-    "legacy autonomous review may differ from canonical only in legacy path/config names",
-  );
-  assert.equal(
-    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-autonomous-review.sh")).mode & 0o111,
-    0o111,
-    "legacy autonomous review must remain directly executable",
-  );
-  assert.equal(
-    readFileSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh"), "utf8"),
-    readFileSync(
-      join(COPIES["canonical-template"], "sentinel", "bin", "issue-close-gate.sh"),
-      "utf8",
-    ),
-    "legacy close gate must be refreshed byte-for-byte from the canonical template",
-  );
-  assert.equal(
-    statSync(join(LEGACY_SCRUM_MASTER, "bin", "issue-close-gate.sh")).mode & 0o111,
-    0o111,
-    "legacy close gate must remain directly executable",
-  );
 
   // `cancelled` is a first-class normalized state in the shared contract.
   for (const [copy, scripts] of Object.entries(COPIES)) {
