@@ -823,3 +823,10 @@ severity: low
 reason: A profile that fails the path gate (symlink, missing, twin, duplicate name) is one `fail` on `profiles.{profile_name}` plus four `unobserved` dependents, by design: nothing beneath the directory was read, and saying so is more honest than four fails about files nobody looked at. But `FLEET_STATUS_STATE_PRECEDENCE` ranks `unobserved` above `fail`, so `agents[].domains.profile` reads `unobserved` for exactly the profiles whose defect is PROVEN -- while the `fail` still sits on its own field, counts into `health.failed`, keeps `health.healthy` false and demotes the lifecycle. Two readings of the vocabulary are both defensible: "the domain was not fully read" (the current rollup) and "the domain has a proven defect" (what an operator scanning `domains` expects). `tests/fleet-health-regressions.mjs` pins the current reading. Resolving it means either a precedence exception for a domain whose unread half is unread BECAUSE of its proven half, or a `gated` state of its own; both are vocabulary changes story 1.4 owns, not this observer's to make.
 status: open
 
+### DW-96: resolveProfileLayout takes HERMES_FLEET_HOME verbatim, so a `~`-prefixed or relative value resolves against the process cwd and every profile reads root-missing.
+origin: spec-deferred 7935f5681722
+location: src/fleet/inventory.ts (resolveProfileLayout)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: Pre-existing in src/fleet/inventory.ts (story 1.2). The story-1.7 observer now resolves the fleet home through that same function (review patch 20), so the two adapters can no longer disagree, but neither expands `~`. Surfaced by the edge-case review; the live fleet.env carries an absolute path, so the live fleet is unaffected.
+status: open

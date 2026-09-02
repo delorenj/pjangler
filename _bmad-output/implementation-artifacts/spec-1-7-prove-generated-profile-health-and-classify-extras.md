@@ -401,6 +401,50 @@ reachable through the registry-derived path gate, or say why not), DW-63 (`profi
   - `[low]` `[patch]` live AC11 case did not snapshot the real root — names/types/mtimes snapshotted before and after
   - `[low]` `[patch]` README/CHANGELOG lines quoting changed strings updated
 
+### 2026-09-02 — Review pass (follow-up)
+- intent_gap: 0
+- bad_spec: 0
+- patch: 36: (high 0, medium 3, low 33)
+- defer: 0
+- reject: 19: (high 0, medium 0, low 19)
+- addressed_findings:
+  - `[medium]` `[patch]` an identity file, generated config, delta or pin the observer could not open was reported `malformed` / `generated-missing` / `delta-missing` / `pin-malformed` — `unreadable` is its own error-ranked kind on every file field, and a config or delta that could not be read is a renderer `error`, not a `fail`
+  - `[medium]` `[patch]` a real file where the template provisions a singleton link (the stock `SOUL.md` Hermes seeds) passed the gate silently — `misowned-link` with `not-a-link:<entry>`, matched to the rule's `not-a-symlink` detail for agreement, tested
+  - `[medium]` `[patch]` singleton-link containment compared paths textually, so a `role_dir` or link target spelled through a symlinked ancestor read `misowned-link` — realpath containment as the second reading, tested
+  - `[low]` `[patch]` a package root nested inside a foreign repository read that repository's HEAD and reported `renderer-gitlink-missing` — a `rev-parse --show-toplevel` guard on the package root, `renderer-source-unobserved`
+  - `[low]` `[patch]` a renderer worktree copy that could not be lstat'ed or read under the cap read `renderer-source-mismatched` — `renderer-source-unobserved`, with the cap named
+  - `[low]` `[patch]` a singleton link whose `readlink` failed was silently treated as owned — `unverifiable`
+  - `[low]` `[patch]` an empty identity file passed as identity-only with zero keys — `malformed` (`empty`), tested
+  - `[low]` `[patch]` an empty fleet base flagged every non-empty delta `delta-not-override-only` (`equals-generated`) — the copy check requires a base that holds keys, tested against the renderer
+  - `[low]` `[patch]` a `skills` entry that is a regular or special file was never named — recorded as `source-unresolvable` (`skills-not-a-directory:<kind>`), tested
+  - `[low]` `[patch]` the skills summary read "…; do not" with an empty list when only the entry itself failed — names the entry defects
+  - `[low]` `[patch]` a backup pattern not leading with `*` (`old.*`) took its suffix as the alias stem — the stem comes only from a leading wildcard, tested
+  - `[low]` `[patch]` `?*`-shaped ignore patterns match every entry and were accepted — wildcard-only patterns refused, tested in both suites
+  - `[low]` `[patch]` symlinked user units were skipped and a multi-assignment `Environment=` line produced a bogus path — units read through the link, the value ends at whitespace, both fixture-pinned
+  - `[low]` `[patch]` a symlinked template config was silently ignored while the template's own `config_get` follows it — read through the link, tested
+  - `[low]` `[patch]` the dead `not-run` renderer state, the never-emitted `root` path code and an untyped `path.code` — vocabularies corrected, `FleetProfilePathCode` typed with `root:<code>` end to end
+  - `[low]` `[patch]` the `result === undefined` branch emitted one observation against the five-field invariant — five `unobserved`
+  - `[low]` `[patch]` the report painted a path warn red, printed `skills 0/0` for an errored field, kept a dead `too-large` bank code and painted `renderer manifest-undeclared` red beside a grey root — corrected
+  - `[low]` `[patch]` the `health.unjustified` widening sat mid-way through the `### Added` bullet — its own bullet under `### Changed`
+  - `[low]` `[patch]` an orphaned JSDoc block in `inventory.ts` documenting nothing, its "exported for provenance.ts" claim stale, stray blank lines in two source files — corrected
+  - `[low]` `[patch]` the health suite's exception case removed its unregistered profile only after every assertion passed — `finally`
+  - `[low]` `[patch]` two hand-rolled glob converters could diverge — one exported `rootEntryGlob` shared by the validator and the sweep
+  - `[low]` `[patch]` README never said the renderer runs under an allowlisted environment — stated, with the `PYTHONPATH`/`VIRTUAL_ENV` consequence
+  - `[low]` `[patch]` the live AC11 snapshot would fail on a newly registered profile whose lock the check creates on first use, and the mise comment said "strictly read-only" — lock entries excluded from the snapshot, the one footprint stated
+  - `[low]` `[patch]` an unnamed row's gate item carried an empty path — `(unnamed)`, tested
+  - `[low]` `[patch]` `FLEET_PROFILE_ROOT_CODES`, `FLEET_PROFILE_PYTHON_CODES`, their types, `FleetProfileSkillCoreRecord` and three observer constants were not exported — exported
+  - `[low]` `[patch]` lock entries counted toward `max_root_entries` before the ignore list applied — filtered before the cap; first-use lock creation proven byte-stable across two runs and invisible to a cap of one
+  - `[low]` `[patch]` three renderer-dependent assertions ran ungated on a python-less host — gated on `RENDERER_AVAILABLE`
+  - `[low]` `[patch]` `renderer-source-unobserved` was never driven — nested package root, a git exiting 128 and a 1 KiB cap
+  - `[low]` `[patch]` `root-unreadable` and the `unreadable` path gate had no case — mode 0300 / 0400 roots and mode 0 files, skipped as root, in both scopes
+  - `[low]` `[patch]` `too-large` and `max_unit_files` were never exercised — an oversized identity file and pin (`bank_invalid`, `bank error` in the report), a one-unit cap
+  - `[low]` `[patch]` `core-missing` was never produced — a core skill absent from every root and a core entry with no `SKILL.md`
+  - `[low]` `[patch]` seven validator rejections had no negative — lock timeout (negative, over a minute), lock pattern (no placeholder, a path), `canonical_dir_env`, an empty `required`, an empty ignore list
+  - `[low]` `[patch]` fleet-wide duplicate-name detection was proven only in fleet scope — an `--agent` run against the duplicate registry
+  - `[low]` `[patch]` the `skip` half of the host justification gate was unpinned — a host skip counts against proof until an `allowed_skips` entry lifts it
+  - `[low]` `[patch]` human-report cells beyond the clean row were unasserted — drifted, gated, unverifiable, bank invalid / unpinned / alias, identity warn, `skills 4/6`, and an `--agent` report's `extras not swept`
+  - `[low]` `[patch]` the renderer child's cwd and environment were never observed — a recording shim proves the submodule cwd, the lock wait, the allowlist and that the parent's Plane key never reaches the child
+
 ## Design Notes
 
 **Run the canonical bytes, not a canonical location.** The renderer cannot be relocated (it insists on its
@@ -488,59 +532,59 @@ Blocking condition: none
 
 ### Summary of implemented change
 
-`pjangler fleet status --domain profile` now proves every registered profile instead of
-`lstat`ing its directory. A read-only observer (`src/fleet/profile.ts`) gates the path first
-(real, contained, safely named, no case-insensitive twin, no second row claiming it, singleton
-links into this agent's own runtime), then reads the identity file for its key names, proves
-the generated config by running the CANONICAL renderer's own `check` from the submodule
-worktree only after its blob id and its lock helper's equal the blobs at the committed gitlink,
-reads the Hindsight bank pin for an exact `agent-<profile_name>`, and proves the six core skills
-by bytes through the roots Hermes loads. Five observations per agent land on
-`profiles.{profile_name}` leaves; a gated profile is one `fail` plus four `unobserved` naming
-the gate, and nothing beneath it is read. In fleet scope the root is enumerated once and every
-unregistered entry is classified on the `profile.extras` host finding into one of five classes
-with bounded evidence and guidance; `profile.root`, `profile.renderer` and the once-per-host
-`profile.skill-core` findings name the shared causes. Host findings now reach the justification
-gate, so an unjustified extra or skill-core gap keeps the fleet `unproven`. The contract is
-schema 4 (`profile_manifest`, `provisioned_profile_state`); the `profile.render_generation`
-deferral and provenance fact are deleted. Commits: e906015, 1a2865c, 1fea950 (dev), plus this
-spec finalization.
+Follow-up review pass over the story-1.7 profile observer (the first pass recommended one at
+score 50). Four review layers over the whole story diff since `c935037` produced 36 patches, all
+applied in commit `ecee7bd6dc6778787074481b57b116c2582b477f`. The theme: a collection failure is
+never a verdict. A file the observer cannot open is `unreadable` (an error on its own field, and
+a renderer `error` when it is the config or the delta), a renderer copy it cannot read or a
+package root that is not a git checkout root of its own is `renderer-source-unobserved`, and a
+singleton link it cannot read is `unverifiable`. The gate now catches a real file where the
+template provisions a link (the stock `SOUL.md` Hermes seeds, `not-a-link:<entry>`, agreed with
+the rule's `not-a-symlink`) and stops flagging a link whose role directory is spelled through a
+symlinked ancestor. Smaller readings: an empty identity file is `malformed`, an empty base no
+longer marks every delta a frozen copy, a non-directory `skills` entry is recorded, a
+non-leading backup wildcard names no stem, wildcard-only ignore patterns are refused, unit files
+and the template config are read through links, and lock entries are excluded before the root
+cap. One glob grammar is shared by the validator and the sweep; the dead `not-run` state and the
+never-emitted `root` path code are gone and `path.code` is typed end to end; the report paints a
+path warn yellow and an errored skills field by state. Nineteen findings were rejected as
+design-as-specified (the `unobserved` rollup DW-95, the SIGKILL timeout DW-94, the optional-skill
+listing DW-90, the namespace-majority owner, counts versus exceptions, the mismatch probe record),
+as orchestrator bookkeeping (`sprint-status.yaml`, the DW-96 ledger entry), or as noise. Nothing
+was deferred this pass.
 
 ### Files changed
 
-- `src/fleet/profile.ts` -- NEW observer: root gate, renderer integrity + python probe, per-agent path/identity/config/pin/skills, extras sweep, probe records.
-- `src/fleet/runtime.ts` -- `probeText` (stdout kept on a nonzero exit).
-- `src/fleet/types.ts`, `src/fleet/contract.ts` (`validateProfileManifest`), `src/fleet/health.ts` (`fleet-profile` evidence; host findings at the justification gate), `src/fleet/status.ts` (collection phase, `observeFromProfile`, four host findings, rule agreement, `data.profile`, `agents[].profile`), `src/fleet/output.ts`, `src/fleet/index.ts`, `src/fleet/inventory.ts` (shared fleet-home resolution, gateways from the parsed store), `src/fleet/provenance.ts` (fact deleted).
-- `contracts/fleet-contract.yaml` -- schema 4, contract 1.3.0.
-- `tests/fleet-profile-regressions.mjs` -- NEW, 34 cases incl. the live AC11 case; `tests/fleet-status-regressions.mjs`, `tests/fleet-health-regressions.mjs`, `tests/fleet-scaffold-regressions.mjs` (renderer-clean fixture profiles, real renderer bytes in fixture submodules), `tests/fleet-provenance-regressions.mjs`, `tests/fleet-contract-regressions.mjs`, `tests/mcp-server-regressions.mjs`, `scripts/run-tests.mjs`.
-- `README.md` (`### Profile health`), `mise.toml`, `CHANGELOG.md`, `deferred-work.md` (DW-25/28/31/63 annotated; DW-90..DW-95 added).
+- `src/fleet/profile.ts` -- package-root toplevel guard; unobserved for unreadable renderer copies; `unreadable` kind on identity/config/delta/pin; `not-a-link` and realpath containment for singleton entries; `unverifiable` on a failed readlink; empty identity file; empty-base guard; non-directory `skills` entry; skills summary wording; leading-wildcard stem; unit files through links with a whitespace-terminated value; template config through its link; lock entries filtered before the cap; `(unnamed)` item path; `rootEntryGlob` import; typed path code.
+- `src/fleet/contract.ts` -- `rootEntryGlob` exported (one grammar, capturing); wildcard-only patterns refused.
+- `src/fleet/status.ts` -- `not-a-symlink` rule pattern; five `unobserved` on a missing result; typed path code on the summary.
+- `src/fleet/output.ts` -- path warn painted yellow; errored/unobserved skills cell by state; dead `too-large` bank code removed; `renderer manifest-undeclared` painted grey.
+- `src/fleet/types.ts` -- `FleetProfilePathCode` with `root:<code>`, `root` dropped from the list; `not-run` dropped; `renderer-source-unobserved` documented; `FleetStatusAgentProfile.path.code` typed.
+- `src/fleet/index.ts` -- root/python code vocabularies, their types, the skill-core record and three constants exported.
+- `src/fleet/inventory.ts` -- JSDoc restored to `resolveProfileLayout`, its consumer named; blank lines.
+- `tests/fleet-profile-regressions.mjs` -- 45 cases (34 + 11 new: unobserved shapes, singleton entries, unreadable root/gate/files, too-large + unit cap + backup stem, core-missing, empty identity, empty base, first-use lock, renderer child environment, host skip; plus scoped duplicate names, linked template config, `not-a-symlink` agreement, seven validator negatives, human-report cells, unit-file fixtures, three gated assertions).
+- `tests/fleet-contract-regressions.mjs` -- three `profileRejects` negatives. `tests/fleet-health-regressions.mjs` -- exception-case cleanup in `finally`.
+- `README.md` (kinds per field, `not-a-link`, `renderer-source-unobserved` causes, the allowlisted environment), `CHANGELOG.md` (`### Changed` bullet for `health.unjustified`), `mise.toml` (the lock footprint), `dist/` rebuilt.
 
 ### Review findings
 
-- Four review layers (blind hunter, edge-case hunter, verification-gap, intent alignment) over the story diff.
-- intent_gap 0, bad_spec 0; **38 patches applied** (high 0, medium 6, low 32) in commit 1fea950 by the implementation agent; 1 finding deferred (frontmatter `deferred`); 11 rejected (design consistent with the spec or the epic's story boundaries: process attribution belongs to 1.9, parity only exists under `--live`, standalone singleton entries are legitimate, `warn`-only profiles count healthy as 1.4 defines it, bookkeeping the workflow owns).
-- Follow-up review recommendation: **true** -- patched counts high 0 / medium 6 / low 32, score 3 x 6 + 32 = 50 (threshold 5).
+- Four review layers (blind hunter 22, edge-case hunter 24, verification-gap 8 + 2 notes, intent alignment 12 observations) over the story diff since `c935037` (7,204 lines without `dist/`).
+- intent_gap 0, bad_spec 0; **36 patches applied** (high 0, medium 3, low 33); 0 deferred; 19 rejected.
+- Follow-up review recommendation: **true** -- patched counts high 0 / medium 3 / low 33, score 3 x 3 + 33 = 42 (threshold 5).
 
 ### Verification performed
 
-- `npm run typecheck && npm run build` -- clean after each commit; the rebuilt `dist/` is byte-identical to the committed bundle (`git status` empty after build).
-- `npm test` -- 69/69 suites before the patch pass (392.9 s) and 69/69 after it (401.8 s). `node tests/fleet-profile-regressions.mjs` -- 34 cases, none skipped, live case ran.
-- Two consecutive live runs of `fleet status --domain profile --json`: `data` byte-identical; `git -C templates/hermes-agent status --porcelain` and an `ls -la` listing of the real profile root identical before and after.
+- `npm run typecheck && npm run build` -- clean; `dist/` rebuilt and committed with the source.
+- `npm test` -- 69/69 suites (417.3 s). `node tests/fleet-profile-regressions.mjs` -- 45 cases, none skipped, the live AC11 case ran; the health, contract, status, scaffold, provenance and MCP suites green on their own too.
+- Two consecutive live runs of `fleet status --domain profile --json`: `data` byte-identical (`diff <(jq -S .data p1) <(jq -S .data p2)` empty); `git -C templates/hermes-agent status --porcelain` empty before and after.
 - `fleet status --domain registry --json`: zero probes of kind `profile`. `fleet contract validate`: ok, schema 4, contract 1.3.0.
 - Payload scan: 0 occurrences of `GENERATED FILE`, `op://`, `/home/`; no ISO timestamp.
-- **AC11, independently recorded:** `python3 -B templates/hermes-agent/scripts/hermes-profile-config.py check --profile pjangler-pm` printed `OK: every profile config.yaml == deep_merge(base, delta)` and exited 0; the payload's `agents[pjangler-pm].profile.renderer` is `{state: "in-sync", sections: []}`; renderer source `ok` at gitlink `6bc683d8a265`, python `ok`. The suite's live case re-checks this and an independent `readdir`+`lstat` of the real root on every run.
-- Live fleet: 28 registered, 26 real, 2 blocked at path (`delonet-company-reporter`, `hermes-agent-pm`, both `symlink`), renderer checked 26 / in sync 26, bank ok 25 + 1 alias (`nautilus-trader-pm` pinned `agent-nautilus_trader-pm`), 11 unregistered root entries: 1 `approved-managed-exception` (`fleet-bloodbank-gateway`), 2 `retired-candidate` (`33god-pm.bak`, `nautilus_trader-pm`), 8 `unclassified`. Verdict `unhealthy`, `unjustified: 1` (the extras warn).
-
-### Live readings that are fleet facts, not observer defects
-
-- 15 real profiles carry no `profile.yaml` (`identity` `fail`, `missing`); the other 11 pass on `ui_meta` and, where present, `description`/`description_auto`.
-- `profile.skill-core` reads `fail`: `33god-projects` and `hermes-pm-template-maintenance` have no `SKILL.md` under `~/.agents/skills`, so every real profile reads `canonical-missing` for both and `core_present` is 4 of 6 fleet-wide (DW-91). The fleet base's `./agents/skills` entry is `sources_unresolvable: 1` on every profile.
-- 27 profiles reach the core only through `skills.external_dirs`; their `skills -> ~/.hermes/skills` link resolves inside the fleet home and lists that directory's optional skills.
+- **AC11, independently recorded:** `python3 -B templates/hermes-agent/scripts/hermes-profile-config.py check --profile pjangler-pm` printed `OK: every profile config.yaml == deep_merge(base, delta)` and exited 0; the payload's `agents[pjangler-pm].profile.renderer` is `{state: "in-sync", sections: []}`; renderer source `ok` at gitlink `6bc683d8a265`, python `ok`.
+- Live fleet: 28 registered, 26 real, 2 blocked at path (`symlink`), renderer checked 26 / in sync 26, bank ok 25 + 1 alias, 11 unregistered root entries (1 `approved-managed-exception`, 2 `retired-candidate`, 8 `unclassified`). Verdict `unhealthy`, `unjustified: 1` (the extras warn), `failed: 47`. Unchanged from the first pass.
 
 ### Residual risks
 
-- DW-95: a gated profile's `domains.profile` rollup reads `unobserved` (four dependents outrank the path `fail` under the declared precedence); the `fail` is on the record, in `health.failed`, and demotes the lifecycle.
-- DW-94: a held lock is reported by killing the renderer at `lock_timeout_seconds + 1` s; a legitimately slow check reads the same `renderer-timeout`.
-- DW-93: `unit_file_references` reads literal `Environment=HERMES_HOME=` lines only; `process_reference` is `unobserved` until story 1.9.
-- DW-90/DW-92: optional skills are listed from the profile's own `skills` entry only; the singleton-link list is duplicated from the recipe rule and pinned by a text-parity case.
-- `root-unreadable` (readdir failure on a root that `lstat`s as a directory) and the indexed `unparsed:<n>` sweep rows have no driving case; both fail safe.
+- DW-90 .. DW-96 stand as ledgered; nothing this pass changes their readings.
+- On the skills field a `SKILL.md` that cannot be read or is over the cap still reads `core-replaced` (a `fail`): bytes that cannot be proven do not prove membership. The other four fields now say `unreadable`.
+- Under `--agent`, `extras.reason` reads `agent-scope` even when the root is `root-unreadable`; the root error is on `profile.root` and `data.profile.root` regardless.
+- `renderer-gitlink-missing` (a checkout root whose HEAD records no gitlink) still has no driving case; the nested-root and broken-git shapes that used to reach it now read `renderer-source-unobserved`.
