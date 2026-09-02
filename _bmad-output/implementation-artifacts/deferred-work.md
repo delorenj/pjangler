@@ -700,3 +700,43 @@ source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
 severity: low
 reason: MEASURED on this tree at story 1.5's review pass -- `npm run test:coverage` aborts with `node::OOMErrorHandler` / `Aborted (core dumped)` partway through the 67-suite sweep. It is a V8 HEAP limit, not system memory: 38 GB was available at the time. c8 accumulates V8 coverage JSON for every suite in one parent process, and the story added ~1000 lines of source to a report that already covered 88 files. `NODE_OPTIONS=--max-old-space-size=12288 npm run test:coverage` completes in 383 s and reports 88.04% lines / 81.50% functions / 78.35% branches, all above the floor, and `coverage-ratchet.mjs` exits 0. So the numbers are fine and the runner is not. CI has not hit it yet, which means the first person it blocks will be whoever runs the gate locally and reads the abort as a test failure. The fix is a `--max-old-space-size` in the script itself, or splitting the c8 merge; neither is a call worth making inside a story about health semantics.
 status: open
+
+### DW-82: The output.ts <-> health.ts import cycle is prevented by a comment in both files, not by structure.
+origin: spec-deferred 48bb9c84e95d
+location: src/fleet/health.ts, src/fleet/output.ts
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: medium
+reason: output.ts needs compareStatusFindings and the two sort keys; health.ts needs bounded/redactHome. Safe today only because neither file calls the other at module scope. A top-level initializer calling across it is a TypeError at import time, and because every suite runs the esbuild BUNDLE it would surface as the whole CLI failing to start rather than as a unit-test failure naming the line. Nothing enforces the constraint -- no lint rule, no test, no build check. Extracting bounded/redactHome into a shared module removes the cycle outright. Recorded as DW-77.
+status: open
+
+### DW-83: Two lifecycle values are unreachable until the observers that produce them exist.
+origin: spec-deferred 70ae5d26b634
+location: src/fleet/health.ts (agentLifecycle)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: capability_readiness "blocked" needs a per-agent bloodbank observation in fail or error; every bloodbank observation this build constructs is pass, warn or unsupported, bloodbank is not provenance-fed, and its only mapped audit rule is host-scoped so it never reaches an agent record. Story 1.10 owns the observer. Recorded as DW-78.
+status: open
+
+### DW-84: applicability "optional" is unreachable while the shipped contract requires all nine domains.
+origin: spec-deferred 2df318370ed7
+location: contracts/fleet-contract.yaml (health_policy.required_domains)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: health_policy.required_domains lists all nine, so classifyObservation can never derive "optional". The value is declared, validated and inert until a contract marks some domain optional. Recorded as DW-79.
+status: open
+
+### DW-85: AC9 names "unhealthy complete observation" as a category, but the verdict does not partition that way.
+origin: spec-deferred 143e7c8055e0
+location: src/fleet/health.ts (evaluateFleetHealth)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: verdict resolves "unhealthy" whenever !healthy, regardless of completeness, so a run that is both unhealthy and incomplete reports unhealthy. Deliberate -- a proven failure is more actionable than an unread half -- and documented where the rule is written, but it is not the partition the acceptance criterion describes. Recorded as DW-80.
+status: open
+
+### DW-86: npm run test:coverage OOMs on Node's default V8 heap.
+origin: spec-deferred fdf242a294af
+location: package.json (test:coverage)
+source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
+severity: low
+reason: MEASURED at this review pass: node::OOMErrorHandler / Aborted (core dumped) partway through the 67-suite sweep, with 38 GB of system memory free -- it is the V8 heap, not the machine. c8 accumulates coverage JSON for every suite in one parent process. With --max-old-space-size=12288 it completes in 383 s at 88.04% lines and the ratchet exits 0. The numbers are fine; the runner is not, and the first person it blocks will read the abort as a test failure. Recorded as DW-81.
+status: open
