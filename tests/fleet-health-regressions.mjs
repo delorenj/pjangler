@@ -70,7 +70,7 @@ const EXIT_CODES = { ok: 0, unhealthy: 10, incomplete: 11 };
 const MAX_TRANSITIONS = 2000;
 const DATA_KEYS = [
   "contract_path", "contract_version", "scope",
-  "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "truncated",
+  "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "truncated",
 ];
 
 const temp = mkdtempSync(join(tmpdir(), "fleet-health-"));
@@ -132,6 +132,68 @@ const TEMPLATE_REMOTE = "https://github.com/delorenj/hermes-agent.git";
 const HERMES_REMOTE = "https://github.com/delorenj/hermes-agent.git";
 
 /**
+ * The tracked template at its COMMITTED gitlink, read once through git objects.
+ *
+ * Story 1.6's scaffold observer compares every managed role directory against
+ * the template the package root pins, so a synthetic role carrying only
+ * `role.yaml` reads as fifty missing assets. The story's rule is to fix the
+ * FIXTURE, never to weaken the observer: the fixture package root gets a
+ * template submodule whose tree IS the pinned tree, and every synthetic role is
+ * rendered from it. The bytes come from `git show <gitlink>:<path>`, never from
+ * the submodule worktree, for the same reason the observer reads objects.
+ */
+const PINNED_TEMPLATE = (() => {
+  const submodule = join(ROOT, "templates", "hermes-agent");
+  const gitlink = /([0-9a-f]{40})/u.exec(git(ROOT, ["ls-tree", "HEAD", "--", "templates/hermes-agent"]).stdout)?.[1];
+  if (!gitlink) return null;
+  const listed = git(submodule, ["ls-tree", "-r", "-z", gitlink, "--", "template"]);
+  if (listed.status !== 0) return null;
+  const files = [];
+  for (const entry of listed.stdout.split("\u0000").filter(Boolean)) {
+    const match = /^(\d{6}) blob ([0-9a-f]{40})\t(.+)$/su.exec(entry);
+    if (!match) continue;
+    const [, mode, , path] = match;
+    const bytes = spawnSync("git", ["show", `${gitlink}:${path}`], { cwd: submodule, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }).stdout;
+    files.push({ mode, path: path.slice("template/".length), bytes });
+  }
+  return { gitlink, files };
+})();
+
+/** Write the pinned template's tree, unrendered, into a fixture submodule. */
+function writePinnedTemplateTree(submodule) {
+  assert.ok(PINNED_TEMPLATE, "the tracked template must be readable at its committed gitlink for the fixture to have one");
+  for (const file of PINNED_TEMPLATE.files) {
+    const full = join(submodule, "template", ...file.path.split("/"));
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, file.bytes);
+    chmodSync(full, file.mode === "100755" ? 0o755 : 0o644);
+  }
+}
+
+/**
+ * Render the pinned template into a role directory as the fanout would: the
+ * five simple substitutions the manifest declares, `.jinja` stripped,
+ * presence-only files written as-is, modes from the tree.
+ */
+function renderPinnedRole(roleDir, inputs) {
+  assert.ok(PINNED_TEMPLATE, "the tracked template must be readable at its committed gitlink for the fixture to be scaffold-clean");
+  const presenceOnly = new Set(["role.yaml", "SOUL.md"]);
+  for (const file of PINNED_TEMPLATE.files) {
+    const rendered = file.path.endsWith(".jinja");
+    const target = rendered ? file.path.slice(0, -".jinja".length) : file.path;
+    let bytes = file.bytes;
+    if (rendered && !presenceOnly.has(target)) {
+      const text = bytes.toString("utf8").replace(/\{\{\s*([a-z_]+)\s*\}\}/gu, (whole, name) => (name in inputs ? inputs[name] : whole));
+      bytes = Buffer.from(text, "utf8");
+    }
+    const full = join(roleDir, ...target.split("/"));
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, bytes);
+    chmodSync(full, file.mode === "100755" ? 0o755 : 0o644);
+  }
+}
+
+/**
  * A relocated package root, so the FLEET-SCOPED template facts are this suite's.
  *
  * `resolvePjanglerRoot()` walks up from the running `dist/index.js` for a
@@ -165,8 +227,15 @@ function makePackageRoot(name, contractText) {
   writeFileSync(join(root, "contracts", "fleet-contract.yaml"), contractText, "utf8");
 
   const submodule = join(root, "templates", "hermes-agent");
-  mkdirSync(submodule, { recursive: true });
+  // The pinned template's own tree, so story 1.6's scaffold observer has the
+  // real manifest to compare against and the roles `makeRepo` renders from
+  // that same tree read clean whichever build observes them -- this fixture's
+  // or the repository's own. The fixture is made scaffold-clean rather than
+  // the observer being weakened: `cleanRoot` has to stay `proven: true` for
+  // the right reason.
+  mkdirSync(join(submodule, "template"), { recursive: true });
   writeFileSync(join(submodule, "README.md"), "# hermes-agent fixture\n", "utf8");
+  writePinnedTemplateTree(submodule);
   assert.equal(git(submodule, ["init", "--quiet"]).status, 0);
   assert.equal(git(submodule, ["add", "-A"]).status, 0);
   assert.equal(git(submodule, ["commit", "--quiet", "-m", "template"]).status, 0);
@@ -185,6 +254,10 @@ function makePackageRoot(name, contractText) {
   git(root, ["add", ".gitmodules", "templates/hermes-agent"]);
   const staged = git(root, ["ls-files", "--stage", "--", "templates/hermes-agent"]).stdout;
   assert.match(staged, /^160000 [0-9a-f]{40} 0\t/u, `the fixture root must stage a gitlink, got ${JSON.stringify(staged)}`);
+  // COMMITTED, not merely staged. The scaffold observer reads the gitlink out
+  // of HEAD and refuses a staged-but-uncommitted pin as `gitlink-unstable`,
+  // which is correct and would make every fixture agent incomplete.
+  assert.equal(git(root, ["commit", "--quiet", "-m", "pin the fixture template"]).status, 0, "the fixture root must commit its gitlink");
   return root;
 }
 
@@ -204,11 +277,12 @@ function makeRelease(home) {
   return { release, sha };
 }
 
-/** A repository with a role scaffold, an ignored runtime directory and a `.project.json`. */
+/** A repository with a role scaffold rendered from the pinned template, an ignored runtime directory and a `.project.json`. */
 function makeRepo(reposRoot, slug) {
   const dir = join(reposRoot, slug);
   const role = join(dir, "agents", "hermes", "pm");
   mkdirSync(join(role, "runtime"), { recursive: true });
+  renderPinnedRole(role, { agent_id: `${slug}-pm`, role: "pm", target_repo: slug, display_name: `${slug} PM`, ticket_provider: "plane" });
   writeFileSync(join(role, "role.yaml"), "role: pm\n", "utf8");
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify({
     project_slug: slug,
@@ -1717,6 +1791,68 @@ try {
     const task = mise.slice(mise.indexOf('[tasks."fleet:status"]') - 700, mise.indexOf('[tasks."fleet:status"]') + 400);
     assert.match(task, /--exit-code/u, "the fleet:status comment must name the opt-in exit projection");
     assert.match(task, /still exits 0/u, "and must keep stating that the default exits 0");
+  });
+
+  check("an agent_exceptions entry flips a drifted agent to exception and leaves health.healthy alone", () => {
+    // Story 1.6 (PJAN-108). A DELTA on one contract entry: the same fleet, with
+    // one role directory missing its `role.yaml`, once without a ruling and once
+    // with `health_policy.agent_exceptions` naming it. The drift is still
+    // reported and still `fail`; what moves is the agent's member bucket -- the
+    // conflict-ruling precedent, on the scaffold axis.
+    const drifted = join(reposRoot, "drifted");
+    mkdirSync(join(drifted, "agents", "hermes", "pm", "runtime"), { recursive: true });
+    writeFileSync(join(drifted, ".project.json"), `${JSON.stringify({
+      project_slug: "drifted",
+      ticket_provider: { type: "plane", workspace: "suite", identifier: "DRIFTED", board_id: "board-drifted" },
+    }, null, 2)}\n`, "utf8");
+    assert.equal(git(drifted, ["init", "--quiet"]).status, 0);
+    writeFileSync(join(drifted, "README.md"), "# drifted\n", "utf8");
+    assert.equal(git(drifted, ["add", "-A"]).status, 0);
+    assert.equal(git(drifted, ["commit", "--quiet", "-m", "seed"]).status, 0);
+    const profile = join(scratchHome, ".hermes", "profiles", "drifted-pm");
+    mkdirSync(profile, { recursive: true });
+    writeFileSync(join(profile, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT\nname: x\n", "utf8");
+    const agents = writeAgentRegistry(join(temp, "exception-agents.yaml"), [...SLUGS, "drifted"]);
+    const projects = writeProjectRegistry(join(temp, "exception-projects.yaml"), [...SLUGS, "drifted"]);
+    const argv = ["fleet", "status", "--live", "--json", "--agent-registry", agents, "--project-registry", projects];
+
+    resetEntry(cleanShim);
+    const before = status(cliAt(cleanRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
+    const unruled = agentNamed(before, "drifted-pm");
+    const roleYaml = unruled.observations.find((item) => item.field === "scaffold.role.yaml");
+    assert.ok(roleYaml, "the role.yaml group must be observed");
+    assert.equal(roleYaml.state, "fail", "a missing role.yaml is drift");
+    assert.deepEqual(roleYaml.items.map((item) => item.kind), ["missing"]);
+    assert.equal(roleYaml.justification, null, "nothing rules on it yet");
+    assert.equal(unruled.member_class, "unhealthy");
+    assert.equal(before.scaffold.agents.drifted, 1);
+    assert.equal(before.scaffold.agents.exception_authorized, 0);
+
+    const ruled = writeContract("agent-exception", policyContract((document) => {
+      document.health_policy.agent_exceptions = [
+        { domain: "template_scaffold", agent_id: "drifted-pm", reason: "the operator keeps this role's manifest by hand", owner: "suite" },
+      ];
+    }));
+    const ruledRoot = makePackageRoot("pkg-agent-exception", readFileSync(ruled, "utf8"));
+    resetEntry(cleanShim);
+    const after = status(cliAt(ruledRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
+    const excepted = agentNamed(after, "drifted-pm");
+    const ruledYaml = excepted.observations.find((item) => item.field === "scaffold.role.yaml");
+    assert.equal(ruledYaml.state, "fail", "the state is unchanged; only the AUTHORIZATION is new");
+    assert.ok(ruledYaml.justification, "the ruling must be named on the observation");
+    assert.equal(ruledYaml.justification.kind, "exception");
+    assert.equal(ruledYaml.justification.policy, "health_policy.agent_exceptions[0]", "the policy path is the entry's own, not the intentionally_unmanaged literal");
+    assert.equal(ruledYaml.applicability, "exception");
+    assert.equal(excepted.member_class, "exception", "every proven failure carries the ruling, so the agent is an exception rather than unhealthy");
+    assert.equal(after.scaffold.agents.exception_authorized, 1);
+    assert.equal(after.scaffold.agents.drifted, 0);
+    // The ruling moves the BUCKET and nothing else: `health.healthy` is about
+    // proven drift, and the drift is still proven.
+    assert.equal(after.health.healthy, before.health.healthy, "a ruling must not change health.healthy");
+    assert.equal(after.health.healthy, false);
+    assert.equal(after.health.failed, before.health.failed, "the fail is still counted");
+    assert.equal(after.health.members.exception, before.health.members.exception + 1);
+    assert.equal(after.health.members.unhealthy, before.health.members.unhealthy - 1);
   });
 
   check("every declared vocabulary is exported and spelled the same in source", () => {

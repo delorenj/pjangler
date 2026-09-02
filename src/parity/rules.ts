@@ -8,6 +8,13 @@ import YAML from "yaml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
 import {
+  blobId as scaffoldBlobId,
+  compareAssets as compareScaffoldAssets,
+  renderTemplate as renderScaffoldTemplate,
+  type ScaffoldDesiredAsset,
+  type ScaffoldObservedAsset,
+} from "../scaffold/compare";
+import {
   PackUnavailableError,
   assertNoSymlinkComponents,
   assertRealDirectory,
@@ -2755,9 +2762,87 @@ function renderSoul(role: RoleMeta): string {
   return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. HERMES_HOME is the real named profile at \`~/.hermes/profiles/${role.profileName || role.agentId}\`; shared config/auth/skills remain linked to fleet truth while owned state lives in ignored \`./runtime/\`. The launcher supplies the project root through process-local \`TERMINAL_CWD\` and never persists it into shared config.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is stored locally at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
 
+/**
+ * The one renderer, shared with the fleet scaffold observer.
+ *
+ * Simple `{{ name }}` substitution only. A template that has grown control
+ * flow in a rendered asset is refused here rather than written half-rendered
+ * into a deployed role, which is what the regex replacement it replaces would
+ * have done.
+ */
+function renderScaffoldAsset(templateRoleDir: string, jinjaRel: string, inputs: Record<string, string | null>): string {
+  const result = renderScaffoldTemplate(readText(join(templateRoleDir, jinjaRel)), inputs);
+  if (!result.ok) throw new Error(`${jinjaRel}: ${result.detail}`);
+  return result.text;
+}
+
 function renderHermesWrapper(role: RoleMeta, templateRoleDir: string): string {
-  return readText(join(templateRoleDir, "hermes.jinja"))
-    .replace(/\{\{\s*agent_id\s*\}\}/g, role.agentId);
+  return renderScaffoldAsset(templateRoleDir, "hermes.jinja", { agent_id: role.agentId });
+}
+
+/** The render inputs the sentinel prompt takes, with the rule's historical fallbacks. */
+function sentinelPromptInputs(role: RoleMeta): Record<string, string | null> {
+  return {
+    agent_id: role.agentId,
+    role: role.role,
+    target_repo: role.repo,
+    display_name: role.displayName || role.agentId,
+    ticket_provider: role.ticketProviderName || "plane",
+  };
+}
+
+/** What is on disk at one owned path, by `lstat`. Filesystem only: this rule may not invoke git. */
+function observeScaffoldAsset(path: string): ScaffoldObservedAsset {
+  const seen: ScaffoldObservedAsset = { present: false, type: null, executable: false, blobId: null, unsafeSymlink: false, unreadable: null, wip: false };
+  try {
+    const stat = lstatSync(path);
+    seen.present = true;
+    if (stat.isSymbolicLink()) {
+      seen.type = "symlink";
+      seen.blobId = scaffoldBlobId(Buffer.from(readlinkSync(path), "utf8"));
+    } else if (stat.isDirectory()) {
+      seen.type = "directory";
+    } else if (stat.isFile()) {
+      seen.type = "file";
+      seen.executable = (stat.mode & 0o111) !== 0;
+      try { seen.blobId = scaffoldBlobId(readFileSync(path)); } catch { seen.unreadable = "unreadable"; }
+    } else {
+      seen.type = "other";
+    }
+  } catch {
+    // absent
+  }
+  return seen;
+}
+
+/**
+ * The desired asset set the audit compares, read from the template WORKTREE
+ * through the filesystem -- this rule stays filesystem-only (`mcp-server.ts`
+ * relies on it) and the fleet observer is the one that reads git objects.
+ *
+ * The asset set is the rule's historical one: verbatim `.scripts/**` minus the
+ * rendered prompt, rendered `hermes`, `.gitignore` and `.scripts/sentinel.prompt.md`,
+ * and presence of `role.yaml`, `SOUL.md` and `.runtime-scaffold/README.md`.
+ * Bytes, not normalised text: the comparison is the shared core's.
+ */
+function scaffoldDesiredForRule(role: RoleMeta, templateRoleDir: string, managedScripts: readonly string[]): ScaffoldDesiredAsset[] {
+  const desired: ScaffoldDesiredAsset[] = [];
+  const asset = (path: string, blob: string | null, incomplete: ScaffoldDesiredAsset["incomplete"] = null, presenceOnly = false): void => {
+    desired.push({ path, type: "file", executable: false, blobId: blob, presenceOnly, incomplete });
+  };
+  for (const rel of ["role.yaml", "SOUL.md", ".runtime-scaffold/README.md"]) asset(rel, null, null, true);
+  const rendered = (path: string, jinjaRel: string, inputs: Record<string, string | null>): void => {
+    const source = join(templateRoleDir, jinjaRel);
+    if (!existsSync(source)) { asset(path, null, { reason: "render-unsupported", detail: `render-unsupported: ${jinjaRel} is absent from the template` }); return; }
+    const result = renderScaffoldTemplate(readFileSync(source).toString("utf8"), inputs);
+    if (!result.ok) { asset(path, null, { reason: result.reason, detail: result.detail }); return; }
+    asset(path, scaffoldBlobId(Buffer.from(result.text, "utf8")));
+  };
+  rendered("hermes", "hermes.jinja", { agent_id: role.agentId });
+  rendered(".gitignore", ".gitignore.jinja", { role: role.role });
+  for (const rel of managedScripts) asset(`.scripts/${rel}`, scaffoldBlobId(readFileSync(join(templateRoleDir, ".scripts", rel))));
+  rendered(".scripts/sentinel.prompt.md", ".scripts/sentinel.prompt.md.jinja", sentinelPromptInputs(role));
+  return desired;
 }
 
 function templateFiles(sourceDir: string, current = sourceDir): string[] {
@@ -2818,12 +2903,7 @@ function managedHermesScaffoldRoles(ctx: Context): { roles: RoleMeta[]; blockers
 }
 
 function renderSentinelPrompt(role: RoleMeta, templateRoleDir: string): string {
-  return readText(join(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja"))
-    .replace(/\{\{\s*agent_id\s*\}\}/g, role.agentId)
-    .replace(/\{\{\s*role\s*\}\}/g, role.role)
-    .replace(/\{\{\s*target_repo\s*\}\}/g, role.repo)
-    .replace(/\{\{\s*display_name\s*\}\}/g, role.displayName || role.agentId)
-    .replace(/\{\{\s*ticket_provider\s*\}\}/g, role.ticketProviderName || "plane");
+  return renderScaffoldAsset(templateRoleDir, join(".scripts", "sentinel.prompt.md.jinja"), sentinelPromptInputs(role));
 }
 
 function copyMissingRecursive(sourceDir: string, targetDir: string, changedFiles: string[], dryRun: boolean, skip?: (source: string) => boolean): void {
@@ -6015,26 +6095,28 @@ return [
         .filter((rel) => rel !== "sentinel.prompt.md.jinja");
       for (const role of selection.roles) {
         const prefix = role.agentId || role.role;
-        for (const rel of ["role.yaml", "SOUL.md", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
-          if (!existsSync(join(role.roleDir, rel))) details.push(`${prefix}: missing ${relative(ctx.repoRoot, join(role.roleDir, rel))}`);
+        // The runtime memory file is the one presence check outside the shared
+        // core: it lives under the ignored runtime, which the core never reads.
+        const memory = join(role.roleDir, "runtime", "memories", "MEMORY.md");
+        if (!existsSync(memory)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, memory)}`);
+        // ONE comparison for the rule and the fleet observer (story 1.6):
+        // `compareAssets` from the shared core, over the rule's historical
+        // asset set. The rule is filesystem-only, so lineage is undecidable
+        // here and every content mismatch keeps its historical word, "stale";
+        // modes are deliberately not compared, because `migrate` writes bytes
+        // and never lowers a mode, and a rule that cannot pass after its own
+        // repair is a lie.
+        const desired = scaffoldDesiredForRule(role, templateRoleDir, managedScripts);
+        const findings = compareScaffoldAssets(
+          desired,
+          (asset) => observeScaffoldAsset(join(role.roleDir, ...asset.path.split("/"))),
+          { inLineage: () => true, modes: false },
+        );
+        for (const finding of findings) {
+          const word = finding.kind === "stale-content" ? "stale" : finding.kind;
+          const shown = relative(ctx.repoRoot, join(role.roleDir, ...finding.path.split("/")));
+          details.push(`${prefix}: ${word} ${shown}${finding.detail ? ` (${finding.detail})` : ""}`);
         }
-        const wrapper = join(role.roleDir, "hermes");
-        const expectedWrapper = renderHermesWrapper(role, templateRoleDir);
-        if (!existsSync(wrapper)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, wrapper)}`);
-        else if (safeReadText(wrapper) !== expectedWrapper) details.push(`${prefix}: stale ${relative(ctx.repoRoot, wrapper)}`);
-        const expectedIgnore = readText(join(templateRoleDir, ".gitignore.jinja")).replace(/\{\{\s*role\s*\}\}/g, role.role);
-        const ignorePath = join(role.roleDir, ".gitignore");
-        if (!existsSync(ignorePath)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, ignorePath)}`);
-        else if (safeReadText(ignorePath) !== expectedIgnore) details.push(`${prefix}: stale ${relative(ctx.repoRoot, ignorePath)}`);
-        for (const rel of managedScripts) {
-          const source = join(templateRoleDir, ".scripts", rel);
-          const target = join(role.roleDir, ".scripts", rel);
-          if (!existsSync(target)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, target)}`);
-          else if (safeReadText(target) !== readText(source)) details.push(`${prefix}: stale ${relative(ctx.repoRoot, target)}`);
-        }
-        const promptPath = join(role.roleDir, ".scripts", "sentinel.prompt.md");
-        if (!existsSync(promptPath)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, promptPath)}`);
-        else if (safeReadText(promptPath) !== renderSentinelPrompt(role, templateRoleDir)) details.push(`${prefix}: stale ${relative(ctx.repoRoot, promptPath)}`);
         if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) details.push(`${prefix}: .gitmodules contains retired ${role.role} runtime submodule mapping`);
         if (!profileMetaInheritsDefault(join(role.roleDir, "runtime", "profile.yaml"))) details.push(`${prefix}: runtime/profile.yaml missing inherited default config metadata`);
         const registry = safeReadText(registryPath(ctx.homeDir));

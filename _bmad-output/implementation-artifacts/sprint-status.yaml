@@ -51,7 +51,7 @@ development_status:
   1-3-report-fleet-provenance-through-shared-cli-and-mcp: done  # PJAN-94
   1-4-deliver-parse-safe-registry-wide-fleet-status: done  # PJAN-95
   1-5-make-partial-health-truthful-and-actionable: done  # PJAN-96
-  1-6-audit-tracked-pm-scaffold-parity-fleet-wide: backlog  # PJAN-108
+  1-6-audit-tracked-pm-scaffold-parity-fleet-wide: done  # PJAN-108
   1-7-prove-generated-profile-health-and-classify-extras: backlog  # PJAN-109
   1-8-prove-canonical-systemd-topology-and-service-health: backlog  # PJAN-110
   1-9-attribute-live-hermes-processes-and-expose-runtime-sprawl: backlog  # PJAN-111

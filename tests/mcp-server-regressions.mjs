@@ -562,6 +562,11 @@ try {
           // discriminant lives in `data` rather than in the envelope.
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--exit-code"], { exitCode: true }],
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--baseline", join(fleetTmp, "no-such-baseline.json")], { baseline: join(fleetTmp, "no-such-baseline.json") }],
+          // Story 1.6 (PJAN-108): the scaffold observer runs under this domain
+          // and its `data.scaffold` summary plus every `agents[].scaffold` must
+          // be identical on both adapters -- the comparison is by construction
+          // through `collectFleetStatus`, and this is the equality that proves it.
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "template_scaffold"], { domain: "template_scaffold" }],
         ]) {
           const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
           const cli = cliEnvelope(argv, cleanEnv);
@@ -569,6 +574,10 @@ try {
           assert.equal(mcp.command, cli.command, `${tool}: command must match the CLI's`);
           assert.deepEqual(mcp.data, cli.data, `${tool} ${JSON.stringify(args)}: data must deep-equal the CLI envelope's`);
           assert.deepEqual(mcp.error, cli.error, `${tool} ${JSON.stringify(args)}: error must deep-equal the CLI envelope's`);
+          if (args.domain === "template_scaffold" && mcp.ok) {
+            assert.ok(mcp.data.scaffold, "data.scaffold must be present under --domain template_scaffold");
+            assert.ok(mcp.data.agents.length > 0 && mcp.data.agents.every((agent) => agent.scaffold !== null), "every agent record must carry its scaffold summary");
+          }
         }
 
         // Story 1.5: a REAL baseline, written by the CLI and read by both

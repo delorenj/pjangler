@@ -59,7 +59,10 @@ run = "node {{config_root}}/dist/index.js fleet provenance"
 # Answers "is the fleet correct?" in ONE invocation: every registered agent across
 # all nine observation domains, plus the three-way verdict (healthy / unhealthy /
 # unproven) an aggregate needs before it may claim health over a fleet it did not
-# fully read. Strictly read-only. Without --live no recipe audit child runs and no
+# fully read. Strictly read-only. The template_scaffold domain compares every
+# managed role directory against the template at the COMMITTED gitlink (git
+# objects, never the submodule worktree) and reports typed per-asset drift; see
+# "Scaffold parity" in README.md. Without --live no recipe audit child runs and no
 # network call is made, and every audit-fed domain says so. An unhealthy or
 # incomplete fleet still exits 0 -- only a command failure, a blown deadline, or a
 # cancellation is nonzero. Pass --exit-code to opt in to the nonzero projection

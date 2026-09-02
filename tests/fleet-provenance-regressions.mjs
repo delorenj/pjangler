@@ -964,11 +964,11 @@ try {
     assert.equal(fact.status, "unsupported", "a comparison that would need an expansion is unsupported, not a match and not drift");
   });
 
-  // -- AC10: the two gaps this host records nothing for -----------------------
+  // -- AC10: the one gap this host records nothing for ------------------------
 
-  check("scaffold and profile provenance are unsupported with their evidence still reported", () => {
+  check("profile provenance is unsupported with its evidence still reported; the scaffold ref is the observer's now", () => {
     const data = provenance(cli(["fleet", "provenance", "--json"]));
-    for (const id of ["scaffold.template_ref", "profile.render_generation"]) {
+    for (const id of ["profile.render_generation"]) {
       const facts = factsFor(data, id);
       assert.ok(facts.length > 0, `${id} must be reported for every agent`);
       for (const fact of facts) {
@@ -978,13 +978,19 @@ try {
       }
       assert.ok(facts.some((fact) => fact.observed.value !== null), `${id} must still report its observed evidence`);
     }
+    // Story 1.6 (PJAN-108): `scaffold.template_ref` is DELETED, not kept. The
+    // scaffold observer in `fleet status` compares every role directory against
+    // the template at the committed gitlink, so no recorded ref is needed to
+    // know whether a scaffold matches -- and one permanent `unsupported` beside
+    // eight real observations was the rollup lie DW-67 records.
+    assert.deepEqual(factsFor(data, "scaffold.template_ref"), [], "the deleted scaffold.template_ref fact must not come back");
     // The profile digest is a hash of the bytes, never the bytes: the generated
     // config is mode 0600 and is a merge of a shared base with an operator-owned
     // delta.
     const digests = factsFor(data, "profile.render_generation").map((fact) => fact.observed.value).filter(Boolean);
     assert.ok(digests.some((value) => /^sha256:[0-9a-f]{64}$/.test(value)), "at least one rendered profile config must be digested");
     assert.ok(
-      data.totals.by_status.unsupported >= factsFor(data, "scaffold.template_ref").length,
+      data.totals.by_status.unsupported >= factsFor(data, "profile.render_generation").length,
       "every unsupported fact must be counted as unsupported, not folded into another bucket",
     );
   });

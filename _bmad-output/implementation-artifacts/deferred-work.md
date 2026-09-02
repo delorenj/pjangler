@@ -98,6 +98,7 @@ source_spec: `spec-1-1-define-fleet-authority-and-managed-state-contract.md`
 severity: medium
 reason: The intent requires field ownership declared by "real key paths that exist today". projects.*, agents.* and gateways.* are real; scaffold.* and units.* are not paths in any store. The dotted grammar then makes them wrong rather than merely synthetic: FIELD_PATH forbids a leading dot, so `.gitignore` is declared as `scaffold.gitignore`, and `scaffold.sentinel.prompt.md` names a file that actually lives at `.scripts/sentinel.prompt.md`. Related to the grammar entry above but a distinct claim about the contract's content.
 status: open
+addressed (story 1.6, PJAN-108): The eight `scaffold.*` leaves are now REAL. `scaffold_manifest.groups` in the tracked contract maps each declared leaf to the role-relative path it owns (`scaffold.gitignore: .gitignore`, `scaffold.sentinel.prompt.md: .scripts/sentinel.prompt.md`, `scaffold.scripts: .scripts/`, ...), `validateScaffoldManifest` refuses a group key no authority declares writable, and the scaffold observer files one observation per leaf -- so a leaf is a declared asset group with a live observation behind it rather than an invented store key. The header comment of the contract says so. `units.*` is untouched and still awaits story 1.8.
 
 ### DW-11: The contract's declarations are anchored only by a second copy in the tests.
 origin: spec-deferred 64fd53515ff2
@@ -431,6 +432,7 @@ source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
 severity: low
 reason: `template.gitlink`, `template.remote_url`, `template.worktree_clean` and `scaffold.template_ref` carry field path `scaffold`, which the contract declares no leaf for. `ownerFor` walks up and `buildAuthorityIndex`'s modal-namespace fallback answers `hermes-agent-template` -- correct today, because all eight declared `scaffold.*` paths are that owner's and the answer is unanimous rather than merely modal. It is still derived rather than declared, and a contract that moved enough `scaffold.*` paths elsewhere would flip it silently. Same class as the `agents.{agent_id}` gap story 1.2 recorded.
 status: open
+addressed (story 1.6, PJAN-108): Every per-agent scaffold observation now sits on a DECLARED leaf (`field: scaffold.hermes`, ...), so `authority.ownerOf` resolves `hermes-agent-template` directly rather than by the modal-namespace walk-up. The three fleet-scoped template facts (`template.gitlink`/`remote_url`/`worktree_clean`) and the new `scaffold.source` host finding still carry field `scaffold` and still resolve by walk-up; `scaffold.template_ref` is deleted (the observer answers it). What remains of this entry is those four fleet/host-scoped readings.
 
 ### DW-51: Provenance inherits the inventory's project-registry hard dependency.
 origin: spec-deferred story-1.3
@@ -455,6 +457,7 @@ source_spec: `spec-1-3-report-fleet-provenance-through-shared-cli-and-mcp.md`
 severity: low
 reason: The spec requires the flag on both commands so the two adapters share one option surface, and it is honoured -- it is threaded into `collectFleetInventory`, which provenance calls. But no provenance FACT reads the project registry, so the only observable effect of the flag is which file a NOT_FOUND names. An operator could reasonably expect it to change the answer. Either provenance grows a project-correlated fact (story 1.6 territory), or the flag's no-op nature is documented at the flag rather than only here.
 status: open
+note (story 1.6, PJAN-108): The project registry IS read by `fleet status` now, when the domain needs it: the scaffold observer's `render_inputs` name `projects.{slug}.ticket_provider.type`, resolved from the raw project store correlated by `project_path` then `repo`, so `--project-registry` changes what the sentinel prompt is rendered against. `fleet provenance` itself still reads no project fact; the flag's no-op there is unchanged.
 
 ### DW-54: The whole provenance suite, and the MCP fleet block, skip on any host without the operator's three live sources.
 origin: review-deferred story-1.3
@@ -537,6 +540,7 @@ severity: medium
 reason: `systemd`, `live_process` and the Bloodbank LIVENESS half of `bloodbank` are reported `unsupported` with a named reason and the story that owns them, because this story's Never list forbids implementing any of the three. Concretely: `systemd` carries the contract-derived expected unit names as evidence and observes nothing (story 1.8 owns canonical topology and service health); `live_process` observes nothing at all -- there is no `ps`, `pgrep` or `/proc` read anywhere in `src/` (story 1.9); `bloodbank` observes the stored routing RECORD and the strict activation flag, and reports routing readiness `unsupported` (story 1.10). The consequence a later story inherits: `health.complete` on this build is only ever about the domains that DO have an adapter, and three of the nine contribute a permanent `unsupported` to `totals.by_state` that no run can clear.
 status: open
 addressed: The three `unsupported` literals no longer authorize themselves. `health_policy.deferred_capabilities` in the tracked contract declares `systemd`/`unit_topology` (story 1.8), `live_process`/`process_attribution` (1.9) and `bloodbank`/`routing_liveness` (1.10), each with a reason and an owning story, and story 1.5's evaluator reports the same observations with `applicability: "deferred"`, `repair: "blocked"` and a `justification.policy` naming the entry. Remove an entry and the identical observation is reported unjustified and blocks `proven` -- pinned by a delta case in `tests/fleet-health-regressions.mjs`. The domains still have no observer; the gap is now authorized rather than assumed, and two more of the same kind (`scaffold.template_ref` for 1.6, `profile.render_generation` for 1.7) are declared beside them.
+addressed (story 1.6, PJAN-108): `template_scaffold` has a real observer. The `scaffold.template_ref` deferral is REMOVED from `health_policy.deferred_capabilities` and the provenance fact deleted: the scaffold observer compares every role directory against the template at the committed gitlink, so no recorded ref is needed. The three observer-less domains (`systemd`, `live_process`, Bloodbank liveness) and `profile.render_generation` remain declared deferrals for 1.8/1.9/1.10/1.7.
 
 ### DW-64: Thirty-four JSON-emitting `process.exit()` sites in src/index.ts are still unflushed.
 origin: spec-deferred story-1.4
@@ -571,6 +575,7 @@ reason: The declared precedence is `error > unobserved > unsupported > fail > wa
 status: documented, behaviour unchanged
 addressed: The review pass corrected every place that stated the one-line rule. `FLEET_STATUS_STATE_PRECEDENCE`'s doc comment now says the yield is PART of the rule and why (a statement about the build, not about the fleet); the README's precedence paragraph is a two-step list rather than a single ordering; and the spec's `## Design Notes` says the same. The array order is unchanged and `rollUp` still iterates it, so nothing behavioural moved -- the divergence is now impossible to read as an accident. What remains genuinely open is the underlying modelling question: whether `unsupported` should have been given a rank at all, or whether a domain with no adapter deserves a separate axis from a domain with an unread half.
 resolved (modelling question): The open half was "whether a domain with no adapter deserves a separate axis from a domain with an unread half". Story 1.5 answers yes and adds it: `applicability: "deferred"` beside `evidence: "absent"` IS that axis, so `unsupported` needs no different rank in `FLEET_STATUS_STATE_PRECEDENCE`. The array order and `rollUp`'s behaviour are untouched.
+note (story 1.6, PJAN-108): The domain that motivated the step-aside no longer carries a permanent `unsupported`: `template_scaffold` now has eight real observations per agent from the scaffold observer and no `scaffold.template_ref` placeholder. `rollUp` and the precedence constant are untouched; the yield still matters for `live_process`, `systemd` and the Bloodbank liveness half.
 
 ### DW-68: A domain rollup can read `unobserved` while a real failure sits underneath it.
 origin: spec-deferred story-1.4
@@ -628,6 +633,7 @@ source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
 severity: medium
 reason: `template.gitlink`, `template.remote_url` and `template.worktree_clean` are read out of `resolvePjanglerRoot()/templates/hermes-agent` -- the running build's own checkout. MEASURED while building story 1.5's suite: the same submodule reads clean through this repository's git and DIRTY through a probe, because `probeEnv` strips `GIT_CONFIG_GLOBAL` and `git status --porcelain` then reports untracked files a global excludes file had been hiding. So a fleet-scoped `fail` can be produced by the operator's editor droppings rather than by anything about the fleet. The suite works around it by building its own package root with its own committed template submodule; the command has no such option. Either the fact set should be scoped to what is TRACKED (`git status --porcelain --untracked-files=no`), or the probe should stop stripping the global config, and both are decisions about what "clean" means for a pinned template.
 status: open
+decision (story 1.6, PJAN-108): The observer's dirt definition is TRACKED CHANGES ONLY. `collectScaffoldParity` reads the template worktree with `git status --porcelain --untracked-files=no`, so the untracked files a stripped `GIT_CONFIG_GLOBAL` un-hides are not `source-dirty`; a modified tracked file is, and a worktree at the wrong commit is `source-mismatched`. Both are integrity ERRORS that mark every agent incomplete, never a change to a desired byte -- desired bytes come from the objects at the committed gitlink regardless. The provenance fact `template.worktree_clean` keeps its wider definition and is unchanged; the two now deliberately answer different questions.
 
 ### DW-75: a contradiction is detected per FIELD PATH, which is coarser than per thing.
 origin: review-deferred story-1.5
@@ -739,4 +745,28 @@ location: package.json (test:coverage)
 source_spec: `spec-1-5-make-partial-health-truthful-and-actionable.md`
 severity: low
 reason: MEASURED at this review pass: node::OOMErrorHandler / Aborted (core dumped) partway through the 67-suite sweep, with 38 GB of system memory free -- it is the V8 heap, not the machine. c8 accumulates coverage JSON for every suite in one parent process. With --max-old-space-size=12288 it completes in 383 s at 88.04% lines and the ratchet exits 0. The numbers are fine; the runner is not, and the first person it blocks will read the abort as a test failure. Recorded as DW-81.
+status: open
+
+### DW-87: The recipe rule compares scaffold bytes exactly but its migration still normalises CRLF on write.
+origin: spec-deferred story-1.6
+location: src/parity/rules.ts (hermes.pm-scaffold audit vs migrate) / src/scaffold/compare.ts
+source_spec: `spec-1-6-audit-tracked-pm-scaffold-parity-fleet-wide.md`
+severity: low
+reason: Story 1.6 moved the `hermes.pm-scaffold` audit onto the shared pure core (`compareAssets`, blob ids over raw bytes) while leaving `migrate` untouched, as the story's Block If required. `migrate` still reads template sources through `readText`, which folds CRLF to LF before writing. Every asset in the template today is LF, so audit and migrate agree; a template file committed with CRLF would be written LF by migrate and then read as stale by the audit forever. Story 1.15's fanout, which writes bytes from git objects, is where the write side should become byte-exact; the rule's migrate should follow it rather than grow a third definition of "the same bytes".
+status: open
+
+### DW-88: `scaffold-rule-disagreement` cannot fire while the template source is broken.
+origin: spec-deferred story-1.6
+location: src/fleet/status.ts (scaffoldRuleVerdict / scaffoldObserverDrift)
+source_spec: `spec-1-6-audit-tracked-pm-scaffold-parity-fleet-wide.md`
+severity: low
+reason: When source integrity is not `ok`, every observer group is `error` with no items, so `scaffoldObserverDrift` returns null and the agent is counted `rule_agreement.not_compared` rather than compared against the rule. The `scaffold.source` host error is present, as AC5 requires, but a rule `pass` read off a mismatched worktree is not reported as a disagreement in that run -- only in the next run after the source is repaired. Comparing from the gitlink's objects while the worktree is mismatched would close this and is deliberately not done: the story's matrix says every group is `error` when the source is not canonical, and reading objects behind an error would blur the line the integrity code draws.
+status: open
+
+### DW-89: The scaffold observer's `role-entries-exceeded` and lineage-unobserved paths are unexercised.
+origin: spec-deferred story-1.6
+location: src/fleet/scaffold.ts (scanAgent, resolveLineage) / tests/fleet-scaffold-regressions.mjs
+source_spec: `spec-1-6-audit-tracked-pm-scaffold-parity-fleet-wide.md`
+severity: low
+reason: `SCAFFOLD_MAX_ROLE_ENTRIES` (5000) turns a role directory with more tracked or dirty entries into an agent-level `incomplete`, and a failed `cat-file --batch-check`/`log` during lineage resolution downgrades every stale/locally-modified item to `incomplete: lineage-unobserved` rather than guessing. Neither branch is driven by a case: the first needs a five-thousand-file role and the second a git that fails only on the lineage call. Both fail SAFE (incomplete, never a pass), which is why they ship; a PATH shim that fails `cat-file --batch-check` alone would make the second real.
 status: open

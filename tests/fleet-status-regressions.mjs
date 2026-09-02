@@ -58,7 +58,7 @@ const DOMAINS = [
 const AUDIT_FED = ["template_scaffold", "project_binding", "profile", "runtime"];
 const DATA_KEYS = [
   "contract_path", "contract_version", "scope",
-  "totals", "health", "agents", "domains", "host", "findings", "probes", "truncated",
+  "totals", "health", "agents", "domains", "host", "findings", "probes", "scaffold", "truncated",
 ];
 /** Mirrors FLEET_STATUS_MAX_AGENTS / _MAX_OBSERVATIONS_PER_AGENT in src/fleet/types.ts. */
 const MAX_AGENTS = 500;
@@ -159,10 +159,68 @@ function git(cwd, args) {
   });
 }
 
-/** A real repository with one commit, a role scaffold, and a `.project.json`. */
+/**
+ * The tracked template at the COMMITTED gitlink, read once through git objects.
+ *
+ * Story 1.6's scaffold observer compares every managed role directory against
+ * this tree, so a synthetic role that carries only `role.yaml` now reads as 51
+ * missing assets -- and the story's rule is to fix the FIXTURE, never to weaken
+ * the observer. The bytes are read with `git show <gitlink>:<path>` as buffers,
+ * never from the submodule worktree, for the same reason the observer does.
+ */
+const PINNED_TEMPLATE = (() => {
+  const submodule = join(ROOT, "templates", "hermes-agent");
+  const staged = git(ROOT, ["ls-tree", "HEAD", "--", "templates/hermes-agent"]).stdout;
+  const gitlink = /([0-9a-f]{40})/u.exec(staged)?.[1];
+  if (!gitlink) return null;
+  const listed = spawnSync("git", ["ls-tree", "-r", "-z", gitlink, "--", "template"], {
+    cwd: submodule, encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+  });
+  if (listed.status !== 0) return null;
+  const files = [];
+  for (const entry of listed.stdout.split("\u0000").filter(Boolean)) {
+    const match = /^(\d{6}) blob ([0-9a-f]{40})\t(.+)$/su.exec(entry);
+    if (!match) continue;
+    const [, mode, , path] = match;
+    const bytes = spawnSync("git", ["show", `${gitlink}:${path}`], { cwd: submodule, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }).stdout;
+    files.push({ mode, path: path.slice("template/".length), bytes });
+  }
+  return { gitlink, files };
+})();
+
+/**
+ * Render the pinned template into a role directory: the five simple
+ * substitutions the manifest declares, `.jinja` stripped, presence-only files
+ * written as-is, modes from the tree. Written as the fanout would write it, so
+ * the observer reads a clean scaffold and every 1.4/1.5 case keeps the
+ * `template_scaffold` state it was written against.
+ */
+function renderPinnedRole(roleDir, inputs) {
+  assert.ok(PINNED_TEMPLATE, "the tracked template must be readable at its committed gitlink for the fixture to be scaffold-clean");
+  const presenceOnly = new Set(["role.yaml", "SOUL.md"]);
+  for (const file of PINNED_TEMPLATE.files) {
+    const rendered = file.path.endsWith(".jinja");
+    const target = rendered ? file.path.slice(0, -".jinja".length) : file.path;
+    let bytes = file.bytes;
+    if (rendered && !presenceOnly.has(target)) {
+      const text = bytes.toString("utf8").replace(/\{\{\s*([a-z_]+)\s*\}\}/gu, (whole, name) => (name in inputs ? inputs[name] : whole));
+      bytes = Buffer.from(text, "utf8");
+    }
+    const full = join(roleDir, ...target.split("/"));
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, bytes);
+    chmodSync(full, file.mode === "100755" ? 0o755 : 0o644);
+  }
+}
+
+/** A real repository with one commit, a role scaffold rendered from the pinned template, and a `.project.json`. */
 function makeRepo(slug) {
   const dir = join(reposRoot, slug);
   mkdirSync(join(dir, "agents", "hermes", "pm"), { recursive: true });
+  renderPinnedRole(join(dir, "agents", "hermes", "pm"), {
+    agent_id: `${slug}-pm`, role: "pm", target_repo: slug, display_name: `${slug} PM`, ticket_provider: "plane",
+  });
   writeFileSync(join(dir, "agents", "hermes", "pm", "role.yaml"), "role: pm\n", "utf8");
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify({
     project_slug: slug,
@@ -1633,7 +1691,12 @@ process.exit(0);
       { PJ_FLEET_CLI_ENTRY: shim },
     ));
     assert.ok(invocationsOf(shim).length > 0, "the fixture requires the audit child to have actually run");
-    assert.equal(data.host.length, 0, "no host finding belongs to the selected domain in this fixture");
+    // Story 1.6 added ONE host finding of its own to this domain: the scaffold
+    // source's integrity (`scaffold.source`), filed once for the machine's
+    // checkout of the template. No AUDIT host rule belongs to the selected
+    // domain in this fixture, which is what this case is about.
+    assert.deepEqual(data.host.map((finding) => finding.rule_id), ["scaffold.source"], "no audit host rule belongs to the selected domain in this fixture");
+    assert.equal(data.host[0].state, "pass", "the tracked template must be a canonical source for this suite");
     const dropped = data.findings.filter((finding) => finding.code === "audit-host-rules-not-reported");
     assert.equal(dropped.length, 1, `the dropped host rule must be named exactly once, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
     assert.match(dropped[0].detail, /hermes\.profile-wiring/u, "the finding must name the rule");
@@ -1642,6 +1705,32 @@ process.exit(0);
     // across repositories; this finding fires on the first one, so naming its
     // state would re-introduce the first-wins mask a previous pass removed.
     assert.equal(/\b(pass|fail|warn|skip)\b/u.test(dropped[0].detail), false, `the detail must claim no state: ${dropped[0].detail}`);
+  });
+
+  check("--domain registry spawns zero scaffold probes, and template_scaffold spawns one per selected role", () => {
+    // Story 1.6 (PJAN-108). The scaffold observer is gated on its domain exactly
+    // as the provenance families are: a filter that read every role directory
+    // and then hid the result would not be a filter.
+    const registry = status(cli(["fleet", "status", "--domain", "registry", "--json"]));
+    assert.deepEqual(registry.probes.filter((probe) => probe.kind === "scaffold"), [], "--domain registry must spawn no scaffold probe");
+    assert.equal(registry.scaffold, null, "data.scaffold is null when the domain was not selected, and the key is still present");
+    for (const agent of registry.agents) assert.equal(agent.scaffold, null, `${agent.agent_id}.scaffold must be null when the domain was not selected`);
+
+    const scaffold = status(cli(["fleet", "status", "--domain", "template_scaffold", "--json"]));
+    const probes = scaffold.probes.filter((probe) => probe.kind === "scaffold");
+    // One per selected role directory plus one for the template source.
+    assert.equal(probes.length, BASE_SLUGS.length + 1, `expected ${BASE_SLUGS.length + 1} scaffold probes, got ${JSON.stringify(probes.map((p) => p.target))}`);
+    assert.ok(scaffold.scaffold, "data.scaffold must be present when the domain is selected");
+    assert.equal(scaffold.scaffold.source.integrity, "ok", `the tracked template must be a canonical source for this suite: ${JSON.stringify(scaffold.scaffold.source)}`);
+    // THE FIXTURE IS SCAFFOLD-CLEAN. Every synthetic role is rendered from the
+    // pinned template, so the observer's eight groups read `pass` and the
+    // 1.4/1.5 cases above keep the rollups they were written against.
+    assert.equal(scaffold.scaffold.agents.passing, BASE_SLUGS.length, `every synthetic role must match the pinned template: ${JSON.stringify(scaffold.scaffold.agents)}`);
+    for (const agent of scaffold.agents) {
+      assert.ok(agent.scaffold, `${agent.agent_id} must carry a scaffold summary`);
+      assert.equal(agent.scaffold.assets.drifted, 0, `${agent.agent_id} must be scaffold-clean`);
+      assert.equal(agent.scaffold.role_dir_source, "registry");
+    }
   });
 
   check("a domain filter constrains which probe FAMILY runs, not just which agent", () => {

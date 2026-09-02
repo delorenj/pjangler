@@ -12,7 +12,11 @@
 #   agents.*      Hermes agent registry, per-agent rows
 #   gateways.*    Hermes agent registry, fleet-shared gateway block
 #   profiles.*    generated Hermes profile tree
-#   scaffold.*    tracked per-agent role scaffold
+#   scaffold.*    tracked per-agent role scaffold. Each leaf is mapped to the
+#                 role-relative path it owns by `scaffold_manifest.groups`, so
+#                 `scaffold.gitignore` means `.gitignore` and
+#                 `scaffold.sentinel.prompt.md` means `.scripts/sentinel.prompt.md`
+#                 -- the leaves name owned asset GROUPS, not store keys.
 #   units.*       systemd user units
 #   processes.*   observed Hermes processes (read-only)
 #
@@ -24,12 +28,12 @@
 # rather than be rejected as an unknown key, because rejecting it would hide the
 # very drift this contract exists to name.
 
-schema_version: 2
-contract_version: 1.1.0
+schema_version: 3
+contract_version: 1.2.0
 
 compatibility:
   min_schema_version: 1
-  max_schema_version: 2
+  max_schema_version: 3
 
 x-delonet/provenance:
   assessment: fleet-convergence-live-assessment-2026-08-31
@@ -393,13 +397,6 @@ health_policy:
         can dispatch to it is not. Routing readiness is a separate authority
         from the record and must never be inferred from it.
       owner_story: "1.10"
-    - domain: template_scaffold
-      capability: scaffold.template_ref
-      reason: >-
-        A deployed role scaffold records no template ref, so there is no
-        recorded value on this host to compare against the pinned gitlink and
-        none may be invented.
-      owner_story: "1.6"
     - domain: release_provenance
       capability: profile.render_generation
       reason: >-
@@ -458,6 +455,80 @@ health_policy:
     - field: agents.{agent_id}.provisioned_at
       max_age_days: 365
       applies_to: registry
+
+  # An operator's ruling on ONE agent's drift in ONE domain. The drifted
+  # observation is still reported and still `fail`; what changes is that the
+  # agent is counted `exception` rather than `unhealthy`, exactly as a permitted
+  # identity conflict is. Ships empty on purpose: a ruling is written here when
+  # it is made, never inferred.
+  agent_exceptions: []
+
+# What a deployed role directory SHOULD contain, as POLICY about the tracked
+# template rather than a copy of it.
+#
+# The bytes come from git at the gitlink the parent repository has COMMITTED for
+# `template_submodule` -- never from the submodule worktree, never from a
+# sibling clone, never from a branch tip. This block says how to read that
+# tree: which subdirectory holds the rendered files, how a rendered file is
+# named, which registry fields feed each simple `{{ name }}` placeholder, which
+# `scaffold.*` writable leaf owns each role-relative path, which assets are
+# compared for presence only (and why), what must never appear in the tree,
+# and which role-local directory is ignored runtime state nobody owns.
+scaffold_manifest:
+  template_submodule: templates/hermes-agent
+  template_subdirectory: template
+  render_suffix: .jinja
+  # Placeholder name -> the field that feeds it. Only simple substitution is
+  # rendered; a template that needs control flow or a filter in a
+  # content-compared asset is `incomplete`, never rendered "as best it can".
+  render_inputs:
+    agent_id: agents.{agent_id}
+    role: agents.{agent_id}.role
+    target_repo: agents.{agent_id}.repo
+    display_name: agents.{agent_id}.display_name
+    ticket_provider: projects.{slug}.ticket_provider.type
+  # Declared leaf -> the role-relative path it owns. A trailing `/` owns a
+  # directory; longest prefix wins, so the rendered sentinel prompt inside the
+  # verbatim `.scripts/` tree has its own leaf. Every key is a writable field of
+  # `authorities.tracked_role_scaffold`, which is what makes those eight leaves
+  # real paths rather than invented ones.
+  groups:
+    scaffold.role.yaml: role.yaml
+    scaffold.SOUL.md: SOUL.md
+    scaffold.hermes: hermes
+    scaffold.momo: momo
+    scaffold.sentinel.prompt.md: .scripts/sentinel.prompt.md
+    scaffold.gitignore: .gitignore
+    scaffold.scripts: .scripts/
+    scaffold.runtime-scaffold: .runtime-scaffold/
+  # Compared for type and mode only. Policy, with a reason each, never a
+  # shortcut: any OTHER control-flow template is reported incomplete.
+  presence_only:
+    - path: role.yaml
+      reason: >-
+        Rendered with strftime and rewritten by deployment state (verified
+        channel identities, operator choices); Copier itself skips it when it
+        exists.
+    - path: SOUL.md
+      reason: >-
+        The operator's persona for the agent. The fanout writes it only when
+        absent, so its content is the operator's, not the template's.
+  # Never allowed in the tree at the gitlink. Matching a tracked file in a role
+  # directory makes it `unexpected-owned`; matching a template path makes the
+  # source `source-contaminated`.
+  excluded_patterns:
+    - "__pycache__/"
+    - "*.pyc"
+    - "*.pyo"
+    - "*.log"
+    - ".done-*"
+    - ".last-run"
+    - ".provision.log"
+    - ".plane-project-id"
+    - ".DS_Store"
+  # Ignored role-local runtime. Never compared, never named, never proposed
+  # for deletion; owned by nobody.
+  runtime_dir: runtime
 
 activation:
   states:

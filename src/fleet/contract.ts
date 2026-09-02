@@ -20,6 +20,7 @@ import {
   FLEET_CONTRACT_OPTIONAL_ROOT_KEYS,
   FLEET_CONTRACT_ROOT_KEYS,
   FLEET_EXTENSION_PREFIX,
+  FLEET_HEALTH_POLICY_AGENT_EXCEPTION_KEYS,
   FLEET_HEALTH_POLICY_DEFERRED_KEYS,
   FLEET_HEALTH_POLICY_FRESHNESS_KEYS,
   FLEET_HEALTH_POLICY_KEYS,
@@ -31,6 +32,8 @@ import {
   FLEET_PROJECTION_KEYS,
   FLEET_RETIRED_IDS,
   FLEET_RETIRED_KEYS,
+  FLEET_SCAFFOLD_MANIFEST_KEYS,
+  FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS,
   FLEET_STATUS_DOMAINS,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
   FleetError,
@@ -38,6 +41,7 @@ import {
   type FleetDiagnostic,
   type FleetExtension,
 } from "./types";
+import { groupFor } from "../scaffold/compare";
 
 /** Name of the tracked contract, relative to the package root. */
 export const FLEET_CONTRACT_RELATIVE_PATH = join("contracts", "fleet-contract.yaml");
@@ -249,6 +253,7 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
     () => sortDiagnostics(validateClassifications(policy as unknown as FleetContract)),
     () => sortDiagnostics(validateRetiredModes(policy as unknown as FleetContract)),
     () => sortDiagnostics(validateHealthPolicy(policy)),
+    () => sortDiagnostics(validateScaffoldManifest(policy)),
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -933,6 +938,166 @@ function validateHealthPolicy(policy: Record<string, unknown>): FleetDiagnostic[
         // consecutive runs.
         if (!Number.isSafeInteger(age) || Number(age) <= 0) fail(`${at}.max_age_days`, "max_age_days must be a positive whole number of days");
         requireDomain(entry.applies_to, `${at}.applies_to`);
+      });
+    }
+  }
+
+  const exceptions = block.agent_exceptions;
+  if (exceptions !== undefined) {
+    if (!Array.isArray(exceptions)) fail("health_policy.agent_exceptions", "agent_exceptions must be a list");
+    else {
+      const seen = new Set<string>();
+      exceptions.forEach((entry: unknown, index: number) => {
+        const at = `health_policy.agent_exceptions[${index}]`;
+        if (!isRecord(entry)) { fail(at, "agent exception must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_HEALTH_POLICY_AGENT_EXCEPTION_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown agent_exceptions key");
+        }
+        requireDomain(entry.domain, `${at}.domain`);
+        // An agent id is one registry KEY: a safe single token, never a path,
+        // never blank. A ruling on a blank id would match nothing and look
+        // like it ruled on everything.
+        if (typeof entry.agent_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(entry.agent_id)) {
+          fail(`${at}.agent_id`, "agent_id must be a registry key: letters, digits, dots, underscores or hyphens");
+        }
+        for (const key of ["reason", "owner"] as const) {
+          const value = entry[key];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key}`, `${key} must be a non-empty string`);
+        }
+        // `\u0000` as an ESCAPE, never a literal NUL byte (see validateRetiredModes).
+        const key = `${String(entry.domain)}\u0000${String(entry.agent_id)}`;
+        if (seen.has(key)) fail(at, "duplicate agent exception: the same domain and agent_id is already ruled on");
+        seen.add(key);
+      });
+    }
+  }
+
+  return findings;
+}
+
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const RENDER_INPUT_NAME = /^[a-z_][a-z0-9_]*$/u;
+
+/** A relative path that stays inside the tree it is relative to: no leading `/`, no `.`/`..` segment, no blank segment. */
+function relativeInside(value: unknown): value is string {
+  if (typeof value !== "string" || value === "" || value.startsWith("/") || value.includes("\\")) return false;
+  const segments = value.replace(/\/+$/u, "").split("/");
+  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+/**
+ * Validate the optional `scaffold_manifest` block (schema 3).
+ *
+ * OPTIONAL: a schema-1/2 contract carries none and still loads; the scaffold
+ * observer then reports every agent `unsupported` with capability
+ * `scaffold.manifest`. What it may not do is carry a manifest that points at
+ * nothing: a group key no authority declares writable (then `authority.ownerOf`
+ * would resolve nobody for a real observation), a presence-only path that
+ * resolves to no group, a render input fed by a field no authority writes, a
+ * pattern list that would exclude everything. A manifest that matches nothing
+ * must fail to load rather than compare nothing and report it as parity.
+ *
+ * Runs after `validateHealthPolicy`, for the same reason that stage runs after
+ * the structural ones: everything here is expressed in terms of authorities the
+ * earlier stages have proven well formed.
+ */
+function validateScaffoldManifest(policy: Record<string, unknown>): FleetDiagnostic[] {
+  const block = policy.scaffold_manifest;
+  if (block === undefined) return [];
+
+  const findings: FleetDiagnostic[] = [];
+  const fail = (path: string, message: string): void => { findings.push({ code: "INVALID_INPUT", path, message }); };
+  if (!isRecord(block)) {
+    fail("scaffold_manifest", "scaffold_manifest must be a mapping");
+    return findings;
+  }
+  for (const key of Object.keys(block)) {
+    if (!(FLEET_SCAFFOLD_MANIFEST_KEYS as readonly string[]).includes(key)) fail(`scaffold_manifest.${key}`, "unknown scaffold_manifest key");
+  }
+  for (const key of ["template_submodule", "template_subdirectory"] as const) {
+    if (!relativeInside(block[key]) || (block[key] as string).endsWith("/")) fail(`scaffold_manifest.${key}`, `${key} must be a relative path inside the repository`);
+  }
+  const suffix = block.render_suffix;
+  if (typeof suffix !== "string" || !/^\.[A-Za-z0-9]+$/u.test(suffix)) fail("scaffold_manifest.render_suffix", "render_suffix must be a dotted extension such as .jinja");
+  const runtimeDir = block.runtime_dir;
+  if (typeof runtimeDir !== "string" || !SAFE_SEGMENT.test(runtimeDir)) fail("scaffold_manifest.runtime_dir", "runtime_dir must be one safe path segment");
+
+  // Every field a render input names has to be one some authority declares
+  // writable, under one of the two roots the observer can resolve. A render
+  // input fed by nothing would make every rendered asset `incomplete` forever
+  // and read as though the template needed something the registry lacks.
+  const declaredFields = new Set<string>();
+  const authorities = policy.authorities;
+  if (isRecord(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field of entry.writable_fields) if (typeof field === "string") declaredFields.add(field);
+    }
+  }
+  const inputs = block.render_inputs;
+  if (!isRecord(inputs)) fail("scaffold_manifest.render_inputs", "render_inputs must be a mapping of placeholder name to field path");
+  else {
+    for (const [name, field] of Object.entries(inputs)) {
+      const at = `scaffold_manifest.render_inputs.${name}`;
+      if (!RENDER_INPUT_NAME.test(name)) fail(at, "a render input name must be a lower-case identifier");
+      if (typeof field !== "string" || !FIELD_PATH.test(field)) { fail(at, "must be a dotted field path"); continue; }
+      const resolvable = field === "agents.{agent_id}"
+        || ((field.startsWith("agents.{agent_id}.") || field.startsWith("projects.{slug}.")) && declaredFields.has(field));
+      if (!resolvable) fail(at, `${field} is not agents.{agent_id} or a declared agents.{agent_id}.* / projects.{slug}.* writable field`);
+    }
+  }
+
+  const groups = block.groups;
+  const groupTable: Record<string, string> = {};
+  if (!isRecord(groups) || Object.keys(groups).length === 0) fail("scaffold_manifest.groups", "groups must be a non-empty mapping of declared leaf to role-relative path");
+  else {
+    const seenPaths = new Map<string, string>();
+    for (const [leaf, rolePath] of Object.entries(groups)) {
+      const at = `scaffold_manifest.groups.${leaf}`;
+      // The key IS a contract leaf: it must be a field some authority declares
+      // writable, or an observation filed under it would resolve no owner.
+      if (!declaredFields.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+      if (!relativeInside(rolePath)) { fail(at, "must be a role-relative path; a trailing / owns a directory"); continue; }
+      const previous = seenPaths.get(rolePath);
+      if (previous !== undefined) fail(at, `duplicate group path ${rolePath}, already owned by ${previous}`);
+      else seenPaths.set(rolePath, leaf);
+      groupTable[leaf] = rolePath;
+    }
+  }
+
+  const presence = block.presence_only;
+  if (presence !== undefined) {
+    if (!Array.isArray(presence)) fail("scaffold_manifest.presence_only", "presence_only must be a list");
+    else {
+      const seen = new Set<string>();
+      presence.forEach((entry: unknown, index: number) => {
+        const at = `scaffold_manifest.presence_only[${index}]`;
+        if (!isRecord(entry)) { fail(at, "presence_only entry must be a mapping"); return; }
+        for (const key of Object.keys(entry)) {
+          if (!(FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS as readonly string[]).includes(key)) fail(`${at}.${key}`, "unknown presence_only key");
+        }
+        const path = entry.path;
+        if (!relativeInside(path) || path.endsWith("/")) fail(`${at}.path`, "path must be a role-relative file path");
+        else if (Object.keys(groupTable).length > 0 && groupFor(path, groupTable) === null) fail(`${at}.path`, `${path} resolves to no declared group`);
+        else if (seen.has(path)) fail(`${at}.path`, `duplicate presence_only path ${path}`);
+        else seen.add(path);
+        // A presence-only asset is a decision not to compare content, and a
+        // decision needs a reason an operator can read.
+        if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) fail(`${at}.reason`, "reason must be a non-empty string");
+      });
+    }
+  }
+
+  const excluded = block.excluded_patterns;
+  if (excluded !== undefined) {
+    if (!Array.isArray(excluded)) fail("scaffold_manifest.excluded_patterns", "excluded_patterns must be a list");
+    else {
+      excluded.forEach((pattern: unknown, index: number) => {
+        const at = `scaffold_manifest.excluded_patterns[${index}]`;
+        if (typeof pattern !== "string" || pattern.trim() === "" || pattern === "/" || pattern.startsWith("/")) { fail(at, "an excluded pattern must be a non-empty segment glob"); return; }
+        // `*` alone would exclude every path and read a real template as
+        // contaminated on its first file; `**` is not a segment glob.
+        if (/^\*+\/?$/u.test(pattern) || pattern.includes("**")) fail(at, "an excluded pattern may not match every segment");
       });
     }
   }

@@ -63,6 +63,7 @@ import {
   type FleetClassificationId,
   type FleetContract,
   type FleetHealthPolicy,
+  type FleetHealthPolicyAgentException,
   type FleetHealthPolicyAllowedSkip,
   type FleetHealthPolicyAllowedWarning,
   type FleetHealthPolicyDeferredCapability,
@@ -106,6 +107,8 @@ export interface FleetHealthPolicyView {
   warnings: ReadonlyArray<{ path: string; entry: FleetHealthPolicyAllowedWarning }>;
   skips: ReadonlyArray<{ path: string; entry: FleetHealthPolicyAllowedSkip }>;
   freshness: ReadonlyArray<{ path: string; entry: FleetHealthPolicyFreshness }>;
+  /** Operator rulings on one agent's drift in one domain. Story 1.6. */
+  agentExceptions: ReadonlyArray<{ path: string; entry: FleetHealthPolicyAgentException }>;
 }
 
 function list<T>(value: unknown): T[] {
@@ -124,7 +127,7 @@ function list<T>(value: unknown): T[] {
 export function readHealthPolicy(contract: Pick<FleetContract, "health_policy">): FleetHealthPolicyView {
   const block: FleetHealthPolicy | undefined = contract.health_policy;
   if (!block) {
-    return { declared: false, requiredDomains: new Set(), deferred: [], warnings: [], skips: [], freshness: [] };
+    return { declared: false, requiredDomains: new Set(), deferred: [], warnings: [], skips: [], freshness: [], agentExceptions: [] };
   }
   return {
     declared: true,
@@ -137,6 +140,8 @@ export function readHealthPolicy(contract: Pick<FleetContract, "health_policy">)
       .map((entry, index) => ({ path: `health_policy.allowed_skips[${index}]`, entry })),
     freshness: list<FleetHealthPolicyFreshness>(block.freshness)
       .map((entry, index) => ({ path: `health_policy.freshness[${index}]`, entry })),
+    agentExceptions: list<FleetHealthPolicyAgentException>(block.agent_exceptions)
+      .map((entry, index) => ({ path: `health_policy.agent_exceptions[${index}]`, entry })),
   };
 }
 
@@ -218,6 +223,12 @@ export interface FleetHealthObservationInput {
   /** The `classifications.intentionally_unmanaged` entry covering this, if any. */
   exceptionId: string | null;
   exceptionReason: string | null;
+  /**
+   * The contract path of the exception entry, when it is NOT an
+   * `intentionally_unmanaged` classification: a `health_policy.agent_exceptions[i]`
+   * ruling names its own path here. Null keeps the classification default.
+   */
+  exceptionPolicy?: string | null;
   freshness: FleetStatusFreshness;
   /** The repository a `pjangler migrate` invocation would name, home-redacted. */
   repo: string | null;
@@ -252,6 +263,8 @@ const SOURCE_EVIDENCE: Readonly<Record<string, FleetStatusEvidence>> = Object.fr
   "fleet-inventory": "direct",
   "fleet-provenance": "direct",
   "recipe-audit": "direct",
+  // The scaffold observer reads git objects and role directories itself.
+  "fleet-scaffold": "direct",
   "declared-gap": "absent",
 });
 
@@ -268,7 +281,7 @@ const UNREAD_STATES: ReadonlySet<FleetStatusState> = new Set<FleetStatusState>([
  * severity, or the absence of other findings.
  */
 export function resolveJustification(
-  input: Pick<FleetHealthObservationInput, "domain" | "state" | "ruleId" | "capability" | "exceptionId" | "exceptionReason">,
+  input: Pick<FleetHealthObservationInput, "domain" | "state" | "ruleId" | "capability" | "exceptionId" | "exceptionReason" | "exceptionPolicy">,
   policy: FleetHealthPolicyView,
 ): FleetStatusJustification | null {
   if (input.state === "unsupported") {
@@ -286,9 +299,15 @@ export function resolveJustification(
     }
   }
   if (input.exceptionId !== null) {
+    // The POLICY PATH comes from the entry, not from a literal: an operator
+    // ruling under `health_policy.agent_exceptions` (story 1.6) names its own
+    // path, and only the identity-conflict rulings keep the
+    // `intentionally_unmanaged` default. An operator opens the contract at
+    // this path, so it has to be where the ruling actually lives.
+    const policyPath = input.exceptionPolicy ?? `classifications.intentionally_unmanaged.entries.${bounded(input.exceptionId, 128)}`;
     return {
       kind: "exception",
-      policy: `classifications.intentionally_unmanaged.entries.${bounded(input.exceptionId, 128)}`,
+      policy: bounded(policyPath),
       reason: bounded(input.exceptionReason ?? "a managed exception the contract records for exactly these participants"),
       owner: null,
     };

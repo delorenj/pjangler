@@ -142,9 +142,33 @@ export interface FleetCaptureResult extends FleetProbeResult {
   overflow: boolean;
 }
 
+/** A bounded child's stdout as BYTES. `probeRaw` returns this; `probe` decodes and trims. */
+export interface FleetRawProbeResult {
+  outcome: FleetProbeOutcome;
+  /** Untrimmed stdout bytes on `ok`, null on every other outcome. Never stderr. */
+  value: Buffer | null;
+}
+
 interface BoundedChildOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Bytes to feed the child on stdin, after which stdin is closed.
+   *
+   * `git cat-file --batch` and `--batch-check` read their object list from
+   * stdin, and one such child over N ids is what keeps a lineage lookup at one
+   * spawn rather than one per blob. Absent, stdin is `ignore` exactly as before.
+   */
+  input?: string | Uint8Array;
+  /**
+   * Keep stdout as raw bytes: no `setEncoding`, no `trim`.
+   *
+   * A blob read through `cat-file --batch` is followed by a newline git adds
+   * and may itself end in whitespace; `trim()` would corrupt it, and a UTF-8
+   * decode would corrupt any blob that is not UTF-8. The text path is unchanged
+   * for every existing caller.
+   */
+  raw?: boolean;
   /**
    * Keep stdout when the child exits nonzero.
    *
@@ -244,6 +268,26 @@ export async function probe(ctx: FleetRunContext, argv: readonly string[], cwd?:
 }
 
 /**
+ * `probe`, for a child whose stdout is BYTES and which may need stdin.
+ *
+ * Same budget, same kill rules, same byte cap, same argv-only spawn. The two
+ * differences are the ones `cat-file --batch` forces: the output is neither
+ * decoded nor trimmed, and `input` is written to the child's stdin and then
+ * closed. Nothing else in this module reads a blob, so nothing else needs it.
+ */
+export async function probeRaw(
+  ctx: FleetRunContext,
+  argv: readonly string[],
+  cwd?: string,
+  input?: string | Uint8Array,
+): Promise<FleetRawProbeResult> {
+  const [command, ...args] = argv;
+  if (!command) return { outcome: "failed", value: null };
+  const { outcome, bytes } = await runBoundedChild(ctx, command, args, { cwd, input, raw: true });
+  return { outcome, value: outcome === "ok" ? bytes : null };
+}
+
+/**
  * Run one bounded child of THIS BUILD and keep its stdout whatever it exits with.
  *
  * `process.execPath` is the one deliberate absolute-path spawn in this module.
@@ -271,13 +315,18 @@ export function captureSelf(
   return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env, timeoutMs, keepStdoutOnFailure: true });
 }
 
+/** `FleetCaptureResult` plus the undecoded bytes, for the one caller that wants them. */
+interface BoundedChildResult extends FleetCaptureResult {
+  bytes: Buffer | null;
+}
+
 function runBoundedChild(
   ctx: FleetRunContext,
   command: string,
   args: readonly string[],
   options: BoundedChildOptions = {},
-): Promise<FleetCaptureResult> {
-  const { cwd, env, keepStdoutOnFailure = false, timeoutMs } = options;
+): Promise<BoundedChildResult> {
+  const { cwd, env, keepStdoutOnFailure = false, timeoutMs, input, raw = false } = options;
   // Checked BEFORE the spawn, so a cancelled or expired run never starts one
   // more child. `remainingMs` throws TIMEOUT and CANCELLED; both are command
   // failures and must escape rather than become a probe outcome.
@@ -287,12 +336,15 @@ function runBoundedChild(
   // outlive the deadline the operator gave the command.
   const budget = Math.min(timeoutMs ?? ctx.probeTimeoutMs, remainingMs(ctx));
 
-  return new Promise<FleetCaptureResult>((settle) => {
+  return new Promise<BoundedChildResult>((settle) => {
     let child;
     try {
       child = spawn(command, [...args], {
         cwd,
-        stdio: ["ignore", "pipe", "ignore"],
+        // stdin is `ignore` unless a caller has bytes to feed it: a child that
+        // could wait on a terminal it never gets is a child the timeout has to
+        // kill, and nothing here should need killing to finish.
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
         // Its own process GROUP, so `kill` below can reach the whole tree.
         // Measured: a shim that is `#!/bin/sh ... sleep 60` puts the sleep under
         // the sh. SIGKILLing the sh alone leaves the sleep holding the write end
@@ -308,14 +360,19 @@ function runBoundedChild(
         env: env ?? probeEnv(),
       });
     } catch {
-      settle({ outcome: "failed", value: null, code: null, overflow: false });
+      settle({ outcome: "failed", value: null, code: null, overflow: false, bytes: null });
       return;
     }
 
-    let out = "";
+    // BYTES, accumulated as buffers and decoded once at the end. Counting
+    // `chunk.length` on utf8 strings counted UTF-16 code units against a byte
+    // cap (DW-59), and decoding chunk by chunk would split a multi-byte
+    // sequence that straddled two reads. One concat, one decode, exact count.
+    const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
-    const finish = (result: FleetCaptureResult): void => {
+    const collected = (): Buffer => Buffer.concat(chunks);
+    const finish = (result: Omit<BoundedChildResult, "bytes" | "value"> & { keep: boolean }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -325,8 +382,18 @@ function runBoundedChild(
       // timeout or on abort -- kept the whole command from ever exiting, even
       // with `process.exitCode` already set and the envelope already written.
       try { child.stdout?.destroy(); } catch { /* already closed */ }
+      try { child.stdin?.destroy(); } catch { /* already closed */ }
       child.unref();
-      settle(result);
+      const bytes = result.keep ? collected() : null;
+      settle({
+        outcome: result.outcome,
+        code: result.code,
+        overflow: result.overflow,
+        bytes,
+        // The TEXT value keeps its historical shape for every existing caller:
+        // decoded as utf8 and trimmed. A raw caller reads `bytes` instead.
+        value: bytes === null || raw ? null : bytes.toString("utf8").trim(),
+      });
     };
     // The GROUP, not just the leader: a shell shim's own children are what keep
     // the pipe open after the shell dies. Falls back to the single process when
@@ -336,34 +403,42 @@ function runBoundedChild(
       catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
     };
 
-    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", value: null, code: null, overflow: false }); }, budget);
+    const timer = setTimeout(() => { kill(); finish({ outcome: "timeout", code: null, overflow: false, keep: false }); }, budget);
     timer.unref?.();
 
-    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", value: null, code: null, overflow: false }); };
+    const onAbort = (): void => { kill(); finish({ outcome: "cancelled", code: null, overflow: false, keep: false }); };
     // If the caller cancelled between the budget check and the spawn, the
     // listener fires immediately and the child is killed on its first tick.
     ctx.signal.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      size += chunk.length;
+    const stdout = child.stdout;
+    if (!stdout) { finish({ outcome: "failed", code: null, overflow: false, keep: false }); return; }
+    stdout.on("data", (chunk: Buffer) => {
+      size += chunk.byteLength;
       // `overflow`, not a bare failure: a child killed for saying too much and a
       // child that said nothing are different answers, and at 3.7 MB against a
       // 4 MiB cap the audit report is one growth spurt from needing the
       // distinction.
-      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", value: null, code: null, overflow: true }); return; }
-      out += chunk;
+      if (size > PROBE_MAX_BYTES) { kill(); finish({ outcome: "failed", code: null, overflow: true, keep: false }); return; }
+      chunks.push(chunk);
     });
-    child.on("error", () => finish({ outcome: "failed", value: null, code: null, overflow: false }));
+    if (child.stdin) {
+      // A child that exits before reading everything (git refusing a bad id)
+      // closes the pipe under us; EPIPE on stdin is that child's answer, not
+      // this process's error, and its exit status is what the caller reads.
+      child.stdin.on("error", () => { /* the close handler reports the outcome */ });
+      child.stdin.end(input);
+    }
+    child.on("error", () => finish({ outcome: "failed", code: null, overflow: false, keep: false }));
     child.on("close", (code) => {
       if (code !== 0) {
         // `keepStdoutOnFailure` is the whole reason this body was extracted from
         // `probe`. The outcome still says `failed`; what changes is that the
         // caller can read WHAT the child said before it said no.
-        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code, overflow: false });
+        finish({ outcome: "failed", code, overflow: false, keep: keepStdoutOnFailure });
         return;
       }
-      finish({ outcome: "ok", value: out.trim(), code, overflow: false });
+      finish({ outcome: "ok", code, overflow: false, keep: true });
     });
   });
 }
