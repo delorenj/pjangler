@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-31-2026 21:03
-last_updated: 08-31-2026 22:46
+last_updated: 09-02-2026 13:30
 project: pjangler
 project_key: PJAN
 tracking_system: plane
@@ -37,13 +37,18 @@ story_location: _bmad-output/implementation-artifacts
 # BOARD BINDING (PJAN, https://plane.delo.sh/33god)
 # ================================================
 # This repo forbids code changes without an active Plane ticket, and every
-# commit must reference one. Sprint 1 = Horizon 1, "One Fleet, One Trustworthy
-# Inventory" (stories 1.1-1.5). Each story's ticket is noted inline below;
-# use it in the branch name and every commit message for that story.
+# commit must reference one. Each story's ticket is noted inline below; use it
+# in the branch name and every commit message for that story.
 #   epic-1 -> PJAN-91
+#   Sprint 1 = Horizon 1, "One Fleet, One Trustworthy Inventory" (1.1-1.5)
+#   Sprint 2 = Horizon 2, "Know the Fleet's Real Health"        (1.6-1.10)
 # NOTE: re-running the generator with --set drops these inline refs; re-add them.
-# Stories 1.6-1.22 are later horizons and have no ticket yet -- file one
-# before starting any of them.
+# TICKETS EXIST for 1.1-1.10 (PJAN-92..96, 108..112) -- they are inline below,
+# so do NOT file duplicates. Stories 1.11-1.22 have no ticket yet; file one
+# before starting any of them. (Corrected 2026-09-02: this block used to say
+# "Stories 1.6-1.22 ... have no ticket yet" while the body eight lines down
+# carried PJAN-108..112, so an agent obeying the header either filed a
+# duplicate or refused work it was cleared to do.)
 development_status:
   epic-1: in-progress
   1-1-define-fleet-authority-and-managed-state-contract: done  # PJAN-92
@@ -53,7 +58,7 @@ development_status:
   1-5-make-partial-health-truthful-and-actionable: done  # PJAN-96
   1-6-audit-tracked-pm-scaffold-parity-fleet-wide: done  # PJAN-108
   1-7-prove-generated-profile-health-and-classify-extras: done  # PJAN-109
-  1-8-prove-canonical-systemd-topology-and-service-health: backlog  # PJAN-110
+  1-8-prove-canonical-systemd-topology-and-service-health: in-progress  # PJAN-110
   1-9-attribute-live-hermes-processes-and-expose-runtime-sprawl: backlog  # PJAN-111
   1-10-prove-bloodbank-routing-readiness-without-granting-activatio: backlog  # PJAN-112
   1-11-produce-scoped-versioned-dry-run-reconciliation-plans: backlog

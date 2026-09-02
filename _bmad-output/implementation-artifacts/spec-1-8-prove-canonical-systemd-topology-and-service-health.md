@@ -26,7 +26,9 @@ whose latest result is `exit-code`/209 (`automatic-ai-pm`), a deferred agent who
 fleet base's `platforms.telegram.enabled: true` (`ssbnk-pm`), five heartbeat pairs on disk the registry never
 recorded, a registered agent with no units at all (`delonet-director`), a retired consumer reference
 (`hermes-tonnybox-pm-consumer.service`, `not-found`), and unregistered units (`hermes-dashboard`,
-`hermes-coachingagentframework-pm-*`, seven transient `hermes-worker-proc_*.scope`).
+`hermes-coachingagentframework-pm-*`, and a fluctuating set of transient `hermes-worker-proc_*.scope`
+units -- these are `systemd-run` wrappers around live `hermes ... chat` calls, so their COUNT is
+ephemeral by construction and is never an assertable quantity; only their class is).
 
 **Approach:** Add a read-only systemd observer (`src/fleet/systemd.ts`) driven by a new versioned
 `service_manifest` contract block (schema 5). It derives each selected agent's canonical unit set from
@@ -106,7 +108,7 @@ HALT `blocked`, `contract moved during implementation`.
 | Topology drift | retired `hermes-<id>-consumer.service` present; second gateway-named unit; registry `systemd.checkpoint_timer` key; heartbeat units on disk but no registry `heartbeat_timer` (live: 5 agents) | topology leaf `fail` items `retired-unit:<unit>`, `duplicate-gateway:<unit>`, `registry-retired-key:checkpoint_timer`; `heartbeat_timer` leaf `fail` `registry-undeclared` / `unit-missing` | none |
 | Missing units (live `delonet-director`) | no unit files, `show` → `LoadState=not-found` | topology `fail` `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`; gateway/heartbeat leaves `fail` `absent` | none |
 | Shared gateway | `hermes-fleet-bloodbank-gateway.service` = `gateways.bloodbank.systemd_unit` = `service_model.fleet_shared.bloodbank_gateway_unit`; `HERMES_HOME` = `<root>/fleet-bloodbank-gateway`; enabled+active+stable | host `systemd.shared-gateway` `pass`, `data.systemd.shared.state: healthy` | name mismatch → `fail` `identity-mismatch`; `--agent` → `coverage: unobserved`, no finding |
-| Unregistered units (live) | `hermes-dashboard.service` (HERMES_HOME=`~/.hermes`), `hermes-coachingagentframework-pm-*`, `hermes-tonnybox-pm-consumer.service` (`not-found`), 7 `hermes-worker-proc_*.scope` (`transient`, Description `--profile james-brennan-pm`) | `systemd.unregistered` `warn`; classes `unclassified`, `profile-correlated`, `retired`, `transient` (`correlated_profile: james-brennan-pm`); every item `process_reference: "unobserved"`, `guidance` | `--agent` → `coverage: not-swept` |
+| Unregistered units (live) | `hermes-dashboard.service` (HERMES_HOME=`~/.hermes`), `hermes-coachingagentframework-pm-*`, `hermes-tonnybox-pm-consumer.service` (`not-found`), one or more `hermes-worker-proc_*.scope` (`transient`, Description `--profile james-brennan-pm`) | `systemd.unregistered` `warn`; classes `unclassified`, `profile-correlated`, `retired`, `transient` (`correlated_profile: james-brennan-pm`); every item `process_reference: "unobserved"`, `guidance` | `--agent` → `coverage: not-swept` |
 | Manager unavailable / timeout | `is-system-running` fails with empty stdout, or the probe times out | all five leaves per agent `error` `manager-unavailable` / `manager-timeout`; host `systemd.manager` `error`; zero sampling; registry/profile domains unaffected | `degraded` (exit 1, stdout `degraded`) is AVAILABLE |
 | Malformed property | `NRestarts=abc`, missing `ActiveState` | that unit's leaf `error` `property-malformed:<Key>`, other units unaffected | none |
 | Unsafe path | `FragmentPath` outside `$XDG_CONFIG_HOME/systemd/user` and `/usr/lib/systemd/user`, or `HERMES_HOME` not under the fleet home | item `fragment-unsafe` / `home-unsafe` (`fail`); path shown redacted | none |
@@ -123,13 +125,15 @@ HALT `blocked`, `contract moved during implementation`.
 `cron_tick_timer`/`artifact_bridge_timer`/`watchdog_timer`); `systemd.heartbeat_timer` on 11 rows; NO
 `lifecycle`/`messaging`/`reconcile` block -- messaging declaration is `telegram.provisioning_status` /
 `slack.provisioning_status` (`verified` | `disabled` | `deferred`; absent on legacy rows such as `skillex-pm`,
-`nautilus-trader-pm`, `automatic-ai-pm`; `condaleeza` has `telegram.status: blocked-*`). Unit files: 27
+`nautilus-trader-pm`, `automatic-ai-pm`; `condaleeza` has `telegram.status: blocked-*`). Unit files: 29 as measured 2026-09-02 13:2x (VOLATILE -- 27 when the spec was drafted three hours earlier;
+assert the CLASS, never this number)
 `hermes-*-gateway.service` (26 registered + unregistered `coachingagentframework-pm`, `tonnybox-pm`), 15
 heartbeat pairs (registry names 11; `bloodbank/candybar/candystore/holocene/voxxy` have pairs but no field;
 `delonet-director` has the field and NO units), `hermes-fleet-bloodbank-gateway.service`, `hermes-dashboard.service`,
 `hermes-condaleeza-gateway.service` (registered: agent id `condaleeza`), 7 transient `hermes-worker-proc_*.scope`
 (`UnitFileState=transient`, `Description=[systemd-run] … hermes --profile james-brennan-pm chat …`), loaded
-`not-found` `hermes-tonnybox-pm-consumer.service`. 214 files in `~/.config/systemd/user`, none symlinked;
+`not-found` `hermes-tonnybox-pm-consumer.service`. ~216 entries in `~/.config/systemd/user` (VOLATILE; 214 at
+drafting), none of the `hermes-*` fragments symlinked;
 26 drop-in dirs (`10-versioned-runtime.conf` ×23 overriding `ExecStart=` to
 `~/.local/share/hermes-agent/releases/<sha>/.venv/bin/hermes gateway run --replace`; 17 fragments still
 `~/.hermes/hermes-agent/.venv/bin/hermes`; 12 fragments use `<role_dir>/.scripts/credential-launch.sh gateway`).
@@ -171,7 +175,7 @@ is the test seam), detached + group SIGKILL on timeout (`:398,:445-450`), `PROBE
 Add `sleepBounded(ctx, ms)` (abort-aware, capped by `remainingMs`) beside `probeText` for the sample interval.
 
 **Collector pattern (`src/fleet/profile.ts`):** ctx `:172-201` (`run, pjanglerRoot, home, env, fleetHome, root,
-manifest, classifications, gatewayProfileName, registeredProfileNames, agents[], sweep, shown`), result `:284-295`,
+manifest, classifications, gatewayProfileName, registeredProfileNames, agents[], sweep, shown`), result `:276-287` (`export interface FleetProfileHealth`),
 phases `:1434-1516`, `skipped(reason)` probe `:764`, `entryStat` (`lstat`) `:323-335`, `readBounded` (`O_NOFOLLOW`,
 double `fstat`) `:348-376`, `unitReferences` `:1281-1308` (`configHome = XDG_CONFIG_HOME || ~/.config`, unit dir
 `join(configHome,"systemd","user")`, follows unit symlinks on purpose) -- reuse `readBounded`/`entryStat` by export
@@ -208,7 +212,8 @@ new optional closed root block `service_manifest`: `stabilization {samples: 3, i
 `heartbeat {on_boot_sec: 60, on_unit_inactive_sec: 60, overdue_multiplier: 5, max_tick_seconds: 2700, reconcile_policy_file: role.yaml, reconcile_state_file: runtime/continuous-ticket-sentinel-state.json}`,
 `unregistered {unit_glob: "hermes-*", retired_candidates: ["hermes-{agent_id}-consumer.service", "hermes-{agent_id}-checkpoint.timer", "hermes-{agent_id}-checkpoint.service"]}`,
 `limits {max_units: 1000, max_unregistered_units: 200, max_file_bytes: 65536, max_show_bytes: 4194304}`.
-Remove `deferred_capabilities[0]` (`systemd`/`unit_topology`, `:411-417`); update the header (`units.*` note `:25`),
+Remove `deferred_capabilities[0]` (`systemd`/`unit_topology`, `:412-418` -- `:411` is the
+`deferred_capabilities:` block key itself and MUST survive; `:418` is the entry's `owner_story`); update the header (`units.*` note `:25`),
 the `health_policy` comment (`:391-396`), and the `systemd_lifecycle` notes. `service_model` stays as is.
 - `src/fleet/types.ts` -- `FLEET_CONTRACT_SCHEMA_VERSION` 5 (`:19`), max 5 (`:22`), root keys (`:40-44`,`:60`) +
   `service_manifest`; `FLEET_SERVICE_MANIFEST_KEYS` + per-block key lists beside `:100-106`; `FleetServiceManifest`,
@@ -358,6 +363,53 @@ deferral removed), DW-71/DW-78 (gateway now observed), DW-93 (unit STATE observe
 
 ## Spec Change Log
 
+**2026-09-02, operator repair pass (pre-implementation).** The run that wrote this spec was killed
+externally at 11:03 with its dev session mid-flight. Before re-entering implementation, six defects in the
+spec itself were found and fixed -- five would have mis-instructed an implementer, one would have HALTed the
+story at `## Verification`. Every claim below was re-measured on this host, not inferred.
+
+1. **`deferred_capabilities[0]` anchor was off by one and destructive.** The spec said remove `:411-417`.
+   Read at HEAD: `:411` is the `deferred_capabilities:` block KEY, `:412` is `- domain: systemd`, `:418` is
+   that entry's `owner_story: "1.8"`. Following the spec literally would have deleted the block key and left
+   `owner_story` orphaned, corrupting `health_policy`. Corrected to `:412-418` with both boundaries named.
+2. **`src/fleet/profile.ts` result-shape anchor pointed at the wrong symbol.** The spec said `:284-295`.
+   Read at HEAD: `export interface FleetProfileHealth` is `:276-287`; `:293-296` is the unrelated `gitArgv`
+   helper. Corrected, and the symbol is now named so a future drift is self-evident.
+3. **The transient-scope count was pinned and is not a pinnable quantity.** The spec asserted "seven
+   transient `hermes-worker-proc_*.scope`" in the Intent and "7" in the I/O matrix. Re-measured three hours
+   later: 10. These are `systemd-run` wrappers around live `hermes ... chat` calls; they appear and vanish
+   on their own. Both occurrences now assert the CLASS and explicitly disclaim the count. (Both sit inside
+   `<intent-contract>`; this is an operator correction of a stale OBSERVATION, not a change of intent -- the
+   requirement, that transient scopes are classified and left alone, is untouched.)
+4. **Two more live counts had already drifted.** `hermes-*-gateway.service` unit files: 27 at drafting, 29
+   now. `~/.config/systemd/user` entries: 214 at drafting, 216 now. Both re-measured and marked VOLATILE so
+   the new suite asserts classification rather than arithmetic.
+5. **The live two-run byte-identity check was flaky by construction and would have HALTed the story.**
+   `## Verification` demanded `diff` over the whole live `.data` across two runs, while the transient-scope
+   set moves on its own. step-03 HALTs `blocked` on a verification failure it cannot fix, so this was the
+   single most likely way for the story to die with correct code. The determinism proof now lives where it
+   is actually determinate -- the fake, over fixed state -- and the live check excludes `unregistered` with
+   the reason stated.
+6. **The live zero-write check hashed mtimes.** `ls -la --time-style=full-iso ~/.config/systemd/user |
+   sha256sum` fails on any concurrent fleet write (a heartbeat tick every 60s, another agent, `fleet:sync`)
+   while proving nothing about a read-only observer. Replaced with a content hash of the `hermes-*`
+   fragments, which fails only on a real write.
+
+**Checked and NOT changed:** a review pass claimed an unregistered `hermes-openclaw-gateway.service` was
+missing from the spec's enumeration. It does not exist. `~/.config/systemd/user` holds
+`openclaw-gateway.service` (and an `openclaw-gateway.service.bak`) with NO `hermes-` prefix, so it falls
+outside `unregistered.unit_glob: "hermes-*"` and is correctly out of this story's scope. The registry's
+28-row count and the `is-system-running` = `degraded` claim both re-verified true.
+
+**Recovered work.** The killed session's implementer subagent produced 840 on-plan insertions across
+`contracts/fleet-contract.yaml` (schema 4 -> 5 + `service_manifest`), `src/fleet/contract.ts` (+244,
+`validateServiceManifest`), `src/fleet/types.ts` (+423), `src/fleet/profile.ts` (+33, exports),
+`src/fleet/runtime.ts` (+34, `sleepBounded`) and `src/fleet/health.ts` (+4). The diff was snapshotted before
+the tree was reverted, still applies clean at HEAD, and typechecks with exactly TWO errors -- both the single
+deliberate missing wire (`FleetStatusAgent.systemd` / `FleetStatus.systemd` declared required but not yet
+populated in `src/fleet/status.ts`), which is the next task on the list either way. It was re-applied rather
+than re-derived.
+
 ## Review Triage Log
 
 ## Design Notes
@@ -399,9 +451,25 @@ service_manifest:
 **Commands:**
 - `npm run typecheck && npm run build` -- expected: clean
 - `npm test` -- expected: every suite green including `tests/fleet-systemd-regressions.mjs`; the live case runs (not skipped) on this host
-- `node dist/index.js fleet status --domain systemd --json > /tmp/s1.json; node dist/index.js fleet status --domain systemd --json > /tmp/s2.json; diff <(jq -S .data /tmp/s1.json) <(jq -S .data /tmp/s2.json)` -- expected: no diff
+- DETERMINISM, proven where it is actually determinate -- against the FAKE, whose state cannot move under
+  the run: the suite's two-run case asserts `data` is byte-identical across two invocations over one fixed
+  `SYSTEMCTL_FAKE_STATE`. That is the real proof and it is the gating one.
+- DETERMINISM against the LIVE manager, stated honestly: `node dist/index.js fleet status --domain systemd
+  --json > /tmp/s1.json; node dist/index.js fleet status --domain systemd --json > /tmp/s2.json;
+  diff <(jq -S '.data.systemd | del(.unregistered)' /tmp/s1.json) <(jq -S '.data.systemd | del(.unregistered)' /tmp/s2.json)`
+  -- expected: no diff. `unregistered` is EXCLUDED deliberately, not defensively: `hermes-worker-proc_*.scope`
+  units are `systemd-run` wrappers around live chat calls that appear and vanish on their own (measured 7 at
+  drafting, 10 three hours later), so a live set-equality assertion over them is flaky BY CONSTRUCTION and
+  would report the host's own activity as this observer's nondeterminism. A live diff outside `unregistered`
+  is a real defect; re-run once before believing a diff inside it.
 - `systemctl --user show hermes-pjangler-pm-gateway.service hermes-pjangler-pm-heartbeat.timer hermes-pjangler-pm-heartbeat.service hermes-fleet-bloodbank-gateway.service -p Id,LoadState,UnitFileState,ActiveState,SubState,Result,ExecMainStatus,NRestarts` -- expected: agrees with `agents[pjangler-pm].systemd` and `data.systemd.shared`
 - `node dist/index.js fleet status --domain registry --json | jq '[.data.probes[] | select(.kind=="systemd")] | length'` -- expected: 0
 - `node dist/index.js fleet contract validate` -- expected: exit 0 at schema 5
 - `grep -c 'USec\|Monotonic\|op://\|/home/\|TOKEN=' /tmp/s1.json` -- expected: 0
-- `ls -la --time-style=full-iso ~/.config/systemd/user | sha256sum` before and after -- expected: identical
+- ZERO-WRITE against the live unit directory, by CONTENT rather than by `ls` metadata:
+  `find ~/.config/systemd/user -maxdepth 1 -name 'hermes-*' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum`
+  before and after -- expected: identical. The original `ls -la --time-style=full-iso ... | sha256sum` is
+  rejected: it hashes mtimes and the directory listing, so ANY concurrent fleet write (a heartbeat tick, a
+  `fleet:sync`, another agent) fails it while proving nothing about this read-only observer. Content hashes
+  fail only on a real write. The gating zero-mutation proof remains the fake's invocation log, which must
+  contain no verb outside `is-system-running|list-units|list-unit-files|show`.
