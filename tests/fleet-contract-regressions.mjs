@@ -237,10 +237,11 @@ try {
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
     const out = result.stdout;
     assert.match(out, /Fleet contract valid/);
-    // Story 1.5 bumped the tracked contract to schema 2: `health_policy` is a
-    // new ROOT key, and a new root key is a grammar change. The build still
-    // READS schema 1, which the supported-range line beside this one states.
-    assert.match(out, /schema 2/, "report must name the effective schema version");
+    // Story 1.5 bumped the tracked contract to schema 2 (`health_policy`) and
+    // story 1.6 to schema 3 (`scaffold_manifest`): each is a new ROOT key, and
+    // a new root key is a grammar change. The build still READS schema 1 and 2,
+    // which the supported-range line beside this one states.
+    assert.match(out, /schema 3/, "report must name the effective schema version");
     assert.match(out, /contract 1\.\d+\.\d+/, "report must name the contract version");
     for (const owner of ["project-registry", "hermes-agent-registry", "hermes-profile-renderer", "hermes-agent-template", "hermes-fleet-provisioner", "fleet-observer"]) {
       assert.ok(out.includes(owner), `report must name authority owner ${owner}`);
@@ -665,7 +666,7 @@ try {
     const parsed = envelope(result);
     assert.equal(errorCode(parsed), "UNSUPPORTED_SCHEMA_VERSION");
     assert.equal(result.status, 5, `expected exit 5, got ${result.status}`);
-    assert.match(parsed.error.message, /supported range 1\.\.2/, "diagnostic must state the supported range");
+    assert.match(parsed.error.message, /supported range 1\.\.3/, "diagnostic must state the supported range");
     assert.equal(parsed.error.details.diagnostic_count, 1, "a version this build cannot read must not be partially applied");
   });
 
@@ -1246,6 +1247,134 @@ try {
   policyRejects("a health_policy that is not a mapping", (policy, document) => {
     document.set("health_policy", "yes please");
   }, "health_policy", /must be a mapping/u);
+
+  // -- health_policy.agent_exceptions (story 1.6 / PJAN-108) -----------------
+
+  policyRejects("an agent exception naming no domain of ours", (policy, document) => {
+    document.setIn(["health_policy", "agent_exceptions"], [{ domain: "not_a_domain", agent_id: "alpha-pm", reason: "ruled", owner: "suite" }]);
+  }, "health_policy.agent_exceptions[0].domain", /must name one of/u);
+
+  policyRejects("an agent exception with a blank agent id", (policy, document) => {
+    document.setIn(["health_policy", "agent_exceptions"], [{ domain: "template_scaffold", agent_id: "", reason: "ruled", owner: "suite" }]);
+  }, "health_policy.agent_exceptions[0].agent_id", /registry key/u);
+
+  policyRejects("an agent exception with no owner", (policy, document) => {
+    document.setIn(["health_policy", "agent_exceptions"], [{ domain: "template_scaffold", agent_id: "alpha-pm", reason: "ruled" }]);
+  }, "health_policy.agent_exceptions[0].owner", /non-empty/u);
+
+  policyRejects("two agent exceptions on one (domain, agent_id)", (policy, document) => {
+    document.setIn(["health_policy", "agent_exceptions"], [
+      { domain: "template_scaffold", agent_id: "alpha-pm", reason: "ruled once", owner: "suite" },
+      { domain: "template_scaffold", agent_id: "alpha-pm", reason: "ruled twice", owner: "suite" },
+    ]);
+  }, "health_policy.agent_exceptions[1]", /duplicate agent exception/u);
+
+  policyRejects("an unknown agent_exceptions key", (policy, document) => {
+    document.setIn(["health_policy", "agent_exceptions"], [{ domain: "template_scaffold", agent_id: "alpha-pm", reason: "ruled", owner: "suite", until: "someday" }]);
+  }, "health_policy.agent_exceptions[0].until", /unknown agent_exceptions key/u);
+
+  // -- scaffold_manifest: the seventh validation stage (story 1.6 / PJAN-108) --
+  //
+  // A manifest that matches nothing must fail to LOAD, because the failure mode
+  // of one that loads is flattering: a group key no authority declares resolves
+  // no owner, a presence-only path outside every group is compared for nothing,
+  // and a render input fed by an undeclared field makes every rendered asset
+  // `incomplete` forever while reading as if the registry were at fault.
+  const manifestRejects = (name, mutate, path, hint) => {
+    check(`scaffold_manifest: ${name}`, () => {
+      const file = mutated(`scaffold-manifest-${name.replace(/[^a-z0-9]+/gu, "-")}`, (document) => {
+        mutate(document.get("scaffold_manifest"), document);
+      });
+      const result = cli(["fleet", "contract", "validate", "--contract", file, "--json"]);
+      const parsed = envelope(result);
+      assert.equal(errorCode(parsed), "INVALID_INPUT", `expected INVALID_INPUT for ${name}`);
+      assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+      assert.ok(parsed.error.message.startsWith(`${path}:`), `the diagnostic must be addressed at ${path}, got ${parsed.error.message}`);
+      if (hint) assert.match(parsed.error.message, hint, `the diagnostic must say why: ${parsed.error.message}`);
+    });
+  };
+
+  manifestRejects("a manifest that is not a mapping", (manifest, document) => {
+    document.set("scaffold_manifest", "yes please");
+  }, "scaffold_manifest", /must be a mapping/u);
+
+  manifestRejects("an unknown manifest key", (manifest) => {
+    manifest.set("template_branch", "main");
+  }, "scaffold_manifest.template_branch", /unknown scaffold_manifest key/u);
+
+  manifestRejects("a group key no authority declares writable", (manifest) => {
+    manifest.get("groups").set("scaffold.invented", "invented/");
+  }, "scaffold_manifest.groups.scaffold.invented", /not declared writable/u);
+
+  manifestRejects("a group path that escapes the role", (manifest) => {
+    manifest.get("groups").set("scaffold.momo", "../momo");
+  }, "scaffold_manifest.groups.scaffold.momo", /role-relative/u);
+
+  manifestRejects("two groups owning one path", (manifest) => {
+    manifest.get("groups").set("scaffold.momo", "hermes");
+  }, "scaffold_manifest.groups.scaffold.momo", /duplicate group path/u);
+
+  manifestRejects("a presence-only path that resolves to no group", (manifest) => {
+    manifest.get("presence_only").get(0).set("path", "elsewhere/role.yaml");
+  }, "scaffold_manifest.presence_only[0].path", /resolves to no declared group/u);
+
+  manifestRejects("a presence-only entry with no reason", (manifest) => {
+    manifest.get("presence_only").get(0).set("reason", "  ");
+  }, "scaffold_manifest.presence_only[0].reason", /non-empty/u);
+
+  manifestRejects("a render input fed by a field no authority declares", (manifest) => {
+    manifest.get("render_inputs").set("display_name", "agents.{agent_id}.display_nmae");
+  }, "scaffold_manifest.render_inputs.display_name", /not agents\.\{agent_id\} or a declared/u);
+
+  manifestRejects("a render input fed by a root the observer cannot resolve", (manifest) => {
+    manifest.get("render_inputs").set("role", "gateways.bloodbank.scope");
+  }, "scaffold_manifest.render_inputs.role", /not agents\.\{agent_id\} or a declared/u);
+
+  manifestRejects("an excluded pattern that matches every segment", (manifest) => {
+    manifest.set("excluded_patterns", ["*"]);
+  }, "scaffold_manifest.excluded_patterns[0]", /every segment/u);
+
+  manifestRejects("a runtime_dir that is a path", (manifest) => {
+    manifest.set("runtime_dir", "runtime/state");
+  }, "scaffold_manifest.runtime_dir", /one safe path segment/u);
+
+  manifestRejects("a render suffix that is not an extension", (manifest) => {
+    manifest.set("render_suffix", "jinja");
+  }, "scaffold_manifest.render_suffix", /dotted extension/u);
+
+  check("scaffold_manifest: a schema-2 contract with no manifest still loads", () => {
+    // OPTIONAL, and that is load-bearing: a contract that predates the block is
+    // simply one that declares no scaffold to compare against. The observer
+    // then reports `unsupported` under capability `scaffold.manifest`; the
+    // contract itself must not be refused.
+    const file = mutated("schema-2-no-manifest", (document) => {
+      document.delete("scaffold_manifest");
+      document.set("schema_version", 2);
+      document.setIn(["compatibility", "max_schema_version"], 2);
+    });
+    const result = cli(["fleet", "contract", "validate", "--contract", file, "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `a schema-2 contract must still validate: ${JSON.stringify(parsed.error)}`);
+    assert.equal(parsed.data.schema_version, 2);
+  });
+
+  check("scaffold_manifest: the tracked manifest validates and covers the eight declared leaves", () => {
+    const result = cli(["fleet", "contract", "validate", "--json"]);
+    const parsed = envelope(result);
+    assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
+    assert.equal(parsed.data.schema_version, 3, "story 1.6 bumps the tracked contract to schema 3");
+    const contract = YAML.parse(TRACKED_TEXT);
+    const manifest = contract.scaffold_manifest;
+    assert.ok(manifest, "the tracked contract must declare a scaffold_manifest or the rejections above prove nothing");
+    const leaves = contract.authorities.tracked_role_scaffold.writable_fields;
+    assert.deepEqual(Object.keys(manifest.groups).sort(), [...leaves].sort(), "every scaffold.* leaf must own exactly one group, and every group must be a declared leaf");
+    assert.ok(manifest.presence_only.length >= 2, "role.yaml and SOUL.md are presence-only by policy");
+    assert.deepEqual(contract.health_policy.agent_exceptions, [], "agent_exceptions ships empty; a ruling is written when it is made");
+    assert.equal(
+      contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "scaffold.template_ref"), false,
+      "the scaffold.template_ref deferral is gone: the observer answers it",
+    );
+  });
 
   check("health_policy: a valid policy still validates, so the cases above are not vacuous", () => {
     // Every rejection above is only evidence if the UNMUTATED contract passes

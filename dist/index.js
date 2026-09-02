@@ -219,7 +219,7 @@ var init_types = __esm({
 });
 
 // src/utils/tree-diff.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { existsSync as existsSync4, lstatSync as lstatSync4, readFileSync as readFileSync5, readdirSync as readdirSync3, readlinkSync as readlinkSync2 } from "node:fs";
 import { join as join6, relative as relative3 } from "node:path";
 function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()) {
@@ -230,7 +230,7 @@ function snapshotTree(root, current = root, snapshot = /* @__PURE__ */ new Map()
   if (stat.isSymbolicLink()) {
     snapshot.set(rel, `link:${readlinkSync2(current)}`);
   } else if (stat.isFile()) {
-    snapshot.set(rel, `file:${createHash3("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
+    snapshot.set(rel, `file:${createHash4("sha256").update(readFileSync5(current)).digest("hex")}:${stat.mode & 511}`);
   } else if (stat.isDirectory()) {
     snapshot.set(rel, `dir:${stat.mode & 511}`);
     for (const name of readdirSync3(current)) snapshotTree(root, join6(current, name), snapshot);
@@ -249,7 +249,7 @@ var init_tree_diff = __esm({
 });
 
 // src/lifecycle/preflight.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import {
   accessSync,
   constants as constants2,
@@ -267,7 +267,7 @@ function containedBy(parent, candidate) {
   return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
 }
 function sha2562(path) {
-  return createHash4("sha256").update(readFileSync6(path)).digest("base64url");
+  return createHash5("sha256").update(readFileSync6(path)).digest("base64url");
 }
 function fingerprint(path) {
   const absolute = resolve4(path);
@@ -2760,7 +2760,7 @@ var init_config = __esm({
 });
 
 // src/notebook/notes.ts
-import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID2 } from "node:crypto";
 function canonicalJson(value) {
   if (value === void 0 || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") throw new NotebookError("INVALID_INPUT", "Canonical JSON value is not JSON-compatible");
   if (value === null || typeof value !== "object") {
@@ -2773,7 +2773,7 @@ function canonicalJson(value) {
   return `{${Object.keys(record).filter((key) => record[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 function sha256Hex(value) {
-  return createHash5("sha256").update(value).digest("hex");
+  return createHash6("sha256").update(value).digest("hex");
 }
 function base64UrlEncode(value) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -3315,7 +3315,7 @@ var init_remote_mutation_schema = __esm({
 });
 
 // src/notebook/state.ts
-import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID3 } from "node:crypto";
 import {
   closeSync as closeSync4,
   constants as constants3,
@@ -3340,7 +3340,7 @@ function notebookStateRoot(env2 = process.env) {
 }
 function deriveSessionKey(projectSlug, client, clientSessionId) {
   if (!projectSlug || !client || !clientSessionId) throw new NotebookError("INVALID_INPUT", "project slug, client, and client session id are required");
-  return createHash6("sha256").update(`pjangler-session-v1\0${projectSlug}\0${client}\0${clientSessionId}`, "utf8").digest("hex");
+  return createHash7("sha256").update(`pjangler-session-v1\0${projectSlug}\0${client}\0${clientSessionId}`, "utf8").digest("hex");
 }
 function deriveReceiptId(sessionKey) {
   assertDigest(sessionKey, "session key");
@@ -5842,8 +5842,8 @@ var init_capture = __esm({
 
 // src/index.ts
 import { spawnSync as spawnSync16 } from "node:child_process";
-import { existsSync as existsSync30, readFileSync as readFileSync29, statSync as statSync9 } from "node:fs";
-import { basename as basename10, join as join37, resolve as resolve23 } from "node:path";
+import { existsSync as existsSync30, readFileSync as readFileSync30, statSync as statSync9 } from "node:fs";
+import { basename as basename10, join as join38, resolve as resolve24 } from "node:path";
 import { Command as Command3, CommanderError } from "commander";
 
 // src/commands/hermes/types.ts
@@ -6551,7 +6551,7 @@ import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirS
 import { basename as basename3, dirname as dirname3, join as join4, relative as relative2, resolve as resolve3 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir as homedir3 } from "node:os";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { spawnSync as spawnSync2 } from "node:child_process";
 import YAML from "yaml";
 
@@ -6567,9 +6567,149 @@ var SUPPORTED_CLIS = Object.freeze([
 var SUPPORTED_BMAD_TOOLS = SUPPORTED_CLIS.map((cli) => cli.bmadTool);
 var SUPPORTED_CLI_ROOTS = SUPPORTED_CLIS.map((cli) => cli.projectRoot);
 
+// src/scaffold/compare.ts
+import { createHash } from "node:crypto";
+var PLACEHOLDER = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/gu;
+var JINJA_DELIMITER = /\{\{|\{%|\{#/u;
+function renderTemplate(source, inputs) {
+  const stripped = source.replace(PLACEHOLDER, "");
+  if (JINJA_DELIMITER.test(stripped)) {
+    return { ok: false, reason: "render-unsupported", detail: "render-unsupported: template uses Jinja constructs beyond simple substitution" };
+  }
+  const undeclared = /* @__PURE__ */ new Set();
+  const missing = /* @__PURE__ */ new Set();
+  const text3 = source.replace(PLACEHOLDER, (whole, name) => {
+    if (!Object.prototype.hasOwnProperty.call(inputs, name)) {
+      undeclared.add(name);
+      return whole;
+    }
+    const value = inputs[name];
+    if (value === null || value === void 0) {
+      missing.add(name);
+      return whole;
+    }
+    return value;
+  });
+  if (undeclared.size > 0) {
+    return { ok: false, reason: "render-unsupported", detail: `render-unsupported: undeclared placeholder ${[...undeclared].sort().join(", ")}` };
+  }
+  if (missing.size > 0) {
+    return { ok: false, reason: "input-missing", detail: `input-missing: ${[...missing].sort().join(", ")}` };
+  }
+  return { ok: true, text: text3 };
+}
+function blobId(bytes) {
+  return createHash("sha1").update(`blob ${bytes.byteLength}\0`, "latin1").update(bytes).digest("hex");
+}
+function digestPrefix(id) {
+  return id.slice(0, 12);
+}
+function globToRegExp(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "[^/]*").replace(/\?/gu, "[^/]");
+  return new RegExp(`^${escaped}$`, "u");
+}
+function matchesExcluded(path, patterns) {
+  const segments = path.split("/").filter((segment) => segment !== "");
+  for (const pattern of patterns) {
+    if (pattern === "" || pattern === "/") continue;
+    const directory = pattern.endsWith("/");
+    const glob = directory ? pattern.slice(0, -1) : pattern;
+    if (glob === "") continue;
+    if (glob.includes("/")) {
+      const expression2 = globToRegExp(glob.replace(/^\/+/u, ""));
+      if (directory ? segments.some((_, index) => index < segments.length - 1 && expression2.test(segments.slice(0, index + 1).join("/"))) : expression2.test(segments.join("/"))) return pattern;
+      continue;
+    }
+    const expression = globToRegExp(glob);
+    const candidates = directory ? segments.slice(0, -1) : segments;
+    if (candidates.some((segment) => expression.test(segment))) return pattern;
+  }
+  return null;
+}
+function groupFor(path, groups) {
+  let best = null;
+  let bestLength = -1;
+  for (const leaf of Object.keys(groups).sort()) {
+    const rolePath = groups[leaf];
+    const matches = rolePath.endsWith("/") ? path.startsWith(rolePath) : path === rolePath;
+    if (!matches) continue;
+    const length = rolePath.endsWith("/") ? rolePath.length : rolePath.length + 1;
+    if (length > bestLength) {
+      best = leaf;
+      bestLength = length;
+    }
+  }
+  return best;
+}
+function typeWord(asset) {
+  return asset.type;
+}
+function modeWord(executable) {
+  return executable ? "100755" : "100644";
+}
+function compareAssets(desired, observe, options) {
+  const out = [];
+  const compareModes = options.modes !== false;
+  const push = (asset, seen, kind, desiredWord, observedWord, detail = null) => {
+    out.push({ path: asset.path, kind, desired: desiredWord, observed: observedWord, detail, wip: seen.wip });
+  };
+  for (const asset of desired) {
+    const seen = observe(asset);
+    if (asset.incomplete) {
+      push(asset, seen, "incomplete", null, seen.present ? seen.type : "absent", asset.incomplete.detail);
+      continue;
+    }
+    if (!seen.present) {
+      push(asset, seen, "missing", typeWord(asset), "absent");
+      continue;
+    }
+    if (seen.type === "symlink" && seen.unsafeSymlink) {
+      push(asset, seen, "unsafe-symlink", typeWord(asset), "symlink");
+      continue;
+    }
+    if (seen.type !== asset.type) {
+      push(asset, seen, "wrong-type", typeWord(asset), seen.type ?? "unknown");
+      continue;
+    }
+    if (compareModes && asset.type === "file" && seen.executable !== asset.executable) {
+      push(asset, seen, "wrong-mode", modeWord(asset.executable), modeWord(seen.executable));
+    }
+    if (asset.presenceOnly || asset.blobId === null) continue;
+    if (seen.unreadable !== null || seen.blobId === null) {
+      push(asset, seen, "incomplete", digestPrefix(asset.blobId), null, `unreadable: ${seen.unreadable ?? "unread"}`);
+      continue;
+    }
+    if (seen.blobId === asset.blobId) continue;
+    const kind = options.inLineage(seen.blobId, asset.path) ? "stale-content" : "locally-modified";
+    push(asset, seen, kind, digestPrefix(asset.blobId), digestPrefix(seen.blobId));
+  }
+  return out.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0);
+}
+function classifyExtras(input) {
+  const unexpected = [];
+  let foreignTracked = 0;
+  const runtimePrefix = `${input.runtimeDir.replace(/\/+$/u, "")}/`;
+  for (const path of input.trackedPaths) {
+    if (input.ownedPaths.has(path)) continue;
+    if (path.startsWith(runtimePrefix)) {
+      foreignTracked += 1;
+      continue;
+    }
+    const group = groupFor(path, input.groups);
+    if (group === null) {
+      foreignTracked += 1;
+      continue;
+    }
+    const excluded = matchesExcluded(path, input.excludedPatterns);
+    unexpected.push({ path, group, detail: excluded === null ? null : `matches excluded pattern ${excluded}` });
+  }
+  unexpected.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return { unexpected, foreignTracked };
+}
+
 // src/parity/pack.ts
 import { closeSync, constants, fstatSync, lstatSync as lstatSync2, openSync, readFileSync as readFileSync2, readdirSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { basename as basename2, join as join3, relative, resolve as resolve2, sep } from "node:path";
 var PackUnavailableError = class extends Error {
   constructor(message) {
@@ -6579,7 +6719,7 @@ var PackUnavailableError = class extends Error {
 };
 var CANONICAL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 function sha256(content) {
-  return createHash("sha256").update(content).digest("hex");
+  return createHash2("sha256").update(content).digest("hex");
 }
 function readRegularFile(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -7891,7 +8031,7 @@ function availableSkillsRegistryRoots(ctx) {
   );
 }
 function digestSkillEntry(root) {
-  const hash = createHash2("sha256");
+  const hash = createHash3("sha256");
   try {
     const stat = lstatSync3(root);
     if (stat.isSymbolicLink()) return null;
@@ -8956,8 +9096,72 @@ ${roleSpecific}
 Your memory is stored locally at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.
 `;
 }
+function renderScaffoldAsset(templateRoleDir, jinjaRel, inputs) {
+  const result2 = renderTemplate(readText(join4(templateRoleDir, jinjaRel)), inputs);
+  if (!result2.ok) throw new Error(`${jinjaRel}: ${result2.detail}`);
+  return result2.text;
+}
 function renderHermesWrapper(role, templateRoleDir) {
-  return readText(join4(templateRoleDir, "hermes.jinja")).replace(/\{\{\s*agent_id\s*\}\}/g, role.agentId);
+  return renderScaffoldAsset(templateRoleDir, "hermes.jinja", { agent_id: role.agentId });
+}
+function sentinelPromptInputs(role) {
+  return {
+    agent_id: role.agentId,
+    role: role.role,
+    target_repo: role.repo,
+    display_name: role.displayName || role.agentId,
+    ticket_provider: role.ticketProviderName || "plane"
+  };
+}
+function observeScaffoldAsset(path) {
+  const seen = { present: false, type: null, executable: false, blobId: null, unsafeSymlink: false, unreadable: null, wip: false };
+  try {
+    const stat = lstatSync3(path);
+    seen.present = true;
+    if (stat.isSymbolicLink()) {
+      seen.type = "symlink";
+      seen.blobId = blobId(Buffer.from(readlinkSync(path), "utf8"));
+    } else if (stat.isDirectory()) {
+      seen.type = "directory";
+    } else if (stat.isFile()) {
+      seen.type = "file";
+      seen.executable = (stat.mode & 73) !== 0;
+      try {
+        seen.blobId = blobId(readFileSync3(path));
+      } catch {
+        seen.unreadable = "unreadable";
+      }
+    } else {
+      seen.type = "other";
+    }
+  } catch {
+  }
+  return seen;
+}
+function scaffoldDesiredForRule(role, templateRoleDir, managedScripts) {
+  const desired = [];
+  const asset = (path, blob, incomplete = null, presenceOnly = false) => {
+    desired.push({ path, type: "file", executable: false, blobId: blob, presenceOnly, incomplete });
+  };
+  for (const rel of ["role.yaml", "SOUL.md", ".runtime-scaffold/README.md"]) asset(rel, null, null, true);
+  const rendered = (path, jinjaRel, inputs) => {
+    const source = join4(templateRoleDir, jinjaRel);
+    if (!existsSync3(source)) {
+      asset(path, null, { reason: "render-unsupported", detail: `render-unsupported: ${jinjaRel} is absent from the template` });
+      return;
+    }
+    const result2 = renderTemplate(readFileSync3(source).toString("utf8"), inputs);
+    if (!result2.ok) {
+      asset(path, null, { reason: result2.reason, detail: result2.detail });
+      return;
+    }
+    asset(path, blobId(Buffer.from(result2.text, "utf8")));
+  };
+  rendered("hermes", "hermes.jinja", { agent_id: role.agentId });
+  rendered(".gitignore", ".gitignore.jinja", { role: role.role });
+  for (const rel of managedScripts) asset(`.scripts/${rel}`, blobId(readFileSync3(join4(templateRoleDir, ".scripts", rel))));
+  rendered(".scripts/sentinel.prompt.md", ".scripts/sentinel.prompt.md.jinja", sentinelPromptInputs(role));
+  return desired;
 }
 function templateFiles(sourceDir, current = sourceDir) {
   if (!existsSync3(current)) return [];
@@ -9011,7 +9215,7 @@ function managedHermesScaffoldRoles(ctx) {
   return { roles, blockers };
 }
 function renderSentinelPrompt(role, templateRoleDir) {
-  return readText(join4(templateRoleDir, ".scripts", "sentinel.prompt.md.jinja")).replace(/\{\{\s*agent_id\s*\}\}/g, role.agentId).replace(/\{\{\s*role\s*\}\}/g, role.role).replace(/\{\{\s*target_repo\s*\}\}/g, role.repo).replace(/\{\{\s*display_name\s*\}\}/g, role.displayName || role.agentId).replace(/\{\{\s*ticket_provider\s*\}\}/g, role.ticketProviderName || "plane");
+  return renderScaffoldAsset(templateRoleDir, join4(".scripts", "sentinel.prompt.md.jinja"), sentinelPromptInputs(role));
 }
 function copyMissingRecursive(sourceDir, targetDir, changedFiles, dryRun, skip) {
   if (!existsSync3(sourceDir)) return;
@@ -9739,7 +9943,7 @@ function ownedRegistryEntries(registry, repoRoot) {
   }
   return owned;
 }
-function unprovisionedRoleAgents(registry, repoRoot, canonical) {
+function unprovisionedRoleAgents(registry, repoRoot, canonical2) {
   const blockers = /* @__PURE__ */ new Map();
   const record = (agentId, roleDir, source) => {
     const current = blockers.get(agentId) ?? { roleDir, sources: /* @__PURE__ */ new Set() };
@@ -9748,12 +9952,12 @@ function unprovisionedRoleAgents(registry, repoRoot, canonical) {
     blockers.set(agentId, current);
   };
   for (const [agentId, entry] of ownedRegistryEntries(registry, repoRoot)) {
-    if (canonical.has(agentId)) continue;
+    if (canonical2.has(agentId)) continue;
     const roleDir = String(entry.role_dir ?? "");
     if (declaredRoleIsUnprovisioned(repoRoot, roleDir)) record(agentId, roleDir, "registry");
   }
   for (const [agentId, entry] of declaredAgentEntries(repoRoot)) {
-    if (canonical.has(agentId)) continue;
+    if (canonical2.has(agentId)) continue;
     const configured = String(entry.role_dir ?? "");
     const roleDir = configured ? resolve3(repoRoot, configured) : "";
     if (declaredRoleIsUnprovisioned(repoRoot, configured)) record(agentId, roleDir, ".project.json");
@@ -10356,7 +10560,7 @@ function unsupportedRootAttestation(repoRoot, rootName) {
   for (const rel of walked.files) {
     const expectedHash = inventory.files.get(rel);
     if (!expectedHash) return { safe: false, reason: `${rootName}/${rel} is outside the BMAD generated inventory` };
-    const actualHash = createHash2("sha256").update(readFileSync3(join4(root, rel))).digest("hex");
+    const actualHash = createHash3("sha256").update(readFileSync3(join4(root, rel))).digest("hex");
     if (actualHash !== expectedHash) return { safe: false, reason: `${rootName}/${rel} was locally modified after generation` };
   }
   return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
@@ -10903,15 +11107,15 @@ function createProjectJsonChecks() {
         const droppedDetails = [];
         const path = join4(ctx.repoRoot, ".project.json");
         const existing = readProjectJson(ctx) ?? {};
-        const canonical = canonicalProjectJson(ctx);
+        const canonical2 = canonicalProjectJson(ctx);
         const preservedDetails = [];
-        for (const agentId of canonical.unprovisioned) {
+        for (const agentId of canonical2.unprovisioned) {
           const roleDir = existing.agents?.[agentId]?.role_dir;
           preservedDetails.push(
             `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no role.yaml)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
           );
         }
-        for (const agentId of canonical.dropped) {
+        for (const agentId of canonical2.dropped) {
           const entry = existing.agents?.[agentId];
           const entryRecord = typeof entry === "object" && entry !== null ? entry : void 0;
           const declared = {
@@ -10924,7 +11128,7 @@ function createProjectJsonChecks() {
           const reason = validation.details.join("; ") || "invalid";
           droppedDetails.push(`dropped invalid declared agent: ${agentId} (${reason})`);
         }
-        const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson2 } = canonical;
+        const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson2 } = canonical2;
         const merged = { ...existing, ...canonicalJson2 };
         const expected = `${JSON.stringify(merged, null, 2)}
 `;
@@ -11622,26 +11826,19 @@ function createHermesChecks() {
         const managedScripts = templateFiles(join4(templateRoleDir, ".scripts")).filter((rel) => rel !== "sentinel.prompt.md.jinja");
         for (const role of selection.roles) {
           const prefix = role.agentId || role.role;
-          for (const rel of ["role.yaml", "SOUL.md", ".runtime-scaffold/README.md", "runtime/memories/MEMORY.md"]) {
-            if (!existsSync3(join4(role.roleDir, rel))) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, join4(role.roleDir, rel))}`);
+          const memory = join4(role.roleDir, "runtime", "memories", "MEMORY.md");
+          if (!existsSync3(memory)) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, memory)}`);
+          const desired = scaffoldDesiredForRule(role, templateRoleDir, managedScripts);
+          const findings = compareAssets(
+            desired,
+            (asset) => observeScaffoldAsset(join4(role.roleDir, ...asset.path.split("/"))),
+            { inLineage: () => true, modes: false }
+          );
+          for (const finding2 of findings) {
+            const word = finding2.kind === "stale-content" ? "stale" : finding2.kind;
+            const shown = relative2(ctx.repoRoot, join4(role.roleDir, ...finding2.path.split("/")));
+            details.push(`${prefix}: ${word} ${shown}${finding2.detail ? ` (${finding2.detail})` : ""}`);
           }
-          const wrapper = join4(role.roleDir, "hermes");
-          const expectedWrapper = renderHermesWrapper(role, templateRoleDir);
-          if (!existsSync3(wrapper)) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, wrapper)}`);
-          else if (safeReadText(wrapper) !== expectedWrapper) details.push(`${prefix}: stale ${relative2(ctx.repoRoot, wrapper)}`);
-          const expectedIgnore = readText(join4(templateRoleDir, ".gitignore.jinja")).replace(/\{\{\s*role\s*\}\}/g, role.role);
-          const ignorePath = join4(role.roleDir, ".gitignore");
-          if (!existsSync3(ignorePath)) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, ignorePath)}`);
-          else if (safeReadText(ignorePath) !== expectedIgnore) details.push(`${prefix}: stale ${relative2(ctx.repoRoot, ignorePath)}`);
-          for (const rel of managedScripts) {
-            const source = join4(templateRoleDir, ".scripts", rel);
-            const target = join4(role.roleDir, ".scripts", rel);
-            if (!existsSync3(target)) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, target)}`);
-            else if (safeReadText(target) !== readText(source)) details.push(`${prefix}: stale ${relative2(ctx.repoRoot, target)}`);
-          }
-          const promptPath = join4(role.roleDir, ".scripts", "sentinel.prompt.md");
-          if (!existsSync3(promptPath)) details.push(`${prefix}: missing ${relative2(ctx.repoRoot, promptPath)}`);
-          else if (safeReadText(promptPath) !== renderSentinelPrompt(role, templateRoleDir)) details.push(`${prefix}: stale ${relative2(ctx.repoRoot, promptPath)}`);
           if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) details.push(`${prefix}: .gitmodules contains retired ${role.role} runtime submodule mapping`);
           if (!profileMetaInheritsDefault(join4(role.roleDir, "runtime", "profile.yaml"))) details.push(`${prefix}: runtime/profile.yaml missing inherited default config metadata`);
           const registry = safeReadText(registryPath(ctx.homeDir));
@@ -12244,9 +12441,9 @@ function createHermesChecks() {
           }
           return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "warn", summary: `registry unreadable at ${registryPath2}`, details: [], fixable: false };
         }
-        const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const canonical2 = new Set(roles.map((role) => role.agentId).filter(Boolean));
         const owned = ownedRegistryEntries(registry, ctx.repoRoot);
-        const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical);
+        const unprovisioned = unprovisionedRoleAgents(registry, ctx.repoRoot, canonical2);
         if (unprovisioned.length) {
           return {
             id: "hermes.registry-parity",
@@ -12259,16 +12456,16 @@ function createHermesChecks() {
             fixable: false
           };
         }
-        if (canonical.size === 0) {
+        if (canonical2.size === 0) {
           return { id: "hermes.registry-parity", title: "Fleet registry matches .project.json (no duplicate or stale agents)", status: "skip", summary: "No Hermes roles, declarations, or registry entries present", details: [], fixable: false };
         }
         for (const [agentId, entry] of owned) {
           const roleDir = String(entry?.role_dir ?? "");
-          if (!canonical.has(agentId)) {
-            details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical].join(", ")})`);
+          if (!canonical2.has(agentId)) {
+            details.push(`stale/duplicate registry agent "${agentId}" for ${roleDir} (role.yaml declares ${[...canonical2].join(", ")})`);
           }
         }
-        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+        for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical2.has(id))) {
           details.push(`.project.json declares agent "${extra}" that no role.yaml claims`);
         }
         for (const role of roles) {
@@ -12357,8 +12554,8 @@ function createHermesChecks() {
           return { id: finding2.id, title: finding2.title, status: "blocked", summary: "registry is not valid YAML", changedFiles, details };
         }
         const agents = doc?.agents ?? {};
-        const canonical = new Set(roles.map((role) => role.agentId).filter(Boolean));
-        const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical);
+        const canonical2 = new Set(roles.map((role) => role.agentId).filter(Boolean));
+        const unprovisioned = unprovisionedRoleAgents(agents, ctx.repoRoot, canonical2);
         if (unprovisioned.length) {
           return {
             id: finding2.id,
@@ -12373,7 +12570,7 @@ function createHermesChecks() {
         }
         const fleetBin = fleetBinPath(ctx);
         let dirty = false;
-        if (canonical.size === 0) {
+        if (canonical2.size === 0) {
           for (const [agentId] of ownedRegistryEntries(agents, ctx.repoRoot)) {
             details.push(`blocked: "${agentId}" has no role.yaml; provision the role instead of pruning the registry`);
           }
@@ -12435,7 +12632,7 @@ function createHermesChecks() {
           }
         }
         for (const [agentId, entry] of ownedRegistryEntries(agents, ctx.repoRoot)) {
-          if (canonical.size > 0 && !canonical.has(agentId)) {
+          if (canonical2.size > 0 && !canonical2.has(agentId)) {
             details.push(`drop stale/duplicate registry agent "${agentId}"`);
             delete agents[agentId];
             dropDeclaredAgent(ctx, agentId, changedFiles, details);
@@ -12455,8 +12652,8 @@ function createHermesChecks() {
             dirty = true;
           }
         }
-        if (canonical.size > 0) {
-          for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical.has(id))) {
+        if (canonical2.size > 0) {
+          for (const extra of declaredAgentIds(ctx.repoRoot).filter((id) => !canonical2.has(id))) {
             dropDeclaredAgent(ctx, extra, changedFiles, details);
           }
         }
@@ -14524,7 +14721,7 @@ init_notes();
 init_state();
 init_types();
 import { spawn, spawnSync as spawnSync12 } from "node:child_process";
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID5 } from "node:crypto";
 import { chmodSync as chmodSync4, closeSync as closeSync6, constants as constants5, copyFileSync as copyFileSync3, existsSync as existsSync18, fstatSync as fstatSync4, fsyncSync as fsyncSync4, lstatSync as lstatSync11, mkdirSync as mkdirSync7, openSync as openSync6, readFileSync as readFileSync19, readSync as readSync3, readdirSync as readdirSync8, realpathSync as realpathSync8, renameSync as renameSync6, rmSync as rmSync4, symlinkSync as symlinkSync2, unlinkSync as unlinkSync5, writeFileSync as writeFileSync10 } from "node:fs";
 import { basename as basename9, dirname as dirname11, isAbsolute as isAbsolute4, join as join24, parse as parse3, relative as relative11, resolve as resolve12, sep as sep6 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
@@ -14619,7 +14816,7 @@ function enumerateSkillPayload(source) {
       if (entry.isDirectory()) walk(path);
       else if (entry.isFile()) {
         const expectedMode = rel.endsWith(".sh") || rel.startsWith("scripts/") ? "0755" : "0644";
-        result2.push({ path: rel, sha256: createHash7("sha256").update(readFileSync19(path)).digest("hex"), mode: expectedMode });
+        result2.push({ path: rel, sha256: createHash8("sha256").update(readFileSync19(path)).digest("hex"), mode: expectedMode });
       } else throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
     }
   };
@@ -14641,7 +14838,7 @@ function parsePackedManifest(source) {
     const path = join24(source, ...entry.path.split("/"));
     const stat = lstatSync11(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill export contains a non-regular entry");
-    const actual = createHash7("sha256").update(readFileSync19(path)).digest("hex");
+    const actual = createHash8("sha256").update(readFileSync19(path)).digest("hex");
     if (actual !== entry.sha256) throw new NotebookError("CONFLICT", `Project Notebook skill digest mismatch: ${entry.path}`);
     const actualMode = stat.mode & 511;
     const executable = entry.mode === "0755";
@@ -14662,7 +14859,7 @@ function expectedPackedSkill() {
     assertOwnedSkillTree(candidate);
     const manifest = parsePackedManifest(candidate);
     if (!manifest) continue;
-    const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
+    const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
     return { source: candidate, manifest, digest };
   }
   throw new NotebookError("NOT_CONFIGURED", "PJ\xE1ngler package has no verified Project Notebook skill export");
@@ -14730,10 +14927,10 @@ function resolveProjectNotebookSkillSource(env2 = process.env) {
     return explicit;
   }
   if (env2.PJ_SKILLS_REGISTRY_ROOT) {
-    const canonical = resolve12(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
-    if (existsSync18(join24(canonical, "SKILL.md"))) {
-      verifyProjectNotebookSkillExport(canonical);
-      return canonical;
+    const canonical2 = resolve12(env2.PJ_SKILLS_REGISTRY_ROOT, "all-skills", "project-notebook");
+    if (existsSync18(join24(canonical2, "SKILL.md"))) {
+      verifyProjectNotebookSkillExport(canonical2);
+      return canonical2;
     }
   }
   try {
@@ -14801,7 +14998,7 @@ function installPackagedProjectNotebookSkill(input = {}) {
   const source = input.source ?? resolveProjectNotebookSkillSource(env2);
   if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable");
   const manifest = verifyProjectNotebookSkillExport(source);
-  const digest = createHash7("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const digest = createHash8("sha256").update(JSON.stringify(manifest)).digest("hex");
   const home = env2.HOME;
   if (!home || !resolve12(home).startsWith("/")) throw new NotebookError("NOT_CONFIGURED", "A trusted HOME is required to install the Project Notebook skill");
   const skillsRoot = join24(home, ".agents", "skills");
@@ -14956,7 +15153,7 @@ function repairProjectNotebookSkillProjection(input = {}) {
     if (!existsSync18(path)) return true;
     const stat = lstatSync11(path);
     if (!stat.isFile()) return true;
-    if (createHash7("sha256").update(readFileSync19(path)).digest("hex") !== entry.sha256) return true;
+    if (createHash8("sha256").update(readFileSync19(path)).digest("hex") !== entry.sha256) return true;
     const mode = stat.mode & 511;
     const executable = entry.mode === "0755";
     return executable && (mode & 64) === 0 || !executable && (mode & 73) !== 0;
@@ -16391,8 +16588,8 @@ var ProjectRecipe = class extends Recipe {
       } else try {
         rmSync5(targetDir, { recursive: true, force: true });
         const insideTarget = (path) => {
-          const relative13 = relativePath(resolve14(targetDir), resolve14(path));
-          return relative13 === "" || !relative13.startsWith("..") && !isAbsolute6(relative13);
+          const relative14 = relativePath(resolve14(targetDir), resolve14(path));
+          return relative14 === "" || !relative14.startsWith("..") && !isAbsolute6(relative14);
         };
         const orphaned = [...new Set(changedFiles.filter((path) => !insideTarget(path)))].sort();
         changedFiles.length = 0;
@@ -16833,15 +17030,15 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
     if (enterRe.test(content)) {
       content = content.replace(enterRe, (_m, head, close) => {
-        const sep7 = /[,[]\s*$/.test(head) ? "" : ",";
-        return `${head}${sep7}
+        const sep8 = /[,[]\s*$/.test(head) ? "" : ",";
+        return `${head}${sep8}
 ${enterAdds}${close}`;
       });
       const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
-          const sep7 = /[,[]\s*$/.test(head) ? "" : ",";
-          return `${head}${sep7}
+          const sep8 = /[,[]\s*$/.test(head) ? "" : ",";
+          return `${head}${sep8}
   "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
@@ -18059,7 +18256,7 @@ function git3(repo, args) {
   return result2.stdout;
 }
 function gitAsync(repo, args) {
-  return new Promise((resolve24) => {
+  return new Promise((resolve25) => {
     const child = spawn2("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let size = 0;
@@ -18067,7 +18264,7 @@ function gitAsync(repo, args) {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve24(value);
+      resolve25(value);
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -18976,7 +19173,7 @@ var SHOW_CURSOR = "\x1B[?25h";
 function runChecklist(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
-  return new Promise((resolve24) => {
+  return new Promise((resolve25) => {
     let state = createChecklist(options.items);
     let previousLines = 0;
     const draw = () => {
@@ -18996,7 +19193,7 @@ function runChecklist(options) {
         return;
       }
       cleanup();
-      resolve24({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
+      resolve25({ outcome: state.outcome, selected: state.outcome === "apply" ? selectedIds(state) : [] });
     };
     const cleanup = () => {
       input.removeListener("keypress", onKey);
@@ -19013,7 +19210,7 @@ function runChecklist(options) {
     input.once("end", () => {
       if (state.outcome !== "pending") return;
       cleanup();
-      resolve24({ outcome: "cancel", selected: [] });
+      resolve25({ outcome: "cancel", selected: [] });
     });
   });
 }
@@ -19039,7 +19236,7 @@ function guardBrokenPipe(streams = [process.stdout, process.stderr]) {
 }
 function writeStdout(text3, stream = process.stdout) {
   if (text3.length === 0) return Promise.resolve();
-  return new Promise((resolve24, reject) => {
+  return new Promise((resolve25, reject) => {
     let settled = false;
     const finish = (error) => {
       if (settled) return;
@@ -19048,7 +19245,7 @@ function writeStdout(text3, stream = process.stdout) {
       stream.removeListener("drain", onDrain);
       stream.removeListener("close", onClose);
       if (error && !isBrokenPipe(error)) reject(error);
-      else resolve24();
+      else resolve25();
     };
     const onError = (error) => finish(error);
     const onDrain = () => finish();
@@ -19069,13 +19266,13 @@ function drain(stream) {
   if (typeof stream?.write !== "function") return Promise.resolve();
   if (stream.destroyed || stream.writableEnded) return Promise.resolve();
   if ((stream.writableLength ?? 0) === 0) return Promise.resolve();
-  return new Promise((resolve24) => {
+  return new Promise((resolve25) => {
     const done = () => {
       clearTimeout(timer);
       stream.removeListener("drain", done);
       stream.removeListener("error", done);
       stream.removeListener("close", done);
-      resolve24();
+      resolve25();
     };
     const timer = setTimeout(done, DRAIN_DEADLINE_MS);
     stream.on("drain", done);
@@ -19461,7 +19658,7 @@ import { fileURLToPath as fileURLToPath8 } from "node:url";
 import YAML9 from "yaml";
 
 // src/fleet/types.ts
-var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 2 };
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 3 };
 var FLEET_SCHEMA_VERSION = 1;
 var FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version",
@@ -19473,20 +19670,34 @@ var FLEET_CONTRACT_ROOT_KEYS = [
   "service_model",
   "activation",
   "retired",
-  "health_policy"
+  "health_policy",
+  "scaffold_manifest"
 ];
-var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy"];
+var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest"];
 var FLEET_HEALTH_POLICY_KEYS = [
   "required_domains",
   "deferred_capabilities",
   "allowed_warnings",
   "allowed_skips",
-  "freshness"
+  "freshness",
+  "agent_exceptions"
 ];
 var FLEET_HEALTH_POLICY_DEFERRED_KEYS = ["domain", "capability", "reason", "owner_story"];
 var FLEET_HEALTH_POLICY_WARNING_KEYS = ["rule_id", "reason", "owner"];
 var FLEET_HEALTH_POLICY_SKIP_KEYS = ["domain", "rule_id", "reason"];
 var FLEET_HEALTH_POLICY_FRESHNESS_KEYS = ["field", "max_age_days", "applies_to"];
+var FLEET_HEALTH_POLICY_AGENT_EXCEPTION_KEYS = ["domain", "agent_id", "reason", "owner"];
+var FLEET_SCAFFOLD_MANIFEST_KEYS = [
+  "template_submodule",
+  "template_subdirectory",
+  "render_suffix",
+  "render_inputs",
+  "groups",
+  "presence_only",
+  "excluded_patterns",
+  "runtime_dir"
+];
+var FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS = ["path", "reason"];
 var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
 var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
 var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
@@ -19612,6 +19823,9 @@ var FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT = 200;
 var FLEET_STATUS_MAX_FINDINGS = 2e3;
 var FLEET_STATUS_MAX_DETAILS = 20;
 var FLEET_STATUS_AUDIT_CONCURRENCY = 4;
+var FLEET_STATUS_SCAFFOLD_CONCURRENCY = 4;
+var FLEET_STATUS_MAX_ITEMS = 100;
+var FLEET_STATUS_MAX_WIP_OVERLAP = 20;
 var FLEET_STATUS_EVIDENCE = ["direct", "declared", "derived", "absent"];
 var FLEET_STATUS_FRESHNESS_PRECEDENCE = [
   "stale",
@@ -19768,7 +19982,8 @@ function validateFleetContract(document) {
     () => validateAuthorityConflicts(policy),
     () => sortDiagnostics(validateClassifications(policy)),
     () => sortDiagnostics(validateRetiredModes(policy)),
-    () => sortDiagnostics(validateHealthPolicy(policy))
+    () => sortDiagnostics(validateHealthPolicy(policy)),
+    () => sortDiagnostics(validateScaffoldManifest(policy))
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -20362,11 +20577,146 @@ function validateHealthPolicy(policy) {
       });
     }
   }
+  const exceptions = block.agent_exceptions;
+  if (exceptions !== void 0) {
+    if (!Array.isArray(exceptions)) fail("health_policy.agent_exceptions", "agent_exceptions must be a list");
+    else {
+      const seen = /* @__PURE__ */ new Set();
+      exceptions.forEach((entry, index) => {
+        const at = `health_policy.agent_exceptions[${index}]`;
+        if (!isRecord6(entry)) {
+          fail(at, "agent exception must be a mapping");
+          return;
+        }
+        for (const key2 of Object.keys(entry)) {
+          if (!FLEET_HEALTH_POLICY_AGENT_EXCEPTION_KEYS.includes(key2)) fail(`${at}.${key2}`, "unknown agent_exceptions key");
+        }
+        requireDomain(entry.domain, `${at}.domain`);
+        if (typeof entry.agent_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(entry.agent_id)) {
+          fail(`${at}.agent_id`, "agent_id must be a registry key: letters, digits, dots, underscores or hyphens");
+        }
+        for (const key2 of ["reason", "owner"]) {
+          const value = entry[key2];
+          if (typeof value !== "string" || value.trim().length === 0) fail(`${at}.${key2}`, `${key2} must be a non-empty string`);
+        }
+        const key = `${String(entry.domain)}\0${String(entry.agent_id)}`;
+        if (seen.has(key)) fail(at, "duplicate agent exception: the same domain and agent_id is already ruled on");
+        seen.add(key);
+      });
+    }
+  }
+  return findings;
+}
+var SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+var RENDER_INPUT_NAME = /^[a-z_][a-z0-9_]*$/u;
+function relativeInside(value) {
+  if (typeof value !== "string" || value === "" || value.startsWith("/") || value.includes("\\")) return false;
+  const segments = value.replace(/\/+$/u, "").split("/");
+  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+function validateScaffoldManifest(policy) {
+  const block = policy.scaffold_manifest;
+  if (block === void 0) return [];
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  if (!isRecord6(block)) {
+    fail("scaffold_manifest", "scaffold_manifest must be a mapping");
+    return findings;
+  }
+  for (const key of Object.keys(block)) {
+    if (!FLEET_SCAFFOLD_MANIFEST_KEYS.includes(key)) fail(`scaffold_manifest.${key}`, "unknown scaffold_manifest key");
+  }
+  for (const key of ["template_submodule", "template_subdirectory"]) {
+    if (!relativeInside(block[key]) || block[key].endsWith("/")) fail(`scaffold_manifest.${key}`, `${key} must be a relative path inside the repository`);
+  }
+  const suffix = block.render_suffix;
+  if (typeof suffix !== "string" || !/^\.[A-Za-z0-9]+$/u.test(suffix)) fail("scaffold_manifest.render_suffix", "render_suffix must be a dotted extension such as .jinja");
+  const runtimeDir = block.runtime_dir;
+  if (typeof runtimeDir !== "string" || !SAFE_SEGMENT.test(runtimeDir)) fail("scaffold_manifest.runtime_dir", "runtime_dir must be one safe path segment");
+  const declaredFields = /* @__PURE__ */ new Set();
+  const authorities = policy.authorities;
+  if (isRecord6(authorities)) {
+    for (const entry of Object.values(authorities)) {
+      if (!isRecord6(entry) || !Array.isArray(entry.writable_fields)) continue;
+      for (const field3 of entry.writable_fields) if (typeof field3 === "string") declaredFields.add(field3);
+    }
+  }
+  const inputs = block.render_inputs;
+  if (!isRecord6(inputs)) fail("scaffold_manifest.render_inputs", "render_inputs must be a mapping of placeholder name to field path");
+  else {
+    for (const [name, field3] of Object.entries(inputs)) {
+      const at = `scaffold_manifest.render_inputs.${name}`;
+      if (!RENDER_INPUT_NAME.test(name)) fail(at, "a render input name must be a lower-case identifier");
+      if (typeof field3 !== "string" || !FIELD_PATH.test(field3)) {
+        fail(at, "must be a dotted field path");
+        continue;
+      }
+      const resolvable = field3 === "agents.{agent_id}" || (field3.startsWith("agents.{agent_id}.") || field3.startsWith("projects.{slug}.")) && declaredFields.has(field3);
+      if (!resolvable) fail(at, `${field3} is not agents.{agent_id} or a declared agents.{agent_id}.* / projects.{slug}.* writable field`);
+    }
+  }
+  const groups = block.groups;
+  const groupTable = {};
+  if (!isRecord6(groups) || Object.keys(groups).length === 0) fail("scaffold_manifest.groups", "groups must be a non-empty mapping of declared leaf to role-relative path");
+  else {
+    const seenPaths = /* @__PURE__ */ new Map();
+    for (const [leaf, rolePath] of Object.entries(groups)) {
+      const at = `scaffold_manifest.groups.${leaf}`;
+      if (!declaredFields.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+      if (!relativeInside(rolePath)) {
+        fail(at, "must be a role-relative path; a trailing / owns a directory");
+        continue;
+      }
+      const previous = seenPaths.get(rolePath);
+      if (previous !== void 0) fail(at, `duplicate group path ${rolePath}, already owned by ${previous}`);
+      else seenPaths.set(rolePath, leaf);
+      groupTable[leaf] = rolePath;
+    }
+  }
+  const presence = block.presence_only;
+  if (presence !== void 0) {
+    if (!Array.isArray(presence)) fail("scaffold_manifest.presence_only", "presence_only must be a list");
+    else {
+      const seen = /* @__PURE__ */ new Set();
+      presence.forEach((entry, index) => {
+        const at = `scaffold_manifest.presence_only[${index}]`;
+        if (!isRecord6(entry)) {
+          fail(at, "presence_only entry must be a mapping");
+          return;
+        }
+        for (const key of Object.keys(entry)) {
+          if (!FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS.includes(key)) fail(`${at}.${key}`, "unknown presence_only key");
+        }
+        const path = entry.path;
+        if (!relativeInside(path) || path.endsWith("/")) fail(`${at}.path`, "path must be a role-relative file path");
+        else if (Object.keys(groupTable).length > 0 && groupFor(path, groupTable) === null) fail(`${at}.path`, `${path} resolves to no declared group`);
+        else if (seen.has(path)) fail(`${at}.path`, `duplicate presence_only path ${path}`);
+        else seen.add(path);
+        if (typeof entry.reason !== "string" || entry.reason.trim().length === 0) fail(`${at}.reason`, "reason must be a non-empty string");
+      });
+    }
+  }
+  const excluded = block.excluded_patterns;
+  if (excluded !== void 0) {
+    if (!Array.isArray(excluded)) fail("scaffold_manifest.excluded_patterns", "excluded_patterns must be a list");
+    else {
+      excluded.forEach((pattern, index) => {
+        const at = `scaffold_manifest.excluded_patterns[${index}]`;
+        if (typeof pattern !== "string" || pattern.trim() === "" || pattern === "/" || pattern.startsWith("/")) {
+          fail(at, "an excluded pattern must be a non-empty segment glob");
+          return;
+        }
+        if (/^\*+\/?$/u.test(pattern) || pattern.includes("**")) fail(at, "an excluded pattern may not match every segment");
+      });
+    }
+  }
   return findings;
 }
 
 // src/fleet/inventory.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 import { existsSync as existsSync27, lstatSync as lstatSync15, readFileSync as readFileSync26, readlinkSync as readlinkSync3, statSync as statSync7 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
 import { isAbsolute as isAbsolute7, join as join34, posix, relative as relative12, resolve as resolve20 } from "node:path";
@@ -20383,7 +20733,7 @@ function list(value) {
 function readHealthPolicy(contract) {
   const block = contract.health_policy;
   if (!block) {
-    return { declared: false, requiredDomains: /* @__PURE__ */ new Set(), deferred: [], warnings: [], skips: [], freshness: [] };
+    return { declared: false, requiredDomains: /* @__PURE__ */ new Set(), deferred: [], warnings: [], skips: [], freshness: [], agentExceptions: [] };
   }
   return {
     declared: true,
@@ -20391,7 +20741,8 @@ function readHealthPolicy(contract) {
     deferred: list(block.deferred_capabilities).map((entry, index) => ({ path: `health_policy.deferred_capabilities[${index}]`, entry })),
     warnings: list(block.allowed_warnings).map((entry, index) => ({ path: `health_policy.allowed_warnings[${index}]`, entry })),
     skips: list(block.allowed_skips).map((entry, index) => ({ path: `health_policy.allowed_skips[${index}]`, entry })),
-    freshness: list(block.freshness).map((entry, index) => ({ path: `health_policy.freshness[${index}]`, entry }))
+    freshness: list(block.freshness).map((entry, index) => ({ path: `health_policy.freshness[${index}]`, entry })),
+    agentExceptions: list(block.agent_exceptions).map((entry, index) => ({ path: `health_policy.agent_exceptions[${index}]`, entry }))
   };
 }
 function evaluateFreshness(field3, isoValue, referenceMs, policy) {
@@ -20413,6 +20764,8 @@ var SOURCE_EVIDENCE = Object.freeze({
   "fleet-inventory": "direct",
   "fleet-provenance": "direct",
   "recipe-audit": "direct",
+  // The scaffold observer reads git objects and role directories itself.
+  "fleet-scaffold": "direct",
   "declared-gap": "absent"
 });
 var UNREAD_STATES = /* @__PURE__ */ new Set(["unobserved", "unsupported", "error"]);
@@ -20429,9 +20782,10 @@ function resolveJustification(input, policy) {
     }
   }
   if (input.exceptionId !== null) {
+    const policyPath = input.exceptionPolicy ?? `classifications.intentionally_unmanaged.entries.${bounded3(input.exceptionId, 128)}`;
     return {
       kind: "exception",
-      policy: `classifications.intentionally_unmanaged.entries.${bounded3(input.exceptionId, 128)}`,
+      policy: bounded3(policyPath),
       reason: bounded3(input.exceptionReason ?? "a managed exception the contract records for exactly these participants"),
       owner: null
     };
@@ -20880,6 +21234,7 @@ var FLEET_COMMAND_DATA_KEYS = {
     "findings",
     "probes",
     "transitions",
+    "scaffold",
     "truncated"
   ]
 };
@@ -21363,6 +21718,7 @@ function formatFleetProvenanceReport(provenance) {
 var REPORT_MAX_AGENTS = 40;
 var REPORT_MAX_OBSERVATIONS = 40;
 var REPORT_MAX_TRANSITIONS = 30;
+var REPORT_MAX_ITEMS = 5;
 function statusGlyph(state) {
   if (state === "pass") return green(glyph.pass);
   if (state === "fail" || state === "error") return red(glyph.fail);
@@ -21409,6 +21765,15 @@ function observationLines(observation3, width) {
   if (observation3.justification) {
     lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation3.justification.policy}: ${observation3.justification.reason}`)}`);
   }
+  const items = observation3.items ?? [];
+  for (const item of items.slice(0, REPORT_MAX_ITEMS)) {
+    const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"}${glyph.arrow}${item.observed ?? "-"}` : "";
+    const paint = item.kind === "incomplete" ? red : item.kind === "wrong-mode" || item.kind === "unexpected-owned" ? yellow : red;
+    lines.push(`       ${dim(glyph.arrow)} ${paint(item.kind)} ${bounded3(item.path)}${dim(pair)}${item.wip ? ` ${yellow("[wip]")}` : ""}${item.detail ? ` ${dim(`(${item.detail})`)}` : ""}`);
+  }
+  if (items.length > REPORT_MAX_ITEMS) {
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`... ${items.length - REPORT_MAX_ITEMS} more item(s); use --json for all of them`)}`);
+  }
   if (observation3.state !== "pass" && observation3.state !== "skip") {
     lines.push(`       ${dim(glyph.arrow)} ${dim(observation3.retrieval)}`);
   }
@@ -21431,6 +21796,18 @@ function agentLine(agent, width, domains) {
     agent.lifecycle.capability_readiness === "ready" ? green("routing ready") : dim(`routing ${agent.lifecycle.capability_readiness}`),
     agent.lifecycle.activation === "granted" ? yellow("activation granted") : dim(`activation ${agent.lifecycle.activation}`)
   ])}`);
+  if (agent.scaffold) {
+    const assets = agent.scaffold.assets;
+    const cells2 = [
+      dim(`scaffold ${assets.matching}/${assets.owned}`),
+      assets.drifted ? red(`${assets.drifted} drifted`) : dim("0 drifted"),
+      assets.incomplete ? yellow(`${assets.incomplete} undecided`) : dim("0 undecided"),
+      assets.unexpected_owned ? yellow(`${assets.unexpected_owned} unexpected`) : dim("0 unexpected"),
+      dim(`gitlink ${agent.scaffold.source_gitlink ? agent.scaffold.source_gitlink.slice(0, 12) : "unreadable"}`)
+    ];
+    if (agent.scaffold.wip_overlap.length) cells2.push(yellow(`${agent.scaffold.wip_overlap.length} wip overlap`));
+    lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells2)}`);
+  }
   if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
   return lines;
 }
@@ -21481,6 +21858,27 @@ function formatFleetStatusReport(status) {
     const stateCounts = Object.entries(rollup.counts).filter(([, count]) => count > 0).map(([state, count]) => statusColor2(state)(`${count} ${state}`));
     lines.push(`    ${statusGlyph(rollup.state)}  ${padVisible(rollup.domain, domainWidth)}  ${statusColor2(rollup.state)(rollup.state)}  ${dim(`${rollup.agents} agent${rollup.agents === 1 ? "" : "s"}`)}`);
     lines.push(`       ${dim(glyph.arrow)} ${stateCounts.length ? joinDot(stateCounts) : dim("no observations")}`);
+    if (rollup.domain === "template_scaffold" && status.scaffold) {
+      const counts2 = status.scaffold.agents;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`scaffold parity over ${counts2.applicable} of ${counts2.selected} selected`),
+        counts2.passing ? green(`${counts2.passing} passing`) : dim("0 passing"),
+        counts2.drifted ? red(`${counts2.drifted} drifted`) : dim("0 drifted"),
+        counts2.incomplete ? yellow(`${counts2.incomplete} incomplete`) : dim("0 incomplete"),
+        counts2.exception_authorized ? gray(`${counts2.exception_authorized} exception`) : dim("0 exception"),
+        counts2.unobserved ? yellow(`${counts2.unobserved} unobserved`) : dim("0 unobserved")
+      ])}`);
+      const source = status.scaffold.source;
+      lines.push(`       ${dim(glyph.arrow)} ${source.integrity === "ok" ? green("source ok") : red(`source ${source.integrity}`)} ${dim(`gitlink ${source.gitlink ? source.gitlink.slice(0, 12) : "none"}`)}`);
+      const agreement = status.scaffold.rule_agreement;
+      if (agreement.compared || agreement.disagree) {
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+          dim(`rule agreement ${agreement.agree}/${agreement.compared}`),
+          agreement.disagree ? red(`${agreement.disagree} disagree`) : dim("0 disagree"),
+          dim(`${agreement.not_compared} not compared`)
+        ])}`);
+      }
+    }
     for (const observation3 of rollup.observations) {
       lines.push(`       ${dim(glyph.arrow)} ${statusColor2(observation3.state)(observation3.state)} ${dim(observation3.summary)}`);
     }
@@ -21628,18 +22026,27 @@ async function probe(ctx, argv, cwd) {
   const { outcome, value } = await runBoundedChild(ctx, command, args, { cwd });
   return { outcome, value };
 }
+async function probeRaw(ctx, argv, cwd, input) {
+  const [command, ...args] = argv;
+  if (!command) return { outcome: "failed", value: null };
+  const { outcome, bytes } = await runBoundedChild(ctx, command, args, { cwd, input, raw: true });
+  return { outcome, value: outcome === "ok" ? bytes : null };
+}
 function captureSelf(ctx, entry, args, cwd, env2, timeoutMs) {
   return runBoundedChild(ctx, process.execPath, [entry, ...args], { cwd, env: env2, timeoutMs, keepStdoutOnFailure: true });
 }
 function runBoundedChild(ctx, command, args, options = {}) {
-  const { cwd, env: env2, keepStdoutOnFailure = false, timeoutMs } = options;
+  const { cwd, env: env2, keepStdoutOnFailure = false, timeoutMs, input, raw = false } = options;
   const budget = Math.min(timeoutMs ?? ctx.probeTimeoutMs, remainingMs(ctx));
   return new Promise((settle) => {
     let child;
     try {
       child = spawn4(command, [...args], {
         cwd,
-        stdio: ["ignore", "pipe", "ignore"],
+        // stdin is `ignore` unless a caller has bytes to feed it: a child that
+        // could wait on a terminal it never gets is a child the timeout has to
+        // kill, and nothing here should need killing to finish.
+        stdio: [input === void 0 ? "ignore" : "pipe", "pipe", "ignore"],
         // Its own process GROUP, so `kill` below can reach the whole tree.
         // Measured: a shim that is `#!/bin/sh ... sleep 60` puts the sleep under
         // the sh. SIGKILLing the sh alone leaves the sleep holding the write end
@@ -21655,12 +22062,13 @@ function runBoundedChild(ctx, command, args, options = {}) {
         env: env2 ?? probeEnv()
       });
     } catch {
-      settle({ outcome: "failed", value: null, code: null, overflow: false });
+      settle({ outcome: "failed", value: null, code: null, overflow: false, bytes: null });
       return;
     }
-    let out = "";
+    const chunks = [];
     let size = 0;
     let settled = false;
+    const collected = () => Buffer.concat(chunks);
     const finish = (result2) => {
       if (settled) return;
       settled = true;
@@ -21670,8 +22078,21 @@ function runBoundedChild(ctx, command, args, options = {}) {
         child.stdout?.destroy();
       } catch {
       }
+      try {
+        child.stdin?.destroy();
+      } catch {
+      }
       child.unref();
-      settle(result2);
+      const bytes = result2.keep ? collected() : null;
+      settle({
+        outcome: result2.outcome,
+        code: result2.code,
+        overflow: result2.overflow,
+        bytes,
+        // The TEXT value keeps its historical shape for every existing caller:
+        // decoded as utf8 and trimmed. A raw caller reads `bytes` instead.
+        value: bytes === null || raw ? null : bytes.toString("utf8").trim()
+      });
     };
     const kill = () => {
       try {
@@ -21685,31 +22106,40 @@ function runBoundedChild(ctx, command, args, options = {}) {
     };
     const timer = setTimeout(() => {
       kill();
-      finish({ outcome: "timeout", value: null, code: null, overflow: false });
+      finish({ outcome: "timeout", code: null, overflow: false, keep: false });
     }, budget);
     timer.unref?.();
     const onAbort = () => {
       kill();
-      finish({ outcome: "cancelled", value: null, code: null, overflow: false });
+      finish({ outcome: "cancelled", code: null, overflow: false, keep: false });
     };
     ctx.signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      size += chunk.length;
+    const stdout = child.stdout;
+    if (!stdout) {
+      finish({ outcome: "failed", code: null, overflow: false, keep: false });
+      return;
+    }
+    stdout.on("data", (chunk) => {
+      size += chunk.byteLength;
       if (size > PROBE_MAX_BYTES) {
         kill();
-        finish({ outcome: "failed", value: null, code: null, overflow: true });
+        finish({ outcome: "failed", code: null, overflow: true, keep: false });
         return;
       }
-      out += chunk;
+      chunks.push(chunk);
     });
-    child.on("error", () => finish({ outcome: "failed", value: null, code: null, overflow: false }));
+    if (child.stdin) {
+      child.stdin.on("error", () => {
+      });
+      child.stdin.end(input);
+    }
+    child.on("error", () => finish({ outcome: "failed", code: null, overflow: false, keep: false }));
     child.on("close", (code) => {
       if (code !== 0) {
-        finish({ outcome: "failed", value: keepStdoutOnFailure ? out.trim() : null, code, overflow: false });
+        finish({ outcome: "failed", code, overflow: false, keep: keepStdoutOnFailure });
         return;
       }
-      finish({ outcome: "ok", value: out.trim(), code, overflow: false });
+      finish({ outcome: "ok", code, overflow: false, keep: true });
     });
   });
 }
@@ -22334,7 +22764,7 @@ function normalizePathValue(value) {
 }
 function conflictGroupId(fieldPath, value) {
   const normalized = value.normalize("NFC").trim();
-  return `conflict:${fieldPath}:${createHash8("sha256").update(normalized, "utf8").digest("hex").slice(0, 12)}`;
+  return `conflict:${fieldPath}:${createHash9("sha256").update(normalized, "utf8").digest("hex").slice(0, 12)}`;
 }
 var DIMENSIONS = {
   agentId: { key: "agent-id", field: "agents.{agent_id}", kind: "agent" },
@@ -22801,7 +23231,7 @@ function collectFleetInventory(options = {}) {
 }
 
 // src/fleet/provenance.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 import { existsSync as existsSync28, lstatSync as lstatSync16, readFileSync as readFileSync27, realpathSync as realpathSync9, statSync as statSync8 } from "node:fs";
 import { homedir as homedir15 } from "node:os";
 import { dirname as dirname17, isAbsolute as isAbsolute8, join as join35, resolve as resolve21 } from "node:path";
@@ -22823,7 +23253,6 @@ var SOURCE_TEMPLATE_SUBMODULE = "hermes-agent-template-submodule";
 var SOURCE_AGENT_REGISTRY = "hermes-agent-registry";
 var SOURCE_AGENT_CHECKOUT = "hermes-agent-checkout";
 var SOURCE_PROVENANCE_POLICY = "pjangler-fleet-provenance";
-var SOURCE_ROLE_SCAFFOLD = "hermes-agent-role-scaffold";
 var SOURCE_PROFILE_TREE = "hermes-profile-tree";
 var SHELL_REFERENCE = /\$\{?[A-Za-z_]/u;
 function isRecord9(value) {
@@ -22970,14 +23399,14 @@ async function probeCheckout(ctx, declared, home) {
       reason: toplevel.outcome === "timeout" ? "probe-timeout" : toplevel.outcome === "cancelled" ? "probe-cancelled" : "probe-failed"
     };
   }
-  const canonical = (path) => {
+  const canonical2 = (path) => {
     try {
       return realpathSync9(path);
     } catch {
       return resolve21(path);
     }
   };
-  if (canonical(toplevel.value) !== canonical(expanded)) {
+  if (canonical2(toplevel.value) !== canonical2(expanded)) {
     return { ...base, classification, outcome: "skipped", reason: "not-a-repository-root" };
   }
   const [remote, head, status] = await Promise.all([
@@ -23247,23 +23676,7 @@ function addAgentRecordFacts(ctx, subject) {
   });
 }
 function addUnsupportedFacts(ctx, subject, profileTemplate) {
-  const { agentId, roleDir, profileName } = subject;
-  const scaffoldEvidence = roleDir === null ? absent(SOURCE_ROLE_SCAFFOLD, "missing") : (() => {
-    const dir = expandHome3(roleDir, ctx.home);
-    const view = classifyPath(dir, { directory: true });
-    const manifest = join35(dir, "role.yaml");
-    const state = view.classification === "ok" && existsSync28(manifest) ? "role.yaml present" : `role directory is ${view.classification}`;
-    return present(state, SOURCE_ROLE_SCAFFOLD, { classification: view.classification });
-  })();
-  addFact(ctx, {
-    id: "scaffold.template_ref",
-    scope: "agent",
-    agent_id: agentId,
-    field: "scaffold",
-    desired: absent(SOURCE_ROLE_SCAFFOLD, "unsupported"),
-    observed: scaffoldEvidence,
-    detail: "a deployed role scaffold records no template ref -- it renders no .copier-answers.yml and the repo-root one is CommonProject's, with no _commit -- so no comparison is possible and none is invented"
-  });
+  const { agentId, profileName } = subject;
   const namedProfile = profileName !== null && /^[A-Za-z0-9._-]+$/u.test(profileName) && profileName !== "." && profileName !== ".." ? profileName : null;
   const profilePath = namedProfile && profileTemplate ? profileTemplate.replaceAll("{profile_name}", namedProfile) : null;
   const generated = profilePath ? join35(profilePath, "config.yaml") : null;
@@ -23283,7 +23696,7 @@ function profileDigest(path) {
     if (stat.isSymbolicLink()) return present("symlink", SOURCE_PROFILE_TREE, { classification: "symlink" });
     if (!stat.isFile()) return present(`not-a-file`, SOURCE_PROFILE_TREE, { classification: "not-a-directory" });
     if (stat.size > PROFILE_CONFIG_MAX_BYTES) return absent(SOURCE_PROFILE_TREE, "unobserved", { classification: "unreadable" });
-    return present(`sha256:${createHash9("sha256").update(readFileSync27(path)).digest("hex")}`, SOURCE_PROFILE_TREE, { classification: "ok" });
+    return present(`sha256:${createHash10("sha256").update(readFileSync27(path)).digest("hex")}`, SOURCE_PROFILE_TREE, { classification: "ok" });
   } catch (error) {
     const code = error.code;
     return absent(SOURCE_PROFILE_TREE, "missing", { classification: code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable" });
@@ -23441,9 +23854,9 @@ async function collectFleetProvenance(options) {
   remainingMs(runContext);
   const observations = await mapBounded(targets, PROBE_CONCURRENCY, async ([, declared]) => probeCheckout(runContext, declared, home));
   const byDeclared = /* @__PURE__ */ new Map();
-  targets.forEach(([canonical, declared], index) => {
+  targets.forEach(([canonical2, declared], index) => {
     const observation3 = observations[index];
-    byDeclared.set(canonical, observation3);
+    byDeclared.set(canonical2, observation3);
     addProbe(ctx, {
       id: `checkout:${observation3.target}`,
       kind: "checkout",
@@ -23561,10 +23974,545 @@ async function collectFleetProvenance(options) {
 }
 
 // src/fleet/status.ts
-import { createHash as createHash10 } from "node:crypto";
-import { existsSync as existsSync29, readFileSync as readFileSync28 } from "node:fs";
+import { createHash as createHash11 } from "node:crypto";
+import { existsSync as existsSync29, readFileSync as readFileSync29 } from "node:fs";
 import { homedir as homedir16 } from "node:os";
-import { isAbsolute as isAbsolute9, join as join36, resolve as resolve22 } from "node:path";
+import { isAbsolute as isAbsolute10, join as join37, resolve as resolve23 } from "node:path";
+
+// src/fleet/scaffold.ts
+import { lstatSync as lstatSync17, readFileSync as readFileSync28, readlinkSync as readlinkSync4, realpathSync as realpathSync10 } from "node:fs";
+import { dirname as dirname18, isAbsolute as isAbsolute9, join as join36, relative as relative13, resolve as resolve22, sep as sep7 } from "node:path";
+var SCAFFOLD_MAX_ASSET_BYTES = 4 * 1024 * 1024;
+var SCAFFOLD_MAX_ROLE_ENTRIES = 5e3;
+var SCAFFOLD_LINEAGE_DEPTH = 12;
+var SCAFFOLD_PROBE_KIND = "scaffold";
+function gitArgv2(path, args) {
+  return ["git", "--no-optional-locks", "-C", path, ...args];
+}
+function canonical(path) {
+  try {
+    return realpathSync10(path);
+  } catch {
+    return resolve22(path);
+  }
+}
+function within(root, candidate) {
+  return candidate === root || candidate.startsWith(`${root}${sep7}`);
+}
+function parseBatch(output, keys) {
+  const out = /* @__PURE__ */ new Map();
+  let offset = 0;
+  for (const key of keys) {
+    const newline = output.indexOf(10, offset);
+    if (newline === -1) {
+      out.set(key, null);
+      continue;
+    }
+    const header = output.subarray(offset, newline).toString("utf8");
+    offset = newline + 1;
+    const parts = header.split(" ");
+    if (parts.length < 3 || parts[1] === "missing" || parts[1] === "ambiguous") {
+      out.set(key, null);
+      continue;
+    }
+    const size = Number(parts[2]);
+    if (!Number.isSafeInteger(size) || size < 0) {
+      out.set(key, null);
+      continue;
+    }
+    out.set(key, output.subarray(offset, offset + size));
+    offset += size + 1;
+  }
+  return out;
+}
+async function inspectSource(ctx) {
+  const { manifest } = ctx;
+  const submodule = join36(ctx.pjanglerRoot, manifest.template_submodule);
+  const target = ctx.shown(submodule);
+  const empty = (integrity, detail, gitlink2, outcome = "failed") => ({
+    record: { gitlink: gitlink2, integrity, detail, assets: 0 },
+    submodule,
+    assets: [],
+    renderSources: /* @__PURE__ */ new Map(),
+    probe: { id: `${SCAFFOLD_PROBE_KIND}:${target}`, kind: SCAFFOLD_PROBE_KIND, target, outcome, reason: integrity }
+  });
+  const unobserved = (step, outcome, gitlink2) => empty("source-unobserved", `the ${step} probe ${outcome === "timeout" ? "timed out" : "failed"} before the template source could be read`, gitlink2, outcome);
+  const committed = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.template_submodule]));
+  throwIfCancelled(ctx.run);
+  if (committed.outcome === "timeout") return unobserved("ls-tree HEAD", "timeout", null);
+  const head = /^160000\s+commit\s+([0-9a-f]{40})\t/u.exec(committed.value ?? "");
+  if (!head) {
+    return empty("gitlink-missing", `HEAD of the package root records no gitlink for ${manifest.template_submodule}; the template has no committed pin to compare against`, null);
+  }
+  const gitlink = head[1];
+  const staged = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-files", "--stage", "--", manifest.template_submodule]));
+  throwIfCancelled(ctx.run);
+  if (staged.outcome === "timeout") return unobserved("ls-files --stage", "timeout", gitlink);
+  const index = /^160000\s+([0-9a-f]{40})\s/u.exec(staged.value ?? "");
+  if (!index || index[1] !== gitlink) {
+    return empty("gitlink-unstable", `the index pins ${manifest.template_submodule} at ${index ? index[1].slice(0, 12) : "nothing"} while HEAD pins ${gitlink.slice(0, 12)}; a staged, uncommitted pin is not a version anything can be compared against`, gitlink);
+  }
+  const toplevel = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", "--show-toplevel"]));
+  throwIfCancelled(ctx.run);
+  if (toplevel.outcome === "timeout") return unobserved("rev-parse --show-toplevel", "timeout", gitlink);
+  if (toplevel.outcome !== "ok" || !toplevel.value || canonical(toplevel.value) !== canonical(submodule)) {
+    return empty("source-uninitialized", `${manifest.template_submodule} is not an initialized submodule checkout; run git submodule update to make the pinned template readable`, gitlink);
+  }
+  const object = await probe(ctx.run, gitArgv2(submodule, ["cat-file", "-e", `${gitlink}^{commit}`]));
+  throwIfCancelled(ctx.run);
+  if (object.outcome === "timeout") return unobserved("cat-file -e", "timeout", gitlink);
+  if (object.outcome !== "ok") {
+    return empty("source-missing-object", `the committed gitlink ${gitlink.slice(0, 12)} names a commit the submodule's object database does not hold; fetch the template before comparing against it`, gitlink);
+  }
+  const worktreeHead = await probe(ctx.run, gitArgv2(submodule, ["rev-parse", "HEAD"]));
+  throwIfCancelled(ctx.run);
+  if (worktreeHead.outcome === "timeout") return unobserved("rev-parse HEAD", "timeout", gitlink);
+  if (worktreeHead.outcome !== "ok" || worktreeHead.value !== gitlink) {
+    return empty("source-mismatched", `the template worktree is at ${worktreeHead.value ? worktreeHead.value.slice(0, 12) : "no commit"} while the parent commits ${gitlink.slice(0, 12)}; the checkout is not canonical`, gitlink);
+  }
+  const dirty = await probe(ctx.run, gitArgv2(submodule, ["status", "--porcelain", "--untracked-files=no"]));
+  throwIfCancelled(ctx.run);
+  if (dirty.outcome === "timeout") return unobserved("status --porcelain", "timeout", gitlink);
+  if (dirty.outcome !== "ok") return unobserved("status --porcelain", "failed", gitlink);
+  if ((dirty.value ?? "") !== "") {
+    return empty("source-dirty", `the template worktree carries modified tracked files; desired bytes are read from the committed gitlink ${gitlink.slice(0, 12)} and never from a dirty checkout, and the checkout must be clean before it is canonical`, gitlink);
+  }
+  const tree = await probeRaw(ctx.run, gitArgv2(submodule, ["ls-tree", "-r", "-z", gitlink, "--", manifest.template_subdirectory]));
+  throwIfCancelled(ctx.run);
+  if (tree.outcome === "timeout") return unobserved("ls-tree -r", "timeout", gitlink);
+  if (tree.outcome !== "ok" || tree.value === null) return unobserved("ls-tree -r", "failed", gitlink);
+  const prefix = `${manifest.template_subdirectory.replace(/\/+$/u, "")}/`;
+  const assets = [];
+  const entries = tree.value.toString("utf8").split("\0").filter((entry) => entry !== "");
+  for (const entry of entries) {
+    const match = /^(\d{6}) (\w+) ([0-9a-f]{40})\t(.+)$/su.exec(entry);
+    if (!match) continue;
+    const [, mode, type, sha, templatePath] = match;
+    if (!templatePath.startsWith(prefix)) continue;
+    const raw = templatePath.slice(prefix.length);
+    if (type !== "blob") {
+      return empty("source-contaminated", `the tree at ${gitlink.slice(0, 12)} carries a ${type} at ${raw}; a template renders blobs only`, gitlink);
+    }
+    const excluded = matchesExcluded(raw, manifest.excluded_patterns);
+    if (excluded !== null) {
+      return empty("source-contaminated", `the tree at ${gitlink.slice(0, 12)} carries ${raw}, which matches the excluded pattern ${excluded}; a contaminated template cannot be the desired state`, gitlink);
+    }
+    const rendered = raw.endsWith(manifest.render_suffix);
+    const rolePath = rendered ? raw.slice(0, -manifest.render_suffix.length) : raw;
+    if (rolePath === "" || rolePath.endsWith("/")) {
+      return empty("source-contaminated", `the tree at ${gitlink.slice(0, 12)} renders an unnamed asset from ${raw}`, gitlink);
+    }
+    const group = groupFor(rolePath, manifest.groups);
+    if (group === null) {
+      return empty(`manifest-uncovered:${rolePath}`, `the tree at ${gitlink.slice(0, 12)} renders ${rolePath}, which no scaffold_manifest.groups entry owns; declare a group for it before it can be compared`, gitlink);
+    }
+    assets.push({
+      templatePath,
+      rolePath,
+      sha,
+      mode,
+      type: mode === "120000" ? "symlink" : "file",
+      executable: mode === "100755",
+      rendered,
+      group,
+      presenceOnly: manifest.presence_only.some((item) => item.path === rolePath)
+    });
+  }
+  if (assets.length === 0) {
+    return empty("source-empty", `the tree at ${gitlink.slice(0, 12)} renders nothing under ${manifest.template_subdirectory}; an empty template is not a desired state`, gitlink);
+  }
+  assets.sort((a, b) => a.rolePath < b.rolePath ? -1 : a.rolePath > b.rolePath ? 1 : 0);
+  const renderSources = /* @__PURE__ */ new Map();
+  const wanted = assets.filter((asset) => asset.rendered && !asset.presenceOnly && asset.type === "file");
+  if (wanted.length > 0) {
+    const ids = [...new Set(wanted.map((asset) => asset.sha))];
+    const batch = await probeRaw(ctx.run, gitArgv2(submodule, ["cat-file", "--batch"]), void 0, `${ids.join("\n")}
+`);
+    throwIfCancelled(ctx.run);
+    if (batch.outcome === "timeout") return unobserved("cat-file --batch", "timeout", gitlink);
+    if (batch.outcome !== "ok" || batch.value === null) return unobserved("cat-file --batch", "failed", gitlink);
+    const blobs = parseBatch(batch.value, ids);
+    for (const asset of wanted) {
+      const bytes = blobs.get(asset.sha) ?? null;
+      if (bytes === null) {
+        return empty("source-missing-object", `blob ${asset.sha.slice(0, 12)} for ${asset.rolePath} is absent from the submodule's object database`, gitlink);
+      }
+      const text3 = bytes.toString("utf8");
+      renderSources.set(asset.templatePath, Buffer.from(text3, "utf8").equals(bytes) ? { text: text3 } : { unsupported: "render-unsupported: template source is not UTF-8 text" });
+    }
+  }
+  return {
+    record: { gitlink, integrity: "ok", detail: `${assets.length} asset(s) rendered by the template at the committed gitlink ${gitlink.slice(0, 12)}`, assets: assets.length },
+    submodule,
+    assets,
+    renderSources,
+    probe: { id: `${SCAFFOLD_PROBE_KIND}:${target}`, kind: SCAFFOLD_PROBE_KIND, target, outcome: "ok", reason: null }
+  };
+}
+function desiredFor(source, input) {
+  return source.assets.map((asset) => {
+    const base = {
+      path: asset.rolePath,
+      type: asset.type,
+      executable: asset.executable,
+      blobId: asset.sha,
+      presenceOnly: asset.presenceOnly,
+      incomplete: null
+    };
+    if (asset.presenceOnly) return { ...base, blobId: null };
+    if (!asset.rendered || asset.type !== "file") return base;
+    const rendered = source.renderSources.get(asset.templatePath);
+    if (!rendered) return { ...base, blobId: null, incomplete: { reason: "render-unsupported", detail: "render-unsupported: source not read" } };
+    if ("unsupported" in rendered) return { ...base, blobId: null, incomplete: { reason: "render-unsupported", detail: rendered.unsupported } };
+    const result2 = renderTemplate(rendered.text, input.inputs);
+    if (!result2.ok) return { ...base, blobId: null, incomplete: { reason: result2.reason, detail: result2.detail } };
+    return { ...base, blobId: blobId(Buffer.from(result2.text, "utf8")) };
+  });
+}
+function absent2() {
+  return { present: false, type: null, executable: false, blobId: null, unsafeSymlink: false, unreadable: null, wip: false };
+}
+async function scanAgent(ctx, source, input) {
+  const scan = {
+    input,
+    roleDir: null,
+    roleDirSource: input.roleDir !== null ? "registry" : "default",
+    error: null,
+    top: null,
+    observed: /* @__PURE__ */ new Map(),
+    tracked: [],
+    wipPaths: /* @__PURE__ */ new Set(),
+    wipPreserved: 0,
+    ignoredEntries: 0,
+    probe: { id: "", kind: SCAFFOLD_PROBE_KIND, target: "", outcome: "skipped", reason: null }
+  };
+  const fail = (error, outcome = "skipped") => {
+    scan.error = error;
+    scan.probe = { ...scan.probe, outcome, reason: error };
+    return scan;
+  };
+  const setTarget = (path) => {
+    const shown = ctx.shown(path);
+    scan.probe = { ...scan.probe, id: `${SCAFFOLD_PROBE_KIND}:${shown}`, target: shown };
+  };
+  if (input.projectPath === null) {
+    setTarget(input.agentId);
+    return fail("repository-unreadable:no-project-path");
+  }
+  setTarget(input.projectPath);
+  const toplevel = await probe(ctx.run, gitArgv2(input.projectPath, ["rev-parse", "--show-toplevel"]));
+  throwIfCancelled(ctx.run);
+  if (toplevel.outcome === "timeout") return fail("probe-timeout", "timeout");
+  if (toplevel.outcome !== "ok" || !toplevel.value) return fail("repository-unreadable:not-a-repository", "failed");
+  const top = canonical(toplevel.value);
+  if (top !== canonical(input.projectPath)) return fail("repository-unreadable:not-a-repository-root");
+  scan.top = top;
+  let roleDir;
+  if (input.roleDir !== null) {
+    roleDir = isAbsolute9(input.roleDir) ? resolve22(input.roleDir) : resolve22(input.projectPath, input.roleDir);
+  } else if (input.role !== null && input.role !== "" && input.role !== "." && input.role !== ".." && !input.role.includes("/")) {
+    roleDir = join36(input.projectPath, "agents", "hermes", input.role);
+  } else {
+    return fail("role-unresolved");
+  }
+  scan.roleDir = roleDir;
+  setTarget(roleDir);
+  let roleRel;
+  let roleReal;
+  try {
+    const stat = lstatSync17(roleDir);
+    if (stat.isSymbolicLink()) return fail("role-dir-symlink");
+    if (!stat.isDirectory()) return fail("role-dir-not-a-directory");
+    roleReal = canonical(roleDir);
+    if (roleReal === top) return fail("role-dir-is-repository-root");
+    if (!within(top, roleReal)) return fail("role-dir-outside-project");
+    roleRel = relative13(top, roleReal);
+  } catch {
+    const lexical = resolve22(roleDir);
+    const project = resolve22(input.projectPath);
+    if (lexical === project || lexical === top) return fail("role-dir-is-repository-root");
+    if (within(project, lexical)) roleRel = relative13(project, lexical);
+    else if (within(top, lexical)) roleRel = relative13(top, lexical);
+    else return fail("role-dir-outside-project");
+    roleReal = lexical;
+  }
+  const rolePosix = roleRel.split(sep7).join("/");
+  const pathspec = `:(literal)${rolePosix}`;
+  const tracked = await probeRaw(ctx.run, gitArgv2(top, ["ls-files", "-z", "--", pathspec]));
+  throwIfCancelled(ctx.run);
+  if (tracked.outcome === "timeout") return fail("probe-timeout", "timeout");
+  if (tracked.outcome !== "ok" || tracked.value === null) return fail("repository-unreadable:probe-failed", "failed");
+  const status = await probeRaw(ctx.run, gitArgv2(top, ["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all", "--", pathspec]));
+  throwIfCancelled(ctx.run);
+  if (status.outcome === "timeout") return fail("probe-timeout", "timeout");
+  if (status.outcome !== "ok" || status.value === null) return fail("repository-unreadable:probe-failed", "failed");
+  const toRole = (path) => path.startsWith(`${rolePosix}/`) ? path.slice(rolePosix.length + 1) : null;
+  const trackedEntries = tracked.value.toString("utf8").split("\0").filter((entry) => entry !== "");
+  const statusEntries = status.value.toString("utf8").split("\0");
+  if (trackedEntries.length + statusEntries.length > SCAFFOLD_MAX_ROLE_ENTRIES) return fail("role-entries-exceeded");
+  for (const entry of trackedEntries) {
+    const rolePath = toRole(entry);
+    if (rolePath !== null) scan.tracked.push(rolePath);
+  }
+  scan.tracked.sort();
+  for (let index = 0; index < statusEntries.length; index += 1) {
+    const entry = statusEntries[index];
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (xy[0] === "R" || xy[0] === "C") index += 1;
+    const rolePath = toRole(path.replace(/\/$/u, ""));
+    if (rolePath === null && !path.startsWith(`${rolePosix}/`)) continue;
+    if (xy === "!!") {
+      scan.ignoredEntries += 1;
+      continue;
+    }
+    scan.wipPreserved += 1;
+    if (xy !== "??" && rolePath !== null) scan.wipPaths.add(rolePath);
+  }
+  for (const asset of source.assets) {
+    const full = join36(roleReal, ...asset.rolePath.split("/"));
+    const seen = absent2();
+    seen.wip = scan.wipPaths.has(asset.rolePath);
+    try {
+      const stat = lstatSync17(full);
+      seen.present = true;
+      if (stat.isSymbolicLink()) {
+        seen.type = "symlink";
+        const link = readlinkSync4(full);
+        let resolvedTarget = null;
+        try {
+          resolvedTarget = realpathSync10(resolve22(dirname18(full), link));
+        } catch {
+          resolvedTarget = null;
+        }
+        seen.unsafeSymlink = isAbsolute9(link) || resolvedTarget !== null && !within(top, resolvedTarget);
+        seen.blobId = blobId(Buffer.from(link, "utf8"));
+      } else if (stat.isDirectory()) {
+        seen.type = "directory";
+      } else if (stat.isFile()) {
+        seen.type = "file";
+        seen.executable = (stat.mode & 73) !== 0;
+        if (stat.size > SCAFFOLD_MAX_ASSET_BYTES) seen.unreadable = "too-large";
+        else {
+          try {
+            seen.blobId = blobId(readFileSync28(full));
+          } catch {
+            seen.unreadable = "unreadable";
+          }
+        }
+      } else {
+        seen.type = "other";
+      }
+    } catch {
+    }
+    scan.observed.set(asset.rolePath, seen);
+  }
+  scan.probe = { ...scan.probe, outcome: "ok", reason: null };
+  return scan;
+}
+async function resolveLineage(ctx, source, scans, desiredByAgent) {
+  const lineage = { verbatim: /* @__PURE__ */ new Set(), rendered: /* @__PURE__ */ new Map(), unobserved: false };
+  const verbatimIds = /* @__PURE__ */ new Set();
+  const renderedNeeded = /* @__PURE__ */ new Map();
+  const assetByPath = new Map(source.assets.map((asset) => [asset.rolePath, asset]));
+  scans.forEach((scan, index) => {
+    if (scan.error !== null) return;
+    for (const desired of desiredByAgent[index] ?? []) {
+      if (desired.presenceOnly || desired.blobId === null || desired.type !== "file") continue;
+      const seen = scan.observed.get(desired.path);
+      if (!seen || !seen.present || seen.type !== "file" || seen.blobId === null || seen.blobId === desired.blobId) continue;
+      const asset = assetByPath.get(desired.path);
+      if (!asset) continue;
+      if (asset.rendered) {
+        const set = renderedNeeded.get(asset.templatePath) ?? /* @__PURE__ */ new Set();
+        set.add(index);
+        renderedNeeded.set(asset.templatePath, set);
+      } else {
+        verbatimIds.add(seen.blobId);
+      }
+    }
+  });
+  if (verbatimIds.size > 0) {
+    const ids = [...verbatimIds].sort();
+    const check = await probeRaw(ctx.run, gitArgv2(source.submodule, ["cat-file", "--batch-check"]), void 0, `${ids.join("\n")}
+`);
+    throwIfCancelled(ctx.run);
+    if (check.outcome !== "ok" || check.value === null) lineage.unobserved = true;
+    else {
+      for (const line of check.value.toString("utf8").split("\n")) {
+        const match = /^([0-9a-f]{40}) (\w+)/u.exec(line);
+        if (match && match[2] !== "missing") lineage.verbatim.add(match[1]);
+      }
+    }
+  }
+  if (renderedNeeded.size > 0) {
+    const gitlink = source.record.gitlink;
+    const keys = [];
+    const versions = /* @__PURE__ */ new Map();
+    for (const templatePath of [...renderedNeeded.keys()].sort()) {
+      const log3 = await probe(ctx.run, gitArgv2(source.submodule, ["log", "--format=%H", "-n", String(SCAFFOLD_LINEAGE_DEPTH), gitlink, "--", templatePath]));
+      throwIfCancelled(ctx.run);
+      if (log3.outcome !== "ok") {
+        lineage.unobserved = true;
+        continue;
+      }
+      const commits = (log3.value ?? "").split("\n").map((line) => line.trim()).filter((line) => /^[0-9a-f]{40}$/u.test(line));
+      const perPath = commits.map((commit) => `${commit}:${templatePath}`);
+      versions.set(templatePath, perPath);
+      keys.push(...perPath);
+    }
+    if (keys.length > 0) {
+      const batch = await probeRaw(ctx.run, gitArgv2(source.submodule, ["cat-file", "--batch"]), void 0, `${keys.join("\n")}
+`);
+      throwIfCancelled(ctx.run);
+      if (batch.outcome !== "ok" || batch.value === null) lineage.unobserved = true;
+      else {
+        const blobs = parseBatch(batch.value, keys);
+        for (const [templatePath, agentIndexes] of renderedNeeded) {
+          const asset = source.assets.find((item) => item.templatePath === templatePath);
+          if (!asset) continue;
+          const sources = (versions.get(templatePath) ?? []).map((key) => blobs.get(key) ?? null).filter((bytes) => bytes !== null).map((bytes) => bytes.toString("utf8"));
+          for (const index of agentIndexes) {
+            const scan = scans[index];
+            const rendered = /* @__PURE__ */ new Set();
+            for (const text3 of sources) {
+              const result2 = renderTemplate(text3, scan.input.inputs);
+              if (result2.ok) rendered.add(blobId(Buffer.from(result2.text, "utf8")));
+            }
+            const perAgent = lineage.rendered.get(index) ?? /* @__PURE__ */ new Map();
+            perAgent.set(asset.rolePath, rendered);
+            lineage.rendered.set(index, perAgent);
+          }
+        }
+      }
+    }
+  }
+  return lineage;
+}
+function erroredGroups(manifest, assets, detail) {
+  return Object.keys(manifest.groups).sort().map((group) => {
+    const rolePath = manifest.groups[group];
+    const owned = assets.filter((asset) => asset.group === group).length;
+    return {
+      group,
+      role_path: rolePath,
+      state: "error",
+      owned,
+      matching: 0,
+      drifted: 0,
+      incomplete: owned,
+      unexpected: 0,
+      items: [{ path: rolePath, kind: "incomplete", desired: null, observed: null, detail, wip: false }]
+    };
+  });
+}
+function emptyAgentResult(input, groups, error, roleDir, roleDirSource) {
+  const owned = groups.reduce((total, group) => total + group.owned, 0);
+  return {
+    agentId: input.agentId,
+    roleDir,
+    roleDirSource,
+    error,
+    groups,
+    assets: { owned, compared: 0, matching: 0, drifted: 0, incomplete: owned, unexpected_owned: 0 },
+    wipOverlap: [],
+    wipPreserved: 0,
+    foreignTracked: 0,
+    ignoredEntries: 0
+  };
+}
+async function collectScaffoldParity(ctx) {
+  throwIfCancelled(ctx.run);
+  const source = await inspectSource(ctx);
+  const probes = [source.probe];
+  const manifest = ctx.manifest;
+  if (source.record.integrity !== "ok") {
+    const detail = `source:${source.record.integrity}`;
+    const agents2 = ctx.agents.map((input) => {
+      const roleDir = input.roleDir !== null ? isAbsolute9(input.roleDir) ? resolve22(input.roleDir) : input.projectPath === null ? null : resolve22(input.projectPath, input.roleDir) : input.projectPath !== null && input.role ? join36(input.projectPath, "agents", "hermes", input.role) : null;
+      const target = ctx.shown(roleDir ?? input.projectPath ?? input.agentId);
+      probes.push({ id: `${SCAFFOLD_PROBE_KIND}:${target}`, kind: SCAFFOLD_PROBE_KIND, target, outcome: "skipped", reason: "source-unreadable" });
+      return emptyAgentResult(input, erroredGroups(manifest, [], detail), detail, roleDir, input.roleDir !== null ? "registry" : "default");
+    });
+    return { source: source.record, agents: agents2, probes };
+  }
+  const scans = await mapBounded(ctx.agents, FLEET_STATUS_SCAFFOLD_CONCURRENCY, (input) => scanAgent(ctx, source, input));
+  const desiredByAgent = ctx.agents.map((input) => desiredFor(source, input));
+  const lineage = await resolveLineage(ctx, source, scans, desiredByAgent);
+  const ownedPaths = new Set(source.assets.map((asset) => asset.rolePath));
+  const agents = scans.map((scan, index) => {
+    probes.push(scan.probe);
+    if (scan.error !== null) {
+      return emptyAgentResult(scan.input, erroredGroups(manifest, source.assets, scan.error), scan.error, scan.roleDir, scan.roleDirSource);
+    }
+    const desired = desiredByAgent[index] ?? [];
+    const renderedLineage = lineage.rendered.get(index) ?? /* @__PURE__ */ new Map();
+    let findings = compareAssets(desired, (asset) => scan.observed.get(asset.path) ?? absent2(), {
+      inLineage: (id, path) => lineage.verbatim.has(id) || (renderedLineage.get(path)?.has(id) ?? false)
+    });
+    if (lineage.unobserved) {
+      findings = findings.map((finding2) => finding2.kind === "stale-content" || finding2.kind === "locally-modified" ? { ...finding2, kind: "incomplete", detail: "lineage-unobserved" } : finding2);
+    }
+    const extras = classifyExtras({
+      trackedPaths: scan.tracked,
+      ownedPaths,
+      groups: manifest.groups,
+      runtimeDir: manifest.runtime_dir,
+      excludedPatterns: manifest.excluded_patterns
+    });
+    const groups = Object.keys(manifest.groups).sort().map((group) => {
+      const rolePath = manifest.groups[group];
+      const ownedHere = source.assets.filter((asset) => asset.group === group);
+      const ownedSet = new Set(ownedHere.map((asset) => asset.rolePath));
+      const items = findings.filter((finding2) => ownedSet.has(finding2.path));
+      for (const extra of extras.unexpected) {
+        if (extra.group !== group) continue;
+        items.push({ path: extra.path, kind: "unexpected-owned", desired: null, observed: "tracked", detail: extra.detail, wip: scan.wipPaths.has(extra.path) });
+      }
+      items.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0);
+      const incompletePaths = new Set(items.filter((item) => item.kind === "incomplete").map((item) => item.path));
+      const driftedPaths = new Set(items.filter((item) => item.kind !== "incomplete" && item.kind !== "unexpected-owned" && !incompletePaths.has(item.path)).map((item) => item.path));
+      const unexpected = items.filter((item) => item.kind === "unexpected-owned").length;
+      const owned = ownedHere.length;
+      return {
+        group,
+        role_path: rolePath,
+        state: incompletePaths.size > 0 ? "error" : driftedPaths.size > 0 || unexpected > 0 ? "fail" : "pass",
+        owned,
+        matching: owned - incompletePaths.size - driftedPaths.size,
+        drifted: driftedPaths.size,
+        incomplete: incompletePaths.size,
+        unexpected,
+        items
+      };
+    });
+    const totals = groups.reduce((sum, group) => ({
+      owned: sum.owned + group.owned,
+      compared: sum.compared + group.owned - group.incomplete,
+      matching: sum.matching + group.matching,
+      drifted: sum.drifted + group.drifted,
+      incomplete: sum.incomplete + group.incomplete,
+      unexpected_owned: sum.unexpected_owned + group.unexpected
+    }), { owned: 0, compared: 0, matching: 0, drifted: 0, incomplete: 0, unexpected_owned: 0 });
+    const wipOverlap = [...new Set(groups.flatMap((group) => group.items).filter((item) => item.wip).map((item) => item.path))].sort();
+    return {
+      agentId: scan.input.agentId,
+      roleDir: scan.roleDir,
+      roleDirSource: scan.roleDirSource,
+      error: null,
+      groups,
+      assets: totals,
+      wipOverlap,
+      wipPreserved: scan.wipPreserved,
+      foreignTracked: extras.foreignTracked,
+      ignoredEntries: scan.ignoredEntries
+    };
+  });
+  return { source: source.record, agents, probes };
+}
+
+// src/fleet/status.ts
 init_project();
 var RULE_DOMAIN = Object.freeze({
   // Tracked assets the CommonProject / Hermes template owns in a repository.
@@ -23657,6 +24605,7 @@ var DOMAIN_AUTHORITY_BLOCK = Object.freeze({
 var CAPABILITY_SYSTEMD = "unit_topology";
 var CAPABILITY_LIVE_PROCESS = "process_attribution";
 var CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
+var CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
 var FINDING_SEVERITY = Object.freeze({
   error: "critical",
   warn: "medium",
@@ -23681,6 +24630,16 @@ var SOURCE_REGISTRY = "fleet-inventory";
 var SOURCE_PROVENANCE = "fleet-provenance";
 var SOURCE_AUDIT = "recipe-audit";
 var SOURCE_DECLARED_GAP = "declared-gap";
+var SOURCE_SCAFFOLD = "fleet-scaffold";
+var SCAFFOLD_SOURCE_RULE_ID = "scaffold.source";
+var RULE_COVERED_CONTENT_GROUPS = /* @__PURE__ */ new Set([
+  "scaffold.hermes",
+  "scaffold.gitignore",
+  "scaffold.scripts",
+  "scaffold.sentinel.prompt.md"
+]);
+var RULE_COVERED_PRESENCE_PATHS = /* @__PURE__ */ new Set(["role.yaml", "SOUL.md", ".runtime-scaffold/README.md"]);
+var RULE_COVERED_KINDS = /* @__PURE__ */ new Set(["missing", "stale-content", "locally-modified"]);
 var FLEET_STATUS_AUDIT_TIMEOUT_MS = 2e4;
 var CLI_ENTRY_ENV = "PJ_FLEET_CLI_ENTRY";
 var AUDIT_CHILD_ENV_KEYS = [
@@ -23719,7 +24678,7 @@ function nonEmptyString3(value) {
 }
 function expandHome4(path, home) {
   if (path === "~") return home;
-  if (path.startsWith("~/")) return join36(home, path.slice(2));
+  if (path.startsWith("~/")) return join37(home, path.slice(2));
   return path;
 }
 function shownPath3(path) {
@@ -23727,7 +24686,7 @@ function shownPath3(path) {
 }
 function statusFindingId(scope, agentId, domain, ruleId, field3, source) {
   const key = [scope, agentId ?? "", domain, ruleId ?? "", field3, source].join("\0");
-  return createHash10("sha256").update(key, "utf8").digest("hex").slice(0, 12);
+  return createHash11("sha256").update(key, "utf8").digest("hex").slice(0, 12);
 }
 function retrievalFor(agentId, domain, live) {
   const parts = ["pjangler fleet status"];
@@ -23896,12 +24855,14 @@ function observation2(ctx, input) {
     fixable: input.fixable ?? null,
     exceptionId: input.exceptionId ?? null,
     exceptionReason: input.exceptionReason ?? null,
+    exceptionPolicy: input.exceptionPolicy ?? null,
     freshness,
     repo: input.agentId === null ? null : ctx.repoFor(input.agentId),
     retrieval,
     activationField: ctx.activationField,
     activationOwner: ctx.activationOwner
   }, ctx.policy);
+  const items = input.items && input.items.length > 0 ? { items: [...input.items] } : {};
   return {
     domain: input.domain,
     agent_id: input.agentId,
@@ -23930,7 +24891,8 @@ function observation2(ctx, input) {
     desired: bounded3(redactHome(input.desired ?? DOMAIN_DESIRED[input.domain])),
     next_action: classification.next_action,
     next_action_class: classification.next_action_class,
-    justification: classification.justification
+    justification: classification.justification,
+    ...items
   };
 }
 function observeFromInventory(ctx, row, domains) {
@@ -24170,20 +25132,133 @@ function observeFromProvenance(ctx, facts, agentId, domains) {
     if (!domains.has(domain)) continue;
     out.push(factObservation(ctx, fact, domain, agentId));
   }
-  for (const domain of ["template_scaffold", "release_provenance"]) {
+  for (const domain of ["release_provenance"]) {
     if (!domains.has(domain) || (byDomain.get(domain) ?? 0) > 0) continue;
     out.push(observation2(ctx, {
       domain,
       agentId,
       state: "unobserved",
       field: DOMAIN_FIELD[domain],
-      summary: `the provenance core reported no ${domain === "template_scaffold" ? "scaffold" : "release"} fact for this agent`,
+      summary: "the provenance core reported no release fact for this agent",
       source: SOURCE_PROVENANCE,
       observed: "no fact",
-      desired: `at least one ${domain === "template_scaffold" ? "scaffold" : "release"} provenance fact for this agent`
+      desired: "at least one release provenance fact for this agent"
     }));
   }
   return out;
+}
+function observeFromScaffold(ctx, input) {
+  const { agentId, result: result2 } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: [observation2(ctx, {
+        domain: "template_scaffold",
+        agentId,
+        state: "unsupported",
+        field: DOMAIN_FIELD.template_scaffold,
+        summary: "the fleet contract declares no scaffold_manifest, so no role directory can be compared against the pinned template",
+        details: ["declare scaffold_manifest in the fleet contract (schema 3) to make this domain observable"],
+        source: SOURCE_SCAFFOLD,
+        capability: CAPABILITY_SCAFFOLD_MANIFEST,
+        observed: "not observed",
+        desired: "every owned asset compared against the template at the committed gitlink"
+      })],
+      summary: null
+    };
+  }
+  if (result2 === void 0) {
+    return {
+      observations: [observation2(ctx, {
+        domain: "template_scaffold",
+        agentId,
+        state: "unobserved",
+        field: DOMAIN_FIELD.template_scaffold,
+        summary: "the scaffold observer produced no result for this agent",
+        source: SOURCE_SCAFFOLD,
+        observed: "no result",
+        desired: "eight group observations for this agent"
+      })],
+      summary: null
+    };
+  }
+  const short = input.gitlink === null ? null : input.gitlink.slice(0, 12);
+  const desiredSuffix = short === null ? "at the committed gitlink" : `at gitlink ${short}`;
+  const observations = [];
+  for (const group of result2.groups) {
+    const items = group.items.map((item) => ({
+      path: bounded3(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded3(item.desired, 64),
+      observed: item.observed === null ? null : bounded3(item.observed, 64),
+      detail: item.detail === null ? null : bounded3(item.detail),
+      wip: item.wip
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${group.group}].items: ${items.length - kept.length} of ${items.length} items dropped; the counts on this observation and on agents[].scaffold.assets are computed over every item before the cap`
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}${item.wip ? " [wip]" : ""}`;
+    });
+    const summary = group.state === "pass" ? `${group.owned} owned asset(s) in ${group.role_path} match the template ${desiredSuffix}` : group.state === "fail" ? `${group.drifted} drifted, ${group.unexpected} unexpected and ${group.incomplete} undecided asset(s) in ${group.role_path}` : `${group.incomplete} asset(s) in ${group.role_path} could not be compared`;
+    const excepted = group.state === "fail" && input.exception !== null;
+    observations.push(observation2(ctx, {
+      domain: "template_scaffold",
+      agentId,
+      state: group.state,
+      field: group.group,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_SCAFFOLD,
+      summary,
+      details,
+      observed: `${group.matching}/${group.owned} assets match`,
+      desired: `every asset in ${group.group} ${desiredSuffix}`,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception.reason : null,
+      exceptionPolicy: excepted ? input.exception.path : null
+    }));
+  }
+  const overlap = result2.wipOverlap.slice(0, FLEET_STATUS_MAX_WIP_OVERLAP).map((path) => bounded3(path));
+  if (result2.wipOverlap.length > overlap.length) {
+    input.notes.push(`agents.${agentId}.scaffold.wip_overlap: ${result2.wipOverlap.length - overlap.length} of ${result2.wipOverlap.length} paths dropped`);
+  }
+  return {
+    observations,
+    summary: {
+      source_gitlink: input.gitlink,
+      role_dir: result2.roleDir === null ? null : shownPath3(result2.roleDir),
+      role_dir_source: result2.roleDirSource,
+      assets: { ...result2.assets },
+      wip_overlap: overlap,
+      wip_preserved: result2.wipPreserved,
+      foreign_tracked: result2.foreignTracked,
+      ignored_entries: result2.ignoredEntries
+    }
+  };
+}
+function scaffoldRuleVerdict(rule) {
+  if (rule === void 0) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line) => typeof line === "string") : [];
+  return details.some((line) => /: (?:missing|stale) (?!.*\/runtime\/)/u.test(line)) ? "fail" : null;
+}
+function scaffoldObserverDrift(result2) {
+  if (result2 === void 0 || result2.error !== null) return null;
+  if (result2.groups.some((group) => group.state === "error" && (RULE_COVERED_CONTENT_GROUPS.has(group.group) || group.owned > 0))) return null;
+  for (const group of result2.groups) {
+    for (const item of group.items) {
+      if (item.kind === "missing" && RULE_COVERED_PRESENCE_PATHS.has(item.path)) return true;
+      if (RULE_COVERED_CONTENT_GROUPS.has(group.group) && RULE_COVERED_KINDS.has(item.kind)) return true;
+    }
+  }
+  return false;
 }
 function factObservation(ctx, fact, domain, agentId) {
   return observation2(ctx, {
@@ -24246,8 +25321,8 @@ function agentLifecycle(row, own, domains) {
 }
 function resolveAuditCli(env2 = process.env) {
   const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
-  const entry = override ?? join36(resolvePjanglerRoot(), "dist", "index.js");
-  if (!isAbsolute9(entry)) return null;
+  const entry = override ?? join37(resolvePjanglerRoot(), "dist", "index.js");
+  if (!isAbsolute10(entry)) return null;
   return existsSync29(entry) ? entry : null;
 }
 function auditChildEnv(base = process.env) {
@@ -24318,10 +25393,10 @@ async function collectFleetStatus(options) {
   let baselineText = null;
   let baselineShown = "";
   if (baselinePath !== null) {
-    const resolved = resolve22(expandHome4(baselinePath, home));
+    const resolved = resolve23(expandHome4(baselinePath, home));
     baselineShown = shownPath3(resolved);
     try {
-      baselineText = readFileSync28(resolved, "utf8");
+      baselineText = readFileSync29(resolved, "utf8");
     } catch {
       throw new FleetError(
         "INVALID_INPUT",
@@ -24364,15 +25439,22 @@ async function collectFleetStatus(options) {
   const agentRawById = /* @__PURE__ */ new Map();
   for (const entry of agentRaw.entries) if (!agentRawById.has(entry.key)) agentRawById.set(entry.key, entry.value);
   const repoByAgent = /* @__PURE__ */ new Map();
+  const roleDirByAgent = /* @__PURE__ */ new Map();
+  const rawRowByAgent = /* @__PURE__ */ new Map();
   for (const entry of agentRaw.entries) {
-    if (!selectedAgents.has(entry.key)) continue;
+    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const raw = isRecord10(entry.value) ? entry.value : {};
     const declared = nonEmptyString3(raw.project_path);
-    if (declared !== null) repoByAgent.set(entry.key, resolve22(expandHome4(declared, home)));
+    if (declared !== null) repoByAgent.set(entry.key, resolve23(expandHome4(declared, home)));
+    const declaredRoleDir = nonEmptyString3(raw.role_dir);
+    roleDirByAgent.set(entry.key, declaredRoleDir === null ? null : expandHome4(declaredRoleDir, home));
+    rawRowByAgent.set(entry.key, raw);
   }
   const policy = readHealthPolicy(contract);
+  const manifest = domainSet.has("template_scaffold") ? contract.scaffold_manifest ?? null : null;
   const projectRawBySlug = /* @__PURE__ */ new Map();
-  if (policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
+  const manifestNeedsProjects = manifest !== null && Object.values(manifest.render_inputs).some((field3) => field3.startsWith("projects."));
+  if (manifestNeedsProjects || policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
     const projectRaw = readProjectRegistryRaw(stores.projects.inspectedPath);
     for (const entry of projectRaw.entries) {
       if (!projectRawBySlug.has(entry.key)) projectRawBySlug.set(entry.key, entry.value);
@@ -24484,6 +25566,66 @@ async function collectFleetStatus(options) {
     provenanceFacts = provenance.facts;
     ctx.probes.push(...provenance.probes);
   }
+  const scalarAt = (root, segments) => {
+    let node = root;
+    for (const segment of segments) {
+      if (!isRecord10(node)) return null;
+      node = node[segment];
+    }
+    if (typeof node === "string") return nonEmptyString3(node);
+    if (typeof node === "number" || typeof node === "boolean") return String(node);
+    return null;
+  };
+  const renderInputsFor = (agentId) => {
+    const inputs = {};
+    if (manifest === null) return inputs;
+    const rawRow = rawRowByAgent.get(agentId);
+    const slug = rowsById.get(agentId)?.project_id.value ?? null;
+    const project = slug === null ? void 0 : projectRawBySlug.get(slug);
+    for (const [name, field3] of Object.entries(manifest.render_inputs)) {
+      const [root, key, ...rest] = field3.split(".");
+      if (field3 === "agents.{agent_id}") inputs[name] = agentId;
+      else if (root === "agents" && key === "{agent_id}") inputs[name] = scalarAt(rawRow, rest);
+      else if (root === "projects" && key === "{slug}") inputs[name] = scalarAt(project, rest);
+      else inputs[name] = null;
+    }
+    return inputs;
+  };
+  const scaffoldExceptionFor = (agentId) => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "template_scaffold" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let scaffoldParity = null;
+  const scaffoldByAgent = /* @__PURE__ */ new Map();
+  if (manifest !== null) {
+    throwIfCancelled(runContext);
+    scaffoldParity = await collectScaffoldParity({
+      run: runContext,
+      pjanglerRoot: resolvePjanglerRoot(),
+      manifest,
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        projectPath: repoByAgent.get(agentId) ?? null,
+        roleDir: roleDirByAgent.get(agentId) ?? null,
+        role: nonEmptyString3(rawRowByAgent.get(agentId)?.role),
+        inputs: renderInputsFor(agentId)
+      })),
+      shown: shownPath3
+    });
+    ctx.probes.push(...scaffoldParity.probes);
+    for (const result2 of scaffoldParity.agents) scaffoldByAgent.set(result2.agentId, result2);
+  }
+  const scaffoldCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    applicable: 0,
+    passing: 0,
+    drifted: 0,
+    incomplete: 0,
+    exception_authorized: 0,
+    unobserved: 0
+  };
+  const ruleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
   const auditByAgent = /* @__PURE__ */ new Map();
@@ -24565,6 +25707,57 @@ async function collectFleetStatus(options) {
     }
   }
   const hostByRule = /* @__PURE__ */ new Map();
+  if (scaffoldParity !== null) {
+    const state = scaffoldParity.source.integrity === "ok" ? "pass" : "error";
+    const field3 = DOMAIN_FIELD.template_scaffold;
+    const hostRetrieval = retrievalFor(null, "template_scaffold", live);
+    const sourceClassification = classifyObservation({
+      domain: "template_scaffold",
+      state,
+      field: field3,
+      ruleId: SCAFFOLD_SOURCE_RULE_ID,
+      ruleScope: "host",
+      source: SOURCE_SCAFFOLD,
+      capability: null,
+      evidence: null,
+      fixable: false,
+      exceptionId: null,
+      exceptionReason: null,
+      freshness: "not_applicable",
+      repo: null,
+      retrieval: hostRetrieval,
+      activationField: ctx.activationField,
+      activationOwner: ctx.activationOwner
+    }, ctx.policy);
+    const sourceSummary = bounded3(redactHome(scaffoldParity.source.detail));
+    hostByRule.set(SCAFFOLD_SOURCE_RULE_ID, {
+      finding: {
+        rule_id: SCAFFOLD_SOURCE_RULE_ID,
+        owner: ctx.domainOwner("template_scaffold"),
+        domain: "template_scaffold",
+        state,
+        summary: sourceSummary,
+        details: boundedDetails([
+          `integrity ${scaffoldParity.source.integrity}`,
+          `gitlink ${scaffoldParity.source.gitlink ?? "none recorded"}`,
+          `${scaffoldParity.source.assets} asset(s) in the manifest`
+        ]),
+        finding_id: statusFindingId("host", null, "template_scaffold", SCAFFOLD_SOURCE_RULE_ID, field3, SOURCE_SCAFFOLD),
+        retrieval: hostRetrieval,
+        applicability: sourceClassification.applicability,
+        evidence: sourceClassification.evidence,
+        freshness: sourceClassification.freshness,
+        severity: sourceClassification.severity,
+        repair: sourceClassification.repair,
+        observed: bounded3(scaffoldParity.source.integrity),
+        desired: "the committed gitlink stable, its object present, the worktree at it with no tracked change, and every rendered path owned by a declared group",
+        next_action: sourceClassification.next_action,
+        next_action_class: sourceClassification.next_action_class,
+        justification: sourceClassification.justification
+      },
+      states: /* @__PURE__ */ new Map([[state, 1]])
+    });
+  }
   const agentRecords = [];
   let totalObservations = 0;
   let emittedObservations = 0;
@@ -24581,8 +25774,34 @@ async function collectFleetStatus(options) {
     const own = [];
     own.push(...observeFromInventory(ctx, row, domainSet));
     if (needsProvenance) own.push(...observeFromProvenance(ctx, provenanceFacts, agentId, domainSet));
+    const agentNotes = [];
+    let scaffoldSummary = null;
+    const scaffoldResult = scaffoldByAgent.get(agentId);
+    const scaffoldObserved = manifest !== null && scaffoldResult !== void 0;
+    if (domainSet.has("template_scaffold")) {
+      const scaffold2 = observeFromScaffold(ctx, {
+        agentId,
+        result: scaffoldResult,
+        manifestDeclared: manifest !== null,
+        gitlink: scaffoldParity?.source.gitlink ?? null,
+        exception: scaffoldExceptionFor(agentId),
+        notes: agentNotes
+      });
+      own.push(...scaffold2.observations);
+      scaffoldSummary = scaffold2.summary;
+      if (!scaffoldObserved) scaffoldCounts.unobserved += 1;
+      else {
+        scaffoldCounts.applicable += 1;
+        if (scaffoldResult.groups.some((group) => group.state === "error")) scaffoldCounts.incomplete += 1;
+        else if (scaffoldResult.groups.some((group) => group.state === "fail")) {
+          if (scaffoldExceptionFor(agentId) !== null) scaffoldCounts.exception_authorized += 1;
+          else scaffoldCounts.drifted += 1;
+        } else scaffoldCounts.passing += 1;
+      }
+    }
     const audit = auditByAgent.get(agentId);
     if (!live) {
+      if (scaffoldObserved) ruleAgreement.not_compared += 1;
       for (const domain of auditFedSelected) {
         own.push(observation2(ctx, {
           domain,
@@ -24597,6 +25816,7 @@ async function collectFleetStatus(options) {
         }));
       }
     } else if (auditEntry === null || audit === void 0 || audit.outcome !== "ok") {
+      if (scaffoldObserved) ruleAgreement.not_compared += 1;
       const failed = audit !== void 0 && audit.outcome === "failed";
       const state = failed ? "error" : "unobserved";
       const reason = auditEntry === null ? "audit-cli-unavailable" : audit === void 0 ? "no-project-path-recorded" : audit.reason ?? audit.outcome;
@@ -24749,6 +25969,29 @@ async function collectFleetStatus(options) {
           fixable: typeof rule.fixable === "boolean" ? rule.fixable : null
         }));
       }
+      if (scaffoldObserved) {
+        const ruleVerdict = scaffoldRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString3(rule.id) === "hermes.pm-scaffold"));
+        const observerDrift = scaffoldObserverDrift(scaffoldResult);
+        if (ruleVerdict === null || observerDrift === null) ruleAgreement.not_compared += 1;
+        else {
+          ruleAgreement.compared += 1;
+          if (ruleVerdict === "fail" === observerDrift) ruleAgreement.agree += 1;
+          else {
+            ruleAgreement.disagree += 1;
+            addFinding3(ctx, {
+              code: "scaffold-rule-disagreement",
+              domain: "template_scaffold",
+              field: DOMAIN_FIELD.template_scaffold,
+              agent_id: agentId,
+              source: ctx.domainOwner("template_scaffold"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rule hermes.pm-scaffold reports ${ruleVerdict} while the scaffold observer finds ${observerDrift ? "drift" : "no drift"} over the assets both compare (hermes, .gitignore, .scripts/** for content; role.yaml, SOUL.md and .runtime-scaffold/README.md for presence); both readings are kept and neither is resolved silently`
+            });
+          }
+        }
+      }
     }
     own.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : (a.rule_id ?? "") < (b.rule_id ?? "") ? -1 : (a.rule_id ?? "") > (b.rule_id ?? "") ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0);
     totalObservations += own.length;
@@ -24766,6 +26009,7 @@ async function collectFleetStatus(options) {
     );
     members[memberClass] += 1;
     if (agentRecords.length >= FLEET_STATUS_MAX_AGENTS) continue;
+    truncated.push(...agentNotes);
     let kept = own;
     let retrieval = retrievalFor(agentId, domains.length === 1 ? domains[0] : null, live);
     if (clipped) {
@@ -24786,7 +26030,8 @@ async function collectFleetStatus(options) {
       truncated: clipped,
       retrieval,
       lifecycle,
-      member_class: memberClass
+      member_class: memberClass,
+      scaffold: scaffoldSummary
     });
   }
   const fleetObservations = [];
@@ -24875,6 +26120,18 @@ async function collectFleetStatus(options) {
     policy,
     domainStates: new Map(domainRollups.map((rollup) => [rollup.domain, rollup.state]))
   });
+  const scaffold = !domainSet.has("template_scaffold") ? null : {
+    source: scaffoldParity === null ? { gitlink: null, integrity: "manifest-undeclared", detail: "the fleet contract declares no scaffold_manifest, so no role directory was compared" } : {
+      gitlink: scaffoldParity.source.gitlink,
+      integrity: bounded3(scaffoldParity.source.integrity),
+      detail: bounded3(redactHome(scaffoldParity.source.detail))
+    },
+    agents: {
+      ...scaffoldCounts,
+      unobserved: scaffoldCounts.unobserved + (scaffoldCounts.total_registered - scaffoldCounts.selected)
+    },
+    rule_agreement: { ...ruleAgreement }
+  };
   return {
     contract_path: shownPath3(contractPath),
     contract_version: contract.contract_version,
@@ -24887,6 +26144,7 @@ async function collectFleetStatus(options) {
     findings,
     probes,
     transitions,
+    scaffold,
     truncated
   };
 }
@@ -24918,13 +26176,13 @@ function emptyInspection(contractPath, diagnostics) {
 function inspectFleetContract(override) {
   const path = resolveFleetContractPath(override);
   const shown = redactHome(path);
-  const canonical = override === void 0;
+  const canonical2 = override === void 0;
   const loaded = loadFleetContract(path);
   const { diagnostics, contract, extensions } = validateFleetContract(loaded.document);
   if (!contract) return { ...emptyInspection(shown, diagnostics), extensions };
   const byteStable = serializeFleetContract(loaded.document) === loaded.text;
   const findings = [...diagnostics];
-  if (canonical && !byteStable) {
+  if (canonical2 && !byteStable) {
     findings.push({
       code: "INVALID_INPUT",
       path: "contract",
@@ -25248,7 +26506,7 @@ async function promptForRuleIds(rules) {
 function readJson2(path) {
   if (!existsSync30(path)) return void 0;
   try {
-    const parsed = JSON.parse(readFileSync29(path, "utf8"));
+    const parsed = JSON.parse(readFileSync30(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
   } catch {
     return void 0;
@@ -25257,7 +26515,7 @@ function readJson2(path) {
 function findGitRoot(cwd) {
   const result2 = spawnSync16("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
   if (result2.status !== 0) return void 0;
-  return resolve23(result2.stdout.trim());
+  return resolve24(result2.stdout.trim());
 }
 function packageNameToProjectName(value) {
   if (!value) return void 0;
@@ -25265,8 +26523,8 @@ function packageNameToProjectName(value) {
   return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
 }
 function deriveProjectDefaults(targetDir) {
-  const manifest = readJson2(join37(targetDir, ".project.json"));
-  const pkg = readJson2(join37(targetDir, "package.json"));
+  const manifest = readJson2(join38(targetDir, ".project.json"));
+  const pkg = readJson2(join38(targetDir, "package.json"));
   const name = String(manifest?.project_name ?? "").trim() || packageNameToProjectName(typeof pkg?.name === "string" ? pkg.name : void 0) || packageNameToProjectName(basename10(targetDir)) || "Project";
   const ticketProvider = manifest?.ticket_provider && typeof manifest.ticket_provider === "object" ? manifest.ticket_provider : {};
   return {
@@ -25342,7 +26600,7 @@ function actionNeedsRun(plan, kind, syncMode) {
     if (!action || action.kind !== "project.write-manifest") return false;
     const next = `${JSON.stringify(action.manifest, null, 2)}
 `;
-    return !existsSync30(action.path) || readFileSync29(action.path, "utf8") !== next;
+    return !existsSync30(action.path) || readFileSync30(action.path, "utf8") !== next;
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
@@ -25390,27 +26648,27 @@ async function resolveProjectInitTarget(name, options) {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
-  let targetDir = options.targetDir ? resolve23(options.targetDir) : void 0;
+  let targetDir = options.targetDir ? resolve24(options.targetDir) : void 0;
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
   if (!targetDir && interactive) {
     const defaultName = name ?? basename10(cwd);
     const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join37(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    const defaultDir = join38(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     targetDir = await promptTextValue("Project directory", defaultDir);
     name = promptedName;
   }
   if (!targetDir) {
     if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve23(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    targetDir = resolve24(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   }
   const targetExists = existsSync30(targetDir);
   if (targetExists && !statSync9(targetDir).isDirectory()) throw new Error(`Target path is not a directory: ${targetDir}`);
   const targetGitRoot = targetExists ? findGitRoot(targetDir) : void 0;
-  const alreadyScaffolded = targetExists && (existsSync30(join37(targetDir, ".project.json")) || existsSync30(join37(targetDir, ".copier-answers.yml")));
+  const alreadyScaffolded = targetExists && (existsSync30(join38(targetDir, ".project.json")) || existsSync30(join38(targetDir, ".copier-answers.yml")));
   const syncMode = Boolean(
-    targetGitRoot && resolve23(targetGitRoot) === resolve23(targetDir) || alreadyScaffolded
+    targetGitRoot && resolve24(targetGitRoot) === resolve24(targetDir) || alreadyScaffolded
   );
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename10(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {

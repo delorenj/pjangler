@@ -9,14 +9,16 @@
  * The contract schema version this build WRITES.
  *
  * Bumped to 2 by story 1.5: `health_policy` is a new ROOT key, and a new root
- * key is a grammar change rather than a content one. The build still READS
- * schema 1 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because a schema-1
- * contract is simply one that authorizes no gap at all.
+ * key is a grammar change rather than a content one. Bumped to 3 by story 1.6
+ * for the same reason: `scaffold_manifest` is a new root key. The build still
+ * READS schema 1 and 2 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because a
+ * contract without the newer blocks is simply one that authorizes no gap and
+ * declares no manifest.
  */
-export const FLEET_CONTRACT_SCHEMA_VERSION = 2 as const;
+export const FLEET_CONTRACT_SCHEMA_VERSION = 3 as const;
 
 /** Inclusive range of contract schema versions this build accepts. */
-export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 2 } as const;
+export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 3 } as const;
 
 /** Envelope version for `pjangler fleet ...` machine output. */
 export const FLEET_SCHEMA_VERSION = 1 as const;
@@ -37,7 +39,7 @@ export const FLEET_SCHEMA_VERSION = 1 as const;
 export const FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version", "contract_version", "compatibility", "authorities",
   "projections", "classifications", "service_model", "activation", "retired",
-  "health_policy",
+  "health_policy", "scaffold_manifest",
 ] as const;
 
 /**
@@ -46,18 +48,39 @@ export const FLEET_CONTRACT_ROOT_KEYS = [
  * `health_policy` is real policy, not an `x-` extension, so it belongs in the
  * allowlist above -- but a schema-1 contract predates it and must still load.
  * A contract without it authorizes nothing, which is why an absent block makes
- * every non-pass unjustified rather than making the run fail.
+ * every non-pass unjustified rather than making the run fail. `scaffold_manifest`
+ * (schema 3) is optional on the same terms: without it the scaffold observer
+ * reports every agent's `template_scaffold` as `unsupported` with capability
+ * `scaffold.manifest`, unjustified unless the policy says otherwise.
  */
-export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy"] as const;
+export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest"] as const;
 
-/** Closed key set for `health_policy` and each of its four entry lists. */
+/** Closed key set for `health_policy` and each of its five entry lists. */
 export const FLEET_HEALTH_POLICY_KEYS = [
-  "required_domains", "deferred_capabilities", "allowed_warnings", "allowed_skips", "freshness",
+  "required_domains", "deferred_capabilities", "allowed_warnings", "allowed_skips", "freshness", "agent_exceptions",
 ] as const;
 export const FLEET_HEALTH_POLICY_DEFERRED_KEYS = ["domain", "capability", "reason", "owner_story"] as const;
 export const FLEET_HEALTH_POLICY_WARNING_KEYS = ["rule_id", "reason", "owner"] as const;
 export const FLEET_HEALTH_POLICY_SKIP_KEYS = ["domain", "rule_id", "reason"] as const;
 export const FLEET_HEALTH_POLICY_FRESHNESS_KEYS = ["field", "max_age_days", "applies_to"] as const;
+/** Closed key set for one `health_policy.agent_exceptions[]` entry. `(domain, agent_id)` is unique. */
+export const FLEET_HEALTH_POLICY_AGENT_EXCEPTION_KEYS = ["domain", "agent_id", "reason", "owner"] as const;
+
+/**
+ * Closed key set for the `scaffold_manifest` root block (schema 3).
+ *
+ * The manifest is POLICY about the tracked template, not a copy of it: which
+ * submodule and subdirectory the assets live in, how a rendered file is named,
+ * which registry fields feed each render input, which contract leaf owns each
+ * role-relative path, which assets are compared for presence only and why, and
+ * what may never appear in a template tree. The bytes themselves come from git
+ * at the committed gitlink and are never declared here.
+ */
+export const FLEET_SCAFFOLD_MANIFEST_KEYS = [
+  "template_submodule", "template_subdirectory", "render_suffix", "render_inputs",
+  "groups", "presence_only", "excluded_patterns", "runtime_dir",
+] as const;
+export const FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS = ["path", "reason"] as const;
 
 export const FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"] as const;
 
@@ -219,6 +242,23 @@ export interface FleetHealthPolicyFreshness {
 }
 
 /**
+ * One agent whose drift in one domain an operator has ruled on.
+ *
+ * `(domain, agent_id)` is the key and is unique. The ruling rides the existing
+ * justification axis as `kind: "exception"` with THIS entry's own contract path
+ * as its `policy`: the drifted observation is still reported, still `fail`, and
+ * still keeps `health.healthy` false -- what changes is that the agent lands in
+ * the `exception` member bucket rather than `unhealthy`, exactly as a permitted
+ * identity conflict does. `owner` is who made the ruling.
+ */
+export interface FleetHealthPolicyAgentException {
+  domain: string;
+  agent_id: string;
+  reason: string;
+  owner: string;
+}
+
+/**
  * The only thing that can JUSTIFY a gap.
  *
  * Nothing here grants a capability, relaxes the activation gate, or turns an
@@ -231,6 +271,37 @@ export interface FleetHealthPolicy {
   allowed_warnings: FleetHealthPolicyAllowedWarning[];
   allowed_skips: FleetHealthPolicyAllowedSkip[];
   freshness: FleetHealthPolicyFreshness[];
+  /** Optional. Absent on a schema-2 contract, which then rules on no agent at all. */
+  agent_exceptions?: FleetHealthPolicyAgentException[];
+}
+
+/** One asset compared for type and mode only, and the reason it is not compared for content. */
+export interface FleetScaffoldPresenceOnly {
+  path: string;
+  reason: string;
+}
+
+/**
+ * Policy about the tracked template, so the scaffold observer knows what a
+ * role directory SHOULD contain without reading a worktree.
+ *
+ * `render_inputs` maps a template placeholder name to the contract field path
+ * that feeds it -- `agents.{agent_id}` for the row's own id, a declared
+ * `agents.{agent_id}.*` field, or a declared `projects.{slug}.*` field on the
+ * correlated project record. `groups` maps each declared `scaffold.*` writable
+ * leaf to the role-relative path it owns; a value ending in `/` owns a
+ * directory. Every path the template renders must resolve to exactly one
+ * group, or the source is `manifest-uncovered` and nothing is compared.
+ */
+export interface FleetScaffoldManifest {
+  template_submodule: string;
+  template_subdirectory: string;
+  render_suffix: string;
+  render_inputs: Record<string, string>;
+  groups: Record<string, string>;
+  presence_only: FleetScaffoldPresenceOnly[];
+  excluded_patterns: string[];
+  runtime_dir: string;
 }
 
 export interface FleetContract {
@@ -245,6 +316,8 @@ export interface FleetContract {
   retired: FleetRetiredMode[];
   /** Optional. Absent on a schema-1 contract, which then authorizes no gap at all. */
   health_policy?: FleetHealthPolicy;
+  /** Optional. Absent on a schema-1/2 contract, which then declares no scaffold to compare against. */
+  scaffold_manifest?: FleetScaffoldManifest;
 }
 
 /** One namespaced extension, kept out of policy and reported separately. */
@@ -857,6 +930,29 @@ export const FLEET_STATUS_MAX_DETAILS = 20;
  */
 export const FLEET_STATUS_AUDIT_CONCURRENCY = 4;
 
+/**
+ * How many role directories the scaffold observer reads at once.
+ *
+ * Each agent costs a handful of local `git` reads plus one `lstat`/read per
+ * owned asset (51 on the current template). Four in flight is the audit's
+ * number and for the same reason: it keeps an observation command from
+ * becoming a load spike on the operator's own machine.
+ */
+export const FLEET_STATUS_SCAFFOLD_CONCURRENCY = 4;
+
+/**
+ * Cap on typed `items` carried on ONE observation.
+ *
+ * Its own cap, recorded per observation in `truncated`, never `boundedValue`
+ * (which slices at 100 with no clip record). The counts on the observation and
+ * on `agents[].scaffold` are computed over EVERY item before this cap applies,
+ * so a bound on what the envelope carries never moves what it concludes.
+ */
+export const FLEET_STATUS_MAX_ITEMS = 100;
+
+/** Cap on `agents[].scaffold.wip_overlap` paths carried. The count beside it is uncapped. */
+export const FLEET_STATUS_MAX_WIP_OVERLAP = 20;
+
 
 // ---------------------------------------------------------------------------
 // Fleet health (story 1.5)
@@ -1294,6 +1390,139 @@ export interface FleetStatusObservation {
   next_action_class: FleetStatusNextActionClass;
   /** The contract entry authorizing this gap, or null. Null on a non-pass blocks `proven`. */
   justification: FleetStatusJustification | null;
+  /**
+   * Typed per-asset items, where the observation is a scaffold group. Story 1.6.
+   *
+   * ABSENT (not empty) on a group with nothing to report, and capped at
+   * `FLEET_STATUS_MAX_ITEMS` with the clip recorded in `truncated`. Each item's
+   * `path` is role-relative and its `desired`/`observed` are 12-hex blob-id
+   * prefixes or type/mode words -- never a body, never an absolute path.
+   */
+  items?: FleetStatusObservationItem[];
+}
+
+// ---------------------------------------------------------------------------
+// Fleet scaffold parity (story 1.6)
+//
+// `template_scaffold` used to read `unsupported`/`unobserved` for every agent on
+// a default run. The vocabulary below is what a read-only observer reports when
+// it compares each managed role directory, asset by asset, against the template
+// at the COMMITTED gitlink -- git objects, never a worktree.
+// ---------------------------------------------------------------------------
+
+/**
+ * What one asset item says. Mirrors `SCAFFOLD_ASSET_FINDING_KINDS` in
+ * `src/scaffold/compare.ts`, which is the pure core both the observer and the
+ * recipe rule share; declared here too so the envelope vocabulary lives beside
+ * every other `FLEET_STATUS_*` tuple.
+ */
+export const FLEET_SCAFFOLD_ITEM_KINDS = [
+  "missing", "stale-content", "locally-modified", "wrong-mode",
+  "wrong-type", "unsafe-symlink", "unexpected-owned", "incomplete",
+] as const;
+export type FleetScaffoldItemKind = (typeof FLEET_SCAFFOLD_ITEM_KINDS)[number];
+
+/**
+ * Why the template SOURCE could not be trusted, when it could not.
+ *
+ * `ok`                    the committed gitlink is stable, its object exists, the
+ *                         worktree is at it and carries no tracked change, and
+ *                         every rendered path resolves to one declared group.
+ * `gitlink-missing`       the parent's HEAD records no gitlink for the submodule.
+ * `gitlink-unstable`      the index gitlink differs from HEAD's -- a staged, uncommitted pin.
+ * `source-uninitialized`  the submodule directory is not a repository root.
+ * `source-missing-object` the gitlink names a commit the object database does not hold.
+ * `source-mismatched`     the worktree HEAD is not the committed gitlink.
+ * `source-dirty`          a TRACKED template file is modified (untracked files are not dirt here).
+ * `source-contaminated`   the tree at the gitlink carries an excluded pattern (`__pycache__`, `*.pyc`).
+ * `source-empty`          the tree at the gitlink renders nothing.
+ * `source-unobserved`     a probe failed or timed out before the source could be read.
+ * `manifest-uncovered`    a rendered path matches no declared group; the code is suffixed `:<path>`.
+ *
+ * Any code but `ok` is a HOST finding (`scaffold.source`) and marks every
+ * selected agent's eight groups `error`. Desired bytes are never taken from the
+ * worktree as a fallback.
+ */
+export const FLEET_SCAFFOLD_SOURCE_CODES = [
+  "ok", "gitlink-missing", "gitlink-unstable", "source-uninitialized", "source-missing-object",
+  "source-mismatched", "source-dirty", "source-contaminated", "source-empty", "source-unobserved",
+  "manifest-uncovered",
+] as const;
+export type FleetScaffoldSourceCode = (typeof FLEET_SCAFFOLD_SOURCE_CODES)[number];
+
+/** One asset item on a scaffold group observation. */
+export interface FleetStatusObservationItem {
+  /** Role-relative, forward slashes. Never absolute. */
+  path: string;
+  kind: FleetScaffoldItemKind;
+  /** A 12-hex blob-id prefix or a type/mode word. Never a body. */
+  desired: string | null;
+  observed: string | null;
+  /** A stable category (`input-missing: display_name`), never a subprocess message. */
+  detail: string | null;
+  /** The working tree carries an uncommitted change to this path. Orthogonal to the kind. */
+  wip: boolean;
+}
+
+/** The per-agent scaffold summary. `null` when `template_scaffold` was not selected or no manifest is declared. */
+export interface FleetStatusAgentScaffold {
+  /** The committed gitlink the comparison ran against, 40-hex. Null when the source was unreadable. */
+  source_gitlink: string | null;
+  /** The role directory compared, bounded and home-redacted. Null when none could be resolved. */
+  role_dir: string | null;
+  /** Whether `role_dir` came from the registry row or from the `<project_path>/agents/hermes/<role>` default. */
+  role_dir_source: "registry" | "default";
+  assets: {
+    /** Assets the template renders at the gitlink. */
+    owned: number;
+    /** Owned assets a comparison completed for. `owned - incomplete`. */
+    compared: number;
+    matching: number;
+    /** Distinct owned paths with at least one drift item. */
+    drifted: number;
+    /** Owned paths this build could not decide. */
+    incomplete: number;
+    /** Tracked files inside an owned group the template did not render. */
+    unexpected_owned: number;
+  };
+  /** Owned, drifted paths that ALSO carry an uncommitted change. Capped at `FLEET_STATUS_MAX_WIP_OVERLAP`. */
+  wip_overlap: string[];
+  /** Modified or untracked entries under the role directory, counted and never named. */
+  wip_preserved: number;
+  /** Tracked files outside every owned group. Counted, never named. */
+  foreign_tracked: number;
+  /** Git-ignored entries under the role directory, the runtime directory included. Counted, never named. */
+  ignored_entries: number;
+}
+
+/** The fleet-level scaffold summary under `data.scaffold`. `null` when `template_scaffold` was not selected. */
+export interface FleetScaffoldSummary {
+  source: {
+    gitlink: string | null;
+    integrity: string;
+    detail: string;
+  };
+  /** Counted over EVERY selected agent, before any envelope cap. */
+  agents: {
+    total_registered: number;
+    selected: number;
+    /** Selected agents the observer produced a result for. */
+    applicable: number;
+    passing: number;
+    drifted: number;
+    incomplete: number;
+    /** Drifted agents whose every drifted group a `health_policy.agent_exceptions` entry covers. */
+    exception_authorized: number;
+    /** `total_registered - selected`, plus selected agents the observer never reached. */
+    unobserved: number;
+  };
+  /** Under `--live`, how the observer and the `hermes.pm-scaffold` rule agreed over the rule-covered subset. */
+  rule_agreement: {
+    compared: number;
+    agree: number;
+    disagree: number;
+    not_compared: number;
+  };
 }
 
 /** One agent, every domain, with the per-domain rollup beside the raw observations. */
@@ -1313,6 +1542,8 @@ export interface FleetStatusAgent {
   lifecycle: FleetStatusLifecycle;
   /** Exactly one bucket, resolved under `FLEET_STATUS_MEMBER_PRECEDENCE`. */
   member_class: FleetStatusMemberClass;
+  /** The scaffold parity summary. Story 1.6. Always present; `null` when the domain was not selected. */
+  scaffold: FleetStatusAgentScaffold | null;
 }
 
 /**
@@ -1492,6 +1723,8 @@ export interface FleetStatus {
    * to this run: an unchanged finding emits nothing.
    */
   transitions: FleetStatusTransition[];
+  /** The fleet-level scaffold parity summary. Story 1.6. Always present; `null` when the domain was not selected. */
+  scaffold: FleetScaffoldSummary | null;
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
 }

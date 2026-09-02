@@ -105,6 +105,7 @@ const SUITES = [
   "tests/fleet-provenance-regressions.mjs",
   "tests/fleet-status-regressions.mjs",
   "tests/fleet-health-regressions.mjs",
+  "tests/fleet-scaffold-regressions.mjs",
   "tests/mcp-catalog-regressions.mjs",
   "tests/mcp-server-regressions.mjs",
   "tests/project-registry-regressions.mjs",

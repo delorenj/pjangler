@@ -82,13 +82,16 @@ import {
 import { bounded, redactHome } from "./output";
 import { collectFleetProvenance } from "./provenance";
 import { captureSelf, mapBounded, remainingMs, throwIfCancelled, type FleetRunContext } from "./runtime";
+import { collectScaffoldParity, type FleetScaffoldAgentResult, type FleetScaffoldParity } from "./scaffold";
 import {
   FLEET_STATUS_AUDIT_CONCURRENCY,
   FLEET_STATUS_DOMAINS,
   FLEET_STATUS_MAX_AGENTS,
   FLEET_STATUS_MAX_DETAILS,
   FLEET_STATUS_MAX_FINDINGS,
+  FLEET_STATUS_MAX_ITEMS,
   FLEET_STATUS_MAX_OBSERVATIONS_PER_AGENT,
+  FLEET_STATUS_MAX_WIP_OVERLAP,
   FLEET_STATUS_STATE_PRECEDENCE,
   FLEET_STATUS_STATES,
   FleetError,
@@ -99,8 +102,12 @@ import {
   type FleetInventoryRow,
   type FleetProbeRecord,
   type FleetProvenanceFact,
+  type FleetScaffoldManifest,
+  type FleetScaffoldSummary,
   type FleetStatus,
   type FleetStatusAgent,
+  type FleetStatusAgentScaffold,
+  type FleetStatusObservationItem,
   type FleetStatusDomain,
   type FleetStatusDomainRollup,
   type FleetStatusEvidence,
@@ -317,6 +324,13 @@ const DOMAIN_AUTHORITY_BLOCK: Readonly<Record<FleetStatusDomain, string>> = Obje
 const CAPABILITY_SYSTEMD = "unit_topology";
 const CAPABILITY_LIVE_PROCESS = "process_attribution";
 const CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
+/**
+ * The scaffold observer's own gap: a contract with no `scaffold_manifest` gives
+ * it nothing to compare against, so every selected agent's `template_scaffold`
+ * is `unsupported` under this capability -- unjustified unless the policy says
+ * otherwise, exactly like the three above.
+ */
+const CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
 
 /** The inventory finding severity, mapped onto the status priority axis. */
 const FINDING_SEVERITY: Readonly<Record<FleetFindingSeverity, FleetStatusSeverity>> = Object.freeze({
@@ -359,6 +373,27 @@ const SOURCE_REGISTRY = "fleet-inventory";
 const SOURCE_PROVENANCE = "fleet-provenance";
 const SOURCE_AUDIT = "recipe-audit";
 const SOURCE_DECLARED_GAP = "declared-gap";
+/** The scaffold observer (story 1.6): role directories against the template at the committed gitlink. */
+const SOURCE_SCAFFOLD = "fleet-scaffold";
+
+/** The host-scoped rule id the source-integrity finding is filed under. */
+const SCAFFOLD_SOURCE_RULE_ID = "scaffold.source";
+
+/**
+ * The subset of the scaffold the `hermes.pm-scaffold` recipe rule ALSO compares,
+ * so the two can be checked for agreement under `--live`.
+ *
+ * The rule reads `hermes`, `.gitignore` and `.scripts/**` for content, and
+ * `role.yaml`, `SOUL.md` and `.runtime-scaffold/README.md` for presence. It
+ * ignores `momo`, modes, types, symlinks and extra tracked files, so those are
+ * not in the subset: an observer finding there is not a disagreement, it is
+ * coverage the rule never had.
+ */
+const RULE_COVERED_CONTENT_GROUPS: ReadonlySet<string> = new Set([
+  "scaffold.hermes", "scaffold.gitignore", "scaffold.scripts", "scaffold.sentinel.prompt.md",
+]);
+const RULE_COVERED_PRESENCE_PATHS: ReadonlySet<string> = new Set(["role.yaml", "SOUL.md", ".runtime-scaffold/README.md"]);
+const RULE_COVERED_KINDS: ReadonlySet<string> = new Set(["missing", "stale-content", "locally-modified"]);
 
 /**
  * Wall-clock budget for ONE audit child, still floored by the whole-run deadline.
@@ -816,6 +851,10 @@ interface ObservationInput {
   /** The contract exception entry covering this observation. */
   exceptionId?: string | null;
   exceptionReason?: string | null;
+  /** The exception entry's own contract path, when it is not an `intentionally_unmanaged` ruling. */
+  exceptionPolicy?: string | null;
+  /** Typed per-asset items, for a scaffold group observation. Omitted from the record when empty. */
+  items?: readonly FleetStatusObservationItem[];
 }
 
 /**
@@ -851,12 +890,17 @@ function observation(ctx: FleetStatusContext, input: ObservationInput): FleetSta
     fixable: input.fixable ?? null,
     exceptionId: input.exceptionId ?? null,
     exceptionReason: input.exceptionReason ?? null,
+    exceptionPolicy: input.exceptionPolicy ?? null,
     freshness,
     repo: input.agentId === null ? null : ctx.repoFor(input.agentId),
     retrieval,
     activationField: ctx.activationField,
     activationOwner: ctx.activationOwner,
   }, ctx.policy);
+  // ABSENT, not empty, when there is nothing to itemize: a `pass` group carries
+  // no `items` key at all, so a consumer can tell "nothing to report" from
+  // "reported nothing" without counting.
+  const items = input.items && input.items.length > 0 ? { items: [...input.items] } : {};
   return {
     domain: input.domain,
     agent_id: input.agentId,
@@ -886,6 +930,7 @@ function observation(ctx: FleetStatusContext, input: ObservationInput): FleetSta
     next_action: classification.next_action,
     next_action_class: classification.next_action_class,
     justification: classification.justification,
+    ...items,
   };
 }
 
@@ -1152,13 +1197,16 @@ export function observeFromInventory(
 }
 
 /**
- * The two domains the provenance core answers.
+ * The domains the provenance core answers per agent.
  *
  * `release_provenance` is every per-agent provenance fact -- which executable,
  * which checkout, which remote, which HEAD, whether it is clean -- carried
- * across with its own status rather than recomputed. `template_scaffold` is the
- * one fact this host records nothing to answer (`scaffold.template_ref`), which
- * provenance already reports `unsupported` by design.
+ * across with its own status rather than recomputed. `template_scaffold` used
+ * to receive one permanent per-agent `unsupported` here (`scaffold.template_ref`);
+ * story 1.6's scaffold observer answers that domain with real observations, so
+ * the provenance core now feeds it FLEET-scoped facts only (the gitlink, the
+ * remote, the worktree's cleanliness) and no per-agent placeholder is emitted
+ * for it -- one would sit as an `unobserved` beside eight real observations.
  */
 export function observeFromProvenance(
   ctx: FleetStatusContext,
@@ -1179,20 +1227,194 @@ export function observeFromProvenance(
 
   // A domain the provenance core answered NOTHING for is `unobserved`, not
   // absent: the domain must appear on every record even when the source that
-  // feeds it returned no fact at all.
-  for (const domain of ["template_scaffold", "release_provenance"] as const) {
+  // feeds it returned no fact at all. `template_scaffold` is deliberately not in
+  // this list any more -- the scaffold observer owns that domain's per-agent
+  // record, and a placeholder here would land beside its real observations.
+  for (const domain of ["release_provenance"] as const) {
     if (!domains.has(domain) || (byDomain.get(domain) ?? 0) > 0) continue;
     out.push(observation(ctx, {
       domain, agentId, state: "unobserved",
       field: DOMAIN_FIELD[domain],
-      summary: `the provenance core reported no ${domain === "template_scaffold" ? "scaffold" : "release"} fact for this agent`,
+      summary: "the provenance core reported no release fact for this agent",
       source: SOURCE_PROVENANCE,
       observed: "no fact",
-      desired: `at least one ${domain === "template_scaffold" ? "scaffold" : "release"} provenance fact for this agent`,
+      desired: "at least one release provenance fact for this agent",
     }));
   }
 
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The scaffold observer's observations (story 1.6)
+// ---------------------------------------------------------------------------
+
+/** What `observeFromScaffold` needs beyond the context. */
+interface ScaffoldObservationInput {
+  agentId: string;
+  /** The observer's result for this agent, or undefined when it never ran. */
+  result: FleetScaffoldAgentResult | undefined;
+  /** Whether the contract declares a `scaffold_manifest` at all. */
+  manifestDeclared: boolean;
+  /** The committed gitlink the comparison ran against, 40-hex, or null. */
+  gitlink: string | null;
+  /** The `health_policy.agent_exceptions` ruling for this agent in this domain, if any. */
+  exception: { path: string; reason: string } | null;
+  /** Where item and overlap clips are recorded. The caller adds them to `truncated` if the record is emitted. */
+  notes: string[];
+}
+
+/**
+ * Eight observations per agent, one per declared `scaffold.*` leaf.
+ *
+ * ON THE LEAVES, not on `scaffold`. The twelve recipe rules in this domain all
+ * sit on field `scaffold` (`DOMAIN_FIELD.template_scaffold`), and
+ * `detectContradictions` joins on `(agent, domain, field)` -- so an observer
+ * `fail` on `scaffold` beside a rule `pass` on `scaffold` would manufacture a
+ * contradiction out of two true readings of different things (DW-75). Each
+ * leaf is a contract-declared writable field, so `authority.ownerOf` resolves
+ * `hermes-agent-template` directly rather than by namespace walk-up (DW-50),
+ * and the eight leaves the contract invented in story 1.1 become real (DW-10).
+ *
+ * One observation per GROUP rather than per agent or per asset: per agent
+ * would need a second "coverage" observation to keep `complete` honest when
+ * drift and an incomplete asset coexist; per asset would make `by_state` count
+ * files, not agents. Counts stay per group; the typed items ride on it.
+ */
+function observeFromScaffold(ctx: FleetStatusContext, input: ScaffoldObservationInput): {
+  observations: FleetStatusObservation[];
+  summary: FleetStatusAgentScaffold | null;
+} {
+  const { agentId, result } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: [observation(ctx, {
+        domain: "template_scaffold", agentId, state: "unsupported",
+        field: DOMAIN_FIELD.template_scaffold,
+        summary: "the fleet contract declares no scaffold_manifest, so no role directory can be compared against the pinned template",
+        details: ["declare scaffold_manifest in the fleet contract (schema 3) to make this domain observable"],
+        source: SOURCE_SCAFFOLD,
+        capability: CAPABILITY_SCAFFOLD_MANIFEST,
+        observed: "not observed",
+        desired: "every owned asset compared against the template at the committed gitlink",
+      })],
+      summary: null,
+    };
+  }
+  if (result === undefined) {
+    return {
+      observations: [observation(ctx, {
+        domain: "template_scaffold", agentId, state: "unobserved",
+        field: DOMAIN_FIELD.template_scaffold,
+        summary: "the scaffold observer produced no result for this agent",
+        source: SOURCE_SCAFFOLD,
+        observed: "no result",
+        desired: "eight group observations for this agent",
+      })],
+      summary: null,
+    };
+  }
+
+  const short = input.gitlink === null ? null : input.gitlink.slice(0, 12);
+  const desiredSuffix = short === null ? "at the committed gitlink" : `at gitlink ${short}`;
+  const observations: FleetStatusObservation[] = [];
+  for (const group of result.groups) {
+    const items: FleetStatusObservationItem[] = group.items.map((item) => ({
+      path: bounded(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded(item.desired, 64),
+      observed: item.observed === null ? null : bounded(item.observed, 64),
+      detail: item.detail === null ? null : bounded(item.detail),
+      wip: item.wip,
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${group.group}].items: ${items.length - kept.length} of ${items.length} items dropped; `
+        + "the counts on this observation and on agents[].scaffold.assets are computed over every item before the cap",
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}${item.wip ? " [wip]" : ""}`;
+    });
+    const summary = group.state === "pass"
+      ? `${group.owned} owned asset(s) in ${group.role_path} match the template ${desiredSuffix}`
+      : group.state === "fail"
+        ? `${group.drifted} drifted, ${group.unexpected} unexpected and ${group.incomplete} undecided asset(s) in ${group.role_path}`
+        : `${group.incomplete} asset(s) in ${group.role_path} could not be compared`;
+    // An operator ruling covers DRIFT, never a collection error: an exception
+    // is a decision about the fleet, and an `error` is this run failing to read
+    // it, which no ruling can excuse.
+    const excepted = group.state === "fail" && input.exception !== null;
+    observations.push(observation(ctx, {
+      domain: "template_scaffold", agentId, state: group.state,
+      field: group.group,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_SCAFFOLD,
+      summary,
+      details,
+      observed: `${group.matching}/${group.owned} assets match`,
+      desired: `every asset in ${group.group} ${desiredSuffix}`,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception!.reason : null,
+      exceptionPolicy: excepted ? input.exception!.path : null,
+    }));
+  }
+
+  const overlap = result.wipOverlap.slice(0, FLEET_STATUS_MAX_WIP_OVERLAP).map((path) => bounded(path));
+  if (result.wipOverlap.length > overlap.length) {
+    input.notes.push(`agents.${agentId}.scaffold.wip_overlap: ${result.wipOverlap.length - overlap.length} of ${result.wipOverlap.length} paths dropped`);
+  }
+  return {
+    observations,
+    summary: {
+      source_gitlink: input.gitlink,
+      role_dir: result.roleDir === null ? null : shownPath(result.roleDir),
+      role_dir_source: result.roleDirSource,
+      assets: { ...result.assets },
+      wip_overlap: overlap,
+      wip_preserved: result.wipPreserved,
+      foreign_tracked: result.foreignTracked,
+      ignored_entries: result.ignoredEntries,
+    },
+  };
+}
+
+/**
+ * The `hermes.pm-scaffold` rule's verdict over the subset it and the observer
+ * both cover, or null when it cannot be compared.
+ *
+ * A `fail` counts only when one of its detail lines is a missing/stale asset
+ * outside the ignored runtime: the rule also fails for its own non-core checks
+ * (a retired `.gitmodules` mapping, a profile inheriting nothing, a registry
+ * entry missing), none of which the observer reads, and comparing those would
+ * report a disagreement about a thing only one side looked at.
+ */
+function scaffoldRuleVerdict(rule: Record<string, unknown> | undefined): "pass" | "fail" | null {
+  if (rule === undefined) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line): line is string => typeof line === "string") : [];
+  return details.some((line) => /: (?:missing|stale) (?!.*\/runtime\/)/u.test(line)) ? "fail" : null;
+}
+
+/** Whether the observer found drift the rule would also have seen. Null when the comparison was incomplete. */
+function scaffoldObserverDrift(result: FleetScaffoldAgentResult | undefined): boolean | null {
+  if (result === undefined || result.error !== null) return null;
+  // An `error` on a covered group means the observer could not decide there,
+  // and a verdict over a partial reading is not one to hold the rule against.
+  if (result.groups.some((group) => group.state === "error" && (RULE_COVERED_CONTENT_GROUPS.has(group.group) || group.owned > 0))) return null;
+  for (const group of result.groups) {
+    for (const item of group.items) {
+      if (item.kind === "missing" && RULE_COVERED_PRESENCE_PATHS.has(item.path)) return true;
+      if (RULE_COVERED_CONTENT_GROUPS.has(group.group) && RULE_COVERED_KINDS.has(item.kind)) return true;
+    }
+  }
+  return false;
 }
 
 /** One provenance fact as one observation. Shared by the per-agent and fleet paths. */
@@ -1599,20 +1821,32 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   const agentRawById = new Map<string, unknown>();
   for (const entry of agentRaw.entries) if (!agentRawById.has(entry.key)) agentRawById.set(entry.key, entry.value);
   const repoByAgent = new Map<string, string>();
+  // The scaffold observer's per-row inputs (story 1.6), from the RAW row for
+  // the same reason `repoByAgent` is: a projected row is bounded and
+  // home-redacted, and a role directory has to be opened, not shown.
+  const roleDirByAgent = new Map<string, string | null>();
+  const rawRowByAgent = new Map<string, Record<string, unknown>>();
   for (const entry of agentRaw.entries) {
-    if (!selectedAgents.has(entry.key)) continue;
+    if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const raw = isRecord(entry.value) ? entry.value : {};
     const declared = nonEmptyString(raw.project_path);
     if (declared !== null) repoByAgent.set(entry.key, resolve(expandHome(declared, home)));
+    const declaredRoleDir = nonEmptyString(raw.role_dir);
+    roleDirByAgent.set(entry.key, declaredRoleDir === null ? null : expandHome(declaredRoleDir, home));
+    rawRowByAgent.set(entry.key, raw);
   }
 
   const policy = readHealthPolicy(contract);
-  // The PROJECT raw store, read only when a freshness policy actually needs it.
-  // Every populated, declared timestamp in either store lives on one side or
-  // the other, and reading a file nothing will consult would be work a
-  // `--domain registry` run explicitly must not do.
+  // The manifest is read only when the domain it feeds is selected: a
+  // `--domain registry` run must not resolve render inputs it will never use.
+  const manifest: FleetScaffoldManifest | null = domainSet.has("template_scaffold") ? contract.scaffold_manifest ?? null : null;
+  // The PROJECT raw store, read only when a freshness policy or a scaffold
+  // render input actually needs it. Every populated, declared timestamp in
+  // either store lives on one side or the other, and reading a file nothing
+  // will consult would be work a `--domain registry` run explicitly must not do.
   const projectRawBySlug = new Map<string, unknown>();
-  if (policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
+  const manifestNeedsProjects = manifest !== null && Object.values(manifest.render_inputs).some((field) => field.startsWith("projects."));
+  if (manifestNeedsProjects || policy.freshness.some(({ entry }) => entry.field.startsWith("projects."))) {
     const projectRaw = readProjectRegistryRaw(stores.projects.inspectedPath);
     for (const entry of projectRaw.entries) {
       // Indexed by BOTH the record key and the record's own `slug`, because the
@@ -1754,6 +1988,75 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     ctx.probes.push(...provenance.probes);
   }
 
+  // -- scaffold parity, only when template_scaffold is selected --------------
+  //
+  // Story 1.6. Every managed role directory against the template at the
+  // COMMITTED gitlink, asset by asset. Gated on the domain exactly as the
+  // provenance families are: a `--domain registry` run spawns zero scaffold
+  // probes, and `--agent <id>` reads only that agent's role directory.
+  //
+  // Render inputs resolve from the RAW stores by the contract's own paths --
+  // `agents.{agent_id}` is the row's key, `agents.{agent_id}.<field>` reads the
+  // raw row, `projects.{slug}.<field>` reads the correlated project record --
+  // so the manifest may name any declared field and nothing here holds a second
+  // table saying where each one lives.
+  const scalarAt = (root: unknown, segments: readonly string[]): string | null => {
+    let node: unknown = root;
+    for (const segment of segments) {
+      if (!isRecord(node)) return null;
+      node = node[segment];
+    }
+    if (typeof node === "string") return nonEmptyString(node);
+    if (typeof node === "number" || typeof node === "boolean") return String(node);
+    return null;
+  };
+  const renderInputsFor = (agentId: string): Record<string, string | null> => {
+    const inputs: Record<string, string | null> = {};
+    if (manifest === null) return inputs;
+    const rawRow = rawRowByAgent.get(agentId);
+    const slug = rowsById.get(agentId)?.project_id.value ?? null;
+    const project = slug === null ? undefined : projectRawBySlug.get(slug);
+    for (const [name, field] of Object.entries(manifest.render_inputs)) {
+      const [root, key, ...rest] = field.split(".");
+      if (field === "agents.{agent_id}") inputs[name] = agentId;
+      else if (root === "agents" && key === "{agent_id}") inputs[name] = scalarAt(rawRow, rest);
+      else if (root === "projects" && key === "{slug}") inputs[name] = scalarAt(project, rest);
+      else inputs[name] = null;
+    }
+    return inputs;
+  };
+  const scaffoldExceptionFor = (agentId: string): { path: string; reason: string } | null => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "template_scaffold" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let scaffoldParity: FleetScaffoldParity | null = null;
+  const scaffoldByAgent = new Map<string, FleetScaffoldAgentResult>();
+  if (manifest !== null) {
+    throwIfCancelled(runContext);
+    scaffoldParity = await collectScaffoldParity({
+      run: runContext,
+      pjanglerRoot: resolvePjanglerRoot(),
+      manifest,
+      agents: agentIds.map((agentId) => ({
+        agentId,
+        projectPath: repoByAgent.get(agentId) ?? null,
+        roleDir: roleDirByAgent.get(agentId) ?? null,
+        role: nonEmptyString(rawRowByAgent.get(agentId)?.role),
+        inputs: renderInputsFor(agentId),
+      })),
+      shown: shownPath,
+    });
+    ctx.probes.push(...scaffoldParity.probes);
+    for (const result of scaffoldParity.agents) scaffoldByAgent.set(result.agentId, result);
+  }
+  // Counted over EVERY selected agent, before any cap, in the per-agent loop.
+  const scaffoldCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    applicable: 0, passing: 0, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: 0,
+  };
+  const ruleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+
   // -- the recipe audit, as bounded children ---------------------------------
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
@@ -1867,6 +2170,60 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // MEASURED. A bound on what the envelope CARRIES must never move what it
   // CONCLUDES.
   const hostByRule = new Map<string, { finding: FleetStatusHostFinding; states: Map<FleetStatusState, number> }>();
+
+  // -- source integrity: ONE host finding, never an agent record -------------
+  //
+  // Whether the template source is canonical is a fact about THIS MACHINE's
+  // checkout of pjangler, not about any repository in the fleet. It is filed
+  // exactly as a host-scoped audit rule is -- once, under `data.host`, through
+  // the same classifier -- and its consequence for the agents is carried on
+  // their own records: every group `error`, every agent incomplete. A broken
+  // source never becomes a fallback and never fails a repository.
+  if (scaffoldParity !== null) {
+    const state: FleetStatusState = scaffoldParity.source.integrity === "ok" ? "pass" : "error";
+    const field = DOMAIN_FIELD.template_scaffold;
+    const hostRetrieval = retrievalFor(null, "template_scaffold", live);
+    const sourceClassification = classifyObservation({
+      domain: "template_scaffold", state, field,
+      ruleId: SCAFFOLD_SOURCE_RULE_ID, ruleScope: "host", source: SOURCE_SCAFFOLD,
+      capability: null, evidence: null, fixable: false,
+      exceptionId: null, exceptionReason: null,
+      freshness: "not_applicable",
+      repo: null,
+      retrieval: hostRetrieval,
+      activationField: ctx.activationField,
+      activationOwner: ctx.activationOwner,
+    }, ctx.policy);
+    const sourceSummary = bounded(redactHome(scaffoldParity.source.detail));
+    hostByRule.set(SCAFFOLD_SOURCE_RULE_ID, {
+      finding: {
+        rule_id: SCAFFOLD_SOURCE_RULE_ID,
+        owner: ctx.domainOwner("template_scaffold"),
+        domain: "template_scaffold",
+        state,
+        summary: sourceSummary,
+        details: boundedDetails([
+          `integrity ${scaffoldParity.source.integrity}`,
+          `gitlink ${scaffoldParity.source.gitlink ?? "none recorded"}`,
+          `${scaffoldParity.source.assets} asset(s) in the manifest`,
+        ]),
+        finding_id: statusFindingId("host", null, "template_scaffold", SCAFFOLD_SOURCE_RULE_ID, field, SOURCE_SCAFFOLD),
+        retrieval: hostRetrieval,
+        applicability: sourceClassification.applicability,
+        evidence: sourceClassification.evidence,
+        freshness: sourceClassification.freshness,
+        severity: sourceClassification.severity,
+        repair: sourceClassification.repair,
+        observed: bounded(scaffoldParity.source.integrity),
+        desired: "the committed gitlink stable, its object present, the worktree at it with no tracked change, and every rendered path owned by a declared group",
+        next_action: sourceClassification.next_action,
+        next_action_class: sourceClassification.next_action_class,
+        justification: sourceClassification.justification,
+      },
+      states: new Map([[state, 1]]),
+    });
+  }
+
   const agentRecords: FleetStatusAgent[] = [];
   let totalObservations = 0;
   let emittedObservations = 0;
@@ -1892,8 +2249,38 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     own.push(...observeFromInventory(ctx, row, domainSet));
     if (needsProvenance) own.push(...observeFromProvenance(ctx, provenanceFacts, agentId, domainSet));
 
+    // Story 1.6: the scaffold observer's group observations and per-agent
+    // summary. The bucket counts are taken HERE, over every selected agent,
+    // before the record cap decides what the envelope carries.
+    const agentNotes: string[] = [];
+    let scaffoldSummary: FleetStatusAgentScaffold | null = null;
+    const scaffoldResult = scaffoldByAgent.get(agentId);
+    const scaffoldObserved = manifest !== null && scaffoldResult !== undefined;
+    if (domainSet.has("template_scaffold")) {
+      const scaffold = observeFromScaffold(ctx, {
+        agentId,
+        result: scaffoldResult,
+        manifestDeclared: manifest !== null,
+        gitlink: scaffoldParity?.source.gitlink ?? null,
+        exception: scaffoldExceptionFor(agentId),
+        notes: agentNotes,
+      });
+      own.push(...scaffold.observations);
+      scaffoldSummary = scaffold.summary;
+      if (!scaffoldObserved) scaffoldCounts.unobserved += 1;
+      else {
+        scaffoldCounts.applicable += 1;
+        if (scaffoldResult.groups.some((group) => group.state === "error")) scaffoldCounts.incomplete += 1;
+        else if (scaffoldResult.groups.some((group) => group.state === "fail")) {
+          if (scaffoldExceptionFor(agentId) !== null) scaffoldCounts.exception_authorized += 1;
+          else scaffoldCounts.drifted += 1;
+        } else scaffoldCounts.passing += 1;
+      }
+    }
+
     const audit = auditByAgent.get(agentId);
     if (!live) {
+      if (scaffoldObserved) ruleAgreement.not_compared += 1;
       // Matrix row 1. Without `--live` the audit half was not read, so every
       // domain it feeds says so -- rather than reporting the store half as if
       // it were the whole answer.
@@ -1909,6 +2296,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
         }));
       }
     } else if (auditEntry === null || audit === undefined || audit.outcome !== "ok") {
+      if (scaffoldObserved) ruleAgreement.not_compared += 1;
       const failed = audit !== undefined && audit.outcome === "failed";
       const state: FleetStatusState = failed ? "error" : "unobserved";
       const reason = auditEntry === null
@@ -2094,6 +2482,36 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           fixable: typeof rule.fixable === "boolean" ? rule.fixable : null,
         }));
       }
+
+      // -- rule agreement: the observer against `hermes.pm-scaffold` ---------
+      //
+      // An EXPLICIT check, because the two deliberately do not share a field
+      // path and so can never meet in `detectContradictions`. Compared over the
+      // subset both read; a disagreement is a finding and both readings stand.
+      // Never resolved silently in either direction.
+      if (scaffoldObserved) {
+        const ruleVerdict = scaffoldRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString(rule.id) === "hermes.pm-scaffold"));
+        const observerDrift = scaffoldObserverDrift(scaffoldResult);
+        if (ruleVerdict === null || observerDrift === null) ruleAgreement.not_compared += 1;
+        else {
+          ruleAgreement.compared += 1;
+          if ((ruleVerdict === "fail") === observerDrift) ruleAgreement.agree += 1;
+          else {
+            ruleAgreement.disagree += 1;
+            addFinding(ctx, {
+              code: "scaffold-rule-disagreement",
+              domain: "template_scaffold",
+              field: DOMAIN_FIELD.template_scaffold,
+              agent_id: agentId,
+              source: ctx.domainOwner("template_scaffold"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rule hermes.pm-scaffold reports ${ruleVerdict} while the scaffold observer finds ${observerDrift ? "drift" : "no drift"} over the assets both compare (hermes, .gitignore, .scripts/** for content; role.yaml, SOUL.md and .runtime-scaffold/README.md for presence); both readings are kept and neither is resolved silently`,
+            });
+          }
+        }
+      }
     }
 
     // `(agent_id, domain, rule_id)` -- the declared sort key. Byte order, never
@@ -2134,6 +2552,10 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     members[memberClass] += 1;
 
     if (agentRecords.length >= FLEET_STATUS_MAX_AGENTS) continue;
+    // Item and overlap clips belong to the RECORD, so they are noted only once
+    // the record is known to be emitted -- the counts they clip were already
+    // taken above, over the full lists.
+    truncated.push(...agentNotes);
 
     let kept = own;
     let retrieval = retrievalFor(agentId, domains.length === 1 ? domains[0]! : null, live);
@@ -2164,6 +2586,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       retrieval,
       lifecycle,
       member_class: memberClass,
+      scaffold: scaffoldSummary,
     });
   }
 
@@ -2326,6 +2749,28 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     domainStates: new Map(domainRollups.map((rollup) => [rollup.domain, rollup.state])),
   });
 
+  // The fleet-level scaffold summary. `null` when the domain was not selected,
+  // so a `--domain profile` consumer sees the key and knows nothing was read.
+  // `unobserved` is every registered agent this run did not select plus every
+  // selected one the observer never reached -- a scoped answer says so in its
+  // own numbers rather than reading as fleet-wide parity.
+  const scaffold: FleetScaffoldSummary | null = !domainSet.has("template_scaffold")
+    ? null
+    : {
+      source: scaffoldParity === null
+        ? { gitlink: null, integrity: "manifest-undeclared", detail: "the fleet contract declares no scaffold_manifest, so no role directory was compared" }
+        : {
+          gitlink: scaffoldParity.source.gitlink,
+          integrity: bounded(scaffoldParity.source.integrity),
+          detail: bounded(redactHome(scaffoldParity.source.detail)),
+        },
+      agents: {
+        ...scaffoldCounts,
+        unobserved: scaffoldCounts.unobserved + (scaffoldCounts.total_registered - scaffoldCounts.selected),
+      },
+      rule_agreement: { ...ruleAgreement },
+    };
+
   return {
     contract_path: shownPath(contractPath),
     contract_version: contract.contract_version,
@@ -2338,6 +2783,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     findings,
     probes,
     transitions,
+    scaffold,
     truncated,
   };
 }

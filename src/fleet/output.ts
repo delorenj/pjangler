@@ -90,7 +90,7 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   // future edit drops the key, which is the one thing this table exists to stop.
   "fleet.status": [
     "contract_path", "contract_version", "scope",
-    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "truncated",
+    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "truncated",
   ],
 };
 
@@ -859,6 +859,8 @@ const REPORT_MAX_AGENTS = 40;
 const REPORT_MAX_OBSERVATIONS = 40;
 /** How many baseline transitions the human report lists. */
 const REPORT_MAX_TRANSITIONS = 30;
+/** How many typed items one scaffold observation prints before it says how many it withheld. */
+const REPORT_MAX_ITEMS = 5;
 
 function statusGlyph(state: FleetStatusState): string {
   if (state === "pass") return green(glyph.pass);
@@ -922,6 +924,18 @@ function observationLines(observation: FleetStatusObservation, width: number): s
   if (observation.justification) {
     lines.push(`       ${dim(glyph.arrow)} ${gray(`authorized by ${observation.justification.policy}: ${observation.justification.reason}`)}`);
   }
+  // The typed items of a scaffold group: kind, role-relative path, and the
+  // desired -> observed pair (digest prefixes or type/mode words). Never a
+  // body, never an absolute path -- the items carry neither.
+  const items = observation.items ?? [];
+  for (const item of items.slice(0, REPORT_MAX_ITEMS)) {
+    const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"}${glyph.arrow}${item.observed ?? "-"}` : "";
+    const paint = item.kind === "incomplete" ? red : item.kind === "wrong-mode" || item.kind === "unexpected-owned" ? yellow : red;
+    lines.push(`       ${dim(glyph.arrow)} ${paint(item.kind)} ${bounded(item.path)}${dim(pair)}${item.wip ? ` ${yellow("[wip]")}` : ""}${item.detail ? ` ${dim(`(${item.detail})`)}` : ""}`);
+  }
+  if (items.length > REPORT_MAX_ITEMS) {
+    lines.push(`       ${dim(glyph.arrow)} ${dim(`... ${items.length - REPORT_MAX_ITEMS} more item(s); use --json for all of them`)}`);
+  }
   // The RETRIEVAL, which is what an operator reaches for when the envelope
   // clipped: the command that returns this one observation on its own. It was
   // dropped when the axes were added and the docstring went on promising it --
@@ -961,6 +975,20 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
     agent.lifecycle.capability_readiness === "ready" ? green("routing ready") : dim(`routing ${agent.lifecycle.capability_readiness}`),
     agent.lifecycle.activation === "granted" ? yellow("activation granted") : dim(`activation ${agent.lifecycle.activation}`),
   ])}`);
+  // The scaffold cell: how much of the pinned template this role directory
+  // carries, and against which gitlink. Absent when the domain was not read.
+  if (agent.scaffold) {
+    const assets = agent.scaffold.assets;
+    const cells = [
+      dim(`scaffold ${assets.matching}/${assets.owned}`),
+      assets.drifted ? red(`${assets.drifted} drifted`) : dim("0 drifted"),
+      assets.incomplete ? yellow(`${assets.incomplete} undecided`) : dim("0 undecided"),
+      assets.unexpected_owned ? yellow(`${assets.unexpected_owned} unexpected`) : dim("0 unexpected"),
+      dim(`gitlink ${agent.scaffold.source_gitlink ? agent.scaffold.source_gitlink.slice(0, 12) : "unreadable"}`),
+    ];
+    if (agent.scaffold.wip_overlap.length) cells.push(yellow(`${agent.scaffold.wip_overlap.length} wip overlap`));
+    lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells)}`);
+  }
   if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
   return lines;
 }
@@ -1039,6 +1067,29 @@ export function formatFleetStatusReport(status: FleetStatus): string {
       .map(([state, count]) => statusColor(state as FleetStatusState)(`${count} ${state}`));
     lines.push(`    ${statusGlyph(rollup.state)}  ${padVisible(rollup.domain, domainWidth)}  ${statusColor(rollup.state)(rollup.state)}  ${dim(`${rollup.agents} agent${rollup.agents === 1 ? "" : "s"}`)}`);
     lines.push(`       ${dim(glyph.arrow)} ${stateCounts.length ? joinDot(stateCounts) : dim("no observations")}`);
+    // The scaffold parity summary rides on its domain: how many selected
+    // agents match the pinned template, and whether the source was canonical.
+    if (rollup.domain === "template_scaffold" && status.scaffold) {
+      const counts = status.scaffold.agents;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`scaffold parity over ${counts.applicable} of ${counts.selected} selected`),
+        counts.passing ? green(`${counts.passing} passing`) : dim("0 passing"),
+        counts.drifted ? red(`${counts.drifted} drifted`) : dim("0 drifted"),
+        counts.incomplete ? yellow(`${counts.incomplete} incomplete`) : dim("0 incomplete"),
+        counts.exception_authorized ? gray(`${counts.exception_authorized} exception`) : dim("0 exception"),
+        counts.unobserved ? yellow(`${counts.unobserved} unobserved`) : dim("0 unobserved"),
+      ])}`);
+      const source = status.scaffold.source;
+      lines.push(`       ${dim(glyph.arrow)} ${source.integrity === "ok" ? green("source ok") : red(`source ${source.integrity}`)} ${dim(`gitlink ${source.gitlink ? source.gitlink.slice(0, 12) : "none"}`)}`);
+      const agreement = status.scaffold.rule_agreement;
+      if (agreement.compared || agreement.disagree) {
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+          dim(`rule agreement ${agreement.agree}/${agreement.compared}`),
+          agreement.disagree ? red(`${agreement.disagree} disagree`) : dim("0 disagree"),
+          dim(`${agreement.not_compared} not compared`),
+        ])}`);
+      }
+    }
     for (const observation of rollup.observations) {
       lines.push(`       ${dim(glyph.arrow)} ${statusColor(observation.state)(observation.state)} ${dim(observation.summary)}`);
     }

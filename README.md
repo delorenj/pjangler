@@ -275,7 +275,7 @@ the same envelope, including `baseline` and `exitCode`.
 | --- | --- | --- |
 | `registry` | the agent row itself: well-formedness, identity conflicts, correlation to a project record | `hermes.registry-parity` (**host-scoped** → `data.host`, unfiltered runs only†) |
 | `project_binding` | the row's board binding and whether the repository's `.project.json` agrees | the notebook and `sot.project-json` rules |
-| `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide); `scaffold.template_ref` is `unsupported` — a deployed role scaffold records none | every tracked-asset parity rule |
+| `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide), and **every managed role directory compared asset by asset against the template at the committed gitlink** — eight group observations per agent, typed per-asset `items`, `data.scaffold` and `agents[].scaffold` summaries (see *Scaffold parity* below) | every tracked-asset parity rule, plus a `scaffold-rule-disagreement` finding where `hermes.pm-scaffold` and the observer disagree |
 | `profile` | the generated profile directory, `lstat`ed and never followed; a symlink is a `fail`, because the contract declares `symlink_allowed: false` | `hermes.runtime-singleton`; `hermes.profile-wiring` (**host-scoped**) |
 | `runtime` | the role-local runtime directory derived from `role_dir` | `hermes.untracked-runtimes` |
 | `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**, unfiltered runs only†), never promoted to an agent |
@@ -303,6 +303,82 @@ the narrowed command could not return it.
 Story 1.8 owns the systemd observer, 1.9 the live-process observer, and 1.10
 Bloodbank routing readiness. Until then those domains say so, by name, rather
 than disappearing.
+
+### Scaffold parity
+
+`template_scaffold` compares every managed role directory against the tracked
+template **at the gitlink this repository has committed** for
+`templates/hermes-agent` — git objects, never the submodule worktree, never a
+sibling clone, never a branch tip. The contract's `scaffold_manifest` block
+(schema 3) is the policy that says how to read that tree: which subdirectory
+holds the rendered files, how a rendered file is named, which registry fields
+feed each simple `{{ name }}` placeholder (`render_inputs`), which `scaffold.*`
+writable leaf owns each role-relative path (`groups`), which assets are
+compared for presence only and why (`presence_only`: `role.yaml`, `SOUL.md`),
+what may never appear in a template tree (`excluded_patterns`), and which
+role-local directory is ignored runtime nobody owns (`runtime_dir`).
+
+Each agent gets **eight observations, one per declared leaf** — `scaffold.role.yaml`,
+`scaffold.SOUL.md`, `scaffold.hermes`, `scaffold.momo`, `scaffold.sentinel.prompt.md`,
+`scaffold.gitignore`, `scaffold.scripts`, `scaffold.runtime-scaffold` — each
+`pass`, `fail` or `error`, with `observed: "<matching>/<owned> assets match"`
+and, on anything but a clean pass, a typed `items[]` list (capped at 100 per
+observation, the clip recorded in `truncated`). Every item carries a
+**role-relative path**, a kind, and a `desired`/`observed` pair that is a 12-hex
+git blob-id prefix or a type/mode word — never a file body, never an absolute
+path:
+
+| kind | meaning |
+| --- | --- |
+| `missing` | the template renders it; the role does not have it |
+| `stale-content` | different bytes, and the observed blob exists in the template's lineage — an older release |
+| `locally-modified` | different bytes, and no template version ever shipped them — somebody edited it |
+| `wrong-mode` | same bytes, executable bit differs |
+| `wrong-type` | a directory or symlink where a file was rendered, or the reverse |
+| `unsafe-symlink` | a symlink whose target is absolute or leaves the repository |
+| `unexpected-owned` | a tracked file inside an owned group the template did not render (a committed `.done-*`, an unrendered `.jinja`) — named, never proposed for deletion |
+| `incomplete` | this build could not decide: a render input is missing (`input-missing: display_name`), the template needs control flow (`render-unsupported`), or the bytes were unreadable |
+
+`stale-content` versus `locally-modified` is **lineage, not commit state**: a
+verbatim asset is stale when its observed blob exists in the template's object
+database, a rendered asset when it equals the render of one of the last twelve
+versions of its Jinja source. An uncommitted edit is the orthogonal `wip: true`
+flag on the item, and a drifted path that also carries one appears in
+`agents[].scaffold.wip_overlap`. Ignored runtime bytes, git-ignored entries and
+tracked files outside every owned group are **counted, never named**
+(`ignored_entries`, `wip_preserved`, `foreign_tracked`).
+
+**Source integrity is a host finding.** `scaffold.source` in `data.host` reads
+`pass` when the committed gitlink is stable (`ls-tree HEAD` and the index
+agree), its object exists, the submodule worktree is at it with no modified
+tracked file, the tree carries no excluded pattern, and every rendered path
+resolves to one declared group. Any other reading — `gitlink-missing`,
+`gitlink-unstable`, `source-uninitialized`, `source-missing-object`,
+`source-mismatched`, `source-dirty`, `source-contaminated`, `source-empty`,
+`manifest-uncovered:<path>` — is `error`, every selected agent's eight groups
+are `error`, and **desired bytes are never taken from the worktree as a
+fallback**. The same code is carried in `data.scaffold.source.integrity`.
+
+`data.scaffold.agents` counts every selected agent before any cap
+(`total_registered`, `selected`, `applicable`, `passing`, `drifted`,
+`incomplete`, `exception_authorized`, `unobserved`), and
+`data.scaffold.rule_agreement` says, under `--live`, how the observer and the
+`hermes.pm-scaffold` rule agreed over the subset both compare — a disagreement
+is a `scaffold-rule-disagreement` finding and both readings stand. An operator
+ruling on one agent's scaffold drift lives in
+`health_policy.agent_exceptions[]` (`domain`, `agent_id`, `reason`, `owner`):
+the drifted groups keep their `fail`, carry `justification.kind: "exception"`
+with that entry's own path, and the agent is counted `exception` rather than
+`unhealthy` — `health.healthy` is unaffected, exactly as for a permitted
+identity conflict. A contract with no `scaffold_manifest` still loads; the
+domain then reads `unsupported` under capability `scaffold.manifest`.
+
+`--domain template_scaffold` is the surface. A run scoped to any other domain
+spawns zero scaffold probes; `--agent <id>` reads only that agent's role
+directory while `data.scaffold.agents` keeps the fleet-wide totals. The role
+directory is the registry row's `role_dir`, defaulting to
+`<project_path>/agents/hermes/<role>` only when the row is silent
+(`agents[].scaffold.role_dir_source`), and must sit inside `project_path`.
 
 ### Seven states, one precedence
 

@@ -868,36 +868,25 @@ function addAgentRecordFacts(ctx: ProvenanceContext, subject: AgentSubject): voi
 }
 
 /**
- * The two provenance questions this host records nothing to answer.
+ * The one provenance question this host records nothing to answer.
  *
- * Not a gap this story may paper over. A deployed role scaffold carries
- * `role.yaml`, `SOUL.md`, `hermes`, `.scripts/` and `.runtime-scaffold/` and NO
- * `.copier-answers.yml`; the template renders no answers file, and the repo-root
- * `.copier-answers.yml` is CommonProject's (it carries `_src_path`, a host path,
- * and no `_commit`). A generated profile config carries only the header marker
- * `GENERATED FILE -- DO NOT EDIT` -- no generation counter, digest, sidecar, or
- * yaml key. So both are `unsupported` with their observed evidence still
- * reported, and neither counts toward `match`. Closing either gap means adding a
- * recorded ref at render time, which is stories 1.6 and 1.7.
+ * A generated profile config carries only the header marker `GENERATED FILE --
+ * DO NOT EDIT` -- no generation counter, digest, sidecar, or yaml key. So it is
+ * `unsupported` with its observed evidence still reported, and it never counts
+ * toward `match`. Closing the gap means adding a recorded ref at render time,
+ * which is story 1.7.
+ *
+ * `scaffold.template_ref` used to be reported here on the same terms -- "a
+ * deployed role scaffold records no template ref". Story 1.6 answered it a
+ * different way: the scaffold observer (`src/fleet/scaffold.ts`) compares every
+ * role directory against the template at the COMMITTED gitlink, asset by asset,
+ * so a recorded ref is not needed to know whether a scaffold matches. The fact
+ * is deleted rather than kept beside the real comparison, because one
+ * permanent `unsupported` next to eight real observations is exactly the
+ * rollup lie DW-67 records.
  */
 function addUnsupportedFacts(ctx: ProvenanceContext, subject: AgentSubject, profileTemplate: string | null): void {
-  const { agentId, roleDir, profileName } = subject;
-
-  const scaffoldEvidence = roleDir === null
-    ? absent(SOURCE_ROLE_SCAFFOLD, "missing")
-    : (() => {
-      const dir = expandHome(roleDir, ctx.home);
-      const view = classifyPath(dir, { directory: true });
-      const manifest = join(dir, "role.yaml");
-      const state = view.classification === "ok" && existsSync(manifest) ? "role.yaml present" : `role directory is ${view.classification}`;
-      return present(state, SOURCE_ROLE_SCAFFOLD, { classification: view.classification });
-    })();
-  addFact(ctx, {
-    id: "scaffold.template_ref", scope: "agent", agent_id: agentId, field: "scaffold",
-    desired: absent(SOURCE_ROLE_SCAFFOLD, "unsupported"),
-    observed: scaffoldEvidence,
-    detail: "a deployed role scaffold records no template ref -- it renders no .copier-answers.yml and the repo-root one is CommonProject's, with no _commit -- so no comparison is possible and none is invented",
-  });
+  const { agentId, profileName } = subject;
 
   // `profile_name` is a REGISTRY value substituted into a path template, so it
   // is checked against the shape a profile name may have before it becomes a
