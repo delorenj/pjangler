@@ -183,7 +183,7 @@ function writeTemplateTree(repo, files) {
 
 const templateSource = join(temp, "template-source");
 /** Commit ids of the synthetic template's history, filled by `seedTemplate`. */
-const COMMIT = { v1: "", v2: "", v3: "", contaminated: "", bulk: "" };
+const COMMIT = { v1: "", v2: "", v3: "", contaminated: "", unsupported: "", bulk: "" };
 /** How many verbatim scripts the `bulk` version adds, for the >64 KiB and item-cap cases. */
 const BULK_SCRIPTS = 300;
 
@@ -205,6 +205,17 @@ function seedTemplate() {
   gitOk(templateSource, ["add", "-f", "-A"]);
   gitOk(templateSource, ["commit", "--quiet", "-m", "contaminated"]);
   COMMIT.contaminated = gitOk(templateSource, ["rev-parse", "HEAD"]);
+  // An UNSUPPORTED version: control flow in one content-compared template and
+  // an undeclared placeholder in another. Neither may be rendered "as best it
+  // can": each asset is `incomplete` with the reason, the source stays intact,
+  // and every other asset is still compared.
+  gitOk(templateSource, ["checkout", "--quiet", COMMIT.v3]);
+  gitOk(templateSource, ["checkout", "--quiet", "-b", "unsupported"]);
+  writeFileSync(join(templateSource, "template", "momo.jinja"), "#!/usr/bin/env bash\n{% if role == \"pm\" %}echo pm{% else %}echo other{% endif %}\n", "utf8");
+  writeFileSync(join(templateSource, "template", "hermes.jinja"), "#!/usr/bin/env bash\n# launcher for {{ agent_id }} ({{ launcher_flavor }})\n", "utf8");
+  gitOk(templateSource, ["add", "-A"]);
+  gitOk(templateSource, ["commit", "--quiet", "-m", "unsupported"]);
+  COMMIT.unsupported = gitOk(templateSource, ["rev-parse", "HEAD"]);
   // A BULK version: three hundred verbatim scripts, for the item cap.
   gitOk(templateSource, ["checkout", "--quiet", COMMIT.v3]);
   gitOk(templateSource, ["checkout", "--quiet", "-b", "bulk"]);
@@ -968,6 +979,37 @@ try {
     const groups = agent.observations.filter((item) => item.source === "fleet-scaffold");
     assert.equal(groups.length, GROUPS.length - 1);
     for (const group of groups) assert.equal(group.state, "error");
+  });
+
+  check("control flow or an undeclared placeholder in a content-compared template is render-unsupported, never rendered as best it can", () => {
+    const root = makePackageRoot("pkg-unsupported", YAML.stringify(policyContract(), { lineWidth: 0 }), { commit: COMMIT.unsupported });
+    const data = status(cliAt(root, [...STATUS_ARGS, "--agent", "match-pm"]));
+    // The SOURCE is fine: an unrenderable template is a per-asset gap, not a
+    // broken checkout, so it must never hide behind a source-integrity error.
+    assert.equal(data.scaffold.source.integrity, "ok", data.scaffold.source.detail);
+    const agent = agentNamed(data, "match-pm");
+    const momo = groupOf(agent, "scaffold.momo");
+    assert.equal(momo.state, "error");
+    assert.deepEqual(itemsOf(momo), [
+      { path: "momo", kind: "incomplete", desired: null, observed: "file", detail: "render-unsupported: template uses Jinja constructs beyond simple substitution", wip: false },
+    ]);
+    const hermes = groupOf(agent, "scaffold.hermes");
+    assert.equal(hermes.state, "error");
+    assert.deepEqual(itemsOf(hermes), [
+      { path: "hermes", kind: "incomplete", desired: null, observed: "file", detail: "render-unsupported: undeclared placeholder launcher_flavor", wip: false },
+    ]);
+    for (const leaf of GROUPS) {
+      if (leaf === "scaffold.momo" || leaf === "scaffold.hermes") continue;
+      assert.equal(groupOf(agent, leaf).state, "pass", `${leaf} is unaffected by another asset's unrenderable source`);
+    }
+    assert.equal(agent.complete, false, "an undecided asset makes the agent incomplete");
+    assert.equal(agent.scaffold.assets.incomplete, 2);
+    assert.equal(agent.scaffold.assets.compared, OWNED_ASSETS - 2);
+    assert.equal(agent.scaffold.assets.drifted, 0, "nothing was rendered as best it can and then called stale");
+    assert.equal(data.scaffold.agents.incomplete, 1);
+    // Presence-only assets with control flow are the SAME template mechanism
+    // and stay `pass`: policy, not a parser accident, is what exempts them.
+    assert.equal(groupOf(agent, "scaffold.SOUL.md").state, "pass");
   });
 
   // -- AC: exceptions ride the existing axis ---------------------------------
