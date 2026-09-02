@@ -351,12 +351,12 @@ deferral removed), DW-71/DW-78 (gateway now observed), DW-93 (unit STATE observe
 **Acceptance Criteria:**
 - Given a five-agent isolated fleet behind the fake `systemctl` where one agent is canonical-active, one canonical-deferred, one deferred with an empty delta, one verified-but-disabled, and one legacy-undeclared-active, when `fleet status --domain systemd --json` runs, then the gateway leaves read `pass`, `pass`, `fail` (`platform-enablement-inherited:telegram`), `fail` (`verified-channel-gateway-disabled`), `fail` (`channel-undeclared`), `data.systemd.capability` reads `{active: 2, deferred: 2, undeclared: 1}`, and exactly `1 + 2 + samples` `systemctl` invocations were recorded (one more only when an unregistered unit exists), none carrying a mutation verb.
 - Given a gateway whose fake samples read `NRestarts` 3, 4, 5 and another whose second sample is `activating/auto-restart`, when the window completes, then the first is `fail` `crash-looping` with `transitions: ["restarts 3 -> 5"]`, the second is `fail` `unstable` with `transitions: ["active/running -> activating/auto-restart"]`, neither `stability.stable` is true, and no per-sample timestamp or restart value appears outside those two summaries.
-- Given a heartbeat whose oneshot is `activating` with `ExecMainStartTimestampMonotonic` younger than `TimeoutStartUSec`, another older than it, a third with `Result=exit-code`, a fourth with `LastTriggerUSecMonotonic` older than `5 × 60 s` and inactive service, and a fifth with `OnUnitInactiveUSec=5min`, when heartbeat health runs, then `latest_result`/`tick`/`schedule` read `in-progress` (`warn`), `stuck` (`fail`), `failed` (`fail`), `overdue` (`fail`), `off-policy` (`fail`) respectively and `data` contains no `USec`, `Monotonic`, or epoch value.
-- Given `role.yaml` declaring `reconcile.enabled: true` with no state file, `enabled: false` without `explicit_opt_out`, `enabled: false` with `explicit_opt_out: true`, and no block, when the heartbeat.service leaf is produced, then codes are `checkpoint-only` (`fail`), `reconcile-opt-out-undeclared` (`warn`), none (`declared: opted-out`), `reconcile-undeclared` (`warn`), and sentinels planted in `runtime/.env`, `auth.json`, and `runtime/logs/heartbeat.log` never appear in stdout while the fixture tree is byte-identical before and after.
+- Given a heartbeat whose oneshot is `activating` with `ExecMainStartTimestampMonotonic` younger than `TimeoutStartUSec`, another older than it, a third with `Result=exit-code`, a fourth with `LastTriggerUSecMonotonic` older than `5 × 60 s` and inactive service, and a fifth with `OnUnitInactiveUSec=5min`, when heartbeat health runs, then `latest_result`/`tick`/`schedule` read `in-progress`, `stuck`, `failed`, `overdue`, `off-policy` respectively; the TIMER leaf carries the `in-progress` item (`warn`), the `stuck` item (`fail`), `tick-overdue` (`fail`) and `schedule-off-policy` (`fail`) -- it owns whether the tick is happening -- while the ONESHOT's leaf carries `latest-result-failed:exit-code` (`fail`) for the completed run that failed; and `data` contains no `USec`, `Monotonic`, or epoch value.
+- Given `role.yaml` declaring `reconcile.enabled: true` with no state file, `enabled: false` without `explicit_opt_out`, `enabled: false` with `explicit_opt_out: true`, and no block, when the heartbeat.service leaf is produced, then codes are `checkpoint-only` (`fail`, `evidence: state-missing`), `reconcile-opt-out-undeclared` (`warn`), none (`declared: opted-out`), `reconcile-undeclared` (`warn`); a state file that EXISTS carrying neither key, or exactly one of the two, is also `checkpoint-only` (`fail`) while both together are `full-run` (`pass`); and sentinels planted in `runtime/.env`, `auth.json`, and `runtime/logs/heartbeat.log` never appear in stdout while the fixture tree is byte-identical before and after.
 - Given a registry row with `systemd.checkpoint_timer`, a `hermes-<id>-consumer.service` on disk, a second gateway-named unit, heartbeat units on disk with no registry `heartbeat_timer`, a stored `gateway_unit` differing from the derived name, and a row whose three units are absent, when topology runs, then items `registry-retired-key:checkpoint_timer`, `retired-unit:…consumer.service`, `duplicate-gateway:…`, `misnamed-gateway:…` make the topology leaf `fail`, the `heartbeat_timer` leaf reads `fail` `registry-undeclared` / `unit-missing` as appropriate, and the absent agent's five leaves are `fail` with `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`, `absent`, `absent`.
 - Given a fleet-scope run whose listings include `hermes-dashboard.service` (HERMES_HOME = fleet root), `hermes-stray-pm-gateway.service` (HERMES_HOME = an unregistered profile dir), `hermes-old-pm-consumer.service` (`not-found`), a `hermes-worker-proc_x.scope` (`transient`, `Description` with `--profile alpha-pm`), and a unit named by a `managed_shared_service` entry with `systemd` in `policy_domains`, when classification runs, then `systemd.unregistered` is `warn` listing classes `unclassified`, `profile-correlated`, `retired`, `transient` (`correlated_profile: alpha-pm`), `managed-exception`, every item carries `process_reference: "unobserved"` and `guidance`, `health.verdict` is `unproven`, and the fake unit dir is byte-identical before and after.
 - Given the shared gateway unit whose `HERMES_HOME` matches `<root>/fleet-bloodbank-gateway`, is enabled+active+stable, and whose name equals both `gateways.bloodbank.systemd_unit` and `service_model.fleet_shared.bloodbank_gateway_unit`, when a fleet-scope run completes, then `systemd.shared-gateway` is `pass`; when the registry `systemd_unit` names a different unit it is `fail` `identity-mismatch`; and under `--agent alpha-pm` `data.systemd.shared.coverage` is `unobserved`, `unregistered.coverage` is `not-swept`, no `list-*` verb is invoked, and the `show` argv names only alpha-pm's units and retired candidates.
-- Given `DBUS_SESSION_BUS_ADDRESS` pointing at a missing socket (no shim), a fake whose `is-system-running` sleeps past `probe.timeout_ms`, and a fake emitting `NRestarts=abc` for one unit, when status runs, then the first two produce five `error` leaves per agent with `manager-unavailable` / `manager-timeout`, a `systemd.manager` host `error`, zero `show` invocations, and intact `registry`/`profile` domains, while the third produces `error` `property-malformed:NRestarts` on that unit's leaf only.
+- Given `DBUS_SESSION_BUS_ADDRESS` pointing at a missing socket (no shim), a fake whose `is-system-running` sleeps past `probe.timeout_ms`, and a fake emitting `NRestarts=abc` for one unit, when status runs, then the first two produce five `error` leaves per agent with `manager-unavailable` / `manager-timeout`, a `systemd.manager` host `error`, zero `show` invocations, and intact `registry`/`profile` domains, while the third produces `error` `property-malformed:NRestarts` on that unit's leaf only. A sample that carries a unit and OMITS a required property (`LoadState`, `UnitFileState`, `ActiveState`, `SubState`) is the same class of failure -- `error` `property-malformed:<Key>` on that unit's leaf, every other unit and agent read normally out of the same window -- and is distinct from an ABSENT unit, which carries all four and reads `absent`.
 - Given unfiltered `--live` with a `PJ_FLEET_CLI_ENTRY` synthetic report whose `systemd.sentinel` passes for an agent the observer reads `deferred-but-enabled`, when findings are produced, then `systemd-rule-disagreement` is present and gating carrying both claims, `data.systemd.rule_agreement.disagree` is 1, and an agent whose only divergence is `unstable` is `not_compared`.
 - Given the same fake fleet run twice, through a pipe with a payload > 64 KiB, and through the MCP tool, when `data` is compared, then it is byte-identical, complete, and `data.systemd` plus every `agents[].systemd` is present in all three; a schema-4 contract without `service_manifest` reports every selected agent's five leaves `unsupported` with `capability: "systemd.manifest"` and `health.unjustified > 0`.
 - Given the live fleet, when the story is closed, then `pjangler fleet status --domain systemd --json` reports 28 registered agents with `data.systemd.manager.state` = `degraded`-or-`running` (available), `pjangler-pm` gateway `fail` `deferred-but-enabled` with `stability.stable: true`, `drumjangler-pm` `verified-channel-gateway-disabled`, `automatic-ai-pm` heartbeat `latest_result: failed` and `entrypoint-unpinned`, `ssbnk-pm` `platform-enablement-inherited:telegram`, `delonet-director` `gateway-missing`, the shared gateway `pass`, `unregistered` listing `hermes-dashboard.service`, `hermes-coachingagentframework-pm-gateway.service`, `hermes-tonnybox-pm-*`, and the `hermes-worker-proc_*.scope` units (`transient`, `correlated_profile: james-brennan-pm`), and an independent `systemctl --user show` of the four pjangler/shared units recorded in the Auto Run Result agrees with the payload field-by-field.
@@ -409,6 +409,51 @@ the tree was reverted, still applies clean at HEAD, and typechecks with exactly 
 deliberate missing wire (`FleetStatusAgent.systemd` / `FleetStatus.systemd` declared required but not yet
 populated in `src/fleet/status.ts`), which is the next task on the list either way. It was re-applied rather
 than re-derived.
+
+**2026-09-02, matrix test audit closure (post-implementation).** The suite was green and the Matrix Test
+Audit gate still failed: green proved the code agreed with itself, not that every row of the I/O matrix had
+a test that would go red if the behaviour changed. Fifteen gaps were closed. Three of them were CONTRACT
+decisions -- a test disagreed with the matrix, and the rule is that the code moves, never the expectation:
+
+1. **`in-progress` / `stuck` moved to the heartbeat TIMER leaf.** The matrix puts the `warn`/`fail` on the
+   timer; the observer pushed both items onto the oneshot's leaf, and the test had been written to the code.
+   The matrix is coherent rather than ambiguous: the timer leaf consistently owns whether the tick is
+   HAPPENING (`tick-overdue`, `tick-never`, `schedule-off-policy`, and now a wedged or progressing
+   activation) while the oneshot's leaf owns whether the last COMPLETED run succeeded
+   (`latest-result-failed`). The item placement moved; the `latest_result` bucket still reports
+   `in-progress`/`stuck` from the same single evaluation (`evaluateTickActivation`), and `in-progress` moved
+   from `serviceRank` to `timerRank` with it.
+2. **`platform-enablement-inherited` now consults the fleet base.** The row's input is a delta of `{}`
+   against a base that enables telegram, and its output names ONE item. The observer read only the delta, so
+   a delta-empty agent was flagged for EVERY deferred platform -- saying "inherited" about a platform nothing
+   enables. It now reads `HERMES_HOME/config.yaml` once per run and reports the EFFECTIVE enablement (the
+   delta's pin when it has one, the base's value when it does not). This supersedes DW-98, whose entry
+   records why the original deferral no longer holds.
+3. **A missing required property is `property-malformed`, not a default.** The row's second input is a
+   missing `ActiveState`, which the observer coerced to `""` -- so it reported `inactive`, a VERDICT, about a
+   property nobody read, and `property-malformed` could only ever fire for a numeric parse failure. Every
+   unit sample is now validated against `SYSTEMD_REQUIRED_PROPERTIES` (`LoadState`, `UnitFileState`,
+   `ActiveState`, `SubState` -- the four systemd prints for every unit type, and for a unit that does not
+   exist), and a missing one errors THAT unit's leaf only. An absent unit still reads `absent`: it carries
+   all four, with an empty `UnitFileState`, so the two readings cannot be confused.
+
+The remaining twelve were test gaps, all closed by asserting the artifact the matrix NAMES rather than a
+proxy -- the item code where the row names a code (`duplicate-gateway:<unit>`, `deferred-but-active`,
+`tick-overdue`, `schedule-off-policy`, `latest-result-failed:exit-code`, `property-malformed:ExecMainStatus`),
+the leaf STATE where it names a severity -- and by making the fixture actually drive the branch: a real
+second `*gateway.service` for the duplicate rule (the old fixture's "second gateway" did not end in
+`gateway.service`, so the duplicate loop skipped it and the misnamed branch's side effect satisfied the
+assertion), `serviceExec` for the oneshot's entrypoint (no case had ever passed it), unsafe paths moved UNDER
+the scratch HOME so `redactHome` actually fires, a state file that exists and evidences only a checkpoint,
+and an unfiltered run with an unreachable manager to prove the registry and profile domains do not move.
+Every one was verified by MUTATION: the covered line was deleted or inverted, the suite rebuilt, and the
+case confirmed red.
+
+Two host dependencies were removed rather than skipped. `tick-never` compared this host's uptime against
+`on_boot_sec x 2` and would have FAILED on a box booted under 120 s ago; the case now pins `on_boot_sec: 1`
+in its own contract, which any host running the suite has exceeded. The overdue threshold is proven by a
+290 s / 310 s pair around `60 s x 5`, which pins the multiplier in both directions with ten seconds of margin
+for the run's own duration.
 
 ## Review Triage Log
 

@@ -667,7 +667,14 @@ function status(result) {
   // Every finding names a dotted contract path, never a source id -- carried
   // from 1.4 and applied to the two finding codes this story adds.
   for (const finding of parsed.data.findings) {
-    assert.equal(finding.field.includes("-"), false, `a finding's field must be a dotted contract path, not a source id: ${finding.field}`);
+    // A dotted contract path, not a source id. Checked by SHAPE rather than by
+    // "contains no hyphen": story 1.8 made `units.hermes-{agent_id}-gateway.service`
+    // a declared leaf, so hyphens no longer separate a path from an id. What
+    // still separates them is the ROOT: a contract path's first segment is a
+    // plain identifier followed by a dot or nothing at all (`scaffold`,
+    // `units.…`, `agents.…`), while every source id this guard exists to catch
+    // (`recipe-audit`, `fleet-systemd`) is hyphenated at its root.
+    assert.match(finding.field, /^[a-z_]+(?:\.|$)/u, `a finding's field must be a contract path, not a source id: ${finding.field}`);
   }
   return parsed.data;
 }

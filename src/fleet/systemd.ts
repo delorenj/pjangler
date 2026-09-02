@@ -65,7 +65,7 @@
 import YAML from "yaml";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { isSafePathSegment } from "./inventory";
-import { entryStat, readBounded, type BoundedRead } from "./profile";
+import { entryStat, readBounded, RENDERER_BASE_FILE, type BoundedRead } from "./profile";
 import { mapBounded, probeText, sleepBounded, throwIfCancelled, type FleetRunContext } from "./runtime";
 import {
   FLEET_STATUS_SYSTEMD_CONCURRENCY,
@@ -148,6 +148,21 @@ export const SYSTEMD_CLASSIFY_PROPERTIES = [
 
 /** Directories a canonical `FragmentPath` may live in: the user unit dir, and the system-wide user units. */
 export const SYSTEMD_SYSTEM_UNIT_DIRS = ["/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user"] as const;
+
+/**
+ * The properties EVERY unit reading is built on, required in every sample.
+ *
+ * A sample that carries a unit and omits one of these is not a unit in a
+ * default state: coercing a missing `ActiveState` to `""` would report
+ * `inactive` -- a verdict -- about a property nobody actually read, and a
+ * deferred agent's gateway would pass for the wrong reason. All four are on
+ * systemd's own `Unit` interface and are printed for every unit type and even
+ * for a unit that does not exist (`LoadState=not-found` with an EMPTY
+ * `UnitFileState`), so an absent one is a defect of the READING and is
+ * reported as `property-malformed:<Key>` rather than resolved with a default.
+ * Present-and-empty is a reading; absent is not.
+ */
+export const SYSTEMD_REQUIRED_PROPERTIES = ["LoadState", "UnitFileState", "ActiveState", "SubState"] as const;
 
 /** `UnitFileState` values that mean the unit is wired to start. */
 const ENABLED_STATES: ReadonlySet<string> = new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
@@ -473,6 +488,32 @@ function all(sample: Sample, key: string): string[] {
   return sample?.get(key) ?? [];
 }
 
+/**
+ * The required properties this sample does not carry AT ALL, in declaration
+ * order.
+ *
+ * `one` returns `undefined` only for a key the block never printed; a key
+ * printed with an empty value (`UnitFileState=` on a `not-found` unit) comes
+ * back as `""` and is a reading, not a gap.
+ */
+function missingProperties(sample: Sample): string[] {
+  if (sample === null) return [];
+  return SYSTEMD_REQUIRED_PROPERTIES.filter((key) => one(sample, key) === undefined);
+}
+
+/** What one unit's sample supports: a full reading, an absent unit, or a sample this build refuses to read. */
+type UnitReading = "readable" | "absent" | "unreadable";
+
+/** A value at a dotted path inside a parsed YAML mapping, or `undefined`. Mappings only; never an array index. */
+function atPath(root: unknown, segments: readonly string[]): unknown {
+  let cursor = root;
+  for (const key of segments) {
+    if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return undefined;
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return cursor;
+}
+
 /** The `path=` and the first argv token of an `ExecStart={ ... }` line. Nothing else from it is read. */
 export function parseExecStart(raw: string | undefined): { path: string | null; argv0: string | null } {
   if (raw === undefined) return { path: null, argv0: null };
@@ -766,6 +807,8 @@ interface Shared {
   listing: Listing;
   /** Directories a `FragmentPath` may live in, resolved. */
   unitDirs: string[];
+  /** The fleet base's per-platform enablement, read once: what a delta that pins nothing inherits. */
+  baseEnabled: Record<string, boolean | null>;
 }
 
 /** The properties of one unit that make a window unanimous, joined for comparison. */
@@ -831,6 +874,28 @@ function evaluateStability(samples: readonly Sample[]): Stability {
   return { stable: stable && !crashLooping, crashLooping, transitions, restarts: last, malformed };
 }
 
+/**
+ * Is the heartbeat oneshot mid-tick, and has it been mid-tick too long?
+ *
+ * Computed ONCE and reported on the TIMER leaf, because "is the tick
+ * happening" is the timer's question -- the same leaf that owns
+ * `tick-overdue`, `tick-never` and `schedule-off-policy` -- while "did the last
+ * COMPLETED run succeed" (`latest-result-failed`) is the oneshot's. systemd
+ * pre-initialises `Result=success` before the first exit, so an activating
+ * oneshot is never read as a success; whether it is merely running or wedged is
+ * the unit's OWN start timeout, floored by the manifest's ceiling for a unit
+ * that declares none.
+ */
+function evaluateTickActivation(sample: Sample, monotonicNowUs: bigint, maxTickSeconds: number): "in-progress" | "stuck" | null {
+  if (sample === null || one(sample, "LoadState") !== "loaded") return null;
+  const active = one(sample, "ActiveState") ?? "";
+  if (active !== "activating" && active !== "active") return null;
+  const timeout = parseSystemdUsec(one(sample, "TimeoutStartUSec")) ?? BigInt(maxTickSeconds) * 1_000_000n;
+  const start = parseSystemdUsec(one(sample, "ExecMainStartTimestampMonotonic"));
+  const age = start === null || start === 0n ? null : monotonicNowUs - start;
+  return age !== null && age >= timeout ? "stuck" : "in-progress";
+}
+
 /** Which executable family a unit's `ExecStart` path belongs to, and whether the registry pins it. */
 function classifyEntrypoint(
   path: string | null,
@@ -859,6 +924,34 @@ function classifyHome(home: string | null, expected: string | null, fleetHomeRea
   return resolved === resolve(expected) ? "matches" : "mismatch";
 }
 
+/**
+ * The FLEET BASE's `platforms.<p>.enabled`, read once for the whole run.
+ *
+ * The base is the file the renderer merges every delta over
+ * (`hermes-profile-config.py`'s `BASE`), so a delta that pins nothing inherits
+ * exactly this. Reading it is what makes `platform-enablement-inherited:<p>`
+ * mean what its name says: without it the item fires for a deferred platform
+ * NOTHING enables, which is an item asking an operator to pin away an
+ * enablement that does not exist. `null` for a platform the base does not
+ * declare, and for a base that is missing or unparseable -- an enablement this
+ * observer could not read is not an enablement it will claim.
+ */
+function readBaseEnablement(ctx: FleetSystemdContext, platforms: readonly string[]): Record<string, boolean | null> {
+  const enabled: Record<string, boolean | null> = {};
+  for (const platform of platforms) enabled[platform] = null;
+  const path = join(ctx.fleetHome, RENDERER_BASE_FILE);
+  if (entryStat(path).kind !== "file") return enabled;
+  const read = readBounded(path, ctx.manifest.limits.max_file_bytes);
+  if (!("bytes" in read)) return enabled;
+  let document: unknown;
+  try { document = YAML.parse(read.bytes.toString("utf8")); } catch { return enabled; }
+  for (const platform of platforms) {
+    const value = atPath(document, ctx.manifest.messaging.enabled_path.replaceAll("{platform}", platform).split("."));
+    enabled[platform] = typeof value === "boolean" ? value : null;
+  }
+  return enabled;
+}
+
 /** The delta's `platforms.<p>.enabled` pin, read once per agent. `null` when the delta leaves it inherited. */
 function readDeltaEnablement(ctx: FleetSystemdContext, profileName: string | null, platforms: readonly string[]): {
   enabled: Record<string, boolean | null>;
@@ -875,23 +968,15 @@ function readDeltaEnablement(ctx: FleetSystemdContext, profileName: string | nul
   if (!("bytes" in read)) return { enabled, secrets, read };
   let document: unknown;
   try { document = YAML.parse(read.bytes.toString("utf8")); } catch { return { enabled, secrets, read: { error: "unreadable" } }; }
-  const at = (root: unknown, path: readonly string[]): unknown => {
-    let cursor = root;
-    for (const key of path) {
-      if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return undefined;
-      cursor = (cursor as Record<string, unknown>)[key];
-    }
-    return cursor;
-  };
   for (const platform of platforms) {
     const segments = ctx.manifest.messaging.enabled_path.replaceAll("{platform}", platform).split(".");
-    const value = at(document, segments);
+    const value = atPath(document, segments);
     enabled[platform] = typeof value === "boolean" ? value : null;
     // PRESENCE of the declared environment key under the delta's secret block,
     // and nothing else. The reference itself is never read, never compared and
     // never emitted -- only whether the delta names the key at all.
     const keys = ctx.manifest.messaging.secret_env[platform] ?? [];
-    const block = at(document, ["secrets", "onepassword", "env"]);
+    const block = atPath(document, ["secrets", "onepassword", "env"]);
     secrets[platform] = keys.length > 0 && typeof block === "object" && block !== null
       && keys.every((key) => typeof (block as Record<string, unknown>)[key] === "string" && ((block as Record<string, unknown>)[key] as string).trim() !== "");
   }
@@ -1125,27 +1210,48 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   const isDisabled = DISABLED_STATES.has(unitFileState) || unitFileState === "";
   const activeState = one(gatewaySample, "ActiveState") ?? "";
   const isActive = activeState === "active" || activeState === "activating" || activeState === "reloading";
-  const absent = gatewaySample === null || one(gatewaySample, "LoadState") === "not-found";
 
-  const unitDefects = (unit: string, sample: Sample, items: FleetSystemdItem[]): boolean => {
-    if (sample === null || one(sample, "LoadState") === "not-found") {
+  const unitDefects = (unit: string, sample: Sample, items: FleetSystemdItem[]): UnitReading => {
+    if (sample === null) {
       items.push({ path: unit, kind: "absent", desired: "loaded", observed: "not-found", detail: "absent" });
-      return true;
+      return "absent";
+    }
+    // A sample that CARRIES the unit and omits a load-bearing property is a
+    // reading this build will not make. Checked before the `not-found` test on
+    // purpose: an absent unit is still a complete reading (systemd prints all
+    // four properties for one), so the two cannot be confused -- and coercing a
+    // missing `ActiveState` to `""` would report `inactive` about a property
+    // nobody read. ONE unit's leaf, never the run: the window is shared, but
+    // each unit's block stands or falls on its own.
+    const missing = missingProperties(sample);
+    if (missing.length > 0) {
+      for (const key of missing) {
+        items.push({
+          path: unit, kind: "property-malformed",
+          desired: "a property the user manager reports for every unit",
+          observed: "absent", detail: `property-malformed:${word(key)}`,
+        });
+      }
+      return "unreadable";
+    }
+    if (one(sample, "LoadState") === "not-found") {
+      items.push({ path: unit, kind: "absent", desired: "loaded", observed: "not-found", detail: "absent" });
+      return "absent";
     }
     const load = one(sample, "LoadState") ?? "";
     if (load !== "loaded") {
       items.push({ path: unit, kind: "load-error", desired: "loaded", observed: word(load), detail: `load-error:${word(load)}` });
-      return true;
+      return "unreadable";
     }
     const fragment = one(sample, "FragmentPath") ?? "";
     if (fragment !== "" && !shared.unitDirs.some((dir) => within(dir, resolve(fragment)))) {
       items.push({ path: unit, kind: "fragment-unsafe", desired: "a fragment under the declared unit directories", observed: ctx.shown(fragment), detail: "fragment-unsafe" });
     }
-    return false;
+    return "readable";
   };
 
-  const gatewayAbsent = unitDefects(gatewayUnit, gatewaySample, gatewayItems);
-  if (!gatewayAbsent) {
+  const gatewayRead = unitDefects(gatewayUnit, gatewaySample, gatewayItems);
+  if (gatewayRead === "readable") {
     for (const key of gatewayStability.malformed) {
       gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: `property-malformed:${word(key)}` });
     }
@@ -1176,11 +1282,20 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
       if (isActive) gatewayItems.push({ path: gatewayUnit, kind: "deferred-but-active", desired: "inactive", observed: word(activeState), detail: "deferred-but-active" });
       for (const platform of platforms) {
         if (declaredPlatforms[platform] !== "deferred") continue;
-        if (delta.enabled[platform] !== false) {
+        // The EFFECTIVE enablement the renderer produces: the delta's pin when
+        // it has one, the fleet base's value when it does not. Both halves are
+        // read, because the item's whole claim is that this platform IS enabled
+        // -- a deferred platform nothing enables needs no pin, and reporting one
+        // there would ask an operator to pin away an enablement that does not
+        // exist (the live fleet's base enables telegram, which is exactly why
+        // an empty delta inherits it and a pinned one does not).
+        const pinned = delta.enabled[platform];
+        const effective = pinned ?? shared.baseEnabled[platform] ?? null;
+        if (effective === true) {
           gatewayItems.push({
             path: platform, kind: "platform-enablement-inherited",
             desired: `${manifest.messaging.enabled_path.replaceAll("{platform}", platform)}: false`,
-            observed: delta.enabled[platform] === true ? "true" : "inherited",
+            observed: pinned === true ? "true" : "inherited",
             detail: `platform-enablement-inherited:${platform}`,
           });
         }
@@ -1223,9 +1338,9 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   const gateway = {
     ...aspect(
       gatewayState, gatewayItems,
-      gatewayAbsent ? "absent" : `${word(unitFileState || "absent")}/${word(activeState)}/${word(one(gatewaySample, "SubState"))}`,
+      gatewayRead === "readable" ? `${word(unitFileState || "absent")}/${word(activeState)}/${word(one(gatewaySample, "SubState"))}` : gatewayRead,
       capability === "active" ? "enabled, active, running and stable over the window"
-        : capability === "deferred" ? "disabled and inactive, with every deferred platform pinned disabled in the delta"
+        : capability === "deferred" ? "disabled and inactive, with no deferred platform left enabled by the delta or the fleet base"
           : "a declared messaging capability before any gateway is enabled",
       gatewayItems.length === 0
         ? capability === "deferred" ? "the gateway is correctly deferred: disabled, inactive, and no platform inherits enablement" : "the gateway is enabled, active and stable over the window"
@@ -1238,19 +1353,26 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
     restarts: gatewayStability.restarts,
     entrypoint: gatewayEntrypoint,
     home: gatewayHome,
-    stability: { samples: gatewaySamples.length, stable: !gatewayAbsent && gatewayStability.stable, transitions: gatewayStability.transitions },
+    stability: { samples: gatewaySamples.length, stable: gatewayRead === "readable" && gatewayStability.stable, transitions: gatewayStability.transitions },
   };
 
   // -- the heartbeat timer ---------------------------------------------------
   const timerSample = latest(timerUnit);
   const timerItems: FleetSystemdItem[] = [];
-  const timerAbsent = unitDefects(timerUnit, timerSample, timerItems);
+  const timerRead = unitDefects(timerUnit, timerSample, timerItems);
   const timers = parseTimersMonotonic(all(timerSample, "TimersMonotonic"));
   let schedule: FleetSystemdSchedule = "unknown";
   let tick: FleetSystemdTick = "unknown";
   let paired = false;
   const serviceSample = latest(serviceUnit);
-  if (!timerAbsent) {
+  // Whether the tick is HAPPENING is the timer's question, and the answer is
+  // read off the oneshot: this leaf already carries `tick-overdue`,
+  // `tick-never` and `schedule-off-policy`, and a wedged oneshot is the same
+  // fact one step further along. The oneshot's own leaf keeps whether the last
+  // COMPLETED run succeeded, and reports this reading as its `latest_result`
+  // bucket.
+  const activation = evaluateTickActivation(serviceSample, ctx.monotonicNowUs, manifest.heartbeat.max_tick_seconds);
+  if (timerRead === "readable") {
     const timerFileState = one(timerSample, "UnitFileState") ?? "";
     if (!ENABLED_STATES.has(timerFileState)) timerItems.push({ path: timerUnit, kind: "timer-disabled", desired: "enabled", observed: word(timerFileState || "absent"), detail: "timer-disabled" });
     const timerActive = one(timerSample, "ActiveState") ?? "";
@@ -1311,14 +1433,29 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
         observed: "overdue", detail: "tick-overdue",
       });
     } else tick = "current";
+
+    // The oneshot mid-tick, on the leaf that owns whether the tick happens.
+    // `path` names the ONESHOT, because that is the unit an operator would look
+    // at -- the item is on the timer's leaf, not about the timer's own state.
+    if (activation !== null) {
+      timerItems.push({
+        path: serviceUnit, kind: activation, desired: "a completed tick",
+        observed: activation === "stuck" ? "activating past its own start timeout" : "activating",
+        detail: activation,
+      });
+    }
   }
-  const timerRank = (kind: FleetSystemdItemKind): FleetStatusState => (kind === "tick-unknown" || kind === "schedule-unknown" ? "warn" : "fail");
+  const timerRank = (kind: FleetSystemdItemKind): FleetStatusState => (
+    kind === "property-malformed" ? "error"
+      : kind === "tick-unknown" || kind === "schedule-unknown" || kind === "in-progress" ? "warn"
+        : "fail"
+  );
   let timerState: FleetStatusState = "pass";
   for (const item of timerItems) timerState = worseOf(timerState, timerRank(item.kind));
   const timer = {
     ...aspect(
       timerState, timerItems,
-      timerAbsent ? "absent" : `${word(one(timerSample, "UnitFileState") ?? "absent")}/${word(one(timerSample, "ActiveState"))}/${word(one(timerSample, "SubState"))} tick ${tick}`,
+      timerRead !== "readable" ? timerRead : `${word(one(timerSample, "UnitFileState") ?? "absent")}/${word(one(timerSample, "ActiveState"))}/${word(one(timerSample, "SubState"))} tick ${tick}`,
       `enabled, active and waiting, paired with ${serviceUnit}, on the declared schedule, with a current tick`,
       timerItems.length === 0
         ? "the heartbeat timer is enabled, active, correctly paired, on policy and current"
@@ -1330,34 +1467,25 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
 
   // -- the heartbeat oneshot -------------------------------------------------
   const serviceItems: FleetSystemdItem[] = [];
-  const serviceAbsent = unitDefects(serviceUnit, serviceSample, serviceItems);
+  const serviceRead = unitDefects(serviceUnit, serviceSample, serviceItems);
   const serviceExec = parseExecStart(one(serviceSample, "ExecStart"));
   const serviceEntrypoint = classifyEntrypoint(serviceExec.path, input.roleDir, manifest.entrypoint.launcher, input.hermesBin);
   const serviceResult = one(serviceSample, "Result") ?? null;
   const serviceStatus = numeric(serviceSample, "ExecMainStatus");
   let latestResult: FleetSystemdLatestResult = "unknown";
   const reconcile = readReconcile(ctx, input.roleDir);
-  if (!serviceAbsent) {
+  if (serviceRead === "readable") {
     if ((one(serviceSample, "Type") ?? "") !== "oneshot") {
       serviceItems.push({ path: serviceUnit, kind: "type-not-oneshot", desired: "oneshot", observed: word(one(serviceSample, "Type") ?? "absent"), detail: "type-not-oneshot" });
     }
     const start = parseSystemdUsec(one(serviceSample, "ExecMainStartTimestampMonotonic"));
     const exit = parseSystemdUsec(one(serviceSample, "ExecMainExitTimestampMonotonic"));
-    const serviceActive = one(serviceSample, "ActiveState") ?? "";
-    if (serviceActive === "activating" || serviceActive === "active") {
+    if (activation !== null) {
+      // Mid-tick: the BUCKET is reported here, the ITEM on the timer leaf.
       // systemd pre-initialises `Result=success` before the first exit, so an
-      // activating oneshot is NEVER read as a success -- the template's own
-      // rule. Whether it is merely running or wedged is the unit's OWN start
-      // timeout, floored by the manifest's ceiling for a unit that declares none.
-      const timeout = parseSystemdUsec(one(serviceSample, "TimeoutStartUSec")) ?? BigInt(manifest.heartbeat.max_tick_seconds) * 1_000_000n;
-      const age = start === null || start === 0n ? null : ctx.monotonicNowUs - start;
-      if (age !== null && age >= timeout) {
-        latestResult = "stuck";
-        serviceItems.push({ path: serviceUnit, kind: "stuck", desired: "a completed tick", observed: "activating past its own start timeout", detail: "stuck" });
-      } else {
-        latestResult = "in-progress";
-        serviceItems.push({ path: serviceUnit, kind: "in-progress", desired: "a completed tick", observed: "activating", detail: "in-progress" });
-      }
+      // activating oneshot is never read as a success -- and it has no
+      // completed run for THIS leaf to fault either.
+      latestResult = activation;
     } else if (serviceResult !== null && serviceResult !== "success") {
       latestResult = "failed";
       serviceItems.push({ path: serviceUnit, kind: "latest-result-failed", desired: "success", observed: word(serviceResult), detail: `latest-result-failed:${word(serviceResult)}` });
@@ -1391,7 +1519,7 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   }
   const serviceRank = (kind: FleetSystemdItemKind): FleetStatusState => (
     kind === "property-malformed" || kind === "policy-unreadable" || kind === "state-unreadable" ? "error"
-      : kind === "in-progress" || kind === "reconcile-undeclared" || kind === "reconcile-opt-out-undeclared" || kind === "reconcile-unverifiable" || kind === "latest-result-unknown" ? "warn"
+      : kind === "reconcile-undeclared" || kind === "reconcile-opt-out-undeclared" || kind === "reconcile-unverifiable" || kind === "latest-result-unknown" ? "warn"
         : "fail"
   );
   let serviceState: FleetStatusState = "pass";
@@ -1399,7 +1527,7 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   const service = {
     ...aspect(
       serviceState, serviceItems,
-      serviceAbsent ? "absent" : `${word(one(serviceSample, "ActiveState"))}/${word(one(serviceSample, "SubState"))} ${latestResult}`,
+      serviceRead !== "readable" ? serviceRead : `${word(one(serviceSample, "ActiveState"))}/${word(one(serviceSample, "SubState"))} ${latestResult}`,
       "a oneshot whose latest invocation completed successfully, entered from the pinned entrypoint",
       serviceItems.length === 0
         ? "the heartbeat oneshot completed its latest tick successfully"
@@ -1650,6 +1778,9 @@ export async function collectSystemdHealth(ctx: FleetSystemdContext): Promise<Fl
     window: sampled,
     listing,
     unitDirs,
+    // ONE read for the whole fleet: the base is one file every profile's delta
+    // is merged over, so reading it per agent would be the same bytes 28 times.
+    baseEnabled: readBaseEnablement(ctx, ctx.manifest.messaging.platforms),
   };
 
   const results = await mapBounded(ctx.agents, FLEET_STATUS_SYSTEMD_CONCURRENCY, async (input) => {

@@ -172,7 +172,14 @@ const HERMES_BIN = join(HERMES_RELEASE, "bin", "hermes");
  * and every case sets the unit state itself.
  */
 const AGENTS = [
-  { name: "alpha-pm", telegram: "verified", slack: "disabled", delta: "pinned", secret: true, identity: true },
+  // `alpha-pm` is the matrix's canonical ACTIVE agent, so its delta is the one
+  // the provisioner writes for a verified channel: telegram left ENABLED and
+  // only the deferred platform pinned off. A `pinned` delta here would have
+  // made the fixture contradict the row's own input column (`generated
+  // platforms.telegram.enabled: true`) while nothing noticed, because the
+  // `active` branch reads identity and the secret reference and never
+  // enablement.
+  { name: "alpha-pm", telegram: "verified", slack: "disabled", delta: "active", secret: true, identity: true },
   { name: "bravo-pm", telegram: "disabled", slack: "disabled", delta: "pinned" },
   { name: "charlie-pm", telegram: "disabled", slack: "disabled", delta: "empty" },
   { name: "delta-pm", telegram: "verified", slack: "disabled", delta: "pinned", secret: true, identity: true },
@@ -225,6 +232,8 @@ function makeRepo(name, { reconcile = { enabled: false, explicit_opt_out: true }
 }
 
 const PINNED_PLATFORMS = { platforms: { telegram: { enabled: false }, slack: { enabled: false } } };
+/** What a VERIFIED telegram row's delta carries: the live channel enabled, the deferred one pinned off. */
+const ACTIVE_PLATFORMS = { platforms: { telegram: { enabled: true }, slack: { enabled: false } } };
 
 function baseConfig() {
   // The fleet base ENABLES telegram, which is exactly why a deferred platform
@@ -240,7 +249,7 @@ function baseConfig() {
 function seedProfile(name, { delta = "pinned", secret = false } = {}) {
   const dir = join(profileRoot, name);
   mkdirSync(join(dir, "hindsight"), { recursive: true });
-  const document = delta === "empty" ? {} : { ...PINNED_PLATFORMS };
+  const document = delta === "empty" ? {} : delta === "active" ? { ...ACTIVE_PLATFORMS } : { ...PINNED_PLATFORMS };
   if (secret) document.secrets = { onepassword: { env: { TELEGRAM_BOT_TOKEN: `op://DeLoSecrets/${name}/token` } } };
   writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
   writeFileSync(join(dir, "config.delta.yaml"), YAML.stringify(document), "utf8");
@@ -616,11 +625,13 @@ function status(result) {
   assert.equal(parsed.command, "fleet.status");
   for (const key of DATA_KEYS) assert.notEqual(parsed.data[key], undefined, `data.${key} must be present`);
   for (const finding of parsed.data.findings) {
-    // A dotted contract path, not a source id. Checked by SHAPE rather than by
+    // A contract path, not a source id. Checked by SHAPE rather than by
     // "contains no hyphen": `units.hermes-{agent_id}-gateway.service` is a
-    // declared leaf and is full of hyphens, while `fleet-systemd` -- the source
-    // id this guard exists to catch -- has no dot at all.
-    assert.match(finding.field, /^[a-z_]+\./u, `a finding's field must be a dotted contract path, not a source id: ${finding.field}`);
+    // declared leaf and is full of hyphens. What separates the two is the ROOT
+    // -- a plain identifier followed by a dot or nothing at all (`scaffold`,
+    // `units.…`) -- while `fleet-systemd`, the source id this guard exists to
+    // catch, is hyphenated at its root.
+    assert.match(finding.field, /^[a-z_]+(?:\.|$)/u, `a finding's field must be a contract path, not a source id: ${finding.field}`);
   }
   return parsed.data;
 }
@@ -718,7 +729,11 @@ async function main() {
     assert.equal(gateway("alpha-pm").state, "pass", JSON.stringify(kindsOf(gateway("alpha-pm"))));
     assert.equal(gateway("bravo-pm").state, "pass", JSON.stringify(kindsOf(gateway("bravo-pm"))));
     assert.equal(gateway("charlie-pm").state, "fail");
-    assert.deepEqual(detailsOf(gateway("charlie-pm")), ["platform-enablement-inherited:telegram", "platform-enablement-inherited:slack"]);
+    // ONE item, for the one platform the fleet base actually enables. `slack`
+    // is deferred on the same row and enabled by nobody, so there is no
+    // inherited enablement to pin away and no item to raise -- see the
+    // dedicated case below, which drives the base itself.
+    assert.deepEqual(detailsOf(gateway("charlie-pm")), ["platform-enablement-inherited:telegram"]);
     assert.equal(gateway("delta-pm").state, "fail");
     assert.deepEqual(kindsOf(gateway("delta-pm")), ["verified-channel-gateway-disabled", "verified-channel-gateway-inactive"]);
     assert.equal(gateway("echo-pm").state, "fail");
@@ -760,6 +775,35 @@ async function main() {
         assert.equal(leafOf(agent, field).evidence, "direct", `${id} ${field} must be direct evidence, never derived`);
       }
     }
+  });
+
+  check("a canonical active agent reads five passes, a stable window, a successful tick and a current one", () => {
+    // The matrix's first row, end to end. Every earlier case asserts what goes
+    // WRONG on some leaf; nothing asserted the shape the whole fixture is
+    // supposed to have -- so `stability.stable: true`, and `pass` on the
+    // topology, heartbeat_timer row and both heartbeat leaves of an ACTIVE
+    // agent, were unproven in either direction.
+    setState(canonicalState());
+    const data = systemdRun();
+    const alpha = agentNamed(data, "alpha-pm");
+    for (const field of FIELD_ORDER) {
+      assert.equal(leafOf(alpha, field).state, "pass", `${field}: ${JSON.stringify(kindsOf(leafOf(alpha, field)))}`);
+    }
+    assert.equal(alpha.systemd.capability.declared, "active");
+    assert.equal(alpha.systemd.gateway.stability.stable, true);
+    assert.equal(alpha.systemd.gateway.stability.samples, data.systemd.window.samples);
+    assert.deepEqual(alpha.systemd.gateway.stability.transitions, []);
+    assert.deepEqual(alpha.systemd.gateway.entrypoint, { family: "launcher", pinned: true });
+    assert.equal(alpha.systemd.gateway.home, "matches");
+    assert.equal(alpha.systemd.heartbeat.latest_result, "success");
+    assert.equal(alpha.systemd.heartbeat.tick, "current");
+    assert.equal(alpha.systemd.heartbeat.schedule, "within-policy");
+    assert.equal(alpha.systemd.heartbeat.timer.paired, true);
+    assert.equal(data.systemd.agents.heartbeat_healthy >= 1, true, JSON.stringify(data.systemd.agents));
+    // The row's stated input, asserted against the fixture rather than assumed:
+    // this agent's GENERATED config really does carry telegram enabled.
+    const generated = YAML.parse(readFileSync(join(profileRoot, "alpha-pm", "config.yaml"), "utf8"));
+    assert.equal(generated.platforms.telegram.enabled, true, "the canonical active agent's generated config must enable its verified channel");
   });
 
   // -- AC2: the stability window --------------------------------------------
@@ -833,16 +877,48 @@ async function main() {
     const data = systemdRun();
     const summary = (id) => agentNamed(data, id).systemd.heartbeat;
 
+    // Whether the tick is HAPPENING is the TIMER's question -- the leaf that
+    // already owns `tick-overdue`, `tick-never` and `schedule-off-policy` --
+    // while whether the last COMPLETED run succeeded is the oneshot's. Both
+    // halves are asserted as the item CODE plus the leaf state, never as the
+    // summary bucket alone: a build that renamed the item or emitted a
+    // different failing kind while still bucketing the same word stayed green
+    // before.
     assert.equal(summary("alpha-pm").latest_result, "in-progress");
-    assert.equal(leafOf(agentNamed(data, "alpha-pm"), FIELDS.service).state, "warn");
+    const alphaTimer = leafOf(agentNamed(data, "alpha-pm"), FIELDS.timer);
+    assert.deepEqual(kindsOf(alphaTimer), ["in-progress"], JSON.stringify(detailsOf(alphaTimer)));
+    assert.equal(alphaTimer.state, "warn");
+    assert.equal(leafOf(agentNamed(data, "alpha-pm"), FIELDS.service).state, "pass", "a tick still running has no completed result for its own leaf to fault");
+
     assert.equal(summary("bravo-pm").latest_result, "stuck");
-    assert.equal(leafOf(agentNamed(data, "bravo-pm"), FIELDS.service).state, "fail");
+    const bravoTimer = leafOf(agentNamed(data, "bravo-pm"), FIELDS.timer);
+    assert.deepEqual(kindsOf(bravoTimer), ["stuck"], JSON.stringify(detailsOf(bravoTimer)));
+    assert.equal(bravoTimer.state, "fail");
+
     assert.equal(summary("charlie-pm").latest_result, "failed");
-    assert.equal(leafOf(agentNamed(data, "charlie-pm"), FIELDS.service).state, "fail");
+    const charlieService = leafOf(agentNamed(data, "charlie-pm"), FIELDS.service);
+    assert.equal(charlieService.state, "fail");
+    assert.ok(detailsOf(charlieService).includes("latest-result-failed:exit-code"), JSON.stringify(detailsOf(charlieService)));
+    // `Result` is read before `ExecMainStatus`, and the status is carried on the
+    // summary rather than in the code -- 209 is the live `automatic-ai-pm`
+    // reading this row was written from.
+    assert.equal(summary("charlie-pm").service.exec_status, 209);
+    assert.equal(summary("charlie-pm").service.result, "exit-code");
+
     assert.equal(summary("delta-pm").tick, "overdue");
-    assert.equal(leafOf(agentNamed(data, "delta-pm"), FIELDS.timer).state, "fail");
+    const deltaTimer = leafOf(agentNamed(data, "delta-pm"), FIELDS.timer);
+    assert.ok(kindsOf(deltaTimer).includes("tick-overdue"), JSON.stringify(detailsOf(deltaTimer)));
+    assert.equal(deltaTimer.state, "fail");
+
     assert.equal(summary("echo-pm").schedule, "off-policy");
-    assert.equal(leafOf(agentNamed(data, "echo-pm"), FIELDS.timer).state, "fail");
+    const echoTimer = leafOf(agentNamed(data, "echo-pm"), FIELDS.timer);
+    assert.ok(kindsOf(echoTimer).includes("schedule-off-policy"), JSON.stringify(detailsOf(echoTimer)));
+    assert.equal(echoTimer.state, "fail");
+    assert.match(
+      echoTimer.items.find((item) => item.kind === "schedule-off-policy").observed, /on_unit_inactive_sec 300s/u,
+      "the item must name the schedule it OBSERVED, in the manifest's vocabulary",
+    );
+
     assert.equal(summary("alpha-pm").tick, "current");
     assert.equal(summary("alpha-pm").schedule, "within-policy");
 
@@ -855,13 +931,66 @@ async function main() {
   });
 
   check("a timer that has never fired is `never` only once the boot delay has passed twice over", () => {
-    setState(canonicalState({ "alpha-pm": { lastTriggerNever: true, serviceNeverRan: true } }));
-    const data = systemdRun();
+    // `never` is claimed only once the host's uptime exceeds `on_boot_sec x 2`,
+    // which made this case depend on THIS HOST: a box booted under 120 s ago
+    // read `unknown` and turned it red for a reading the observer got right.
+    // The contract declares the delay, so the contract is what moves -- 1 s,
+    // which any host running this suite has already exceeded -- and the
+    // fixture's own timer declares the same 1 s so the schedule stays on policy
+    // and `tick-never` is the only finding.
+    const contract = writeContract("boot-delay-1s", (document) => {
+      document.service_manifest.heartbeat.on_boot_sec = 1;
+    });
+    const onBoot = Object.fromEntries(AGENT_IDS.map((id) => [id, { onBootSec: 1 }]));
+    setState(canonicalState({ ...onBoot, "alpha-pm": { onBootSec: 1, lastTriggerNever: true, serviceNeverRan: true } }));
+    resetFakeSystemctl(systemctlShim);
+    const data = status(cli(["fleet", "status", "--domain", "systemd", "--json", "--contract", contract]));
     const alpha = agentNamed(data, "alpha-pm");
-    assert.equal(alpha.systemd.heartbeat.tick, "never", "this host has been up far longer than 2 x on_boot_sec");
+    assert.equal(alpha.systemd.heartbeat.schedule, "within-policy", "the fixture's boot delay matches the contract's");
+    assert.equal(alpha.systemd.heartbeat.tick, "never", "the declared boot delay has elapsed twice over");
     assert.equal(alpha.systemd.heartbeat.latest_result, "never");
-    assert.ok(kindsOf(leafOf(alpha, FIELDS.timer)).includes("tick-never"));
+    assert.deepEqual(kindsOf(leafOf(alpha, FIELDS.timer)), ["tick-never"], JSON.stringify(detailsOf(leafOf(alpha, FIELDS.timer))));
+    assert.equal(leafOf(alpha, FIELDS.timer).state, "fail");
     assert.ok(kindsOf(leafOf(alpha, FIELDS.service)).includes("never-completed"));
+    // Every OTHER agent's timer is on policy and current under the same
+    // contract: the boot delay moved, not the reading.
+    for (const id of AGENT_IDS.filter((name) => name !== "alpha-pm")) {
+      assert.equal(leafOf(agentNamed(data, id), FIELDS.timer).state, "pass", `${id}: ${JSON.stringify(kindsOf(leafOf(agentNamed(data, id), FIELDS.timer)))}`);
+    }
+  });
+
+  check("the overdue threshold is the declared multiple, read off the LATER of the two clocks", () => {
+    const nowUs = monotonicNowUs();
+    setState(canonicalState({
+      // 290 s is inside `on_unit_inactive_sec x overdue_multiplier` (60 x 5)
+      // and 310 s is outside it. The PAIR is what pins the multiplier: with a
+      // multiplier of 1 the first reads overdue, with 10 the second reads
+      // current, and either mutation goes red here.
+      "alpha-pm": { nowUs, lastTriggerAgoUs: 290_000_000n, serviceStartAgoUs: 291_000_000n, serviceExitAgoUs: 290_000_000n },
+      "bravo-pm": { nowUs, lastTriggerAgoUs: 310_000_000n, serviceStartAgoUs: 311_000_000n, serviceExitAgoUs: 310_000_000n },
+      // Only the TIMER's last trigger is stale; the oneshot exited a moment ago.
+      "charlie-pm": { nowUs, lastTriggerAgoUs: 600_000_000n, serviceStartAgoUs: 31_000_000n, serviceExitAgoUs: 30_000_000n },
+      // The mirror: only the ONESHOT's exit is stale. Reading either clock
+      // alone -- or the earlier of the two -- calls one of these two overdue.
+      "delta-pm": { nowUs, lastTriggerAgoUs: 30_000_000n, serviceStartAgoUs: 601_000_000n, serviceExitAgoUs: 600_000_000n },
+      // The schedule rule's OTHER limb: the boot delay, not the interval.
+      "echo-pm": { nowUs, onBootSec: 120 },
+    }));
+    const data = systemdRun();
+    const tickOf = (id) => agentNamed(data, id).systemd.heartbeat.tick;
+    assert.equal(tickOf("alpha-pm"), "current", "290 s is inside 60 s x 5");
+    assert.equal(kindsOf(leafOf(agentNamed(data, "alpha-pm"), FIELDS.timer)).includes("tick-overdue"), false);
+    assert.equal(tickOf("bravo-pm"), "overdue", "310 s is outside 60 s x 5");
+    assert.ok(kindsOf(leafOf(agentNamed(data, "bravo-pm"), FIELDS.timer)).includes("tick-overdue"));
+    assert.equal(tickOf("charlie-pm"), "current", "the oneshot's exit is the later reading");
+    assert.equal(tickOf("delta-pm"), "current", "the timer's last trigger is the later reading");
+    const echoTimer = leafOf(agentNamed(data, "echo-pm"), FIELDS.timer);
+    assert.equal(agentNamed(data, "echo-pm").systemd.heartbeat.schedule, "off-policy");
+    assert.ok(kindsOf(echoTimer).includes("schedule-off-policy"), JSON.stringify(detailsOf(echoTimer)));
+    assert.match(
+      echoTimer.items.find((item) => item.kind === "schedule-off-policy").observed, /on_boot_sec 120s/u,
+      "an off-policy BOOT delay is the same rule's other half",
+    );
   });
 
   check("a timer that is disabled, inactive, wrongly paired or in a bad substate says which", () => {
@@ -896,6 +1025,7 @@ async function main() {
       writeFileSync(join(roleDirOf(name), "role.yaml"), YAML.stringify(body === null ? { role: "pm" } : { role: "pm", ...body }), "utf8");
     }
     const statePath = join(roleDirOf("echo-pm"), "runtime", "continuous-ticket-sentinel-state.json");
+    const alphaState = join(roleDirOf("alpha-pm"), "runtime", "continuous-ticket-sentinel-state.json");
     writeFileSync(statePath, `${JSON.stringify({
       last_decision: SECRET_SENTINEL,
       last_full_run_epoch: 1,
@@ -922,14 +1052,36 @@ async function main() {
       assert.equal(leafOf(agentNamed(data, "charlie-pm"), FIELDS.service).state, "pass");
       assert.deepEqual(reconcile("delta-pm"), { declared: "undeclared", evidence: "not-applicable" });
       assert.ok(kindsOf(leafOf(agentNamed(data, "delta-pm"), FIELDS.service)).includes("reconcile-undeclared"));
+      assert.equal(leafOf(agentNamed(data, "delta-pm"), FIELDS.service).state, "warn", "a role that declares no policy is a gap to declare, not drift");
       assert.deepEqual(reconcile("echo-pm"), { declared: "enabled", evidence: "full-run" });
       assert.equal(leafOf(agentNamed(data, "echo-pm"), FIELDS.service).state, "pass");
 
       // The state file's VALUES never leave it: only the presence of two keys
       // is read, and `last_decision` carried a sentinel.
       assert.equal(result.stdout.includes(SECRET_SENTINEL), false, "a value from the heartbeat state file reached stdout");
+
+      // The matrix's headline sub-case: reconcile ON with a state file that
+      // EXISTS and evidences only a checkpoint. `alpha-pm` above has no state
+      // file at all -- a different branch (`state-missing`) -- so the
+      // key-presence predicate was only ever exercised in its true form. Three
+      // shapes, because the predicate reads BOTH keys: with `||` in place of
+      // `&&`, or either key name dropped, the one-key rows report `full-run`.
+      for (const [label, body] of [
+        ["neither key", { last_decision: SECRET_SENTINEL }],
+        ["only last_full_run_epoch", { last_full_run_epoch: 1 }],
+        ["only last_runner_completed_at", { last_runner_completed_at: "2026-01-01T00:00:00Z" }],
+      ]) {
+        writeFileSync(alphaState, `${JSON.stringify(body)}\n`, "utf8");
+        setState(canonicalState());
+        const partial = systemdRun();
+        const alpha = agentNamed(partial, "alpha-pm");
+        assert.deepEqual(alpha.systemd.heartbeat.reconcile, { declared: "enabled", evidence: "checkpoint-only" }, label);
+        assert.ok(kindsOf(leafOf(alpha, FIELDS.service)).includes("checkpoint-only"), `${label}: ${JSON.stringify(kindsOf(leafOf(alpha, FIELDS.service)))}`);
+        assert.equal(leafOf(alpha, FIELDS.service).state, "fail", label);
+      }
     } finally {
       rmSync(statePath, { force: true });
+      rmSync(alphaState, { force: true });
       for (const name of AGENT_IDS) {
         writeFileSync(join(roleDirOf(name), "role.yaml"), YAML.stringify({ role: "pm", reconcile: { enabled: false, explicit_opt_out: true } }), "utf8");
       }
@@ -988,11 +1140,22 @@ async function main() {
         list_units: [{ unit: "hermes-alpha-pm-consumer.service", load: "loaded", active: "inactive", sub: "dead", description: "retired consumer" }],
         unit_files: [{ unit_file: "hermes-alpha-pm-consumer.service", state: "disabled", preset: null }],
       },
-      // A SECOND gateway-named unit for bravo.
+      // The unit bravo's ROW points at, which is not the canonical name.
       {
         units: { "hermes-bravo-pm-messaging.service": { Id: "hermes-bravo-pm-messaging.service", LoadState: "loaded", UnitFileState: "enabled", ActiveState: "active", SubState: "running" } },
         list_units: [{ unit: "hermes-bravo-pm-messaging.service", load: "loaded", active: "active", sub: "running", description: "second gateway" }],
         unit_files: [{ unit_file: "hermes-bravo-pm-messaging.service", state: "enabled", preset: null }],
+      },
+      // A SECOND unit with the canonical gateway SHAPE for the same agent --
+      // two gateways racing one channel. This is what the duplicate rule reads
+      // (`hermes-<id>-*gateway.service`); the misnamed unit above does not end
+      // in `gateway.service` and is a different defect entirely, so before this
+      // fixture the `duplicate-gateway` item was produced by no test at all and
+      // deleting its emission turned nothing red.
+      {
+        units: { "hermes-bravo-pm-secondary-gateway.service": { Id: "hermes-bravo-pm-secondary-gateway.service", LoadState: "loaded", UnitFileState: "enabled", ActiveState: "active", SubState: "running" } },
+        list_units: [{ unit: "hermes-bravo-pm-secondary-gateway.service", load: "loaded", active: "active", sub: "running", description: "a second canonical-shaped gateway" }],
+        unit_files: [{ unit_file: "hermes-bravo-pm-secondary-gateway.service", state: "enabled", preset: null }],
       },
       sharedGateway({ nowUs }),
     ));
@@ -1009,7 +1172,11 @@ async function main() {
     const bravoTopology = leafOf(bravo, FIELDS.topology);
     assert.equal(bravoTopology.state, "fail");
     assert.ok(detailsOf(bravoTopology).includes("misnamed-gateway:hermes-bravo-pm-messaging.service"), JSON.stringify(detailsOf(bravoTopology)));
-    assert.ok(bravo.systemd.topology.extra.some((item) => item.class === "duplicate-gateway"), JSON.stringify(bravo.systemd.topology.extra));
+    assert.ok(detailsOf(bravoTopology).includes("duplicate-gateway:hermes-bravo-pm-secondary-gateway.service"), JSON.stringify(detailsOf(bravoTopology)));
+    assert.deepEqual(bravo.systemd.topology.extra, [
+      { unit: "hermes-bravo-pm-messaging.service", class: "duplicate-gateway" },
+      { unit: "hermes-bravo-pm-secondary-gateway.service", class: "duplicate-gateway" },
+    ], JSON.stringify(bravo.systemd.topology.extra));
 
     const charlie = agentNamed(data, "charlie-pm");
     const charlieRow = leafOf(charlie, FIELDS.heartbeatTimerRow);
@@ -1024,7 +1191,14 @@ async function main() {
     assert.deepEqual(kindsOf(leafOf(echo, FIELDS.gateway)), ["absent"]);
     assert.deepEqual(kindsOf(leafOf(echo, FIELDS.timer)), ["absent"]);
     assert.deepEqual(kindsOf(leafOf(echo, FIELDS.service)), ["absent"]);
+    // The SEVERITY, on all three: `absent` reaches `fail` through the default
+    // arm of three separate ternaries, so moving it into any warn arm would
+    // have downgraded every one of them silently.
+    for (const field of [FIELDS.gateway, FIELDS.timer, FIELDS.service]) {
+      assert.equal(leafOf(echo, field).state, "fail", `${field}: a registered agent with no unit is drift, not a warning`);
+    }
     assert.deepEqual(kindsOf(leafOf(echo, FIELDS.heartbeatTimerRow)), ["unit-missing"]);
+    assert.equal(leafOf(echo, FIELDS.heartbeatTimerRow).state, "fail", "a row naming a timer the manager does not load is drift");
     assert.deepEqual(echo.systemd.topology.installed, []);
     assert.equal(echo.systemd.topology.missing.length, 3);
   });
@@ -1206,6 +1380,37 @@ async function main() {
     assert.equal(probes[0].id, "systemd:is-system-running");
   });
 
+  check("a manager this run could not reach leaves every other domain reading exactly as it did", () => {
+    // The row's "registry/profile domains unaffected" clause, proven by
+    // DIFFERENCE over two UNFILTERED runs whose only difference is the
+    // manager's answer. Every other manager-failure case runs `--domain
+    // systemd`, which never evaluates those domains at all -- so none of them
+    // could have shown this in either direction.
+    setState(canonicalState());
+    resetFakeSystemctl(systemctlShim);
+    const healthy = status(cli(["fleet", "status", "--json"]));
+    const reachable = healthy.agents.map((agent) => `${agent.agent_id} registry:${agent.domains.registry} profile:${agent.domains.profile}`);
+    assert.ok(reachable.length === AGENTS.length && reachable.every((line) => !line.includes("undefined")), JSON.stringify(reachable));
+
+    // `is-system-running` answering with an empty stdout: the matrix's own input.
+    setState({ ...canonicalState(), manager: { stdout: "", exit: 1 } });
+    const broken = status(cli(["fleet", "status", "--json"]));
+    assert.equal(broken.systemd.manager.code, "manager-unavailable");
+    assert.equal(broken.systemd.manager.state, "unreachable");
+    assert.equal(hostNamed(broken, "systemd.manager").state, "error");
+    for (const id of AGENT_IDS) {
+      for (const field of FIELD_ORDER) {
+        assert.deepEqual(kindsOf(leafOf(agentNamed(broken, id), field)), ["manager-unavailable"], `${id} ${field}`);
+        assert.equal(leafOf(agentNamed(broken, id), field).state, "error", `${id} ${field}`);
+      }
+    }
+    assert.deepEqual(
+      broken.agents.map((agent) => `${agent.agent_id} registry:${agent.domains.registry} profile:${agent.domains.profile}`),
+      reachable,
+      "a manager this run could not reach must not move a domain that never asked it anything",
+    );
+  });
+
   check("a manager that does not answer in time is a timeout, and the run still succeeds", () => {
     const contract = writeContract("short-timeout", (document) => {
       document.service_manifest.probe.timeout_ms = 300;
@@ -1216,8 +1421,22 @@ async function main() {
     const elapsed = Date.now() - started;
     assert.equal(data.systemd.manager.code, "manager-timeout");
     assert.equal(hostNamed(data, "systemd.manager").state, "error");
-    for (const field of FIELD_ORDER) assert.deepEqual(kindsOf(leafOf(agentNamed(data, "alpha-pm"), field)), ["manager-timeout"]);
-    assert.deepEqual(fakeSystemctlVerbs(systemctlShim).filter((verb) => verb === "show"), [], "a failed manager probe skips sampling entirely");
+    // PER AGENT, as the row says -- not on alpha-pm alone.
+    for (const id of AGENT_IDS) {
+      for (const field of FIELD_ORDER) {
+        assert.deepEqual(kindsOf(leafOf(agentNamed(data, id), field)), ["manager-timeout"], `${id} ${field}`);
+        assert.equal(leafOf(agentNamed(data, id), field).state, "error", `${id} ${field}`);
+      }
+    }
+    // ZERO sampling, asserted over the whole invocation log and the probe
+    // ledger rather than over `show` alone: a stray listing after a failed
+    // probe would have passed the narrower check.
+    assert.deepEqual(fakeSystemctlVerbs(systemctlShim), ["is-system-running"], "a failed manager probe skips every listing and every sample");
+    assert.deepEqual(
+      data.probes.filter((probe) => probe.kind === "systemd").map((probe) => `${probe.id}/${probe.outcome}/${probe.reason}`),
+      ["systemd:is-system-running/timeout/manager-timeout"],
+      JSON.stringify(data.probes.filter((probe) => probe.kind === "systemd")),
+    );
     assert.ok(elapsed < 60_000, `the child must be killed at the declared budget, took ${elapsed} ms`);
   });
 
@@ -1245,17 +1464,74 @@ async function main() {
     assert.equal(leafOf(agentNamed(data, "alpha-pm"), FIELDS.timer).state, "pass");
     assert.equal(leafOf(agentNamed(data, "bravo-pm"), FIELDS.gateway).state, "pass");
     assert.equal(data.systemd.manager.code, "available");
+
+    // The matrix's OTHER input: a property the manager did not report at all.
+    // The fake omits any property whose value is `undefined`, so this is a
+    // `show` block that carries the unit and not its `ActiveState` -- which
+    // the observer must refuse to read rather than coerce to `""` and report
+    // `inactive` about a property nobody read.
+    setState(canonicalState({
+      "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewaySamples: [{ ActiveState: undefined }] },
+      // The oneshot's own malformed-property site, which had no test at all.
+      "charlie-pm": { serviceExecStatus: "abc" },
+      // The CONTROL: an ABSENT unit reports every required property (systemd
+      // prints all four for a `not-found` unit, with an empty UnitFileState),
+      // so it must keep reading `absent` and never `property-malformed`.
+      "delta-pm": { present: { gateway: false, timer: true, service: true } },
+    }));
+    const missing = systemdRun();
+
+    const alphaGateway = leafOf(agentNamed(missing, "alpha-pm"), FIELDS.gateway);
+    assert.equal(alphaGateway.state, "error");
+    assert.deepEqual(detailsOf(alphaGateway), ["property-malformed:ActiveState"], JSON.stringify(detailsOf(alphaGateway)));
+    assert.equal(agentNamed(missing, "alpha-pm").systemd.gateway.active, null, "a property the manager did not report is null, never a word");
+    // That unit's leaf ONLY: the same agent's other two units, and every other
+    // agent, are read normally out of the same window.
+    assert.equal(leafOf(agentNamed(missing, "alpha-pm"), FIELDS.timer).state, "pass");
+    assert.equal(leafOf(agentNamed(missing, "alpha-pm"), FIELDS.service).state, "pass");
+    assert.equal(leafOf(agentNamed(missing, "bravo-pm"), FIELDS.gateway).state, "pass");
+
+    const charlieService = leafOf(agentNamed(missing, "charlie-pm"), FIELDS.service);
+    assert.equal(charlieService.state, "error");
+    assert.ok(detailsOf(charlieService).includes("property-malformed:ExecMainStatus"), JSON.stringify(detailsOf(charlieService)));
+    assert.equal(agentNamed(missing, "charlie-pm").systemd.heartbeat.latest_result, "unknown");
+    assert.equal(agentNamed(missing, "charlie-pm").systemd.heartbeat.service.exec_status, null);
+
+    const deltaGateway = leafOf(agentNamed(missing, "delta-pm"), FIELDS.gateway);
+    assert.deepEqual(kindsOf(deltaGateway), ["absent"], "an absent unit is a complete reading of a unit that is not there");
+    assert.equal(deltaGateway.state, "fail");
   });
 
-  check("a fragment or a profile home outside the declared roots is unsafe", () => {
+  check("a fragment or a profile home outside the declared roots is unsafe, shown redacted", () => {
     setState(canonicalState({
-      "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewayFragment: join(temp, "elsewhere", "hermes-alpha-pm-gateway.service") },
-      "delta-pm": { gatewayEnabled: true, gatewayActive: true, gatewayHome: join(temp, "not-the-fleet-home") },
+      // Both unsafe paths sit UNDER the scratch HOME on purpose: a sibling of
+      // HOME (`<tmp>/elsewhere`) passes through `redactHome` verbatim, so the
+      // row's "path shown redacted" half would have been asserted over a string
+      // that never needed redacting -- and replacing `shown(...)` with the raw
+      // path would have broken nothing.
+      "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewayFragment: join(scratchHome, "elsewhere", "hermes-alpha-pm-gateway.service") },
+      "delta-pm": { gatewayEnabled: true, gatewayActive: true, gatewayHome: join(scratchHome, "not-the-fleet-home") },
+      // The POSITIVE control: a fragment inside the declared user unit
+      // directory. The default fixture's `FragmentPath` is empty and
+      // short-circuits, so nothing proved the allowlist ever ACCEPTS anything.
+      "bravo-pm": { gatewayFragment: join(scratchHome, ".config", "systemd", "user", "hermes-bravo-pm-gateway.service") },
     }));
     const data = systemdRun();
-    assert.ok(kindsOf(leafOf(agentNamed(data, "alpha-pm"), FIELDS.gateway)).includes("fragment-unsafe"));
-    assert.ok(kindsOf(leafOf(agentNamed(data, "delta-pm"), FIELDS.gateway)).includes("home-unsafe"));
+    const alphaGateway = leafOf(agentNamed(data, "alpha-pm"), FIELDS.gateway);
+    assert.ok(kindsOf(alphaGateway).includes("fragment-unsafe"), JSON.stringify(kindsOf(alphaGateway)));
+    assert.equal(alphaGateway.state, "fail", "an unsafe fragment is drift, not a warning");
+    assert.match(
+      alphaGateway.items.find((item) => item.kind === "fragment-unsafe").observed, /^~\/elsewhere\//u,
+      "the path must be shown home-redacted",
+    );
+    const deltaGateway = leafOf(agentNamed(data, "delta-pm"), FIELDS.gateway);
+    assert.ok(kindsOf(deltaGateway).includes("home-unsafe"), JSON.stringify(kindsOf(deltaGateway)));
+    assert.equal(deltaGateway.state, "fail");
+    assert.equal(deltaGateway.items.find((item) => item.kind === "home-unsafe").observed, "~/not-the-fleet-home");
     assert.equal(agentNamed(data, "delta-pm").systemd.gateway.home, "unsafe");
+    const bravoGateway = leafOf(agentNamed(data, "bravo-pm"), FIELDS.gateway);
+    assert.equal(kindsOf(bravoGateway).includes("fragment-unsafe"), false, "a fragment in the declared unit directory is accepted");
+    assert.equal(bravoGateway.state, "pass");
     // And a home that is a REAL profile home, just not this agent's.
     setState(canonicalState({ "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewayHome: join(profileRoot, "bravo-pm") } }));
     const second = systemdRun();
@@ -1266,16 +1542,29 @@ async function main() {
   check("an entrypoint that is neither the launcher nor the row's pinned executable is unpinned", () => {
     const stray = join(scratchHome, ".local", "share", "hermes-agent", "releases", "def", ".venv", "bin", "hermes");
     setState(canonicalState({
-      "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewayExec: execLine(stray, "gateway", "run", "--replace") },
+      // BOTH units, because the row the matrix names (`automatic-ai-pm`) trips
+      // this on its heartbeat oneshot -- a branch no case in this suite ever
+      // reached, since nothing passed `serviceExec` at all.
+      "alpha-pm": {
+        gatewayEnabled: true, gatewayActive: true,
+        gatewayExec: execLine(stray, "gateway", "run", "--replace"),
+        serviceExec: execLine(stray, "heartbeat"),
+      },
       "delta-pm": { gatewayEnabled: true, gatewayActive: true, gatewayExec: execLine(HERMES_BIN, "gateway", "run", "--replace") },
     }));
     const data = systemdRun();
     const alpha = agentNamed(data, "alpha-pm");
     assert.deepEqual(alpha.systemd.gateway.entrypoint, { family: "hermes-bin", pinned: false });
     assert.ok(kindsOf(leafOf(alpha, FIELDS.gateway)).includes("entrypoint-unpinned"));
+    assert.equal(leafOf(alpha, FIELDS.gateway).state, "fail", "an unpinned entrypoint is drift, not a warning");
+    assert.deepEqual(alpha.systemd.heartbeat.service.entrypoint, { family: "hermes-bin", pinned: false });
+    assert.ok(kindsOf(leafOf(alpha, FIELDS.service)).includes("entrypoint-unpinned"), JSON.stringify(kindsOf(leafOf(alpha, FIELDS.service))));
+    assert.equal(leafOf(alpha, FIELDS.service).state, "fail");
     const delta = agentNamed(data, "delta-pm");
     assert.deepEqual(delta.systemd.gateway.entrypoint, { family: "hermes-bin", pinned: true }, "the row's OWN hermes.bin is pinned");
     assert.equal(kindsOf(leafOf(delta, FIELDS.gateway)).includes("entrypoint-unpinned"), false);
+    assert.deepEqual(delta.systemd.heartbeat.service.entrypoint, { family: "launcher", pinned: true }, "and the role launcher is pinned on the oneshot too");
+    assert.equal(kindsOf(leafOf(delta, FIELDS.service)).includes("entrypoint-unpinned"), false);
   });
 
   check("a verified channel with no identity fields and no delta reference says both", () => {
@@ -1301,6 +1590,69 @@ async function main() {
     assert.deepEqual(kindsOf(gateway), ["channel-undeclared"]);
   });
 
+  check("a deferred row whose gateway is enabled AND active says both, and fails", () => {
+    // `bravo-pm` pins BOTH platforms false in its delta, so the only thing that
+    // can move its gateway leaf is the unit's own enablement and activity: no
+    // inherited-enablement item can be doing the work. (`charlie-pm`, the only
+    // agent ever driven deferred+enabled+active before, has an empty delta and
+    // failed its leaf independently -- so neither code's severity was
+    // attributable and `deferred-but-active` was asserted nowhere at all.)
+    setState(canonicalState({ "bravo-pm": { gatewayEnabled: true, gatewayActive: true } }));
+    const data = systemdRun();
+    const bravo = agentNamed(data, "bravo-pm");
+    const gateway = leafOf(bravo, FIELDS.gateway);
+    assert.deepEqual(kindsOf(gateway), ["deferred-but-enabled", "deferred-but-active"], JSON.stringify(detailsOf(gateway)));
+    assert.deepEqual(detailsOf(gateway), ["deferred-but-enabled", "deferred-but-active"]);
+    assert.equal(gateway.state, "fail", "a gateway running for a channel nobody verified is drift, not a warning");
+    assert.equal(bravo.systemd.gateway.code, "deferred-but-enabled");
+    assert.equal(bravo.systemd.capability.declared, "deferred");
+    // The same fixture with the unit correctly disabled is the negative half.
+    setState(canonicalState({ "bravo-pm": { gatewayEnabled: false, gatewayActive: false } }));
+    const quiet = systemdRun();
+    assert.equal(leafOf(agentNamed(quiet, "bravo-pm"), FIELDS.gateway).state, "pass");
+  });
+
+  check("a deferred platform is flagged inherited only when the fleet base actually enables it", () => {
+    const basePath = join(fleetHome, "config.yaml");
+    const savedBase = readFileSync(basePath, "utf8");
+    const deltaPath = join(profileRoot, "charlie-pm", "config.delta.yaml");
+    const savedDelta = readFileSync(deltaPath, "utf8");
+    try {
+      // The base ENABLES telegram, so `charlie-pm`'s empty delta inherits it --
+      // and `slack`, deferred on the same row and enabled by nobody, is NOT
+      // flagged: there is no enablement to pin away, and an item there would be
+      // asking an operator to disable something nothing enables.
+      setState(canonicalState());
+      const inherited = systemdRun();
+      const gateway = leafOf(agentNamed(inherited, "charlie-pm"), FIELDS.gateway);
+      assert.deepEqual(detailsOf(gateway), ["platform-enablement-inherited:telegram"], JSON.stringify(detailsOf(gateway)));
+      assert.equal(gateway.state, "fail");
+      assert.equal(gateway.items[0].observed, "inherited");
+      assert.equal(gateway.items[0].desired, "platforms.telegram.enabled: false");
+
+      // THE CONTROL. The same delta-empty agent against a base that disables
+      // telegram: the item is a claim about the base, and the base no longer
+      // makes it. Nothing about the delta, the row or the unit changed.
+      writeFileSync(basePath, YAML.stringify({ ...baseConfig(), platforms: { telegram: { enabled: false } } }), "utf8");
+      const disabledBase = systemdRun();
+      const control = leafOf(agentNamed(disabledBase, "charlie-pm"), FIELDS.gateway);
+      assert.deepEqual(kindsOf(control), [], JSON.stringify(detailsOf(control)));
+      assert.equal(control.state, "pass", "a deferred platform nothing enables needs no pin");
+
+      // And a delta that pins the platform ON is still flagged against that
+      // same base: what the item reports is the EFFECTIVE enablement, and the
+      // delta is the half that wins when it has an opinion.
+      writeFileSync(deltaPath, YAML.stringify({ platforms: { telegram: { enabled: true } } }), "utf8");
+      const pinnedOn = systemdRun();
+      const explicit = leafOf(agentNamed(pinnedOn, "charlie-pm"), FIELDS.gateway);
+      assert.deepEqual(detailsOf(explicit), ["platform-enablement-inherited:telegram"]);
+      assert.equal(explicit.items[0].observed, "true", "a delta that pins it on is not inheriting anything");
+    } finally {
+      writeFileSync(basePath, savedBase, "utf8");
+      writeFileSync(deltaPath, savedDelta, "utf8");
+    }
+  });
+
   // -- AC9: rule agreement ---------------------------------------------------
 
   const SENTINEL_PASS = { id: "systemd.sentinel", title: "Hermes systemd/sentinel units enabled + active", status: "pass", summary: "Hermes user units match each role's declared service state", details: [], fixable: true, scope: "host" };
@@ -1321,8 +1673,38 @@ async function main() {
     assert.equal(disagreement.severity, "error");
     assert.equal(disagreement.status_severity, "high");
     assert.match(disagreement.detail, /systemd\.sentinel/u);
+    // The DIRECTION, not just the two fixed halves of the sentence: with the
+    // two interpolations swapped the detail still names the rule and still ends
+    // "both readings are kept", and an operator would be told the opposite of
+    // what happened.
+    assert.match(disagreement.detail, /report pass while the systemd observer finds drift/u, disagreement.detail);
     assert.match(disagreement.detail, /both readings are kept/u);
     assert.ok(data.systemd.rule_agreement.disagree >= 1, JSON.stringify(data.systemd.rule_agreement));
+  });
+
+  check("a topology code the parity rule also reads is compared, and a passing rule there disagrees", () => {
+    const shim = entry("parity-pass-topology", syntheticReport([SENTINEL_PASS, PARITY_PASS]));
+    // The only divergence is a retired consumer unit on disk -- a TOPOLOGY
+    // code, and one `hermes.registry-parity` reads. Every other leaf of this
+    // agent is clean, so nothing else can be producing the disagreement, and
+    // the topology half of the shared subset was driven by no case before.
+    setState(mergeUnitSets(canonicalState(), {
+      units: {
+        "hermes-delta-pm-consumer.service": {
+          Id: "hermes-delta-pm-consumer.service", LoadState: "loaded", UnitFileState: "disabled",
+          ActiveState: "inactive", SubState: "dead",
+        },
+      },
+      list_units: [{ unit: "hermes-delta-pm-consumer.service", load: "loaded", active: "inactive", sub: "dead", description: "retired consumer" }],
+      unit_files: [{ unit_file: "hermes-delta-pm-consumer.service", state: "disabled", preset: null }],
+    }));
+    const data = status(cli(["fleet", "status", "--live", "--json", "--agent", "delta-pm"], { PJ_FLEET_CLI_ENTRY: shim }));
+    const topology = leafOf(agentNamed(data, "delta-pm"), FIELDS.topology);
+    assert.deepEqual(detailsOf(topology), ["retired-unit:hermes-delta-pm-consumer.service"], JSON.stringify(detailsOf(topology)));
+    const disagreement = data.findings.find((finding) => finding.code === "systemd-rule-disagreement" && finding.agent_id === "delta-pm");
+    assert.ok(disagreement, `expected a disagreement, got ${JSON.stringify(data.findings.map((f) => `${f.code}/${f.agent_id}`))}`);
+    assert.equal(disagreement.gating, true);
+    assert.deepEqual(data.systemd.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
   });
 
   check("drift outside the rules' coverage is not compared in either direction", () => {
@@ -1338,6 +1720,34 @@ async function main() {
     assert.equal(data.findings.some((finding) => finding.code === "systemd-rule-disagreement" && finding.agent_id === "alpha-pm"), false,
       "an unstable window is coverage neither rule ever had");
     assert.ok(data.systemd.rule_agreement.not_compared >= 1, JSON.stringify(data.systemd.rule_agreement));
+
+    // PINNED, over one selected agent. On the five-agent fleet `charlie-pm` and
+    // `echo-pm` land in `not_compared` for their own reasons, so a fleet-wide
+    // `>= 1` never showed that the UNSTABLE WINDOW is what lands there.
+    setState(canonicalState({
+      "alpha-pm": {
+        gatewayEnabled: true, gatewayActive: true,
+        gatewaySamples: [{}, { ActiveState: "activating", SubState: "auto-restart" }, {}],
+      },
+    }));
+    const only = status(cli(["fleet", "status", "--live", "--json", "--agent", "alpha-pm"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.ok(kindsOf(leafOf(agentNamed(only, "alpha-pm"), FIELDS.gateway)).includes("unstable"));
+    assert.deepEqual(only.systemd.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+
+    // The clause names three code families; each one isolated on the agent
+    // whose ONLY divergence is of that family. A SCHEDULE code: `bravo-pm` is
+    // correctly deferred, so its off-policy timer is the whole divergence.
+    setState(canonicalState({ "bravo-pm": { onUnitInactiveSec: 300 } }));
+    const schedule = status(cli(["fleet", "status", "--live", "--json", "--agent", "bravo-pm"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.ok(kindsOf(leafOf(agentNamed(schedule, "bravo-pm"), FIELDS.timer)).includes("schedule-off-policy"));
+    assert.deepEqual(schedule.systemd.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+
+    // A CHANNEL code: `echo-pm` declares no platform at all and its units are
+    // canonical, so `channel-undeclared` is the whole divergence.
+    setState(canonicalState());
+    const channel = status(cli(["fleet", "status", "--live", "--json", "--agent", "echo-pm"], { PJ_FLEET_CLI_ENTRY: shim }));
+    assert.deepEqual(kindsOf(leafOf(agentNamed(channel, "echo-pm"), FIELDS.gateway)), ["channel-undeclared"]);
+    assert.deepEqual(channel.systemd.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
   });
 
   check("a rule and the observer that agree are counted as agreeing", () => {

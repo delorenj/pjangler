@@ -668,10 +668,14 @@ function status(result) {
   // undeclared" for every one) and a `field` of the literal source id
   // "recipe-audit", which also made the findings sort by `field` a no-op.
   for (const finding of parsed.data.findings) {
-    assert.equal(
-      finding.field.includes("-"), false,
-      `a finding's field must be a dotted contract path, not a source id: ${finding.field}`,
-    );
+    // A dotted contract path, not a source id. Checked by SHAPE rather than by
+    // "contains no hyphen": story 1.8 made `units.hermes-{agent_id}-gateway.service`
+    // a declared leaf, so hyphens no longer separate a path from an id. What
+    // still separates them is the ROOT: a contract path's first segment is a
+    // plain identifier followed by a dot or nothing at all (`scaffold`,
+    // `units.…`, `agents.…`), while every source id this guard exists to catch
+    // (`recipe-audit`, `fleet-systemd`) is hyphenated at its root.
+    assert.match(finding.field, /^[a-z_]+(?:\.|$)/u, `a finding's field must be a contract path, not a source id: ${finding.field}`);
     if (!/^(audit-|registry-declares-no-agents)/u.test(finding.code)) continue;
     assert.ok(
       typeof finding.source === "string" && finding.source.length > 0,
@@ -1193,7 +1197,7 @@ ${syntheticReport([PROJECT_PASS_RULE]).slice(RECORD_PREAMBLE.length)}
     const unavailable = data.findings.find((finding) => finding.code === "audit-cli-unavailable");
     assert.ok(unavailable, "a missing entry must be a visible finding");
     assert.ok(typeof unavailable.source === "string" && unavailable.source.length > 0, "and it must name the owning authority");
-    assert.equal(unavailable.field.includes("-"), false, "and carry a contract path, not a source id");
+    assert.match(unavailable.field, /^[a-z_]+(?:\.|$)/u, "and carry a contract path, not a source id");
     for (const agent of data.agents) {
       for (const domain of AUDIT_FED) {
         assert.equal(agent.domains[domain], "unobserved", `${domain} must be unobserved, never assumed`);

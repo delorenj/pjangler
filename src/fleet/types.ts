@@ -2266,10 +2266,14 @@ export const FLEET_SYSTEMD_ITEM_KINDS = [
   "channel-undeclared", "channel-identity-incomplete", "channel-secret-unreferenced", "platform-enablement-inherited",
   "unstable", "crash-looping", "result-not-success", "entrypoint-unpinned", "home-mismatch", "home-absent", "home-unsafe",
   // The heartbeat timer (units.hermes-{agent_id}-heartbeat.timer).
+  // Whether the tick is HAPPENING -- including a oneshot that is mid-tick
+  // (`in-progress`) or wedged past its own start timeout (`stuck`), which is
+  // the same question one step further along.
   "timer-disabled", "timer-inactive", "timer-substate", "timer-unpaired", "schedule-off-policy", "schedule-unknown",
-  "tick-overdue", "tick-never", "tick-unknown",
-  // The heartbeat oneshot (units.hermes-{agent_id}-heartbeat.service).
-  "type-not-oneshot", "latest-result-failed", "latest-result-unknown", "never-completed", "in-progress", "stuck",
+  "tick-overdue", "tick-never", "tick-unknown", "in-progress", "stuck",
+  // The heartbeat oneshot (units.hermes-{agent_id}-heartbeat.service): whether
+  // the last COMPLETED run succeeded.
+  "type-not-oneshot", "latest-result-failed", "latest-result-unknown", "never-completed",
   "reconcile-undeclared", "reconcile-opt-out-undeclared", "reconcile-unverifiable", "checkpoint-only", "policy-unreadable", "state-unreadable",
 ] as const;
 export type FleetSystemdItemKind = (typeof FLEET_SYSTEMD_ITEM_KINDS)[number];

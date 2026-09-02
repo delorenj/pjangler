@@ -535,8 +535,8 @@ fields and three units, all five declared writable under the contract's
 | `agents.{agent_id}.systemd.gateway_unit` | the canonical triple `service_model.per_agent` derives is loaded, the row names it, and nothing retired sits beside it | `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`, `misnamed-gateway:<unit>`, `duplicate-gateway:<unit>`, `retired-unit:<unit>`, `registry-retired-key:<key>` |
 | `agents.{agent_id}.systemd.heartbeat_timer` | the row records the timer the contract derives, and the manager loads it | `registry-undeclared` (units on disk, no field), `unit-missing`, `misnamed-heartbeat-timer:<unit>` |
 | `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared`, `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `absent` |
-| `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, and its last tick is current | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `tick-overdue`, `tick-never` |
-| `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest invocation actually completed successfully, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `never-completed`, `stuck`, `in-progress` (warn), `checkpoint-only`, `reconcile-undeclared` (warn), `reconcile-opt-out-undeclared` (warn) |
+| `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, its last tick is current, and a tick in flight is progressing | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `tick-overdue`, `tick-never`, `stuck`, `in-progress` (warn), `property-malformed:<Key>` (error), `absent` |
+| `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest COMPLETED invocation actually succeeded, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `never-completed`, `entrypoint-unpinned`, `checkpoint-only`, `reconcile-undeclared` (warn), `reconcile-opt-out-undeclared` (warn), `property-malformed:<Key>` (error), `absent` |
 
 **The desired gateway state comes from the DECLARATION, never from the unit.**
 `70-systemd.sh` enables a gateway only when a platform's `provisioning_status`
@@ -546,10 +546,12 @@ platform verified), `deferred` (every declared platform in
 `deferred_statuses`), or `undeclared` (no platform declares a status this build
 reads). That makes "deferred but enabled" and "verified but disabled" visible as
 drift instead of two alternate healthy modes, and makes an active gateway on an
-undeclared row the liveness theatre it is. A deferred platform must also be
-pinned `platforms.<platform>.enabled: false` in the profile's
-`config.delta.yaml`, or it inherits the fleet base's enablement — reported as
-`platform-enablement-inherited:<platform>`. A verified platform must carry its
+undeclared row the liveness theatre it is. A deferred platform must also end up
+DISABLED once the renderer has merged the delta over the fleet base: the
+observer reads both halves — the delta's `platforms.<platform>.enabled` pin when
+it has one, `HERMES_HOME/config.yaml`'s value when it does not — and reports
+`platform-enablement-inherited:<platform>` only where that resolves to `true`.
+A deferred platform nothing enables anywhere needs no pin and raises nothing. A verified platform must carry its
 `identity_fields` on the row and its `secret_env` keys as `op://` references in
 the delta; the observer reads the PRESENCE of those keys and never a value.
 
@@ -562,6 +564,24 @@ the first exit). Both are encoded here: a sample set that is not unanimous is
 never proven, and `gateway.stability.transitions` reports the transition
 (`active/running -> activating/auto-restart`, `restarts 3 -> 5`) rather than the
 most favourable sample.
+
+**The timer leaf owns whether the tick is HAPPENING; the oneshot's owns whether
+the last one SUCCEEDED.** `tick-overdue`, `tick-never`, `schedule-off-policy` and
+a oneshot that is mid-tick (`in-progress`, a warn) or wedged past its own
+`TimeoutStartUSec` (`stuck`, a fail) are all readings about whether the heartbeat
+is firing, so they land on `units.hermes-{agent_id}-heartbeat.timer`.
+`latest-result-failed:<result>`, `never-completed` and the reconcile evidence are
+readings about the last completed run, so they land on the oneshot's own leaf.
+The `heartbeat.latest_result` bucket reports `in-progress`/`stuck` either way.
+
+**A property the manager did not report is not a default.** Every sample is
+validated against the four properties every reading is built on — `LoadState`,
+`UnitFileState`, `ActiveState`, `SubState`, which systemd prints for every unit
+type and even for a unit that does not exist. A sample that carries the unit and
+omits one errors THAT unit's leaf with `property-malformed:<Key>` rather than
+coercing it to `""` and reporting a verdict about a property nobody read; an
+absent unit carries all four (with an empty `UnitFileState`) and still reads
+`absent`.
 
 **Every time-derived fact is a BUCKET.** No timestamp, age, pid, duration or
 completion order reaches `data`. `LastTriggerUSecMonotonic` and the oneshot's

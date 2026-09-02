@@ -22396,6 +22396,7 @@ var SYSTEMD_CLASSIFY_PROPERTIES = [
   "FragmentPath"
 ];
 var SYSTEMD_SYSTEM_UNIT_DIRS = ["/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user"];
+var SYSTEMD_REQUIRED_PROPERTIES = ["LoadState", "UnitFileState", "ActiveState", "SubState"];
 var ENABLED_STATES = /* @__PURE__ */ new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
 var DISABLED_STATES = /* @__PURE__ */ new Set(["disabled", "masked", "masked-runtime"]);
 var TIMER_SUBSTATES = /* @__PURE__ */ new Set(["waiting", "running", "elapsed"]);
@@ -22505,6 +22506,18 @@ function one(sample, key) {
 }
 function all(sample, key) {
   return sample?.get(key) ?? [];
+}
+function missingProperties(sample) {
+  if (sample === null) return [];
+  return SYSTEMD_REQUIRED_PROPERTIES.filter((key) => one(sample, key) === void 0);
+}
+function atPath(root, segments) {
+  let cursor = root;
+  for (const key of segments) {
+    if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return void 0;
+    cursor = cursor[key];
+  }
+  return cursor;
 }
 function parseExecStart(raw) {
   if (raw === void 0) return { path: null, argv0: null };
@@ -22751,6 +22764,15 @@ function evaluateStability(samples) {
   }
   return { stable: stable && !crashLooping, crashLooping, transitions, restarts: last, malformed };
 }
+function evaluateTickActivation(sample, monotonicNowUs, maxTickSeconds) {
+  if (sample === null || one(sample, "LoadState") !== "loaded") return null;
+  const active = one(sample, "ActiveState") ?? "";
+  if (active !== "activating" && active !== "active") return null;
+  const timeout = parseSystemdUsec(one(sample, "TimeoutStartUSec")) ?? BigInt(maxTickSeconds) * 1000000n;
+  const start = parseSystemdUsec(one(sample, "ExecMainStartTimestampMonotonic"));
+  const age = start === null || start === 0n ? null : monotonicNowUs - start;
+  return age !== null && age >= timeout ? "stuck" : "in-progress";
+}
 function classifyEntrypoint(path, roleDir, launcher, hermesBin) {
   if (path === null || path === "") return { family: "unknown", pinned: false };
   const launcherPath = roleDir === null ? null : resolve22(roleDir, launcher);
@@ -22766,6 +22788,25 @@ function classifyHome(home, expected, fleetHomeReal) {
   if (!isAbsolute11(resolved) || !within3(fleetHomeReal, resolved)) return "unsafe";
   if (expected === null) return "unknown";
   return resolved === resolve22(expected) ? "matches" : "mismatch";
+}
+function readBaseEnablement(ctx, platforms) {
+  const enabled2 = {};
+  for (const platform2 of platforms) enabled2[platform2] = null;
+  const path = join36(ctx.fleetHome, RENDERER_BASE_FILE);
+  if (entryStat(path).kind !== "file") return enabled2;
+  const read = readBounded(path, ctx.manifest.limits.max_file_bytes);
+  if (!("bytes" in read)) return enabled2;
+  let document;
+  try {
+    document = YAML11.parse(read.bytes.toString("utf8"));
+  } catch {
+    return enabled2;
+  }
+  for (const platform2 of platforms) {
+    const value = atPath(document, ctx.manifest.messaging.enabled_path.replaceAll("{platform}", platform2).split("."));
+    enabled2[platform2] = typeof value === "boolean" ? value : null;
+  }
+  return enabled2;
 }
 function readDeltaEnablement(ctx, profileName, platforms) {
   const enabled2 = {};
@@ -22785,20 +22826,12 @@ function readDeltaEnablement(ctx, profileName, platforms) {
   } catch {
     return { enabled: enabled2, secrets, read: { error: "unreadable" } };
   }
-  const at = (root, path2) => {
-    let cursor = root;
-    for (const key of path2) {
-      if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return void 0;
-      cursor = cursor[key];
-    }
-    return cursor;
-  };
   for (const platform2 of platforms) {
     const segments = ctx.manifest.messaging.enabled_path.replaceAll("{platform}", platform2).split(".");
-    const value = at(document, segments);
+    const value = atPath(document, segments);
     enabled2[platform2] = typeof value === "boolean" ? value : null;
     const keys = ctx.manifest.messaging.secret_env[platform2] ?? [];
-    const block = at(document, ["secrets", "onepassword", "env"]);
+    const block = atPath(document, ["secrets", "onepassword", "env"]);
     secrets[platform2] = keys.length > 0 && typeof block === "object" && block !== null && keys.every((key) => typeof block[key] === "string" && block[key].trim() !== "");
   }
   return { enabled: enabled2, secrets, read };
@@ -23015,25 +23048,41 @@ function inspectAgent2(ctx, shared, input) {
   const isDisabled = DISABLED_STATES.has(unitFileState) || unitFileState === "";
   const activeState = one(gatewaySample, "ActiveState") ?? "";
   const isActive = activeState === "active" || activeState === "activating" || activeState === "reloading";
-  const absent3 = gatewaySample === null || one(gatewaySample, "LoadState") === "not-found";
   const unitDefects = (unit, sample, items) => {
-    if (sample === null || one(sample, "LoadState") === "not-found") {
+    if (sample === null) {
       items.push({ path: unit, kind: "absent", desired: "loaded", observed: "not-found", detail: "absent" });
-      return true;
+      return "absent";
+    }
+    const missing2 = missingProperties(sample);
+    if (missing2.length > 0) {
+      for (const key of missing2) {
+        items.push({
+          path: unit,
+          kind: "property-malformed",
+          desired: "a property the user manager reports for every unit",
+          observed: "absent",
+          detail: `property-malformed:${word2(key)}`
+        });
+      }
+      return "unreadable";
+    }
+    if (one(sample, "LoadState") === "not-found") {
+      items.push({ path: unit, kind: "absent", desired: "loaded", observed: "not-found", detail: "absent" });
+      return "absent";
     }
     const load = one(sample, "LoadState") ?? "";
     if (load !== "loaded") {
       items.push({ path: unit, kind: "load-error", desired: "loaded", observed: word2(load), detail: `load-error:${word2(load)}` });
-      return true;
+      return "unreadable";
     }
     const fragment = one(sample, "FragmentPath") ?? "";
     if (fragment !== "" && !shared.unitDirs.some((dir) => within3(dir, resolve22(fragment)))) {
       items.push({ path: unit, kind: "fragment-unsafe", desired: "a fragment under the declared unit directories", observed: ctx.shown(fragment), detail: "fragment-unsafe" });
     }
-    return false;
+    return "readable";
   };
-  const gatewayAbsent = unitDefects(gatewayUnit, gatewaySample, gatewayItems);
-  if (!gatewayAbsent) {
+  const gatewayRead = unitDefects(gatewayUnit, gatewaySample, gatewayItems);
+  if (gatewayRead === "readable") {
     for (const key of gatewayStability.malformed) {
       gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: `property-malformed:${word2(key)}` });
     }
@@ -23064,12 +23113,14 @@ function inspectAgent2(ctx, shared, input) {
       if (isActive) gatewayItems.push({ path: gatewayUnit, kind: "deferred-but-active", desired: "inactive", observed: word2(activeState), detail: "deferred-but-active" });
       for (const platform2 of platforms) {
         if (declaredPlatforms[platform2] !== "deferred") continue;
-        if (delta.enabled[platform2] !== false) {
+        const pinned = delta.enabled[platform2];
+        const effective = pinned ?? shared.baseEnabled[platform2] ?? null;
+        if (effective === true) {
           gatewayItems.push({
             path: platform2,
             kind: "platform-enablement-inherited",
             desired: `${manifest.messaging.enabled_path.replaceAll("{platform}", platform2)}: false`,
-            observed: delta.enabled[platform2] === true ? "true" : "inherited",
+            observed: pinned === true ? "true" : "inherited",
             detail: `platform-enablement-inherited:${platform2}`
           });
         }
@@ -23107,8 +23158,8 @@ function inspectAgent2(ctx, shared, input) {
     ...aspect2(
       gatewayState,
       gatewayItems,
-      gatewayAbsent ? "absent" : `${word2(unitFileState || "absent")}/${word2(activeState)}/${word2(one(gatewaySample, "SubState"))}`,
-      capability === "active" ? "enabled, active, running and stable over the window" : capability === "deferred" ? "disabled and inactive, with every deferred platform pinned disabled in the delta" : "a declared messaging capability before any gateway is enabled",
+      gatewayRead === "readable" ? `${word2(unitFileState || "absent")}/${word2(activeState)}/${word2(one(gatewaySample, "SubState"))}` : gatewayRead,
+      capability === "active" ? "enabled, active, running and stable over the window" : capability === "deferred" ? "disabled and inactive, with no deferred platform left enabled by the delta or the fleet base" : "a declared messaging capability before any gateway is enabled",
       gatewayItems.length === 0 ? capability === "deferred" ? "the gateway is correctly deferred: disabled, inactive, and no platform inherits enablement" : "the gateway is enabled, active and stable over the window" : `${gatewayItems.length} gateway defect(s) against a ${capability} messaging declaration`
     ),
     view: gatewayView,
@@ -23118,17 +23169,18 @@ function inspectAgent2(ctx, shared, input) {
     restarts: gatewayStability.restarts,
     entrypoint: gatewayEntrypoint,
     home: gatewayHome,
-    stability: { samples: gatewaySamples.length, stable: !gatewayAbsent && gatewayStability.stable, transitions: gatewayStability.transitions }
+    stability: { samples: gatewaySamples.length, stable: gatewayRead === "readable" && gatewayStability.stable, transitions: gatewayStability.transitions }
   };
   const timerSample = latest(timerUnit);
   const timerItems = [];
-  const timerAbsent = unitDefects(timerUnit, timerSample, timerItems);
+  const timerRead = unitDefects(timerUnit, timerSample, timerItems);
   const timers = parseTimersMonotonic(all(timerSample, "TimersMonotonic"));
   let schedule = "unknown";
   let tick = "unknown";
   let paired = false;
   const serviceSample = latest(serviceUnit);
-  if (!timerAbsent) {
+  const activation = evaluateTickActivation(serviceSample, ctx.monotonicNowUs, manifest.heartbeat.max_tick_seconds);
+  if (timerRead === "readable") {
     const timerFileState = one(timerSample, "UnitFileState") ?? "";
     if (!ENABLED_STATES.has(timerFileState)) timerItems.push({ path: timerUnit, kind: "timer-disabled", desired: "enabled", observed: word2(timerFileState || "absent"), detail: "timer-disabled" });
     const timerActive = one(timerSample, "ActiveState") ?? "";
@@ -23175,15 +23227,24 @@ function inspectAgent2(ctx, shared, input) {
         detail: "tick-overdue"
       });
     } else tick = "current";
+    if (activation !== null) {
+      timerItems.push({
+        path: serviceUnit,
+        kind: activation,
+        desired: "a completed tick",
+        observed: activation === "stuck" ? "activating past its own start timeout" : "activating",
+        detail: activation
+      });
+    }
   }
-  const timerRank = (kind) => kind === "tick-unknown" || kind === "schedule-unknown" ? "warn" : "fail";
+  const timerRank = (kind) => kind === "property-malformed" ? "error" : kind === "tick-unknown" || kind === "schedule-unknown" || kind === "in-progress" ? "warn" : "fail";
   let timerState = "pass";
   for (const item of timerItems) timerState = worseOf(timerState, timerRank(item.kind));
   const timer = {
     ...aspect2(
       timerState,
       timerItems,
-      timerAbsent ? "absent" : `${word2(one(timerSample, "UnitFileState") ?? "absent")}/${word2(one(timerSample, "ActiveState"))}/${word2(one(timerSample, "SubState"))} tick ${tick}`,
+      timerRead !== "readable" ? timerRead : `${word2(one(timerSample, "UnitFileState") ?? "absent")}/${word2(one(timerSample, "ActiveState"))}/${word2(one(timerSample, "SubState"))} tick ${tick}`,
       `enabled, active and waiting, paired with ${serviceUnit}, on the declared schedule, with a current tick`,
       timerItems.length === 0 ? "the heartbeat timer is enabled, active, correctly paired, on policy and current" : `${timerItems.length} heartbeat-timer defect(s): an active timer proves nothing on its own`
     ),
@@ -23193,30 +23254,21 @@ function inspectAgent2(ctx, shared, input) {
     tick
   };
   const serviceItems = [];
-  const serviceAbsent = unitDefects(serviceUnit, serviceSample, serviceItems);
+  const serviceRead = unitDefects(serviceUnit, serviceSample, serviceItems);
   const serviceExec = parseExecStart(one(serviceSample, "ExecStart"));
   const serviceEntrypoint = classifyEntrypoint(serviceExec.path, input.roleDir, manifest.entrypoint.launcher, input.hermesBin);
   const serviceResult = one(serviceSample, "Result") ?? null;
   const serviceStatus = numeric(serviceSample, "ExecMainStatus");
   let latestResult = "unknown";
   const reconcile = readReconcile(ctx, input.roleDir);
-  if (!serviceAbsent) {
+  if (serviceRead === "readable") {
     if ((one(serviceSample, "Type") ?? "") !== "oneshot") {
       serviceItems.push({ path: serviceUnit, kind: "type-not-oneshot", desired: "oneshot", observed: word2(one(serviceSample, "Type") ?? "absent"), detail: "type-not-oneshot" });
     }
     const start = parseSystemdUsec(one(serviceSample, "ExecMainStartTimestampMonotonic"));
     const exit = parseSystemdUsec(one(serviceSample, "ExecMainExitTimestampMonotonic"));
-    const serviceActive = one(serviceSample, "ActiveState") ?? "";
-    if (serviceActive === "activating" || serviceActive === "active") {
-      const timeout = parseSystemdUsec(one(serviceSample, "TimeoutStartUSec")) ?? BigInt(manifest.heartbeat.max_tick_seconds) * 1000000n;
-      const age = start === null || start === 0n ? null : ctx.monotonicNowUs - start;
-      if (age !== null && age >= timeout) {
-        latestResult = "stuck";
-        serviceItems.push({ path: serviceUnit, kind: "stuck", desired: "a completed tick", observed: "activating past its own start timeout", detail: "stuck" });
-      } else {
-        latestResult = "in-progress";
-        serviceItems.push({ path: serviceUnit, kind: "in-progress", desired: "a completed tick", observed: "activating", detail: "in-progress" });
-      }
+    if (activation !== null) {
+      latestResult = activation;
     } else if (serviceResult !== null && serviceResult !== "success") {
       latestResult = "failed";
       serviceItems.push({ path: serviceUnit, kind: "latest-result-failed", desired: "success", observed: word2(serviceResult), detail: `latest-result-failed:${word2(serviceResult)}` });
@@ -23249,14 +23301,14 @@ function inspectAgent2(ctx, shared, input) {
       });
     }
   }
-  const serviceRank = (kind) => kind === "property-malformed" || kind === "policy-unreadable" || kind === "state-unreadable" ? "error" : kind === "in-progress" || kind === "reconcile-undeclared" || kind === "reconcile-opt-out-undeclared" || kind === "reconcile-unverifiable" || kind === "latest-result-unknown" ? "warn" : "fail";
+  const serviceRank = (kind) => kind === "property-malformed" || kind === "policy-unreadable" || kind === "state-unreadable" ? "error" : kind === "reconcile-undeclared" || kind === "reconcile-opt-out-undeclared" || kind === "reconcile-unverifiable" || kind === "latest-result-unknown" ? "warn" : "fail";
   let serviceState = "pass";
   for (const item of serviceItems) serviceState = worseOf(serviceState, serviceRank(item.kind));
   const service = {
     ...aspect2(
       serviceState,
       serviceItems,
-      serviceAbsent ? "absent" : `${word2(one(serviceSample, "ActiveState"))}/${word2(one(serviceSample, "SubState"))} ${latestResult}`,
+      serviceRead !== "readable" ? serviceRead : `${word2(one(serviceSample, "ActiveState"))}/${word2(one(serviceSample, "SubState"))} ${latestResult}`,
       "a oneshot whose latest invocation completed successfully, entered from the pinned entrypoint",
       serviceItems.length === 0 ? "the heartbeat oneshot completed its latest tick successfully" : `${serviceItems.length} heartbeat-service defect(s): an active timer proves nothing without a successful tick`
     ),
@@ -23465,7 +23517,10 @@ async function collectSystemdHealth(ctx) {
     manager: manager.record,
     window: sampled,
     listing,
-    unitDirs
+    unitDirs,
+    // ONE read for the whole fleet: the base is one file every profile's delta
+    // is merged over, so reading it per agent would be the same bytes 28 times.
+    baseEnabled: readBaseEnablement(ctx, ctx.manifest.messaging.platforms)
   };
   const results = await mapBounded(ctx.agents, FLEET_STATUS_SYSTEMD_CONCURRENCY, async (input) => {
     throwIfCancelled(ctx.run);
