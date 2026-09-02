@@ -31,7 +31,14 @@ workflow_stall_nudges_cap = 3 # total (never-restored) stall nudges for an injec
 # does land in the 7-10M range. A ceiling under that does not save anything --
 # it kills a finished-but-uncommitted story and forces a manual recovery,
 # which is exactly what happened to 1.1.
-max_tokens_per_story = 20000000
+# Raised 20M -> 40M on 2026-09-02, pre-emptively rather than after a kill.
+# Measured story costs so far: 1.6 = 3.7M, 1.2 = 10.3M, 1.5 = 14.9M (three
+# review passes), and 1.7 was already at 13.2M with a THIRD review pass just
+# starting. The trend is upward as the epic deepens. Hitting this ceiling has
+# never once saved anything -- both times it fired it killed a story whose work
+# was finished but uncommitted and forced a manual recovery. An unused ceiling
+# costs nothing; a hit one costs a session.
+max_tokens_per_story = 40000000
 cache_read_weight = 0.1      # cache reads bill at ~0.1x input on all vendors; 1.0 = count raw
 
 [verify]
