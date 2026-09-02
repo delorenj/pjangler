@@ -2,16 +2,23 @@
 title: 'Story 1.7: Prove Generated Profile Health and Classify Extras'
 type: 'feature'
 created: '2026-09-02'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'c93503709badcd13a9f0ec14174101f15cfa3620'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-6-audit-tracked-pm-scaffold-parity-fleet-wide.md'
   - '{project-root}/contracts/fleet-contract.yaml'
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      resolveProfileLayout takes HERMES_FLEET_HOME verbatim, so a `~`-prefixed or relative value resolves against the process cwd and every profile reads root-missing.
+    evidence: |-
+      Pre-existing in src/fleet/inventory.ts (story 1.2). The story-1.7 observer now resolves the fleet home through that same function (review patch 20), so the two adapters can no longer disagree, but neither expands `~`. Surfaced by the edge-case review; the live fleet.env carries an absolute path, so the live fleet is unaffected.
+    location: >-
+      src/fleet/inventory.ts (resolveProfileLayout)
+    severity: low
 ---
 
 <intent-contract>
@@ -352,6 +359,48 @@ reachable through the registry-derived path gate, or say why not), DW-63 (`profi
 
 ## Review Triage Log
 
+### 2026-09-02 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 38: (high 0, medium 6, low 32)
+- defer: 1: (high 0, medium 0, low 1)
+- reject: 11: (high 0, medium 0, low 11)
+- addressed_findings:
+  - `[medium]` `[patch]` `health.unjustified` silently generalized to every host finding — documented in README/CHANGELOG and pinned by a non-profile host warn → `unproven` test with an `allowed_warnings` lift
+  - `[medium]` `[patch]` `readdir(root)` failure or a capped listing let the case-collision gate pass vacuously — `root-unreadable` root error in every scope, `case-collision:unverified` hard gate over a truncated listing, indexed `unparsed:<n>` rows
+  - `[medium]` `[patch]` two registry rows naming one profile proved the same directory twice with lock contention — `ambiguous:duplicate-profile-name` hard gate, tested
+  - `[medium]` `[patch]` the symlinked `skills` entry branch (27 of 28 live profiles) was unexercised — three fixture shapes added (fleet-home link accepted, foreign link `core-foreign:skills`, dangling `core-dangling:skills`)
+  - `[medium]` `[patch]` `canonical-missing`, the headline live reading, had no case — added, plus the once-per-host `profile.skill-core` finding naming the missing core skills
+  - `[medium]` `[patch]` `bank_ok` was asserted against itself and `core_complete`/fleet `core_missing` were unpinned — exact fixture counts asserted
+  - `[low]` `[patch]` `renderer.lock_pattern` was never consumed — the sweep derives its lock exclusion from it and the validator rejects `ignored_patterns` that do not cover it
+  - `[low]` `[patch]` code vocabularies — `FLEET_PROFILE_ROOT_CODES`/`FLEET_PROFILE_PYTHON_CODES` added, `renderer-layout-mismatch` moved, record fields typed, dead `unparsed` kind check and unreachable renderer-report branches removed
+  - `[low]` `[patch]` rule agreement could never compare a gated `symlink` — the path aspect is compared on its own, `misowned-link` maps to the rule's wrong-target, and the symlink disagreement assertion is pinned
+  - `[low]` `[patch]` rule detail regexes proven only against a synthetic report — pinned against the literal strings in `src/parity/rules.ts`
+  - `[low]` `[patch]` `provisioned_profile_state` note named a writer that does not write `profile.yaml` — note and README name the real writers
+  - `[low]` `[patch]` README overstated which rulings lift the extras warn — exact rulings stated; `allowed_warnings: profile.extras` lift tested
+  - `[low]` `[patch]` fleet base derived from `profile_layout.generated_file` by coincidence — named explicitly as the renderer's `config.yaml`
+  - `[low]` `[patch]` canonical skills dir ignored the template config — `[fleet] canonical_skills_dir` honoured between the env override and the placeholder, tested
+  - `[low]` `[patch]` failed git probes reported as gitlink verdicts — `renderer-source-unobserved`; git-checkout precondition documented
+  - `[low]` `[patch]` `pin-symlink`/`pin-malformed` fell in no identity bucket — `bank_invalid` added, agent cell reads `bank invalid`, `bank-alias` painted as the fail it is
+  - `[low]` `[patch]` every declared cap untested — lowered-limit cases prove counts before the cap, `truncated`, `max_extra_skills`, item clipping; fleet `core_missing` counts dangling/foreign; `extras_seen` uncapped
+  - `[low]` `[patch]` `unreadable` gate wording, `core-dangling` for a directory without `SKILL.md`, and the `skills/` listing reusing the root cap — corrected
+  - `[low]` `[patch]` held-lock test raced a fixed sleep and assumed `flock` — `skipCase` without `flock`, holder polled with `flock -n`
+  - `[low]` `[patch]` README omitted renderer/root codes, the contract-`retired` path and misdescribed `profile.root` — completed
+  - `[low]` `[patch]` identity `desired` text was vacuous — reworded to what is checked
+  - `[low]` `[patch]` registry re-parsed for the gateways block, exception resolved twice, dead `layout` local in provenance — removed
+  - `[low]` `[patch]` `readBounded` cap advisory and torn reads digested — capped read, re-`lstat`, retry once then `unreadable`
+  - `[low]` `[patch]` python probe mapped unrelated exit codes to `renderer-pyyaml-missing` — probe script exits 3/4 itself; anything else `renderer-python-unavailable`
+  - `[low]` `[patch]` rows without `role_dir` skipped singleton-link checks silently — scaffold-style default, else `unverifiable` warn
+  - `[low]` `[patch]` a drift report with no parseable section could pass, and summaries claimed in-sync beside items — one `semantic-drift`/`unparsed` item; in-sync only with no item
+  - `[low]` `[patch]` unreadable/vanished/unlistable extras landed in `debris-candidate` — `unclassified`/`manual-review`; `intentionally_unmanaged`/`retired` claims require `profile` in `policy_domains`
+  - `[low]` `[patch]` override-only delta proven only transitively — `delta-not-override-only` item for a delta carrying the marker or equal to base/generated, tested
+  - `[low]` `[patch]` fleet home resolved twice — one function shared with `resolveProfileLayout`
+  - `[low]` `[patch]` gated rollup reads `unobserved` — documented in README and recorded as DW-95
+  - `[low]` `[patch]` `base-missing`/`base-symlink`, `renderer-layout-mismatch`, `renderer-gitlink-unstable`, `unnamed`, contract-`retired` claim — cases added
+  - `[low]` `[patch]` the whole suite skipped on a python-less host — renderer-dependent cases skip individually; the rest run
+  - `[low]` `[patch]` live AC11 case did not snapshot the real root — names/types/mtimes snapshotted before and after
+  - `[low]` `[patch]` README/CHANGELOG lines quoting changed strings updated
+
 ## Design Notes
 
 **Run the canonical bytes, not a canonical location.** The renderer cannot be relocated (it insists on its
@@ -435,59 +484,63 @@ as DW-95.
 ## Auto Run Result
 
 Status: done
-Blocking condition: none -- the committed gitlink `6bc683d8a265dba96404a45154da283fc289ff3e` still carries `scripts/hermes-profile-config.py` with a `check` subcommand whose stdout begins `OK:` or `PROFILE CONFIG DRIFT:`, and the suite's live case re-verifies that on every run.
+Blocking condition: none
 
 ### Summary of implemented change
 
-`pjangler fleet status --domain profile` now proves every registered profile
-rather than `lstat`ing its directory. A new read-only observer
-(`src/fleet/profile.ts`) gates the path first (real, contained, safely named,
-no case-insensitive twin, singleton links into this agent's own runtime), then
-reads the identity file for its key names, proves the generated config by
-running the CANONICAL renderer's own `check` from the submodule worktree only
-after both its blob id and its lock helper's equal the blobs at the committed
-gitlink, reads the Hindsight bank pin for an exact `agent-<profile_name>`, and
-proves the six core skills by bytes through the roots Hermes loads. Five
-observations per agent land on `profiles.{profile_name}` leaves (never the
-inventory's field), a gated profile is one `fail` plus four `unobserved` naming
-the gate, and nothing beneath a symlinked or ambiguous profile is read. In
-fleet scope the root is enumerated once and every unregistered entry is
-classified on the `profile.extras` host finding into one of five classes with
-bounded evidence and guidance; only a contract-declared class is `pass`, and an
-unjustified extra now counts against `proven` (host findings reach the
-justification gate and nothing else). The contract is schema 4 with a
-`profile_manifest` block and a `provisioned_profile_state` authority; the
-`profile.render_generation` deferral and provenance fact are deleted.
+`pjangler fleet status --domain profile` now proves every registered profile instead of
+`lstat`ing its directory. A read-only observer (`src/fleet/profile.ts`) gates the path first
+(real, contained, safely named, no case-insensitive twin, no second row claiming it, singleton
+links into this agent's own runtime), then reads the identity file for its key names, proves
+the generated config by running the CANONICAL renderer's own `check` from the submodule
+worktree only after its blob id and its lock helper's equal the blobs at the committed gitlink,
+reads the Hindsight bank pin for an exact `agent-<profile_name>`, and proves the six core skills
+by bytes through the roots Hermes loads. Five observations per agent land on
+`profiles.{profile_name}` leaves; a gated profile is one `fail` plus four `unobserved` naming
+the gate, and nothing beneath it is read. In fleet scope the root is enumerated once and every
+unregistered entry is classified on the `profile.extras` host finding into one of five classes
+with bounded evidence and guidance; `profile.root`, `profile.renderer` and the once-per-host
+`profile.skill-core` findings name the shared causes. Host findings now reach the justification
+gate, so an unjustified extra or skill-core gap keeps the fleet `unproven`. The contract is
+schema 4 (`profile_manifest`, `provisioned_profile_state`); the `profile.render_generation`
+deferral and provenance fact are deleted. Commits: e906015, 1a2865c, 1fea950 (dev), plus this
+spec finalization.
 
 ### Files changed
 
-- `src/fleet/profile.ts` -- NEW, the observer: root gate, renderer integrity, per-agent path/identity/config/pin/skills, extras sweep, probe records.
-- `src/fleet/runtime.ts` -- `probeText` (stdout kept on a nonzero exit, `cwd`/`env`/`timeoutMs`).
-- `src/fleet/types.ts`, `src/fleet/contract.ts` (`validateProfileManifest`), `src/fleet/health.ts` (`fleet-profile` evidence; host findings at the justification gate), `src/fleet/status.ts`, `src/fleet/output.ts`, `src/fleet/index.ts`, `src/fleet/inventory.ts` (`readAgentRegistryGatewaysRaw`), `src/fleet/provenance.ts` (fact deleted).
+- `src/fleet/profile.ts` -- NEW observer: root gate, renderer integrity + python probe, per-agent path/identity/config/pin/skills, extras sweep, probe records.
+- `src/fleet/runtime.ts` -- `probeText` (stdout kept on a nonzero exit).
+- `src/fleet/types.ts`, `src/fleet/contract.ts` (`validateProfileManifest`), `src/fleet/health.ts` (`fleet-profile` evidence; host findings at the justification gate), `src/fleet/status.ts` (collection phase, `observeFromProfile`, four host findings, rule agreement, `data.profile`, `agents[].profile`), `src/fleet/output.ts`, `src/fleet/index.ts`, `src/fleet/inventory.ts` (shared fleet-home resolution, gateways from the parsed store), `src/fleet/provenance.ts` (fact deleted).
 - `contracts/fleet-contract.yaml` -- schema 4, contract 1.3.0.
-- `tests/fleet-profile-regressions.mjs` -- NEW, 24 cases; `tests/fleet-status-regressions.mjs`, `tests/fleet-health-regressions.mjs`, `tests/fleet-scaffold-regressions.mjs` (renderer-clean fixture profiles, real renderer bytes in fixture submodules), `tests/fleet-provenance-regressions.mjs`, `tests/fleet-contract-regressions.mjs`, `tests/mcp-server-regressions.mjs`, `scripts/run-tests.mjs`.
-- `README.md` (`### Profile health`), `mise.toml`, `CHANGELOG.md`, `deferred-work.md` (DW-25/28/31/63 annotated; DW-90..DW-94 added).
+- `tests/fleet-profile-regressions.mjs` -- NEW, 34 cases incl. the live AC11 case; `tests/fleet-status-regressions.mjs`, `tests/fleet-health-regressions.mjs`, `tests/fleet-scaffold-regressions.mjs` (renderer-clean fixture profiles, real renderer bytes in fixture submodules), `tests/fleet-provenance-regressions.mjs`, `tests/fleet-contract-regressions.mjs`, `tests/mcp-server-regressions.mjs`, `scripts/run-tests.mjs`.
+- `README.md` (`### Profile health`), `mise.toml`, `CHANGELOG.md`, `deferred-work.md` (DW-25/28/31/63 annotated; DW-90..DW-95 added).
+
+### Review findings
+
+- Four review layers (blind hunter, edge-case hunter, verification-gap, intent alignment) over the story diff.
+- intent_gap 0, bad_spec 0; **38 patches applied** (high 0, medium 6, low 32) in commit 1fea950 by the implementation agent; 1 finding deferred (frontmatter `deferred`); 11 rejected (design consistent with the spec or the epic's story boundaries: process attribution belongs to 1.9, parity only exists under `--live`, standalone singleton entries are legitimate, `warn`-only profiles count healthy as 1.4 defines it, bookkeeping the workflow owns).
+- Follow-up review recommendation: **true** -- patched counts high 0 / medium 6 / low 32, score 3 x 6 + 32 = 50 (threshold 5).
 
 ### Verification performed
 
-- `npm run typecheck && npm run build` -- clean.
-- `npm test` -- 69/69 suites, 392 s. The new suite runs 24 cases, none skipped on this host; the live AC11 case ran.
-- Two consecutive live runs of `fleet status --domain profile --json`: `data` byte-identical (388 633 B); `git -C templates/hermes-agent status --porcelain` identical before and after; 0 occurrences of `GENERATED FILE`, `op://` or `/home/` in the payload; no ISO timestamp.
-- `fleet status --domain registry --json`: zero probes of kind `profile`.
-- `fleet contract validate`: exit 0 at schema 4, contract 1.3.0.
-- **AC11, independently recorded:** `python3 -B templates/hermes-agent/scripts/hermes-profile-config.py check --profile pjangler-pm` printed `OK: every profile config.yaml == deep_merge(base, delta)` and exited 0; the payload's `agents[pjangler-pm].profile.renderer` is `{state: "in-sync", sections: []}`. Renderer source `ok` at gitlink `6bc683d8a265`, python `ok`.
-- Live fleet: 28 registered, 26 real, 2 blocked at path (`delonet-company-reporter`, `hermes-agent-pm`, both `symlink`), renderer checked 26 / in sync 26, bank ok 25 and one alias (`nautilus-trader-pm` pinned `agent-nautilus_trader-pm`), 11 unregistered root entries classified: 1 `approved-managed-exception` (`fleet-bloodbank-gateway`), 2 `retired-candidate` (`33god-pm.bak` by backup pattern, `nautilus_trader-pm` as alias of `nautilus-trader-pm`), 8 `unclassified` (`OptionJangler-pm`, `optionjangler-pm`, `carrie`, `coachingagentframework-pm`, `raw-stdio-pm`, `tonnybox-pm`, and the two unregistered symlinks `intelliforia-voice-agent`, `stemjangler-adversarial-review`). Verdict `unhealthy`, `unjustified: 1` (the extras warn).
+- `npm run typecheck && npm run build` -- clean after each commit; the rebuilt `dist/` is byte-identical to the committed bundle (`git status` empty after build).
+- `npm test` -- 69/69 suites before the patch pass (392.9 s) and 69/69 after it (401.8 s). `node tests/fleet-profile-regressions.mjs` -- 34 cases, none skipped, live case ran.
+- Two consecutive live runs of `fleet status --domain profile --json`: `data` byte-identical; `git -C templates/hermes-agent status --porcelain` and an `ls -la` listing of the real profile root identical before and after.
+- `fleet status --domain registry --json`: zero probes of kind `profile`. `fleet contract validate`: ok, schema 4, contract 1.3.0.
+- Payload scan: 0 occurrences of `GENERATED FILE`, `op://`, `/home/`; no ISO timestamp.
+- **AC11, independently recorded:** `python3 -B templates/hermes-agent/scripts/hermes-profile-config.py check --profile pjangler-pm` printed `OK: every profile config.yaml == deep_merge(base, delta)` and exited 0; the payload's `agents[pjangler-pm].profile.renderer` is `{state: "in-sync", sections: []}`; renderer source `ok` at gitlink `6bc683d8a265`, python `ok`. The suite's live case re-checks this and an independent `readdir`+`lstat` of the real root on every run.
+- Live fleet: 28 registered, 26 real, 2 blocked at path (`delonet-company-reporter`, `hermes-agent-pm`, both `symlink`), renderer checked 26 / in sync 26, bank ok 25 + 1 alias (`nautilus-trader-pm` pinned `agent-nautilus_trader-pm`), 11 unregistered root entries: 1 `approved-managed-exception` (`fleet-bloodbank-gateway`), 2 `retired-candidate` (`33god-pm.bak`, `nautilus_trader-pm`), 8 `unclassified`. Verdict `unhealthy`, `unjustified: 1` (the extras warn).
 
 ### Live readings that are fleet facts, not observer defects
 
-- 15 real profiles carry no `profile.yaml` at all (`identity` `fail`, `missing`); the other 11 pass with `ui_meta` and, where present, `description`/`description_auto`.
-- Every real profile reads `skills` `fail` with `canonical-missing` for `33god-projects` and `hermes-pm-template-maintenance`: neither has a `SKILL.md` under `~/.agents/skills`, so `core_present` is 4 of 6 fleet-wide (DW-91). The fleet base's `./agents/skills` entry is counted `sources_unresolvable: 1` on every profile.
-- 27 profiles reach the core only through `skills.external_dirs`; their `skills -> ~/.hermes/skills` link resolves inside the fleet home and lists the six optional skills that directory holds.
+- 15 real profiles carry no `profile.yaml` (`identity` `fail`, `missing`); the other 11 pass on `ui_meta` and, where present, `description`/`description_auto`.
+- `profile.skill-core` reads `fail`: `33god-projects` and `hermes-pm-template-maintenance` have no `SKILL.md` under `~/.agents/skills`, so every real profile reads `canonical-missing` for both and `core_present` is 4 of 6 fleet-wide (DW-91). The fleet base's `./agents/skills` entry is `sources_unresolvable: 1` on every profile.
+- 27 profiles reach the core only through `skills.external_dirs`; their `skills -> ~/.hermes/skills` link resolves inside the fleet home and lists that directory's optional skills.
 
 ### Residual risks
 
-- DW-90: optional skills are listed from the profile's own `skills` entry only, never from `external_dirs`.
-- DW-92: the singleton-link list is duplicated from `src/parity/rules.ts` and pinned equal by a text-parity case.
-- DW-93: `unit_file_references` reads only literal `Environment=HERMES_HOME=` lines.
-- DW-94: a held lock is reported by killing the renderer child at `lock_timeout_seconds + 1` s while the renderer is told it may wait longer; a legitimately slow check would read the same.
-- A gated profile's domain rolls up to `unobserved` (four dependents) rather than `fail`; the path `fail` is on the record and demotes the lifecycle, and `tests/fleet-health-regressions.mjs` pins the rollup reading.
+- DW-95: a gated profile's `domains.profile` rollup reads `unobserved` (four dependents outrank the path `fail` under the declared precedence); the `fail` is on the record, in `health.failed`, and demotes the lifecycle.
+- DW-94: a held lock is reported by killing the renderer at `lock_timeout_seconds + 1` s; a legitimately slow check reads the same `renderer-timeout`.
+- DW-93: `unit_file_references` reads literal `Environment=HERMES_HOME=` lines only; `process_reference` is `unobserved` until story 1.9.
+- DW-90/DW-92: optional skills are listed from the profile's own `skills` entry only; the singleton-link list is duplicated from the recipe rule and pinned by a text-parity case.
+- `root-unreadable` (readdir failure on a root that `lstat`s as a directory) and the indexed `unparsed:<n>` sweep rows have no driving case; both fail safe.
