@@ -11,15 +11,15 @@
  * Bumped to 2 by story 1.5: `health_policy` is a new ROOT key, and a new root
  * key is a grammar change rather than a content one. Bumped to 3 by story 1.6
  * for the same reason: `scaffold_manifest` is a new root key. Bumped to 4 by
- * story 1.7, again for a new root key: `profile_manifest`. The build still
- * READS schema 1 through 3 -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because
- * a contract without the newer blocks is simply one that authorizes no gap and
- * declares no manifest.
+ * story 1.7, again for a new root key: `profile_manifest`. Bumped to 5 by
+ * story 1.8 for `service_manifest`. The build still READS schema 1 through 4
+ * -- see `FLEET_SUPPORTED_SCHEMA_VERSIONS` -- because a contract without the
+ * newer blocks is simply one that authorizes no gap and declares no manifest.
  */
-export const FLEET_CONTRACT_SCHEMA_VERSION = 4 as const;
+export const FLEET_CONTRACT_SCHEMA_VERSION = 5 as const;
 
 /** Inclusive range of contract schema versions this build accepts. */
-export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 4 } as const;
+export const FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 5 } as const;
 
 /** Envelope version for `pjangler fleet ...` machine output. */
 export const FLEET_SCHEMA_VERSION = 1 as const;
@@ -40,7 +40,7 @@ export const FLEET_SCHEMA_VERSION = 1 as const;
 export const FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version", "contract_version", "compatibility", "authorities",
   "projections", "classifications", "service_model", "activation", "retired",
-  "health_policy", "scaffold_manifest", "profile_manifest",
+  "health_policy", "scaffold_manifest", "profile_manifest", "service_manifest",
 ] as const;
 
 /**
@@ -55,9 +55,11 @@ export const FLEET_CONTRACT_ROOT_KEYS = [
  * `scaffold.manifest`, unjustified unless the policy says otherwise. And
  * `profile_manifest` (schema 4) likewise: without it the profile observer
  * reports every selected agent's five profile fields `unsupported` under
- * capability `profile.manifest`.
+ * capability `profile.manifest`. And `service_manifest` (schema 5): without it
+ * the systemd observer reports every selected agent's five systemd leaves
+ * `unsupported` under capability `systemd.manifest`.
  */
-export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest"] as const;
+export const FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest", "service_manifest"] as const;
 
 /** Closed key set for `health_policy` and each of its five entry lists. */
 export const FLEET_HEALTH_POLICY_KEYS = [
@@ -104,6 +106,32 @@ export const FLEET_PROFILE_MANIFEST_MEMORY_KEYS = ["pin_file", "bank_id_template
 export const FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS = ["canonical_dir", "canonical_dir_env", "required", "source"] as const;
 export const FLEET_PROFILE_MANIFEST_EXTRAS_KEYS = ["ignored_patterns", "backup_patterns"] as const;
 export const FLEET_PROFILE_MANIFEST_LIMITS_KEYS = ["max_file_bytes", "max_root_entries", "max_unit_files", "max_extra_skills"] as const;
+
+/**
+ * Closed key sets for the `service_manifest` root block (schema 5) and each of
+ * its seven sub-blocks.
+ *
+ * POLICY about the user manager's canonical service state, never a copy of a
+ * unit file: how many samples make a stability window and how far apart, how
+ * the manager is probed and what a child may inherit, which entrypoint counts
+ * as pinned and which environment key names the profile home, how a registry
+ * row DECLARES its messaging capability (the desired gateway state is derived
+ * from that declaration, never read back from the unit), what the heartbeat
+ * schedule and its reconcile evidence are, which unit names are retired
+ * shapes, and the caps every read is bounded by.
+ */
+export const FLEET_SERVICE_MANIFEST_KEYS = ["stabilization", "probe", "entrypoint", "messaging", "heartbeat", "unregistered", "limits"] as const;
+export const FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS = ["samples", "interval_ms"] as const;
+export const FLEET_SERVICE_MANIFEST_PROBE_KEYS = ["timeout_ms", "env_allowlist", "manager_available_states"] as const;
+export const FLEET_SERVICE_MANIFEST_ENTRYPOINT_KEYS = ["launcher", "pinned_bin_field", "home_env"] as const;
+export const FLEET_SERVICE_MANIFEST_MESSAGING_KEYS = [
+  "platforms", "status_field", "verified_status", "deferred_statuses", "enabled_path", "secret_env", "identity_fields",
+] as const;
+export const FLEET_SERVICE_MANIFEST_HEARTBEAT_KEYS = [
+  "on_boot_sec", "on_unit_inactive_sec", "overdue_multiplier", "max_tick_seconds", "reconcile_policy_file", "reconcile_state_file",
+] as const;
+export const FLEET_SERVICE_MANIFEST_UNREGISTERED_KEYS = ["unit_glob", "retired_candidates"] as const;
+export const FLEET_SERVICE_MANIFEST_LIMITS_KEYS = ["max_units", "max_unregistered_units", "max_file_bytes", "max_show_bytes"] as const;
 
 export const FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"] as const;
 
@@ -379,6 +407,70 @@ export interface FleetProfileManifest {
   };
 }
 
+/**
+ * Policy about the canonical SERVICE STATE of a deployed agent, so the systemd
+ * observer knows what to prove against the user manager and how, without a
+ * unit file's contents ever being declared here.
+ *
+ * `stabilization` is the observation window: every unit of interest is shown
+ * `samples` times, `interval_ms` apart, in ONE child per sample. `probe` bounds
+ * each child and names the manager states that count as available and the
+ * environment keys a child may inherit. `entrypoint` says which `ExecStart`
+ * counts as pinned (the role's launcher, or the executable the row's own
+ * `hermes.bin` records) and which environment key names the profile home.
+ * `messaging` is how a registry row DECLARES its gateway capability: a
+ * platform whose `status_field` reads `verified_status` makes the gateway
+ * `active`; only `deferred_statuses` make it `deferred`; anything else is
+ * `undeclared`. `heartbeat` is the timer schedule the template writes, the
+ * overdue multiplier that turns a last trigger into a bucket, and where the
+ * reconcile policy and its evidence live in the role directory.
+ * `unregistered` names the unit glob the sweep lists and the retired shapes.
+ * `limits` bounds every read.
+ */
+export interface FleetServiceManifest {
+  stabilization: {
+    samples: number;
+    interval_ms: number;
+  };
+  probe: {
+    timeout_ms: number;
+    env_allowlist: string[];
+    manager_available_states: string[];
+  };
+  entrypoint: {
+    launcher: string;
+    pinned_bin_field: string;
+    home_env: string;
+  };
+  messaging: {
+    platforms: string[];
+    status_field: string;
+    verified_status: string;
+    deferred_statuses: string[];
+    enabled_path: string;
+    secret_env: Record<string, string[]>;
+    identity_fields: Record<string, string[]>;
+  };
+  heartbeat: {
+    on_boot_sec: number;
+    on_unit_inactive_sec: number;
+    overdue_multiplier: number;
+    max_tick_seconds: number;
+    reconcile_policy_file: string;
+    reconcile_state_file: string;
+  };
+  unregistered: {
+    unit_glob: string;
+    retired_candidates: string[];
+  };
+  limits: {
+    max_units: number;
+    max_unregistered_units: number;
+    max_file_bytes: number;
+    max_show_bytes: number;
+  };
+}
+
 export interface FleetContract {
   schema_version: number;
   contract_version: string;
@@ -395,6 +487,8 @@ export interface FleetContract {
   scaffold_manifest?: FleetScaffoldManifest;
   /** Optional. Absent on a schema-1..3 contract, which then declares no generated-profile policy to prove. */
   profile_manifest?: FleetProfileManifest;
+  /** Optional. Absent on a schema-1..4 contract, which then declares no canonical service state to prove. */
+  service_manifest?: FleetServiceManifest;
 }
 
 /** One namespaced extension, kept out of policy and reported separately. */
@@ -1055,6 +1149,36 @@ export const PROFILE_MAX_UNIT_FILES = 500;
 /** Optional (non-core) skills named on one agent's record. */
 export const PROFILE_MAX_EXTRA_SKILLS = 20;
 
+/**
+ * How many agents the systemd observer evaluates at once.
+ *
+ * The user manager is sampled ONCE for the whole fleet (one `show` per sample,
+ * every unit of interest in its argv), so per-agent work is pure evaluation
+ * plus two bounded role-directory reads -- the reconcile policy and its state
+ * file. Four in flight is the same number every other observer uses, and for
+ * the same reason.
+ */
+export const FLEET_STATUS_SYSTEMD_CONCURRENCY = 4;
+
+/**
+ * CEILINGS on the systemd observer's bounds. The tracked contract's
+ * `service_manifest` may lower any of them and may not exceed them.
+ */
+/** Samples in one stability window. Ten one-second samples is already a long observation command. */
+export const SYSTEMD_MAX_SAMPLES = 10;
+/** Millis between two samples. */
+export const SYSTEMD_MAX_INTERVAL_MS = 10_000;
+/** Wall-clock budget for one `systemctl` child. */
+export const SYSTEMD_MAX_PROBE_TIMEOUT_MS = 60_000;
+/** Units one listing may carry before the sweep stops and says so. */
+export const SYSTEMD_MAX_UNITS = 1000;
+/** Unregistered units classified in one sweep. */
+export const SYSTEMD_MAX_UNREGISTERED_UNITS = 200;
+/** Bytes of one role-directory file (the reconcile policy, its state) the observer will read. */
+export const SYSTEMD_MAX_FILE_BYTES = 64 * 1024;
+/** Bytes one `show` child may produce. Equals the runtime's own probe cap. */
+export const SYSTEMD_MAX_SHOW_BYTES = 4 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Fleet health (story 1.5)
 //
@@ -1551,11 +1675,11 @@ export const FLEET_SCAFFOLD_SOURCE_CODES = [
 ] as const;
 export type FleetScaffoldSourceCode = (typeof FLEET_SCAFFOLD_SOURCE_CODES)[number];
 
-/** One asset item on a scaffold group observation, or one typed item on a profile observation (story 1.7). */
+/** One asset item on a scaffold group observation, one typed item on a profile observation (story 1.7), or one on a systemd leaf (story 1.8). */
 export interface FleetStatusObservationItem {
-  /** Role-relative or profile-relative, forward slashes. Never absolute. */
+  /** Role-relative or profile-relative, forward slashes; or a unit name or registry key on a systemd leaf. Never absolute. */
   path: string;
-  kind: FleetScaffoldItemKind | FleetProfileItemKind;
+  kind: FleetScaffoldItemKind | FleetProfileItemKind | FleetSystemdItemKind;
   /** A 12-hex blob-id prefix or a type/mode word. Never a body. */
   desired: string | null;
   observed: string | null;
@@ -1647,6 +1771,8 @@ export interface FleetStatusAgent {
   scaffold: FleetStatusAgentScaffold | null;
   /** The generated-profile health summary. Story 1.7. Always present; `null` when the domain was not selected. */
   profile: FleetStatusAgentProfile | null;
+  /** The systemd topology and service-health summary. Story 1.8. Always present; `null` when the domain was not selected. */
+  systemd: FleetStatusAgentSystemd | null;
 }
 
 /**
@@ -1695,13 +1821,15 @@ export interface FleetStatusHostFinding {
   next_action_class: FleetStatusNextActionClass;
   justification: FleetStatusJustification | null;
   /**
-   * Typed extra-entry items, where the finding is `profile.extras` (story 1.7).
+   * Typed extra-entry items, where the finding is `profile.extras` (story 1.7),
+   * or typed unregistered-unit items where it is `systemd.unregistered`
+   * (story 1.8).
    *
    * ABSENT on every other host finding and on an empty sweep, capped at
    * `FLEET_STATUS_MAX_ITEMS` with the clip recorded in `truncated`. Each item's
-   * `path` is the root entry's NAME, never an absolute path.
+   * `path`/`unit` is a NAME, never an absolute path.
    */
-  items?: FleetStatusProfileExtraItem[];
+  items?: FleetStatusProfileExtraItem[] | FleetStatusSystemdUnregisteredItem[];
 }
 
 /**
@@ -1838,6 +1966,8 @@ export interface FleetStatus {
   scaffold: FleetScaffoldSummary | null;
   /** The fleet-level generated-profile summary. Story 1.7. Always present; `null` when the domain was not selected. */
   profile: FleetProfileSummary | null;
+  /** The fleet-level systemd summary. Story 1.8. Always present; `null` when the domain was not selected. */
+  systemd: FleetSystemdSummary | null;
   /** Dotted paths where a bound clipped the reported value. */
   truncated: string[];
 }
@@ -2095,5 +2225,268 @@ export interface FleetProfileSummary {
     truncated: boolean;
   };
   /** Under `--live`, how the observer and the `hermes.runtime-singleton` rule agreed over the subset both read. */
+  rule_agreement: { compared: number; agree: number; disagree: number; not_compared: number };
+}
+
+// ---------------------------------------------------------------------------
+// Fleet systemd topology and service health (story 1.8)
+//
+// `systemd` used to report every agent `unsupported`: unit names were derived
+// expectations, never observations of the user manager. The vocabulary below is
+// what a read-only observer reports when it derives each agent's canonical unit
+// set, samples the manager over a declared stabilization window, derives the
+// DESIRED gateway state from the registry's messaging declaration, proves
+// gateway and heartbeat health by the template's own stability semantics,
+// correlates the fleet-shared Bloodbank gateway, and classifies every
+// unregistered `hermes-*` unit for an operator.
+// ---------------------------------------------------------------------------
+
+/**
+ * What one systemd item says. Each is a stable identifier word; the item's
+ * `path` names the unit or registry key it is about and `detail` carries the
+ * subject (`registry-retired-key:checkpoint_timer`, `property-malformed:NRestarts`,
+ * `platform-enablement-inherited:telegram`) where the kind alone does not
+ * identify it. Never a timestamp, an age, a pid, an environment value or an
+ * absolute path.
+ */
+export const FLEET_SYSTEMD_ITEM_KINDS = [
+  // Collection: the manager or a child could not answer, or answered in a
+  // shape this build does not read.
+  "manager-unavailable", "manager-timeout", "show-failed", "show-timeout", "show-too-large", "property-malformed", "agent-id-unsafe",
+  // Topology (agents.{agent_id}.systemd.gateway_unit): the canonical triple
+  // against what the manager loads and what the registry row records.
+  "gateway-missing", "heartbeat-timer-missing", "heartbeat-service-missing", "misnamed-gateway", "duplicate-gateway",
+  "retired-unit", "extra-unit", "registry-retired-key",
+  // The registry's heartbeat_timer field (agents.{agent_id}.systemd.heartbeat_timer).
+  "registry-undeclared", "unit-missing", "misnamed-heartbeat-timer",
+  // Any unit leaf.
+  "absent", "load-error", "fragment-unsafe",
+  // The gateway (units.hermes-{agent_id}-gateway.service).
+  "deferred-but-enabled", "deferred-but-active", "verified-channel-gateway-disabled", "verified-channel-gateway-inactive",
+  "channel-undeclared", "channel-identity-incomplete", "channel-secret-unreferenced", "platform-enablement-inherited",
+  "unstable", "crash-looping", "result-not-success", "entrypoint-unpinned", "home-mismatch", "home-absent", "home-unsafe",
+  // The heartbeat timer (units.hermes-{agent_id}-heartbeat.timer).
+  "timer-disabled", "timer-inactive", "timer-substate", "timer-unpaired", "schedule-off-policy", "schedule-unknown",
+  "tick-overdue", "tick-never", "tick-unknown",
+  // The heartbeat oneshot (units.hermes-{agent_id}-heartbeat.service).
+  "type-not-oneshot", "latest-result-failed", "latest-result-unknown", "never-completed", "in-progress", "stuck",
+  "reconcile-undeclared", "reconcile-opt-out-undeclared", "reconcile-unverifiable", "checkpoint-only", "policy-unreadable", "state-unreadable",
+] as const;
+export type FleetSystemdItemKind = (typeof FLEET_SYSTEMD_ITEM_KINDS)[number];
+
+/**
+ * The five classes an unregistered `hermes-*` unit lands in. Exactly one.
+ *
+ * `retired`             the name wears a retired shape (`-consumer.service`,
+ *                       `-checkpoint.timer`) or a `retired` classification entry
+ *                       names it.
+ * `transient`           `UnitFileState=transient` -- a `systemd-run` scope; its
+ *                       `Description` may name a registered profile, recorded as
+ *                       `correlated_profile`.
+ * `profile-correlated`  `HERMES_HOME=` names a directory under the profile root.
+ * `managed-exception`   a `managed_shared_service` or `intentionally_unmanaged`
+ *                       entry with `systemd` in its policy domains claims it.
+ * `unclassified`        everything else -- a finding for an operator, never a
+ *                       licence to stop, disable or delete.
+ *
+ * Only `managed-exception` is `pass`; the rest are `warn`, unjustified by
+ * design until the operator classifies the unit in the contract. Every item
+ * carries `process_reference: "unobserved"`: attributing the process behind a
+ * unit is story 1.9.
+ */
+export const FLEET_SYSTEMD_UNREGISTERED_CLASSES = ["retired", "transient", "profile-correlated", "managed-exception", "unclassified"] as const;
+export type FleetSystemdUnregisteredClass = (typeof FLEET_SYSTEMD_UNREGISTERED_CLASSES)[number];
+
+/** How the manager probe ended. `available` is any state the manifest lists (`degraded` included). */
+export const FLEET_SYSTEMD_MANAGER_CODES = ["available", "manager-unavailable", "manager-timeout"] as const;
+export type FleetSystemdManagerCode = (typeof FLEET_SYSTEMD_MANAGER_CODES)[number];
+
+/**
+ * The desired gateway state, DERIVED from the registry's messaging declaration
+ * and never from the unit.
+ *
+ * `active`      a platform's `provisioning_status` is `verified`: the gateway
+ *               must be enabled, active, running and stable.
+ * `deferred`    every declared platform is `disabled` or `deferred`: the
+ *               gateway must be disabled (or masked) and inactive, and no
+ *               platform may inherit enablement from the fleet base.
+ * `undeclared`  no platform declares a `provisioning_status` this build reads:
+ *               an active gateway here is liveness theatre, never health.
+ */
+export const FLEET_SYSTEMD_CAPABILITY_STATES = ["active", "deferred", "undeclared"] as const;
+export type FleetSystemdCapabilityState = (typeof FLEET_SYSTEMD_CAPABILITY_STATES)[number];
+
+/** How recently the heartbeat timer fired, as a BUCKET against the declared schedule. Never an age. */
+export const FLEET_SYSTEMD_TICKS = ["current", "overdue", "never", "unknown"] as const;
+export type FleetSystemdTick = (typeof FLEET_SYSTEMD_TICKS)[number];
+
+/**
+ * What the heartbeat oneshot's latest invocation concluded.
+ *
+ * `success` a completed run: inactive/dead, `Result=success`, exit 0, exit
+ * after start. `in-progress` an activation younger than its start timeout;
+ * `stuck` one older. `never` no invocation since boot (after the boot delay).
+ * systemd pre-initialises `Result=success` before the first exit, so an
+ * activating oneshot is never read as a success -- the template's own rule.
+ */
+export const FLEET_SYSTEMD_LATEST_RESULTS = ["success", "failed", "in-progress", "stuck", "never", "unknown"] as const;
+export type FleetSystemdLatestResult = (typeof FLEET_SYSTEMD_LATEST_RESULTS)[number];
+
+/** Whether the timer's monotonic schedule equals the policy exactly. */
+export const FLEET_SYSTEMD_SCHEDULES = ["within-policy", "off-policy", "unknown"] as const;
+export type FleetSystemdSchedule = (typeof FLEET_SYSTEMD_SCHEDULES)[number];
+
+/** Whether the unit's `HERMES_HOME` is this agent's named profile directory. `unsafe` is a home outside the fleet home. */
+export const FLEET_SYSTEMD_HOME_STATES = ["matches", "mismatch", "absent", "unsafe", "unknown"] as const;
+export type FleetSystemdHomeState = (typeof FLEET_SYSTEMD_HOME_STATES)[number];
+
+/** Which executable family a unit's `ExecStart` path belongs to. `launcher` is the role's `credential-launch.sh`. */
+export const FLEET_SYSTEMD_ENTRYPOINT_FAMILIES = ["launcher", "hermes-bin", "other", "unknown"] as const;
+export type FleetSystemdEntrypointFamily = (typeof FLEET_SYSTEMD_ENTRYPOINT_FAMILIES)[number];
+
+/** What the role's reconcile policy declares. `opted-out` is `enabled: false` WITH `explicit_opt_out: true`. */
+export const FLEET_SYSTEMD_RECONCILE_DECLARATIONS = ["enabled", "opted-out", "disabled", "undeclared", "unverifiable", "unreadable"] as const;
+export type FleetSystemdReconcileDeclaration = (typeof FLEET_SYSTEMD_RECONCILE_DECLARATIONS)[number];
+
+/** What the heartbeat state file evidences, by the PRESENCE of keys and nothing else. */
+export const FLEET_SYSTEMD_RECONCILE_EVIDENCE = ["full-run", "checkpoint-only", "state-missing", "state-unreadable", "not-applicable", "not-read"] as const;
+export type FleetSystemdReconcileEvidence = (typeof FLEET_SYSTEMD_RECONCILE_EVIDENCE)[number];
+
+/** What the fleet-shared Bloodbank gateway reads as. `unobserved` under `--agent`, which never probes it. */
+export const FLEET_SYSTEMD_SHARED_STATES = ["healthy", "drifted", "absent", "identity-mismatch", "registry-undeclared", "error", "unobserved"] as const;
+export type FleetSystemdSharedState = (typeof FLEET_SYSTEMD_SHARED_STATES)[number];
+
+/** How an extra unit attributed to an agent is classed on its topology leaf. */
+export const FLEET_SYSTEMD_EXTRA_CLASSES = ["retired", "duplicate-gateway", "unexpected"] as const;
+export type FleetSystemdExtraClass = (typeof FLEET_SYSTEMD_EXTRA_CLASSES)[number];
+
+/** One unit as the manager last showed it. Words only: no pid, no timestamp, no path. */
+export interface FleetStatusSystemdUnitView {
+  unit: string;
+  load: string | null;
+  unit_file: string | null;
+  active: string | null;
+  sub: string | null;
+}
+
+/**
+ * One unregistered `hermes-*` unit, classified, with bounded safe evidence.
+ *
+ * `unit` is the unit NAME. `correlated_profile` is the registered profile a
+ * transient scope's `Description` names by an exact `--profile <name>` token,
+ * or the profile-root directory a unit's `HERMES_HOME` names; never a
+ * substring guess. `process_reference` is `unobserved` in this release: live
+ * attribution is story 1.9.
+ */
+export interface FleetStatusSystemdUnregisteredItem extends FleetStatusSystemdUnitView {
+  class: FleetSystemdUnregisteredClass;
+  correlated_profile: string | null;
+  process_reference: "unobserved";
+  guidance: FleetProfileExtraGuidance;
+  /** A stable category naming what classified it (`retired-pattern:-consumer\.service`, `classifications.managed_shared_service.entries[0]`), never a body. */
+  detail: string | null;
+}
+
+/** The per-agent systemd summary. `null` when `systemd` was not selected or no manifest is declared. */
+export interface FleetStatusAgentSystemd {
+  topology: {
+    /** The canonical triple the contract derives for this agent, sorted. */
+    expected: string[];
+    /** Expected units the manager loads. */
+    installed: string[];
+    /** Expected units the manager does not know (`LoadState=not-found`). */
+    missing: string[];
+    /** Loaded units attributed to this agent beyond the triple, each classed. */
+    extra: Array<{ unit: string; class: FleetSystemdExtraClass }>;
+    state: FleetStatusState;
+  };
+  capability: {
+    declared: FleetSystemdCapabilityState;
+    /** Per platform, the normalized declaration: `verified`, `deferred` or `undeclared`. */
+    platforms: Record<string, "verified" | "deferred" | "undeclared">;
+    /** Per platform, whether the delta pins `platforms.<p>.enabled` false (true), true (false), or leaves it inherited (null). */
+    delta_disabled: Record<string, boolean | null>;
+  };
+  gateway: FleetStatusSystemdUnitView & {
+    state: FleetStatusState;
+    /** The item detail that decided a non-pass, or null. */
+    code: string | null;
+    result: string | null;
+    exec_status: number | null;
+    restarts: number | null;
+    entrypoint: { family: FleetSystemdEntrypointFamily; pinned: boolean };
+    home: FleetSystemdHomeState;
+    stability: {
+      samples: number;
+      stable: boolean;
+      /** Bounded transition summaries (`active/running -> activating/auto-restart`, `restarts 3 -> 5`). Never a timestamp. */
+      transitions: string[];
+    };
+  };
+  heartbeat: {
+    state: FleetStatusState;
+    code: string | null;
+    timer: FleetStatusSystemdUnitView & { paired: boolean };
+    service: FleetStatusSystemdUnitView & {
+      result: string | null;
+      exec_status: number | null;
+      entrypoint: { family: FleetSystemdEntrypointFamily; pinned: boolean };
+    };
+    schedule: FleetSystemdSchedule;
+    latest_result: FleetSystemdLatestResult;
+    tick: FleetSystemdTick;
+    reconcile: { declared: FleetSystemdReconcileDeclaration; evidence: FleetSystemdReconcileEvidence };
+  };
+}
+
+/** The fleet-level systemd summary under `data.systemd`. `null` when `systemd` was not selected. */
+export interface FleetSystemdSummary {
+  source: string;
+  manager: { state: string; code: string };
+  window: { samples: number; interval_ms: number };
+  /** Fleet scope only; zeros under `--agent`, which lists nothing. */
+  units: { listed: number; unit_files: number; transient: number };
+  /** Counted over EVERY selected agent, before any envelope cap. */
+  agents: {
+    total_registered: number;
+    selected: number;
+    /** Selected agents whose five leaves carry no `error` and no `unobserved`. */
+    complete: number;
+    topology_ok: number;
+    /** Gateway leaf `pass` with capability `active`. */
+    gateway_healthy: number;
+    /** Gateway leaf `pass` with capability `deferred`. */
+    gateway_deferred: number;
+    /** Both heartbeat leaves `pass`. */
+    heartbeat_healthy: number;
+    /** Gateway stability windows that were not unanimous, crash loops included. */
+    unstable: number;
+    crash_looping: number;
+    /** At least one leaf `fail` with no exception ruling. */
+    drifted: number;
+    /** At least one leaf `error` or `unobserved`. */
+    incomplete: number;
+    /** Drifted agents whose every failing leaf a `health_policy.agent_exceptions` entry covers. */
+    exception_authorized: number;
+    /** `total_registered - selected`, plus selected agents the observer never reached. */
+    unobserved: number;
+  };
+  capability: Record<FleetSystemdCapabilityState, number>;
+  shared: {
+    coverage: "observed" | "unobserved";
+    unit: string | null;
+    profile: string | null;
+    state: FleetSystemdSharedState;
+    code: string | null;
+  };
+  unregistered: {
+    coverage: "swept" | "not-swept";
+    reason: string | null;
+    total: number;
+    by_class: Record<FleetSystemdUnregisteredClass, number>;
+    listed: number;
+    truncated: boolean;
+  };
+  /** Under `--live`, how the observer and the `systemd.sentinel` / `hermes.registry-parity` rules agreed over the subset both read. */
   rule_agreement: { compared: number; agree: number; disagree: number; not_compared: number };
 }

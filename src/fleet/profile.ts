@@ -313,15 +313,20 @@ function word(value: unknown): string {
   return typeof value === "string" && WORD.test(value) ? value : "unparsed";
 }
 
-type EntryKind = "file" | "directory" | "symlink" | "other" | "absent" | "unreadable";
+export type EntryKind = "file" | "directory" | "symlink" | "other" | "absent" | "unreadable";
 
-interface EntryStat {
+export interface EntryStat {
   kind: EntryKind;
   size: number;
 }
 
-/** `lstat`, never `stat`: what the path IS, established without following it. */
-function entryStat(path: string): EntryStat {
+/**
+ * `lstat`, never `stat`: what the path IS, established without following it.
+ *
+ * Exported for the systemd observer (story 1.8), which reads a role's
+ * reconcile policy and heartbeat state file with the same idiom.
+ */
+export function entryStat(path: string): EntryStat {
   try {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) return { kind: "symlink", size: stat.size };
@@ -334,7 +339,7 @@ function entryStat(path: string): EntryStat {
   }
 }
 
-type BoundedRead = { bytes: Buffer } | { error: "too-large" | "unreadable" };
+export type BoundedRead = { bytes: Buffer } | { error: "too-large" | "unreadable" };
 
 /**
  * Read a regular file under the cap, without following a link, and without
@@ -344,8 +349,10 @@ type BoundedRead = { bytes: Buffer } | { error: "too-large" | "unreadable" };
  * file is opened with `O_NOFOLLOW`, `fstat`ed, read up to `cap + 1` bytes, and
  * `fstat`ed again; a size or mtime that moved between the two is a file
  * somebody was writing, which is retried once and then reported `unreadable`.
+ *
+ * Exported for the systemd observer (story 1.8): one read idiom, shared.
  */
-function readBounded(path: string, cap: number): BoundedRead {
+export function readBounded(path: string, cap: number): BoundedRead {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const before = entryStat(path);
     if (before.kind !== "file") return { error: "unreadable" };
@@ -1278,11 +1285,21 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
 // Phase 4: the extras sweep, fleet scope only
 // ---------------------------------------------------------------------------
 
+/**
+ * The XDG config home: `XDG_CONFIG_HOME`, else `<home>/.config`.
+ *
+ * ONE resolution, shared by the extras sweep's unit-file scan and the systemd
+ * observer's fragment-path gate (story 1.8), so the two can never disagree
+ * about which directory holds the user units.
+ */
+export function resolveConfigHome(env: NodeJS.ProcessEnv, home: string): string {
+  return env.XDG_CONFIG_HOME?.trim() || join(home, ".config");
+}
+
 /** `HERMES_HOME=<path>` values named by user unit files, counted per path. Bounded in files and bytes. */
 function unitReferences(ctx: FleetProfileContext): Map<string, number> {
   const counts = new Map<string, number>();
-  const configHome = ctx.env.XDG_CONFIG_HOME?.trim() || join(ctx.home, ".config");
-  const dir = join(configHome, "systemd", "user");
+  const dir = join(resolveConfigHome(ctx.env, ctx.home), "systemd", "user");
   let names: string[] = [];
   try { names = readdirSync(dir).filter((name) => name.endsWith(".service") || name.endsWith(".timer")).sort(); } catch { return counts; }
   for (const name of names.slice(0, ctx.manifest.limits.max_unit_files)) {

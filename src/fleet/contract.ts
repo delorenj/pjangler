@@ -41,12 +41,27 @@ import {
   FLEET_RETIRED_KEYS,
   FLEET_SCAFFOLD_MANIFEST_KEYS,
   FLEET_SCAFFOLD_PRESENCE_ONLY_KEYS,
+  FLEET_SERVICE_MANIFEST_ENTRYPOINT_KEYS,
+  FLEET_SERVICE_MANIFEST_HEARTBEAT_KEYS,
+  FLEET_SERVICE_MANIFEST_KEYS,
+  FLEET_SERVICE_MANIFEST_LIMITS_KEYS,
+  FLEET_SERVICE_MANIFEST_MESSAGING_KEYS,
+  FLEET_SERVICE_MANIFEST_PROBE_KEYS,
+  FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS,
+  FLEET_SERVICE_MANIFEST_UNREGISTERED_KEYS,
   FLEET_STATUS_DOMAINS,
   FLEET_SUPPORTED_SCHEMA_VERSIONS,
   PROFILE_MAX_EXTRA_SKILLS,
   PROFILE_MAX_FILE_BYTES,
   PROFILE_MAX_ROOT_ENTRIES,
   PROFILE_MAX_UNIT_FILES,
+  SYSTEMD_MAX_FILE_BYTES,
+  SYSTEMD_MAX_INTERVAL_MS,
+  SYSTEMD_MAX_PROBE_TIMEOUT_MS,
+  SYSTEMD_MAX_SAMPLES,
+  SYSTEMD_MAX_SHOW_BYTES,
+  SYSTEMD_MAX_UNITS,
+  SYSTEMD_MAX_UNREGISTERED_UNITS,
   FleetError,
   type FleetContract,
   type FleetDiagnostic,
@@ -72,6 +87,8 @@ const FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
 // walked straight through, and `/root` was never covered at all.
 const HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
 const SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+/** The one path exempt from `SECRET_KEY`: it names environment KEYS, and the service-manifest stage proves each is one. */
+const SERVICE_SECRET_ENV_PATH = "service_manifest.messaging.secret_env";
 /** Longest `retired[].detect` pattern accepted. Long patterns are the ones that hurt. */
 const FLEET_DETECT_MAX_PATTERN_BYTES = 200;
 // A quantified group that itself contains a quantifier -- `(a+)+`, `(a*)*`,
@@ -266,6 +283,7 @@ export function validateFleetContract(document: FleetContractDocument): FleetCon
     () => sortDiagnostics(validateHealthPolicy(policy)),
     () => sortDiagnostics(validateScaffoldManifest(policy)),
     () => sortDiagnostics(validateProfileManifest(policy)),
+    () => sortDiagnostics(validateServiceManifest(policy)),
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -362,7 +380,14 @@ function validateStructure(policy: Record<string, unknown>, extensions: readonly
   }
   for (const leaf of leaves) {
     if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
-    if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+    // `service_manifest.messaging.secret_env` is the ONE credential-shaped key
+    // this contract may carry, and it carries environment KEY NAMES
+    // (`TELEGRAM_BOT_TOKEN`), never a value: the systemd observer checks that a
+    // verified platform's delta REFERENCES them and reads nothing else. The
+    // exemption is bounded, not blanket: `validateServiceManifest` refuses
+    // anything under it that is not an upper-case environment key, so a value
+    // cannot shelter there, and the value scan below still runs over it.
+    if (SECRET_KEY.test(leaf.path) && !leaf.path.startsWith(SERVICE_SECRET_ENV_PATH)) fail(leaf.path, "contract must not carry credential-shaped keys");
     if (SECRET_VALUE.some((pattern) => pattern.test(leaf.text))) fail(leaf.path, "contract must not carry a credential-shaped value");
     if ((FLEET_FORBIDDEN_KEYS as readonly string[]).includes(leaf.text)) fail(leaf.path, `forbidden key name: ${leaf.text}`);
   }
@@ -1340,6 +1365,223 @@ function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnost
   const layout = isRecord(policy.service_model) && isRecord(policy.service_model.profile_layout) ? policy.service_model.profile_layout : null;
   const generated = layout && typeof layout.generated_file === "string" ? layout.generated_file : null;
   if (generated !== null) requireDeclared(profileLeafFor(generated), "profile_manifest.renderer");
+
+  return findings;
+}
+
+/** A unit-name PATTERN as the contract spells one: a systemd unit name with `{agent_id}` allowed as a segment. */
+const UNIT_PATTERN = /^[A-Za-z0-9:_.@{}-]{1,255}\.(?:service|timer|socket|target|path|slice|scope)$/u;
+/** A lower-case identifier word, for platform names and status words. */
+const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
+
+/**
+ * Validate the optional `service_manifest` block (schema 5).
+ *
+ * OPTIONAL: a schema-1..4 contract carries none and still loads; the systemd
+ * observer then reports every selected agent's five systemd leaves
+ * `unsupported` with capability `systemd.manifest`. What it may not do is
+ * carry a manifest that names nothing real: a window of zero samples, a probe
+ * environment that cannot find `systemctl`, a messaging status field no
+ * authority declares, a `secret_env` for a platform the manifest does not list
+ * (or one that is not an environment key -- the ONE credential-shaped path the
+ * structure stage exempts, so this is where it is proven to carry names), an
+ * `enabled_path` that never names the platform, a retired shape that equals a
+ * canonical unit pattern, or a limit above the ceiling this build can honour.
+ * A policy that matches nothing must fail to load rather than prove nothing
+ * and report it as health.
+ */
+function validateServiceManifest(policy: Record<string, unknown>): FleetDiagnostic[] {
+  const block = policy.service_manifest;
+  if (block === undefined) return [];
+
+  const findings: FleetDiagnostic[] = [];
+  const fail = (path: string, message: string): void => { findings.push({ code: "INVALID_INPUT", path, message }); };
+  if (!isRecord(block)) {
+    fail("service_manifest", "service_manifest must be a mapping");
+    return findings;
+  }
+  const closed = (node: unknown, at: string, keys: readonly string[]): node is Record<string, unknown> => {
+    if (!isRecord(node)) { fail(at, `${at.split(".").pop()} must be a mapping`); return false; }
+    for (const key of Object.keys(node)) {
+      if (!keys.includes(key)) fail(`${at}.${key}`, `unknown ${at} key`);
+    }
+    for (const key of keys) {
+      if (node[key] === undefined) fail(`${at}.${key}`, `${key} is required`);
+    }
+    return true;
+  };
+  const wholeNumber = (value: unknown, at: string, min: number, max: number, what: string): void => {
+    if (!Number.isSafeInteger(value) || Number(value) < min) fail(at, `${what} must be a whole number of at least ${min}`);
+    else if (Number(value) > max) fail(at, `${what} may not exceed this build's ceiling of ${max}`);
+  };
+  const nonEmpty = (value: unknown, at: string): value is string => {
+    if (typeof value !== "string" || value.trim().length === 0) { fail(at, "must be a non-empty string"); return false; }
+    return true;
+  };
+  const uniqueList = (value: unknown, at: string, each: (item: string, where: string) => void): string[] => {
+    if (!Array.isArray(value)) { fail(at, "must be a list"); return []; }
+    const seen = new Set<string>();
+    const out: string[] = [];
+    value.forEach((item: unknown, index: number) => {
+      const where = `${at}[${index}]`;
+      if (typeof item !== "string" || item.length === 0) { fail(where, "must be a non-empty string"); return; }
+      if (seen.has(item)) fail(where, `duplicate entry ${item}`);
+      seen.add(item);
+      each(item, where);
+      out.push(item);
+    });
+    return out;
+  };
+
+  closed(block, "service_manifest", FLEET_SERVICE_MANIFEST_KEYS);
+  const declared = declaredWritableFields(policy);
+  const requireDeclared = (leaf: string, at: string): void => {
+    if (!declared.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+  };
+  const service = isRecord(policy.service_model) ? policy.service_model : null;
+  const perAgent = service && isRecord(service.per_agent) ? service.per_agent : {};
+  const shared = service && isRecord(service.fleet_shared) ? service.fleet_shared : {};
+  const perAgentPatterns = Object.values(perAgent).filter((value): value is string => typeof value === "string" && value.length > 0);
+  const sharedUnit = typeof shared.bloodbank_gateway_unit === "string" ? shared.bloodbank_gateway_unit : null;
+
+  // -- stabilization ----------------------------------------------------------
+  const stabilization = block.stabilization;
+  if (closed(stabilization, "service_manifest.stabilization", FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS)) {
+    // At least ONE sample, or nothing is observed and "stable" is vacuous.
+    wholeNumber(stabilization.samples, "service_manifest.stabilization.samples", 1, SYSTEMD_MAX_SAMPLES, "samples");
+    wholeNumber(stabilization.interval_ms, "service_manifest.stabilization.interval_ms", 0, SYSTEMD_MAX_INTERVAL_MS, "interval_ms");
+  }
+
+  // -- probe ------------------------------------------------------------------
+  const probe = block.probe;
+  if (closed(probe, "service_manifest.probe", FLEET_SERVICE_MANIFEST_PROBE_KEYS)) {
+    // Below 100 ms nothing can answer and every child reads `manager-timeout`.
+    wholeNumber(probe.timeout_ms, "service_manifest.probe.timeout_ms", 100, SYSTEMD_MAX_PROBE_TIMEOUT_MS, "timeout_ms");
+    const allow = uniqueList(probe.env_allowlist, "service_manifest.probe.env_allowlist", (item, where) => {
+      if (!ENV_KEY.test(item)) fail(where, `not an environment key: ${item}`);
+    });
+    // `systemctl` is spawned by name, so a child with no PATH finds nothing.
+    if (Array.isArray(probe.env_allowlist) && !allow.includes("PATH")) fail("service_manifest.probe.env_allowlist", "env_allowlist must carry PATH, or no child can find systemctl");
+    const states = uniqueList(probe.manager_available_states, "service_manifest.probe.manager_available_states", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a manager state must be a lower-case word");
+    });
+    if (Array.isArray(probe.manager_available_states) && states.length === 0) fail("service_manifest.probe.manager_available_states", "must name at least one available manager state");
+  }
+
+  // -- entrypoint ---------------------------------------------------------------
+  const entrypoint = block.entrypoint;
+  if (closed(entrypoint, "service_manifest.entrypoint", FLEET_SERVICE_MANIFEST_ENTRYPOINT_KEYS)) {
+    const launcher = entrypoint.launcher;
+    if (!relativeInside(launcher) || launcher.endsWith("/")) fail("service_manifest.entrypoint.launcher", "launcher must be a role-relative file path");
+    const bin = entrypoint.pinned_bin_field;
+    if (typeof bin !== "string" || !FIELD_PATH.test(bin)) fail("service_manifest.entrypoint.pinned_bin_field", "pinned_bin_field must be a dotted field path");
+    else if (!bin.startsWith("agents.{agent_id}.")) fail("service_manifest.entrypoint.pinned_bin_field", "pinned_bin_field must be a per-agent agents.{agent_id}.* field");
+    else requireDeclared(bin, "service_manifest.entrypoint.pinned_bin_field");
+    if (typeof entrypoint.home_env !== "string" || !ENV_KEY.test(entrypoint.home_env)) fail("service_manifest.entrypoint.home_env", "home_env must be an environment key");
+  }
+
+  // -- messaging --------------------------------------------------------------
+  const messaging = block.messaging;
+  if (closed(messaging, "service_manifest.messaging", FLEET_SERVICE_MANIFEST_MESSAGING_KEYS)) {
+    const platforms = uniqueList(messaging.platforms, "service_manifest.messaging.platforms", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a platform must be a lower-case identifier");
+    });
+    if (Array.isArray(messaging.platforms) && platforms.length === 0) fail("service_manifest.messaging.platforms", "must name at least one messaging platform");
+    const statusField = messaging.status_field;
+    if (typeof statusField !== "string" || !IDENTIFIER.test(statusField)) fail("service_manifest.messaging.status_field", "status_field must be a lower-case identifier");
+    else {
+      // The declaration the gateway state is DERIVED from has to be a field
+      // some authority writes, or the derivation reads a key nobody owns.
+      for (const platform of platforms) requireDeclared(`agents.{agent_id}.${platform}.${statusField}`, `service_manifest.messaging.platforms`);
+    }
+    const verified = messaging.verified_status;
+    if (typeof verified !== "string" || !IDENTIFIER.test(verified)) fail("service_manifest.messaging.verified_status", "verified_status must be a lower-case identifier");
+    const deferred = uniqueList(messaging.deferred_statuses, "service_manifest.messaging.deferred_statuses", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a status must be a lower-case identifier");
+      // One status cannot both enable and defer the gateway.
+      if (item === verified) fail(where, `${item} is already the verified_status`);
+    });
+    if (Array.isArray(messaging.deferred_statuses) && deferred.length === 0) fail("service_manifest.messaging.deferred_statuses", "must name at least one deferred status");
+    const enabledPath = messaging.enabled_path;
+    if (typeof enabledPath !== "string" || !FIELD_PATH.test(enabledPath)) fail("service_manifest.messaging.enabled_path", "enabled_path must be a dotted key path");
+    // Without the placeholder every platform would be judged by ONE key.
+    else if (!enabledPath.includes("{platform}")) fail("service_manifest.messaging.enabled_path", "enabled_path must carry the {platform} placeholder");
+    const perPlatform = (node: unknown, at: string, each: (item: string, where: string) => void): void => {
+      if (!isRecord(node)) { fail(at, `${at.split(".").pop()} must be a mapping of platform to list`); return; }
+      for (const [platform, list] of Object.entries(node)) {
+        const where = `${at}.${platform}`;
+        // A key for a platform the manifest does not list is policy about nothing.
+        if (!platforms.includes(platform)) fail(where, `${platform} is not a declared messaging platform`);
+        const items = uniqueList(list, where, each);
+        if (Array.isArray(list) && items.length === 0) fail(where, "must name at least one entry");
+      }
+    };
+    perPlatform(messaging.secret_env, "service_manifest.messaging.secret_env", (item, where) => {
+      // The ONE credential-shaped path the structure stage exempts: it must
+      // hold environment KEY NAMES and nothing that could be a value.
+      if (!ENV_KEY.test(item)) fail(where, `secret_env must name environment keys, not values: ${item}`);
+    });
+    perPlatform(messaging.identity_fields, "service_manifest.messaging.identity_fields", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "an identity field must be a lower-case identifier");
+    });
+  }
+
+  // -- heartbeat ----------------------------------------------------------------
+  const heartbeat = block.heartbeat;
+  if (closed(heartbeat, "service_manifest.heartbeat", FLEET_SERVICE_MANIFEST_HEARTBEAT_KEYS)) {
+    wholeNumber(heartbeat.on_boot_sec, "service_manifest.heartbeat.on_boot_sec", 1, 86_400, "on_boot_sec");
+    wholeNumber(heartbeat.on_unit_inactive_sec, "service_manifest.heartbeat.on_unit_inactive_sec", 1, 86_400, "on_unit_inactive_sec");
+    wholeNumber(heartbeat.overdue_multiplier, "service_manifest.heartbeat.overdue_multiplier", 1, 1_000, "overdue_multiplier");
+    wholeNumber(heartbeat.max_tick_seconds, "service_manifest.heartbeat.max_tick_seconds", 1, 86_400, "max_tick_seconds");
+    for (const key of ["reconcile_policy_file", "reconcile_state_file"] as const) {
+      const value = heartbeat[key];
+      if (!relativeInside(value) || value.endsWith("/")) fail(`service_manifest.heartbeat.${key}`, `${key} must be a role-relative file path`);
+    }
+  }
+
+  // -- unregistered -------------------------------------------------------------
+  const unregistered = block.unregistered;
+  let unitGlob: RegExp | null = null;
+  if (closed(unregistered, "service_manifest.unregistered", FLEET_SERVICE_MANIFEST_UNREGISTERED_KEYS)) {
+    const glob = unregistered.unit_glob;
+    if (nonEmpty(glob, "service_manifest.unregistered.unit_glob")) {
+      // A literal prefix, then wildcards: `*` alone would list every unit on
+      // the manager and classify the desktop as unregistered Hermes.
+      if (glob.includes("/") || /^[*?]/u.test(glob) || !/^[A-Za-z0-9@._-]+[*?][A-Za-z0-9@._*?-]*$|^[A-Za-z0-9@._-]+$/u.test(glob)) {
+        fail("service_manifest.unregistered.unit_glob", "unit_glob must be a literal unit-name prefix followed by wildcards");
+      } else unitGlob = rootEntryGlob(glob);
+    }
+    uniqueList(unregistered.retired_candidates, "service_manifest.unregistered.retired_candidates", (item, where) => {
+      if (!UNIT_PATTERN.test(item)) fail(where, "a retired candidate must be a unit-name pattern");
+      else if (!item.includes("{agent_id}")) fail(where, "a retired candidate must carry the {agent_id} placeholder");
+      // A retired shape that IS a canonical pattern would retire the canon.
+      else if (perAgentPatterns.includes(item)) fail(where, `${item} is a service_model.per_agent pattern, not a retired shape`);
+      else if (sharedUnit !== null && item === sharedUnit) fail(where, `${item} is the fleet-shared gateway, not a retired shape`);
+      else if (unitGlob !== null && !unitGlob.test(item.replaceAll("{agent_id}", "x"))) fail(where, `${item} falls outside unit_glob, so the sweep could never see it`);
+    });
+  }
+
+  // -- limits -----------------------------------------------------------------
+  const limits = block.limits;
+  if (closed(limits, "service_manifest.limits", FLEET_SERVICE_MANIFEST_LIMITS_KEYS)) {
+    const ceilings: Record<(typeof FLEET_SERVICE_MANIFEST_LIMITS_KEYS)[number], number> = {
+      max_units: SYSTEMD_MAX_UNITS,
+      max_unregistered_units: SYSTEMD_MAX_UNREGISTERED_UNITS,
+      max_file_bytes: SYSTEMD_MAX_FILE_BYTES,
+      max_show_bytes: SYSTEMD_MAX_SHOW_BYTES,
+    };
+    for (const key of FLEET_SERVICE_MANIFEST_LIMITS_KEYS) {
+      wholeNumber(limits[key], `service_manifest.limits.${key}`, 1, ceilings[key], key);
+    }
+  }
+
+  // The five leaves the observer files under are declared writable, so every
+  // observation resolves an owner: the three per-agent unit patterns, the two
+  // registry fields, and the fleet-shared gateway unit.
+  for (const pattern of perAgentPatterns) requireDeclared(`units.${pattern}`, "service_manifest");
+  if (sharedUnit !== null) requireDeclared(`units.${sharedUnit}`, "service_manifest");
+  requireDeclared("agents.{agent_id}.systemd.gateway_unit", "service_manifest");
+  requireDeclared("agents.{agent_id}.systemd.heartbeat_timer", "service_manifest");
 
   return findings;
 }

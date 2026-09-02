@@ -267,7 +267,7 @@ function statusEnvelope(status: FleetStatus, json: boolean): FleetEnvelopeV1 {
             : status.health.stale
               ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry"
               : status.scope.live
-                ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+                ? "Review data.health.unobserved: live-process and Bloodbank-liveness observers do not exist in this release (stories 1.9/1.10)"
                 : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved",
       "Re-run with --json for the complete observation set",
     ];

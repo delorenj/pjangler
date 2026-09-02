@@ -237,12 +237,13 @@ try {
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
     const out = result.stdout;
     assert.match(out, /Fleet contract valid/);
-    // Story 1.5 bumped the tracked contract to schema 2 (`health_policy`) and
-    // story 1.6 to schema 3 (`scaffold_manifest`) and story 1.7 to schema 4
-    // (`profile_manifest`): each is a new ROOT key, and a new root key is a
-    // grammar change. The build still READS schema 1 through 3, which the
-    // supported-range line beside this one states.
-    assert.match(out, /schema 4/, "report must name the effective schema version");
+    // Story 1.5 bumped the tracked contract to schema 2 (`health_policy`),
+    // story 1.6 to schema 3 (`scaffold_manifest`), story 1.7 to schema 4
+    // (`profile_manifest`) and story 1.8 to schema 5 (`service_manifest`): each
+    // is a new ROOT key, and a new root key is a grammar change. The build
+    // still READS schema 1 through 4, which the supported-range line beside
+    // this one states.
+    assert.match(out, /schema 5/, "report must name the effective schema version");
     assert.match(out, /contract 1\.\d+\.\d+/, "report must name the contract version");
     for (const owner of ["project-registry", "hermes-agent-registry", "hermes-profile-renderer", "hermes-agent-template", "hermes-fleet-provisioner", "fleet-observer"]) {
       assert.ok(out.includes(owner), `report must name authority owner ${owner}`);
@@ -669,7 +670,7 @@ try {
     const parsed = envelope(result);
     assert.equal(errorCode(parsed), "UNSUPPORTED_SCHEMA_VERSION");
     assert.equal(result.status, 5, `expected exit 5, got ${result.status}`);
-    assert.match(parsed.error.message, /supported range 1\.\.4/, "diagnostic must state the supported range");
+    assert.match(parsed.error.message, /supported range 1\.\.5/, "diagnostic must state the supported range");
     assert.equal(parsed.error.details.diagnostic_count, 1, "a version this build cannot read must not be partially applied");
   });
 
@@ -1365,7 +1366,7 @@ try {
     const result = cli(["fleet", "contract", "validate", "--json"]);
     const parsed = envelope(result);
     assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
-    assert.equal(parsed.data.schema_version, 4, "story 1.6 bumped the tracked contract to schema 3 and story 1.7 to schema 4");
+    assert.equal(parsed.data.schema_version, 5, "story 1.6 bumped the tracked contract to schema 3, story 1.7 to 4 and story 1.8 to 5");
     const contract = YAML.parse(TRACKED_TEXT);
     const manifest = contract.scaffold_manifest;
     assert.ok(manifest, "the tracked contract must declare a scaffold_manifest or the rejections above prove nothing");
@@ -1485,7 +1486,10 @@ try {
     assert.equal(parsed.ok, true, `the tracked contract must validate: ${JSON.stringify(parsed.error)}`);
     const policy = YAML.parse(TRACKED_TEXT).health_policy;
     assert.ok(policy, "the tracked contract must declare a health_policy or these cases prove nothing");
-    assert.ok(policy.deferred_capabilities.length >= 3);
+    // Two, not three: story 1.7 answered `profile.render_generation` and story
+    // 1.8 answered `systemd`/`unit_topology`, leaving the live-process and
+    // Bloodbank-liveness halves.
+    assert.ok(policy.deferred_capabilities.length >= 2);
     assert.ok(policy.freshness.length >= 3);
     assert.ok(policy.allowed_skips.length >= 1);
     assert.ok(policy.allowed_warnings.length >= 1);

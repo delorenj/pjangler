@@ -46,6 +46,14 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import YAML from "yaml";
+import {
+  deferredAgentUnits,
+  installFakeSystemctl,
+  mergeUnitSets,
+  noBusIsolation,
+  setFakeSystemctlState,
+  sharedGatewayUnits,
+} from "./helpers/fake-systemctl.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -296,7 +304,10 @@ function makeRepo(reposRoot, slug) {
   const role = join(dir, "agents", "hermes", "pm");
   mkdirSync(join(role, "runtime"), { recursive: true });
   renderPinnedRole(role, { agent_id: `${slug}-pm`, role: "pm", target_repo: slug, display_name: `${slug} PM`, ticket_provider: "plane" });
-  writeFileSync(join(role, "role.yaml"), "role: pm\n", "utf8");
+  // The reconcile block is EXPLICIT (story 1.8): `enabled: false` without
+  // `explicit_opt_out` is a `reconcile-opt-out-undeclared` warn on the
+  // heartbeat leaf, and a warn without a policy ruling blocks `proven`.
+  writeFileSync(join(role, "role.yaml"), YAML.stringify({ role: "pm", reconcile: { enabled: false, explicit_opt_out: true } }), "utf8");
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify({
     project_slug: slug,
     ticket_provider: { type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}` },
@@ -342,13 +353,17 @@ function seedProfileFixtures(home) {
   }
 }
 
+// A deferred platform must be PINNED disabled in the delta, or it inherits the
+// fleet base's enablement and the gateway would start without a credential.
+const DEFERRED_PLATFORMS = { platforms: { telegram: { enabled: false }, slack: { enabled: false } } };
+
 function seedRendererCleanProfile(home, name) {
   const dir = join(home, ".hermes", "profiles", name);
   mkdirSync(join(dir, "hindsight"), { recursive: true });
   mkdirSync(join(dir, "skills"), { recursive: true });
   writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
-  writeFileSync(join(dir, "config.delta.yaml"), "{}\n", "utf8");
-  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify(profileBase(home))}`, "utf8");
+  writeFileSync(join(dir, "config.delta.yaml"), YAML.stringify(DEFERRED_PLATFORMS), "utf8");
+  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify({ ...profileBase(home), ...DEFERRED_PLATFORMS })}`, "utf8");
   writeFileSync(join(dir, "hindsight", "config.json"), `{\n  "bank_id": "agent-${name}"\n}\n`, "utf8");
   for (const skill of PROFILE_CORE_SKILLS) symlinkSync(join(home, ".agents", "skills", skill), join(dir, "skills", skill));
   writeFileSync(join(home, ".hermes", "profiles", `.${name}.config.lock`), "");
@@ -371,7 +386,15 @@ function agentRow(slug, overrides = {}) {
     provisioned_at: NOW_ISO,
     plane: { workspace: "suite", project_id: `board-${slug}`, identifier: slug.toUpperCase() },
     bloodbank: { enabled: false, gateway_scope: "fleet", target_agent_id: `${slug}-pm` },
-    systemd: { gateway_unit: `hermes-${slug}-pm-gateway.service` },
+    systemd: {
+      gateway_unit: `hermes-${slug}-pm-gateway.service`,
+      heartbeat_timer: `hermes-${slug}-pm-heartbeat.timer`,
+    },
+    // The canonical DEFERRED declaration (story 1.8): the shape that is healthy
+    // without a channel credential, and the one `70-systemd.sh` provisions when
+    // no platform is verified.
+    telegram: { provisioning_status: "disabled" },
+    slack: { provisioning_status: "disabled" },
     hermes: {
       bin: join(RELEASE, "bin", "hermes"),
       repo: RELEASE,
@@ -388,9 +411,22 @@ function writeAgentRegistry(path, slugs, mutate = () => {}) {
   const agents = {};
   for (const slug of slugs) agents[`${slug}-pm`] = agentRow(slug);
   mutate(agents);
-  writeFileSync(path, YAML.stringify({ schema_version: 1, agents }), "utf8");
+  writeFileSync(path, YAML.stringify({ schema_version: 1, gateways: GATEWAYS_BLOCK, agents }), "utf8");
   return path;
 }
+
+// The fleet-shared Bloodbank gateway block the live registry carries. Story 1.8
+// correlates `gateways.bloodbank.systemd_unit` against the contract's own
+// `service_model.fleet_shared.bloodbank_gateway_unit`.
+const GATEWAYS_BLOCK = {
+  bloodbank: {
+    scope: "fleet",
+    profile_name: "fleet-bloodbank-gateway",
+    command_subject: "bloodbank.cmd.agent.invocation.start",
+    target_field: "data.target_agent_id",
+    systemd_unit: "hermes-fleet-bloodbank-gateway.service",
+  },
+};
 
 function writeProjectRegistry(path, slugs, confirmedAt = () => NOW_ISO) {
   const projects = {};
@@ -431,6 +467,8 @@ function seedScratch() {
   writeAgentRegistry(join(scratchHome, ".hermes", "agents-registry.yaml"), SLUGS);
   writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"), SLUGS);
 
+  installFakeSystemctl(systemctlShim, canonicalSystemdState());
+
   writeFileSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), [
     "[fleet]",
     `hermes_bin = "${join(RELEASE, "bin", "hermes")}"`,
@@ -457,6 +495,32 @@ function seedScratch() {
   ].join("\n"), "utf8");
 }
 
+/**
+ * The scripted user manager every case in this suite observes.
+ *
+ * Story 1.8 made `systemd` an OBSERVED domain in every scope, so a suite whose
+ * whole subject is "when may this fleet claim proof" has to seed the fleet's
+ * service state -- exactly as story 1.7 made every fixture profile
+ * renderer-clean. The state below is one canonical DEFERRED triple per agent
+ * plus the fleet-shared gateway.
+ */
+const systemctlShim = join(shimRoot, "systemctl-bin");
+function canonicalSystemdState() {
+  const profileRoot = join(scratchHome, ".hermes", "profiles");
+  const hermesBin = join(RELEASE, "bin", "hermes");
+  return mergeUnitSets(
+    { manager: { stdout: "running", exit: 0 } },
+    ...SLUGS.map((slug) => deferredAgentUnits({
+      agentId: `${slug}-pm`,
+      profileName: `${slug}-pm`,
+      profileRoot,
+      roleDir: join(reposRoot, slug, "agents", "hermes", "pm"),
+      hermesBin,
+    })),
+    sharedGatewayUnits({ profileRoot, hermesBin }),
+  );
+}
+
 const isolation = {
   HOME: scratchHome,
   XDG_CONFIG_HOME: join(scratchHome, ".config"),
@@ -480,6 +544,12 @@ const isolation = {
   GIT_CEILING_DIRECTORIES: realpathSync(temp),
   TMPDIR: temp,
   NO_COLOR: "1",
+  // Story 1.8: `systemctl` resolves to the scripted manager above, and the bus
+  // address and runtime dir point at nothing -- so a case that bypasses the
+  // shim reads `manager-unavailable` rather than this developer's own user
+  // manager, where a fixture agent's units do not exist and never will.
+  PATH: `${systemctlShim}:${process.env.PATH}`,
+  ...noBusIsolation(temp),
 };
 
 // ---------------------------------------------------------------------------
@@ -863,39 +933,43 @@ try {
 
   // -- AC: deferred capabilities, declared and undeclared -------------------
 
+  // `live_process`, not `systemd`: story 1.8 ANSWERED the `unit_topology`
+  // deferral, so systemd is now an observed domain and can no longer stand for
+  // "a capability no observer in this release can answer". Process attribution
+  // (story 1.9) is the remaining one that still can.
   check("a contract-declared deferred capability is blocked, named, and does not reduce proof", () => {
     resetEntry(cleanShim);
     const data = status(cliAt(cleanRoot, ["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: cleanShim }));
-    const systemd = agentNamed(data, "alpha-pm").observations.find((item) => item.domain === "systemd");
-    assert.ok(systemd, "the systemd domain must still appear");
-    assert.equal(systemd.state, "unsupported", "the state is unchanged; only the AUTHORIZATION is new");
-    assert.equal(systemd.applicability, "deferred");
-    assert.equal(systemd.evidence, "absent");
-    assert.equal(systemd.repair, "blocked");
-    assert.ok(systemd.justification, "a declared deferral must name the entry that authorizes it");
-    assert.match(systemd.justification.policy, /^health_policy\.deferred_capabilities\[\d+\]$/u);
-    assert.equal(systemd.justification.kind, "deferred_capability");
-    assert.equal(systemd.justification.owner, "1.8", "the entry names the story that owns the observer");
-    assert.match(systemd.next_action, /1\.8/u, "the next action must name the owning story");
-    assert.equal(systemd.next_action_class, "read-only");
-    assert.equal(systemd.severity, "low", "a justified unsupported is low");
+    const deferred = agentNamed(data, "alpha-pm").observations.find((item) => item.domain === "live_process");
+    assert.ok(deferred, "the live_process domain must still appear");
+    assert.equal(deferred.state, "unsupported", "the state is unchanged; only the AUTHORIZATION is new");
+    assert.equal(deferred.applicability, "deferred");
+    assert.equal(deferred.evidence, "absent");
+    assert.equal(deferred.repair, "blocked");
+    assert.ok(deferred.justification, "a declared deferral must name the entry that authorizes it");
+    assert.match(deferred.justification.policy, /^health_policy\.deferred_capabilities\[\d+\]$/u);
+    assert.equal(deferred.justification.kind, "deferred_capability");
+    assert.equal(deferred.justification.owner, "1.9", "the entry names the story that owns the observer");
+    assert.match(deferred.next_action, /1\.9/u, "the next action must name the owning story");
+    assert.equal(deferred.next_action_class, "read-only");
+    assert.equal(deferred.severity, "low", "a justified unsupported is low");
     assert.equal(data.health.proven, true, "a declared deferral does not reduce proof");
   });
 
   check("the same capability with the policy entry removed is unjustified and blocks proof", () => {
-    const stripped = writeContract("no-systemd-deferral", policyContract((document) => {
+    const stripped = writeContract("no-live-process-deferral", policyContract((document) => {
       document.health_policy.deferred_capabilities = document.health_policy.deferred_capabilities
-        .filter((item) => item.domain !== "systemd");
+        .filter((item) => item.domain !== "live_process");
     }));
-    const strippedRoot = makePackageRoot("pkg-no-systemd-deferral", readFileSync(stripped, "utf8"));
+    const strippedRoot = makePackageRoot("pkg-no-live-process-deferral", readFileSync(stripped, "utf8"));
     resetEntry(cleanShim);
     const data = status(cliAt(strippedRoot, ["fleet", "status", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: cleanShim }));
-    const systemd = agentNamed(data, "alpha-pm").observations.find((item) => item.domain === "systemd");
-    assert.equal(systemd.state, "unsupported", "the same observation, in the same state");
-    assert.equal(systemd.justification, null, "and now authorized by nothing");
-    assert.notEqual(systemd.applicability, "deferred");
-    assert.notEqual(systemd.repair, "blocked", "nothing declares it blocked, so it is not");
-    assert.equal(systemd.severity, "medium", "an unjustified unsupported outranks a justified one");
+    const deferred = agentNamed(data, "alpha-pm").observations.find((item) => item.domain === "live_process");
+    assert.equal(deferred.state, "unsupported", "the same observation, in the same state");
+    assert.equal(deferred.justification, null, "and now authorized by nothing");
+    assert.notEqual(deferred.applicability, "deferred");
+    assert.notEqual(deferred.repair, "blocked", "nothing declares it blocked, so it is not");
+    assert.equal(deferred.severity, "medium", "an unjustified unsupported outranks a justified one");
     assert.ok(data.health.unjustified >= 1);
     assert.equal(data.health.proven, false);
     assert.equal(data.health.verdict, "unproven");
@@ -934,7 +1008,19 @@ try {
     // Whole KEYS, not substrings: `"message"` contains `age` and `"package"`
     // contains it twice, and a scan that fires on either proves nothing about
     // determinism while making every future field name a hazard.
-    assert.doesNotMatch(serialized, /"([a-z_]+_(ms|at|age|seconds)|age|duration|elapsed|timestamp|observed_at)":/u, "an age-shaped key reached data");
+    // `data.systemd.window.interval_ms` is a POLICY constant read straight out
+    // of `service_manifest.stabilization` -- the declared distance between two
+    // samples, identical on every run on every host -- not an age, a duration
+    // this run measured, or anything else that could move between two runs. It
+    // is excluded by NAME rather than by loosening the pattern, and pinned to
+    // the contract's own value below so it cannot quietly become an observation.
+    const ageScan = serialized.replaceAll('"interval_ms":', '"<declared-window>":');
+    assert.doesNotMatch(ageScan, /"([a-z_]+_(ms|at|age|seconds)|age|duration|elapsed|timestamp|observed_at)":/u, "an age-shaped key reached data");
+    assert.equal(
+      data.systemd.window.interval_ms,
+      YAML.parse(readFileSync(cleanContract, "utf8")).service_manifest.stabilization.interval_ms,
+      "the window is the contract's declared constant, never something this run measured",
+    );
 
     const again = status(cli([
       "fleet", "status", "--json", "--contract", cleanContract,
@@ -1874,6 +1960,20 @@ try {
     // profile must carry no failure of its own or the agent could never be an
     // exception rather than unhealthy.
     const profile = seedRendererCleanProfile(scratchHome, "drifted-pm");
+    // And service-clean (story 1.8), for exactly the same reason: a row with no
+    // units on the scripted manager reads `gateway-missing`, which is a
+    // SEPARATE proven failure the scaffold ruling does not cover -- the agent
+    // would stay `unhealthy` for a reason this case is not about.
+    setFakeSystemctlState(systemctlShim, mergeUnitSets(
+      canonicalSystemdState(),
+      deferredAgentUnits({
+        agentId: "drifted-pm",
+        profileName: "drifted-pm",
+        profileRoot: join(scratchHome, ".hermes", "profiles"),
+        roleDir: join(drifted, "agents", "hermes", "pm"),
+        hermesBin: join(RELEASE, "bin", "hermes"),
+      }),
+    ));
     // An unregistered profile left in the root would be an extra for every
     // later fleet-scope sweep, so it goes with its lock -- on a failing
     // assertion too, or one red case cascades into every later sweep.
@@ -1922,6 +2022,7 @@ try {
     } finally {
       rmSync(profile, { recursive: true, force: true });
       rmSync(join(scratchHome, ".hermes", "profiles", ".drifted-pm.config.lock"), { force: true });
+      setFakeSystemctlState(systemctlShim, canonicalSystemdState());
     }
   });
 

@@ -280,17 +280,21 @@ the same envelope, including `baseline` and `exitCode`.
 | `template_scaffold` | the tracked template's gitlink, remote and cleanliness (fleet-wide), and **every managed role directory compared asset by asset against the template at the committed gitlink** — eight group observations per agent, typed per-asset `items`, `data.scaffold` and `agents[].scaffold` summaries (see *Scaffold parity* below) | every tracked-asset parity rule, plus a `scaffold-rule-disagreement` finding where `hermes.pm-scaffold` and the observer disagree |
 | `profile` | the profile directory `lstat`ed by the inventory (a symlink is a `fail`, because the contract declares `symlink_allowed: false`), and **five observations per agent from the profile observer**: the path gated (real, contained, safely named, unambiguous), the identity file, the generated config proven by the canonical renderer's own `check` at the committed gitlink, the Hindsight bank pin, and the skill core by bytes — plus `data.profile`, `agents[].profile`, and in fleet scope one host sweep classifying every unregistered root entry (see *Profile health* below). A gated profile's `domains.profile` rolls up to `unobserved` (its four unread dependents outrank the path `fail` under the declared precedence) while the `fail` stays on `profiles.{profile_name}`, in `health.failed`, and demotes the lifecycle (DW-95) | `hermes.runtime-singleton`, plus a `profile-rule-disagreement` finding where it and the observer disagree; `hermes.profile-wiring` (**host-scoped**) |
 | `runtime` | the role-local runtime directory derived from `role_dir` | `hermes.untracked-runtimes` |
-| `systemd` | `unsupported` — no systemd observer exists in this release; the unit names are the contract's expectations, carried as evidence | `systemd.sentinel` (**host-scoped**, unfiltered runs only†), never promoted to an agent |
+| `systemd` | **five observations per agent from the systemd observer**, sampled off the user manager itself over a declared stabilization window: the canonical unit topology against the row, the row's `heartbeat_timer` field, the messaging gateway proven against the capability the registry *declares*, the heartbeat timer, and the heartbeat oneshot's latest tick — plus `data.systemd`, `agents[].systemd`, one host finding for the manager (every scope) and, in fleet scope, one for the fleet-shared Bloodbank gateway and one classifying every unregistered `hermes-*` unit (see *systemd topology and service health* below) | `systemd.sentinel` and `hermes.registry-parity` (**host-scoped**, unfiltered runs only†), never promoted to an agent, plus a `systemd-rule-disagreement` finding where either and the observer disagree |
 | `live_process` | `unsupported` — there is no `ps`, `pgrep`, or `/proc` read anywhere in this build | nothing |
 | `bloodbank` | the stored routing record and the strict activation flag; liveness is `unsupported` | `hermes.fleet-config` (**host-scoped**, unfiltered runs only†) |
 | `release_provenance` | every provenance fact for the agent: executable, checkout, remote, HEAD, cleanliness | nothing |
 
-† `registry`, `systemd` and `bloodbank` are each observed live by exactly one
-rule, and that rule is **host-scoped** — it can add nothing to any agent's
-record, only to `data.host`. Filters constrain collection, so
-`--domain systemd --live` spawns no audit child at all and `data.host` comes back
-empty; the run says so with an `audit-host-rules-not-collected` finding naming
-the rule it did not collect. Run without `--domain` to get them.
+† `registry`, `systemd` and `bloodbank` are each observed live by host-scoped
+rules only — they can add nothing to any agent's record, only to `data.host`.
+Filters constrain collection, so `--domain systemd --live` spawns no audit child
+at all and neither rule runs; the run says so with an
+`audit-host-rules-not-collected` finding naming the rules it did not collect,
+and `data.systemd.rule_agreement` reads `not_compared`. Run without `--domain`
+to get them. The systemd OBSERVER is not gated on `--live` and is not an audit
+child: sampling the user manager is a bounded read-only local read that every
+scope performs, so a `--domain systemd` run still carries this observer's own
+three host findings.
 
 A `--domain` run whose selected domain *is* audit-fed does spawn children, and
 those children report every rule — including host-scoped rules for domains you
@@ -302,9 +306,8 @@ you are not being shown. For the same reason a host finding's `retrieval` is the
 unfiltered `--live` invocation whenever its domain is one of the three above —
 the narrowed command could not return it.
 
-Story 1.8 owns the systemd observer, 1.9 the live-process observer, and 1.10
-Bloodbank routing readiness. Until then those domains say so, by name, rather
-than disappearing.
+Story 1.9 owns the live-process observer and 1.10 Bloodbank routing readiness.
+Until then those domains say so, by name, rather than disappearing.
 
 ### Scaffold parity
 
@@ -509,6 +512,117 @@ the skill core) is `not_compared`. An operator ruling on one agent lives in
 `health_policy.agent_exceptions[]` with `domain: profile`, exactly as for a
 scaffold. A contract with no `profile_manifest` still loads; the domain then
 reads `unsupported` under capability `profile.manifest`.
+
+### systemd topology and service health
+
+`systemd` proves every registered agent's SERVICE state against the user
+manager, not merely that the contract can derive its unit names. The contract's
+`service_manifest` block (schema 5) is the policy: how many samples make an
+observation window and how far apart (`stabilization`), how a `systemctl --user`
+child is bounded and which environment keys it may inherit (`probe`), which
+`ExecStart` counts as pinned and which environment key names the profile home
+(`entrypoint`), how a registry row *declares* its messaging capability
+(`messaging`), what the heartbeat schedule and its reconcile evidence are
+(`heartbeat`), which unit names are retired shapes (`unregistered`), and how
+much may be read (`limits`).
+
+Each agent gets **five observations, one per declared leaf** — two registry
+fields and three units, all five declared writable under the contract's
+`systemd_lifecycle` authority, so every finding resolves an owner:
+
+| field | proves | fails when |
+| --- | --- | --- |
+| `agents.{agent_id}.systemd.gateway_unit` | the canonical triple `service_model.per_agent` derives is loaded, the row names it, and nothing retired sits beside it | `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`, `misnamed-gateway:<unit>`, `duplicate-gateway:<unit>`, `retired-unit:<unit>`, `registry-retired-key:<key>` |
+| `agents.{agent_id}.systemd.heartbeat_timer` | the row records the timer the contract derives, and the manager loads it | `registry-undeclared` (units on disk, no field), `unit-missing`, `misnamed-heartbeat-timer:<unit>` |
+| `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared`, `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `absent` |
+| `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, and its last tick is current | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `tick-overdue`, `tick-never` |
+| `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest invocation actually completed successfully, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `never-completed`, `stuck`, `in-progress` (warn), `checkpoint-only`, `reconcile-undeclared` (warn), `reconcile-opt-out-undeclared` (warn) |
+
+**The desired gateway state comes from the DECLARATION, never from the unit.**
+`70-systemd.sh` enables a gateway only when a platform's `provisioning_status`
+is `verified` and disables it otherwise, so the observer reads that declaration
+back off the registry and reports `capability.declared` as `active` (some
+platform verified), `deferred` (every declared platform in
+`deferred_statuses`), or `undeclared` (no platform declares a status this build
+reads). That makes "deferred but enabled" and "verified but disabled" visible as
+drift instead of two alternate healthy modes, and makes an active gateway on an
+undeclared row the liveness theatre it is. A deferred platform must also be
+pinned `platforms.<platform>.enabled: false` in the profile's
+`config.delta.yaml`, or it inherits the fleet base's enablement — reported as
+`platform-enablement-inherited:<platform>`. A verified platform must carry its
+`identity_fields` on the row and its `secret_env` keys as `op://` references in
+the delta; the observer reads the PRESENCE of those keys and never a value.
+
+**The window is the template's own stability rule.**
+`_lib.sh:systemd_wait_for_stable_health` rejects any window in which a unit
+looked healthy and then changed, and `systemd_timer_health_snapshot` refuses a
+oneshot that has not completed (systemd pre-initialises `Result=success` before
+the first exit). Both are encoded here: a sample set that is not unanimous is
+`unstable`, a growing `NRestarts` is `crash-looping`, an `activating` gateway is
+never proven, and `gateway.stability.transitions` reports the transition
+(`active/running -> activating/auto-restart`, `restarts 3 -> 5`) rather than the
+most favourable sample.
+
+**Every time-derived fact is a BUCKET.** No timestamp, age, pid, duration or
+completion order reaches `data`. `LastTriggerUSecMonotonic` and the oneshot's
+`ExecMain*Monotonic` are compared against `process.hrtime.bigint()` — CLOCK_MONOTONIC,
+the same clock systemd uses — and reduced to `tick: current | overdue | never | unknown`
+and `latest_result: success | failed | in-progress | stuck | never | unknown`.
+Two runs over unchanged manager state produce byte-identical `data`.
+
+**Read-only, and structurally so.** The only `systemctl --user` verbs this build
+can spawn are `is-system-running`, `list-units`, `list-unit-files` and `show`;
+there is no code path to `enable`, `start`, `daemon-reload` or `reset-failed`
+and nothing is ever written under `$XDG_CONFIG_HOME/systemd/user`. Each child
+receives an **allowlisted** environment — `service_manifest.probe.env_allowlist`
+(`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`) plus `LC_ALL=C`,
+`SYSTEMD_PAGER=`, `SYSTEMD_COLORS=0`, `SYSTEMD_URLIFY=0` — never a copy of this
+process's, so a Plane key in the parent's environment cannot reach one. The
+child count is bounded and independent of fleet size: one manager probe, two
+listings (fleet scope only), `stabilization.samples` multi-unit `show` calls
+covering every unit of interest at once, and one classification `show` only when
+there is an unregistered unit to classify. A failed manager probe skips sampling
+entirely and every selected agent's five leaves read `error` with
+`manager-unavailable` or `manager-timeout`; `degraded` is an **available**
+manager, because a failed unit elsewhere does not make the fleet unobservable.
+
+`data.systemd` carries the manager and its window, the unit counts, per-aspect
+agent tallies (`complete`, `topology_ok`, `gateway_healthy`, `gateway_deferred`,
+`heartbeat_healthy`, `unstable`, `crash_looping`, `drifted`, `incomplete`,
+`exception_authorized`, `unobserved`), the capability split, the fleet-shared
+gateway and the unregistered sweep. Two coverage labels say what a scope did
+NOT do: an `--agent` run samples one agent's units, lists nothing, and reports
+`shared.coverage: "unobserved"` and `unregistered.coverage: "not-swept"` rather
+than an empty sweep. The shared gateway is `pass` only when the contract's
+`service_model.fleet_shared.bloodbank_gateway_unit` and the registry's
+`gateways.bloodbank.systemd_unit` name ONE unit and it is enabled, active,
+stable and rooted at the declared shared profile; two names is
+`identity-mismatch`.
+
+**Unregistered units are findings, never a licence.** Every `hermes-*` unit no
+registered row claims lands in exactly one of five classes — `retired` (a name
+the contract's `retired[].detect` matches), `transient` (a `systemd-run` scope,
+whose `Description` may name a registered profile through an exact
+`--profile <name>` token, recorded as `correlated_profile`), `profile-correlated`
+(its own `HERMES_HOME` names a directory under the profile root),
+`managed-exception` (a `managed_shared_service` or `intentionally_unmanaged`
+entry with `systemd` in its `policy_domains` claims it), or `unclassified`. Only
+`managed-exception` is `pass`; the rest are `warn`, unjustified by design until
+an operator classifies the unit in the contract, and every item carries
+`process_reference: "unobserved"` because attributing the process behind a unit
+is story 1.9. Nothing is ever assigned to the nearest agent name.
+
+Under `--live`, `data.systemd.rule_agreement` says how the observer and the
+`systemd.sentinel` / `hermes.registry-parity` rules agreed over the subset all
+three read — unit presence, enablement, activity, retired units and retired
+registry keys — and a disagreement is a gating `systemd-rule-disagreement`
+finding with both readings kept. Drift only the observer reads (an unstable
+window, a crash loop, an undeclared channel, an off-policy schedule, an overdue
+or failed tick, an unpinned entrypoint) is `not_compared`. An operator ruling on
+one agent lives in `health_policy.agent_exceptions[]` with `domain: systemd`,
+exactly as for a scaffold or a profile, and covers `fail` only — never a
+collection error. A contract with no `service_manifest` still loads; the domain
+then reads `unsupported` under capability `systemd.manifest`.
 
 ### Seven states, one precedence
 

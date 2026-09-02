@@ -204,7 +204,7 @@ function statusEnvelope(status: FleetStatus): FleetEnvelopeV1 {
           : status.health.stale
             ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry"
             : status.scope.live
-              ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)"
+              ? "Review data.health.unobserved: live-process and Bloodbank-liveness observers do not exist in this release (stories 1.9/1.10)"
               : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 
@@ -279,8 +279,9 @@ export function registerFleetMcpTools(server: ToolHost, asText: AsText): void {
         + `project_binding, template_scaffold, profile, runtime, systemd, live_process, bloodbank, release_provenance -- each `
         + "either observed or carrying an explicit unobserved/unsupported reason. Host-scoped findings are reported once in "
         + "data.host and never folded into an agent. Strictly read-only; `live` authorizes bounded read-only host and network "
-        + "observation (the recipe-owned audit rules) and nothing else. Returns the fleet JSON v1 envelope; an unhealthy or "
-        + "incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.",
+        + "observation (the recipe-owned audit rules) and nothing else -- it does not gate the systemd observer, which samples "
+        + "this machine's user manager with read-only `systemctl --user` queries in every scope. Returns the fleet JSON v1 "
+        + "envelope; an unhealthy or incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.",
       inputSchema: z.strictObject({
         ...FLEET_TOOL_INPUT,
         // A plain string, matching the CLI, so an unknown value produces the

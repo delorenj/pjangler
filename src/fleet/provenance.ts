@@ -44,8 +44,9 @@
 // resemblance.
 //
 // What this module deliberately does NOT do: probe systemd, live processes, or
-// Bloodbank (stories 1.8/1.9/1.10); compare scaffold or profile CONTENT against
-// the template (stories 1.6/1.7); or repair, adopt, retire, or plan anything.
+// Bloodbank (the systemd observer is story 1.8's own module, and the other two
+// are stories 1.9/1.10); compare scaffold or profile CONTENT against the
+// template (stories 1.6/1.7); or repair, adopt, retire, or plan anything.
 
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";

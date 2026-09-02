@@ -2270,15 +2270,19 @@ try {
     }
   });
 
-  check("the tracked contract validates at schema 4, and its skill core equals the template's CORE_RUNTIME_SKILLS at the gitlink", () => {
+  check("the tracked contract validates at schema 5, and its skill core equals the template's CORE_RUNTIME_SKILLS at the gitlink", () => {
     // The TRACKED contract, which is its own canonical serialization; a
     // fixture root's re-serialized copy is not, by design.
     const result = cliAt(mainRoot, ["fleet", "contract", "validate", "--contract", TRACKED_CONTRACT, "--json"]);
     const parsed = envelope(result);
     assert.equal(parsed.ok, true, JSON.stringify(parsed.error));
-    assert.equal(parsed.data.schema_version, 4);
+    assert.equal(parsed.data.schema_version, 5);
     const contract = contractDocument();
-    assert.equal(contract.contract_version, "1.3.0");
+    // Story 1.8 bumped it again for `service_manifest`; this case pins the
+    // MINIMUM the profile manifest needs, not the exact version, so the next
+    // root-key story does not have to edit an assertion about a block it does
+    // not touch.
+    assert.ok(Number.parseInt(contract.contract_version.split(".")[1] ?? "0", 10) >= 4, contract.contract_version);
     assert.equal(contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "profile.render_generation"), false, "the profile.render_generation deferral is gone: the observer answers it");
     assert.deepEqual(contract.authorities.provisioned_profile_state.writable_fields, [FIELDS.identity, FIELDS.bank, FIELDS.skills]);
     // The skill core the contract declares IS the template's, read at the gitlink.

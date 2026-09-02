@@ -44,6 +44,18 @@ import {
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join, relative, resolve } from "node:path";
 import YAML from "yaml";
+import {
+  deferredAgentUnits,
+  fakeSystemctlChildEnvs,
+  fakeSystemctlInvocations,
+  fakeSystemctlVerbs,
+  installFakeSystemctl,
+  mergeUnitSets,
+  noBusIsolation,
+  resetFakeSystemctl,
+  setFakeSystemctlState,
+  sharedGatewayUnits,
+} from "./helpers/fake-systemctl.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -221,7 +233,14 @@ function makeRepo(slug) {
   renderPinnedRole(join(dir, "agents", "hermes", "pm"), {
     agent_id: `${slug}-pm`, role: "pm", target_repo: slug, display_name: `${slug} PM`, ticket_provider: "plane",
   });
-  writeFileSync(join(dir, "agents", "hermes", "pm", "role.yaml"), "role: pm\n", "utf8");
+  // The reconcile block is EXPLICIT (story 1.8): `enabled: false` without
+  // `explicit_opt_out` is a `reconcile-opt-out-undeclared` warn, and no block
+  // at all is `reconcile-undeclared` -- both true readings, and both about the
+  // fixture rather than about what any case here tests.
+  writeFileSync(join(dir, "agents", "hermes", "pm", "role.yaml"), YAML.stringify({
+    role: "pm",
+    reconcile: { enabled: false, explicit_opt_out: true },
+  }), "utf8");
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify({
     project_slug: slug,
     ticket_provider: { type: "plane", workspace: "suite", identifier: slug.toUpperCase(), board_id: `board-${slug}` },
@@ -264,7 +283,16 @@ function agentRow(slug) {
     provisioned_at: "2026-01-01T00:00:00.000Z",
     plane: { workspace: "suite", project_id: `board-${slug}`, identifier: slug.toUpperCase() },
     bloodbank: { enabled: false, gateway_scope: "fleet", target_agent_id: `${slug}-pm` },
-    systemd: { gateway_unit: `hermes-${slug}-pm-gateway.service` },
+    systemd: {
+      gateway_unit: `hermes-${slug}-pm-gateway.service`,
+      heartbeat_timer: `hermes-${slug}-pm-heartbeat.timer`,
+    },
+    // The canonical DEFERRED declaration (story 1.8): the shape most of the
+    // live fleet has, and the one that is healthy without a channel credential.
+    // Without it every fixture row would read `channel-undeclared` -- true, but
+    // a reading about the fixture rather than about what each case tests.
+    telegram: { provisioning_status: "disabled" },
+    slack: { provisioning_status: "disabled" },
     hermes: {
       bin: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes"),
       repo: join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc"),
@@ -277,10 +305,25 @@ function agentRow(slug) {
 }
 
 /** A registry YAML file in `temp`, built from a list of agent slugs. */
+// The fleet-shared Bloodbank gateway block the live registry carries. Story 1.8
+// correlates `gateways.bloodbank.systemd_unit` against the contract's
+// `service_model.fleet_shared.bloodbank_gateway_unit`, and a registry that
+// names no unit is `registry-undeclared` -- a true reading, and one about the
+// fixture rather than about what any case here tests.
+const GATEWAYS_BLOCK = {
+  bloodbank: {
+    scope: "fleet",
+    profile_name: "fleet-bloodbank-gateway",
+    command_subject: "bloodbank.cmd.agent.invocation.start",
+    target_field: "data.target_agent_id",
+    systemd_unit: "hermes-fleet-bloodbank-gateway.service",
+  },
+};
+
 function writeAgentRegistry(path, slugs) {
   const agents = {};
   for (const slug of slugs) agents[`${slug}-pm`] = agentRow(slug);
-  writeFileSync(path, YAML.stringify({ schema_version: 1, agents }), "utf8");
+  writeFileSync(path, YAML.stringify({ schema_version: 1, gateways: GATEWAYS_BLOCK, agents }), "utf8");
   return path;
 }
 
@@ -312,7 +355,7 @@ function writeProjectRegistry(path, slugs) {
 function writeAgentRegistryWith(path, slugs, extra) {
   const agents = {};
   for (const slug of slugs) agents[`${slug}-pm`] = agentRow(slug);
-  writeFileSync(path, `${YAML.stringify({ schema_version: 1, agents })}\n${extra}\n`, "utf8");
+  writeFileSync(path, `${YAML.stringify({ schema_version: 1, gateways: GATEWAYS_BLOCK, agents })}\n${extra}\n`, "utf8");
   return path;
 }
 
@@ -343,13 +386,18 @@ function seedProfileFixtures(home) {
   }
 }
 
+// A deferred platform must be PINNED disabled in the delta, or it inherits the
+// fleet base's enablement and the gateway would start without a credential.
+// `70-systemd.sh`'s own deferral path writes exactly this (channel-transaction.py).
+const DEFERRED_PLATFORMS = { platforms: { telegram: { enabled: false }, slack: { enabled: false } } };
+
 function seedRendererCleanProfile(home, name) {
   const dir = join(home, ".hermes", "profiles", name);
   mkdirSync(join(dir, "hindsight"), { recursive: true });
   mkdirSync(join(dir, "skills"), { recursive: true });
   writeFileSync(join(dir, "profile.yaml"), `name: ${name}\n`, "utf8");
-  writeFileSync(join(dir, "config.delta.yaml"), "{}\n", "utf8");
-  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify(profileBase(home))}`, "utf8");
+  writeFileSync(join(dir, "config.delta.yaml"), YAML.stringify(DEFERRED_PLATFORMS), "utf8");
+  writeFileSync(join(dir, "config.yaml"), `# GENERATED FILE -- DO NOT EDIT\n${YAML.stringify({ ...profileBase(home), ...DEFERRED_PLATFORMS })}`, "utf8");
   writeFileSync(join(dir, "hindsight", "config.json"), `{\n  "bank_id": "agent-${name}"\n}\n`, "utf8");
   for (const skill of PROFILE_CORE_SKILLS) symlinkSync(join(home, ".agents", "skills", skill), join(dir, "skills", skill));
   writeFileSync(join(home, ".hermes", "profiles", `.${name}.config.lock`), "");
@@ -380,10 +428,17 @@ function seedScratch() {
     seedRendererCleanProfile(scratchHome, `${slug}-pm`);
   }
   mkdirSync(join(scratchHome, ".hermes", "profiles", "shared"), { recursive: true });
+  // The delta is pinned even here: `beta-pm`'s PROFILE domain is the failure
+  // this fixture exists to produce, and letting its gateway also read
+  // `platform-enablement-inherited` would make a systemd assertion depend on a
+  // profile-topology defect.
+  writeFileSync(join(scratchHome, ".hermes", "profiles", "shared", "config.delta.yaml"), YAML.stringify(DEFERRED_PLATFORMS), "utf8");
   symlinkSync(join(scratchHome, ".hermes", "profiles", "shared"), join(scratchHome, ".hermes", "profiles", "beta-pm"));
 
   writeAgentRegistry(join(scratchHome, ".hermes", "agents-registry.yaml"), BASE_SLUGS);
   writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"), BASE_SLUGS);
+
+  installFakeSystemctl(systemctlShim, canonicalSystemdState());
 
   writeFileSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), [
     "[fleet]",
@@ -405,6 +460,31 @@ function seedScratch() {
     ...CREDENTIAL_KEYS.map((key) => `${key}=${SECRET_SENTINEL}`),
     "",
   ].join("\n"), "utf8");
+}
+
+/**
+ * The scripted user manager every case in this suite observes.
+ *
+ * One canonical DEFERRED triple per fixture agent plus the fleet-shared
+ * Bloodbank gateway: the shape `70-systemd.sh` provisions and the shape most of
+ * the live fleet actually has. It lives outside `temp`, so the fake's own
+ * invocation log never appears in a zero-write snapshot of the isolated roots.
+ */
+const systemctlShim = join(shimRoot, "systemctl-bin");
+function canonicalSystemdState() {
+  const profileRoot = join(scratchHome, ".hermes", "profiles");
+  const hermesBin = join(scratchHome, ".local", "share", "hermes-agent", "releases", "abc", "bin", "hermes");
+  return mergeUnitSets(
+    { manager: { stdout: "running", exit: 0 } },
+    ...BASE_SLUGS.map((slug) => deferredAgentUnits({
+      agentId: `${slug}-pm`,
+      profileName: `${slug}-pm`,
+      profileRoot,
+      roleDir: join(reposRoot, slug, "agents", "hermes", "pm"),
+      hermesBin,
+    })),
+    sharedGatewayUnits({ profileRoot, hermesBin }),
+  );
 }
 
 const isolation = {
@@ -430,6 +510,15 @@ const isolation = {
   GIT_CEILING_DIRECTORIES: realpathSync(temp),
   TMPDIR: temp,
   NO_COLOR: "1",
+  // Story 1.8: `systemd` is an OBSERVED domain in every scope now, so this
+  // suite has to seed the fixture fleet's service state exactly as story 1.7
+  // made every fixture profile renderer-clean. `systemctl` resolves to the
+  // scripted manager below; the bus address and runtime dir point at nothing,
+  // so a case that bypasses the shim reads `manager-unavailable` rather than
+  // this developer's own user manager -- where a fixture agent's units do not
+  // exist and never will.
+  PATH: `${systemctlShim}:${process.env.PATH}`,
+  ...noBusIsolation(temp),
   // The credential the audit child must never receive, present in the PARENT's
   // environment so the allowlist has something to exclude.
   PLANE_33GOD_API_KEY: SECRET_SENTINEL,
@@ -805,7 +894,7 @@ try {
       chmodSync(join(bin, name), 0o755);
       rmSync(join(bin, `called-${name}`), { force: true });
     }
-    const result = cli(["fleet", "status", "--json"], { PATH: `${bin}:${process.env.PATH}` });
+    const result = cli(["fleet", "status", "--json"], { PATH: `${bin}:${systemctlShim}:${process.env.PATH}` });
     assert.equal(result.status, 0);
     for (const name of ["npm", "curl", "wget"]) {
       assert.equal(existsSync(join(bin, `called-${name}`)), false, `a default run invoked ${name}`);
@@ -903,28 +992,84 @@ try {
     }
   });
 
-  check("--domain systemd emits one domain and spawns nothing at all", () => {
+  check("--domain systemd emits one domain, observed off the manager, with no audit child", () => {
     const shim = entry("domain-systemd", syntheticReport([PROJECT_PASS_RULE]));
     resetEntry(shim);
+    resetFakeSystemctl(systemctlShim);
     const result = cli(["fleet", "status", "--domain", "systemd", "--live", "--json"], { PJ_FLEET_CLI_ENTRY: shim });
     assert.equal(result.status, 0);
     const data = status(result);
     assert.deepEqual(data.domains.map((rollup) => rollup.domain), ["systemd"]);
-    assert.equal(data.domains[0].state, "unsupported", "no systemd observer exists in this release");
-    assert.deepEqual(invocationsOf(shim), [], "zero audit children");
-    assert.deepEqual(data.probes, [], "zero probes");
+    // OBSERVED now (story 1.8), not `unsupported`: the observer samples the
+    // user manager itself, in every scope, without `--live` conjuring it.
+    assert.equal(data.domains[0].state, "pass", `the scripted fleet is canonical, got ${JSON.stringify(data.domains[0].counts)}`);
+    assert.deepEqual(invocationsOf(shim), [], "zero audit children: every systemd RULE is host-scoped");
     for (const agent of data.agents) {
       assert.deepEqual(Object.keys(agent.domains), ["systemd"], "the other eight must not be implied");
+      assert.equal(agent.systemd.capability.declared, "deferred");
+      assert.equal(agent.systemd.gateway.state, "pass", `${agent.agent_id}: ${JSON.stringify(agent.systemd.gateway)}`);
+      assert.equal(agent.systemd.heartbeat.latest_result, "success");
+      assert.equal(agent.systemd.heartbeat.tick, "current");
+      assert.equal(agent.systemd.topology.state, "pass");
     }
-    // No child means no host findings either -- and that has to be SAID, not
-    // left for the operator to infer from an empty array. systemd's only live
-    // observer is `systemd.sentinel`, which is host-scoped.
-    assert.deepEqual(data.host, [], "no child ran, so nothing may appear in data.host");
+    // The manager, the two listings, three samples, and nothing else. AC1's
+    // bound: `1 + 2 + samples`, plus one classification `show` only when there
+    // IS an unregistered unit -- and this scripted manager carries none.
+    const verbs = fakeSystemctlVerbs(systemctlShim);
+    assert.deepEqual(verbs, ["is-system-running", "list-units", "list-unit-files", "show", "show", "show"], JSON.stringify(verbs));
+    const probes = data.probes.filter((probe) => probe.kind === "systemd");
+    assert.equal(probes.length, 6, JSON.stringify(probes));
+    assert.ok(probes.every((probe) => probe.outcome === "ok"), JSON.stringify(probes));
+    // The observer's own three host findings ARE collected in every scope. The
+    // two RULES that would corroborate them are host-scoped and their audit
+    // child does not run, which is what the gap finding says.
+    assert.deepEqual(
+      data.host.map((finding) => finding.rule_id).sort(),
+      ["systemd.manager", "systemd.shared-gateway", "systemd.unregistered"],
+      JSON.stringify(data.host.map((finding) => `${finding.rule_id}=${finding.state}`)),
+    );
+    assert.ok(data.host.every((finding) => finding.state === "pass"), JSON.stringify(data.host.map((finding) => `${finding.rule_id}=${finding.state}:${finding.summary}`)));
+    assert.equal(data.systemd.rule_agreement.compared, 0, "neither rule ran, so nothing was compared");
     const gap = data.findings.find((finding) => finding.code === "audit-host-rules-not-collected");
-    assert.ok(gap, `an empty host block must be explained, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
+    assert.ok(gap, `an empty rule half must be explained, got ${JSON.stringify(data.findings.map((f) => f.code))}`);
     assert.match(gap.detail, /systemd\.sentinel/u, "the finding must name the rule it did not collect");
     assert.ok(typeof gap.source === "string" && gap.source.length > 0, "a finding must name the authority that owns its field");
     assert.match(gap.field, /^[a-z]+[.{]/u, "a finding's field must be a dotted contract path, not a source id");
+  });
+
+  check("the systemd observer spawns only read verbs, with only the allowlisted environment", () => {
+    resetFakeSystemctl(systemctlShim);
+    const data = status(cli(["fleet", "status", "--domain", "systemd", "--json"]));
+    assert.equal(data.systemd.manager.code, "available");
+    const invocations = fakeSystemctlInvocations(systemctlShim);
+    assert.ok(invocations.length > 0, "the observer must have reached the scripted manager");
+    for (const argv of invocations) {
+      assert.equal(argv[0], "--user", JSON.stringify(argv));
+      const verb = argv.filter((token) => !token.startsWith("-"))[0];
+      assert.ok(["is-system-running", "list-units", "list-unit-files", "show"].includes(verb), `read-only: ${verb}`);
+    }
+    for (const mutation of ["daemon-reload", "enable", "disable", "start", "stop", "restart", "reset-failed", "link", "mask", "edit", "kill"]) {
+      assert.equal(
+        invocations.some((argv) => argv.includes(mutation)), false,
+        `the observer must never spawn systemctl ${mutation}`,
+      );
+    }
+    // An ALLOWLIST, not a filter: the parent's Plane key is in `process.env`
+    // and must not be in any child's.
+    for (const record of fakeSystemctlChildEnvs(systemctlShim)) {
+      // `PWD` is the SHIM's own addition -- the fake is reached through a one
+      // line `sh` script and every POSIX shell exports `PWD` -- so it is
+      // filtered here rather than pretended away: everything else in the
+      // child's environment came from the observer's allowlist.
+      const keys = Object.keys(record.env).filter((key) => key !== "PWD").sort();
+      assert.deepEqual(
+        keys,
+        ["DBUS_SESSION_BUS_ADDRESS", "HOME", "LC_ALL", "PATH", "SYSTEMD_COLORS", "SYSTEMD_PAGER", "SYSTEMD_URLIFY", "XDG_RUNTIME_DIR"],
+        JSON.stringify(keys),
+      );
+      assert.equal(record.env.PLANE_33GOD_API_KEY, undefined);
+      assert.equal(JSON.stringify(record.env).includes(SECRET_SENTINEL), false, "no credential may reach a systemctl child");
+    }
   });
 
   check("--domain registry --live spawns no audit child and no provenance probe", () => {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { installFakeSystemctl, noBusIsolation } from "./helpers/fake-systemctl.mjs";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { resolve, join } from "node:path";
@@ -465,8 +466,22 @@ try {
         "",
       ].join("\n"), "utf8");
 
+      // Story 1.8: `systemd` is an OBSERVED domain now, and the live user
+      // manager carries `hermes-worker-proc_*.scope` units that `systemd-run`
+      // creates and destroys on their own. Two adapters called a second apart
+      // would list DIFFERENT sets of them, so a parity suite that compared
+      // `data` against the real manager would be flaky by construction -- and
+      // it would be reporting this host's own activity as an adapter
+      // disagreement. A scripted manager with no `hermes-*` unit at all is
+      // deterministic, identical on both sides, and still exercises the whole
+      // observer, which is what this suite is for.
+      const systemctlShim = join(fleetTmp, "systemctl-bin");
+      installFakeSystemctl(systemctlShim, { manager: { stdout: "running", exit: 0 }, units: {}, list_units: [], unit_files: [] });
+
       const fleetEnvFor = (extra = {}) => ({
         ...process.env,
+        PATH: `${systemctlShim}:${process.env.PATH}`,
+        ...noBusIsolation(fleetTmp),
         HOME: scratch,
         XDG_CONFIG_HOME: join(scratch, ".config"),
         HERMES_FLEET_HOME: join(scratch, ".hermes"),
@@ -571,6 +586,12 @@ try {
           // and its `data.profile` summary plus every `agents[].profile` must
           // be identical on both adapters, renderer probes included.
           ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "profile"], { domain: "profile" }],
+          // Story 1.8 (PJAN-110): the systemd observer runs under this domain
+          // and its `data.systemd` summary plus every `agents[].systemd` must be
+          // identical on both adapters -- against the scripted manager above, so
+          // the equality is about the two adapters and not about what the host's
+          // own transient scopes were doing between the two calls.
+          ["pjangler_fleet_status", "fleet.status", ["fleet", "status", "--domain", "systemd"], { domain: "systemd" }],
         ]) {
           const mcp = toolEnvelope(await fleetClient.callTool({ name: tool, arguments: args }));
           const cli = cliEnvelope(argv, cleanEnv);
@@ -585,6 +606,11 @@ try {
           if (args.domain === "profile" && mcp.ok) {
             assert.ok(mcp.data.profile, "data.profile must be present under --domain profile");
             assert.ok(mcp.data.agents.length > 0 && mcp.data.agents.every((agent) => agent.profile !== null), "every agent record must carry its profile summary");
+          }
+          if (args.domain === "systemd" && mcp.ok) {
+            assert.ok(mcp.data.systemd, "data.systemd must be present under --domain systemd");
+            assert.ok(mcp.data.agents.length > 0 && mcp.data.agents.every((agent) => agent.systemd !== null), "every agent record must carry its systemd summary");
+            assert.equal(mcp.data.systemd.manager.code, "available", "the scripted manager must have answered");
           }
         }
 
@@ -703,9 +729,21 @@ try {
         });
         let out = "";
         child.stdout.on("data", (chunk) => { out += chunk; });
-        const killer = setTimeout(() => child.kill("SIGINT"), 2500);
+        // POLLED, not timed. Story 1.8 put the systemd observer's stability
+        // window -- `stabilization.samples` children a second apart -- ahead of
+        // the audit children, so a fixed 2.5 s SIGINT started landing during
+        // that window, before any audit child existed, and the non-vacuity
+        // assertion below went red for a reason that has nothing to do with
+        // cancellation. Waiting for the child to record its pid makes the
+        // signal land where the case means it to, whatever runs before it.
+        const killer = setInterval(() => {
+          if (existsSync(statusHangPids) && readFileSync(statusHangPids, "utf8").trim() !== "") {
+            clearInterval(killer);
+            child.kill("SIGINT");
+          }
+        }, 100);
         const guard = setTimeout(() => child.kill("SIGKILL"), 60_000);
-        child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, envelope: JSON.parse(out) }); });
+        child.on("close", (code) => { clearInterval(killer); clearTimeout(guard); settle({ code, envelope: JSON.parse(out) }); });
       });
       assert.equal(cliStatusCancel.code, 8, "a cancelled status run must exit 8");
       assert.equal(cliStatusCancel.envelope.error?.code, "CANCELLED");

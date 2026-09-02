@@ -34,17 +34,20 @@
 //     the flush.
 //   * `--live` MEANS "MAY REACH THE HOST AND THE NETWORK, READ-ONLY", AND
 //     NOTHING ELSE. The bmad rule's `npm view` is a real network call, so the
-//     audit is gated. `--live` does not conjure a systemd, process, or
-//     Bloodbank-liveness observer -- those stay `unsupported`/`unobserved`, by
-//     name, with the story that owns them.
+//     audit is gated. `--live` does not conjure a process or Bloodbank-liveness
+//     observer -- those stay `unsupported`/`unobserved`, by name, with the story
+//     that owns them. The systemd observer is NOT gated on it: sampling the user
+//     manager is a bounded, read-only local read that every scope performs, and
+//     what `--live` adds there is only the two recipe rules its readings are
+//     then checked for agreement against.
 //   * `data` IS DETERMINISTIC. No timestamp, duration, pid, hostname, or
 //     ordering by completion: the child's `auditedAt` is dropped at the boundary
 //     and every path goes through `redactHome`. Two runs over unchanged state
 //     produce byte-identical `data`, which is what turns the CLI/MCP parity
 //     assertion into an equality rather than a resemblance.
 //
-// What this module deliberately does NOT do: observe systemd, live processes, or
-// Bloodbank liveness (stories 1.8/1.9/1.10); mutate anything, anywhere; or run
+// What this module deliberately does NOT do: observe live processes or
+// Bloodbank liveness (stories 1.9/1.10); mutate anything, anywhere; or run
 // the credentialed `momo-lifecycle-plane` profile.
 
 import { createHash } from "node:crypto";
@@ -82,12 +85,15 @@ import {
   type FleetInventoryOptions,
 } from "./inventory";
 import { bounded, redactHome } from "./output";
-import { collectProfileHealth, type FleetProfileAgentResult, type FleetProfileHealth } from "./profile";
+import { collectProfileHealth, resolveConfigHome, type FleetProfileAgentResult, type FleetProfileHealth } from "./profile";
 import { collectFleetProvenance } from "./provenance";
 import { captureSelf, mapBounded, remainingMs, throwIfCancelled, type FleetRunContext } from "./runtime";
 import { collectScaffoldParity, type FleetScaffoldAgentResult, type FleetScaffoldParity } from "./scaffold";
+import { collectSystemdHealth, type FleetSystemdAgentResult, type FleetSystemdHealth } from "./systemd";
 import {
   FLEET_PROFILE_EXTRA_CLASSES,
+  FLEET_SYSTEMD_CAPABILITY_STATES,
+  FLEET_SYSTEMD_UNREGISTERED_CLASSES,
   FLEET_STATUS_AUDIT_CONCURRENCY,
   FLEET_STATUS_DOMAINS,
   FLEET_STATUS_MAX_AGENTS,
@@ -111,12 +117,18 @@ import {
   type FleetProvenanceFact,
   type FleetScaffoldManifest,
   type FleetScaffoldSummary,
+  type FleetServiceManifest,
   type FleetStatus,
   type FleetStatusAgent,
   type FleetStatusAgentProfile,
   type FleetStatusAgentScaffold,
+  type FleetStatusAgentSystemd,
   type FleetStatusObservationItem,
   type FleetStatusProfileExtraItem,
+  type FleetStatusSystemdUnregisteredItem,
+  type FleetSystemdCapabilityState,
+  type FleetSystemdSummary,
+  type FleetSystemdUnregisteredClass,
   type FleetStatusDomain,
   type FleetStatusDomainRollup,
   type FleetStatusEvidence,
@@ -331,7 +343,6 @@ const DOMAIN_AUTHORITY_BLOCK: Readonly<Record<FleetStatusDomain, string>> = Obje
  * reported, still `unsupported`, and now unjustified: DW-63's three domains
  * stop authorizing themselves.
  */
-const CAPABILITY_SYSTEMD = "unit_topology";
 const CAPABILITY_LIVE_PROCESS = "process_attribution";
 const CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
 /**
@@ -348,6 +359,13 @@ const CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
  * unjustified unless the policy says otherwise, exactly like the four above.
  */
 const CAPABILITY_PROFILE_MANIFEST = "profile.manifest";
+/**
+ * The systemd observer's own gap (story 1.8): a contract with no
+ * `service_manifest` declares no canonical service state, so every selected
+ * agent's five systemd leaves are `unsupported` under this capability --
+ * unjustified unless the policy says otherwise, exactly like the five above.
+ */
+const CAPABILITY_SYSTEMD_MANIFEST = "systemd.manifest";
 
 /** The inventory finding severity, mapped onto the status priority axis. */
 const FINDING_SEVERITY: Readonly<Record<FleetFindingSeverity, FleetStatusSeverity>> = Object.freeze({
@@ -449,6 +467,68 @@ const PROFILE_RULE_COVERED_GATE_KINDS: ReadonlySet<string> = new Set(["symlink",
 const PROFILE_RULE_COVERED_KINDS: ReadonlySet<string> = new Set([
   "misowned-link", "generated-symlink", "generated-missing", "marker-missing", "delta-missing", "delta-symlink",
   "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
+]);
+
+/** The systemd observer (story 1.8): the user manager sampled directly over a declared stabilization window. */
+const SOURCE_SYSTEMD = "fleet-systemd";
+/** The three host-scoped rule ids the systemd observer files its fleet-wide findings under. */
+const SYSTEMD_MANAGER_RULE_ID = "systemd.manager";
+const SYSTEMD_SHARED_RULE_ID = "systemd.shared-gateway";
+const SYSTEMD_UNREGISTERED_RULE_ID = "systemd.unregistered";
+
+/**
+ * The five leaves the systemd observer reports on.
+ *
+ * Two registry fields and three unit names, and every one of them is declared
+ * writable under the contract's `systemd_lifecycle` authority -- so `ownerOf`
+ * answers `hermes-fleet-provisioner` for each and no finding ships without an
+ * owner. Never `agents.{agent_id}.systemd.gateway_unit` ALONE for all five: the
+ * three unit leaves are about units on this manager and the two registry leaves
+ * are about the row, and `by_state` counts agents per aspect only when the
+ * aspects have separate fields.
+ */
+const SYSTEMD_FIELD_TOPOLOGY = "agents.{agent_id}.systemd.gateway_unit";
+const SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW = "agents.{agent_id}.systemd.heartbeat_timer";
+const SYSTEMD_FIELD_GATEWAY = "units.hermes-{agent_id}-gateway.service";
+const SYSTEMD_FIELD_TIMER = "units.hermes-{agent_id}-heartbeat.timer";
+const SYSTEMD_FIELD_SERVICE = "units.hermes-{agent_id}-heartbeat.service";
+const SYSTEMD_FIELDS = [
+  SYSTEMD_FIELD_TOPOLOGY, SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW,
+  SYSTEMD_FIELD_GATEWAY, SYSTEMD_FIELD_TIMER, SYSTEMD_FIELD_SERVICE,
+] as const;
+
+/**
+ * The literal detail prefixes `systemd.sentinel` and `hermes.registry-parity`
+ * write, so the two can be checked for agreement with the observer under
+ * `--live`.
+ *
+ * Anchored on the rules' OWN strings (`src/parity/rules.ts`, the
+ * `systemd.sentinel` audit and the registry-parity retired-key block), and the
+ * suite pins each against that source so a reworded detail goes red rather than
+ * silently stopping the comparison.
+ *
+ * The subset is narrow on purpose. The sentinel reads enablement, activity and
+ * unit-file presence and NOTHING else -- no stability window, no channel
+ * declaration, no schedule, no heartbeat result -- so an observer finding on
+ * `unstable`, `crash-looping`, `channel-*`, `schedule-*`, `tick-*` or any
+ * heartbeat-result code is coverage the rule never had, and is `not_compared`.
+ */
+const SYSTEMD_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
+  /should be enabled\+active/u,
+  /is deferred and should be disabled\+inactive/u,
+  /should be installed/u,
+];
+const SYSTEMD_PARITY_DETAIL_PATTERNS: readonly RegExp[] = [
+  /carries retired systemd\./u,
+  /^retired per-agent consumer unit still on disk: /u,
+];
+/** Observer item kinds the two rules also see. Everything else is coverage they never had. */
+const SYSTEMD_RULE_COVERED_KINDS: ReadonlySet<string> = new Set([
+  "deferred-but-enabled", "deferred-but-active",
+  "verified-channel-gateway-disabled", "verified-channel-gateway-inactive",
+  "timer-disabled", "timer-inactive",
+  "gateway-missing", "heartbeat-timer-missing", "heartbeat-service-missing",
+  "retired-unit", "registry-retired-key",
 ]);
 
 /**
@@ -1232,26 +1312,6 @@ export function observeFromInventory(
     }));
   }
 
-  if (domains.has("systemd")) {
-    // `unsupported` for the same reason the Bloodbank liveness observation is:
-    // no adapter exists in this build, so this is a property of the release, not
-    // of this run. The unit NAMES below are expectations the contract derives,
-    // carried as evidence -- never mistaken for an observation of systemd.
-    out.push(observation(ctx, {
-      domain: "systemd", agentId, state: "unsupported",
-      field: "agents.{agent_id}.systemd.gateway_unit",
-      summary: "no systemd observer exists in this release; unit names are expectations, never observations",
-      details: [
-        ...(row.expected_units.value ?? []).map((unit) => `expected ${unit}`),
-        "canonical systemd topology and service health is story 1.8",
-      ],
-      source: SOURCE_DECLARED_GAP,
-      capability: CAPABILITY_SYSTEMD,
-      observed: "not observed",
-      desired: (row.expected_units.value ?? []).join(", ") || "the canonical per-agent unit set",
-    }));
-  }
-
   if (domains.has("live_process")) {
     out.push(observation(ctx, {
       domain: "live_process", agentId, state: "unsupported",
@@ -1610,6 +1670,226 @@ function observeFromProfile(ctx: FleetStatusContext, input: ProfileObservationIn
       },
     },
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// The systemd observer's five leaves (story 1.8)
+// ---------------------------------------------------------------------------
+
+interface SystemdObservationInput {
+  agentId: string;
+  result: FleetSystemdAgentResult | undefined;
+  /** False when the contract declares no `service_manifest`. */
+  manifestDeclared: boolean;
+  exception: { path: string; reason: string } | null;
+  /** Where item clips are recorded. The caller adds them to `truncated` if the record is emitted. */
+  notes: string[];
+}
+
+/**
+ * Five observations per agent: two registry leaves and three unit leaves.
+ *
+ * Five fields, not one, and all five declared writable under the contract's
+ * `systemd_lifecycle` authority -- so `ownerOf` answers for each, a topology
+ * `fail` never contradicts the inventory (which sits on `profile_name` and
+ * `expected_units`), and `by_state` counts agents per aspect rather than units.
+ */
+function observeFromSystemd(ctx: FleetStatusContext, input: SystemdObservationInput): {
+  observations: FleetStatusObservation[];
+  summary: FleetStatusAgentSystemd | null;
+} {
+  const { agentId, result } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: SYSTEMD_FIELDS.map((field) => observation(ctx, {
+        domain: "systemd", agentId, state: "unsupported",
+        field,
+        summary: "the fleet contract declares no service_manifest, so no canonical service state can be proven against the user manager",
+        details: ["declare service_manifest in the fleet contract (schema 5) to make this domain observable"],
+        source: SOURCE_SYSTEMD,
+        capability: CAPABILITY_SYSTEMD_MANIFEST,
+        observed: "not observed",
+        desired: "the canonical unit set sampled from the user manager and proven against the row's own declaration",
+      })),
+      summary: null,
+    };
+  }
+  if (result === undefined) {
+    // Unreachable when the observer ran over the selected agents, and kept
+    // honest anyway: five `unobserved` leaves, never one, so a consumer that
+    // counts agents per aspect still sees the five declared fields.
+    return {
+      observations: SYSTEMD_FIELDS.map((field) => observation(ctx, {
+        domain: "systemd", agentId, state: "unobserved",
+        field,
+        summary: "the systemd observer produced no result for this agent",
+        source: SOURCE_SYSTEMD,
+        observed: "no result",
+        desired: "five systemd observations for this agent",
+      })),
+      summary: null,
+    };
+  }
+
+  const observations: FleetStatusObservation[] = [];
+  const emit = (field: string, aspect: { state: FleetStatusState; items: ReadonlyArray<{ path: string; kind: FleetStatusObservationItem["kind"]; desired: string | null; observed: string | null; detail: string | null }>; observed: string; desired: string; summary: string }): void => {
+    const items: FleetStatusObservationItem[] = aspect.items.map((item) => ({
+      path: bounded(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded(item.desired, 64),
+      observed: item.observed === null ? null : bounded(item.observed, 64),
+      detail: item.detail === null ? null : bounded(item.detail),
+      wip: false,
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${field}].items: ${items.length - kept.length} of ${items.length} items dropped; `
+        + "the counts on this observation and on agents[].systemd are computed over every item before the cap",
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}`;
+    });
+    // An operator ruling covers DRIFT, never a collection error and never an
+    // unread leaf: an exception is a decision about the fleet, and an error is
+    // this run failing to read it, which no ruling can excuse.
+    const excepted = aspect.state === "fail" && input.exception !== null;
+    observations.push(observation(ctx, {
+      domain: "systemd", agentId, state: aspect.state,
+      field,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_SYSTEMD,
+      summary: aspect.summary,
+      details,
+      observed: aspect.observed,
+      desired: aspect.desired,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception!.reason : null,
+      exceptionPolicy: excepted ? input.exception!.path : null,
+    }));
+  };
+  emit(SYSTEMD_FIELD_TOPOLOGY, result.topology);
+  emit(SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW, result.heartbeatTimerRow);
+  emit(SYSTEMD_FIELD_GATEWAY, result.gateway);
+  emit(SYSTEMD_FIELD_TIMER, result.timer);
+  emit(SYSTEMD_FIELD_SERVICE, result.service);
+
+  // The two heartbeat leaves roll into ONE `heartbeat` reading on the summary:
+  // the timer and the oneshot are two halves of one tick, and an operator
+  // reading "the heartbeat is fine" over a timer that fires into a failing
+  // service would have been told the opposite of the truth.
+  // The WORSE leaf decides both the state and the code. Reading the oneshot's
+  // code beside the timer's state would name the wrong half: a heartbeat that
+  // is `fail` because its timer is disabled must not be summarised by the
+  // oneshot's warning.
+  const heartbeatLeaves = [result.service, result.timer];
+  const worseHeartbeat = heartbeatLeaves
+    .reduce((worst, leaf) => (stateRank(leaf.state) < stateRank(worst.state) ? leaf : worst), heartbeatLeaves[0]!);
+  const heartbeatState = worseHeartbeat.state;
+  const codeSource = worseHeartbeat.items.length > 0 ? worseHeartbeat : heartbeatLeaves.find((leaf) => leaf.items.length > 0);
+  const heartbeatCode = codeSource === undefined ? null : codeSource.items[0]!.detail ?? codeSource.items[0]!.kind;
+
+  return {
+    observations,
+    summary: {
+      topology: {
+        expected: result.topology.expected.map((unit) => bounded(unit, 128)),
+        installed: result.topology.installed.map((unit) => bounded(unit, 128)),
+        missing: result.topology.missing.map((unit) => bounded(unit, 128)),
+        extra: result.topology.extra.map((item) => ({ unit: bounded(item.unit, 128), class: item.class })),
+        state: result.topology.state,
+      },
+      capability: {
+        declared: result.capability.declared,
+        platforms: { ...result.capability.platforms },
+        delta_disabled: Object.fromEntries(
+          Object.entries(result.capability.deltaDisabled).map(([platform, value]) => [platform, value === null ? null : !value]),
+        ),
+      },
+      gateway: {
+        ...result.gateway.view,
+        state: result.gateway.state,
+        code: result.gateway.code === null ? null : bounded(result.gateway.code, 64),
+        result: result.gateway.result,
+        exec_status: result.gateway.execStatus,
+        restarts: result.gateway.restarts,
+        entrypoint: { ...result.gateway.entrypoint },
+        home: result.gateway.home,
+        stability: {
+          samples: result.gateway.stability.samples,
+          stable: result.gateway.stability.stable,
+          transitions: result.gateway.stability.transitions.map((line) => bounded(line, 128)),
+        },
+      },
+      heartbeat: {
+        state: heartbeatState,
+        code: heartbeatCode === null ? null : bounded(heartbeatCode, 64),
+        timer: { ...result.timer.view, paired: result.timer.paired },
+        service: {
+          ...result.service.view,
+          result: result.service.result,
+          exec_status: result.service.execStatus,
+          entrypoint: { ...result.service.entrypoint },
+        },
+        schedule: result.timer.schedule,
+        latest_result: result.service.latestResult,
+        tick: result.timer.tick,
+        reconcile: { ...result.service.reconcile },
+      },
+    },
+  };
+}
+
+/**
+ * The `systemd.sentinel` rule's verdict over the subset it and the systemd
+ * observer both read, or null when it cannot be compared.
+ *
+ * A `fail` counts only when one of its detail lines is one of the three
+ * enablement / activity / presence checks: the rule reads nothing else, so a
+ * failure for another reason is not a reading to hold against an observer that
+ * never looked there.
+ */
+function systemdRuleVerdict(rule: Record<string, unknown> | undefined): "pass" | "fail" | null {
+  if (rule === undefined) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line): line is string => typeof line === "string") : [];
+  return details.some((line) => SYSTEMD_RULE_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+
+/** The `hermes.registry-parity` rule's verdict over the retired-unit / retired-key subset it shares with the observer. */
+function systemdParityVerdict(rule: Record<string, unknown> | undefined): "pass" | "fail" | null {
+  if (rule === undefined) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line): line is string => typeof line === "string") : [];
+  return details.some((line) => SYSTEMD_PARITY_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+
+/**
+ * Whether the systemd observer found drift the two rules would also have seen.
+ * Null when the shared subset was not fully read.
+ *
+ * A leaf the observer could not collect is a partial reading and is never held
+ * against a rule. Drift outside the shared subset -- an unstable window, a
+ * crash loop, an undeclared channel, an off-policy schedule, an overdue or
+ * failed tick, an unpinned entrypoint -- is coverage neither rule ever had, so
+ * it is `not_compared` rather than a disagreement in either direction.
+ */
+function systemdObserverDrift(result: FleetSystemdAgentResult | undefined): boolean | null {
+  if (result === undefined) return null;
+  const leaves = [result.topology, result.heartbeatTimerRow, result.gateway, result.timer, result.service];
+  if (leaves.some((leaf) => leaf.state === "error")) return null;
+  const covered = leaves.some((leaf) => leaf.items.some((item) => SYSTEMD_RULE_COVERED_KINDS.has(item.kind)));
+  if (covered) return true;
+  const uncovered = leaves.some((leaf) => leaf.state === "fail" || leaf.state === "warn");
+  return uncovered ? null : false;
 }
 
 /**
@@ -2064,6 +2344,12 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   const domainSet = new Set<FleetStatusDomain>(domains);
   const selectedAgents = new Set(agentIds);
 
+  // The service manifest is resolved HERE rather than beside the other two,
+  // because the raw-row loop below reads the platform names out of it: a
+  // `--domain registry` run resolves it to null and then reads no messaging
+  // declaration, spawns no `systemctl`, and samples no unit.
+  const serviceManifest: FleetServiceManifest | null = domainSet.has("systemd") ? contract.service_manifest ?? null : null;
+
   // Parsed now, against the scope it will be diffed with, and still before a
   // single probe or audit child.
   const baselineSnapshots = baselineText === null
@@ -2100,11 +2386,24 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // observer resolves it -- held apart from `roleDirByAgent`, which the
   // scaffold observer reads to report `role_dir_source`.
   const profileRoleDirByAgent = new Map<string, string | null>();
+  // The systemd observer's per-row inputs (story 1.8), from the raw row for
+  // the same reason. Every REGISTERED id is kept, not only the selected ones:
+  // the fleet-scope sweep must not report another agent's canonical gateway as
+  // an unregistered unit just because this run did not select that agent.
+  const registeredAgentIds: string[] = [];
+  const systemdRowByAgent = new Map<string, {
+    storedGatewayUnit: string | null;
+    storedHeartbeatTimer: string | null;
+    storedSystemdKeys: string[];
+    hermesBin: string | null;
+    messaging: Record<string, { status: string | null; identity: Record<string, boolean> }>;
+  }>();
   for (const entry of agentRaw.entries) {
     const raw = isRecord(entry.value) ? entry.value : {};
     if (!profileNameByAgent.has(entry.key)) {
       profileNameByAgent.set(entry.key, nonEmptyString(raw.profile_name));
       displayNameByAgent.set(entry.key, nonEmptyString(raw.display_name));
+      registeredAgentIds.push(entry.key);
     }
     if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const declared = nonEmptyString(raw.project_path);
@@ -2117,6 +2416,30 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       ? (isAbsolute(expandHome(declaredRoleDir, home)) ? resolve(expandHome(declaredRoleDir, home)) : projectPath === null ? null : resolve(projectPath, declaredRoleDir))
       : projectPath !== null && role !== null && role !== "." && role !== ".." && !role.includes("/") ? join(projectPath, "agents", "hermes", role) : null);
     rawRowByAgent.set(entry.key, raw);
+    // The row's `systemd` block, its pinned executable, and how it DECLARES
+    // each messaging platform. Names, words and booleans only: an identity
+    // field is recorded as present-or-not and its value is never read out of
+    // the store, so a bot token that somebody wrote into a row cannot reach the
+    // observer, an item, or the envelope.
+    const systemdBlock = isRecord(raw.systemd) ? raw.systemd : {};
+    const hermes = isRecord(raw.hermes) ? raw.hermes : {};
+    const messaging: Record<string, { status: string | null; identity: Record<string, boolean> }> = {};
+    for (const platform of serviceManifest?.messaging.platforms ?? []) {
+      const block = isRecord(raw[platform]) ? raw[platform] as Record<string, unknown> : {};
+      const identity: Record<string, boolean> = {};
+      for (const field of serviceManifest?.messaging.identity_fields[platform] ?? []) {
+        const value = block[field];
+        identity[field] = typeof value === "string" ? value.trim() !== "" : typeof value === "number" || typeof value === "boolean";
+      }
+      messaging[platform] = { status: nonEmptyString(block[serviceManifest!.messaging.status_field]), identity };
+    }
+    systemdRowByAgent.set(entry.key, {
+      storedGatewayUnit: nonEmptyString(systemdBlock.gateway_unit),
+      storedHeartbeatTimer: nonEmptyString(systemdBlock.heartbeat_timer),
+      storedSystemdKeys: Object.keys(systemdBlock).sort(),
+      hermesBin: nonEmptyString(hermes.bin) === null ? null : expandHome(nonEmptyString(hermes.bin)!, home),
+      messaging,
+    });
   }
   // A profile name more than one row claims is ambiguous for EVERY row that
   // claims it: which agent owns the directory cannot be decided, so none reads it.
@@ -2132,6 +2455,9 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // profile domain is selected, so a `--domain registry` run spawns zero
   // renderer children and reads zero profile bytes.
   const profileManifest: FleetProfileManifest | null = domainSet.has("profile") ? contract.profile_manifest ?? null : null;
+  // The systemd manifest is gated the same way and resolved earlier (see
+  // `serviceManifest` above); a `--domain registry` run therefore spawns zero
+  // `systemctl` children and reads zero unit properties.
   // The PROJECT raw store, read only when a freshness policy or a scaffold
   // render input actually needs it. Every populated, declared timestamp in
   // either store lives on one side or the other, and reading a file nothing
@@ -2409,6 +2735,93 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   const profileSkills = { core_complete: 0, core_missing: 0, core_replaced: 0, extras_seen: 0 };
   const profileRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
 
+  // -- systemd topology and service health, only when systemd is selected ----
+  //
+  // Story 1.8. The user manager is sampled ONCE for the whole fleet over the
+  // window `service_manifest.stabilization` declares, each selected agent's
+  // canonical unit set is derived from `service_model.per_agent`, and the
+  // DESIRED gateway state is derived from the row's own messaging declaration
+  // rather than read back from the unit. Gated on the domain exactly as the
+  // scaffold and profile observers are.
+  const systemdExceptionFor = (agentId: string): { path: string; reason: string } | null => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "systemd" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let systemdHealth: FleetSystemdHealth | null = null;
+  if (serviceManifest !== null) {
+    throwIfCancelled(runContext);
+    const layout = resolveProfileLayout(contract, env, home);
+    const profileLayout = isRecord(contract.service_model?.profile_layout) ? contract.service_model.profile_layout : {};
+    const fleetShared = isRecord(contract.service_model?.fleet_shared) ? contract.service_model.fleet_shared : {};
+    // The fleet-shared gateways block, from the SAME parse the agent rows came
+    // from: never a second read of the registry.
+    const gateways = isRecord(agentRaw.siblings.gateways) ? agentRaw.siblings.gateways : {};
+    const bloodbank = isRecord(gateways.bloodbank) ? gateways.bloodbank : null;
+    systemdHealth = await collectSystemdHealth({
+      run: runContext,
+      home,
+      env,
+      fleetHome: resolveFleetHome(env, home),
+      profileRoot: layout.root,
+      overrideFile: nonEmptyString(profileLayout.override_file) ?? "config.delta.yaml",
+      configHome: resolveConfigHome(env, home),
+      manifest: serviceManifest,
+      serviceModel: contract.service_model,
+      retired: contract.retired,
+      classifications: contract.classifications,
+      sharedGateway: {
+        unit: nonEmptyString(fleetShared.bloodbank_gateway_unit),
+        profile: nonEmptyString(fleetShared.bloodbank_gateway_profile),
+        registryUnit: bloodbank === null ? null : nonEmptyString(bloodbank.systemd_unit),
+      },
+      // The registry leaves the contract itself declares writable, unqualified.
+      // A key on a row that is not one of them is a retired key -- read out of
+      // the contract rather than spelled here, so retiring another one is a
+      // contract edit and not a source edit.
+      declaredSystemdKeys: [...new Set(
+        Object.values(contract.authorities)
+          .flatMap((authority) => authority.writable_fields ?? [])
+          .map((field) => /^agents\.\{agent_id\}\.systemd\.([A-Za-z0-9_]+)$/u.exec(field)?.[1] ?? null)
+          .filter((key): key is string => key !== null),
+      )].sort(),
+      registeredProfileNames: [...profileNameByAgent.values()].filter((name): name is string => name !== null),
+      registeredAgentIds,
+      agents: agentIds.map((agentId) => {
+        const row = systemdRowByAgent.get(agentId);
+        return {
+          agentId,
+          profileName: profileNameByAgent.get(agentId) ?? null,
+          roleDir: profileRoleDirByAgent.get(agentId) ?? null,
+          storedGatewayUnit: row?.storedGatewayUnit ?? null,
+          storedHeartbeatTimer: row?.storedHeartbeatTimer ?? null,
+          storedSystemdKeys: row?.storedSystemdKeys ?? [],
+          hermesBin: row?.hermesBin ?? null,
+          messaging: row?.messaging ?? {},
+        };
+      }),
+      // Fleet scope only: an `--agent` run samples one agent's units and never
+      // lists the manager, so it correlates no shared gateway and sweeps no
+      // unregistered unit -- and says so rather than reading as an empty sweep.
+      sweep: scope.kind === "fleet",
+      shown: shownPath,
+      // CLOCK_MONOTONIC, the same clock systemd's `*USecMonotonic` properties
+      // use. Read once for the whole run so every agent's tick bucket is
+      // computed against ONE instant.
+      monotonicNowUs: process.hrtime.bigint() / 1_000n,
+    });
+    ctx.probes.push(...systemdHealth.probes);
+  }
+  // Counted over EVERY selected agent, before any cap, in the per-agent loop.
+  const systemdCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    complete: 0, topology_ok: 0, gateway_healthy: 0, gateway_deferred: 0, heartbeat_healthy: 0,
+    unstable: 0, crash_looping: 0, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: 0,
+  };
+  const systemdCapability = Object.fromEntries(FLEET_SYSTEMD_CAPABILITY_STATES.map((state) => [state, 0])) as Record<FleetSystemdCapabilityState, number>;
+  const systemdRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+  const systemdUnregisteredNotes: string[] = [];
+
   // -- the recipe audit, as bounded children ---------------------------------
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
@@ -2486,12 +2899,15 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     }
   }
 
-  // -- P9: a selected domain whose ONLY observer is host-scoped --------------
-  // `--domain systemd --live` spawns no child, because no per-agent observation
-  // could come of it (AC6 forbids the spawn, and every systemd rule is
-  // host-scoped). That is correct and it is also a gap: `data.host` comes back
-  // empty for the one domain whose whole live story lives there. Said out loud
-  // rather than left for the operator to infer from an empty array.
+  // -- P9: a selected domain whose ONLY AUDIT observer is host-scoped -------
+  // `--domain systemd --live` spawns no audit child, because no per-agent
+  // recipe observation could come of it (AC6 forbids the spawn, and every
+  // systemd RULE is host-scoped). The domain is no longer unobserved -- the
+  // systemd observer samples the user manager directly in every scope (story
+  // 1.8) -- but the two recipe rules that would have corroborated it do not
+  // run, so `data.host` carries this observer's three findings and neither
+  // rule's, and `data.systemd.rule_agreement` reads `not_compared`. Said out
+  // loud rather than left for the operator to infer from an empty array.
   if (live && !wantsAudit) {
     for (const domain of domains) {
       const rules = Object.entries(RULE_DOMAIN).filter(([, mapped]) => mapped === domain).map(([ruleId]) => ruleId);
@@ -2712,6 +3128,138 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     }
   }
 
+  // -- the systemd observer's three host findings (story 1.8) ---------------
+  //
+  // The user manager's own availability, the fleet-shared Bloodbank gateway,
+  // and every unregistered `hermes-*` unit are facts about THIS MACHINE, not
+  // about any repository or any one agent. All three are filed exactly as
+  // `scaffold.source` and the profile observer's three are -- once, in
+  // `data.host`, through the same classifier -- and their consequence for the
+  // agents rides on the agents' own records: an unavailable manager makes every
+  // selected agent's five leaves `error`, and never fails a repository.
+  if (systemdHealth !== null) {
+    const hostRetrieval = retrievalFor(null, "systemd", live);
+    const hostFinding = (
+      ruleId: string,
+      state: FleetStatusState,
+      field: string,
+      summary: string,
+      details: readonly string[],
+      observed: string,
+      desired: string,
+      items?: FleetStatusSystemdUnregisteredItem[],
+    ): void => {
+      const classification = classifyObservation({
+        domain: "systemd", state, field,
+        ruleId, ruleScope: "host", source: SOURCE_SYSTEMD,
+        capability: null, evidence: null, fixable: false,
+        exceptionId: null, exceptionReason: null,
+        freshness: "not_applicable",
+        repo: null,
+        retrieval: hostRetrieval,
+        activationField: ctx.activationField,
+        activationOwner: ctx.activationOwner,
+      }, ctx.policy);
+      hostByRule.set(ruleId, {
+        finding: {
+          rule_id: ruleId,
+          owner: ctx.authority.ownerOf(field) ?? ctx.domainOwner("systemd"),
+          domain: "systemd",
+          state,
+          summary: bounded(redactHome(summary)),
+          details: boundedDetails(details),
+          finding_id: statusFindingId("host", null, "systemd", ruleId, field, SOURCE_SYSTEMD),
+          retrieval: hostRetrieval,
+          applicability: classification.applicability,
+          evidence: classification.evidence,
+          freshness: classification.freshness,
+          severity: classification.severity,
+          repair: classification.repair,
+          observed: bounded(redactHome(observed)),
+          desired: bounded(desired),
+          next_action: classification.next_action,
+          next_action_class: classification.next_action_class,
+          justification: classification.justification,
+          ...(items && items.length > 0 ? { items } : {}),
+        },
+        states: new Map([[state, 1]]),
+      });
+    };
+    // The manager, in EVERY scope: an `--agent` run that could not reach the
+    // user manager has to say so as loudly as a fleet-wide one.
+    hostFinding(
+      SYSTEMD_MANAGER_RULE_ID,
+      systemdHealth.manager.code === "available" ? "pass" : "error",
+      SYSTEMD_FIELD_GATEWAY,
+      systemdHealth.manager.detail,
+      [
+        `manager ${systemdHealth.manager.state}`,
+        `code ${systemdHealth.manager.code}`,
+        `window ${systemdHealth.window.samples} sample(s) ${systemdHealth.window.interval_ms} ms apart`,
+      ],
+      systemdHealth.manager.state,
+      "a user manager in a state service_manifest.probe.manager_available_states lists, answering within the declared budget",
+    );
+    // The shared gateway and the sweep are FLEET-SCOPE facts. Under `--agent`
+    // neither is probed, and neither is reported: a finding whose coverage was
+    // never collected would read as a clean sweep.
+    if (scope.kind === "fleet") {
+      const shared = systemdHealth.shared;
+      hostFinding(
+        SYSTEMD_SHARED_RULE_ID,
+        shared.state === "healthy" ? "pass" : shared.state === "error" || shared.state === "unobserved" ? "error" : "fail",
+        SYSTEMD_FIELD_GATEWAY,
+        shared.detail,
+        [
+          `unit ${shared.unit ?? "none declared"}`,
+          `profile ${shared.profile ?? "none declared"}`,
+          `state ${shared.state}`,
+          ...(shared.code === null ? [] : [`code ${shared.code}`]),
+        ],
+        shared.state,
+        "one fleet-shared Bloodbank gateway, named identically by the contract and the registry, enabled, active and stable at the declared shared profile",
+      );
+      if (systemdHealth.unregistered !== null) {
+        const all = systemdHealth.unregistered.items;
+        const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
+        if (all.length > kept.length) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}].items: ${all.length - kept.length} of ${all.length} items dropped; data.systemd.unregistered.by_class is counted over every unit before the cap`);
+        }
+        if (systemdHealth.unregistered.truncated) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest!.limits.max_unregistered_units} unregistered ${serviceManifest!.unregistered.unit_glob} unit(s); the sweep stopped at the cap and data.systemd.unregistered.truncated says so`);
+        }
+        const unruled = all.filter((item) => item.class !== "managed-exception");
+        const byClass = Object.fromEntries(FLEET_SYSTEMD_UNREGISTERED_CLASSES.map((klass) => [klass, all.filter((item) => item.class === klass).length])) as Record<FleetSystemdUnregisteredClass, number>;
+        const spread = FLEET_SYSTEMD_UNREGISTERED_CLASSES.filter((klass) => byClass[klass] > 0).map((klass) => `${byClass[klass]} ${klass}`).join(", ");
+        hostFinding(
+          SYSTEMD_UNREGISTERED_RULE_ID,
+          unruled.length === 0 ? "pass" : "warn",
+          SYSTEMD_FIELD_TOPOLOGY,
+          all.length === 0
+            ? `the user manager carries no unregistered ${serviceManifest!.unregistered.unit_glob} unit`
+            : unruled.length === 0
+              ? `${all.length} unregistered unit(s) are classified by the contract (${spread})`
+              : `${unruled.length} of ${all.length} unregistered ${serviceManifest!.unregistered.unit_glob} unit(s) carry no contract classification (${spread}); each is a finding for an operator, never a licence to stop, disable or delete`,
+          kept.map((item) => `${item.class} ${item.unit} (${item.load ?? "-"}/${item.active ?? "-"}/${item.sub ?? "-"}${item.correlated_profile ? `, profile ${item.correlated_profile}` : ""}, ${item.guidance})`),
+          spread || "no unregistered units",
+          "every unregistered hermes unit on this manager claimed by a contract classification",
+          kept.map((item) => ({
+            unit: bounded(item.unit, 128),
+            load: item.load,
+            unit_file: item.unit_file,
+            active: item.active,
+            sub: item.sub,
+            class: item.class,
+            correlated_profile: item.correlated_profile === null ? null : bounded(item.correlated_profile, 64),
+            process_reference: item.process_reference,
+            guidance: item.guidance,
+            detail: item.detail === null ? null : bounded(item.detail),
+          })),
+        );
+      }
+    }
+  }
+
   const agentRecords: FleetStatusAgent[] = [];
   let totalObservations = 0;
   let emittedObservations = 0;
@@ -2830,10 +3378,52 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       }
     }
 
+    // Story 1.8: the systemd observer's five observations and per-agent
+    // summary. The same rule as the scaffold's and the profile's: counted
+    // HERE, over every selected agent, before the record cap.
+    let systemdSummary: FleetStatusAgentSystemd | null = null;
+    const systemdResult = systemdHealth?.agents.get(agentId);
+    const systemdObserved = serviceManifest !== null && systemdResult !== undefined;
+    const systemdException = domainSet.has("systemd") ? systemdExceptionFor(agentId) : null;
+    if (domainSet.has("systemd")) {
+      const systemd = observeFromSystemd(ctx, {
+        agentId,
+        result: systemdResult,
+        manifestDeclared: serviceManifest !== null,
+        exception: systemdException,
+        notes: agentNotes,
+      });
+      own.push(...systemd.observations);
+      systemdSummary = systemd.summary;
+      if (!systemdObserved) systemdCounts.unobserved += 1;
+      else {
+        const leaves = [systemdResult.topology, systemdResult.heartbeatTimerRow, systemdResult.gateway, systemdResult.timer, systemdResult.service];
+        systemdCapability[systemdResult.capability.declared] += 1;
+        if (leaves.every((leaf) => leaf.state !== "error" && leaf.state !== "unobserved")) systemdCounts.complete += 1;
+        if (systemdResult.topology.state === "pass") systemdCounts.topology_ok += 1;
+        if (systemdResult.gateway.state === "pass") {
+          if (systemdResult.capability.declared === "deferred") systemdCounts.gateway_deferred += 1;
+          else systemdCounts.gateway_healthy += 1;
+        }
+        if (systemdResult.timer.state === "pass" && systemdResult.service.state === "pass") systemdCounts.heartbeat_healthy += 1;
+        // A crash loop is counted as its own cause AND as an instability: the
+        // window was not unanimous either way, and an operator scanning for
+        // "how many gateways moved under the observation" must see both.
+        if (!systemdResult.gateway.stability.stable && systemdResult.gateway.state !== "error") systemdCounts.unstable += 1;
+        if (systemdResult.gateway.items.some((item) => item.kind === "crash-looping")) systemdCounts.crash_looping += 1;
+        if (leaves.some((leaf) => leaf.state === "error" || leaf.state === "unobserved")) systemdCounts.incomplete += 1;
+        else if (leaves.some((leaf) => leaf.state === "fail")) {
+          if (systemdException !== null) systemdCounts.exception_authorized += 1;
+          else systemdCounts.drifted += 1;
+        }
+      }
+    }
+
     const audit = auditByAgent.get(agentId);
     if (!live) {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
       if (profileObserved) profileRuleAgreement.not_compared += 1;
+      if (systemdObserved) systemdRuleAgreement.not_compared += 1;
       // Matrix row 1. Without `--live` the audit half was not read, so every
       // domain it feeds says so -- rather than reporting the store half as if
       // it were the whole answer.
@@ -2851,6 +3441,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     } else if (auditEntry === null || audit === undefined || audit.outcome !== "ok") {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
       if (profileObserved) profileRuleAgreement.not_compared += 1;
+      if (systemdObserved) systemdRuleAgreement.not_compared += 1;
       const failed = audit !== undefined && audit.outcome === "failed";
       const state: FleetStatusState = failed ? "error" : "unobserved";
       const reason = auditEntry === null
@@ -2960,11 +3551,14 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           // the disagreement is recorded rather than resolved silently.
           const accumulated = hostByRule.get(ruleId);
           // A retrieval that returns nothing is worse than none. `--domain
-          // registry|systemd|bloodbank --live` spawns no child (they are not in
-          // `AUDIT_PER_AGENT_DOMAINS`), so the narrowed command comes back with
-          // `data.host: []` -- measured on the live fleet for 4 of 6 host
-          // findings, each of which named exactly that command. Those domains
-          // get the unfiltered invocation, which is the one that collects them.
+          // registry|systemd|bloodbank --live` spawns no AUDIT child (they are
+          // not in `AUDIT_PER_AGENT_DOMAINS`), so a narrowed run comes back
+          // without this rule's result -- measured on the live fleet for 4 of 6
+          // host findings, each of which named exactly that command. Those
+          // domains get the unfiltered invocation, which is the one that
+          // collects them. (A `--domain systemd` run is no longer empty: the
+          // systemd observer's own three host findings are collected in every
+          // scope. It is the RULE's reading that the narrowed command loses.)
           const hostRetrieval = retrievalFor(null, AUDIT_PER_AGENT_DOMAINS.has(domain) ? domain : null, true);
           const hostSummary = bounded(redactHome(nonEmptyString(rule.summary) ?? nonEmptyString(rule.title) ?? ruleId));
           // The SAME classifier every observation goes through, so a host
@@ -3098,6 +3692,46 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           }
         }
       }
+
+      // -- rule agreement: the systemd observer against `systemd.sentinel`
+      //    and `hermes.registry-parity`
+      //
+      // The same explicit check, for the same reason: both rules are HOST
+      // scoped and file into `data.host`, so they never meet an agent's
+      // observations in `detectContradictions` at all. Compared over the subset
+      // all three read -- enablement, activity, unit presence, retired units and
+      // retired registry keys. Stability, channel declaration, schedule, tick
+      // and heartbeat result are `not_compared` by construction: neither rule
+      // looks at any of them.
+      if (systemdObserved) {
+        const sentinel = systemdRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString(rule.id) === "systemd.sentinel"));
+        const parity = systemdParityVerdict((audit.rules ?? []).find((rule) => nonEmptyString(rule.id) === "hermes.registry-parity"));
+        // The two rules cover one subset between them: either failing over its
+        // own half of it is the rules' reading of "there is drift here".
+        const ruleVerdict = sentinel === null && parity === null
+          ? null
+          : sentinel === "fail" || parity === "fail" ? "fail" as const : "pass" as const;
+        const observerDrift = systemdObserverDrift(systemdResult);
+        if (ruleVerdict === null || observerDrift === null) systemdRuleAgreement.not_compared += 1;
+        else {
+          systemdRuleAgreement.compared += 1;
+          if ((ruleVerdict === "fail") === observerDrift) systemdRuleAgreement.agree += 1;
+          else {
+            systemdRuleAgreement.disagree += 1;
+            addFinding(ctx, {
+              code: "systemd-rule-disagreement",
+              domain: "systemd",
+              field: SYSTEMD_FIELD_GATEWAY,
+              agent_id: agentId,
+              source: ctx.domainOwner("systemd"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rules systemd.sentinel/hermes.registry-parity report ${ruleVerdict} while the systemd observer finds ${observerDrift ? "drift" : "no drift"} over the service state all three read (unit presence, enablement, activity, retired units and retired registry keys); both readings are kept and neither is resolved silently`,
+            });
+          }
+        }
+      }
     }
 
     // `(agent_id, domain, rule_id)` -- the declared sort key. Byte order, never
@@ -3174,10 +3808,13 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       member_class: memberClass,
       scaffold: scaffoldSummary,
       profile: profileSummary,
+      systemd: systemdSummary,
     });
   }
   // The extras clip belongs to the HOST finding, which is always emitted.
   truncated.push(...profileExtrasNotes);
+  // The same for the unregistered-unit clip (story 1.8).
+  truncated.push(...systemdUnregisteredNotes);
 
   // -- fleet-scoped observations, emitted once, on the domain they belong to --
   const fleetObservations: FleetStatusObservation[] = [];
@@ -3402,6 +4039,49 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       rule_agreement: { ...profileRuleAgreement },
     };
 
+  // The fleet-level systemd summary (story 1.8). `null` when the domain was
+  // not selected. `shared.coverage` and `unregistered.coverage` say whether the
+  // fleet-scope halves were probed at all: an `--agent` run samples one agent's
+  // units and lists nothing, and says so rather than reading as a healthy
+  // shared gateway beside an empty sweep.
+  const systemd: FleetSystemdSummary | null = !domainSet.has("systemd")
+    ? null
+    : {
+      source: SOURCE_SYSTEMD,
+      manager: systemdHealth === null
+        ? { state: "manifest-undeclared", code: "manifest-undeclared" }
+        : { state: bounded(systemdHealth.manager.state, 64), code: systemdHealth.manager.code },
+      window: systemdHealth === null
+        ? { samples: 0, interval_ms: 0 }
+        : { ...systemdHealth.window },
+      units: systemdHealth === null ? { listed: 0, unit_files: 0, transient: 0 } : { ...systemdHealth.units },
+      agents: {
+        ...systemdCounts,
+        unobserved: systemdCounts.unobserved + (systemdCounts.total_registered - systemdCounts.selected),
+      },
+      capability: { ...systemdCapability },
+      shared: {
+        coverage: systemdHealth === null || systemdHealth.shared.state === "unobserved" ? "unobserved" as const : "observed" as const,
+        unit: systemdHealth?.shared.unit ?? null,
+        profile: systemdHealth?.shared.profile ?? null,
+        state: systemdHealth === null ? "unobserved" : systemdHealth.shared.state,
+        code: systemdHealth === null ? "manifest-undeclared" : systemdHealth.shared.code === null ? null : bounded(systemdHealth.shared.code, 64),
+      },
+      unregistered: (() => {
+        const items = systemdHealth?.unregistered?.items ?? [];
+        const byClass = Object.fromEntries(FLEET_SYSTEMD_UNREGISTERED_CLASSES.map((klass) => [klass, items.filter((item) => item.class === klass).length])) as Record<FleetSystemdUnregisteredClass, number>;
+        return {
+          coverage: systemdHealth?.unregistered ? "swept" as const : "not-swept" as const,
+          reason: systemdHealth === null ? "manifest-undeclared" : systemdHealth.unregistered ? null : bounded(systemdHealth.unregisteredReason ?? "not-swept", 64),
+          total: items.length,
+          by_class: byClass,
+          listed: Math.min(items.length, FLEET_STATUS_MAX_ITEMS),
+          truncated: systemdHealth?.unregistered?.truncated ?? false,
+        };
+      })(),
+      rule_agreement: { ...systemdRuleAgreement },
+    };
+
   return {
     contract_path: shownPath(contractPath),
     contract_version: contract.contract_version,
@@ -3416,6 +4096,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     transitions,
     scaffold,
     profile,
+    systemd,
     truncated,
   };
 }

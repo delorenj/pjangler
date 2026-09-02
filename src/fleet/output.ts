@@ -90,7 +90,7 @@ const FLEET_COMMAND_DATA_KEYS: Record<string, readonly string[]> = {
   // future edit drops the key, which is the one thing this table exists to stop.
   "fleet.status": [
     "contract_path", "contract_version", "scope",
-    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "profile", "truncated",
+    "totals", "health", "agents", "domains", "host", "findings", "probes", "transitions", "scaffold", "profile", "systemd", "truncated",
   ],
 };
 
@@ -891,7 +891,23 @@ function severityColor(severity: FleetStatusSeverity): (value: string | number) 
 }
 
 /** Item kinds that are imperfections rather than failures: painted yellow, not red. */
-const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set(["wrong-mode", "unexpected-owned", "unknown-key", "unverifiable"]);
+const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set([
+  "wrong-mode", "unexpected-owned", "unknown-key", "unverifiable",
+  // Story 1.8. A tick still running, a reconcile policy nobody declared, and a
+  // gateway that is undeclared but correctly disabled are warnings, not
+  // failures: the observer ranks them `warn`, and the report must agree.
+  "in-progress", "reconcile-undeclared", "reconcile-opt-out-undeclared", "reconcile-unverifiable",
+  "latest-result-unknown", "tick-unknown", "schedule-unknown",
+]);
+/**
+ * `channel-undeclared` is the ONE kind whose rank depends on the reading beside
+ * it: a row that declares no messaging capability is a `warn` while its gateway
+ * is correctly disabled and inactive, and a `fail` the moment that gateway is
+ * enabled or running -- which is the liveness theatre the epic forbids. The
+ * item's own `observed` half carries the distinction, so the report reads it
+ * rather than guessing from the kind.
+ */
+const REPORT_UNDECLARED_SOFT_OBSERVED = "absent";
 /** Bank codes that mean the pin file exists but cannot be read as a pin. Printed `bank invalid`, never `unpinned`. (`too-large` and `unreadable` rank `error` and print as that state.) */
 const REPORT_BANK_INVALID_CODES: ReadonlySet<string> = new Set(["pin-symlink", "pin-malformed"]);
 /** Item kinds that are information beside a pass: painted dim. */
@@ -937,9 +953,11 @@ function observationLines(observation: FleetStatusObservation, width: number): s
   const items = observation.items ?? [];
   for (const item of items.slice(0, REPORT_MAX_ITEMS)) {
     const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"}${glyph.arrow}${item.observed ?? "-"}` : "";
+    const soft = REPORT_SOFT_ITEM_KINDS.has(item.kind)
+      || (item.kind === "channel-undeclared" && item.observed === REPORT_UNDECLARED_SOFT_OBSERVED);
     const paint = item.kind === "incomplete"
       ? red
-      : REPORT_SOFT_ITEM_KINDS.has(item.kind) ? yellow : REPORT_INFO_ITEM_KINDS.has(item.kind) ? dim : red;
+      : soft ? yellow : REPORT_INFO_ITEM_KINDS.has(item.kind) ? dim : red;
     lines.push(`       ${dim(glyph.arrow)} ${paint(item.kind)} ${bounded(item.path)}${dim(pair)}${item.wip ? ` ${yellow("[wip]")}` : ""}${item.detail ? ` ${dim(`(${item.detail})`)}` : ""}`);
   }
   if (items.length > REPORT_MAX_ITEMS) {
@@ -1021,6 +1039,32 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
     if (renderer === "drifted" && profile.renderer.sections.length) cells.push(red(`drift in ${profile.renderer.sections.join(", ")}`));
     if (profile.identity.state === "fail") cells.push(red("identity"));
     else if (profile.identity.state === "warn") cells.push(yellow("identity warn"));
+    lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells)}`);
+  }
+  // The systemd cell: what the gateway reads as against the capability its own
+  // registry row DECLARES, and whether the last heartbeat tick actually
+  // succeeded. An active timer is not on this line, because an active timer
+  // proves nothing.
+  if (agent.systemd) {
+    const systemd = agent.systemd;
+    const gateway = systemd.gateway;
+    const heartbeat = systemd.heartbeat;
+    const paint = (state: FleetStatusState, text: string): string => (
+      state === "pass" ? dim(text) : state === "warn" ? yellow(text) : state === "unobserved" || state === "unsupported" ? gray(text) : red(text)
+    );
+    const gatewayCell = gateway.state === "pass"
+      ? `gw ${gateway.active ?? "-"}${gateway.stability.stable ? `${glyph.dot}stable` : ""}`
+      : `gw ${gateway.code ?? gateway.active ?? "-"}`;
+    const heartbeatCell = `hb ${heartbeat.latest_result}${glyph.dot}${heartbeat.tick}`;
+    const cells = [
+      paint(gateway.state, gatewayCell),
+      paint(heartbeat.state, heartbeatCell),
+      dim(`capability ${systemd.capability.declared}`),
+      paint(systemd.topology.state, `units ${systemd.topology.installed.length}/${systemd.topology.expected.length}`),
+    ];
+    if (systemd.topology.extra.length) cells.push(red(`${systemd.topology.extra.length} extra unit(s)`));
+    if (!gateway.stability.stable && gateway.stability.transitions.length) cells.push(red(gateway.stability.transitions.join("; ")));
+    if (!gateway.entrypoint.pinned && gateway.entrypoint.family !== "unknown") cells.push(red(`entrypoint ${gateway.entrypoint.family} unpinned`));
     lines.push(`       ${dim(glyph.arrow)} ${joinDot(cells)}`);
   }
   if (agent.truncated) lines.push(`       ${dim(glyph.arrow)} ${yellow(`observations clipped; ${agent.retrieval}`)}`);
@@ -1166,6 +1210,61 @@ export function formatFleetStatusReport(status: FleetStatus): string {
         lines.push(`       ${dim(glyph.arrow)} ${joinDot([dim(`extras swept: ${extras.entries_total} unregistered entr${extras.entries_total === 1 ? "y" : "ies"}`), ...byClass])}${extras.truncated ? ` ${yellow("(root enumeration capped)")}` : ""}`);
       }
       const agreement = profile.rule_agreement;
+      if (agreement.compared || agreement.disagree) {
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+          dim(`rule agreement ${agreement.agree}/${agreement.compared}`),
+          agreement.disagree ? red(`${agreement.disagree} disagree`) : dim("0 disagree"),
+          dim(`${agreement.not_compared} not compared`),
+        ])}`);
+      }
+    }
+    // The systemd summary rides on its domain: the manager and the window it
+    // was sampled over, how many selected agents are healthy per aspect, what
+    // each row DECLARES its messaging capability to be, the fleet-shared
+    // gateway, and what the sweep classified.
+    if (rollup.domain === "systemd" && status.systemd) {
+      const systemd = status.systemd;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        systemd.manager.code === "available" ? green(`manager ${systemd.manager.state}`) : red(`manager ${systemd.manager.code}`),
+        dim(`window ${systemd.window.samples} sample(s) ${systemd.window.interval_ms} ms apart`),
+        dim(`${systemd.units.listed} unit(s) listed, ${systemd.units.unit_files} unit file(s), ${systemd.units.transient} transient`),
+      ])}`);
+      const counts = systemd.agents;
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`agents ${counts.complete} complete of ${counts.selected} selected`),
+        counts.gateway_healthy ? green(`${counts.gateway_healthy} gateway healthy`) : dim("0 gateway healthy"),
+        counts.gateway_deferred ? dim(`${counts.gateway_deferred} gateway deferred`) : dim("0 gateway deferred"),
+        counts.heartbeat_healthy ? green(`${counts.heartbeat_healthy} heartbeat healthy`) : dim("0 heartbeat healthy"),
+        counts.drifted ? red(`${counts.drifted} drifted`) : dim("0 drifted"),
+        counts.incomplete ? yellow(`${counts.incomplete} incomplete`) : dim("0 incomplete"),
+        counts.exception_authorized ? gray(`${counts.exception_authorized} exception`) : dim("0 exception"),
+        counts.unobserved ? yellow(`${counts.unobserved} unobserved`) : dim("0 unobserved"),
+      ])}`);
+      lines.push(`       ${dim(glyph.arrow)} ${joinDot([
+        dim(`topology ok ${counts.topology_ok}`),
+        counts.unstable ? red(`${counts.unstable} unstable`) : dim("0 unstable"),
+        counts.crash_looping ? red(`${counts.crash_looping} crash looping`) : dim("0 crash looping"),
+        dim(`capability ${systemd.capability.active} active, ${systemd.capability.deferred} deferred`),
+        systemd.capability.undeclared ? yellow(`${systemd.capability.undeclared} undeclared`) : dim("0 undeclared"),
+      ])}`);
+      const shared = systemd.shared;
+      lines.push(`       ${dim(glyph.arrow)} ${shared.coverage === "unobserved"
+        ? dim(`shared gateway not observed (${shared.code ?? "scoped"})`)
+        : joinDot([
+          shared.state === "healthy" ? green(`shared gateway ${shared.state}`) : red(`shared gateway ${shared.state}`),
+          dim(`unit ${shared.unit ?? "none declared"}`),
+          dim(`profile ${shared.profile ?? "none declared"}`),
+        ])}`);
+      const unregistered = systemd.unregistered;
+      if (unregistered.coverage === "not-swept") {
+        lines.push(`       ${dim(glyph.arrow)} ${dim(`unregistered units not swept (${unregistered.reason ?? "scoped"})`)}`);
+      } else {
+        const byClass = Object.entries(unregistered.by_class).filter(([, count]) => count > 0).map(([klass, count]) => (
+          klass === "managed-exception" ? dim(`${count} ${klass}`) : yellow(`${count} ${klass}`)
+        ));
+        lines.push(`       ${dim(glyph.arrow)} ${joinDot([dim(`unregistered swept: ${unregistered.total} unit${unregistered.total === 1 ? "" : "s"}`), ...byClass])}${unregistered.truncated ? ` ${yellow("(listing capped)")}` : ""}`);
+      }
+      const agreement = systemd.rule_agreement;
       if (agreement.compared || agreement.disagree) {
         lines.push(`       ${dim(glyph.arrow)} ${joinDot([
           dim(`rule agreement ${agreement.agree}/${agreement.compared}`),

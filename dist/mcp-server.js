@@ -4,9 +4,9 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
+var __export = (target, all2) => {
+  for (var name in all2)
+    __defProp(target, name, { get: all2[name], enumerable: true });
 };
 
 // src/utils/style.ts
@@ -50,14 +50,14 @@ function wrapVisible(text2, width) {
   if (width <= 0) return [text2];
   const lines = [];
   let current = "";
-  for (const word2 of text2.split(/\s+/).filter(Boolean)) {
+  for (const word3 of text2.split(/\s+/).filter(Boolean)) {
     if (!current) {
-      current = word2;
-    } else if (visibleWidth(current) + 1 + visibleWidth(word2) <= width) {
-      current = `${current} ${word2}`;
+      current = word3;
+    } else if (visibleWidth(current) + 1 + visibleWidth(word3) <= width) {
+      current = `${current} ${word3}`;
     } else {
       lines.push(current);
-      current = word2;
+      current = word3;
     }
     while (visibleWidth(current) > width) {
       lines.push(current.slice(0, width));
@@ -4770,7 +4770,7 @@ function validateClaims(value, items, noteMaxBytes) {
     const claimWords = words(claim.text);
     const cited = claim.evidence_ids.map((id) => byId.get(String(id)));
     const citedWords = words(cited.map((item) => `${item.path ?? ""} ${item.value ?? ""} ${item.content ?? ""}`).join(" "));
-    if (![...claimWords].some((word2) => citedWords.has(word2))) return null;
+    if (![...claimWords].some((word3) => citedWords.has(word3))) return null;
     rendered.push(`- ${claim.text.trim()} [${claim.evidence_ids.join(", ")}]`);
   }
   const result2 = rendered.join("\n");
@@ -5098,7 +5098,7 @@ var init_capture = __esm({
 
 // src/mcp-server.ts
 import { existsSync as existsSync27, statSync as statSync8 } from "node:fs";
-import { basename as basename9, dirname as dirname19, join as join37, resolve as resolve23 } from "node:path";
+import { basename as basename9, dirname as dirname19, join as join38, resolve as resolve24 } from "node:path";
 import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -10239,9 +10239,9 @@ function createHermesChecks() {
             { inLineage: () => true, modes: false }
           );
           for (const finding2 of findings) {
-            const word2 = finding2.kind === "stale-content" ? "stale" : finding2.kind;
+            const word3 = finding2.kind === "stale-content" ? "stale" : finding2.kind;
             const shown = relative2(ctx.repoRoot, join3(role.roleDir, ...finding2.path.split("/")));
-            details.push(`${prefix}: ${word2} ${shown}${finding2.detail ? ` (${finding2.detail})` : ""}`);
+            details.push(`${prefix}: ${word3} ${shown}${finding2.detail ? ` (${finding2.detail})` : ""}`);
           }
           if (hasRuntimeSubmoduleMapping(ctx.repoRoot, role)) details.push(`${prefix}: .gitmodules contains retired ${role.role} runtime submodule mapping`);
           if (!profileMetaInheritsDefault(join3(role.roleDir, "runtime", "profile.yaml"))) details.push(`${prefix}: runtime/profile.yaml missing inherited default config metadata`);
@@ -15635,15 +15635,15 @@ var WireMiseAgentHooks = class _WireMiseAgentHooks extends Command {
     const enterRe = /(enter\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
     if (enterRe.test(content)) {
       content = content.replace(enterRe, (_m, head, close) => {
-        const sep9 = /[,[]\s*$/.test(head) ? "" : ",";
-        return `${head}${sep9}
+        const sep10 = /[,[]\s*$/.test(head) ? "" : ",";
+        return `${head}${sep10}
 ${enterAdds}${close}`;
       });
       const leaveRe = /(leave\s*=\s*\[[\s\S]*?)(\n[ \t]*\])/;
       if (leaveRe.test(content)) {
         content = content.replace(leaveRe, (_m, head, close) => {
-          const sep9 = /[,[]\s*$/.test(head) ? "" : ",";
-          return `${head}${sep9}
+          const sep10 = /[,[]\s*$/.test(head) ? "" : ",";
+          return `${head}${sep10}
   "${cr}/.agents/hooks/sync.py --uninstall --quiet",${close}`;
         });
       } else {
@@ -15959,9 +15959,9 @@ function runMigrationForRules(ruleIds, repoArg, dryRun, acceptRegistryMatches = 
     ruleIds
   ));
 }
-function runMigration(selector, repoArg, dryRun, all, acceptRegistryMatches = false, registryPath2) {
+function runMigration(selector, repoArg, dryRun, all2, acceptRegistryMatches = false, registryPath2) {
   const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath2 ? { registryPath: registryPath2 } : {});
-  return publicMigration2(all ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
+  return publicMigration2(all2 ? recipeRegistry.migrateAll(ctx) : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
 }
 
 // src/commands/WireMiseOpInject.ts
@@ -16780,7 +16780,7 @@ import { fileURLToPath as fileURLToPath8 } from "node:url";
 import YAML8 from "yaml";
 
 // src/fleet/types.ts
-var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 4 };
+var FLEET_SUPPORTED_SCHEMA_VERSIONS = { min: 1, max: 5 };
 var FLEET_SCHEMA_VERSION = 1;
 var FLEET_CONTRACT_ROOT_KEYS = [
   "schema_version",
@@ -16794,9 +16794,10 @@ var FLEET_CONTRACT_ROOT_KEYS = [
   "retired",
   "health_policy",
   "scaffold_manifest",
-  "profile_manifest"
+  "profile_manifest",
+  "service_manifest"
 ];
-var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest"];
+var FLEET_CONTRACT_OPTIONAL_ROOT_KEYS = ["health_policy", "scaffold_manifest", "profile_manifest", "service_manifest"];
 var FLEET_HEALTH_POLICY_KEYS = [
   "required_domains",
   "deferred_capabilities",
@@ -16828,6 +16829,29 @@ var FLEET_PROFILE_MANIFEST_MEMORY_KEYS = ["pin_file", "bank_id_template", "reser
 var FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS = ["canonical_dir", "canonical_dir_env", "required", "source"];
 var FLEET_PROFILE_MANIFEST_EXTRAS_KEYS = ["ignored_patterns", "backup_patterns"];
 var FLEET_PROFILE_MANIFEST_LIMITS_KEYS = ["max_file_bytes", "max_root_entries", "max_unit_files", "max_extra_skills"];
+var FLEET_SERVICE_MANIFEST_KEYS = ["stabilization", "probe", "entrypoint", "messaging", "heartbeat", "unregistered", "limits"];
+var FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS = ["samples", "interval_ms"];
+var FLEET_SERVICE_MANIFEST_PROBE_KEYS = ["timeout_ms", "env_allowlist", "manager_available_states"];
+var FLEET_SERVICE_MANIFEST_ENTRYPOINT_KEYS = ["launcher", "pinned_bin_field", "home_env"];
+var FLEET_SERVICE_MANIFEST_MESSAGING_KEYS = [
+  "platforms",
+  "status_field",
+  "verified_status",
+  "deferred_statuses",
+  "enabled_path",
+  "secret_env",
+  "identity_fields"
+];
+var FLEET_SERVICE_MANIFEST_HEARTBEAT_KEYS = [
+  "on_boot_sec",
+  "on_unit_inactive_sec",
+  "overdue_multiplier",
+  "max_tick_seconds",
+  "reconcile_policy_file",
+  "reconcile_state_file"
+];
+var FLEET_SERVICE_MANIFEST_UNREGISTERED_KEYS = ["unit_glob", "retired_candidates"];
+var FLEET_SERVICE_MANIFEST_LIMITS_KEYS = ["max_units", "max_unregistered_units", "max_file_bytes", "max_show_bytes"];
 var FLEET_COMPATIBILITY_KEYS = ["min_schema_version", "max_schema_version"];
 var FLEET_AUTHORITY_KEYS = ["owner", "store", "store_env", "writable_fields", "read_only", "notes"];
 var FLEET_PROJECTION_KEYS = ["field", "source", "target", "direction", "writable_by"];
@@ -16930,6 +16954,14 @@ var PROFILE_MAX_FILE_BYTES = 1024 * 1024;
 var PROFILE_MAX_ROOT_ENTRIES = 5e3;
 var PROFILE_MAX_UNIT_FILES = 500;
 var PROFILE_MAX_EXTRA_SKILLS = 20;
+var FLEET_STATUS_SYSTEMD_CONCURRENCY = 4;
+var SYSTEMD_MAX_SAMPLES = 10;
+var SYSTEMD_MAX_INTERVAL_MS = 1e4;
+var SYSTEMD_MAX_PROBE_TIMEOUT_MS = 6e4;
+var SYSTEMD_MAX_UNITS = 1e3;
+var SYSTEMD_MAX_UNREGISTERED_UNITS = 200;
+var SYSTEMD_MAX_FILE_BYTES = 64 * 1024;
+var SYSTEMD_MAX_SHOW_BYTES = 4 * 1024 * 1024;
 var FLEET_STATUS_EVIDENCE = ["direct", "declared", "derived", "absent"];
 var FLEET_STATUS_FRESHNESS_PRECEDENCE = [
   "stale",
@@ -16965,6 +16997,8 @@ var FLEET_PROFILE_EXTRA_CLASSES = [
   "unclassified",
   "debris-candidate"
 ];
+var FLEET_SYSTEMD_UNREGISTERED_CLASSES = ["retired", "transient", "profile-correlated", "managed-exception", "unclassified"];
+var FLEET_SYSTEMD_CAPABILITY_STATES = ["active", "deferred", "undeclared"];
 
 // src/fleet/contract.ts
 var FLEET_CONTRACT_RELATIVE_PATH = join31("contracts", "fleet-contract.yaml");
@@ -16977,6 +17011,7 @@ var DIRECTION = /^[a-z0-9_]+_to_[a-z0-9_]+$/u;
 var FIELD_PATH = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/u;
 var HOST_PATH = /\/(?:home|Users|root)\/[A-Za-z0-9._-]+(?:\/|$)/u;
 var SECRET_KEY = /(api_key|apikey|password|passwd|secret|token|credential)/iu;
+var SERVICE_SECRET_ENV_PATH = "service_manifest.messaging.secret_env";
 var FLEET_DETECT_MAX_PATTERN_BYTES = 200;
 var NESTED_QUANTIFIER = /\((?:\?[:=!])?[^)]*[+*}][^)]*\)\s*[+*{]/u;
 var SECRET_VALUE = [
@@ -17087,7 +17122,8 @@ function validateFleetContract(document) {
     () => sortDiagnostics(validateRetiredModes(policy)),
     () => sortDiagnostics(validateHealthPolicy(policy)),
     () => sortDiagnostics(validateScaffoldManifest(policy)),
-    () => sortDiagnostics(validateProfileManifest(policy))
+    () => sortDiagnostics(validateProfileManifest(policy)),
+    () => sortDiagnostics(validateServiceManifest(policy))
   ];
   for (const stage of stages) {
     const findings = stage();
@@ -17179,7 +17215,7 @@ function validateStructure(policy, extensions) {
   }
   for (const leaf of leaves) {
     if (HOST_PATH.test(leaf.text)) fail(leaf.path, "contract must not contain an absolute host path");
-    if (SECRET_KEY.test(leaf.path)) fail(leaf.path, "contract must not carry credential-shaped keys");
+    if (SECRET_KEY.test(leaf.path) && !leaf.path.startsWith(SERVICE_SECRET_ENV_PATH)) fail(leaf.path, "contract must not carry credential-shaped keys");
     if (SECRET_VALUE.some((pattern) => pattern.test(leaf.text))) fail(leaf.path, "contract must not carry a credential-shaped value");
     if (FLEET_FORBIDDEN_KEYS.includes(leaf.text)) fail(leaf.path, `forbidden key name: ${leaf.text}`);
   }
@@ -17993,6 +18029,186 @@ function validateProfileManifest(policy) {
   if (generated !== null) requireDeclared(profileLeafFor(generated), "profile_manifest.renderer");
   return findings;
 }
+var UNIT_PATTERN = /^[A-Za-z0-9:_.@{}-]{1,255}\.(?:service|timer|socket|target|path|slice|scope)$/u;
+var IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
+function validateServiceManifest(policy) {
+  const block = policy.service_manifest;
+  if (block === void 0) return [];
+  const findings = [];
+  const fail = (path, message) => {
+    findings.push({ code: "INVALID_INPUT", path, message });
+  };
+  if (!isRecord4(block)) {
+    fail("service_manifest", "service_manifest must be a mapping");
+    return findings;
+  }
+  const closed = (node, at, keys) => {
+    if (!isRecord4(node)) {
+      fail(at, `${at.split(".").pop()} must be a mapping`);
+      return false;
+    }
+    for (const key of Object.keys(node)) {
+      if (!keys.includes(key)) fail(`${at}.${key}`, `unknown ${at} key`);
+    }
+    for (const key of keys) {
+      if (node[key] === void 0) fail(`${at}.${key}`, `${key} is required`);
+    }
+    return true;
+  };
+  const wholeNumber = (value, at, min, max, what) => {
+    if (!Number.isSafeInteger(value) || Number(value) < min) fail(at, `${what} must be a whole number of at least ${min}`);
+    else if (Number(value) > max) fail(at, `${what} may not exceed this build's ceiling of ${max}`);
+  };
+  const nonEmpty = (value, at) => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      fail(at, "must be a non-empty string");
+      return false;
+    }
+    return true;
+  };
+  const uniqueList = (value, at, each) => {
+    if (!Array.isArray(value)) {
+      fail(at, "must be a list");
+      return [];
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    value.forEach((item, index) => {
+      const where = `${at}[${index}]`;
+      if (typeof item !== "string" || item.length === 0) {
+        fail(where, "must be a non-empty string");
+        return;
+      }
+      if (seen.has(item)) fail(where, `duplicate entry ${item}`);
+      seen.add(item);
+      each(item, where);
+      out.push(item);
+    });
+    return out;
+  };
+  closed(block, "service_manifest", FLEET_SERVICE_MANIFEST_KEYS);
+  const declared = declaredWritableFields(policy);
+  const requireDeclared = (leaf, at) => {
+    if (!declared.has(leaf)) fail(at, `${leaf} is not declared writable by any authority`);
+  };
+  const service = isRecord4(policy.service_model) ? policy.service_model : null;
+  const perAgent = service && isRecord4(service.per_agent) ? service.per_agent : {};
+  const shared = service && isRecord4(service.fleet_shared) ? service.fleet_shared : {};
+  const perAgentPatterns = Object.values(perAgent).filter((value) => typeof value === "string" && value.length > 0);
+  const sharedUnit = typeof shared.bloodbank_gateway_unit === "string" ? shared.bloodbank_gateway_unit : null;
+  const stabilization = block.stabilization;
+  if (closed(stabilization, "service_manifest.stabilization", FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS)) {
+    wholeNumber(stabilization.samples, "service_manifest.stabilization.samples", 1, SYSTEMD_MAX_SAMPLES, "samples");
+    wholeNumber(stabilization.interval_ms, "service_manifest.stabilization.interval_ms", 0, SYSTEMD_MAX_INTERVAL_MS, "interval_ms");
+  }
+  const probe2 = block.probe;
+  if (closed(probe2, "service_manifest.probe", FLEET_SERVICE_MANIFEST_PROBE_KEYS)) {
+    wholeNumber(probe2.timeout_ms, "service_manifest.probe.timeout_ms", 100, SYSTEMD_MAX_PROBE_TIMEOUT_MS, "timeout_ms");
+    const allow = uniqueList(probe2.env_allowlist, "service_manifest.probe.env_allowlist", (item, where) => {
+      if (!ENV_KEY.test(item)) fail(where, `not an environment key: ${item}`);
+    });
+    if (Array.isArray(probe2.env_allowlist) && !allow.includes("PATH")) fail("service_manifest.probe.env_allowlist", "env_allowlist must carry PATH, or no child can find systemctl");
+    const states = uniqueList(probe2.manager_available_states, "service_manifest.probe.manager_available_states", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a manager state must be a lower-case word");
+    });
+    if (Array.isArray(probe2.manager_available_states) && states.length === 0) fail("service_manifest.probe.manager_available_states", "must name at least one available manager state");
+  }
+  const entrypoint = block.entrypoint;
+  if (closed(entrypoint, "service_manifest.entrypoint", FLEET_SERVICE_MANIFEST_ENTRYPOINT_KEYS)) {
+    const launcher = entrypoint.launcher;
+    if (!relativeInside(launcher) || launcher.endsWith("/")) fail("service_manifest.entrypoint.launcher", "launcher must be a role-relative file path");
+    const bin = entrypoint.pinned_bin_field;
+    if (typeof bin !== "string" || !FIELD_PATH.test(bin)) fail("service_manifest.entrypoint.pinned_bin_field", "pinned_bin_field must be a dotted field path");
+    else if (!bin.startsWith("agents.{agent_id}.")) fail("service_manifest.entrypoint.pinned_bin_field", "pinned_bin_field must be a per-agent agents.{agent_id}.* field");
+    else requireDeclared(bin, "service_manifest.entrypoint.pinned_bin_field");
+    if (typeof entrypoint.home_env !== "string" || !ENV_KEY.test(entrypoint.home_env)) fail("service_manifest.entrypoint.home_env", "home_env must be an environment key");
+  }
+  const messaging = block.messaging;
+  if (closed(messaging, "service_manifest.messaging", FLEET_SERVICE_MANIFEST_MESSAGING_KEYS)) {
+    const platforms = uniqueList(messaging.platforms, "service_manifest.messaging.platforms", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a platform must be a lower-case identifier");
+    });
+    if (Array.isArray(messaging.platforms) && platforms.length === 0) fail("service_manifest.messaging.platforms", "must name at least one messaging platform");
+    const statusField = messaging.status_field;
+    if (typeof statusField !== "string" || !IDENTIFIER.test(statusField)) fail("service_manifest.messaging.status_field", "status_field must be a lower-case identifier");
+    else {
+      for (const platform2 of platforms) requireDeclared(`agents.{agent_id}.${platform2}.${statusField}`, `service_manifest.messaging.platforms`);
+    }
+    const verified = messaging.verified_status;
+    if (typeof verified !== "string" || !IDENTIFIER.test(verified)) fail("service_manifest.messaging.verified_status", "verified_status must be a lower-case identifier");
+    const deferred = uniqueList(messaging.deferred_statuses, "service_manifest.messaging.deferred_statuses", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "a status must be a lower-case identifier");
+      if (item === verified) fail(where, `${item} is already the verified_status`);
+    });
+    if (Array.isArray(messaging.deferred_statuses) && deferred.length === 0) fail("service_manifest.messaging.deferred_statuses", "must name at least one deferred status");
+    const enabledPath = messaging.enabled_path;
+    if (typeof enabledPath !== "string" || !FIELD_PATH.test(enabledPath)) fail("service_manifest.messaging.enabled_path", "enabled_path must be a dotted key path");
+    else if (!enabledPath.includes("{platform}")) fail("service_manifest.messaging.enabled_path", "enabled_path must carry the {platform} placeholder");
+    const perPlatform = (node, at, each) => {
+      if (!isRecord4(node)) {
+        fail(at, `${at.split(".").pop()} must be a mapping of platform to list`);
+        return;
+      }
+      for (const [platform2, list2] of Object.entries(node)) {
+        const where = `${at}.${platform2}`;
+        if (!platforms.includes(platform2)) fail(where, `${platform2} is not a declared messaging platform`);
+        const items = uniqueList(list2, where, each);
+        if (Array.isArray(list2) && items.length === 0) fail(where, "must name at least one entry");
+      }
+    };
+    perPlatform(messaging.secret_env, "service_manifest.messaging.secret_env", (item, where) => {
+      if (!ENV_KEY.test(item)) fail(where, `secret_env must name environment keys, not values: ${item}`);
+    });
+    perPlatform(messaging.identity_fields, "service_manifest.messaging.identity_fields", (item, where) => {
+      if (!IDENTIFIER.test(item)) fail(where, "an identity field must be a lower-case identifier");
+    });
+  }
+  const heartbeat = block.heartbeat;
+  if (closed(heartbeat, "service_manifest.heartbeat", FLEET_SERVICE_MANIFEST_HEARTBEAT_KEYS)) {
+    wholeNumber(heartbeat.on_boot_sec, "service_manifest.heartbeat.on_boot_sec", 1, 86400, "on_boot_sec");
+    wholeNumber(heartbeat.on_unit_inactive_sec, "service_manifest.heartbeat.on_unit_inactive_sec", 1, 86400, "on_unit_inactive_sec");
+    wholeNumber(heartbeat.overdue_multiplier, "service_manifest.heartbeat.overdue_multiplier", 1, 1e3, "overdue_multiplier");
+    wholeNumber(heartbeat.max_tick_seconds, "service_manifest.heartbeat.max_tick_seconds", 1, 86400, "max_tick_seconds");
+    for (const key of ["reconcile_policy_file", "reconcile_state_file"]) {
+      const value = heartbeat[key];
+      if (!relativeInside(value) || value.endsWith("/")) fail(`service_manifest.heartbeat.${key}`, `${key} must be a role-relative file path`);
+    }
+  }
+  const unregistered = block.unregistered;
+  let unitGlob = null;
+  if (closed(unregistered, "service_manifest.unregistered", FLEET_SERVICE_MANIFEST_UNREGISTERED_KEYS)) {
+    const glob = unregistered.unit_glob;
+    if (nonEmpty(glob, "service_manifest.unregistered.unit_glob")) {
+      if (glob.includes("/") || /^[*?]/u.test(glob) || !/^[A-Za-z0-9@._-]+[*?][A-Za-z0-9@._*?-]*$|^[A-Za-z0-9@._-]+$/u.test(glob)) {
+        fail("service_manifest.unregistered.unit_glob", "unit_glob must be a literal unit-name prefix followed by wildcards");
+      } else unitGlob = rootEntryGlob(glob);
+    }
+    uniqueList(unregistered.retired_candidates, "service_manifest.unregistered.retired_candidates", (item, where) => {
+      if (!UNIT_PATTERN.test(item)) fail(where, "a retired candidate must be a unit-name pattern");
+      else if (!item.includes("{agent_id}")) fail(where, "a retired candidate must carry the {agent_id} placeholder");
+      else if (perAgentPatterns.includes(item)) fail(where, `${item} is a service_model.per_agent pattern, not a retired shape`);
+      else if (sharedUnit !== null && item === sharedUnit) fail(where, `${item} is the fleet-shared gateway, not a retired shape`);
+      else if (unitGlob !== null && !unitGlob.test(item.replaceAll("{agent_id}", "x"))) fail(where, `${item} falls outside unit_glob, so the sweep could never see it`);
+    });
+  }
+  const limits = block.limits;
+  if (closed(limits, "service_manifest.limits", FLEET_SERVICE_MANIFEST_LIMITS_KEYS)) {
+    const ceilings = {
+      max_units: SYSTEMD_MAX_UNITS,
+      max_unregistered_units: SYSTEMD_MAX_UNREGISTERED_UNITS,
+      max_file_bytes: SYSTEMD_MAX_FILE_BYTES,
+      max_show_bytes: SYSTEMD_MAX_SHOW_BYTES
+    };
+    for (const key of FLEET_SERVICE_MANIFEST_LIMITS_KEYS) {
+      wholeNumber(limits[key], `service_manifest.limits.${key}`, 1, ceilings[key], key);
+    }
+  }
+  for (const pattern of perAgentPatterns) requireDeclared(`units.${pattern}`, "service_manifest");
+  if (sharedUnit !== null) requireDeclared(`units.${sharedUnit}`, "service_manifest");
+  requireDeclared("agents.{agent_id}.systemd.gateway_unit", "service_manifest");
+  requireDeclared("agents.{agent_id}.systemd.heartbeat_timer", "service_manifest");
+  return findings;
+}
 
 // src/fleet/output.ts
 import { homedir as homedir11, userInfo as userInfo2 } from "node:os";
@@ -18041,6 +18257,10 @@ var SOURCE_EVIDENCE = Object.freeze({
   // The profile observer (story 1.7) lstats and reads the profile tree itself
   // and runs the canonical renderer's own check against it.
   "fleet-profile": "direct",
+  // The systemd observer (story 1.8) samples the user manager itself: every
+  // unit state it reports is a `systemctl --user show` it ran, never a
+  // registry field's claim.
+  "fleet-systemd": "direct",
   "declared-gap": "absent"
 });
 var UNREAD_STATES = /* @__PURE__ */ new Set(["unobserved", "unsupported", "error"]);
@@ -18677,6 +18897,22 @@ function runBoundedChild(ctx, command, args, options = {}) {
       }
       finish({ outcome: "ok", code, overflow: false, keep: true });
     });
+  });
+}
+function sleepBounded(ctx, ms) {
+  const remaining = remainingMs(ctx);
+  const wait = Math.max(0, Math.min(ms, Number.isFinite(remaining) ? remaining : ms));
+  if (wait === 0) return Promise.resolve();
+  return new Promise((settle, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new FleetError("CANCELLED", "Fleet command was cancelled before it completed"));
+    };
+    const timer = setTimeout(() => {
+      ctx.signal.removeEventListener("abort", onAbort);
+      settle();
+    }, wait);
+    ctx.signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 async function mapBounded(items, limit, run) {
@@ -20487,7 +20723,7 @@ async function collectFleetProvenance(options) {
 import { createHash as createHash11 } from "node:crypto";
 import { existsSync as existsSync26, readFileSync as readFileSync26 } from "node:fs";
 import { homedir as homedir14 } from "node:os";
-import { isAbsolute as isAbsolute11, join as join36, resolve as resolve22 } from "node:path";
+import { isAbsolute as isAbsolute12, join as join37, resolve as resolve23 } from "node:path";
 
 // src/fleet/profile.ts
 init_boardUrl();
@@ -21349,10 +21585,12 @@ async function inspectAgent(ctx, shared, input) {
     probe: probeRecord
   };
 }
+function resolveConfigHome(env2, home) {
+  return env2.XDG_CONFIG_HOME?.trim() || join34(home, ".config");
+}
 function unitReferences(ctx) {
   const counts = /* @__PURE__ */ new Map();
-  const configHome = ctx.env.XDG_CONFIG_HOME?.trim() || join34(ctx.home, ".config");
-  const dir = join34(configHome, "systemd", "user");
+  const dir = join34(resolveConfigHome(ctx.env, ctx.home), "systemd", "user");
   let names = [];
   try {
     names = readdirSync10(dir).filter((name) => name.endsWith(".service") || name.endsWith(".timer")).sort();
@@ -22106,6 +22344,1165 @@ async function collectScaffoldParity(ctx) {
   return { source: source.record, agents, probes };
 }
 
+// src/fleet/systemd.ts
+import YAML11 from "yaml";
+import { isAbsolute as isAbsolute11, join as join36, resolve as resolve22, sep as sep9 } from "node:path";
+var SYSTEMD_PROBE_KIND = "systemd";
+var SYSTEMCTL = "systemctl";
+var SYSTEMD_READ_VERBS = ["is-system-running", "list-units", "list-unit-files", "show"];
+var SYSTEMD_CHILD_FLAGS = ["--no-pager", "--plain", "--no-legend"];
+var SYSTEMD_CHILD_PINS = Object.freeze({
+  LC_ALL: "C",
+  SYSTEMD_PAGER: "",
+  SYSTEMD_COLORS: "0",
+  SYSTEMD_URLIFY: "0"
+});
+var SYSTEMD_SHOW_PROPERTIES = [
+  "Id",
+  "Names",
+  "LoadState",
+  "LoadError",
+  "UnitFileState",
+  "ActiveState",
+  "SubState",
+  "Result",
+  "ExecMainStatus",
+  "ExecMainCode",
+  "NRestarts",
+  "FragmentPath",
+  "DropInPaths",
+  "ExecStart",
+  "Environment",
+  "Type",
+  "Restart",
+  "ExecMainStartTimestampMonotonic",
+  "ExecMainExitTimestampMonotonic",
+  "TimeoutStartUSec",
+  "Unit",
+  "Triggers",
+  "TriggeredBy",
+  "TimersMonotonic",
+  "LastTriggerUSecMonotonic",
+  "NextElapseUSecMonotonic"
+];
+var SYSTEMD_CLASSIFY_PROPERTIES = [
+  "Id",
+  "LoadState",
+  "UnitFileState",
+  "ActiveState",
+  "SubState",
+  "Description",
+  "Environment",
+  "FragmentPath"
+];
+var SYSTEMD_SYSTEM_UNIT_DIRS = ["/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user"];
+var ENABLED_STATES = /* @__PURE__ */ new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
+var DISABLED_STATES = /* @__PURE__ */ new Set(["disabled", "masked", "masked-runtime"]);
+var TIMER_SUBSTATES = /* @__PURE__ */ new Set(["waiting", "running", "elapsed"]);
+var UNIT_NAME = /^[A-Za-z0-9:_.@\\-]{1,255}\.(?:service|timer|socket|target|path|slice|scope|mount|automount|swap|device)$/u;
+var SAFE_SEGMENT2 = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+var WORD2 = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$/u;
+var PROFILE_TOKEN = /(?:^|\s)--profile[\s=]+([A-Za-z0-9][A-Za-z0-9_-]{0,63})(?:\s|$)/u;
+var DURATION_UNITS = [
+  ["usec", 1n],
+  ["us", 1n],
+  ["msec", 1000n],
+  ["ms", 1000n],
+  ["minutes", 60000000n],
+  ["minute", 60000000n],
+  ["min", 60000000n],
+  ["m", 60000000n],
+  ["seconds", 1000000n],
+  ["second", 1000000n],
+  ["sec", 1000000n],
+  ["s", 1000000n],
+  ["hours", 3600000000n],
+  ["hour", 3600000000n],
+  ["hr", 3600000000n],
+  ["h", 3600000000n],
+  ["days", 86400000000n],
+  ["day", 86400000000n],
+  ["d", 86400000000n],
+  ["weeks", 604800000000n],
+  ["week", 604800000000n],
+  ["w", 604800000000n],
+  ["months", 2629800000000n],
+  ["month", 2629800000000n],
+  ["M", 2629800000000n],
+  ["years", 31557600000000n],
+  ["year", 31557600000000n],
+  ["y", 31557600000000n]
+];
+function word2(value) {
+  return typeof value === "string" && WORD2.test(value) ? value : "unparsed";
+}
+function unitWord(value) {
+  return typeof value === "string" && UNIT_NAME.test(value) ? value : "unparsed";
+}
+function within3(root, candidate) {
+  return candidate === root || candidate.startsWith(`${root}${sep9}`);
+}
+function aspect2(state, items, observed, desired, summary) {
+  return { state, items, observed, desired, summary };
+}
+var RANK = ["pass", "warn", "fail", "error"];
+function worseOf(a, b) {
+  return RANK.indexOf(b) > RANK.indexOf(a) ? b : a;
+}
+function systemctlArgv(verb, rest = []) {
+  if (!SYSTEMD_READ_VERBS.includes(verb)) {
+    throw new Error(`refusing to spawn systemctl ${verb}: the systemd observer is read-only`);
+  }
+  return ["--user", verb, ...SYSTEMD_CHILD_FLAGS, ...rest];
+}
+function systemctlEnv(ctx) {
+  const env2 = {};
+  for (const key of ctx.manifest.probe.env_allowlist) {
+    const value = ctx.env[key];
+    if (typeof value === "string") env2[key] = value;
+  }
+  for (const [key, value] of Object.entries(SYSTEMD_CHILD_PINS)) env2[key] = value;
+  return env2;
+}
+function parseSystemdUsec(raw) {
+  if (raw === void 0) return null;
+  const value = raw.trim();
+  if (value === "" || value === "infinity" || value === "n/a") return null;
+  if (/^\d+$/u.test(value)) return BigInt(value);
+  let total = 0n;
+  let matched = false;
+  const token = /(\d+(?:\.\d+)?)\s*([A-Za-z]+)/gu;
+  let hit;
+  while ((hit = token.exec(value)) !== null) {
+    const unit = DURATION_UNITS.find(([name]) => name === hit[2]);
+    if (unit === void 0) return null;
+    total += BigInt(Math.floor(Number(hit[1]) * Number(unit[1])));
+    matched = true;
+  }
+  return matched ? total : null;
+}
+function parseShowBlocks(text2) {
+  const units = /* @__PURE__ */ new Map();
+  for (const block of text2.split(/\n[ \t]*\n/u)) {
+    const properties = /* @__PURE__ */ new Map();
+    for (const line of block.split("\n")) {
+      const at = line.indexOf("=");
+      if (at <= 0) continue;
+      const key = line.slice(0, at);
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/u.test(key)) continue;
+      const existing = properties.get(key);
+      if (existing === void 0) properties.set(key, [line.slice(at + 1)]);
+      else existing.push(line.slice(at + 1));
+    }
+    const id = properties.get("Id")?.[0];
+    if (id === void 0 || id === "") continue;
+    if (!units.has(id)) units.set(id, properties);
+  }
+  return units;
+}
+function one(sample, key) {
+  return sample?.get(key)?.[0];
+}
+function all(sample, key) {
+  return sample?.get(key) ?? [];
+}
+function parseExecStart(raw) {
+  if (raw === void 0) return { path: null, argv0: null };
+  const path = /(?:^|[{;\s])path=([^;]+?)\s*(?:;|\}|$)/u.exec(raw);
+  const argv = /argv\[\]=(\S+)/u.exec(raw);
+  return { path: path ? path[1].trim() : null, argv0: argv ? argv[1] : null };
+}
+function parseEnvironment(lines, keys) {
+  const wanted = new Set(keys);
+  const out = {};
+  for (const key of keys) out[key] = null;
+  for (const line of lines) {
+    for (const token of line.split(/\s+/u)) {
+      const at = token.indexOf("=");
+      if (at <= 0) continue;
+      const key = token.slice(0, at);
+      if (!wanted.has(key) || out[key] !== null) continue;
+      out[key] = token.slice(at + 1);
+    }
+  }
+  return out;
+}
+function parseTimersMonotonic(lines) {
+  const out = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const hit = /\{\s*([A-Za-z]+USec)\s*=\s*([^;}]+?)\s*(?:;|\})/u.exec(line);
+    if (hit === null) continue;
+    const usec = parseSystemdUsec(hit[2]);
+    if (usec !== null && !out.has(hit[1])) out.set(hit[1], usec);
+  }
+  return out;
+}
+function unitView(unit, sample) {
+  const reported = (key) => {
+    const value = one(sample, key);
+    return value === void 0 || value === "" ? null : word2(value);
+  };
+  return {
+    unit,
+    load: sample === null ? null : reported("LoadState"),
+    unit_file: sample === null ? null : reported("UnitFileState"),
+    active: sample === null ? null : reported("ActiveState"),
+    sub: sample === null ? null : reported("SubState")
+  };
+}
+function numeric(sample, key) {
+  const raw = one(sample, key);
+  if (raw === void 0 || raw === "") return void 0;
+  return /^-?\d+$/u.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
+}
+function derive(pattern, agentId) {
+  if (typeof pattern !== "string" || pattern === "") return null;
+  if (!SAFE_SEGMENT2.test(agentId)) return null;
+  const name = pattern.replaceAll("{agent_id}", agentId);
+  return UNIT_NAME.test(name) ? name : null;
+}
+async function probeManager(ctx) {
+  const result2 = await probeText(ctx.run, SYSTEMCTL, systemctlArgv("is-system-running"), {
+    env: systemctlEnv(ctx),
+    timeoutMs: ctx.manifest.probe.timeout_ms,
+    keepStdoutOnFailure: true
+  });
+  throwIfCancelled(ctx.run);
+  const record = (code, state, detail) => ({ code, state, detail });
+  const probe2 = (outcome, reason) => ({
+    id: `${SYSTEMD_PROBE_KIND}:is-system-running`,
+    kind: SYSTEMD_PROBE_KIND,
+    target: "is-system-running",
+    outcome,
+    reason
+  });
+  if (result2.outcome === "timeout") {
+    return {
+      record: record("manager-timeout", "timeout", `systemctl --user is-system-running did not answer within ${ctx.manifest.probe.timeout_ms} ms; no unit was sampled`),
+      probe: probe2("timeout", "manager-timeout")
+    };
+  }
+  const answer = (result2.value ?? "").trim().split(/\s+/u)[0] ?? "";
+  if (answer === "") {
+    return {
+      record: record("manager-unavailable", "unreachable", "systemctl --user is-system-running produced no answer; there is no user manager to observe on this host"),
+      probe: probe2(result2.outcome === "cancelled" ? "cancelled" : "failed", "manager-unavailable")
+    };
+  }
+  if (!ctx.manifest.probe.manager_available_states.includes(answer)) {
+    return {
+      record: record("manager-unavailable", word2(answer), `the user manager reports ${word2(answer)}, which service_manifest.probe.manager_available_states does not list; no unit was sampled`),
+      probe: probe2("failed", "manager-unavailable")
+    };
+  }
+  return {
+    record: record("available", word2(answer), `the user manager reports ${word2(answer)}, which the contract lists as available`),
+    probe: probe2("ok", null)
+  };
+}
+function emptyListing() {
+  return { units: /* @__PURE__ */ new Map(), files: /* @__PURE__ */ new Map(), probes: [], truncated: false, error: null };
+}
+async function listFleet(ctx) {
+  const listing = emptyListing();
+  const env2 = systemctlEnv(ctx);
+  const record = (verb, outcome, reason) => {
+    listing.probes.push({ id: `${SYSTEMD_PROBE_KIND}:${verb}`, kind: SYSTEMD_PROBE_KIND, target: verb, outcome, reason });
+  };
+  const glob = ctx.manifest.unregistered.unit_glob;
+  const units = await probeText(ctx.run, SYSTEMCTL, systemctlArgv("list-units", [glob, "--all", "--output=json"]), {
+    env: env2,
+    timeoutMs: ctx.manifest.probe.timeout_ms,
+    keepStdoutOnFailure: true
+  });
+  throwIfCancelled(ctx.run);
+  if (units.outcome !== "ok") {
+    listing.error = units.outcome === "timeout" ? "listing-timeout" : "listing-failed";
+    record("list-units", units.outcome, listing.error);
+    return listing;
+  }
+  try {
+    const parsed = JSON.parse(units.value ?? "[]");
+    if (!Array.isArray(parsed)) throw new Error("not a list");
+    if (parsed.length > ctx.manifest.limits.max_units) listing.truncated = true;
+    for (const row of parsed.slice(0, ctx.manifest.limits.max_units)) {
+      if (typeof row !== "object" || row === null) continue;
+      const entry = row;
+      const name = typeof entry.unit === "string" ? entry.unit : null;
+      if (name === null || !UNIT_NAME.test(name)) continue;
+      listing.units.set(name, {
+        load: word2(entry.load),
+        active: word2(entry.active),
+        sub: word2(entry.sub),
+        // The description is NOT emitted; it is kept only so the transient
+        // classification can look for an exact `--profile <name>` token in it.
+        description: typeof entry.description === "string" ? entry.description : ""
+      });
+    }
+    record("list-units", "ok", null);
+  } catch {
+    listing.error = "listing-malformed";
+    record("list-units", "failed", listing.error);
+    return listing;
+  }
+  const files = await probeText(ctx.run, SYSTEMCTL, systemctlArgv("list-unit-files", [glob, "--output=json"]), {
+    env: env2,
+    timeoutMs: ctx.manifest.probe.timeout_ms,
+    keepStdoutOnFailure: true
+  });
+  throwIfCancelled(ctx.run);
+  if (files.outcome !== "ok") {
+    listing.error = files.outcome === "timeout" ? "listing-timeout" : "listing-failed";
+    record("list-unit-files", files.outcome, listing.error);
+    return listing;
+  }
+  try {
+    const parsed = JSON.parse(files.value ?? "[]");
+    if (!Array.isArray(parsed)) throw new Error("not a list");
+    if (parsed.length > ctx.manifest.limits.max_units) listing.truncated = true;
+    for (const row of parsed.slice(0, ctx.manifest.limits.max_units)) {
+      if (typeof row !== "object" || row === null) continue;
+      const entry = row;
+      const name = typeof entry.unit_file === "string" ? entry.unit_file : null;
+      if (name === null || !UNIT_NAME.test(name)) continue;
+      listing.files.set(name, word2(entry.state));
+    }
+    record("list-unit-files", "ok", null);
+  } catch {
+    listing.error = "listing-malformed";
+    record("list-unit-files", "failed", listing.error);
+  }
+  return listing;
+}
+async function sampleWindow(ctx, unitsOfInterest) {
+  const window = { samples: /* @__PURE__ */ new Map(), taken: 0, probes: [], error: null };
+  for (const unit of unitsOfInterest) window.samples.set(unit, []);
+  if (unitsOfInterest.length === 0) return window;
+  const env2 = systemctlEnv(ctx);
+  const argv = systemctlArgv("show", ["-p", SYSTEMD_SHOW_PROPERTIES.join(","), ...unitsOfInterest]);
+  for (let index = 0; index < ctx.manifest.stabilization.samples; index += 1) {
+    if (index > 0) await sleepBounded(ctx.run, ctx.manifest.stabilization.interval_ms);
+    throwIfCancelled(ctx.run);
+    const result2 = await probeText(ctx.run, SYSTEMCTL, argv, { env: env2, timeoutMs: ctx.manifest.probe.timeout_ms, keepStdoutOnFailure: true });
+    throwIfCancelled(ctx.run);
+    const id = `${SYSTEMD_PROBE_KIND}:show:${index}`;
+    const target = `${unitsOfInterest.length} unit(s)`;
+    if (result2.outcome !== "ok") {
+      const reason = result2.outcome === "timeout" ? "show-timeout" : "show-failed";
+      window.probes.push({ id, kind: SYSTEMD_PROBE_KIND, target, outcome: result2.outcome, reason });
+      if (window.taken === 0) window.error = reason;
+      continue;
+    }
+    const text2 = result2.value ?? "";
+    if (Buffer.byteLength(text2) > ctx.manifest.limits.max_show_bytes) {
+      window.probes.push({ id, kind: SYSTEMD_PROBE_KIND, target, outcome: "failed", reason: "show-too-large" });
+      if (window.taken === 0) window.error = "show-too-large";
+      continue;
+    }
+    const parsed = parseShowBlocks(text2);
+    for (const unit of unitsOfInterest) window.samples.get(unit).push(parsed.get(unit) ?? null);
+    window.taken += 1;
+    window.error = null;
+    window.probes.push({ id, kind: SYSTEMD_PROBE_KIND, target, outcome: "ok", reason: null });
+  }
+  return window;
+}
+function stabilityKey(sample) {
+  if (sample === null) return "absent";
+  return [
+    one(sample, "LoadState") ?? "-",
+    one(sample, "UnitFileState") ?? "-",
+    one(sample, "ActiveState") ?? "-",
+    one(sample, "SubState") ?? "-",
+    one(sample, "Result") ?? "-",
+    one(sample, "ExecMainStatus") ?? "-"
+  ].join("/");
+}
+function stabilitySummary(sample) {
+  if (sample === null) return "absent";
+  return `${word2(one(sample, "ActiveState"))}/${word2(one(sample, "SubState"))}`;
+}
+function evaluateStability(samples) {
+  const transitions = [];
+  const malformed = [];
+  let stable = true;
+  for (let index = 1; index < samples.length; index += 1) {
+    if (stabilityKey(samples[index - 1]) === stabilityKey(samples[index])) continue;
+    stable = false;
+    const summary = `${stabilitySummary(samples[index - 1])} -> ${stabilitySummary(samples[index])}`;
+    if (!transitions.includes(summary)) transitions.push(summary);
+  }
+  let first = null;
+  let last = null;
+  for (const sample of samples) {
+    const value = numeric(sample, "NRestarts");
+    if (value === void 0) continue;
+    if (Number.isNaN(value)) {
+      if (!malformed.includes("NRestarts")) malformed.push("NRestarts");
+      continue;
+    }
+    if (first === null) first = value;
+    last = value;
+  }
+  const crashLooping = first !== null && last !== null && last > first;
+  if (crashLooping) {
+    const summary = `restarts ${first} -> ${last}`;
+    if (!transitions.includes(summary)) transitions.push(summary);
+  }
+  return { stable: stable && !crashLooping, crashLooping, transitions, restarts: last, malformed };
+}
+function classifyEntrypoint(path, roleDir, launcher, hermesBin) {
+  if (path === null || path === "") return { family: "unknown", pinned: false };
+  const launcherPath = roleDir === null ? null : resolve22(roleDir, launcher);
+  if (launcherPath !== null && resolve22(path) === launcherPath) return { family: "launcher", pinned: true };
+  if (hermesBin !== null && resolve22(path) === resolve22(hermesBin)) return { family: "hermes-bin", pinned: true };
+  if (/(?:^|\/)hermes$/u.test(path)) return { family: "hermes-bin", pinned: false };
+  if (path.endsWith(launcher.slice(launcher.lastIndexOf("/") + 1))) return { family: "launcher", pinned: false };
+  return { family: "other", pinned: false };
+}
+function classifyHome(home, expected, fleetHomeReal) {
+  if (home === null || home === "") return "absent";
+  const resolved = resolve22(home);
+  if (!isAbsolute11(resolved) || !within3(fleetHomeReal, resolved)) return "unsafe";
+  if (expected === null) return "unknown";
+  return resolved === resolve22(expected) ? "matches" : "mismatch";
+}
+function readDeltaEnablement(ctx, profileName, platforms) {
+  const enabled2 = {};
+  const secrets = {};
+  for (const platform2 of platforms) {
+    enabled2[platform2] = null;
+    secrets[platform2] = false;
+  }
+  if (profileName === null || ctx.profileRoot === null || !isSafePathSegment(profileName)) return { enabled: enabled2, secrets, read: null };
+  const path = join36(ctx.profileRoot, profileName, ctx.overrideFile);
+  if (entryStat(path).kind !== "file") return { enabled: enabled2, secrets, read: null };
+  const read = readBounded(path, ctx.manifest.limits.max_file_bytes);
+  if (!("bytes" in read)) return { enabled: enabled2, secrets, read };
+  let document;
+  try {
+    document = YAML11.parse(read.bytes.toString("utf8"));
+  } catch {
+    return { enabled: enabled2, secrets, read: { error: "unreadable" } };
+  }
+  const at = (root, path2) => {
+    let cursor = root;
+    for (const key of path2) {
+      if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return void 0;
+      cursor = cursor[key];
+    }
+    return cursor;
+  };
+  for (const platform2 of platforms) {
+    const segments = ctx.manifest.messaging.enabled_path.replaceAll("{platform}", platform2).split(".");
+    const value = at(document, segments);
+    enabled2[platform2] = typeof value === "boolean" ? value : null;
+    const keys = ctx.manifest.messaging.secret_env[platform2] ?? [];
+    const block = at(document, ["secrets", "onepassword", "env"]);
+    secrets[platform2] = keys.length > 0 && typeof block === "object" && block !== null && keys.every((key) => typeof block[key] === "string" && block[key].trim() !== "");
+  }
+  return { enabled: enabled2, secrets, read };
+}
+function readReconcile(ctx, roleDir) {
+  const { reconcile_policy_file, reconcile_state_file } = ctx.manifest.heartbeat;
+  if (roleDir === null) return { declared: "unverifiable", evidence: "not-read", kind: "reconcile-unverifiable" };
+  const policyPath = join36(roleDir, ...reconcile_policy_file.split("/"));
+  if (entryStat(policyPath).kind !== "file") return { declared: "undeclared", evidence: "not-applicable", kind: "reconcile-undeclared" };
+  const read = readBounded(policyPath, ctx.manifest.limits.max_file_bytes);
+  if (!("bytes" in read)) return { declared: "unreadable", evidence: "not-read", kind: "policy-unreadable" };
+  let document;
+  try {
+    document = YAML11.parse(read.bytes.toString("utf8"));
+  } catch {
+    return { declared: "unreadable", evidence: "not-read", kind: "policy-unreadable" };
+  }
+  const block = typeof document === "object" && document !== null && !Array.isArray(document) ? document.reconcile : void 0;
+  if (typeof block !== "object" || block === null || Array.isArray(block)) {
+    return { declared: "undeclared", evidence: "not-applicable", kind: "reconcile-undeclared" };
+  }
+  const record = block;
+  if (record.enabled !== true) {
+    if (record.explicit_opt_out === true) return { declared: "opted-out", evidence: "not-applicable", kind: null };
+    return { declared: "disabled", evidence: "not-applicable", kind: "reconcile-opt-out-undeclared" };
+  }
+  const statePath = join36(roleDir, ...reconcile_state_file.split("/"));
+  if (entryStat(statePath).kind !== "file") return { declared: "enabled", evidence: "state-missing", kind: "checkpoint-only" };
+  const state = readBounded(statePath, ctx.manifest.limits.max_file_bytes);
+  if (!("bytes" in state)) return { declared: "enabled", evidence: "state-unreadable", kind: "state-unreadable" };
+  let parsed;
+  try {
+    parsed = JSON.parse(state.bytes.toString("utf8"));
+  } catch {
+    return { declared: "enabled", evidence: "state-unreadable", kind: "state-unreadable" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { declared: "enabled", evidence: "state-unreadable", kind: "state-unreadable" };
+  }
+  const keys = parsed;
+  const full = keys.last_full_run_epoch !== void 0 && keys.last_runner_completed_at !== void 0;
+  return { declared: "enabled", evidence: full ? "full-run" : "checkpoint-only", kind: full ? null : "checkpoint-only" };
+}
+function erroredAspect2(kind, unit, detail, summary) {
+  return aspect2("error", [{ path: unit, kind, desired: "an observation of the user manager", observed: kind, detail }], kind, "an observation of the user manager", summary);
+}
+function emptyAgentResult2(input, expected, failure, platforms) {
+  const view = (unit) => ({ unit, load: null, unit_file: null, active: null, sub: null });
+  const [gatewayUnit, timerUnit, serviceUnit] = expected;
+  return {
+    agentId: input.agentId,
+    topology: { ...failure(gatewayUnit ?? input.agentId), expected, installed: [], missing: [], extra: [] },
+    heartbeatTimerRow: failure(timerUnit ?? input.agentId),
+    capability: {
+      declared: "undeclared",
+      platforms: Object.fromEntries(platforms.map((platform2) => [platform2, "undeclared"])),
+      deltaDisabled: Object.fromEntries(platforms.map((platform2) => [platform2, null]))
+    },
+    gateway: {
+      ...failure(gatewayUnit ?? input.agentId),
+      view: view(gatewayUnit ?? "(underivable)"),
+      code: null,
+      result: null,
+      execStatus: null,
+      restarts: null,
+      entrypoint: { family: "unknown", pinned: false },
+      home: "unknown",
+      stability: { samples: 0, stable: false, transitions: [] }
+    },
+    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), paired: false, schedule: "unknown", tick: "unknown" },
+    service: {
+      ...failure(serviceUnit ?? input.agentId),
+      view: view(serviceUnit ?? "(underivable)"),
+      result: null,
+      execStatus: null,
+      entrypoint: { family: "unknown", pinned: false },
+      latestResult: "unknown",
+      reconcile: { declared: "unverifiable", evidence: "not-read" }
+    }
+  };
+}
+function inspectAgent2(ctx, shared, input) {
+  const { manifest } = ctx;
+  const platforms = manifest.messaging.platforms;
+  const perAgent = ctx.serviceModel?.per_agent ?? {};
+  const gatewayUnit = derive(perAgent.gateway_unit, input.agentId);
+  const timerUnit = derive(perAgent.heartbeat_timer, input.agentId);
+  const serviceUnit = derive(perAgent.heartbeat_service, input.agentId);
+  const expected = [gatewayUnit, timerUnit, serviceUnit].filter((unit) => unit !== null).sort();
+  if (shared.manager.code !== "available") {
+    const kind = shared.manager.code === "manager-timeout" ? "manager-timeout" : "manager-unavailable";
+    return emptyAgentResult2(input, expected, (unit) => erroredAspect2(kind, unit, shared.manager.code, `not observed: ${shared.manager.detail}`), platforms);
+  }
+  if (gatewayUnit === null || timerUnit === null || serviceUnit === null) {
+    return emptyAgentResult2(input, expected, (unit) => aspect2(
+      "error",
+      [{ path: unit, kind: "agent-id-unsafe", desired: "a unit name derived from service_model.per_agent", observed: "underivable", detail: null }],
+      "underivable",
+      "a unit name derived from service_model.per_agent",
+      "the agent id is not one safe lower-case segment, so no canonical unit name can be derived for it"
+    ), platforms);
+  }
+  if (shared.window.taken === 0) {
+    const kind = shared.window.error === "show-timeout" ? "show-timeout" : shared.window.error === "show-too-large" ? "show-too-large" : "show-failed";
+    return emptyAgentResult2(input, expected, (unit) => erroredAspect2(kind, unit, shared.window.error ?? "show-failed", "not observed: the stability window produced no sample of the user manager"), platforms);
+  }
+  const samplesOf = (unit) => shared.window.samples.get(unit) ?? [];
+  const latest = (unit) => {
+    const list2 = samplesOf(unit);
+    for (let index = list2.length - 1; index >= 0; index -= 1) if (list2[index] !== null) return list2[index];
+    return null;
+  };
+  const loaded = (unit) => {
+    const sample = latest(unit);
+    return sample !== null && one(sample, "LoadState") === "loaded";
+  };
+  const fleetHomeReal = resolve22(ctx.fleetHome);
+  const profileHome = input.profileName !== null && ctx.profileRoot !== null && isSafePathSegment(input.profileName) ? join36(ctx.profileRoot, input.profileName) : null;
+  const declaredPlatforms = {};
+  for (const platform2 of platforms) {
+    const status = input.messaging[platform2]?.status ?? null;
+    declaredPlatforms[platform2] = status === manifest.messaging.verified_status ? "verified" : status !== null && manifest.messaging.deferred_statuses.includes(status) ? "deferred" : "undeclared";
+  }
+  const anyVerified = platforms.some((platform2) => declaredPlatforms[platform2] === "verified");
+  const anyDeferred = platforms.some((platform2) => declaredPlatforms[platform2] === "deferred");
+  const capability = anyVerified ? "active" : anyDeferred ? "deferred" : "undeclared";
+  const delta = readDeltaEnablement(ctx, input.profileName, platforms);
+  const topologyItems = [];
+  const installed = [];
+  const missing = [];
+  const extra = [];
+  for (const [unit, kind] of [
+    [gatewayUnit, "gateway-missing"],
+    [timerUnit, "heartbeat-timer-missing"],
+    [serviceUnit, "heartbeat-service-missing"]
+  ]) {
+    if (loaded(unit)) installed.push(unit);
+    else {
+      missing.push(unit);
+      topologyItems.push({ path: unit, kind, desired: "loaded", observed: word2(one(latest(unit), "LoadState") ?? "not-found"), detail: null });
+    }
+  }
+  installed.sort();
+  missing.sort();
+  if (input.storedGatewayUnit !== null && input.storedGatewayUnit !== "" && input.storedGatewayUnit !== gatewayUnit) {
+    topologyItems.push({ path: unitWord(input.storedGatewayUnit), kind: "misnamed-gateway", desired: gatewayUnit, observed: unitWord(input.storedGatewayUnit), detail: `misnamed-gateway:${unitWord(input.storedGatewayUnit)}` });
+    if (loaded(input.storedGatewayUnit)) extra.push({ unit: input.storedGatewayUnit, class: "duplicate-gateway" });
+  }
+  for (const unit of [...shared.listing.units.keys()].sort()) {
+    if (unit === gatewayUnit || !unit.startsWith(`hermes-${input.agentId}-`) || !unit.endsWith("gateway.service")) continue;
+    if (extra.some((item) => item.unit === unit)) continue;
+    extra.push({ unit, class: "duplicate-gateway" });
+    topologyItems.push({ path: unit, kind: "duplicate-gateway", desired: gatewayUnit, observed: unit, detail: `duplicate-gateway:${unit}` });
+  }
+  for (const pattern of manifest.unregistered.retired_candidates) {
+    const unit = derive(pattern, input.agentId);
+    if (unit === null) continue;
+    const present2 = loaded(unit) || shared.listing.units.has(unit) || shared.listing.files.has(unit) || latest(unit) !== null && one(latest(unit), "LoadState") !== "not-found";
+    if (!present2) continue;
+    extra.push({ unit, class: "retired" });
+    topologyItems.push({ path: unit, kind: "retired-unit", desired: "absent", observed: word2(one(latest(unit), "LoadState") ?? "present"), detail: `retired-unit:${unit}` });
+  }
+  for (const key of input.storedSystemdKeys) {
+    if (ctx.declaredSystemdKeys.includes(key)) continue;
+    topologyItems.push({ path: `systemd.${word2(key)}`, kind: "registry-retired-key", desired: "absent", observed: word2(key), detail: `registry-retired-key:${word2(key)}` });
+  }
+  extra.sort((a, b) => a.unit < b.unit ? -1 : a.unit > b.unit ? 1 : 0);
+  const topologyState = topologyItems.length === 0 ? "pass" : "fail";
+  const topology = {
+    ...aspect2(
+      topologyState,
+      topologyItems,
+      `${installed.length} of ${expected.length} canonical unit(s) loaded${extra.length ? `, ${extra.length} extra` : ""}`,
+      `the canonical unit set ${expected.join(", ")} loaded, with no retired or duplicate unit and no retired registry key`,
+      topologyItems.length === 0 ? `the canonical unit set is loaded and the row records no retired systemd key` : `${topologyItems.length} topology defect(s): the canonical unit set, the row's own unit names, or a retired shape disagrees with the contract`
+    ),
+    expected,
+    installed,
+    missing,
+    extra
+  };
+  const rowItems = [];
+  const stored = input.storedHeartbeatTimer !== null && input.storedHeartbeatTimer !== "" ? input.storedHeartbeatTimer : null;
+  const timerOnDisk = shared.listing.files.has(timerUnit) || loaded(timerUnit);
+  if (stored === null) {
+    if (timerOnDisk) {
+      rowItems.push({ path: timerUnit, kind: "registry-undeclared", desired: timerUnit, observed: "absent", detail: "registry-undeclared" });
+    }
+  } else if (stored !== timerUnit) {
+    rowItems.push({ path: unitWord(stored), kind: "misnamed-heartbeat-timer", desired: timerUnit, observed: unitWord(stored), detail: `misnamed-heartbeat-timer:${unitWord(stored)}` });
+  } else if (!loaded(timerUnit)) {
+    rowItems.push({ path: timerUnit, kind: "unit-missing", desired: "loaded", observed: word2(one(latest(timerUnit), "LoadState") ?? "not-found"), detail: "unit-missing" });
+  }
+  const heartbeatTimerRow = aspect2(
+    rowItems.length === 0 ? "pass" : "fail",
+    rowItems,
+    stored === null ? "absent" : unitWord(stored),
+    timerUnit,
+    rowItems.length === 0 ? stored === null ? "the row declares no heartbeat timer and none is installed" : "the row's heartbeat timer is the canonical name and the manager loads it" : "the row's heartbeat_timer field and the units on this manager disagree"
+  );
+  const gatewaySamples = samplesOf(gatewayUnit);
+  const gatewaySample = latest(gatewayUnit);
+  const gatewayStability = evaluateStability(gatewaySamples);
+  const gatewayItems = [];
+  const gatewayView = unitView(gatewayUnit, gatewaySample);
+  const gatewayExec = parseExecStart(one(gatewaySample, "ExecStart"));
+  const gatewayEnvironment = parseEnvironment(all(gatewaySample, "Environment"), [manifest.entrypoint.home_env]);
+  const gatewayEntrypoint = classifyEntrypoint(gatewayExec.path, input.roleDir, manifest.entrypoint.launcher, input.hermesBin);
+  const gatewayHome = classifyHome(gatewayEnvironment[manifest.entrypoint.home_env] ?? null, profileHome, fleetHomeReal);
+  const gatewayResult = one(gatewaySample, "Result") ?? null;
+  const gatewayStatus = numeric(gatewaySample, "ExecMainStatus");
+  const unitFileState = one(gatewaySample, "UnitFileState") ?? "";
+  const isEnabled = ENABLED_STATES.has(unitFileState);
+  const isDisabled = DISABLED_STATES.has(unitFileState) || unitFileState === "";
+  const activeState = one(gatewaySample, "ActiveState") ?? "";
+  const isActive = activeState === "active" || activeState === "activating" || activeState === "reloading";
+  const absent3 = gatewaySample === null || one(gatewaySample, "LoadState") === "not-found";
+  const unitDefects = (unit, sample, items) => {
+    if (sample === null || one(sample, "LoadState") === "not-found") {
+      items.push({ path: unit, kind: "absent", desired: "loaded", observed: "not-found", detail: "absent" });
+      return true;
+    }
+    const load = one(sample, "LoadState") ?? "";
+    if (load !== "loaded") {
+      items.push({ path: unit, kind: "load-error", desired: "loaded", observed: word2(load), detail: `load-error:${word2(load)}` });
+      return true;
+    }
+    const fragment = one(sample, "FragmentPath") ?? "";
+    if (fragment !== "" && !shared.unitDirs.some((dir) => within3(dir, resolve22(fragment)))) {
+      items.push({ path: unit, kind: "fragment-unsafe", desired: "a fragment under the declared unit directories", observed: ctx.shown(fragment), detail: "fragment-unsafe" });
+    }
+    return false;
+  };
+  const gatewayAbsent = unitDefects(gatewayUnit, gatewaySample, gatewayItems);
+  if (!gatewayAbsent) {
+    for (const key of gatewayStability.malformed) {
+      gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: `property-malformed:${word2(key)}` });
+    }
+    if (capability === "active") {
+      if (!isEnabled) gatewayItems.push({ path: gatewayUnit, kind: "verified-channel-gateway-disabled", desired: "enabled", observed: word2(unitFileState || "absent"), detail: "verified-channel-gateway-disabled" });
+      if (activeState !== "active" || one(gatewaySample, "SubState") !== "running") {
+        gatewayItems.push({ path: gatewayUnit, kind: "verified-channel-gateway-inactive", desired: "active/running", observed: `${word2(activeState)}/${word2(one(gatewaySample, "SubState"))}`, detail: "verified-channel-gateway-inactive" });
+      }
+      if (gatewayResult !== null && gatewayResult !== "success") {
+        gatewayItems.push({ path: gatewayUnit, kind: "result-not-success", desired: "success", observed: word2(gatewayResult), detail: `result-not-success:${word2(gatewayResult)}` });
+      }
+      if (gatewayStatus !== void 0 && !Number.isNaN(gatewayStatus) && gatewayStatus !== 0) {
+        gatewayItems.push({ path: gatewayUnit, kind: "result-not-success", desired: "0", observed: String(gatewayStatus), detail: `exec-status:${gatewayStatus}` });
+      }
+      for (const platform2 of platforms) {
+        if (declaredPlatforms[platform2] !== "verified") continue;
+        const identity = input.messaging[platform2]?.identity ?? {};
+        const blanks = (manifest.messaging.identity_fields[platform2] ?? []).filter((field3) => identity[field3] !== true);
+        if (blanks.length > 0) {
+          gatewayItems.push({ path: platform2, kind: "channel-identity-incomplete", desired: (manifest.messaging.identity_fields[platform2] ?? []).join(", "), observed: `${blanks.length} blank`, detail: `channel-identity-incomplete:${platform2}` });
+        }
+        if (!delta.secrets[platform2]) {
+          gatewayItems.push({ path: platform2, kind: "channel-secret-unreferenced", desired: (manifest.messaging.secret_env[platform2] ?? []).join(", "), observed: "unreferenced", detail: `channel-secret-unreferenced:${platform2}` });
+        }
+      }
+    } else if (capability === "deferred") {
+      if (isEnabled) gatewayItems.push({ path: gatewayUnit, kind: "deferred-but-enabled", desired: "disabled", observed: word2(unitFileState), detail: "deferred-but-enabled" });
+      if (isActive) gatewayItems.push({ path: gatewayUnit, kind: "deferred-but-active", desired: "inactive", observed: word2(activeState), detail: "deferred-but-active" });
+      for (const platform2 of platforms) {
+        if (declaredPlatforms[platform2] !== "deferred") continue;
+        if (delta.enabled[platform2] !== false) {
+          gatewayItems.push({
+            path: platform2,
+            kind: "platform-enablement-inherited",
+            desired: `${manifest.messaging.enabled_path.replaceAll("{platform}", platform2)}: false`,
+            observed: delta.enabled[platform2] === true ? "true" : "inherited",
+            detail: `platform-enablement-inherited:${platform2}`
+          });
+        }
+      }
+    } else {
+      gatewayItems.push({
+        path: gatewayUnit,
+        kind: "channel-undeclared",
+        desired: `${manifest.messaging.status_field} on at least one declared platform`,
+        observed: isEnabled || isActive ? "active with no declared channel" : "absent",
+        detail: "channel-undeclared"
+      });
+    }
+    if (capability === "active" || isActive) {
+      if (gatewayStability.crashLooping) {
+        gatewayItems.push({ path: gatewayUnit, kind: "crash-looping", desired: "a constant restart count", observed: gatewayStability.transitions.join("; "), detail: "crash-looping" });
+      } else if (!gatewayStability.stable) {
+        gatewayItems.push({ path: gatewayUnit, kind: "unstable", desired: "one unchanged reading across the window", observed: gatewayStability.transitions.join("; "), detail: "unstable" });
+      } else if (activeState === "activating") {
+        gatewayItems.push({ path: gatewayUnit, kind: "unstable", desired: "active/running", observed: `activating/${word2(one(gatewaySample, "SubState"))}`, detail: "unstable" });
+      }
+      if (!gatewayEntrypoint.pinned) {
+        gatewayItems.push({ path: gatewayUnit, kind: "entrypoint-unpinned", desired: "the role launcher or the executable the row pins", observed: gatewayEntrypoint.family, detail: "entrypoint-unpinned" });
+      }
+      if (gatewayHome === "absent") gatewayItems.push({ path: gatewayUnit, kind: "home-absent", desired: profileHome === null ? "a profile home" : ctx.shown(profileHome), observed: "absent", detail: "home-absent" });
+      else if (gatewayHome === "unsafe") gatewayItems.push({ path: gatewayUnit, kind: "home-unsafe", desired: "a home under the fleet home", observed: ctx.shown(gatewayEnvironment[manifest.entrypoint.home_env] ?? ""), detail: "home-unsafe" });
+      else if (gatewayHome === "mismatch") gatewayItems.push({ path: gatewayUnit, kind: "home-mismatch", desired: profileHome === null ? "this agent's profile directory" : ctx.shown(profileHome), observed: ctx.shown(gatewayEnvironment[manifest.entrypoint.home_env] ?? ""), detail: "home-mismatch" });
+    }
+  }
+  const gatewayRank = (kind) => kind === "property-malformed" ? "error" : kind === "channel-undeclared" && !isEnabled && !isActive ? "warn" : "fail";
+  let gatewayState = "pass";
+  for (const item of gatewayItems) gatewayState = worseOf(gatewayState, gatewayRank(item.kind));
+  const gatewayCode = gatewayItems.length === 0 ? null : gatewayItems[0].detail ?? gatewayItems[0].kind;
+  const gateway = {
+    ...aspect2(
+      gatewayState,
+      gatewayItems,
+      gatewayAbsent ? "absent" : `${word2(unitFileState || "absent")}/${word2(activeState)}/${word2(one(gatewaySample, "SubState"))}`,
+      capability === "active" ? "enabled, active, running and stable over the window" : capability === "deferred" ? "disabled and inactive, with every deferred platform pinned disabled in the delta" : "a declared messaging capability before any gateway is enabled",
+      gatewayItems.length === 0 ? capability === "deferred" ? "the gateway is correctly deferred: disabled, inactive, and no platform inherits enablement" : "the gateway is enabled, active and stable over the window" : `${gatewayItems.length} gateway defect(s) against a ${capability} messaging declaration`
+    ),
+    view: gatewayView,
+    code: gatewayCode,
+    result: gatewayResult === null ? null : word2(gatewayResult),
+    execStatus: gatewayStatus === void 0 || Number.isNaN(gatewayStatus) ? null : gatewayStatus,
+    restarts: gatewayStability.restarts,
+    entrypoint: gatewayEntrypoint,
+    home: gatewayHome,
+    stability: { samples: gatewaySamples.length, stable: !gatewayAbsent && gatewayStability.stable, transitions: gatewayStability.transitions }
+  };
+  const timerSample = latest(timerUnit);
+  const timerItems = [];
+  const timerAbsent = unitDefects(timerUnit, timerSample, timerItems);
+  const timers = parseTimersMonotonic(all(timerSample, "TimersMonotonic"));
+  let schedule = "unknown";
+  let tick = "unknown";
+  let paired = false;
+  const serviceSample = latest(serviceUnit);
+  if (!timerAbsent) {
+    const timerFileState = one(timerSample, "UnitFileState") ?? "";
+    if (!ENABLED_STATES.has(timerFileState)) timerItems.push({ path: timerUnit, kind: "timer-disabled", desired: "enabled", observed: word2(timerFileState || "absent"), detail: "timer-disabled" });
+    const timerActive = one(timerSample, "ActiveState") ?? "";
+    if (timerActive !== "active") timerItems.push({ path: timerUnit, kind: "timer-inactive", desired: "active", observed: word2(timerActive), detail: "timer-inactive" });
+    const timerSub = one(timerSample, "SubState") ?? "";
+    if (!TIMER_SUBSTATES.has(timerSub)) timerItems.push({ path: timerUnit, kind: "timer-substate", desired: [...TIMER_SUBSTATES].join("|"), observed: word2(timerSub), detail: "timer-substate" });
+    paired = one(timerSample, "Unit") === serviceUnit || all(timerSample, "Triggers").some((value) => value.split(/\s+/u).includes(serviceUnit));
+    if (!paired) timerItems.push({ path: timerUnit, kind: "timer-unpaired", desired: serviceUnit, observed: unitWord(one(timerSample, "Unit") ?? "none"), detail: "timer-unpaired" });
+    const inactive = timers.get("OnUnitInactiveUSec");
+    const boot = timers.get("OnBootUSec");
+    const wantInactive = BigInt(manifest.heartbeat.on_unit_inactive_sec) * 1000000n;
+    const wantBoot = BigInt(manifest.heartbeat.on_boot_sec) * 1000000n;
+    if (inactive === void 0 && boot === void 0) {
+      schedule = "unknown";
+      timerItems.push({ path: timerUnit, kind: "schedule-unknown", desired: `on_unit_inactive_sec ${manifest.heartbeat.on_unit_inactive_sec}s`, observed: "no monotonic expression", detail: "schedule-unknown" });
+    } else if (inactive !== void 0 && inactive !== wantInactive || boot !== void 0 && boot !== wantBoot) {
+      schedule = "off-policy";
+      timerItems.push({
+        path: timerUnit,
+        kind: "schedule-off-policy",
+        desired: `on_unit_inactive_sec ${manifest.heartbeat.on_unit_inactive_sec}s, on_boot_sec ${manifest.heartbeat.on_boot_sec}s`,
+        observed: [inactive === void 0 ? null : `on_unit_inactive_sec ${inactive / 1000000n}s`, boot === void 0 ? null : `on_boot_sec ${boot / 1000000n}s`].filter((value) => value !== null).join(", "),
+        detail: "schedule-off-policy"
+      });
+    } else schedule = "within-policy";
+    const lastTrigger = parseSystemdUsec(one(timerSample, "LastTriggerUSecMonotonic"));
+    const lastExit = parseSystemdUsec(one(serviceSample, "ExecMainExitTimestampMonotonic"));
+    const latestTick = [lastTrigger, lastExit].filter((value) => value !== null && value > 0n).sort((a, b) => a < b ? 1 : a > b ? -1 : 0)[0] ?? null;
+    const overdueAfter = BigInt(manifest.heartbeat.on_unit_inactive_sec) * BigInt(manifest.heartbeat.overdue_multiplier) * 1000000n;
+    if (latestTick === null) {
+      tick = ctx.monotonicNowUs > BigInt(manifest.heartbeat.on_boot_sec) * 2n * 1000000n ? "never" : "unknown";
+      if (tick === "never") timerItems.push({ path: timerUnit, kind: "tick-never", desired: "a completed tick since boot", observed: "never", detail: "tick-never" });
+      else timerItems.push({ path: timerUnit, kind: "tick-unknown", desired: "a completed tick since boot", observed: "not yet due", detail: "tick-unknown" });
+    } else if (latestTick > ctx.monotonicNowUs) {
+      tick = "unknown";
+      timerItems.push({ path: timerUnit, kind: "tick-unknown", desired: "a monotonic reading inside this boot", observed: "ahead of the monotonic clock", detail: "tick-unknown" });
+    } else if (ctx.monotonicNowUs - latestTick > overdueAfter) {
+      tick = "overdue";
+      timerItems.push({
+        path: timerUnit,
+        kind: "tick-overdue",
+        desired: `a tick within ${manifest.heartbeat.on_unit_inactive_sec * manifest.heartbeat.overdue_multiplier}s`,
+        observed: "overdue",
+        detail: "tick-overdue"
+      });
+    } else tick = "current";
+  }
+  const timerRank = (kind) => kind === "tick-unknown" || kind === "schedule-unknown" ? "warn" : "fail";
+  let timerState = "pass";
+  for (const item of timerItems) timerState = worseOf(timerState, timerRank(item.kind));
+  const timer = {
+    ...aspect2(
+      timerState,
+      timerItems,
+      timerAbsent ? "absent" : `${word2(one(timerSample, "UnitFileState") ?? "absent")}/${word2(one(timerSample, "ActiveState"))}/${word2(one(timerSample, "SubState"))} tick ${tick}`,
+      `enabled, active and waiting, paired with ${serviceUnit}, on the declared schedule, with a current tick`,
+      timerItems.length === 0 ? "the heartbeat timer is enabled, active, correctly paired, on policy and current" : `${timerItems.length} heartbeat-timer defect(s): an active timer proves nothing on its own`
+    ),
+    view: unitView(timerUnit, timerSample),
+    paired,
+    schedule,
+    tick
+  };
+  const serviceItems = [];
+  const serviceAbsent = unitDefects(serviceUnit, serviceSample, serviceItems);
+  const serviceExec = parseExecStart(one(serviceSample, "ExecStart"));
+  const serviceEntrypoint = classifyEntrypoint(serviceExec.path, input.roleDir, manifest.entrypoint.launcher, input.hermesBin);
+  const serviceResult = one(serviceSample, "Result") ?? null;
+  const serviceStatus = numeric(serviceSample, "ExecMainStatus");
+  let latestResult = "unknown";
+  const reconcile = readReconcile(ctx, input.roleDir);
+  if (!serviceAbsent) {
+    if ((one(serviceSample, "Type") ?? "") !== "oneshot") {
+      serviceItems.push({ path: serviceUnit, kind: "type-not-oneshot", desired: "oneshot", observed: word2(one(serviceSample, "Type") ?? "absent"), detail: "type-not-oneshot" });
+    }
+    const start = parseSystemdUsec(one(serviceSample, "ExecMainStartTimestampMonotonic"));
+    const exit = parseSystemdUsec(one(serviceSample, "ExecMainExitTimestampMonotonic"));
+    const serviceActive = one(serviceSample, "ActiveState") ?? "";
+    if (serviceActive === "activating" || serviceActive === "active") {
+      const timeout = parseSystemdUsec(one(serviceSample, "TimeoutStartUSec")) ?? BigInt(manifest.heartbeat.max_tick_seconds) * 1000000n;
+      const age = start === null || start === 0n ? null : ctx.monotonicNowUs - start;
+      if (age !== null && age >= timeout) {
+        latestResult = "stuck";
+        serviceItems.push({ path: serviceUnit, kind: "stuck", desired: "a completed tick", observed: "activating past its own start timeout", detail: "stuck" });
+      } else {
+        latestResult = "in-progress";
+        serviceItems.push({ path: serviceUnit, kind: "in-progress", desired: "a completed tick", observed: "activating", detail: "in-progress" });
+      }
+    } else if (serviceResult !== null && serviceResult !== "success") {
+      latestResult = "failed";
+      serviceItems.push({ path: serviceUnit, kind: "latest-result-failed", desired: "success", observed: word2(serviceResult), detail: `latest-result-failed:${word2(serviceResult)}` });
+    } else if (serviceStatus !== void 0 && Number.isNaN(serviceStatus)) {
+      latestResult = "unknown";
+      serviceItems.push({ path: serviceUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: "property-malformed:ExecMainStatus" });
+    } else if (serviceStatus !== void 0 && serviceStatus !== 0) {
+      latestResult = "failed";
+      serviceItems.push({ path: serviceUnit, kind: "latest-result-failed", desired: "0", observed: String(serviceStatus), detail: `latest-result-failed:exit-${serviceStatus}` });
+    } else if (start === null || start === 0n) {
+      latestResult = "never";
+      serviceItems.push({ path: serviceUnit, kind: "never-completed", desired: "a completed tick since boot", observed: "never started", detail: "never-completed" });
+    } else if (exit === null || exit < start) {
+      latestResult = "never";
+      serviceItems.push({ path: serviceUnit, kind: "never-completed", desired: "an exit at or after the last start", observed: "no exit recorded", detail: "never-completed" });
+    } else if (serviceResult === null) {
+      latestResult = "unknown";
+      serviceItems.push({ path: serviceUnit, kind: "latest-result-unknown", desired: "success", observed: "no Result property", detail: "latest-result-unknown" });
+    } else latestResult = "success";
+    if (!serviceEntrypoint.pinned) {
+      serviceItems.push({ path: serviceUnit, kind: "entrypoint-unpinned", desired: "the role launcher or the executable the row pins", observed: serviceEntrypoint.family, detail: "entrypoint-unpinned" });
+    }
+    if (reconcile.kind !== null) {
+      serviceItems.push({
+        path: manifest.heartbeat.reconcile_policy_file,
+        kind: reconcile.kind,
+        desired: "reconcile.enabled: true with a full-run state file, or an explicit opt-out",
+        observed: `${reconcile.declared}/${reconcile.evidence}`,
+        detail: reconcile.kind
+      });
+    }
+  }
+  const serviceRank = (kind) => kind === "property-malformed" || kind === "policy-unreadable" || kind === "state-unreadable" ? "error" : kind === "in-progress" || kind === "reconcile-undeclared" || kind === "reconcile-opt-out-undeclared" || kind === "reconcile-unverifiable" || kind === "latest-result-unknown" ? "warn" : "fail";
+  let serviceState = "pass";
+  for (const item of serviceItems) serviceState = worseOf(serviceState, serviceRank(item.kind));
+  const service = {
+    ...aspect2(
+      serviceState,
+      serviceItems,
+      serviceAbsent ? "absent" : `${word2(one(serviceSample, "ActiveState"))}/${word2(one(serviceSample, "SubState"))} ${latestResult}`,
+      "a oneshot whose latest invocation completed successfully, entered from the pinned entrypoint",
+      serviceItems.length === 0 ? "the heartbeat oneshot completed its latest tick successfully" : `${serviceItems.length} heartbeat-service defect(s): an active timer proves nothing without a successful tick`
+    ),
+    view: unitView(serviceUnit, serviceSample),
+    result: serviceResult === null ? null : word2(serviceResult),
+    execStatus: serviceStatus === void 0 || Number.isNaN(serviceStatus) ? null : serviceStatus,
+    entrypoint: serviceEntrypoint,
+    latestResult,
+    reconcile: { declared: reconcile.declared, evidence: reconcile.evidence }
+  };
+  return {
+    agentId: input.agentId,
+    topology,
+    heartbeatTimerRow,
+    capability: { declared: capability, platforms: declaredPlatforms, deltaDisabled: delta.enabled },
+    gateway,
+    timer,
+    service
+  };
+}
+function inspectShared(ctx, shared) {
+  const unit = ctx.sharedGateway.unit;
+  const profile = ctx.sharedGateway.profile;
+  const base = { unit, profile };
+  if (!ctx.sweep) {
+    return { ...base, state: "unobserved", code: "agent-scope", detail: "an --agent run never probes the fleet-shared gateway; its coverage is reported as unobserved rather than as an empty reading" };
+  }
+  if (shared.manager.code !== "available") {
+    return { ...base, state: "error", code: shared.manager.code, detail: `the fleet-shared gateway could not be observed: ${shared.manager.detail}` };
+  }
+  if (unit === null) {
+    return { ...base, state: "registry-undeclared", code: "contract-undeclared", detail: "the contract declares no service_model.fleet_shared.bloodbank_gateway_unit, so there is no shared gateway to correlate" };
+  }
+  if (ctx.sharedGateway.registryUnit === null) {
+    return { ...base, state: "registry-undeclared", code: "registry-undeclared", detail: `the registry's gateways.bloodbank block names no systemd_unit; the contract derives ${unit}` };
+  }
+  if (ctx.sharedGateway.registryUnit !== unit) {
+    return { ...base, state: "identity-mismatch", code: "identity-mismatch", detail: `the registry names ${unitWord(ctx.sharedGateway.registryUnit)} while the contract derives ${unit}; one shared gateway may not have two names` };
+  }
+  const samples = shared.window.samples.get(unit) ?? [];
+  const sample = samples.length === 0 ? null : samples.filter((entry) => entry !== null).pop() ?? null;
+  if (sample === null || one(sample, "LoadState") === "not-found") {
+    return { ...base, state: "absent", code: "absent", detail: `${unit} is not loaded on this user manager; nothing owns Bloodbank command ingress fleet-wide` };
+  }
+  const stability = evaluateStability(samples);
+  const unitFileState = one(sample, "UnitFileState") ?? "";
+  const home = parseEnvironment(all(sample, "Environment"), [ctx.manifest.entrypoint.home_env])[ctx.manifest.entrypoint.home_env] ?? null;
+  const expectedHome = profile !== null && ctx.profileRoot !== null && isSafePathSegment(profile) ? join36(ctx.profileRoot, profile) : null;
+  const homeState = classifyHome(home, expectedHome, resolve22(ctx.fleetHome));
+  const defects = [];
+  if (!ENABLED_STATES.has(unitFileState)) defects.push("disabled");
+  if (one(sample, "ActiveState") !== "active" || one(sample, "SubState") !== "running") defects.push("inactive");
+  if (!stability.stable) defects.push(stability.crashLooping ? "crash-looping" : "unstable");
+  if (homeState !== "matches") defects.push(`home-${homeState}`);
+  if (defects.length === 0) {
+    return { ...base, state: "healthy", code: null, detail: `${unit} is enabled, active, stable over the window and rooted at the declared shared profile` };
+  }
+  return { ...base, state: "drifted", code: defects[0], detail: `${unit} is the declared shared gateway but reads ${defects.join(", ")}` };
+}
+function declaredUnitClaim(ctx, unit) {
+  for (const id of ["managed_shared_service", "intentionally_unmanaged"]) {
+    const block = ctx.classifications?.[id];
+    const entries = block && Array.isArray(block.entries) ? block.entries : [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+      const record = entry;
+      const domains = Array.isArray(record.policy_domains) ? record.policy_domains : [];
+      if (!domains.includes("systemd")) continue;
+      const source = typeof record.source === "string" ? record.source : "";
+      if (source === `units.${unit}` || source === unit || source === "gateways.bloodbank" && ctx.sharedGateway.unit === unit) {
+        return { klass: "managed-exception", detail: `classifications.${id}.entries[${index}]` };
+      }
+    }
+  }
+  return null;
+}
+async function classifyUnregistered(ctx, shared, owned) {
+  const names = /* @__PURE__ */ new Set();
+  for (const unit of shared.listing.units.keys()) if (!owned.has(unit)) names.add(unit);
+  for (const unit of shared.listing.files.keys()) if (!owned.has(unit)) names.add(unit);
+  const sorted = [...names].sort();
+  const truncated = sorted.length > ctx.manifest.limits.max_unregistered_units;
+  const kept = sorted.slice(0, ctx.manifest.limits.max_unregistered_units);
+  if (kept.length === 0) return { record: { items: [], truncated }, probe: null };
+  const result2 = await probeText(ctx.run, SYSTEMCTL, systemctlArgv("show", ["-p", SYSTEMD_CLASSIFY_PROPERTIES.join(","), ...kept]), {
+    env: systemctlEnv(ctx),
+    timeoutMs: ctx.manifest.probe.timeout_ms,
+    keepStdoutOnFailure: true
+  });
+  throwIfCancelled(ctx.run);
+  const probe2 = {
+    id: `${SYSTEMD_PROBE_KIND}:show:unregistered`,
+    kind: SYSTEMD_PROBE_KIND,
+    target: `${kept.length} unregistered unit(s)`,
+    outcome: result2.outcome,
+    reason: result2.outcome === "ok" ? null : result2.outcome === "timeout" ? "show-timeout" : "show-failed"
+  };
+  const shown = result2.outcome === "ok" ? parseShowBlocks(result2.value ?? "") : /* @__PURE__ */ new Map();
+  const registeredProfiles = new Set(ctx.registeredProfileNames);
+  const retiredPatterns = ctx.retired.flatMap((mode) => mode.detect.map((pattern) => ({ id: mode.id, pattern })));
+  const items = kept.map((unit) => {
+    const sample = shown.get(unit) ?? null;
+    const listed = shared.listing.units.get(unit);
+    const fileState = shared.listing.files.get(unit) ?? (sample === null ? null : one(sample, "UnitFileState") || null);
+    const view = {
+      unit,
+      load: listed?.load ?? (sample === null ? null : word2(one(sample, "LoadState"))),
+      unit_file: fileState === null ? null : word2(fileState),
+      active: listed?.active ?? (sample === null ? null : word2(one(sample, "ActiveState"))),
+      sub: listed?.sub ?? (sample === null ? null : word2(one(sample, "SubState")))
+    };
+    const claim = declaredUnitClaim(ctx, unit);
+    if (claim !== null) {
+      return { ...view, class: claim.klass, correlated_profile: null, process_reference: "unobserved", guidance: "exception", detail: claim.detail };
+    }
+    if (fileState === "transient" || unit.endsWith(".scope")) {
+      const description = listed?.description ?? one(sample, "Description") ?? "";
+      const hit = PROFILE_TOKEN.exec(description);
+      const correlated = hit !== null && registeredProfiles.has(hit[1]) ? hit[1] : null;
+      return { ...view, class: "transient", correlated_profile: correlated, process_reference: "unobserved", guidance: "manual-review", detail: "unit-file-state:transient" };
+    }
+    const retiredHit = retiredPatterns.find(({ pattern }) => {
+      try {
+        return new RegExp(pattern, "u").test(unit);
+      } catch {
+        return false;
+      }
+    });
+    if (retiredHit !== void 0) {
+      return { ...view, class: "retired", correlated_profile: null, process_reference: "unobserved", guidance: "retirement", detail: `retired:${word2(retiredHit.id)}` };
+    }
+    const home = parseEnvironment(all(sample, "Environment"), [ctx.manifest.entrypoint.home_env])[ctx.manifest.entrypoint.home_env] ?? null;
+    if (home !== null && ctx.profileRoot !== null) {
+      const resolved = resolve22(home);
+      const root = resolve22(ctx.profileRoot);
+      if (resolved !== root && within3(root, resolved)) {
+        const name = resolved.slice(root.length + 1).split(sep9)[0] ?? "";
+        return {
+          ...view,
+          class: "profile-correlated",
+          correlated_profile: SAFE_SEGMENT2.test(name) ? name : null,
+          process_reference: "unobserved",
+          guidance: registeredProfiles.has(name) ? "manual-review" : "adoption",
+          detail: "hermes-home-under-profile-root"
+        };
+      }
+    }
+    return { ...view, class: "unclassified", correlated_profile: null, process_reference: "unobserved", guidance: "manual-review", detail: null };
+  });
+  return { record: { items, truncated }, probe: probe2 };
+}
+async function collectSystemdHealth(ctx) {
+  throwIfCancelled(ctx.run);
+  const probes = [];
+  const window = { samples: ctx.manifest.stabilization.samples, interval_ms: ctx.manifest.stabilization.interval_ms };
+  const manager = await probeManager(ctx);
+  probes.push(manager.probe);
+  const available = manager.record.code === "available";
+  const listing = available && ctx.sweep ? await listFleet(ctx) : emptyListing();
+  probes.push(...listing.probes);
+  const perAgent = ctx.serviceModel?.per_agent ?? {};
+  const interest = /* @__PURE__ */ new Set();
+  const owned = /* @__PURE__ */ new Set();
+  for (const agent of ctx.agents) {
+    for (const pattern of [perAgent.gateway_unit, perAgent.heartbeat_timer, perAgent.heartbeat_service]) {
+      const unit = derive(pattern, agent.agentId);
+      if (unit !== null) {
+        interest.add(unit);
+        owned.add(unit);
+      }
+    }
+    for (const pattern of ctx.manifest.unregistered.retired_candidates) {
+      const unit = derive(pattern, agent.agentId);
+      if (unit !== null) {
+        interest.add(unit);
+        owned.add(unit);
+      }
+    }
+    for (const stored of [agent.storedGatewayUnit, agent.storedHeartbeatTimer]) {
+      if (stored !== null && stored !== "" && UNIT_NAME.test(stored)) {
+        interest.add(stored);
+        owned.add(stored);
+      }
+    }
+  }
+  for (const agentId of ctx.registeredAgentIds) {
+    for (const pattern of [perAgent.gateway_unit, perAgent.heartbeat_timer, perAgent.heartbeat_service]) {
+      const unit = derive(pattern, agentId);
+      if (unit !== null) owned.add(unit);
+    }
+    for (const pattern of ctx.manifest.unregistered.retired_candidates) {
+      const unit = derive(pattern, agentId);
+      if (unit !== null) owned.add(unit);
+    }
+  }
+  if (ctx.sweep && ctx.sharedGateway.unit !== null) {
+    interest.add(ctx.sharedGateway.unit);
+    owned.add(ctx.sharedGateway.unit);
+  } else if (ctx.sharedGateway.unit !== null) owned.add(ctx.sharedGateway.unit);
+  const unitsOfInterest = [...interest].sort();
+  const sampled = available ? await sampleWindow(ctx, unitsOfInterest) : { samples: /* @__PURE__ */ new Map(), taken: 0, probes: [], error: "manager-unavailable" };
+  probes.push(...sampled.probes);
+  const unitDirs = [join36(ctx.configHome, "systemd", "user"), ...SYSTEMD_SYSTEM_UNIT_DIRS].map((dir) => resolve22(dir));
+  const shared = {
+    manager: manager.record,
+    window: sampled,
+    listing,
+    unitDirs
+  };
+  const results = await mapBounded(ctx.agents, FLEET_STATUS_SYSTEMD_CONCURRENCY, async (input) => {
+    throwIfCancelled(ctx.run);
+    return inspectAgent2(ctx, shared, input);
+  });
+  const agents = /* @__PURE__ */ new Map();
+  for (const result2 of results) agents.set(result2.agentId, result2);
+  const sharedRecord = inspectShared(ctx, shared);
+  let unregistered = null;
+  let unregisteredReason = null;
+  if (!ctx.sweep) unregisteredReason = "agent-scope";
+  else if (!available) unregisteredReason = manager.record.code;
+  else if (listing.error !== null) unregisteredReason = listing.error;
+  else {
+    const swept = await classifyUnregistered(ctx, shared, owned);
+    unregistered = swept.record;
+    if (swept.probe !== null) probes.push(swept.probe);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const deduped = probes.filter((record) => seen.has(record.id) ? false : (seen.add(record.id), true));
+  deduped.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return {
+    manager: manager.record,
+    window,
+    units: {
+      listed: listing.units.size,
+      unit_files: listing.files.size,
+      transient: [...listing.files.values()].filter((state) => state === "transient").length
+    },
+    agents,
+    shared: sharedRecord,
+    unregistered,
+    unregisteredReason,
+    probes: deduped
+  };
+}
+
 // src/fleet/status.ts
 init_boardUrl();
 init_project();
@@ -22197,11 +23594,11 @@ var DOMAIN_AUTHORITY_BLOCK = Object.freeze({
   bloodbank: "agent_operational_records",
   release_provenance: "agent_operational_records"
 });
-var CAPABILITY_SYSTEMD = "unit_topology";
 var CAPABILITY_LIVE_PROCESS = "process_attribution";
 var CAPABILITY_BLOODBANK_LIVENESS = "routing_liveness";
 var CAPABILITY_SCAFFOLD_MANIFEST = "scaffold.manifest";
 var CAPABILITY_PROFILE_MANIFEST = "profile.manifest";
+var CAPABILITY_SYSTEMD_MANIFEST = "systemd.manifest";
 var FINDING_SEVERITY = Object.freeze({
   error: "critical",
   warn: "medium",
@@ -22266,6 +23663,44 @@ var PROFILE_RULE_COVERED_KINDS = /* @__PURE__ */ new Set([
   "bank-alias",
   "bank-mismatch"
 ]);
+var SOURCE_SYSTEMD = "fleet-systemd";
+var SYSTEMD_MANAGER_RULE_ID = "systemd.manager";
+var SYSTEMD_SHARED_RULE_ID = "systemd.shared-gateway";
+var SYSTEMD_UNREGISTERED_RULE_ID = "systemd.unregistered";
+var SYSTEMD_FIELD_TOPOLOGY = "agents.{agent_id}.systemd.gateway_unit";
+var SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW = "agents.{agent_id}.systemd.heartbeat_timer";
+var SYSTEMD_FIELD_GATEWAY = "units.hermes-{agent_id}-gateway.service";
+var SYSTEMD_FIELD_TIMER = "units.hermes-{agent_id}-heartbeat.timer";
+var SYSTEMD_FIELD_SERVICE = "units.hermes-{agent_id}-heartbeat.service";
+var SYSTEMD_FIELDS = [
+  SYSTEMD_FIELD_TOPOLOGY,
+  SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW,
+  SYSTEMD_FIELD_GATEWAY,
+  SYSTEMD_FIELD_TIMER,
+  SYSTEMD_FIELD_SERVICE
+];
+var SYSTEMD_RULE_DETAIL_PATTERNS = [
+  /should be enabled\+active/u,
+  /is deferred and should be disabled\+inactive/u,
+  /should be installed/u
+];
+var SYSTEMD_PARITY_DETAIL_PATTERNS = [
+  /carries retired systemd\./u,
+  /^retired per-agent consumer unit still on disk: /u
+];
+var SYSTEMD_RULE_COVERED_KINDS = /* @__PURE__ */ new Set([
+  "deferred-but-enabled",
+  "deferred-but-active",
+  "verified-channel-gateway-disabled",
+  "verified-channel-gateway-inactive",
+  "timer-disabled",
+  "timer-inactive",
+  "gateway-missing",
+  "heartbeat-timer-missing",
+  "heartbeat-service-missing",
+  "retired-unit",
+  "registry-retired-key"
+]);
 var RULE_COVERED_CONTENT_GROUPS = /* @__PURE__ */ new Set([
   "scaffold.hermes",
   "scaffold.gitignore",
@@ -22312,7 +23747,7 @@ function nonEmptyString3(value) {
 }
 function expandHome4(path, home) {
   if (path === "~") return home;
-  if (path.startsWith("~/")) return join36(home, path.slice(2));
+  if (path.startsWith("~/")) return join37(home, path.slice(2));
   return path;
 }
 function shownPath3(path) {
@@ -22344,10 +23779,10 @@ function mostClippedDomain(own, kept, domains) {
   return best;
 }
 function boundedDetails(details) {
-  const all = (details ?? []).filter((item) => typeof item === "string");
-  const kept = all.slice(0, FLEET_STATUS_MAX_DETAILS).map((item) => bounded2(redactHome(item)));
-  if (all.length > FLEET_STATUS_MAX_DETAILS) {
-    kept[kept.length - 1] = bounded2(`... ${all.length - FLEET_STATUS_MAX_DETAILS} of ${all.length} detail line(s) dropped`);
+  const all2 = (details ?? []).filter((item) => typeof item === "string");
+  const kept = all2.slice(0, FLEET_STATUS_MAX_DETAILS).map((item) => bounded2(redactHome(item)));
+  if (all2.length > FLEET_STATUS_MAX_DETAILS) {
+    kept[kept.length - 1] = bounded2(`... ${all2.length - FLEET_STATUS_MAX_DETAILS} of ${all2.length} detail line(s) dropped`);
   }
   return kept;
 }
@@ -22723,23 +24158,6 @@ function observeFromInventory(ctx, row, domains) {
       desired: "the fleet-shared gateway proven able to dispatch to this target"
     }));
   }
-  if (domains.has("systemd")) {
-    out.push(observation2(ctx, {
-      domain: "systemd",
-      agentId,
-      state: "unsupported",
-      field: "agents.{agent_id}.systemd.gateway_unit",
-      summary: "no systemd observer exists in this release; unit names are expectations, never observations",
-      details: [
-        ...(row.expected_units.value ?? []).map((unit) => `expected ${unit}`),
-        "canonical systemd topology and service health is story 1.8"
-      ],
-      source: SOURCE_DECLARED_GAP,
-      capability: CAPABILITY_SYSTEMD,
-      observed: "not observed",
-      desired: (row.expected_units.value ?? []).join(", ") || "the canonical per-agent unit set"
-    }));
-  }
   if (domains.has("live_process")) {
     out.push(observation2(ctx, {
       domain: "live_process",
@@ -22918,8 +24336,8 @@ function observeFromProfile(ctx, input) {
     };
   }
   const observations = [];
-  const emit = (field3, aspect2) => {
-    const items = aspect2.items.map((item) => ({
+  const emit = (field3, aspect3) => {
+    const items = aspect3.items.map((item) => ({
       path: bounded2(item.path),
       kind: item.kind,
       desired: item.desired === null ? null : bounded2(item.desired, 64),
@@ -22937,20 +24355,20 @@ function observeFromProfile(ctx, input) {
       const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
       return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}`;
     });
-    const excepted = aspect2.state === "fail" && input.exception !== null;
+    const excepted = aspect3.state === "fail" && input.exception !== null;
     observations.push(observation2(ctx, {
       domain: "profile",
       agentId,
-      state: aspect2.state,
+      state: aspect3.state,
       field: field3,
       ruleId: null,
       ruleScope: "project",
       fixable: false,
       source: SOURCE_PROFILE,
-      summary: aspect2.summary,
+      summary: aspect3.summary,
       details,
-      observed: aspect2.observed,
-      desired: aspect2.desired,
+      observed: aspect3.observed,
+      desired: aspect3.desired,
       items: kept,
       exceptionId: excepted ? agentId : null,
       exceptionReason: excepted ? input.exception.reason : null,
@@ -22986,6 +24404,163 @@ function observeFromProfile(ctx, input) {
     }
   };
 }
+function observeFromSystemd(ctx, input) {
+  const { agentId, result: result2 } = input;
+  if (!input.manifestDeclared) {
+    return {
+      observations: SYSTEMD_FIELDS.map((field3) => observation2(ctx, {
+        domain: "systemd",
+        agentId,
+        state: "unsupported",
+        field: field3,
+        summary: "the fleet contract declares no service_manifest, so no canonical service state can be proven against the user manager",
+        details: ["declare service_manifest in the fleet contract (schema 5) to make this domain observable"],
+        source: SOURCE_SYSTEMD,
+        capability: CAPABILITY_SYSTEMD_MANIFEST,
+        observed: "not observed",
+        desired: "the canonical unit set sampled from the user manager and proven against the row's own declaration"
+      })),
+      summary: null
+    };
+  }
+  if (result2 === void 0) {
+    return {
+      observations: SYSTEMD_FIELDS.map((field3) => observation2(ctx, {
+        domain: "systemd",
+        agentId,
+        state: "unobserved",
+        field: field3,
+        summary: "the systemd observer produced no result for this agent",
+        source: SOURCE_SYSTEMD,
+        observed: "no result",
+        desired: "five systemd observations for this agent"
+      })),
+      summary: null
+    };
+  }
+  const observations = [];
+  const emit = (field3, aspect3) => {
+    const items = aspect3.items.map((item) => ({
+      path: bounded2(item.path),
+      kind: item.kind,
+      desired: item.desired === null ? null : bounded2(item.desired, 64),
+      observed: item.observed === null ? null : bounded2(item.observed, 64),
+      detail: item.detail === null ? null : bounded2(item.detail),
+      wip: false
+    }));
+    const kept = items.slice(0, FLEET_STATUS_MAX_ITEMS);
+    if (items.length > kept.length) {
+      input.notes.push(
+        `agents.${agentId}.observations[${field3}].items: ${items.length - kept.length} of ${items.length} items dropped; the counts on this observation and on agents[].systemd are computed over every item before the cap`
+      );
+    }
+    const details = kept.map((item) => {
+      const pair = item.desired !== null || item.observed !== null ? ` ${item.desired ?? "-"} -> ${item.observed ?? "-"}` : "";
+      return `${item.kind} ${item.path}${pair}${item.detail ? ` (${item.detail})` : ""}`;
+    });
+    const excepted = aspect3.state === "fail" && input.exception !== null;
+    observations.push(observation2(ctx, {
+      domain: "systemd",
+      agentId,
+      state: aspect3.state,
+      field: field3,
+      ruleId: null,
+      ruleScope: "project",
+      fixable: false,
+      source: SOURCE_SYSTEMD,
+      summary: aspect3.summary,
+      details,
+      observed: aspect3.observed,
+      desired: aspect3.desired,
+      items: kept,
+      exceptionId: excepted ? agentId : null,
+      exceptionReason: excepted ? input.exception.reason : null,
+      exceptionPolicy: excepted ? input.exception.path : null
+    }));
+  };
+  emit(SYSTEMD_FIELD_TOPOLOGY, result2.topology);
+  emit(SYSTEMD_FIELD_HEARTBEAT_TIMER_ROW, result2.heartbeatTimerRow);
+  emit(SYSTEMD_FIELD_GATEWAY, result2.gateway);
+  emit(SYSTEMD_FIELD_TIMER, result2.timer);
+  emit(SYSTEMD_FIELD_SERVICE, result2.service);
+  const heartbeatLeaves = [result2.service, result2.timer];
+  const worseHeartbeat = heartbeatLeaves.reduce((worst2, leaf) => stateRank(leaf.state) < stateRank(worst2.state) ? leaf : worst2, heartbeatLeaves[0]);
+  const heartbeatState = worseHeartbeat.state;
+  const codeSource = worseHeartbeat.items.length > 0 ? worseHeartbeat : heartbeatLeaves.find((leaf) => leaf.items.length > 0);
+  const heartbeatCode = codeSource === void 0 ? null : codeSource.items[0].detail ?? codeSource.items[0].kind;
+  return {
+    observations,
+    summary: {
+      topology: {
+        expected: result2.topology.expected.map((unit) => bounded2(unit, 128)),
+        installed: result2.topology.installed.map((unit) => bounded2(unit, 128)),
+        missing: result2.topology.missing.map((unit) => bounded2(unit, 128)),
+        extra: result2.topology.extra.map((item) => ({ unit: bounded2(item.unit, 128), class: item.class })),
+        state: result2.topology.state
+      },
+      capability: {
+        declared: result2.capability.declared,
+        platforms: { ...result2.capability.platforms },
+        delta_disabled: Object.fromEntries(
+          Object.entries(result2.capability.deltaDisabled).map(([platform2, value]) => [platform2, value === null ? null : !value])
+        )
+      },
+      gateway: {
+        ...result2.gateway.view,
+        state: result2.gateway.state,
+        code: result2.gateway.code === null ? null : bounded2(result2.gateway.code, 64),
+        result: result2.gateway.result,
+        exec_status: result2.gateway.execStatus,
+        restarts: result2.gateway.restarts,
+        entrypoint: { ...result2.gateway.entrypoint },
+        home: result2.gateway.home,
+        stability: {
+          samples: result2.gateway.stability.samples,
+          stable: result2.gateway.stability.stable,
+          transitions: result2.gateway.stability.transitions.map((line) => bounded2(line, 128))
+        }
+      },
+      heartbeat: {
+        state: heartbeatState,
+        code: heartbeatCode === null ? null : bounded2(heartbeatCode, 64),
+        timer: { ...result2.timer.view, paired: result2.timer.paired },
+        service: {
+          ...result2.service.view,
+          result: result2.service.result,
+          exec_status: result2.service.execStatus,
+          entrypoint: { ...result2.service.entrypoint }
+        },
+        schedule: result2.timer.schedule,
+        latest_result: result2.service.latestResult,
+        tick: result2.timer.tick,
+        reconcile: { ...result2.service.reconcile }
+      }
+    }
+  };
+}
+function systemdRuleVerdict(rule) {
+  if (rule === void 0) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line) => typeof line === "string") : [];
+  return details.some((line) => SYSTEMD_RULE_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+function systemdParityVerdict(rule) {
+  if (rule === void 0) return null;
+  if (rule.status === "pass") return "pass";
+  if (rule.status !== "fail") return null;
+  const details = Array.isArray(rule.details) ? rule.details.filter((line) => typeof line === "string") : [];
+  return details.some((line) => SYSTEMD_PARITY_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
+}
+function systemdObserverDrift(result2) {
+  if (result2 === void 0) return null;
+  const leaves = [result2.topology, result2.heartbeatTimerRow, result2.gateway, result2.timer, result2.service];
+  if (leaves.some((leaf) => leaf.state === "error")) return null;
+  const covered = leaves.some((leaf) => leaf.items.some((item) => SYSTEMD_RULE_COVERED_KINDS.has(item.kind)));
+  if (covered) return true;
+  const uncovered = leaves.some((leaf) => leaf.state === "fail" || leaf.state === "warn");
+  return uncovered ? null : false;
+}
 function profileRuleVerdict(rule) {
   if (rule === void 0) return null;
   if (rule.status === "pass") return "pass";
@@ -23000,8 +24575,8 @@ function profileObserverDrift(result2) {
   if (gateKinds.some((kind) => PROFILE_RULE_COVERED_GATE_KINDS.has(kind))) return true;
   if (result2.path.items.some((item) => item.kind === "misowned-link")) return true;
   const shared = [result2.config, result2.bank];
-  if (shared.some((aspect2) => aspect2.state === "error" || aspect2.state === "unobserved")) return null;
-  const subsetDrift = shared.some((aspect2) => aspect2.items.some((item) => PROFILE_RULE_COVERED_KINDS.has(item.kind)));
+  if (shared.some((aspect3) => aspect3.state === "error" || aspect3.state === "unobserved")) return null;
+  const subsetDrift = shared.some((aspect3) => aspect3.items.some((item) => PROFILE_RULE_COVERED_KINDS.has(item.kind)));
   if (subsetDrift) return true;
   const otherDrift = result2.identity.state === "fail" || result2.skills.state === "fail" || result2.path.state === "warn" || result2.config.items.some((item) => item.kind === "semantic-drift" || item.kind === "delta-not-override-only");
   return otherDrift ? null : false;
@@ -23078,8 +24653,8 @@ function agentLifecycle(row, own, domains) {
 }
 function resolveAuditCli(env2 = process.env) {
   const override = nonEmptyString3(env2[CLI_ENTRY_ENV]);
-  const entry = override ?? join36(resolvePjanglerRoot(), "dist", "index.js");
-  if (!isAbsolute11(entry)) return null;
+  const entry = override ?? join37(resolvePjanglerRoot(), "dist", "index.js");
+  if (!isAbsolute12(entry)) return null;
   return existsSync26(entry) ? entry : null;
 }
 function auditChildEnv(base = process.env) {
@@ -23150,7 +24725,7 @@ async function collectFleetStatus(options) {
   let baselineText = null;
   let baselineShown = "";
   if (baselinePath !== null) {
-    const resolved = resolve22(expandHome4(baselinePath, home));
+    const resolved = resolve23(expandHome4(baselinePath, home));
     baselineShown = shownPath3(resolved);
     try {
       baselineText = readFileSync26(resolved, "utf8");
@@ -23186,6 +24761,7 @@ async function collectFleetStatus(options) {
   const { scope, agentIds, domains } = resolveStatusScope(options, registeredIds, inventory.totals.registered_agents);
   const domainSet = new Set(domains);
   const selectedAgents = new Set(agentIds);
+  const serviceManifest = domainSet.has("systemd") ? contract.service_manifest ?? null : null;
   const baselineSnapshots = baselineText === null ? [] : parseBaselineDocument(baselineText, baselineShown, {
     agentId: scope.agent_id,
     domain: scope.domain,
@@ -23201,21 +24777,43 @@ async function collectFleetStatus(options) {
   const profileNameByAgent = /* @__PURE__ */ new Map();
   const displayNameByAgent = /* @__PURE__ */ new Map();
   const profileRoleDirByAgent = /* @__PURE__ */ new Map();
+  const registeredAgentIds = [];
+  const systemdRowByAgent = /* @__PURE__ */ new Map();
   for (const entry of agentRaw.entries) {
     const raw = isRecord8(entry.value) ? entry.value : {};
     if (!profileNameByAgent.has(entry.key)) {
       profileNameByAgent.set(entry.key, nonEmptyString3(raw.profile_name));
       displayNameByAgent.set(entry.key, nonEmptyString3(raw.display_name));
+      registeredAgentIds.push(entry.key);
     }
     if (!selectedAgents.has(entry.key) || rawRowByAgent.has(entry.key)) continue;
     const declared = nonEmptyString3(raw.project_path);
-    if (declared !== null) repoByAgent.set(entry.key, resolve22(expandHome4(declared, home)));
+    if (declared !== null) repoByAgent.set(entry.key, resolve23(expandHome4(declared, home)));
     const declaredRoleDir = nonEmptyString3(raw.role_dir);
     roleDirByAgent.set(entry.key, declaredRoleDir === null ? null : expandHome4(declaredRoleDir, home));
     const role = nonEmptyString3(raw.role);
-    const projectPath = declared === null ? null : resolve22(expandHome4(declared, home));
-    profileRoleDirByAgent.set(entry.key, declaredRoleDir !== null ? isAbsolute11(expandHome4(declaredRoleDir, home)) ? resolve22(expandHome4(declaredRoleDir, home)) : projectPath === null ? null : resolve22(projectPath, declaredRoleDir) : projectPath !== null && role !== null && role !== "." && role !== ".." && !role.includes("/") ? join36(projectPath, "agents", "hermes", role) : null);
+    const projectPath = declared === null ? null : resolve23(expandHome4(declared, home));
+    profileRoleDirByAgent.set(entry.key, declaredRoleDir !== null ? isAbsolute12(expandHome4(declaredRoleDir, home)) ? resolve23(expandHome4(declaredRoleDir, home)) : projectPath === null ? null : resolve23(projectPath, declaredRoleDir) : projectPath !== null && role !== null && role !== "." && role !== ".." && !role.includes("/") ? join37(projectPath, "agents", "hermes", role) : null);
     rawRowByAgent.set(entry.key, raw);
+    const systemdBlock = isRecord8(raw.systemd) ? raw.systemd : {};
+    const hermes = isRecord8(raw.hermes) ? raw.hermes : {};
+    const messaging = {};
+    for (const platform2 of serviceManifest?.messaging.platforms ?? []) {
+      const block = isRecord8(raw[platform2]) ? raw[platform2] : {};
+      const identity = {};
+      for (const field3 of serviceManifest?.messaging.identity_fields[platform2] ?? []) {
+        const value = block[field3];
+        identity[field3] = typeof value === "string" ? value.trim() !== "" : typeof value === "number" || typeof value === "boolean";
+      }
+      messaging[platform2] = { status: nonEmptyString3(block[serviceManifest.messaging.status_field]), identity };
+    }
+    systemdRowByAgent.set(entry.key, {
+      storedGatewayUnit: nonEmptyString3(systemdBlock.gateway_unit),
+      storedHeartbeatTimer: nonEmptyString3(systemdBlock.heartbeat_timer),
+      storedSystemdKeys: Object.keys(systemdBlock).sort(),
+      hermesBin: nonEmptyString3(hermes.bin) === null ? null : expandHome4(nonEmptyString3(hermes.bin), home),
+      messaging
+    });
   }
   const profileNameClaims = /* @__PURE__ */ new Map();
   for (const name of profileNameByAgent.values()) if (name !== null) profileNameClaims.set(name, (profileNameClaims.get(name) ?? 0) + 1);
@@ -23452,6 +25050,87 @@ async function collectFleetStatus(options) {
   const profileIdentity = { bank_ok: 0, bank_alias: 0, bank_custom: 0, bank_missing: 0, bank_mismatch: 0, bank_invalid: 0 };
   const profileSkills = { core_complete: 0, core_missing: 0, core_replaced: 0, extras_seen: 0 };
   const profileRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+  const systemdExceptionFor = (agentId) => {
+    const ruling = policy.agentExceptions.find(({ entry }) => entry.domain === "systemd" && entry.agent_id === agentId);
+    return ruling ? { path: ruling.path, reason: ruling.entry.reason } : null;
+  };
+  let systemdHealth = null;
+  if (serviceManifest !== null) {
+    throwIfCancelled(runContext);
+    const layout = resolveProfileLayout(contract, env2, home);
+    const profileLayout = isRecord8(contract.service_model?.profile_layout) ? contract.service_model.profile_layout : {};
+    const fleetShared = isRecord8(contract.service_model?.fleet_shared) ? contract.service_model.fleet_shared : {};
+    const gateways = isRecord8(agentRaw.siblings.gateways) ? agentRaw.siblings.gateways : {};
+    const bloodbank = isRecord8(gateways.bloodbank) ? gateways.bloodbank : null;
+    systemdHealth = await collectSystemdHealth({
+      run: runContext,
+      home,
+      env: env2,
+      fleetHome: resolveFleetHome(env2, home),
+      profileRoot: layout.root,
+      overrideFile: nonEmptyString3(profileLayout.override_file) ?? "config.delta.yaml",
+      configHome: resolveConfigHome(env2, home),
+      manifest: serviceManifest,
+      serviceModel: contract.service_model,
+      retired: contract.retired,
+      classifications: contract.classifications,
+      sharedGateway: {
+        unit: nonEmptyString3(fleetShared.bloodbank_gateway_unit),
+        profile: nonEmptyString3(fleetShared.bloodbank_gateway_profile),
+        registryUnit: bloodbank === null ? null : nonEmptyString3(bloodbank.systemd_unit)
+      },
+      // The registry leaves the contract itself declares writable, unqualified.
+      // A key on a row that is not one of them is a retired key -- read out of
+      // the contract rather than spelled here, so retiring another one is a
+      // contract edit and not a source edit.
+      declaredSystemdKeys: [...new Set(
+        Object.values(contract.authorities).flatMap((authority2) => authority2.writable_fields ?? []).map((field3) => /^agents\.\{agent_id\}\.systemd\.([A-Za-z0-9_]+)$/u.exec(field3)?.[1] ?? null).filter((key) => key !== null)
+      )].sort(),
+      registeredProfileNames: [...profileNameByAgent.values()].filter((name) => name !== null),
+      registeredAgentIds,
+      agents: agentIds.map((agentId) => {
+        const row = systemdRowByAgent.get(agentId);
+        return {
+          agentId,
+          profileName: profileNameByAgent.get(agentId) ?? null,
+          roleDir: profileRoleDirByAgent.get(agentId) ?? null,
+          storedGatewayUnit: row?.storedGatewayUnit ?? null,
+          storedHeartbeatTimer: row?.storedHeartbeatTimer ?? null,
+          storedSystemdKeys: row?.storedSystemdKeys ?? [],
+          hermesBin: row?.hermesBin ?? null,
+          messaging: row?.messaging ?? {}
+        };
+      }),
+      // Fleet scope only: an `--agent` run samples one agent's units and never
+      // lists the manager, so it correlates no shared gateway and sweeps no
+      // unregistered unit -- and says so rather than reading as an empty sweep.
+      sweep: scope.kind === "fleet",
+      shown: shownPath3,
+      // CLOCK_MONOTONIC, the same clock systemd's `*USecMonotonic` properties
+      // use. Read once for the whole run so every agent's tick bucket is
+      // computed against ONE instant.
+      monotonicNowUs: process.hrtime.bigint() / 1000n
+    });
+    ctx.probes.push(...systemdHealth.probes);
+  }
+  const systemdCounts = {
+    total_registered: inventory.totals.registered_agents,
+    selected: agentIds.length,
+    complete: 0,
+    topology_ok: 0,
+    gateway_healthy: 0,
+    gateway_deferred: 0,
+    heartbeat_healthy: 0,
+    unstable: 0,
+    crash_looping: 0,
+    drifted: 0,
+    incomplete: 0,
+    exception_authorized: 0,
+    unobserved: 0
+  };
+  const systemdCapability = Object.fromEntries(FLEET_SYSTEMD_CAPABILITY_STATES.map((state) => [state, 0]));
+  const systemdRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
+  const systemdUnregisteredNotes = [];
   const auditFedSelected = domains.filter((domain) => AUDIT_PER_AGENT_DOMAINS.has(domain));
   const wantsAudit = live && auditFedSelected.length > 0;
   const auditByAgent = /* @__PURE__ */ new Map();
@@ -23668,22 +25347,22 @@ async function collectFleetStatus(options) {
       "every core skill the contract requires present as a readable SKILL.md in the canonical projection"
     );
     if (profileHealth.extras !== null) {
-      const all = profileHealth.extras.items;
-      const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
-      if (all.length > kept.length) {
-        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}].items: ${all.length - kept.length} of ${all.length} items dropped; data.profile.extras.by_class is counted over every entry before the cap`);
+      const all2 = profileHealth.extras.items;
+      const kept = all2.slice(0, FLEET_STATUS_MAX_ITEMS);
+      if (all2.length > kept.length) {
+        profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}].items: ${all2.length - kept.length} of ${all2.length} items dropped; data.profile.extras.by_class is counted over every entry before the cap`);
       }
       if (profileHealth.extras.truncated) {
         profileExtrasNotes.push(`host[${PROFILE_EXTRAS_RULE_ID}]: the profile root holds more than ${profileManifest.limits.max_root_entries} entries; the sweep stopped at the cap and data.profile.extras.truncated says so`);
       }
-      const unruled = all.filter((item) => item.class !== "approved-managed-exception" && item.class !== "intentionally-unmanaged");
-      const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, all.filter((item) => item.class === klass).length]));
+      const unruled = all2.filter((item) => item.class !== "approved-managed-exception" && item.class !== "intentionally-unmanaged");
+      const byClass = Object.fromEntries(FLEET_PROFILE_EXTRA_CLASSES.map((klass) => [klass, all2.filter((item) => item.class === klass).length]));
       const spread = FLEET_PROFILE_EXTRA_CLASSES.filter((klass) => byClass[klass] > 0).map((klass) => `${byClass[klass]} ${klass}`).join(", ");
       hostFinding(
         PROFILE_EXTRAS_RULE_ID,
         unruled.length === 0 ? "pass" : "warn",
         PROFILE_FIELD_PATH,
-        all.length === 0 ? "the profile root holds no unregistered entry" : unruled.length === 0 ? `${all.length} unregistered profile-root entr${all.length === 1 ? "y is" : "ies are"} classified by the contract (${spread})` : `${unruled.length} of ${all.length} unregistered profile-root entries carry no contract classification (${spread}); each is a finding for an operator, never a licence to delete`,
+        all2.length === 0 ? "the profile root holds no unregistered entry" : unruled.length === 0 ? `${all2.length} unregistered profile-root entr${all2.length === 1 ? "y is" : "ies are"} classified by the contract (${spread})` : `${unruled.length} of ${all2.length} unregistered profile-root entries carry no contract classification (${spread}); each is a finding for an operator, never a licence to delete`,
         kept.map((item) => `${item.class} ${item.path} (${item.kind}${item.alias_of ? `, alias of ${item.alias_of}` : ""}${item.standalone ? `, ${item.standalone}` : ""}, ${item.unit_file_references} unit ref(s), ${item.guidance})`),
         spread || "no unregistered entries",
         "every unregistered entry of the profile root claimed by a contract classification",
@@ -23700,6 +25379,117 @@ async function collectFleetStatus(options) {
           detail: item.detail === null ? null : bounded2(item.detail)
         }))
       );
+    }
+  }
+  if (systemdHealth !== null) {
+    const hostRetrieval = retrievalFor(null, "systemd", live);
+    const hostFinding = (ruleId, state, field3, summary, details, observed, desired, items) => {
+      const classification = classifyObservation({
+        domain: "systemd",
+        state,
+        field: field3,
+        ruleId,
+        ruleScope: "host",
+        source: SOURCE_SYSTEMD,
+        capability: null,
+        evidence: null,
+        fixable: false,
+        exceptionId: null,
+        exceptionReason: null,
+        freshness: "not_applicable",
+        repo: null,
+        retrieval: hostRetrieval,
+        activationField: ctx.activationField,
+        activationOwner: ctx.activationOwner
+      }, ctx.policy);
+      hostByRule.set(ruleId, {
+        finding: {
+          rule_id: ruleId,
+          owner: ctx.authority.ownerOf(field3) ?? ctx.domainOwner("systemd"),
+          domain: "systemd",
+          state,
+          summary: bounded2(redactHome(summary)),
+          details: boundedDetails(details),
+          finding_id: statusFindingId("host", null, "systemd", ruleId, field3, SOURCE_SYSTEMD),
+          retrieval: hostRetrieval,
+          applicability: classification.applicability,
+          evidence: classification.evidence,
+          freshness: classification.freshness,
+          severity: classification.severity,
+          repair: classification.repair,
+          observed: bounded2(redactHome(observed)),
+          desired: bounded2(desired),
+          next_action: classification.next_action,
+          next_action_class: classification.next_action_class,
+          justification: classification.justification,
+          ...items && items.length > 0 ? { items } : {}
+        },
+        states: /* @__PURE__ */ new Map([[state, 1]])
+      });
+    };
+    hostFinding(
+      SYSTEMD_MANAGER_RULE_ID,
+      systemdHealth.manager.code === "available" ? "pass" : "error",
+      SYSTEMD_FIELD_GATEWAY,
+      systemdHealth.manager.detail,
+      [
+        `manager ${systemdHealth.manager.state}`,
+        `code ${systemdHealth.manager.code}`,
+        `window ${systemdHealth.window.samples} sample(s) ${systemdHealth.window.interval_ms} ms apart`
+      ],
+      systemdHealth.manager.state,
+      "a user manager in a state service_manifest.probe.manager_available_states lists, answering within the declared budget"
+    );
+    if (scope.kind === "fleet") {
+      const shared = systemdHealth.shared;
+      hostFinding(
+        SYSTEMD_SHARED_RULE_ID,
+        shared.state === "healthy" ? "pass" : shared.state === "error" || shared.state === "unobserved" ? "error" : "fail",
+        SYSTEMD_FIELD_GATEWAY,
+        shared.detail,
+        [
+          `unit ${shared.unit ?? "none declared"}`,
+          `profile ${shared.profile ?? "none declared"}`,
+          `state ${shared.state}`,
+          ...shared.code === null ? [] : [`code ${shared.code}`]
+        ],
+        shared.state,
+        "one fleet-shared Bloodbank gateway, named identically by the contract and the registry, enabled, active and stable at the declared shared profile"
+      );
+      if (systemdHealth.unregistered !== null) {
+        const all2 = systemdHealth.unregistered.items;
+        const kept = all2.slice(0, FLEET_STATUS_MAX_ITEMS);
+        if (all2.length > kept.length) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}].items: ${all2.length - kept.length} of ${all2.length} items dropped; data.systemd.unregistered.by_class is counted over every unit before the cap`);
+        }
+        if (systemdHealth.unregistered.truncated) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest.limits.max_unregistered_units} unregistered ${serviceManifest.unregistered.unit_glob} unit(s); the sweep stopped at the cap and data.systemd.unregistered.truncated says so`);
+        }
+        const unruled = all2.filter((item) => item.class !== "managed-exception");
+        const byClass = Object.fromEntries(FLEET_SYSTEMD_UNREGISTERED_CLASSES.map((klass) => [klass, all2.filter((item) => item.class === klass).length]));
+        const spread = FLEET_SYSTEMD_UNREGISTERED_CLASSES.filter((klass) => byClass[klass] > 0).map((klass) => `${byClass[klass]} ${klass}`).join(", ");
+        hostFinding(
+          SYSTEMD_UNREGISTERED_RULE_ID,
+          unruled.length === 0 ? "pass" : "warn",
+          SYSTEMD_FIELD_TOPOLOGY,
+          all2.length === 0 ? `the user manager carries no unregistered ${serviceManifest.unregistered.unit_glob} unit` : unruled.length === 0 ? `${all2.length} unregistered unit(s) are classified by the contract (${spread})` : `${unruled.length} of ${all2.length} unregistered ${serviceManifest.unregistered.unit_glob} unit(s) carry no contract classification (${spread}); each is a finding for an operator, never a licence to stop, disable or delete`,
+          kept.map((item) => `${item.class} ${item.unit} (${item.load ?? "-"}/${item.active ?? "-"}/${item.sub ?? "-"}${item.correlated_profile ? `, profile ${item.correlated_profile}` : ""}, ${item.guidance})`),
+          spread || "no unregistered units",
+          "every unregistered hermes unit on this manager claimed by a contract classification",
+          kept.map((item) => ({
+            unit: bounded2(item.unit, 128),
+            load: item.load,
+            unit_file: item.unit_file,
+            active: item.active,
+            sub: item.sub,
+            class: item.class,
+            correlated_profile: item.correlated_profile === null ? null : bounded2(item.correlated_profile, 64),
+            process_reference: item.process_reference,
+            guidance: item.guidance,
+            detail: item.detail === null ? null : bounded2(item.detail)
+          }))
+        );
+      }
     }
   }
   const agentRecords = [];
@@ -23766,8 +25556,8 @@ async function collectFleetStatus(options) {
           else profileCounts.incomplete += 1;
         } else {
           profileCounts.real += 1;
-          if (aspects.some((aspect2) => aspect2.state === "error" || aspect2.state === "unobserved")) profileCounts.incomplete += 1;
-          else if (aspects.some((aspect2) => aspect2.state === "fail")) {
+          if (aspects.some((aspect3) => aspect3.state === "error" || aspect3.state === "unobserved")) profileCounts.incomplete += 1;
+          else if (aspects.some((aspect3) => aspect3.state === "fail")) {
             if (profileException !== null) profileCounts.exception_authorized += 1;
             else profileCounts.drifted += 1;
           } else profileCounts.structurally_healthy += 1;
@@ -23807,10 +25597,45 @@ async function collectFleetStatus(options) {
         profileSkills.extras_seen += profileResult.skills.extraTotal;
       }
     }
+    let systemdSummary = null;
+    const systemdResult = systemdHealth?.agents.get(agentId);
+    const systemdObserved = serviceManifest !== null && systemdResult !== void 0;
+    const systemdException = domainSet.has("systemd") ? systemdExceptionFor(agentId) : null;
+    if (domainSet.has("systemd")) {
+      const systemd2 = observeFromSystemd(ctx, {
+        agentId,
+        result: systemdResult,
+        manifestDeclared: serviceManifest !== null,
+        exception: systemdException,
+        notes: agentNotes
+      });
+      own.push(...systemd2.observations);
+      systemdSummary = systemd2.summary;
+      if (!systemdObserved) systemdCounts.unobserved += 1;
+      else {
+        const leaves = [systemdResult.topology, systemdResult.heartbeatTimerRow, systemdResult.gateway, systemdResult.timer, systemdResult.service];
+        systemdCapability[systemdResult.capability.declared] += 1;
+        if (leaves.every((leaf) => leaf.state !== "error" && leaf.state !== "unobserved")) systemdCounts.complete += 1;
+        if (systemdResult.topology.state === "pass") systemdCounts.topology_ok += 1;
+        if (systemdResult.gateway.state === "pass") {
+          if (systemdResult.capability.declared === "deferred") systemdCounts.gateway_deferred += 1;
+          else systemdCounts.gateway_healthy += 1;
+        }
+        if (systemdResult.timer.state === "pass" && systemdResult.service.state === "pass") systemdCounts.heartbeat_healthy += 1;
+        if (!systemdResult.gateway.stability.stable && systemdResult.gateway.state !== "error") systemdCounts.unstable += 1;
+        if (systemdResult.gateway.items.some((item) => item.kind === "crash-looping")) systemdCounts.crash_looping += 1;
+        if (leaves.some((leaf) => leaf.state === "error" || leaf.state === "unobserved")) systemdCounts.incomplete += 1;
+        else if (leaves.some((leaf) => leaf.state === "fail")) {
+          if (systemdException !== null) systemdCounts.exception_authorized += 1;
+          else systemdCounts.drifted += 1;
+        }
+      }
+    }
     const audit = auditByAgent.get(agentId);
     if (!live) {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
       if (profileObserved) profileRuleAgreement.not_compared += 1;
+      if (systemdObserved) systemdRuleAgreement.not_compared += 1;
       for (const domain of auditFedSelected) {
         own.push(observation2(ctx, {
           domain,
@@ -23827,6 +25652,7 @@ async function collectFleetStatus(options) {
     } else if (auditEntry === null || audit === void 0 || audit.outcome !== "ok") {
       if (scaffoldObserved) ruleAgreement.not_compared += 1;
       if (profileObserved) profileRuleAgreement.not_compared += 1;
+      if (systemdObserved) systemdRuleAgreement.not_compared += 1;
       const failed = audit !== void 0 && audit.outcome === "failed";
       const state = failed ? "error" : "unobserved";
       const reason = auditEntry === null ? "audit-cli-unavailable" : audit === void 0 ? "no-project-path-recorded" : audit.reason ?? audit.outcome;
@@ -24025,6 +25851,31 @@ async function collectFleetStatus(options) {
           }
         }
       }
+      if (systemdObserved) {
+        const sentinel = systemdRuleVerdict((audit.rules ?? []).find((rule) => nonEmptyString3(rule.id) === "systemd.sentinel"));
+        const parity = systemdParityVerdict((audit.rules ?? []).find((rule) => nonEmptyString3(rule.id) === "hermes.registry-parity"));
+        const ruleVerdict = sentinel === null && parity === null ? null : sentinel === "fail" || parity === "fail" ? "fail" : "pass";
+        const observerDrift = systemdObserverDrift(systemdResult);
+        if (ruleVerdict === null || observerDrift === null) systemdRuleAgreement.not_compared += 1;
+        else {
+          systemdRuleAgreement.compared += 1;
+          if (ruleVerdict === "fail" === observerDrift) systemdRuleAgreement.agree += 1;
+          else {
+            systemdRuleAgreement.disagree += 1;
+            addFinding3(ctx, {
+              code: "systemd-rule-disagreement",
+              domain: "systemd",
+              field: SYSTEMD_FIELD_GATEWAY,
+              agent_id: agentId,
+              source: ctx.domainOwner("systemd"),
+              severity: "error",
+              statusSeverity: "high",
+              gating: true,
+              detail: `the recipe rules systemd.sentinel/hermes.registry-parity report ${ruleVerdict} while the systemd observer finds ${observerDrift ? "drift" : "no drift"} over the service state all three read (unit presence, enablement, activity, retired units and retired registry keys); both readings are kept and neither is resolved silently`
+            });
+          }
+        }
+      }
     }
     own.sort((a, b) => a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : (a.rule_id ?? "") < (b.rule_id ?? "") ? -1 : (a.rule_id ?? "") > (b.rule_id ?? "") ? 1 : a.field < b.field ? -1 : a.field > b.field ? 1 : a.finding_id < b.finding_id ? -1 : a.finding_id > b.finding_id ? 1 : 0);
     totalObservations += own.length;
@@ -24065,10 +25916,12 @@ async function collectFleetStatus(options) {
       lifecycle,
       member_class: memberClass,
       scaffold: scaffoldSummary,
-      profile: profileSummary
+      profile: profileSummary,
+      systemd: systemdSummary
     });
   }
   truncated.push(...profileExtrasNotes);
+  truncated.push(...systemdUnregisteredNotes);
   const fleetObservations = [];
   if (needsProvenance) {
     for (const fact of provenanceFacts) {
@@ -24197,6 +26050,37 @@ async function collectFleetStatus(options) {
     })(),
     rule_agreement: { ...profileRuleAgreement }
   };
+  const systemd = !domainSet.has("systemd") ? null : {
+    source: SOURCE_SYSTEMD,
+    manager: systemdHealth === null ? { state: "manifest-undeclared", code: "manifest-undeclared" } : { state: bounded2(systemdHealth.manager.state, 64), code: systemdHealth.manager.code },
+    window: systemdHealth === null ? { samples: 0, interval_ms: 0 } : { ...systemdHealth.window },
+    units: systemdHealth === null ? { listed: 0, unit_files: 0, transient: 0 } : { ...systemdHealth.units },
+    agents: {
+      ...systemdCounts,
+      unobserved: systemdCounts.unobserved + (systemdCounts.total_registered - systemdCounts.selected)
+    },
+    capability: { ...systemdCapability },
+    shared: {
+      coverage: systemdHealth === null || systemdHealth.shared.state === "unobserved" ? "unobserved" : "observed",
+      unit: systemdHealth?.shared.unit ?? null,
+      profile: systemdHealth?.shared.profile ?? null,
+      state: systemdHealth === null ? "unobserved" : systemdHealth.shared.state,
+      code: systemdHealth === null ? "manifest-undeclared" : systemdHealth.shared.code === null ? null : bounded2(systemdHealth.shared.code, 64)
+    },
+    unregistered: (() => {
+      const items = systemdHealth?.unregistered?.items ?? [];
+      const byClass = Object.fromEntries(FLEET_SYSTEMD_UNREGISTERED_CLASSES.map((klass) => [klass, items.filter((item) => item.class === klass).length]));
+      return {
+        coverage: systemdHealth?.unregistered ? "swept" : "not-swept",
+        reason: systemdHealth === null ? "manifest-undeclared" : systemdHealth.unregistered ? null : bounded2(systemdHealth.unregisteredReason ?? "not-swept", 64),
+        total: items.length,
+        by_class: byClass,
+        listed: Math.min(items.length, FLEET_STATUS_MAX_ITEMS),
+        truncated: systemdHealth?.unregistered?.truncated ?? false
+      };
+    })(),
+    rule_agreement: { ...systemdRuleAgreement }
+  };
   return {
     contract_path: shownPath3(contractPath),
     contract_version: contract.contract_version,
@@ -24211,6 +26095,7 @@ async function collectFleetStatus(options) {
     transitions,
     scaffold,
     profile,
+    systemd,
     truncated
   };
 }
@@ -24263,7 +26148,7 @@ function provenanceEnvelope(provenance) {
   return fleetSuccessEnvelope(PROVENANCE_COMMAND, provenance, provenance.health.healthy && provenance.health.complete ? ["Consume data.facts as the fleet's proven provenance; every fact names the source of both sides"] : [provenance.health.mismatched ? "Repoint each mismatched agent at the configured pin, or move the pin -- data.facts names both sides and the authority that owns the field" : provenance.health.missing ? "Record the missing values on the owning side; an absent pin is never a match" : "Review data.probes: a fact reported unobserved was not read, and nothing may be claimed about it"]);
 }
 function statusEnvelope(status) {
-  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.proven ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its evidence, its severity, and the one action that changes it"] : [status.health.errors || status.health.collection_errors ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read" : status.health.failed ? "Repair the failing observations in data.agents, worst first -- data.findings is sorted by gating impact and severity, and data.host is separate on purpose" : status.health.unjustified ? "Every non-pass without a justification blocks proof: authorize it under health_policy in the fleet contract, or repair it" : status.health.stale ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry" : status.scope.live ? "Review data.health.unobserved: systemd, live-process and Bloodbank-liveness observers do not exist in this release (stories 1.8/1.9/1.10)" : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
+  return fleetSuccessEnvelope(STATUS_COMMAND, status, status.health.proven ? ["Consume data.agents as the fleet's proven state; every observation names its domain, its evidence, its severity, and the one action that changes it"] : [status.health.errors || status.health.collection_errors ? "Review data.findings: a collection error is never a pass, so the domains it covers are reported error or unobserved until the source can be read" : status.health.failed ? "Repair the failing observations in data.agents, worst first -- data.findings is sorted by gating impact and severity, and data.host is separate on purpose" : status.health.unjustified ? "Every non-pass without a justification blocks proof: authorize it under health_policy in the fleet contract, or repair it" : status.health.stale ? "Refresh the evidence behind each stale observation, or widen the owning health_policy.freshness entry" : status.scope.live ? "Review data.health.unobserved: live-process and Bloodbank-liveness observers do not exist in this release (stories 1.9/1.10)" : "Re-run with --live to authorize the bounded, read-only recipe audit; without it every audit-fed domain is unobserved"]);
 }
 function budgetAwareActions(what) {
   return (error) => [
@@ -24313,7 +26198,7 @@ function registerFleetMcpTools(server2, asText2) {
     "pjangler_fleet_status",
     {
       title: "Report registry-wide Hermes fleet status",
-      description: `Traverses the registry once and reports every registered agent across all nine observation domains -- registry, project_binding, template_scaffold, profile, runtime, systemd, live_process, bloodbank, release_provenance -- each either observed or carrying an explicit unobserved/unsupported reason. Host-scoped findings are reported once in data.host and never folded into an agent. Strictly read-only; \`live\` authorizes bounded read-only host and network observation (the recipe-owned audit rules) and nothing else. Returns the fleet JSON v1 envelope; an unhealthy or incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.`,
+      description: `Traverses the registry once and reports every registered agent across all nine observation domains -- registry, project_binding, template_scaffold, profile, runtime, systemd, live_process, bloodbank, release_provenance -- each either observed or carrying an explicit unobserved/unsupported reason. Host-scoped findings are reported once in data.host and never folded into an agent. Strictly read-only; \`live\` authorizes bounded read-only host and network observation (the recipe-owned audit rules) and nothing else -- it does not gate the systemd observer, which samples this machine's user manager with read-only \`systemctl --user\` queries in every scope. Returns the fleet JSON v1 envelope; an unhealthy or incomplete fleet is still ok:true with data.health.healthy / data.health.complete false.`,
       inputSchema: z.strictObject({
         ...FLEET_TOOL_INPUT,
         // A plain string, matching the CLI, so an unknown value produces the
@@ -24395,7 +26280,7 @@ function validateExternalEffectConsent(input, options) {
   return selected;
 }
 function resolveTargetDir(targetDir) {
-  const dir = resolve23(targetDir ?? process.cwd());
+  const dir = resolve24(targetDir ?? process.cwd());
   if (!existsSync27(dir)) {
     throw new Error(`Target directory does not exist: ${dir}`);
   }
@@ -24407,7 +26292,7 @@ function resolveTargetDir(targetDir) {
 function resolvePjanglerRoot3() {
   let dir = dirname19(fileURLToPath9(import.meta.url));
   while (dir !== dirname19(dir)) {
-    if (existsSync27(join37(dir, "package.json")) && existsSync27(join37(dir, "templates", "commonproject", "copier.yml"))) {
+    if (existsSync27(join38(dir, "package.json")) && existsSync27(join38(dir, "templates", "commonproject", "copier.yml"))) {
       return dir;
     }
     dir = dirname19(dir);
@@ -24504,7 +26389,7 @@ function projectPreflightFailure(plan, errors, audit) {
   };
 }
 function preflightExistingHermesScaffold(targetDir) {
-  if (!existsSync27(join37(targetDir, "agents", "hermes"))) return void 0;
+  if (!existsSync27(join38(targetDir, "agents", "hermes"))) return void 0;
   const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
   if (!owner) return "Hermes lifecycle owner is unavailable";
   const finding2 = owner.check.audit(lifecycleContext(targetDir, true));
@@ -24696,9 +26581,9 @@ server.registerTool(
       acceptRegistryMatches: z2.boolean().optional()
     })
   },
-  async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
+  async ({ targetDir, ruleId, all: all2, dryRun, acceptRegistryMatches }) => {
     try {
-      const runAll = all ?? false;
+      const runAll = all2 ?? false;
       if (!runAll && !ruleId) throw new Error("Either ruleId or all=true is required");
       if (runAll && ruleId) throw new Error("Pass either ruleId or all=true, not both");
       const resolvedTarget = resolveTargetDir(targetDir);
@@ -24763,12 +26648,12 @@ server.registerTool(
       );
       const pjanglerRoot = resolvePjanglerRoot3();
       const projectSlug = validateSafePathSegment(input.projectSlug ?? slugify(input.projectName), "Project slug");
-      const explicitTargetDir = input.targetDir ? resolve23(input.targetDir) : void 0;
-      const parentDir = resolve23(input.parentDir ?? (explicitTargetDir ? dirname19(explicitTargetDir) : process.cwd()));
+      const explicitTargetDir = input.targetDir ? resolve24(input.targetDir) : void 0;
+      const parentDir = resolve24(input.parentDir ?? (explicitTargetDir ? dirname19(explicitTargetDir) : process.cwd()));
       if (!existsSync27(parentDir) || !statSync8(parentDir).isDirectory()) throw new Error(`Parent directory does not exist: ${parentDir}`);
       const targetDir = resolveContainedPath(
         parentDir,
-        explicitTargetDir ?? join37(parentDir, projectSlug),
+        explicitTargetDir ?? join38(parentDir, projectSlug),
         "Bootstrap target"
       );
       const overwrite = input.overwrite ?? input.force ?? false;
@@ -24915,7 +26800,7 @@ server.registerTool(
         registryPath: input.registryPath,
         force: input.force ?? false,
         overwrite: input.force ?? false,
-        scaffold: !(input.targetDir && existsSync27(join37(resolve23(input.targetDir), ".git")))
+        scaffold: !(input.targetDir && existsSync27(join38(resolve24(input.targetDir), ".git")))
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = preflightProjectApply(plan, resolvePjanglerRoot3());

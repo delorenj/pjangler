@@ -488,6 +488,40 @@ function runBoundedChild(
 }
 
 /**
+ * Wait `ms` between two observations, abort-aware and capped by the run deadline.
+ *
+ * The systemd observer samples the user manager several times over a declared
+ * window, and the interval between samples is the one place this module
+ * deliberately does nothing for a while. Three properties make that safe:
+ *
+ *   * CANCELLATION WAKES IT. An aborted signal rejects with `CANCELLED` at
+ *     once, so a SIGINT during the window ends the run rather than waiting
+ *     out the sleep first.
+ *   * THE DEADLINE CAPS IT. The wait never runs past `remainingMs`; the probe
+ *     that follows then throws `TIMEOUT` exactly as it would have without the
+ *     sleep, so a whole-run budget is honoured to the millisecond it names.
+ *   * THE TIMER KEEPS THE LOOP ALIVE. Deliberately NOT `unref`ed: the caller
+ *     is awaiting this promise and nothing else may be pending, so an unref'd
+ *     timer would let the process exit mid-window with the envelope unwritten.
+ */
+export function sleepBounded(ctx: FleetRunContext, ms: number): Promise<void> {
+  const remaining = remainingMs(ctx);
+  const wait = Math.max(0, Math.min(ms, Number.isFinite(remaining) ? remaining : ms));
+  if (wait === 0) return Promise.resolve();
+  return new Promise<void>((settle, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new FleetError("CANCELLED", "Fleet command was cancelled before it completed"));
+    };
+    const timer = setTimeout(() => {
+      ctx.signal.removeEventListener("abort", onAbort);
+      settle();
+    }, wait);
+    ctx.signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
  * Run `tasks` with at most `limit` in flight, preserving input order in the result.
  *
  * Bounded concurrency is a requirement, not an optimization: 28 agents can name

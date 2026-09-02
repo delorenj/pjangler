@@ -268,6 +268,10 @@ const SOURCE_EVIDENCE: Readonly<Record<string, FleetStatusEvidence>> = Object.fr
   // The profile observer (story 1.7) lstats and reads the profile tree itself
   // and runs the canonical renderer's own check against it.
   "fleet-profile": "direct",
+  // The systemd observer (story 1.8) samples the user manager itself: every
+  // unit state it reports is a `systemctl --user show` it ran, never a
+  // registry field's claim.
+  "fleet-systemd": "direct",
   "declared-gap": "absent",
 });
 

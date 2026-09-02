@@ -3,7 +3,7 @@ title: 'Story 1.8: Prove Canonical systemd Topology and Service Health'
 type: 'feature'
 created: '2026-09-02'
 status: 'in-progress'
-baseline_revision: 'd8c1753152ae170568ded4f91f07713537bab103'
+baseline_revision: '378051d690e29c73acbb0560c35a475eb60f15a5'
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
