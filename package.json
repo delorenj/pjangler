@@ -41,7 +41,7 @@
     "migrate:create": "node-pg-migrate --migrations-dir migrations create",
     "prepublishOnly": "npm run check:lock && npm run check:submodules -- --remote --recursive --archive --npm && npm run build && npm run check:tracked-secrets",
     "test:hermes-profile-inheritance": "node tests/hermes-profile-inheritance-regressions.mjs",
-    "test:coverage": "npm run build && c8 --exclude='**/.pjan-*/**' --reporter=json-summary --reporter=text-summary --src=src --report-dir=coverage node scripts/run-tests.mjs",
+    "test:coverage": "npm run build && NODE_OPTIONS=--max-old-space-size=12288 c8 --exclude='**/.pjan-*/**' --reporter=json-summary --reporter=text-summary --src=src --report-dir=coverage node scripts/run-tests.mjs",
     "coverage:check": "node scripts/coverage-ratchet.mjs",
     "coverage:apply": "node scripts/coverage-ratchet.mjs --apply"
   },
