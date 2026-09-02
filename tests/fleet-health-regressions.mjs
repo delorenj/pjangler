@@ -1874,51 +1874,55 @@ try {
     // profile must carry no failure of its own or the agent could never be an
     // exception rather than unhealthy.
     const profile = seedRendererCleanProfile(scratchHome, "drifted-pm");
-    const agents = writeAgentRegistry(join(temp, "exception-agents.yaml"), [...SLUGS, "drifted"]);
-    const projects = writeProjectRegistry(join(temp, "exception-projects.yaml"), [...SLUGS, "drifted"]);
-    const argv = ["fleet", "status", "--live", "--json", "--agent-registry", agents, "--project-registry", projects];
-
-    resetEntry(cleanShim);
-    const before = status(cliAt(cleanRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
-    const unruled = agentNamed(before, "drifted-pm");
-    const roleYaml = unruled.observations.find((item) => item.field === "scaffold.role.yaml");
-    assert.ok(roleYaml, "the role.yaml group must be observed");
-    assert.equal(roleYaml.state, "fail", "a missing role.yaml is drift");
-    assert.deepEqual(roleYaml.items.map((item) => item.kind), ["missing"]);
-    assert.equal(roleYaml.justification, null, "nothing rules on it yet");
-    assert.equal(unruled.member_class, "unhealthy");
-    assert.equal(before.scaffold.agents.drifted, 1);
-    assert.equal(before.scaffold.agents.exception_authorized, 0);
-
-    const ruled = writeContract("agent-exception", policyContract((document) => {
-      document.health_policy.agent_exceptions = [
-        { domain: "template_scaffold", agent_id: "drifted-pm", reason: "the operator keeps this role's manifest by hand", owner: "suite" },
-      ];
-    }));
-    const ruledRoot = makePackageRoot("pkg-agent-exception", readFileSync(ruled, "utf8"));
-    resetEntry(cleanShim);
-    const after = status(cliAt(ruledRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
-    const excepted = agentNamed(after, "drifted-pm");
-    const ruledYaml = excepted.observations.find((item) => item.field === "scaffold.role.yaml");
-    assert.equal(ruledYaml.state, "fail", "the state is unchanged; only the AUTHORIZATION is new");
-    assert.ok(ruledYaml.justification, "the ruling must be named on the observation");
-    assert.equal(ruledYaml.justification.kind, "exception");
-    assert.equal(ruledYaml.justification.policy, "health_policy.agent_exceptions[0]", "the policy path is the entry's own, not the intentionally_unmanaged literal");
-    assert.equal(ruledYaml.applicability, "exception");
-    assert.equal(excepted.member_class, "exception", "every proven failure carries the ruling, so the agent is an exception rather than unhealthy");
-    assert.equal(after.scaffold.agents.exception_authorized, 1);
-    assert.equal(after.scaffold.agents.drifted, 0);
-    // The ruling moves the BUCKET and nothing else: `health.healthy` is about
-    // proven drift, and the drift is still proven.
-    assert.equal(after.health.healthy, before.health.healthy, "a ruling must not change health.healthy");
-    assert.equal(after.health.healthy, false);
-    assert.equal(after.health.failed, before.health.failed, "the fail is still counted");
-    assert.equal(after.health.members.exception, before.health.members.exception + 1);
-    assert.equal(after.health.members.unhealthy, before.health.members.unhealthy - 1);
     // An unregistered profile left in the root would be an extra for every
-    // later fleet-scope sweep, so it goes with its lock.
-    rmSync(profile, { recursive: true, force: true });
-    rmSync(join(scratchHome, ".hermes", "profiles", ".drifted-pm.config.lock"), { force: true });
+    // later fleet-scope sweep, so it goes with its lock -- on a failing
+    // assertion too, or one red case cascades into every later sweep.
+    try {
+      const agents = writeAgentRegistry(join(temp, "exception-agents.yaml"), [...SLUGS, "drifted"]);
+      const projects = writeProjectRegistry(join(temp, "exception-projects.yaml"), [...SLUGS, "drifted"]);
+      const argv = ["fleet", "status", "--live", "--json", "--agent-registry", agents, "--project-registry", projects];
+
+      resetEntry(cleanShim);
+      const before = status(cliAt(cleanRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
+      const unruled = agentNamed(before, "drifted-pm");
+      const roleYaml = unruled.observations.find((item) => item.field === "scaffold.role.yaml");
+      assert.ok(roleYaml, "the role.yaml group must be observed");
+      assert.equal(roleYaml.state, "fail", "a missing role.yaml is drift");
+      assert.deepEqual(roleYaml.items.map((item) => item.kind), ["missing"]);
+      assert.equal(roleYaml.justification, null, "nothing rules on it yet");
+      assert.equal(unruled.member_class, "unhealthy");
+      assert.equal(before.scaffold.agents.drifted, 1);
+      assert.equal(before.scaffold.agents.exception_authorized, 0);
+
+      const ruled = writeContract("agent-exception", policyContract((document) => {
+        document.health_policy.agent_exceptions = [
+          { domain: "template_scaffold", agent_id: "drifted-pm", reason: "the operator keeps this role's manifest by hand", owner: "suite" },
+        ];
+      }));
+      const ruledRoot = makePackageRoot("pkg-agent-exception", readFileSync(ruled, "utf8"));
+      resetEntry(cleanShim);
+      const after = status(cliAt(ruledRoot, argv, { PJ_FLEET_CLI_ENTRY: cleanShim }));
+      const excepted = agentNamed(after, "drifted-pm");
+      const ruledYaml = excepted.observations.find((item) => item.field === "scaffold.role.yaml");
+      assert.equal(ruledYaml.state, "fail", "the state is unchanged; only the AUTHORIZATION is new");
+      assert.ok(ruledYaml.justification, "the ruling must be named on the observation");
+      assert.equal(ruledYaml.justification.kind, "exception");
+      assert.equal(ruledYaml.justification.policy, "health_policy.agent_exceptions[0]", "the policy path is the entry's own, not the intentionally_unmanaged literal");
+      assert.equal(ruledYaml.applicability, "exception");
+      assert.equal(excepted.member_class, "exception", "every proven failure carries the ruling, so the agent is an exception rather than unhealthy");
+      assert.equal(after.scaffold.agents.exception_authorized, 1);
+      assert.equal(after.scaffold.agents.drifted, 0);
+      // The ruling moves the BUCKET and nothing else: `health.healthy` is about
+      // proven drift, and the drift is still proven.
+      assert.equal(after.health.healthy, before.health.healthy, "a ruling must not change health.healthy");
+      assert.equal(after.health.healthy, false);
+      assert.equal(after.health.failed, before.health.failed, "the fail is still counted");
+      assert.equal(after.health.members.exception, before.health.members.exception + 1);
+      assert.equal(after.health.members.unhealthy, before.health.members.unhealthy - 1);
+    } finally {
+      rmSync(profile, { recursive: true, force: true });
+      rmSync(join(scratchHome, ".hermes", "profiles", ".drifted-pm.config.lock"), { force: true });
+    }
   });
 
   check("every declared vocabulary is exported and spelled the same in source", () => {

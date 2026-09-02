@@ -115,13 +115,16 @@ export {
 } from "./scaffold";
 
 export {
+  CANONICAL_SKILLS_CONFIG_KEY,
   PROFILE_MARKER_WINDOW_BYTES,
   PROFILE_MAX_DRIFT_SECTIONS,
+  PROFILE_MAX_SKILL_DIR_ENTRIES,
   PROFILE_MAX_UNIT_FILE_BYTES,
   PROFILE_NAME_PATTERN,
   PROFILE_PROBE_KIND,
   PROFILE_PYTHON_PROBE,
   PROFILE_SINGLETON_LINKS,
+  RENDERER_BASE_FILE,
   collectProfileHealth,
   type FleetProfileAgentInput,
   type FleetProfileAgentResult,
@@ -132,6 +135,7 @@ export {
   type FleetProfileItem,
   type FleetProfileRendererRecord,
   type FleetProfileRootRecord,
+  type FleetProfileSkillCoreRecord,
 } from "./profile";
 
 export {
@@ -215,8 +219,10 @@ export {
   FLEET_PROFILE_MANIFEST_RENDERER_KEYS,
   FLEET_PROFILE_MANIFEST_SKILL_CORE_KEYS,
   FLEET_PROFILE_PATH_CODES,
+  FLEET_PROFILE_PYTHON_CODES,
   FLEET_PROFILE_RENDERER_CODES,
   FLEET_PROFILE_RENDERER_STATES,
+  FLEET_PROFILE_ROOT_CODES,
   FLEET_STATUS_PROFILE_CONCURRENCY,
   PROFILE_MAX_EXTRA_SKILLS,
   PROFILE_MAX_FILE_BYTES,
@@ -303,8 +309,10 @@ export {
   type FleetProfileItemKind,
   type FleetProfileManifest,
   type FleetProfilePathCode,
+  type FleetProfilePythonCode,
   type FleetProfileRendererCode,
   type FleetProfileRendererState,
+  type FleetProfileRootCode,
   type FleetProfileSummary,
   type FleetProjection,
   type FleetProvenance,

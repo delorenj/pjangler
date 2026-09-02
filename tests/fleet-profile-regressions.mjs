@@ -431,6 +431,12 @@ function seedFleet() {
     `Environment=HERMES_HOME=${join(profilesRoot, "standalone")}/`,
     "",
   ].join("\n"), "utf8");
+  // A unit that is itself a link (systemctl link, a dotfiles manager) is read
+  // through the link; a line assigning more than one variable names the first.
+  mkdirSync(join(outside, "units"), { recursive: true });
+  writeFileSync(join(outside, "units", "hermes-unmanaged.service"), ["[Service]", `Environment=HERMES_HOME=${join(profilesRoot, "unmanaged")}`, ""].join("\n"), "utf8");
+  symlinkSync(join(outside, "units", "hermes-unmanaged.service"), join(scratchHome, ".config", "systemd", "user", "hermes-unmanaged.service"));
+  writeFileSync(join(scratchHome, ".config", "systemd", "user", "hermes-linked.service"), ["[Service]", `Environment=HERMES_HOME=${join(profilesRoot, "linked")} HERMES_PROFILE=linked`, ""].join("\n"), "utf8");
 
   writeAgentRegistry(join(fleetHome, "agents-registry.yaml"));
   writeProjectRegistry(join(scratchHome, ".config", "pjangler", "projects.yaml"));
@@ -852,7 +858,7 @@ try {
       const probes = data.probes.filter((probe) => probe.kind === "profile" && probe.target.endsWith(`/profiles/${id}`));
       assert.ok(probes.every((probe) => probe.outcome === "skipped"), `${id}: ${JSON.stringify(probes)}`);
     }
-    assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/clean-pm")).outcome, "ok", "the clean profile's renderer probe ran");
+    if (RENDERER_AVAILABLE) assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/clean-pm")).outcome, "ok", "the clean profile's renderer probe ran");
   });
 
   check("a clean profile reads five passes, an in-sync renderer, three digests and a pinned bank", () => {
@@ -894,7 +900,7 @@ try {
     assert.equal(path.state, "fail");
     assert.deepEqual(itemsOf(path).map((item) => [item.path, item.kind, item.detail]), [["SOUL.md", "misowned-link", "misowned-link:SOUL.md"]]);
     assert.equal(agent.profile.path.code, "misowned-link");
-    assert.equal(fieldOf(agent, FIELDS.config).state, "pass", "the gate passed, so the config was still proven");
+    if (RENDERER_AVAILABLE) assert.equal(fieldOf(agent, FIELDS.config).state, "pass", "the gate passed, so the config was still proven");
     assert.equal(fieldOf(agent, FIELDS.bank).state, "pass");
     assert.equal(textOf(agent).includes(SECRET_SENTINEL), false, "the other agent's memory was never read");
 
@@ -1341,6 +1347,8 @@ try {
     assert.equal(byPath["fleet-bloodbank-gateway"].detail, "classifications.managed_shared_service.entries[0]");
     assert.equal(byPath["fleet-bloodbank-gateway"].unit_file_references, 1);
     assert.equal(byPath.standalone.unit_file_references, 1, "a trailing slash in the unit's HERMES_HOME still counts");
+    assert.equal(byPath.unmanaged.unit_file_references, 1, "a unit that is itself a link is read through the link");
+    assert.equal(byPath.linked.unit_file_references, 1, "a line assigning more than one variable names the first value");
     assert.equal(byPath.standalone.standalone, "incomplete");
     assert.equal(byPath.unmanaged.standalone, "complete");
     assert.equal(byPath.linked.standalone, null, "a symlink is classified, never followed");
@@ -1509,6 +1517,12 @@ try {
     assert.deepEqual(kindsOf(fieldOf(unnamed, FIELDS.path)), ["unnamed"]);
     assert.equal(unnamed.profile.path.code, "unnamed");
     assert.equal(fieldOf(unnamed, FIELDS.config).state, "unobserved");
+    assert.equal(itemsOf(fieldOf(unnamed, FIELDS.path))[0].path, "(unnamed)", "the gate item is addressable even with no name");
+    // Agent scope reads the SAME whole-fleet names: one selected row still
+    // sees the other claimant it did not select.
+    const scoped = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm", "--agent-registry", agents]));
+    assert.equal(agentNamed(scoped, "clean-pm").profile.path.code, "ambiguous", "a --agent run is gated against rows it did not select");
+    assert.equal(fieldOf(agentNamed(scoped, "clean-pm"), FIELDS.config).state, "unobserved");
   });
 
   check("the canonical skills directory follows CANONICAL_SKILLS_DIR, then the template config, then the manifest; a lacking projection is one named host finding", () => {
@@ -1535,6 +1549,12 @@ try {
     assert.equal(agent.profile.skills.core_present, 5, "the other five still resolve: the partial projection links into the same skill directories");
     assert.equal(viaConfig.profile.skills.core_missing, 1);
     assert.equal(viaConfig.profile.skills.core_complete, 0);
+    // The template's own config_get follows a link here; so does the observer.
+    const linkedConfig = join(temp, "config-partial-link.toml");
+    symlinkSync(config, linkedConfig);
+    const viaLinkedConfig = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { HERMES_TEMPLATE_CONFIG: linkedConfig }));
+    assert.equal(hostNamed(viaLinkedConfig, "profile.skill-core").state, "fail", "a linked template config is read through the link");
+    assert.match(hostNamed(viaLinkedConfig, "profile.skill-core").summary, /\(template-config\)/u);
     // The environment override outranks the template config.
     const viaEnv = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { HERMES_TEMPLATE_CONFIG: config, CANONICAL_SKILLS_DIR: canonicalSkills }));
     assert.equal(hostNamed(viaEnv, "profile.skill-core").state, "pass");
@@ -1560,7 +1580,7 @@ try {
       const probe = data.probes.find((item) => item.kind === "profile" && item.target.endsWith("/profiles/solo-pm"));
       assert.deepEqual([probe.outcome, probe.reason], ["skipped", detail], name);
       assert.equal(data.profile.renderer.checked, 0, name);
-      assert.equal(hostNamed(data, "profile.renderer").state, "pass", `${name}: the renderer itself is fine`);
+      if (RENDERER_AVAILABLE) assert.equal(hostNamed(data, "profile.renderer").state, "pass", `${name}: the renderer itself is fine`);
       assert.equal(fieldOf(agentNamed(data, "solo-pm"), FIELDS.bank).state, "pass", `${name}: the other fields are still read`);
     }
   });
@@ -1619,6 +1639,310 @@ try {
     assert.equal(many.profile.extras.by_class["debris-candidate"], 105, "by_class is counted over every entry before the cap");
     assert.ok(many.truncated.some((note) => note.startsWith("host[profile.extras].items: 5 of 105 items dropped")), JSON.stringify(many.truncated));
     assert.equal(many.health.truncated, true);
+  });
+
+  // -- review pass: a collection failure is never a verdict ------------------
+
+  check("a package root that is not a checkout root, a git that cannot answer, and a renderer copy that cannot be read under the cap are renderer-source-unobserved, never a verdict", () => {
+    const contract = YAML.stringify(policyContract(), { lineWidth: 0 });
+    const expectUnobserved = (data, name, summary) => {
+      assert.equal(data.profile.renderer.source, "renderer-source-unobserved", name);
+      assert.equal(data.profile.renderer.python, "not-probed", name);
+      const finding = hostNamed(data, "profile.renderer");
+      assert.equal(finding.state, "error", name);
+      assert.equal(finding.observed, "renderer-source-unobserved", name);
+      assert.match(finding.summary, summary, name);
+      const config = fieldOf(agentNamed(data, "clean-pm"), FIELDS.config);
+      assert.equal(config.state, "error", name);
+      assert.equal(itemsOf(config).find((item) => item.kind === "renderer-unavailable").detail, "renderer-source-unobserved", name);
+      assert.equal(data.probes.filter((probe) => probe.kind === "profile" && probe.outcome === "ok").length, 0, `${name}: nothing was proven`);
+      assert.equal(data.probes.some((probe) => probe.kind === "profile" && probe.target === "python3"), false, `${name}: the interpreter was not probed`);
+    };
+    // 1. An extracted build sitting inside some OTHER repository: `git -C`
+    //    walks up into it, and that repository's HEAD is not pjangler's.
+    const outer = join(temp, "outer-repo");
+    mkdirSync(outer, { recursive: true });
+    gitOk(outer, ["init", "--quiet"]);
+    writeFileSync(join(outer, "README.md"), "not pjangler\n", "utf8");
+    gitOk(outer, ["add", "README.md"]);
+    gitOk(outer, ["commit", "--quiet", "-m", "outer"]);
+    const nested = makePackageRoot(join("outer-repo", "pkg-nested"), contract, { after: (root) => rmSync(join(root, ".git"), { recursive: true, force: true }) });
+    const inside = status(cliAt(nested, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    expectUnobserved(inside, "nested", /not a git checkout root of its own/u);
+    assert.equal(inside.profile.renderer.gitlink, null, "the outer repository's HEAD was never read as a pin");
+    // 2. A git that cannot answer at all.
+    const brokenGit = join(shimRoot, "path-git-broken");
+    mkdirSync(brokenGit, { recursive: true });
+    writeFileSync(join(brokenGit, "git"), "#!/bin/sh\necho 'fatal: not a git repository' >&2\nexit 128\n", "utf8");
+    chmodSync(join(brokenGit, "git"), 0o755);
+    const realPython = spawnSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+    if (realPython) symlinkSync(realPython, join(brokenGit, "python3"));
+    const broken = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { PATH: brokenGit }));
+    expectUnobserved(broken, "broken-git", /rev-parse --show-toplevel probe failed/u);
+    assert.equal(broken.profile.renderer.gitlink, null);
+    // 3. A file cap below the script's size: the copy was never compared.
+    const tiny = makePackageRoot("pkg-tiny-cap", YAML.stringify(policyContract((document) => { document.profile_manifest.limits.max_file_bytes = 1024; }), { lineWidth: 0 }));
+    const capped = status(cliAt(tiny, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    expectUnobserved(capped, "tiny-cap", /could not be read under the file cap \(too-large\)/u);
+    assert.equal(capped.profile.renderer.gitlink, TEMPLATE_HEAD, "the committed gitlink was read; the worktree copy was not");
+  });
+
+  check("a real file where the template provisions a singleton link is a misowned entry, and a role directory spelled through a symlink is still this agent's", () => {
+    const alt = makeAltHome("home-singletons");
+    // The stock identity Hermes seeds into a fresh profile directory: a REAL
+    // SOUL.md where the template provisions a link into the runtime.
+    const solo = join(alt.realProfiles, "solo-pm");
+    rmSync(join(solo, "SOUL.md"));
+    writeFileSync(join(solo, "SOUL.md"), "You are Hermes Agent, created by Nous Research\n", "utf8");
+    // A row whose role_dir is spelled through a symlinked ancestor while the
+    // template wrote the links by the real path.
+    const viaLink = join(alt.home, "code");
+    symlinkSync(reposRoot, viaLink);
+    const linked = makeRepo("home-singletons-linked");
+    seedProfile("linked-pm", { root: alt.realProfiles, links: { "SOUL.md": join(linked.runtime, "SOUL.md"), memories: join(linked.runtime, "memories") } });
+    const rows = [
+      { name: "solo-pm", rowOverrides: { repo: "home-singletons-solo", project_path: join(reposRoot, "home-singletons-solo"), role_dir: join(reposRoot, "home-singletons-solo", "agents", "hermes", "pm") } },
+      { name: "linked-pm", rowOverrides: { repo: "home-singletons-linked", project_path: join(viaLink, "home-singletons-linked"), role_dir: join(viaLink, "home-singletons-linked", "agents", "hermes", "pm") } },
+    ];
+    writeAgentRegistry(join(alt.fleet, "agents-registry.yaml"), rows);
+    writeProjectRegistry(join(alt.home, ".config", "pjangler", "projects.yaml"), rows);
+    const data = status(cliAt(mainRoot, STATUS_ARGS, alt.env));
+    const real = agentNamed(data, "solo-pm");
+    const path = fieldOf(real, FIELDS.path);
+    assert.equal(path.state, "fail");
+    assert.deepEqual(itemsOf(path).map((item) => [item.path, item.kind, item.observed, item.detail]), [["SOUL.md", "misowned-link", "a real file", "not-a-link:SOUL.md"]]);
+    assert.equal(real.profile.path.code, "misowned-link");
+    assert.equal(fieldOf(real, FIELDS.bank).state, "pass", "the gate passed; the dependents are still read");
+    assert.equal(textOf(real).includes("Nous Research"), false, "the file's body is never read");
+    const through = agentNamed(data, "linked-pm");
+    assert.equal(fieldOf(through, FIELDS.path).state, "pass", JSON.stringify(fieldOf(through, FIELDS.path).items));
+    assert.equal(through.profile.path.code, "ok", "a link into the runtime by realpath is still this agent's runtime");
+  });
+
+  check("a root that cannot be enumerated is root-unreadable in every scope, and a profile or a file that cannot be read is an error, never a verdict", () => {
+    const label = "a root that cannot be enumerated is root-unreadable in every scope, and a profile or a file that cannot be read is an error, never a verdict";
+    if (typeof process.getuid === "function" && process.getuid() === 0) skipCase(label, "running as root, which reads every directory");
+    const alt = makeAltHome("home-unreadable");
+    // Direct spawns: the zero-write snapshot cannot walk a directory it may not read.
+    const run = (args) => spawnSync(process.execPath, [join(mainRoot, "dist", "index.js"), ...args], {
+      cwd: workdir, encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...isolation, ...alt.env },
+    });
+    // 1. The root lists but its entries cannot be lstat'ed (no search bit):
+    //    the ONE gate that is an error, with error dependents.
+    chmodSync(alt.realProfiles, 0o400);
+    try {
+      const data = status(run(STATUS_ARGS));
+      assert.equal(hostNamed(data, "profile.root").state, "pass", "the root itself was enumerated");
+      const agent = agentNamed(data, "solo-pm");
+      const path = fieldOf(agent, FIELDS.path);
+      assert.equal(path.state, "error");
+      assert.deepEqual(kindsOf(path), ["unreadable"]);
+      for (const field of [FIELDS.identity, FIELDS.config, FIELDS.bank, FIELDS.skills]) {
+        assert.equal(fieldOf(agent, field).state, "error", `${field} is an error behind a directory that could not be lstat'ed`);
+        assert.match(fieldOf(agent, field).summary, /could not be lstat'ed \(unreadable\)/u);
+      }
+      assert.equal(agent.profile.path.code, "unreadable");
+      assert.equal(agent.profile.renderer.state, "error");
+      assert.deepEqual(data.profile.agents, { total_registered: 1, selected: 1, real: 0, blocked_at_path: 0, structurally_healthy: 0, drifted: 0, incomplete: 1, exception_authorized: 0, unobserved: 0 });
+      assert.equal(agent.complete, false);
+    } finally {
+      chmodSync(alt.realProfiles, 0o755);
+    }
+    // 2. The root cannot be enumerated at all: an error in EVERY scope.
+    chmodSync(alt.realProfiles, 0o300);
+    try {
+      for (const args of [STATUS_ARGS, [...STATUS_ARGS, "--agent", "solo-pm"]]) {
+        const scope = args.includes("--agent") ? "agent scope" : "fleet scope";
+        const data = status(run(args));
+        assert.deepEqual(data.profile.root, { state: "error", code: "root-unreadable" }, scope);
+        assert.equal(hostNamed(data, "profile.root").state, "error", scope);
+        assert.equal(hostNamed(data, "profile.root").observed, "root-unreadable", scope);
+        const agent = agentNamed(data, "solo-pm");
+        for (const field of FIELD_ORDER) assert.equal(fieldOf(agent, field).state, "error", `${scope} ${field}`);
+        assert.equal(agent.profile.path.code, "root:root-unreadable", scope);
+        assert.equal(data.profile.extras.coverage, "not-swept", scope);
+        assert.equal(data.profile.extras.reason, args.includes("--agent") ? "agent-scope" : "root:root-unreadable", scope);
+        assert.equal(data.host.some((finding) => finding.rule_id === "profile.extras"), false, scope);
+        assert.equal(data.profile.renderer.checked, 0, scope);
+      }
+    } finally {
+      chmodSync(alt.realProfiles, 0o755);
+    }
+    // 3. Files the observer may not open, inside a profile it may: collection
+    //    failures on their own fields, never malformed or missing.
+    const solo = join(alt.realProfiles, "solo-pm");
+    const sealed = ["profile.yaml", "config.delta.yaml", join("hindsight", "config.json")].map((file) => join(solo, file));
+    for (const file of sealed) chmodSync(file, 0o000);
+    try {
+      const data = status(run([...STATUS_ARGS, "--agent", "solo-pm"]));
+      const agent = agentNamed(data, "solo-pm");
+      for (const field of [FIELDS.identity, FIELDS.bank]) {
+        assert.equal(fieldOf(agent, field).state, "error", field);
+        assert.deepEqual(kindsOf(fieldOf(agent, field)), ["unreadable"], field);
+      }
+      const config = fieldOf(agent, FIELDS.config);
+      assert.equal(config.state, "error");
+      assert.deepEqual(itemsOf(config).map((item) => [item.path, item.kind]), [["config.delta.yaml", "unreadable"]]);
+      assert.equal(agent.profile.renderer.state, "error", "no check is spawned over a delta that could not be read");
+      assert.equal(agent.profile.digests.delta, null);
+      assert.equal(agent.profile.bank.code, "unreadable");
+      assert.equal(data.profile.identity.bank_invalid, 1, "an unreadable pin is neither ok nor unpinned");
+      assert.equal(fieldOf(agent, FIELDS.path).state, "pass", "the directory itself was fine");
+      assert.equal(fieldOf(agent, FIELDS.skills).state, "pass");
+      assert.equal(agent.complete, false);
+      assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/solo-pm")).outcome, "skipped");
+    } finally {
+      for (const file of sealed) chmodSync(file, 0o644);
+    }
+  });
+
+  check("a file over limits.max_file_bytes is too-large on its own field; a lowered max_unit_files drops the units past it; a backup pattern that does not lead with a wildcard names no stem", () => {
+    const alt = makeAltHome("home-limits");
+    const solo = join(alt.realProfiles, "solo-pm");
+    const pad = "x".repeat(1024 * 1024);
+    writeFileSync(join(solo, "profile.yaml"), `# ${pad}\nname: solo-pm\n`, "utf8");
+    writeFileSync(join(solo, "hindsight", "config.json"), `{"bank_id": "agent-solo-pm", "pad": "${pad}"}\n`, "utf8");
+    const scoped = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "solo-pm"], alt.env));
+    const agent = agentNamed(scoped, "solo-pm");
+    for (const field of [FIELDS.identity, FIELDS.bank]) {
+      assert.equal(fieldOf(agent, field).state, "error", field);
+      assert.deepEqual(kindsOf(fieldOf(agent, field)), ["too-large"], field);
+    }
+    assert.equal(agent.profile.bank.code, "too-large");
+    assert.equal(scoped.profile.identity.bank_invalid, 1);
+    assert.equal(textOf(agent).includes("xxxxxxxx"), false, "nothing of an oversized file reaches the payload");
+    if (RENDERER_AVAILABLE) assert.equal(fieldOf(agent, FIELDS.config).state, "pass", "the config field is read on its own");
+    const human = cliAt(mainRoot, ["fleet", "status", "--domain", "profile", "--agent", "solo-pm"], alt.env);
+    assert.match(human.stdout, /bank error/u, "an unreadable pin is painted as the error it is, never as unpinned");
+
+    // Two units, one allowed: the second, by name, is never read. And a
+    // backup pattern whose wildcard is not leading names no stem.
+    const units = join(alt.home, ".config", "systemd", "user");
+    mkdirSync(units, { recursive: true });
+    for (const name of ["extra-a", "extra-b", "old.solo-pm", "solo-pm.bak"]) mkdirSync(join(alt.realProfiles, name, "hindsight"), { recursive: true });
+    writeFileSync(join(units, "a-first.service"), ["[Service]", `Environment=HERMES_HOME=${join(alt.realProfiles, "extra-a")}`, ""].join("\n"), "utf8");
+    writeFileSync(join(units, "b-second.service"), ["[Service]", `Environment=HERMES_HOME=${join(alt.realProfiles, "extra-b")}`, ""].join("\n"), "utf8");
+    const limited = policyContract((document) => {
+      document.profile_manifest.limits.max_unit_files = 1;
+      document.profile_manifest.extras.backup_patterns.push("old.*");
+    });
+    const root = makePackageRoot("pkg-limits", YAML.stringify(limited, { lineWidth: 0 }));
+    const fleet = status(cliAt(root, STATUS_ARGS, alt.env));
+    const byPath = Object.fromEntries((hostNamed(fleet, "profile.extras").items ?? []).map((item) => [item.path, item]));
+    assert.equal(byPath["extra-a"].unit_file_references, 1);
+    assert.equal(byPath["extra-b"].unit_file_references, 0, "the unit past max_unit_files was never read");
+    assert.deepEqual([byPath["solo-pm.bak"].class, byPath["solo-pm.bak"].detail, byPath["solo-pm.bak"].alias_of], ["retired-candidate", "backup-pattern:*.bak", "solo-pm"]);
+    assert.deepEqual([byPath["old.solo-pm"].class, byPath["old.solo-pm"].detail, byPath["old.solo-pm"].alias_of], ["retired-candidate", "backup-pattern:old.*", null], "a wildcard that is not leading names no stem");
+  });
+
+  check("a core skill absent from every root is core-missing, a core entry with no SKILL.md is too, and a skills entry that is not a directory is recorded", () => {
+    const alt = makeAltHome("home-core-missing");
+    const links = (slug) => { const repo = makeRepo(slug); return { "SOUL.md": join(repo.runtime, "SOUL.md"), memories: join(repo.runtime, "memories") }; };
+    const fiveLinks = (dir) => { for (const skill of CORE_SKILLS.filter((name) => name !== "hindsight")) symlinkSync(join(canonicalSkills, skill), join(dir, skill)); };
+    // The delta REPLACES the base's external_dirs with nothing, so the
+    // profile's own entry is the only root Hermes would load.
+    seedProfile("absent-pm", { root: alt.realProfiles, links: links("home-core-missing-absent"), delta: { skills: { external_dirs: [] } }, skills: fiveLinks });
+    seedProfile("hollow-pm", { root: alt.realProfiles, links: links("home-core-missing-hollow"), delta: { skills: { external_dirs: [] } }, skills: (dir) => { fiveLinks(dir); mkdirSync(join(dir, "hindsight")); } });
+    seedProfile("fileskills-pm", { root: alt.realProfiles, links: links("home-core-missing-fileskills"), skills: null });
+    writeFileSync(join(alt.realProfiles, "fileskills-pm", "skills"), "", "utf8");
+    const row = (name, slug) => ({ name, rowOverrides: { repo: slug, project_path: join(reposRoot, slug), role_dir: join(reposRoot, slug, "agents", "hermes", "pm") } });
+    const rows = [row("solo-pm", "home-core-missing-solo"), row("absent-pm", "home-core-missing-absent"), row("hollow-pm", "home-core-missing-hollow"), row("fileskills-pm", "home-core-missing-fileskills")];
+    writeAgentRegistry(join(alt.fleet, "agents-registry.yaml"), rows);
+    writeProjectRegistry(join(alt.home, ".config", "pjangler", "projects.yaml"), rows);
+    const data = status(cliAt(mainRoot, STATUS_ARGS, alt.env));
+    const absent = agentNamed(data, "absent-pm");
+    assert.equal(fieldOf(absent, FIELDS.skills).state, "fail");
+    assert.deepEqual(itemsOf(fieldOf(absent, FIELDS.skills)).map((item) => [item.kind, item.observed, item.detail]), [["core-missing", "absent", "core-missing:hindsight"]]);
+    assert.deepEqual(absent.profile.skills, { state: "fail", core_present: 5, core_missing: ["hindsight"], extra: [], sources_unresolvable: 0 });
+    assert.match(fieldOf(absent, FIELDS.skills).summary, /5\/6 core skills resolve to the canonical bytes; hindsight do not/u);
+    const hollow = agentNamed(data, "hollow-pm");
+    assert.deepEqual(itemsOf(fieldOf(hollow, FIELDS.skills)).map((item) => [item.kind, item.observed, item.detail]), [["core-missing", "no SKILL.md", "core-missing:hindsight"]]);
+    assert.equal(hollow.profile.skills.core_present, 5);
+    const fileSkills = agentNamed(data, "fileskills-pm");
+    assert.equal(fieldOf(fileSkills, FIELDS.skills).state, "pass", "the core still resolves through external_dirs");
+    assert.ok(itemsOf(fieldOf(fileSkills, FIELDS.skills)).some((item) => item.path === "skills" && item.kind === "source-unresolvable" && item.detail === "skills-not-a-directory:file"), JSON.stringify(fieldOf(fileSkills, FIELDS.skills).items));
+    assert.equal(fileSkills.profile.skills.core_present, 6);
+    assert.equal(data.profile.skills.core_missing, 2);
+    assert.equal(data.profile.skills.core_complete, 2, "solo-pm and fileskills-pm");
+  });
+
+  check("an empty identity file declares nothing: malformed, never identity-only", () => {
+    const alt = makeAltHome("home-empty-identity");
+    writeFileSync(join(alt.realProfiles, "solo-pm", "profile.yaml"), "", "utf8");
+    const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "solo-pm"], alt.env));
+    const identity = fieldOf(agentNamed(data, "solo-pm"), FIELDS.identity);
+    assert.equal(identity.state, "fail");
+    assert.deepEqual(itemsOf(identity).map((item) => [item.kind, item.observed, item.detail]), [["malformed", "empty", "empty"]]);
+    assert.deepEqual(agentNamed(data, "solo-pm").profile.identity, { state: "fail", keys: [] });
+  });
+
+  check("over an empty fleet base a delta equal to the generated config is inheritance with nothing to inherit, not a frozen copy", () => {
+    requireRenderer("over an empty fleet base a delta equal to the generated config is inheritance with nothing to inherit, not a frozen copy");
+    const alt = makeAltHome("home-empty-base");
+    writeFileSync(join(alt.fleet, "config.yaml"), "{}\n", "utf8");
+    const solo = join(alt.realProfiles, "solo-pm");
+    const delta = { model: { default: "solo-model", provider: "solo" } };
+    writeFileSync(join(solo, "config.delta.yaml"), YAML.stringify(delta), "utf8");
+    writeFileSync(join(solo, "config.yaml"), GENERATED_HEADER + YAML.stringify(delta), "utf8");
+    const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "solo-pm"], alt.env));
+    const config = fieldOf(agentNamed(data, "solo-pm"), FIELDS.config);
+    assert.equal(config.state, "pass", JSON.stringify(config.items));
+    assert.equal(agentNamed(data, "solo-pm").profile.renderer.state, "in-sync");
+    assert.equal(textOf(data).includes("solo-model"), false, "the delta was parsed for equality only");
+  });
+
+  check("a lock the renderer creates on first use is invisible to the next run and never counts toward the root cap", () => {
+    requireRenderer("a lock the renderer creates on first use is invisible to the next run and never counts toward the root cap");
+    const alt = makeAltHome("home-first-lock");
+    const lock = join(alt.realProfiles, ".solo-pm.config.lock");
+    rmSync(lock);
+    // Direct spawns: the first run WRITES the lock, which the zero-write snapshot would rightly refuse.
+    const run = () => spawnSync(process.execPath, [join(mainRoot, "dist", "index.js"), ...STATUS_ARGS], {
+      cwd: workdir, encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...isolation, ...alt.env },
+    });
+    const first = run();
+    assert.equal(existsSync(lock), true, "the renderer's check created its lock on first use");
+    assert.equal(lstatSync(lock).size, 0);
+    const second = run();
+    assert.equal(first.stdout, second.stdout, "the lock the first run created changes nothing the second reports");
+    const data = status(first);
+    assert.equal(fieldOf(agentNamed(data, "solo-pm"), FIELDS.config).state, "pass");
+    assert.equal(data.profile.extras.entries_total, 0, "the lock is never an extra");
+    assert.equal(hostNamed(data, "profile.extras").state, "pass");
+    // With the root cap at ONE entry, the lock beside the one profile is not a second entry.
+    const capped = makePackageRoot("pkg-root-cap-one", YAML.stringify(policyContract((document) => { document.profile_manifest.limits.max_root_entries = 1; }), { lineWidth: 0 }));
+    const under = status(cliAt(capped, STATUS_ARGS, alt.env));
+    assert.equal(under.profile.extras.truncated, false, "a lock entry never counts toward max_root_entries");
+    assert.equal(agentNamed(under, "solo-pm").profile.path.code, "ok");
+  });
+
+  check("the renderer child runs in the submodule worktree with the allowlisted environment and nothing else", () => {
+    requireRenderer("the renderer child runs in the submodule worktree with the allowlisted environment and nothing else");
+    const recorder = join(shimRoot, "python3-env.log");
+    rmSync(recorder, { force: true });
+    const realPython = spawnSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+    const shim = pathShim("env-recording", [
+      "#!/bin/sh",
+      `printf '%s\\n' "argv=$*" "cwd=$PWD" "secret=\${PLANE_33GOD_API_KEY:-unset}" "lock=\${HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS:-unset}" "home=$HOME" "fleet=\${HERMES_FLEET_HOME:-unset}" "keys=$(env | cut -d= -f1 | sort | tr '\\n' ',')" "--" >> "${recorder}"`,
+      `exec "${realPython}" "$@"`,
+      "",
+    ].join("\n"));
+    status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { PATH: `${shim}:${process.env.PATH}` }));
+    const records = readFileSync(recorder, "utf8").split("--\n").filter((record) => record.trim() !== "")
+      .map((record) => Object.fromEntries(record.trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])));
+    const checkRun = records.find((record) => record.argv.includes("hermes-profile-config.py check --profile clean-pm"));
+    assert.ok(checkRun, `the renderer's check ran: ${JSON.stringify(records)}`);
+    assert.equal(realpathSync(checkRun.cwd), realpathSync(join(mainRoot, "templates", "hermes-agent")), "the check runs in the submodule worktree");
+    assert.equal(checkRun.secret, "unset", "the parent's Plane key never reaches the child");
+    assert.equal(checkRun.lock, "32", "the renderer's own lock wait is the contract's timeout plus the margin");
+    assert.equal(checkRun.home, scratchHome);
+    assert.equal(checkRun.fleet, fleetHome);
+    const allowed = new Set(["PATH", "LANG", "HOME", "HERMES_FLEET_HOME", "HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "PYTHONIOENCODING", "PWD", "OLDPWD", "SHLVL", "_"]);
+    const leaked = checkRun.keys.split(",").filter((key) => key !== "" && !allowed.has(key));
+    assert.deepEqual(leaked, [], "no key outside the allowlist reaches the renderer");
+    const probeRun = records.find((record) => record.argv.startsWith("-B -c "));
+    assert.ok(probeRun, "the interpreter probe ran");
+    assert.equal(probeRun.secret, "unset");
   });
 
   check("every rule-detail pattern the observer compares against matches a literal detail the rule actually emits", () => {
@@ -1732,6 +2056,10 @@ try {
     assert.deepEqual(misownedAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
     const misownedDisagree = live("misowned-pm", passShim);
     assert.deepEqual(misownedDisagree.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
+    // A real file where the rule expects a link is the rule's not-a-symlink reading.
+    const notLinkShim = entry("rule-not-a-symlink", syntheticReport([{ ...SINGLETON_RULE_WRONG_TARGET, details: ["not-a-symlink: x/SOUL.md"] }]));
+    const notLinkAgree = live("misowned-pm", notLinkShim);
+    assert.deepEqual(notLinkAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
     // A gate the rule never checks (a case-insensitive twin) is a partial reading: not compared.
     const twinGated = live("twin-pm", passShim);
     assert.deepEqual(twinGated.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
@@ -1758,6 +2086,26 @@ try {
     assert.equal(hostNamed(after, "hermes.profile-wiring").justification.kind, "allowed_warning");
     assert.equal(after.health.unjustified, 0);
     assert.equal(after.health.healthy, before.health.healthy, "a host warn never touched healthy either way");
+  });
+
+  check("a skipping HOST rule counts against proof until an allowed_skips entry lifts it", () => {
+    const PROFILE_WIRING_SKIP = { ...PROFILE_WIRING_WARN, status: "skip", summary: "the shared profile root was not inspected" };
+    const skipShim = entry("rule-host-skip", syntheticReport([SINGLETON_RULE_PASS, PROFILE_WIRING_SKIP]));
+    const before = status(cliAt(mainRoot, [...STATUS_ARGS, "--live", "--agent", "clean-pm"], { PJ_FLEET_CLI_ENTRY: skipShim }));
+    const wiring = hostNamed(before, "hermes.profile-wiring");
+    assert.equal(wiring.state, "skip");
+    assert.equal(wiring.justification, null);
+    assert.equal(before.health.unjustified, 1, "the host skip is the one unjustified gap");
+    assert.equal(before.health.verdict, "unproven");
+    const ruled = policyContract((document) => {
+      document.health_policy.allowed_skips.push({ rule_id: "hermes.profile-wiring", reason: "a default audit never inspects the shared root" });
+    });
+    const root = makePackageRoot("pkg-host-skip", YAML.stringify(ruled, { lineWidth: 0 }));
+    const after = status(cliAt(root, [...STATUS_ARGS, "--live", "--agent", "clean-pm"], { PJ_FLEET_CLI_ENTRY: skipShim }));
+    assert.equal(hostNamed(after, "hermes.profile-wiring").state, "skip", "the reading is unchanged");
+    assert.equal(hostNamed(after, "hermes.profile-wiring").justification.kind, "allowed_skip");
+    assert.equal(after.health.unjustified, 0);
+    assert.equal(after.health.healthy, before.health.healthy, "a host skip never touched healthy either way");
   });
 
   // -- exceptions ride the existing axis ----------------------------------------
@@ -1818,6 +2166,17 @@ try {
     assert.match(human.stdout, /extras swept: \d+ unregistered entries/u, "the report prints the sweep");
     assert.match(human.stdout, /profile\.extras/u, "the report prints the extras host finding");
     assert.match(human.stdout, /semantic-drift config\.yaml/u, "the report prints typed items");
+    // Every cell shape beyond the clean row, by fixture profile.
+    assert.match(human.stdout, /profile drifted · bank ok · skills 6\/6 · drift in model/u, "a drifted row names its sections");
+    assert.match(human.stdout, /profile symlink · bank unobserved · skills unobserved/u, "a gated row names its gate code and its unread dependents");
+    assert.match(human.stdout, /profile unverifiable · bank ok/u, "an unverifiable link is painted as the warn it is");
+    assert.match(human.stdout, /bank invalid/u, "a malformed pin reads bank invalid");
+    assert.match(human.stdout, /bank unpinned/u, "a missing pin reads bank unpinned");
+    assert.match(human.stdout, /bank agent-Alias-pm/u, "an aliased pin shows the id as read");
+    assert.match(human.stdout, /identity warn/u, "an unknown identity key is a warn cell");
+    assert.match(human.stdout, /skills 4\/6/u, "a profile lacking core skills prints the count");
+    const scopedHuman = cliAt(mainRoot, ["fleet", "status", "--domain", "profile", "--agent", "clean-pm"]);
+    assert.match(scopedHuman.stdout, /extras not swept \(agent-scope\)/u, "an --agent report says the root was not swept");
   });
 
   await checkAsync("the MCP tool returns the same data as the CLI, profile summaries included", async () => {
@@ -1887,6 +2246,15 @@ try {
       ["undeclared-pin-leaf", (document) => { document.profile_manifest.memory.pin_file = "memory/pin.json"; }, /not declared writable by any authority/u],
       ["inert-and-allowed", (document) => { document.profile_manifest.identity.inert_keys.push("role"); }, /already an allowed identity key/u],
       ["lock-not-ignored", (document) => { document.profile_manifest.extras.ignored_patterns = ["*.tmp"]; }, /must cover renderer\.lock_pattern/u],
+      ["lock-timeout-negative", (document) => { document.profile_manifest.renderer.lock_timeout_seconds = -1; }, /lock_timeout_seconds must be a positive number/u],
+      ["lock-timeout-over-a-minute", (document) => { document.profile_manifest.renderer.lock_timeout_seconds = 61; }, /at most 60/u],
+      ["lock-pattern-no-placeholder", (document) => { document.profile_manifest.renderer.lock_pattern = ".fleet.config.lock"; }, /lock_pattern must carry the \{profile_name\} placeholder/u],
+      // The ignore list covers the path-shaped pattern (`?` matches `/`), so the ONE diagnostic is the path itself.
+      ["lock-pattern-path", (document) => { document.profile_manifest.renderer.lock_pattern = "{profile_name}/lock"; document.profile_manifest.extras.ignored_patterns = ["*?lock"]; }, /never a path/u],
+      ["canonical-dir-env-not-a-key", (document) => { document.profile_manifest.skill_core.canonical_dir_env = "not a key"; }, /canonical_dir_env must be an environment key/u],
+      ["no-required-skills", (document) => { document.profile_manifest.skill_core.required = []; }, /required must name at least one core skill/u],
+      ["no-ignored-patterns", (document) => { document.profile_manifest.extras.ignored_patterns = []; }, /ignored_patterns must name the renderer's lock entries/u],
+      ["wildcard-only-pattern", (document) => { document.profile_manifest.extras.ignored_patterns.push("?*"); }, /may not match every entry/u],
     ];
     for (const [name, mutate, hint] of cases) {
       const path = writeContract(name, policyContract(mutate));
@@ -1894,7 +2262,10 @@ try {
       assert.equal(result.status, 2, `${name}: a contract that lies must exit 2, got ${result.status}: ${result.stdout.slice(0, 300)}`);
       const parsed = envelope(result);
       assert.equal(errorCode(parsed), "INVALID_INPUT", name);
-      assert.match(parsed.error.message, hint, name);
+      // The message carries the first diagnostic; a manifest that lies in two
+      // places lists every diagnostic under details, so the hint is matched there too.
+      const diagnostics = [parsed.error.message, ...Object.values(parsed.error.details ?? {}).filter((value) => typeof value === "string")].join("\n");
+      assert.match(diagnostics, hint, name);
       assert.match(parsed.error.message, /profile_manifest/u, name);
     }
   });
@@ -1990,9 +2361,10 @@ try {
     const liveEnv = { ...process.env, NO_COLOR: "1" };
     const porcelainBefore = git(SUBMODULE, ["status", "--porcelain"]).stdout;
     // The real root, before and after: entry names, types and mtimes. The
-    // renderer's check opens existing lock files and creates none, so nothing
-    // may move.
-    const rootSnapshot = () => readdirSync(realRoot).sort().map((name) => {
+    // renderer's check opens a profile's existing lock file, or creates it on
+    // first use for a newly registered profile, so lock entries are the one
+    // thing allowed to appear; nothing else may move.
+    const rootSnapshot = () => readdirSync(realRoot).sort().filter((name) => !/^\..+\.config\.lock$/u.test(name)).map((name) => {
       const stat = lstatSync(join(realRoot, name));
       return `${name}:${stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other"}:${stat.mtimeMs}`;
     });

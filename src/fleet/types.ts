@@ -1055,7 +1055,6 @@ export const PROFILE_MAX_UNIT_FILES = 500;
 /** Optional (non-core) skills named on one agent's record. */
 export const PROFILE_MAX_EXTRA_SKILLS = 20;
 
-
 // ---------------------------------------------------------------------------
 // Fleet health (story 1.5)
 //
@@ -1915,9 +1914,10 @@ export type FleetProfileExtraClass = (typeof FLEET_PROFILE_EXTRA_CLASSES)[number
  * failure carried onto every agent.
  */
 export const FLEET_PROFILE_PATH_CODES = [
-  "ok", "misowned-link", "unverifiable", "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "ambiguous", "unreadable", "root",
+  "ok", "misowned-link", "unverifiable", "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "ambiguous", "unreadable",
 ] as const;
-export type FleetProfilePathCode = (typeof FLEET_PROFILE_PATH_CODES)[number];
+/** A path code, or the root gate's failure carried onto the agent as `root:<root code>`. */
+export type FleetProfilePathCode = (typeof FLEET_PROFILE_PATH_CODES)[number] | `root:${FleetProfileRootCode}`;
 
 /**
  * What the ROOT gate concluded.
@@ -1951,9 +1951,12 @@ export type FleetProfileRootCode = (typeof FLEET_PROFILE_ROOT_CODES)[number];
  * `renderer-source-missing`     the submodule is not a repository root of its
  *                               own, or the pinned tree or the worktree lacks a file.
  * `renderer-source-mismatched`  a worktree copy's bytes differ from the gitlink's.
- * `renderer-source-unobserved`  a git probe failed, timed out or was cancelled
- *                               before a verdict; the renderer can only be
- *                               proven inside a git checkout of pjangler.
+ * `renderer-source-unobserved`  no verdict: a git probe failed, timed out or
+ *                               was cancelled, the package root is not a git
+ *                               checkout root of its own, or a worktree copy
+ *                               could not be read under the file cap; the
+ *                               renderer can only be proven inside a git
+ *                               checkout of pjangler.
  *
  * Any code but `ok` is a HOST finding (`profile.renderer`), marks every
  * selected agent's `config.yaml` field `error`, and spawns NO renderer.
@@ -1977,8 +1980,12 @@ export const FLEET_PROFILE_PYTHON_CODES = [
 ] as const;
 export type FleetProfilePythonCode = (typeof FLEET_PROFILE_PYTHON_CODES)[number];
 
-/** What the renderer's `check` concluded for one profile. */
-export const FLEET_PROFILE_RENDERER_STATES = ["in-sync", "drifted", "fail", "error", "not-run", "unobserved"] as const;
+/**
+ * What the renderer's `check` concluded for one profile: `fail` when the two
+ * files were not both regular so no check was spawned, `error` when the check
+ * could not run or answer, `unobserved` behind a failed gate.
+ */
+export const FLEET_PROFILE_RENDERER_STATES = ["in-sync", "drifted", "fail", "error", "unobserved"] as const;
 export type FleetProfileRendererState = (typeof FLEET_PROFILE_RENDERER_STATES)[number];
 
 /** The action an extra entry's class implies for an operator. Guidance, never an effect. */
@@ -2014,7 +2021,7 @@ export interface FleetStatusProfileExtraItem {
 /** The per-agent profile summary. `null` when `profile` was not selected or no manifest is declared. */
 export interface FleetStatusAgentProfile {
   profile_name: string | null;
-  path: { state: FleetStatusState; code: string };
+  path: { state: FleetStatusState; code: FleetProfilePathCode };
   identity: {
     state: FleetStatusState;
     /** The identity file's top-level key NAMES, sorted. Names only, never values. */

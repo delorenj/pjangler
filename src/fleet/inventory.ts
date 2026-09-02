@@ -502,7 +502,6 @@ export function readProjectRegistryRaw(path: string): RawStore {
   return readKeyedStore(path, "PJangler project registry", "projects");
 }
 
-
 // ---------------------------------------------------------------------------
 // Store resolution
 // ---------------------------------------------------------------------------
@@ -649,14 +648,6 @@ function addFinding(ctx: InventoryContext, finding: FleetInventoryFinding): void
 }
 
 /**
- * Read the contract's declared profile layout rather than re-deriving one.
- *
- * Exported for `provenance.ts`, which has to reach the GENERATED profile config
- * on disk. A row's `profile_path` is home-redacted for display and cannot be
- * opened, so the alternative was a second copy of the substitution -- and two
- * copies of a contract-derived path are two paths.
- */
-/**
  * The fleet home: `HERMES_FLEET_HOME`, else `<home>/.hermes`.
  *
  * ONE function, shared by the inventory's profile layout and the profile
@@ -668,6 +659,14 @@ export function resolveFleetHome(env: NodeJS.ProcessEnv, home: string): string {
   return env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes");
 }
 
+/**
+ * Read the contract's declared profile layout rather than re-deriving one.
+ *
+ * Exported for `status.ts`, which has to reach the GENERATED profile config on
+ * disk for the profile observer. A row's `profile_path` is home-redacted for
+ * display and cannot be opened, so the alternative was a second copy of the
+ * substitution -- and two copies of a contract-derived path are two paths.
+ */
 export function resolveProfileLayout(contract: FleetContract, env: NodeJS.ProcessEnv, home: string): { root: string | null; template: string | null } {
   const layout = contract.service_model?.profile_layout;
   const raw = isRecord(layout) ? nonEmptyString(layout.root) : null;

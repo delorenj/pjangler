@@ -892,8 +892,8 @@ function severityColor(severity: FleetStatusSeverity): (value: string | number) 
 
 /** Item kinds that are imperfections rather than failures: painted yellow, not red. */
 const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set(["wrong-mode", "unexpected-owned", "unknown-key", "unverifiable"]);
-/** Bank codes that mean the pin file exists but cannot be read as a pin. Printed `bank invalid`, never `unpinned`. */
-const REPORT_BANK_INVALID_CODES: ReadonlySet<string> = new Set(["pin-symlink", "pin-malformed", "too-large"]);
+/** Bank codes that mean the pin file exists but cannot be read as a pin. Printed `bank invalid`, never `unpinned`. (`too-large` and `unreadable` rank `error` and print as that state.) */
+const REPORT_BANK_INVALID_CODES: ReadonlySet<string> = new Set(["pin-symlink", "pin-malformed"]);
 /** Item kinds that are information beside a pass: painted dim. */
 const REPORT_INFO_ITEM_KINDS: ReadonlySet<string> = new Set(["inert-config-block", "extra-skill", "source-unresolvable"]);
 
@@ -1004,16 +1004,19 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
   if (agent.profile) {
     const profile = agent.profile;
     const renderer = profile.renderer.state;
+    const coreCell = `skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`;
     const cells = [
-      profile.path.state === "pass" ? dim(`profile ${renderer}`) : red(`profile ${profile.path.code}`),
+      // A warn on the path (an unverifiable link) is painted as the warn it
+      // is; a fail or an error is red and names the code.
+      profile.path.state === "pass" ? dim(`profile ${renderer}`) : profile.path.state === "warn" ? yellow(`profile ${profile.path.code}`) : red(`profile ${profile.path.code}`),
       profile.bank.state === "pass"
         ? dim("bank ok")
         : profile.bank.state === "unobserved" || profile.bank.state === "error"
           ? dim(`bank ${profile.bank.state}`)
           : red(`bank ${profile.bank.observed ?? (REPORT_BANK_INVALID_CODES.has(profile.bank.code ?? "") ? "invalid" : "unpinned")}`),
       profile.skills.state === "pass"
-        ? dim(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`)
-        : profile.skills.state === "unobserved" ? dim("skills unobserved") : red(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`),
+        ? dim(coreCell)
+        : profile.skills.state === "unobserved" || profile.skills.state === "error" ? dim(`skills ${profile.skills.state}`) : red(coreCell),
     ];
     if (renderer === "drifted" && profile.renderer.sections.length) cells.push(red(`drift in ${profile.renderer.sections.join(", ")}`));
     if (profile.identity.state === "fail") cells.push(red("identity"));
@@ -1128,7 +1131,7 @@ export function formatFleetStatusReport(status: FleetStatus): string {
       const profile = status.profile;
       lines.push(`       ${dim(glyph.arrow)} ${joinDot([
         profile.root.state === "pass" ? green("root ok") : profile.root.state === "unsupported" ? gray(`root ${profile.root.code}`) : red(`root ${profile.root.code}`),
-        profile.renderer.source === "ok" ? green("renderer ok") : red(`renderer ${profile.renderer.source}`),
+        profile.renderer.source === "ok" ? green("renderer ok") : profile.renderer.source === "manifest-undeclared" ? gray(`renderer ${profile.renderer.source}`) : red(`renderer ${profile.renderer.source}`),
         profile.renderer.python === "ok" ? dim("python ok") : profile.renderer.python === "not-probed" ? dim("python not probed") : red(`python ${profile.renderer.python}`),
         dim(`gitlink ${profile.renderer.gitlink ? profile.renderer.gitlink.slice(0, 12) : "none"}`),
       ])}`);

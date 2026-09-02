@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `feat(PJAN-109)`: `health.unjustified` now counts every unjustified **host** finding -- a host-scoped rule's `warn` or `skip` with no `allowed_warnings`/`allowed_skips` entry -- on every run and in every domain, not only the profile sweep's `profile.extras`. A fleet whose host-scoped audit rules warn without a ruling now reads `verdict: unproven` and `proven: false` where it previously could read `healthy`; `health.healthy` and `complete` are untouched, because a host condition is never a fleet failure. Add the ruling to the contract, or fix the host, to regain proof.
 - `fix(PJAN-58)`: advance the Hermes agent template and checked-in PM profile so the Plane adapter reads only the workspace-scoped credential from shared fleet dotenv data instead of sourcing and executing the whole file.
 - `refactor(PJAN-57)`: route CLI and MCP project operations through one `ProjectRecipe` transaction that composes dependencies, closes fresh output, performs the final audit, initializes and commits Git exactly once, then persists the central registry.
 - `refactor(PJAN-57)`: make `MiseOpInjectRecipe` the sole owner of `.env.op` materialization through an atomic, collision-resistant managed script; a nonempty comment-only template is the intentional no-secrets opt-out.

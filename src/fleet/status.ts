@@ -436,6 +436,7 @@ const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
   /^profile dir missing: /u,
   /^profile dir is a symlink \(must be a real dir\): /u,
   /^wrong-target: /u,
+  /^not-a-symlink: /u,
   /^profile config missing /u,
   /^config\.yaml is a symlink /u,
   /^config\.yaml is not a rendered artifact /u,
@@ -1522,15 +1523,18 @@ function observeFromProfile(ctx: FleetStatusContext, input: ProfileObservationIn
     };
   }
   if (result === undefined) {
+    // Unreachable when the observer ran over the selected agents, and kept
+    // honest anyway: five `unobserved` leaves, never one, so a consumer that
+    // counts agents per aspect still sees the five declared fields.
     return {
-      observations: [observation(ctx, {
+      observations: [PROFILE_FIELD_PATH, PROFILE_FIELD_IDENTITY, PROFILE_FIELD_CONFIG, PROFILE_FIELD_BANK, PROFILE_FIELD_SKILLS].map((field) => observation(ctx, {
         domain: "profile", agentId, state: "unobserved",
-        field: PROFILE_FIELD_PATH,
+        field,
         summary: "the profile observer produced no result for this agent",
         source: SOURCE_PROFILE,
         observed: "no result",
         desired: "five profile observations for this agent",
-      })],
+      })),
       summary: null,
     };
   }
@@ -1587,7 +1591,7 @@ function observeFromProfile(ctx: FleetStatusContext, input: ProfileObservationIn
     observations,
     summary: {
       profile_name: result.profileName,
-      path: { state: result.path.state, code: bounded(result.path.code, 64) },
+      path: { state: result.path.state, code: result.path.code },
       identity: { state: result.identity.state, keys: result.identity.keys.map((key) => bounded(key, 64)) },
       renderer: { state: result.config.renderer.state, sections: result.config.renderer.sections.map((section) => bounded(section, 64)) },
       digests: { ...result.config.digests },

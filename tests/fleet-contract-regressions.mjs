@@ -1431,6 +1431,15 @@ try {
   profileRejects("an ignore list that does not cover the renderer's lock pattern", (manifest) => {
     manifest.setIn(["extras", "ignored_patterns"], ["*.tmp"]);
   }, "profile_manifest.extras.ignored_patterns", /must cover renderer\.lock_pattern/u);
+  profileRejects("a lock timeout that is not a positive number of seconds", (manifest) => {
+    manifest.setIn(["renderer", "lock_timeout_seconds"], 0);
+  }, "profile_manifest.renderer.lock_timeout_seconds", /positive number of seconds/u);
+  profileRejects("an ignore pattern made of wildcards alone", (manifest) => {
+    manifest.addIn(["extras", "ignored_patterns"], "?*");
+  }, "profile_manifest.extras.ignored_patterns[1]", /may not match every entry/u);
+  profileRejects("an empty core", (manifest) => {
+    manifest.setIn(["skill_core", "required"], []);
+  }, "profile_manifest.skill_core.required", /at least one core skill/u);
 
   check("profile_manifest: a schema-3 contract with no manifest still loads", () => {
     // OPTIONAL, and that is load-bearing: a contract that predates the block is

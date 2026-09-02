@@ -71,6 +71,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import YAML from "yaml";
 import { readTomlScalar } from "../project/boardUrl";
 import { blobId } from "../scaffold/compare";
+import { rootEntryGlob } from "./contract";
 import { isSafePathSegment } from "./inventory";
 import { mapBounded, probe, probeText, throwIfCancelled, type FleetRunContext } from "./runtime";
 import {
@@ -80,6 +81,7 @@ import {
   type FleetProfileExtraClass,
   type FleetProfileItemKind,
   type FleetProfileManifest,
+  type FleetProfilePathCode,
   type FleetProfilePythonCode,
   type FleetProfileRendererCode,
   type FleetProfileRendererState,
@@ -245,7 +247,7 @@ export interface FleetProfileSkillCoreRecord {
 export interface FleetProfileAgentResult {
   agentId: string;
   profileName: string | null;
-  path: FleetProfileAspect & { code: string };
+  path: FleetProfileAspect & { code: FleetProfilePathCode };
   identity: FleetProfileAspect & { keys: string[] };
   config: FleetProfileAspect & {
     renderer: { state: FleetProfileRendererState; sections: string[] };
@@ -374,15 +376,13 @@ function readBounded(path: string, cap: number): BoundedRead {
   return { error: "unreadable" };
 }
 
-/** Segment glob to a regular expression over one root entry name. */
-function globToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "(.*)").replace(/\?/gu, ".");
-  return new RegExp(`^${escaped}$`, "u");
-}
-
-/** A `{profile_name}` pattern as a glob over any name. */
+/**
+ * A `{profile_name}` pattern as a glob over any name. The glob grammar is the
+ * contract validator's own (`rootEntryGlob`), so the ignore list the validator
+ * proved covers the lock pattern is matched here by the same rule.
+ */
 function patternGlob(pattern: string): RegExp {
-  return globToRegExp(pattern.replaceAll("{profile_name}", "*"));
+  return rootEntryGlob(pattern.replaceAll("{profile_name}", "*"));
 }
 
 /** A registered name, case-folded with `_` and `-` unified: the two alias shapes the live root carries. */
@@ -545,6 +545,17 @@ async function inspectRenderer(ctx: FleetProfileContext): Promise<RendererInspec
     bad("renderer-source-unobserved", `the ${step} probe ${outcome === "timeout" ? "timed out" : outcome === "cancelled" ? "was cancelled" : "failed"} before the renderer source could be proven; the renderer can only be proven inside a git checkout of pjangler`, gitlink, outcome === "ok" ? "failed" : outcome)
   );
 
+  // `git -C <path>` WALKS UP. A package root that is not a checkout root of
+  // its own -- an extracted build sitting inside some other repository --
+  // would read THAT repository's HEAD and be told it records no gitlink, a
+  // content verdict about a tree that is not pjangler's. Unobserved instead.
+  const packageTop = await probe(ctx.run, gitArgv(ctx.pjanglerRoot, ["rev-parse", "--show-toplevel"]));
+  throwIfCancelled(ctx.run);
+  if (packageTop.outcome !== "ok") return unobserved("rev-parse --show-toplevel", packageTop.outcome, null);
+  if (!packageTop.value || canonical(packageTop.value) !== canonical(ctx.pjanglerRoot)) {
+    return bad("renderer-source-unobserved", `the package root is not a git checkout root of its own (${packageTop.value ? ctx.shown(packageTop.value) : "no toplevel"} answers for it), so no committed gitlink of pjangler's can be read; the renderer can only be proven inside a git checkout of pjangler`, null);
+  }
+
   const committed = await probe(ctx.run, gitArgv(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.renderer.submodule]));
   throwIfCancelled(ctx.run);
   if (committed.outcome !== "ok") return unobserved("ls-tree HEAD", committed.outcome, null);
@@ -585,9 +596,13 @@ async function inspectRenderer(ctx: FleetProfileContext): Promise<RendererInspec
     const full = join(submodule, file);
     const stat = entryStat(full);
     if (stat.kind === "absent") return bad("renderer-source-missing", `${file} is absent from the submodule worktree`, gitlink);
+    // A copy that could not be READ is not a copy that differs: a failed
+    // lstat, a torn read or a cap below the script's size proves nothing
+    // about the bytes, so it is unobserved, never a content verdict.
+    if (stat.kind === "unreadable") return bad("renderer-source-unobserved", `${file} in the submodule worktree could not be lstat'ed, so its bytes were never compared to the committed gitlink ${gitlink.slice(0, 12)}`, gitlink);
     if (stat.kind !== "file") return bad("renderer-source-mismatched", `${file} in the submodule worktree is a ${stat.kind}, not the regular file the committed gitlink pins`, gitlink);
     const read = readBounded(full, manifest.limits.max_file_bytes);
-    if ("error" in read) return bad("renderer-source-mismatched", `${file} in the submodule worktree could not be read under the file cap (${read.error})`, gitlink);
+    if ("error" in read) return bad("renderer-source-unobserved", `${file} in the submodule worktree could not be read under the file cap (${read.error}), so its bytes were never compared to the committed gitlink ${gitlink.slice(0, 12)}`, gitlink);
     if (blobId(read.bytes) !== ids[position]) {
       return bad("renderer-source-mismatched", `${file} in the submodule worktree differs from the bytes at the committed gitlink ${gitlink.slice(0, 12)}; what runs must be what is pinned, so nothing runs`, gitlink);
     }
@@ -666,8 +681,14 @@ function resolveCanonicalDir(ctx: FleetProfileContext): { dir: string; source: F
     if (dir !== null) return { dir, source: "env" };
   }
   if (ctx.templateConfigPath !== null) {
-    const read = readBounded(ctx.templateConfigPath, ctx.manifest.limits.max_file_bytes);
-    if (!("error" in read)) {
+    // The template's own `config_get` follows a link here (a dotfiles manager
+    // commonly leaves one), so the observer reads the config through it too.
+    // Host configuration, not profile state: nothing inside a profile is
+    // followed.
+    let configPath: string | null = ctx.templateConfigPath;
+    try { configPath = realpathSync(configPath); } catch { configPath = null; }
+    const read = configPath === null ? null : readBounded(configPath, ctx.manifest.limits.max_file_bytes);
+    if (read !== null && !("error" in read)) {
       const configured = readTomlScalar(read.bytes.toString("utf8"), "fleet", CANONICAL_SKILLS_CONFIG_KEY)?.trim();
       if (configured) {
         const dir = expand(configured);
@@ -704,14 +725,17 @@ function erroredAspect(code: string, detail: string): FleetProfileAspect {
   return aspect("error", [], code, "observed beneath a real profile root", detail);
 }
 
+// `too-large` and `unreadable` are collection failures on every field that
+// reads a file: the observer could not establish the bytes, so it says so
+// rather than calling the file malformed or missing.
 const PATH_RANK = (kind: FleetProfileItemKind): FleetStatusState => (kind === "unreadable" ? "error" : kind === "unverifiable" ? "warn" : "fail");
 const IDENTITY_RANK = (kind: FleetProfileItemKind): FleetStatusState => (
-  kind === "too-large" ? "error" : kind === "unknown-key" ? "warn" : kind === "inert-config-block" ? "pass" : "fail"
+  kind === "too-large" || kind === "unreadable" ? "error" : kind === "unknown-key" ? "warn" : kind === "inert-config-block" ? "pass" : "fail"
 );
 const CONFIG_RANK = (kind: FleetProfileItemKind): FleetStatusState => (
-  kind === "base-missing" || kind === "too-large" || kind === "renderer-failed" || kind === "renderer-timeout" || kind === "renderer-unavailable" ? "error" : "fail"
+  kind === "base-missing" || kind === "too-large" || kind === "unreadable" || kind === "renderer-failed" || kind === "renderer-timeout" || kind === "renderer-unavailable" ? "error" : "fail"
 );
-const BANK_RANK = (kind: FleetProfileItemKind): FleetStatusState => (kind === "too-large" ? "error" : "fail");
+const BANK_RANK = (kind: FleetProfileItemKind): FleetStatusState => (kind === "too-large" || kind === "unreadable" ? "error" : "fail");
 // `canonical-missing` is a FAIL, not an error: the canonical projection lacking
 // a core skill is a fleet defect (no agent can run what nothing holds), not
 // this observer failing to read something. Measured live: two of the six core
@@ -720,7 +744,7 @@ const SKILLS_RANK = (kind: FleetProfileItemKind): FleetStatusState => (
   kind === "extra-skill" || kind === "source-unresolvable" ? "pass" : "fail"
 );
 
-function emptyResult(input: FleetProfileAgentInput, path: FleetProfileAspect & { code: string }, dependents: FleetProfileAspect, probe: FleetProbeRecord): FleetProfileAgentResult {
+function emptyResult(input: FleetProfileAgentInput, path: FleetProfileAspect & { code: FleetProfilePathCode }, dependents: FleetProfileAspect, probe: FleetProbeRecord): FleetProfileAgentResult {
   return {
     agentId: input.agentId,
     profileName: input.profileName,
@@ -741,14 +765,14 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
 
   // -- the root gate, carried onto every agent --------------------------------
   if (shared.root.state !== "ok") {
-    const code = `root:${shared.root.code}`;
+    const code = `root:${shared.root.code}` as const;
     const path = { ...erroredAspect(code, `the profile root could not be gated (${shared.root.code}); nothing beneath it was read`), code };
     return emptyResult(input, path, erroredAspect(code, `not observed: the profile root could not be gated (${shared.root.code})`), skipped(code));
   }
 
   // -- the path gate ------------------------------------------------------------
-  const gate = (code: FleetProfileItemKind, detail: string | null, summary: string): FleetProfileAgentResult => {
-    const items: FleetProfileItem[] = [{ path: name ?? "", kind: code, desired: "directory", observed: code, detail }];
+  const gate = (code: FleetProfileItemKind & FleetProfilePathCode, detail: string | null, summary: string): FleetProfileAgentResult => {
+    const items: FleetProfileItem[] = [{ path: name ?? "(unnamed)", kind: code, desired: "directory", observed: code, detail }];
     const state = PATH_RANK(code);
     const path = { ...aspect(state, items, code, "a real, contained, unambiguous profile directory under the declared root", summary), code };
     // An `unreadable` directory is the one gate that IS a collection failure:
@@ -780,26 +804,47 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
   if (dirStat.kind === "unreadable") return gate("unreadable", null, "the profile directory could not be lstat'ed; nothing beneath it could be collected");
   if (dirStat.kind !== "directory") return gate("not-a-directory", null, `the profile entry is a ${dirStat.kind}, not a directory`);
 
-  // Post-gate: the singleton links, which must point into THIS agent's runtime.
+  // Post-gate: the singleton entries, which must be links into THIS agent's runtime.
   const pathItems: FleetProfileItem[] = [];
   const runtime = input.roleDir === null ? null : resolve(input.roleDir, "runtime");
+  const runtimeReal = runtime === null ? null : canonical(runtime);
   for (const link of PROFILE_SINGLETON_LINKS) {
     const full = join(profileDir, link);
-    if (entryStat(full).kind !== "symlink") continue;
-    if (runtime === null) {
+    const kind = entryStat(full).kind;
+    if (kind === "absent") continue;
+    if (kind === "unreadable") {
+      pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "an entry that could not be lstat'ed", detail: `unverifiable:${link}` });
+      continue;
+    }
+    if (kind !== "symlink") {
+      // The template provisions every one of these as a link into the agent's
+      // runtime. A real file or directory here is state living inside the
+      // profile instead -- the stock SOUL.md Hermes seeds into a fresh profile
+      // directory, which silently shadows the agent's real identity. The rule
+      // reads it as `not-a-symlink`; here it is the same misowned entry.
+      pathItems.push({ path: link, kind: "misowned-link", desired: "a link into this agent's role-local runtime", observed: `a real ${kind}`, detail: `not-a-link:${link}` });
+      continue;
+    }
+    if (runtime === null || runtimeReal === null) {
       // No role directory and nothing to derive one from: the link exists and
       // cannot be judged. Said so, never silently ok.
       pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "a link nothing can judge", detail: `unverifiable:${link}` });
       continue;
     }
     let pointed: string;
-    try { pointed = resolve(dirname(full), readlinkSync(full)); } catch { continue; }
-    if (!within(runtime, pointed)) {
+    try { pointed = resolve(dirname(full), readlinkSync(full)); } catch {
+      pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "a link that could not be read", detail: `unverifiable:${link}` });
+      continue;
+    }
+    // Contained as written, else contained by realpath: a role directory or a
+    // link target spelled through a symlinked ancestor is still this agent's
+    // runtime. Neither side is followed INTO -- only the two paths are resolved.
+    if (!within(runtime, pointed) && !within(runtimeReal, canonical(pointed))) {
       pathItems.push({ path: link, kind: "misowned-link", desired: "a link into this agent's role-local runtime", observed: "a link elsewhere", detail: `misowned-link:${link}` });
     }
   }
   const pathState = worst(pathItems, PATH_RANK);
-  const pathCode = pathState === "pass" ? "ok" : pathItems.some((item) => item.kind === "misowned-link") ? "misowned-link" : "unverifiable";
+  const pathCode: FleetProfilePathCode = pathState === "pass" ? "ok" : pathItems.some((item) => item.kind === "misowned-link") ? "misowned-link" : "unverifiable";
   const pathAspect = {
     ...aspect(
       pathState,
@@ -807,9 +852,9 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
       pathCode,
       "a real, contained, unambiguous profile directory whose singleton links point into this agent's runtime",
       pathCode === "misowned-link"
-        ? `${pathItems.filter((item) => item.kind === "misowned-link").length} singleton link(s) in the profile directory point outside this agent's role-local runtime`
+        ? `${pathItems.filter((item) => item.kind === "misowned-link").length} singleton entr${pathItems.filter((item) => item.kind === "misowned-link").length === 1 ? "y is" : "ies are"} not a link into this agent's role-local runtime`
         : pathCode === "unverifiable"
-          ? `${pathItems.length} singleton link(s) could not be judged: the row records no role_dir and no project_path to derive one from`
+          ? `${pathItems.length} singleton link(s) could not be judged: the row records no role_dir and no project_path to derive one from, or the link could not be read`
           : "the profile directory is real, contained, safely named and unambiguous",
     ),
     code: pathCode,
@@ -826,18 +871,23 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     const stat = entryStat(full);
     if (stat.kind === "absent") identityItems.push({ path: file, kind: "missing", desired: "file", observed: "absent", detail: null });
     else if (stat.kind === "symlink") identityItems.push({ path: file, kind: "symlink", desired: "file", observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") identityItems.push({ path: file, kind: "unreadable", desired: "file", observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") identityItems.push({ path: file, kind: "malformed", desired: "file", observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap);
-      if ("error" in read) identityItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "malformed", desired: "file", observed: read.error, detail: null });
+      if ("error" in read) identityItems.push({ path: file, kind: read.error, desired: "file", observed: read.error, detail: null });
       else {
         let parsed: unknown;
         let malformed = false;
         try { parsed = YAML.parse(read.bytes.toString("utf8")); } catch { malformed = true; }
         if (malformed || (parsed !== null && parsed !== undefined && !isMapping(parsed))) {
           identityItems.push({ path: file, kind: "malformed", desired: "a mapping of identity keys", observed: "not a mapping", detail: null });
+        } else if (parsed === null || parsed === undefined) {
+          // An empty file declares no identity at all: the same gap as a
+          // missing file, wearing the file's name.
+          identityItems.push({ path: file, kind: "malformed", desired: "a mapping of identity keys", observed: "empty", detail: "empty" });
         } else {
-          const record = (parsed ?? {}) as Record<string, unknown>;
+          const record = parsed as Record<string, unknown>;
           for (const key of Object.keys(record).sort()) {
             const shownKey = word(key);
             identityKeys.push(shownKey);
@@ -884,10 +934,11 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     const stat = entryStat(full);
     if (stat.kind === "absent") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: "absent", detail: null });
     else if (stat.kind === "symlink") configItems.push({ path: file, kind: "generated-symlink", desired: "a generated file", observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") configItems.push({ path: file, kind: "unreadable", desired: "a generated file", observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap);
-      if ("error" in read) configItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "generated-missing", desired: "a generated file", observed: read.error, detail: null });
+      if ("error" in read) configItems.push({ path: file, kind: read.error, desired: "a generated file", observed: read.error, detail: null });
       else {
         generatedRegular = true;
         digests.generated = digest(read.bytes);
@@ -904,10 +955,11 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     const deltaStat = entryStat(deltaFull);
     if (deltaStat.kind === "absent") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "an override-only delta", observed: "absent", detail: null });
     else if (deltaStat.kind === "symlink") configItems.push({ path: deltaFile, kind: "delta-symlink", desired: "a real file", observed: "symlink", detail: null });
+    else if (deltaStat.kind === "unreadable") configItems.push({ path: deltaFile, kind: "unreadable", desired: "a real file", observed: "could not be lstat'ed", detail: null });
     else if (deltaStat.kind !== "file") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "a real file", observed: deltaStat.kind, detail: null });
     else {
       const read = readBounded(deltaFull, cap);
-      if ("error" in read) configItems.push({ path: deltaFile, kind: read.error === "too-large" ? "too-large" : "delta-missing", desired: "a real file", observed: read.error, detail: null });
+      if ("error" in read) configItems.push({ path: deltaFile, kind: read.error, desired: "a real file", observed: read.error, detail: null });
       else {
         deltaRegular = true;
         digests.delta = digest(read.bytes);
@@ -921,8 +973,12 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
         } else {
           let parsed: unknown = null;
           try { parsed = YAML.parse(read.bytes.toString("utf8")); } catch { parsed = null; }
-          if (isMapping(parsed) && Object.keys(parsed).length > 0) {
-            if (shared.base.parsed !== null && stableEqual(parsed, shared.base.parsed)) {
+          // Only against a base that HOLDS something: over an empty base every
+          // delta equals deep_merge({}, delta), and that is inheritance with
+          // nothing to inherit, not a frozen copy.
+          const baseHoldsKeys = shared.base.parsed !== null && Object.keys(shared.base.parsed).length > 0;
+          if (isMapping(parsed) && Object.keys(parsed).length > 0 && baseHoldsKeys) {
+            if (stableEqual(parsed, shared.base.parsed)) {
               configItems.push({ path: deltaFile, kind: "delta-not-override-only", desired: "an override-only delta", observed: "a copy of the base", detail: "equals-base" });
             } else if (generatedParsed !== null && stableEqual(parsed, generatedParsed)) {
               configItems.push({ path: deltaFile, kind: "delta-not-override-only", desired: "an override-only delta", observed: "a copy of the generated config", detail: "equals-generated" });
@@ -932,7 +988,7 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
       }
     }
   }
-  let rendererState: FleetProfileRendererState = "not-run";
+  let rendererState: FleetProfileRendererState;
   const sections: string[] = [];
   let probeRecord: FleetProbeRecord = skipped("renderer-not-run");
   if (shared.base.state !== "ok") {
@@ -946,8 +1002,9 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     probeRecord = skipped(code);
   } else if (!generatedRegular || !deltaRegular) {
     // The renderer's own answer here would be the same two lines this observer
-    // already read off `lstat`; it is not spawned for them.
-    rendererState = "fail";
+    // already read off `lstat`; it is not spawned for them. A file that could
+    // not be READ (as opposed to one that is not there) is a collection error.
+    rendererState = configItems.some((item) => item.kind === "unreadable" || item.kind === "too-large") ? "error" : "fail";
     probeRecord = skipped(configItems.map((item) => item.kind).join(","));
   } else {
     const argv = manifest.renderer.check_argv.map((arg) => arg.replaceAll("{profile_name}", name));
@@ -1031,10 +1088,11 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     const stat = entryStat(full);
     if (stat.kind === "absent") bankItems.push({ path: file, kind: "pin-missing", desired: expectedBank, observed: "absent", detail: null });
     else if (stat.kind === "symlink") bankItems.push({ path: file, kind: "pin-symlink", desired: expectedBank, observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") bankItems.push({ path: file, kind: "unreadable", desired: expectedBank, observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") bankItems.push({ path: file, kind: "pin-malformed", desired: expectedBank, observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap);
-      if ("error" in read) bankItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "pin-malformed", desired: expectedBank, observed: read.error, detail: null });
+      if ("error" in read) bankItems.push({ path: file, kind: read.error, desired: expectedBank, observed: read.error, detail: null });
       else {
         let parsed: unknown;
         let malformed = false;
@@ -1094,6 +1152,12 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
       if (real === null) skillItems.push({ path: "skills", kind: "core-dangling", desired: "a skills directory", observed: "dangling-symlink", detail: "core-dangling:skills" });
       else if (within(shared.fleetHomeReal, real) || within(shared.canonicalReal, real)) profileSkillsRoot = real;
       else skillItems.push({ path: "skills", kind: "core-foreign", desired: "a skills directory inside the fleet home or the canonical projection", observed: "a directory elsewhere", detail: "core-foreign:skills" });
+    } else if (skillsStat.kind !== "absent") {
+      // A regular file, a special file or an entry that could not be lstat'ed
+      // where the template provisions a directory: Hermes loads nothing from
+      // it. Recorded as a root that could not be used, never silently skipped;
+      // the core may still resolve through `skills.external_dirs`.
+      skillItems.push({ path: "skills", kind: "source-unresolvable", desired: "a skills directory", observed: skillsStat.kind, detail: `skills-not-a-directory:${skillsStat.kind}` });
     }
     if (profileSkillsRoot !== null) addRoot(profileSkillsRoot);
     if (generatedParsed !== null) {
@@ -1171,15 +1235,25 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
   for (const skill of listedExtra) skillItems.push({ path: `skills/${skill}`, kind: "extra-skill", desired: null, observed: "present", detail: null });
   const skillsState = worst(skillItems, SKILLS_RANK);
   const required = manifest.skill_core.required.length;
+  // What failed, by name: the core skills that do not resolve, else the
+  // `skills` entry's own defect (a dangling or foreign link) when every core
+  // skill still resolved through another root.
+  const entryDefects = skillItems.filter((item) => item.path === "skills" && item.kind !== "source-unresolvable").map((item) => item.detail ?? item.kind);
   const skillsAspect = {
     ...aspect(
       skillsState,
       skillItems,
-      skillsState === "pass" ? `${corePresent}/${required} core skills present by bytes` : `${corePresent}/${required} core skills present by bytes; ${coreMissing.join(", ")} not`,
+      skillsState === "pass"
+        ? `${corePresent}/${required} core skills present by bytes`
+        : coreMissing.length
+          ? `${corePresent}/${required} core skills present by bytes; ${coreMissing.join(", ")} not`
+          : `${corePresent}/${required} core skills present by bytes; ${entryDefects.join(", ")}`,
       `every one of the ${required} core skills present by bytes through the roots Hermes loads`,
       skillsState === "pass"
         ? `${corePresent}/${required} core skills resolve to the canonical bytes${extra.length ? `, ${extra.length} optional skill(s) beside them` : ""}`
-        : `${corePresent}/${required} core skills resolve to the canonical bytes; ${coreMissing.join(", ")} do not`,
+        : coreMissing.length
+          ? `${corePresent}/${required} core skills resolve to the canonical bytes; ${coreMissing.join(", ")} do not`
+          : `${corePresent}/${required} core skills resolve to the canonical bytes, but the profile's own skills entry is defective (${entryDefects.join(", ")})`,
     ),
     corePresent,
     coreMissing,
@@ -1212,11 +1286,17 @@ function unitReferences(ctx: FleetProfileContext): Map<string, number> {
   let names: string[] = [];
   try { names = readdirSync(dir).filter((name) => name.endsWith(".service") || name.endsWith(".timer")).sort(); } catch { return counts; }
   for (const name of names.slice(0, ctx.manifest.limits.max_unit_files)) {
-    const read = readBounded(join(dir, name), PROFILE_MAX_UNIT_FILE_BYTES);
+    // A unit is commonly a link (`systemctl link`, a dotfiles manager) and is
+    // read through it: host configuration, not profile state.
+    let target = join(dir, name);
+    try { target = realpathSync(target); } catch { continue; }
+    const read = readBounded(target, PROFILE_MAX_UNIT_FILE_BYTES);
     if ("error" in read) continue;
     const text = read.bytes.toString("utf8");
     const seen = new Set<string>();
-    for (const match of text.matchAll(/^\s*Environment=(?:"?)HERMES_HOME=([^"\n]+?)\/?(?:"?)\s*$/gmu)) {
+    // The value ends at whitespace or the line's end, so a line assigning more
+    // than one variable (`Environment=HERMES_HOME=/a OTHER=b`) names `/a`.
+    for (const match of text.matchAll(/^\s*Environment=(?:"?)HERMES_HOME=([^"\s]+?)\/?(?:"?)(?:\s|$)/gmu)) {
       const value = match[1]!.trim();
       if (!isAbsolute(value)) continue;
       seen.add(resolve(value));
@@ -1301,10 +1381,13 @@ function classifyExtra(ctx: FleetProfileContext, root: string, name: string, reg
   let aliasOf: string | null = byAlias.get(aliasKey(name)) ?? null;
   let backupPattern: string | null = null;
   for (const pattern of ctx.manifest.extras.backup_patterns) {
-    const match = globToRegExp(pattern).exec(name);
+    const match = rootEntryGlob(pattern).exec(name);
     if (!match) continue;
     backupPattern = pattern;
-    const stem = match[1];
+    // The first wildcard is the stem only when the pattern LEADS with it
+    // (`*.bak`, `*-backup*`); for `old.*` it is the suffix, and a suffix names
+    // nothing.
+    const stem = pattern.startsWith("*") ? match[1] : undefined;
     if (aliasOf === null && typeof stem === "string" && stem !== "") aliasOf = byAlias.get(aliasKey(stem)) ?? null;
     break;
   }
@@ -1358,11 +1441,16 @@ export async function collectProfileHealth(ctx: FleetProfileContext): Promise<Fl
   // needs every name, and the sweep needs every name once more. A root that
   // cannot be enumerated is an error in EVERY scope -- a `--agent` run cannot
   // prove its one profile unambiguous over a listing it never got.
+  // The renderer's lock entries are the observer's own footprint: excluded by
+  // `renderer.lock_pattern` itself and by the declared ignore list (which the
+  // contract validator proves covers it) BEFORE the cap and before any count,
+  // so a lock an earlier run created changes nothing this run reports.
+  const ignored = [...ctx.manifest.extras.ignored_patterns, ctx.manifest.renderer.lock_pattern].map(patternGlob);
   let rootEntries: string[] = [];
   let rootTruncated = false;
   if (root.state === "ok" && ctx.root !== null) {
     try {
-      const listed = readdirSync(ctx.root).sort();
+      const listed = readdirSync(ctx.root).sort().filter((name) => !ignored.some((pattern) => pattern.test(name)));
       rootTruncated = listed.length > ctx.manifest.limits.max_root_entries;
       rootEntries = listed.slice(0, ctx.manifest.limits.max_root_entries);
     } catch {
@@ -1407,17 +1495,12 @@ export async function collectProfileHealth(ctx: FleetProfileContext): Promise<Fl
   if (!ctx.sweep) extrasReason = "agent-scope";
   else if (root.state !== "ok") extrasReason = `root:${root.code}`;
   else {
-    // The renderer's lock entries are the observer's own footprint: excluded
-    // by `renderer.lock_pattern` itself and by the declared ignore list, which
-    // the contract validator proves covers it.
-    const ignored = [...ctx.manifest.extras.ignored_patterns, ctx.manifest.renderer.lock_pattern].map(patternGlob);
     const registered = new Set(ctx.registeredProfileNames);
     const units = unitReferences(ctx);
     const items: FleetStatusProfileExtraItem[] = [];
     let unsafe = 0;
     for (const name of rootEntries) {
       if (registered.has(name)) continue;
-      if (ignored.some((pattern) => pattern.test(name))) continue;
       if (!isSafePathSegment(name)) {
         unsafe += 1;
         items.push(unclassifiedExtra(`unparsed:${unsafe}`, "name-unsafe"));

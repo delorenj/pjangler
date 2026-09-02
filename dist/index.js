@@ -20630,8 +20630,8 @@ function validateHealthPolicy(policy) {
 }
 var SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 var RENDER_INPUT_NAME = /^[a-z_][a-z0-9_]*$/u;
-function segmentGlob(glob) {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*").replace(/\?/gu, ".");
+function rootEntryGlob(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "(.*)").replace(/\?/gu, ".");
   return new RegExp(`^${escaped}$`, "u");
 }
 function relativeInside(value) {
@@ -20879,7 +20879,7 @@ function validateProfileManifest(policy) {
   const extras = block.extras;
   if (closed(extras, "profile_manifest.extras", FLEET_PROFILE_MANIFEST_EXTRAS_KEYS)) {
     const pattern = (item, where) => {
-      if (item.includes("/") || /^\*+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
+      if (item.includes("/") || /^[*?]+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
     };
     const ignored = uniqueList(extras.ignored_patterns, "profile_manifest.extras.ignored_patterns", pattern);
     if (ignored.length === 0) fail("profile_manifest.extras.ignored_patterns", "ignored_patterns must name the renderer's lock entries, or the observer's own footprint would be classified");
@@ -20887,7 +20887,7 @@ function validateProfileManifest(policy) {
     const lockPattern = isRecord6(renderer) && typeof renderer.lock_pattern === "string" ? renderer.lock_pattern : null;
     if (lockPattern !== null && ignored.length > 0) {
       const sample = lockPattern.replaceAll("{profile_name}", "sample-profile");
-      const covered = ignored.some((glob) => segmentGlob(glob.replaceAll("{profile_name}", "*")).test(sample));
+      const covered = ignored.some((glob) => rootEntryGlob(glob.replaceAll("{profile_name}", "*")).test(sample));
       if (!covered) fail("profile_manifest.extras.ignored_patterns", `must cover renderer.lock_pattern (${lockPattern}); the renderer's lock entries would otherwise be classified as extras`);
     }
   }
@@ -21946,7 +21946,7 @@ function severityColor(severity) {
   return dim;
 }
 var REPORT_SOFT_ITEM_KINDS = /* @__PURE__ */ new Set(["wrong-mode", "unexpected-owned", "unknown-key", "unverifiable"]);
-var REPORT_BANK_INVALID_CODES = /* @__PURE__ */ new Set(["pin-symlink", "pin-malformed", "too-large"]);
+var REPORT_BANK_INVALID_CODES = /* @__PURE__ */ new Set(["pin-symlink", "pin-malformed"]);
 var REPORT_INFO_ITEM_KINDS = /* @__PURE__ */ new Set(["inert-config-block", "extra-skill", "source-unresolvable"]);
 function observationLines(observation3, width) {
   const subject = observation3.agent_id ? `${observation3.agent_id} ${glyph.dot} ${observation3.domain}` : `fleet ${glyph.dot} ${observation3.domain}`;
@@ -22017,10 +22017,13 @@ function agentLine(agent, width, domains) {
   if (agent.profile) {
     const profile = agent.profile;
     const renderer = profile.renderer.state;
+    const coreCell = `skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`;
     const cells2 = [
-      profile.path.state === "pass" ? dim(`profile ${renderer}`) : red(`profile ${profile.path.code}`),
+      // A warn on the path (an unverifiable link) is painted as the warn it
+      // is; a fail or an error is red and names the code.
+      profile.path.state === "pass" ? dim(`profile ${renderer}`) : profile.path.state === "warn" ? yellow(`profile ${profile.path.code}`) : red(`profile ${profile.path.code}`),
       profile.bank.state === "pass" ? dim("bank ok") : profile.bank.state === "unobserved" || profile.bank.state === "error" ? dim(`bank ${profile.bank.state}`) : red(`bank ${profile.bank.observed ?? (REPORT_BANK_INVALID_CODES.has(profile.bank.code ?? "") ? "invalid" : "unpinned")}`),
-      profile.skills.state === "pass" ? dim(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`) : profile.skills.state === "unobserved" ? dim("skills unobserved") : red(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`)
+      profile.skills.state === "pass" ? dim(coreCell) : profile.skills.state === "unobserved" || profile.skills.state === "error" ? dim(`skills ${profile.skills.state}`) : red(coreCell)
     ];
     if (renderer === "drifted" && profile.renderer.sections.length) cells2.push(red(`drift in ${profile.renderer.sections.join(", ")}`));
     if (profile.identity.state === "fail") cells2.push(red("identity"));
@@ -22102,7 +22105,7 @@ function formatFleetStatusReport(status) {
       const profile = status.profile;
       lines.push(`       ${dim(glyph.arrow)} ${joinDot([
         profile.root.state === "pass" ? green("root ok") : profile.root.state === "unsupported" ? gray(`root ${profile.root.code}`) : red(`root ${profile.root.code}`),
-        profile.renderer.source === "ok" ? green("renderer ok") : red(`renderer ${profile.renderer.source}`),
+        profile.renderer.source === "ok" ? green("renderer ok") : profile.renderer.source === "manifest-undeclared" ? gray(`renderer ${profile.renderer.source}`) : red(`renderer ${profile.renderer.source}`),
         profile.renderer.python === "ok" ? dim("python ok") : profile.renderer.python === "not-probed" ? dim("python not probed") : red(`python ${profile.renderer.python}`),
         dim(`gitlink ${profile.renderer.gitlink ? profile.renderer.gitlink.slice(0, 12) : "none"}`)
       ])}`);
@@ -24335,12 +24338,8 @@ function readBounded(path, cap2) {
   }
   return { error: "unreadable" };
 }
-function globToRegExp2(glob) {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "(.*)").replace(/\?/gu, ".");
-  return new RegExp(`^${escaped}$`, "u");
-}
 function patternGlob(pattern) {
-  return globToRegExp2(pattern.replaceAll("{profile_name}", "*"));
+  return rootEntryGlob(pattern.replaceAll("{profile_name}", "*"));
 }
 function aliasKey(name) {
   return name.toLowerCase().replaceAll("_", "-");
@@ -24445,6 +24444,12 @@ async function inspectRenderer(ctx) {
     probes: [{ id: `${PROFILE_PROBE_KIND}:${target}`, kind: PROFILE_PROBE_KIND, target, outcome, reason: source }]
   });
   const unobserved = (step, outcome, gitlink2) => bad("renderer-source-unobserved", `the ${step} probe ${outcome === "timeout" ? "timed out" : outcome === "cancelled" ? "was cancelled" : "failed"} before the renderer source could be proven; the renderer can only be proven inside a git checkout of pjangler`, gitlink2, outcome === "ok" ? "failed" : outcome);
+  const packageTop = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["rev-parse", "--show-toplevel"]));
+  throwIfCancelled(ctx.run);
+  if (packageTop.outcome !== "ok") return unobserved("rev-parse --show-toplevel", packageTop.outcome, null);
+  if (!packageTop.value || canonical(packageTop.value) !== canonical(ctx.pjanglerRoot)) {
+    return bad("renderer-source-unobserved", `the package root is not a git checkout root of its own (${packageTop.value ? ctx.shown(packageTop.value) : "no toplevel"} answers for it), so no committed gitlink of pjangler's can be read; the renderer can only be proven inside a git checkout of pjangler`, null);
+  }
   const committed = await probe(ctx.run, gitArgv2(ctx.pjanglerRoot, ["ls-tree", "HEAD", "--", manifest.renderer.submodule]));
   throwIfCancelled(ctx.run);
   if (committed.outcome !== "ok") return unobserved("ls-tree HEAD", committed.outcome, null);
@@ -24477,9 +24482,10 @@ async function inspectRenderer(ctx) {
     const full = join36(submodule, file);
     const stat = entryStat(full);
     if (stat.kind === "absent") return bad("renderer-source-missing", `${file} is absent from the submodule worktree`, gitlink);
+    if (stat.kind === "unreadable") return bad("renderer-source-unobserved", `${file} in the submodule worktree could not be lstat'ed, so its bytes were never compared to the committed gitlink ${gitlink.slice(0, 12)}`, gitlink);
     if (stat.kind !== "file") return bad("renderer-source-mismatched", `${file} in the submodule worktree is a ${stat.kind}, not the regular file the committed gitlink pins`, gitlink);
     const read = readBounded(full, manifest.limits.max_file_bytes);
-    if ("error" in read) return bad("renderer-source-mismatched", `${file} in the submodule worktree could not be read under the file cap (${read.error})`, gitlink);
+    if ("error" in read) return bad("renderer-source-unobserved", `${file} in the submodule worktree could not be read under the file cap (${read.error}), so its bytes were never compared to the committed gitlink ${gitlink.slice(0, 12)}`, gitlink);
     if (blobId(read.bytes) !== ids[position]) {
       return bad("renderer-source-mismatched", `${file} in the submodule worktree differs from the bytes at the committed gitlink ${gitlink.slice(0, 12)}; what runs must be what is pinned, so nothing runs`, gitlink);
     }
@@ -24540,8 +24546,14 @@ function resolveCanonicalDir(ctx) {
     if (dir !== null) return { dir, source: "env" };
   }
   if (ctx.templateConfigPath !== null) {
-    const read = readBounded(ctx.templateConfigPath, ctx.manifest.limits.max_file_bytes);
-    if (!("error" in read)) {
+    let configPath = ctx.templateConfigPath;
+    try {
+      configPath = realpathSync10(configPath);
+    } catch {
+      configPath = null;
+    }
+    const read = configPath === null ? null : readBounded(configPath, ctx.manifest.limits.max_file_bytes);
+    if (read !== null && !("error" in read)) {
       const configured = readTomlScalar(read.bytes.toString("utf8"), "fleet", CANONICAL_SKILLS_CONFIG_KEY)?.trim();
       if (configured) {
         const dir = expand(configured);
@@ -24561,9 +24573,9 @@ function erroredAspect(code, detail) {
   return aspect("error", [], code, "observed beneath a real profile root", detail);
 }
 var PATH_RANK = (kind) => kind === "unreadable" ? "error" : kind === "unverifiable" ? "warn" : "fail";
-var IDENTITY_RANK = (kind) => kind === "too-large" ? "error" : kind === "unknown-key" ? "warn" : kind === "inert-config-block" ? "pass" : "fail";
-var CONFIG_RANK = (kind) => kind === "base-missing" || kind === "too-large" || kind === "renderer-failed" || kind === "renderer-timeout" || kind === "renderer-unavailable" ? "error" : "fail";
-var BANK_RANK = (kind) => kind === "too-large" ? "error" : "fail";
+var IDENTITY_RANK = (kind) => kind === "too-large" || kind === "unreadable" ? "error" : kind === "unknown-key" ? "warn" : kind === "inert-config-block" ? "pass" : "fail";
+var CONFIG_RANK = (kind) => kind === "base-missing" || kind === "too-large" || kind === "unreadable" || kind === "renderer-failed" || kind === "renderer-timeout" || kind === "renderer-unavailable" ? "error" : "fail";
+var BANK_RANK = (kind) => kind === "too-large" || kind === "unreadable" ? "error" : "fail";
 var SKILLS_RANK = (kind) => kind === "extra-skill" || kind === "source-unresolvable" ? "pass" : "fail";
 function emptyResult(input, path, dependents, probe2) {
   return {
@@ -24588,7 +24600,7 @@ async function inspectAgent(ctx, shared, input) {
     return emptyResult(input, path, erroredAspect(code, `not observed: the profile root could not be gated (${shared.root.code})`), skipped(code));
   }
   const gate = (code, detail, summary) => {
-    const items = [{ path: name ?? "", kind: code, desired: "directory", observed: code, detail }];
+    const items = [{ path: name ?? "(unnamed)", kind: code, desired: "directory", observed: code, detail }];
     const state = PATH_RANK(code);
     const path = { ...aspect(state, items, code, "a real, contained, unambiguous profile directory under the declared root", summary), code };
     const dependents = state === "error" ? erroredAspect(code, `not observed: the profile directory could not be lstat'ed (${code})`) : unobservedAspect(code);
@@ -24615,10 +24627,20 @@ async function inspectAgent(ctx, shared, input) {
   if (dirStat.kind !== "directory") return gate("not-a-directory", null, `the profile entry is a ${dirStat.kind}, not a directory`);
   const pathItems = [];
   const runtime = input.roleDir === null ? null : resolve22(input.roleDir, "runtime");
+  const runtimeReal = runtime === null ? null : canonical(runtime);
   for (const link of PROFILE_SINGLETON_LINKS) {
     const full = join36(profileDir, link);
-    if (entryStat(full).kind !== "symlink") continue;
-    if (runtime === null) {
+    const kind = entryStat(full).kind;
+    if (kind === "absent") continue;
+    if (kind === "unreadable") {
+      pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "an entry that could not be lstat'ed", detail: `unverifiable:${link}` });
+      continue;
+    }
+    if (kind !== "symlink") {
+      pathItems.push({ path: link, kind: "misowned-link", desired: "a link into this agent's role-local runtime", observed: `a real ${kind}`, detail: `not-a-link:${link}` });
+      continue;
+    }
+    if (runtime === null || runtimeReal === null) {
       pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "a link nothing can judge", detail: `unverifiable:${link}` });
       continue;
     }
@@ -24626,9 +24648,10 @@ async function inspectAgent(ctx, shared, input) {
     try {
       pointed = resolve22(dirname18(full), readlinkSync4(full));
     } catch {
+      pathItems.push({ path: link, kind: "unverifiable", desired: "a link into this agent's role-local runtime", observed: "a link that could not be read", detail: `unverifiable:${link}` });
       continue;
     }
-    if (!within(runtime, pointed)) {
+    if (!within(runtime, pointed) && !within(runtimeReal, canonical(pointed))) {
       pathItems.push({ path: link, kind: "misowned-link", desired: "a link into this agent's role-local runtime", observed: "a link elsewhere", detail: `misowned-link:${link}` });
     }
   }
@@ -24640,7 +24663,7 @@ async function inspectAgent(ctx, shared, input) {
       pathItems,
       pathCode,
       "a real, contained, unambiguous profile directory whose singleton links point into this agent's runtime",
-      pathCode === "misowned-link" ? `${pathItems.filter((item) => item.kind === "misowned-link").length} singleton link(s) in the profile directory point outside this agent's role-local runtime` : pathCode === "unverifiable" ? `${pathItems.length} singleton link(s) could not be judged: the row records no role_dir and no project_path to derive one from` : "the profile directory is real, contained, safely named and unambiguous"
+      pathCode === "misowned-link" ? `${pathItems.filter((item) => item.kind === "misowned-link").length} singleton entr${pathItems.filter((item) => item.kind === "misowned-link").length === 1 ? "y is" : "ies are"} not a link into this agent's role-local runtime` : pathCode === "unverifiable" ? `${pathItems.length} singleton link(s) could not be judged: the row records no role_dir and no project_path to derive one from, or the link could not be read` : "the profile directory is real, contained, safely named and unambiguous"
     ),
     code: pathCode
   };
@@ -24654,10 +24677,11 @@ async function inspectAgent(ctx, shared, input) {
     const stat = entryStat(full);
     if (stat.kind === "absent") identityItems.push({ path: file, kind: "missing", desired: "file", observed: "absent", detail: null });
     else if (stat.kind === "symlink") identityItems.push({ path: file, kind: "symlink", desired: "file", observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") identityItems.push({ path: file, kind: "unreadable", desired: "file", observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") identityItems.push({ path: file, kind: "malformed", desired: "file", observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap2);
-      if ("error" in read) identityItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "malformed", desired: "file", observed: read.error, detail: null });
+      if ("error" in read) identityItems.push({ path: file, kind: read.error, desired: "file", observed: read.error, detail: null });
       else {
         let parsed;
         let malformed = false;
@@ -24668,8 +24692,10 @@ async function inspectAgent(ctx, shared, input) {
         }
         if (malformed || parsed !== null && parsed !== void 0 && !isMapping(parsed)) {
           identityItems.push({ path: file, kind: "malformed", desired: "a mapping of identity keys", observed: "not a mapping", detail: null });
+        } else if (parsed === null || parsed === void 0) {
+          identityItems.push({ path: file, kind: "malformed", desired: "a mapping of identity keys", observed: "empty", detail: "empty" });
         } else {
-          const record = parsed ?? {};
+          const record = parsed;
           for (const key of Object.keys(record).sort()) {
             const shownKey = word(key);
             identityKeys.push(shownKey);
@@ -24712,10 +24738,11 @@ async function inspectAgent(ctx, shared, input) {
     const stat = entryStat(full);
     if (stat.kind === "absent") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: "absent", detail: null });
     else if (stat.kind === "symlink") configItems.push({ path: file, kind: "generated-symlink", desired: "a generated file", observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") configItems.push({ path: file, kind: "unreadable", desired: "a generated file", observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") configItems.push({ path: file, kind: "generated-missing", desired: "a generated file", observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap2);
-      if ("error" in read) configItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "generated-missing", desired: "a generated file", observed: read.error, detail: null });
+      if ("error" in read) configItems.push({ path: file, kind: read.error, desired: "a generated file", observed: read.error, detail: null });
       else {
         generatedRegular = true;
         digests.generated = digest(read.bytes);
@@ -24736,10 +24763,11 @@ async function inspectAgent(ctx, shared, input) {
     const deltaStat = entryStat(deltaFull);
     if (deltaStat.kind === "absent") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "an override-only delta", observed: "absent", detail: null });
     else if (deltaStat.kind === "symlink") configItems.push({ path: deltaFile, kind: "delta-symlink", desired: "a real file", observed: "symlink", detail: null });
+    else if (deltaStat.kind === "unreadable") configItems.push({ path: deltaFile, kind: "unreadable", desired: "a real file", observed: "could not be lstat'ed", detail: null });
     else if (deltaStat.kind !== "file") configItems.push({ path: deltaFile, kind: "delta-missing", desired: "a real file", observed: deltaStat.kind, detail: null });
     else {
       const read = readBounded(deltaFull, cap2);
-      if ("error" in read) configItems.push({ path: deltaFile, kind: read.error === "too-large" ? "too-large" : "delta-missing", desired: "a real file", observed: read.error, detail: null });
+      if ("error" in read) configItems.push({ path: deltaFile, kind: read.error, desired: "a real file", observed: read.error, detail: null });
       else {
         deltaRegular = true;
         digests.delta = digest(read.bytes);
@@ -24752,8 +24780,9 @@ async function inspectAgent(ctx, shared, input) {
           } catch {
             parsed = null;
           }
-          if (isMapping(parsed) && Object.keys(parsed).length > 0) {
-            if (shared.base.parsed !== null && stableEqual(parsed, shared.base.parsed)) {
+          const baseHoldsKeys = shared.base.parsed !== null && Object.keys(shared.base.parsed).length > 0;
+          if (isMapping(parsed) && Object.keys(parsed).length > 0 && baseHoldsKeys) {
+            if (stableEqual(parsed, shared.base.parsed)) {
               configItems.push({ path: deltaFile, kind: "delta-not-override-only", desired: "an override-only delta", observed: "a copy of the base", detail: "equals-base" });
             } else if (generatedParsed !== null && stableEqual(parsed, generatedParsed)) {
               configItems.push({ path: deltaFile, kind: "delta-not-override-only", desired: "an override-only delta", observed: "a copy of the generated config", detail: "equals-generated" });
@@ -24763,7 +24792,7 @@ async function inspectAgent(ctx, shared, input) {
       }
     }
   }
-  let rendererState = "not-run";
+  let rendererState;
   const sections = [];
   let probeRecord = skipped("renderer-not-run");
   if (shared.base.state !== "ok") {
@@ -24776,7 +24805,7 @@ async function inspectAgent(ctx, shared, input) {
     rendererState = "error";
     probeRecord = skipped(code);
   } else if (!generatedRegular || !deltaRegular) {
-    rendererState = "fail";
+    rendererState = configItems.some((item) => item.kind === "unreadable" || item.kind === "too-large") ? "error" : "fail";
     probeRecord = skipped(configItems.map((item) => item.kind).join(","));
   } else {
     const argv = manifest.renderer.check_argv.map((arg) => arg.replaceAll("{profile_name}", name));
@@ -24853,10 +24882,11 @@ async function inspectAgent(ctx, shared, input) {
     const stat = entryStat(full);
     if (stat.kind === "absent") bankItems.push({ path: file, kind: "pin-missing", desired: expectedBank, observed: "absent", detail: null });
     else if (stat.kind === "symlink") bankItems.push({ path: file, kind: "pin-symlink", desired: expectedBank, observed: "symlink", detail: null });
+    else if (stat.kind === "unreadable") bankItems.push({ path: file, kind: "unreadable", desired: expectedBank, observed: "could not be lstat'ed", detail: null });
     else if (stat.kind !== "file") bankItems.push({ path: file, kind: "pin-malformed", desired: expectedBank, observed: stat.kind, detail: null });
     else {
       const read = readBounded(full, cap2);
-      if ("error" in read) bankItems.push({ path: file, kind: read.error === "too-large" ? "too-large" : "pin-malformed", desired: expectedBank, observed: read.error, detail: null });
+      if ("error" in read) bankItems.push({ path: file, kind: read.error, desired: expectedBank, observed: read.error, detail: null });
       else {
         let parsed;
         let malformed = false;
@@ -24922,6 +24952,8 @@ async function inspectAgent(ctx, shared, input) {
       if (real === null) skillItems.push({ path: "skills", kind: "core-dangling", desired: "a skills directory", observed: "dangling-symlink", detail: "core-dangling:skills" });
       else if (within(shared.fleetHomeReal, real) || within(shared.canonicalReal, real)) profileSkillsRoot = real;
       else skillItems.push({ path: "skills", kind: "core-foreign", desired: "a skills directory inside the fleet home or the canonical projection", observed: "a directory elsewhere", detail: "core-foreign:skills" });
+    } else if (skillsStat.kind !== "absent") {
+      skillItems.push({ path: "skills", kind: "source-unresolvable", desired: "a skills directory", observed: skillsStat.kind, detail: `skills-not-a-directory:${skillsStat.kind}` });
     }
     if (profileSkillsRoot !== null) addRoot(profileSkillsRoot);
     if (generatedParsed !== null) {
@@ -25030,13 +25062,14 @@ async function inspectAgent(ctx, shared, input) {
   for (const skill of listedExtra) skillItems.push({ path: `skills/${skill}`, kind: "extra-skill", desired: null, observed: "present", detail: null });
   const skillsState = worst(skillItems, SKILLS_RANK);
   const required = manifest.skill_core.required.length;
+  const entryDefects = skillItems.filter((item) => item.path === "skills" && item.kind !== "source-unresolvable").map((item) => item.detail ?? item.kind);
   const skillsAspect = {
     ...aspect(
       skillsState,
       skillItems,
-      skillsState === "pass" ? `${corePresent}/${required} core skills present by bytes` : `${corePresent}/${required} core skills present by bytes; ${coreMissing.join(", ")} not`,
+      skillsState === "pass" ? `${corePresent}/${required} core skills present by bytes` : coreMissing.length ? `${corePresent}/${required} core skills present by bytes; ${coreMissing.join(", ")} not` : `${corePresent}/${required} core skills present by bytes; ${entryDefects.join(", ")}`,
       `every one of the ${required} core skills present by bytes through the roots Hermes loads`,
-      skillsState === "pass" ? `${corePresent}/${required} core skills resolve to the canonical bytes${extra.length ? `, ${extra.length} optional skill(s) beside them` : ""}` : `${corePresent}/${required} core skills resolve to the canonical bytes; ${coreMissing.join(", ")} do not`
+      skillsState === "pass" ? `${corePresent}/${required} core skills resolve to the canonical bytes${extra.length ? `, ${extra.length} optional skill(s) beside them` : ""}` : coreMissing.length ? `${corePresent}/${required} core skills resolve to the canonical bytes; ${coreMissing.join(", ")} do not` : `${corePresent}/${required} core skills resolve to the canonical bytes, but the profile's own skills entry is defective (${entryDefects.join(", ")})`
     ),
     corePresent,
     coreMissing,
@@ -25066,11 +25099,17 @@ function unitReferences(ctx) {
     return counts;
   }
   for (const name of names.slice(0, ctx.manifest.limits.max_unit_files)) {
-    const read = readBounded(join36(dir, name), PROFILE_MAX_UNIT_FILE_BYTES);
+    let target = join36(dir, name);
+    try {
+      target = realpathSync10(target);
+    } catch {
+      continue;
+    }
+    const read = readBounded(target, PROFILE_MAX_UNIT_FILE_BYTES);
     if ("error" in read) continue;
     const text3 = read.bytes.toString("utf8");
     const seen = /* @__PURE__ */ new Set();
-    for (const match of text3.matchAll(/^\s*Environment=(?:"?)HERMES_HOME=([^"\n]+?)\/?(?:"?)\s*$/gmu)) {
+    for (const match of text3.matchAll(/^\s*Environment=(?:"?)HERMES_HOME=([^"\s]+?)\/?(?:"?)(?:\s|$)/gmu)) {
       const value = match[1].trim();
       if (!isAbsolute9(value)) continue;
       seen.add(resolve22(value));
@@ -25162,10 +25201,10 @@ function classifyExtra(ctx, root, name, registered, units) {
   let aliasOf = byAlias.get(aliasKey(name)) ?? null;
   let backupPattern = null;
   for (const pattern of ctx.manifest.extras.backup_patterns) {
-    const match = globToRegExp2(pattern).exec(name);
+    const match = rootEntryGlob(pattern).exec(name);
     if (!match) continue;
     backupPattern = pattern;
-    const stem = match[1];
+    const stem = pattern.startsWith("*") ? match[1] : void 0;
     if (aliasOf === null && typeof stem === "string" && stem !== "") aliasOf = byAlias.get(aliasKey(stem)) ?? null;
     break;
   }
@@ -25210,11 +25249,12 @@ async function collectProfileHealth(ctx) {
   let root = gateRoot(ctx);
   const renderer = await inspectRenderer(ctx);
   const probes = [...renderer.probes];
+  const ignored = [...ctx.manifest.extras.ignored_patterns, ctx.manifest.renderer.lock_pattern].map(patternGlob);
   let rootEntries = [];
   let rootTruncated = false;
   if (root.state === "ok" && ctx.root !== null) {
     try {
-      const listed = readdirSync10(ctx.root).sort();
+      const listed = readdirSync10(ctx.root).sort().filter((name) => !ignored.some((pattern) => pattern.test(name)));
       rootTruncated = listed.length > ctx.manifest.limits.max_root_entries;
       rootEntries = listed.slice(0, ctx.manifest.limits.max_root_entries);
     } catch {
@@ -25253,14 +25293,12 @@ async function collectProfileHealth(ctx) {
   if (!ctx.sweep) extrasReason = "agent-scope";
   else if (root.state !== "ok") extrasReason = `root:${root.code}`;
   else {
-    const ignored = [...ctx.manifest.extras.ignored_patterns, ctx.manifest.renderer.lock_pattern].map(patternGlob);
     const registered = new Set(ctx.registeredProfileNames);
     const units = unitReferences(ctx);
     const items = [];
     let unsafe = 0;
     for (const name of rootEntries) {
       if (registered.has(name)) continue;
-      if (ignored.some((pattern) => pattern.test(name))) continue;
       if (!isSafePathSegment(name)) {
         unsafe += 1;
         items.push(unclassifiedExtra(`unparsed:${unsafe}`, "name-unsafe"));
@@ -25943,6 +25981,7 @@ var PROFILE_RULE_DETAIL_PATTERNS = [
   /^profile dir missing: /u,
   /^profile dir is a symlink \(must be a real dir\): /u,
   /^wrong-target: /u,
+  /^not-a-symlink: /u,
   /^profile config missing /u,
   /^config\.yaml is a symlink /u,
   /^config\.yaml is not a rendered artifact /u,
@@ -26604,16 +26643,16 @@ function observeFromProfile(ctx, input) {
   }
   if (result2 === void 0) {
     return {
-      observations: [observation2(ctx, {
+      observations: [PROFILE_FIELD_PATH, PROFILE_FIELD_IDENTITY, PROFILE_FIELD_CONFIG, PROFILE_FIELD_BANK, PROFILE_FIELD_SKILLS].map((field3) => observation2(ctx, {
         domain: "profile",
         agentId,
         state: "unobserved",
-        field: PROFILE_FIELD_PATH,
+        field: field3,
         summary: "the profile observer produced no result for this agent",
         source: SOURCE_PROFILE,
         observed: "no result",
         desired: "five profile observations for this agent"
-      })],
+      })),
       summary: null
     };
   }
@@ -26666,7 +26705,7 @@ function observeFromProfile(ctx, input) {
     observations,
     summary: {
       profile_name: result2.profileName,
-      path: { state: result2.path.state, code: bounded3(result2.path.code, 64) },
+      path: { state: result2.path.state, code: result2.path.code },
       identity: { state: result2.identity.state, keys: result2.identity.keys.map((key) => bounded3(key, 64)) },
       renderer: { state: result2.config.renderer.state, sections: result2.config.renderer.sections.map((section3) => bounded3(section3, 64)) },
       digests: { ...result2.config.digests },

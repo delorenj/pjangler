@@ -399,10 +399,10 @@ leaf**, in this order:
 
 | field | proves | fails when |
 | --- | --- | --- |
-| `profiles.{profile_name}` | the path **gate**: a real directory under the root, safely named, named by exactly one registry row, with no case-insensitive twin over a complete root listing, whose singleton links point into this agent's own runtime (`role_dir`, else `<project_path>/agents/hermes/<role>`) | `unnamed`, `symlink`, `missing`, `not-a-directory`, `name-unsafe`, `case-collision:<other>` (or `case-collision:unverified` over a capped listing), `ambiguous:duplicate-profile-name`, `misowned-link:<entry>`; `unverifiable:<entry>` is a `warn` when the row records neither a role directory nor a project path; `unreadable` is the one gate that is an `error` |
-| `profiles.{profile_name}.profile.yaml` | an identity-only file — the declared identity keys and nothing Hermes reads as config; when it declares `name`, this profile's; when it declares `display_name`, the registry's. Written by Hermes' own profile tooling (`hermes_cli/profiles.py`, `write_profile_meta`), never by the renderer or the template | `missing`, `symlink`, `malformed`, `identity-mismatch:name` / `identity-mismatch:display_name`; `unknown-key:<k>` is a `warn`; a `config:` block is recorded as `inert-config-block` and passes, because Hermes reads it nowhere |
-| `profiles.{profile_name}.config.yaml` | `config.yaml == deep_merge(<fleet home>/config.yaml, config.delta.yaml)`, proven by running the **canonical renderer's own `check`**, from an override-only delta | `generated-symlink`, `generated-missing`, `marker-missing`, `delta-missing`, `delta-symlink`, `delta-not-override-only` (the delta carries the generated marker or equals the base or generated mapping), `semantic-drift` naming each drifted top-level section (or `unparsed` when the report names none); `base-missing`, `renderer-unavailable`, `renderer-failed`, `renderer-timeout` and `too-large` are `error` |
-| `profiles.{profile_name}.hindsight/config.json` | the bank pin is exactly `agent-<profile_name>`. Written by the template's provisioning step 10 (`10-hermes-profile.sh`), which never touches `profile.yaml` | `pin-missing`, `pin-symlink`, `pin-malformed`, `bank-missing` (a generic `bank_id_template` never satisfies it), `bank-custom`, `bank-alias` (case or `_`/`-` variant, a `fail`), `bank-mismatch` |
+| `profiles.{profile_name}` | the path **gate**: a real directory under the root, safely named, named by exactly one registry row, with no case-insensitive twin over a complete root listing, whose singleton links point into this agent's own runtime (`role_dir`, else `<project_path>/agents/hermes/<role>`) | `unnamed`, `symlink`, `missing`, `not-a-directory`, `name-unsafe`, `case-collision:<other>` (or `case-collision:unverified` over a capped listing), `ambiguous:duplicate-profile-name`, `misowned-link:<entry>` (a singleton link pointing outside this agent's runtime) or `not-a-link:<entry>` (a real file or directory where the template provisions a link — the stock `SOUL.md` Hermes seeds into a fresh profile directory); `unverifiable:<entry>` is a `warn` when the row records neither a role directory nor a project path, or the link could not be read; `unreadable` is the one gate that is an `error` |
+| `profiles.{profile_name}.profile.yaml` | an identity-only file — the declared identity keys and nothing Hermes reads as config; when it declares `name`, this profile's; when it declares `display_name`, the registry's. Written by Hermes' own profile tooling (`hermes_cli/profiles.py`, `write_profile_meta`), never by the renderer or the template | `missing`, `symlink`, `malformed`, `identity-mismatch:name` / `identity-mismatch:display_name`; `unknown-key:<k>` is a `warn`; a `config:` block is recorded as `inert-config-block` and passes, because Hermes reads it nowhere; an empty file is `malformed` (`empty`); `too-large` and `unreadable` (over `limits.max_file_bytes`, or a read that could not complete) are `error` |
+| `profiles.{profile_name}.config.yaml` | `config.yaml == deep_merge(<fleet home>/config.yaml, config.delta.yaml)`, proven by running the **canonical renderer's own `check`**, from an override-only delta | `generated-symlink`, `generated-missing`, `marker-missing`, `delta-missing`, `delta-symlink`, `delta-not-override-only` (the delta carries the generated marker or equals the base or generated mapping), `semantic-drift` naming each drifted top-level section (or `unparsed` when the report names none); `base-missing`, `renderer-unavailable`, `renderer-failed`, `renderer-timeout`, `too-large` and `unreadable` are `error` |
+| `profiles.{profile_name}.hindsight/config.json` | the bank pin is exactly `agent-<profile_name>`. Written by the template's provisioning step 10 (`10-hermes-profile.sh`), which never touches `profile.yaml` | `pin-missing`, `pin-symlink`, `pin-malformed`, `bank-missing` (a generic `bank_id_template` never satisfies it), `bank-custom`, `bank-alias` (case or `_`/`-` variant, a `fail`), `bank-mismatch`; `too-large` and `unreadable` are `error` |
 | `profiles.{profile_name}.skills` | every core skill resolves **by bytes** — through the profile's `skills` entry (a real directory, or a symlink into the fleet home or the canonical projection) or the generated config's `skills.external_dirs` — to a `SKILL.md` inside an allowed root that equals the canonical copy. The skill links are step 10's too | `core-missing:<n>` (absent, or a directory with no `SKILL.md`), `core-replaced:<n>`, `core-dangling:<n>`, `core-foreign:<n>`, `canonical-missing:<n>` (the canonical projection itself lacks it); optional skills beside the core are listed as `extra-skill`, capped at `limits.max_extra_skills` while `extras_seen` counts them all |
 
 **Gate first, then look.** A profile that fails the gate is a `fail` on the
@@ -436,13 +436,20 @@ code, and **no renderer child is spawned**. The source codes are
 `renderer-source-missing` (the submodule is not a repository root of its own,
 or the pinned tree or the worktree lacks a file), `renderer-source-mismatched`
 (a worktree copy's bytes differ from the gitlink's) and
-`renderer-source-unobserved` (a git probe failed, timed out or was cancelled
-before a verdict — the renderer can only be proven inside a git checkout of
-pjangler, never from an extracted package). The interpreter codes are
+`renderer-source-unobserved` (no verdict: a git probe failed, timed out or was
+cancelled, the package root is not a git checkout root of its own, or a
+worktree copy could not be read under `limits.max_file_bytes` — the renderer can
+only be proven inside a git checkout of pjangler, never from an extracted
+package). The interpreter codes are
 `renderer-python-unavailable` (no `python3` answered, or it exited with a
 status the probe does not own), `renderer-python-too-old` and
 `renderer-pyyaml-missing`; the probe script exits 3 and 4 for the last two
-itself, so no other exit is ever read as one of them. The renderer's `check` takes the profile's own
+itself, so no other exit is ever read as one of them. Both the probe and the
+check run under an allowlisted environment — `PATH`, `HOME`, `LANG`,
+`HERMES_FLEET_HOME`, the lock timeout and the three `PYTHON*` settings, nothing
+else — so a PyYAML reachable only through `PYTHONPATH`, `VIRTUAL_ENV` or
+`PYTHONHOME` reads `renderer-pyyaml-missing`; it must be importable by the
+`python3` that `PATH` resolves. The renderer's `check` takes the profile's own
 persistent zero-byte lock (`profiles/.<name>.config.lock`, `flock`, created on
 first use) so a concurrent render cannot hand it a half-written file; that is
 its read semantics, not a mutation, and the observer bounds the wait so a held

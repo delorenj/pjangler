@@ -990,9 +990,16 @@ function validateHealthPolicy(policy: Record<string, unknown>): FleetDiagnostic[
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const RENDER_INPUT_NAME = /^[a-z_][a-z0-9_]*$/u;
 
-/** One root-entry glob (`*` and `?` only) as a regular expression over a whole name. */
-function segmentGlob(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*").replace(/\?/gu, ".");
+/**
+ * One root-entry glob (`*` and `?` only) as a regular expression over a whole
+ * name. Each `*` is a capturing group, so a caller that needs the stem a
+ * leading `*` matched can read it. The ONE glob grammar: the profile observer
+ * matches the ignore and backup lists with this same function, so the ignore
+ * list this validator proves covers the lock pattern is matched by the same
+ * rule at sweep time.
+ */
+export function rootEntryGlob(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, "(.*)").replace(/\?/gu, ".");
   return new RegExp(`^${escaped}$`, "u");
 }
 
@@ -1293,7 +1300,9 @@ function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnost
   const extras = block.extras;
   if (closed(extras, "profile_manifest.extras", FLEET_PROFILE_MANIFEST_EXTRAS_KEYS)) {
     const pattern = (item: string, where: string): void => {
-      if (item.includes("/") || /^\*+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
+      // `*`, `**`, `?*`, `*?*`: every spelling made of wildcards alone matches
+      // every entry, and an ignore list that matches every entry sweeps nothing.
+      if (item.includes("/") || /^[*?]+$/u.test(item) || item.includes("**")) fail(where, "a pattern must be one root entry glob and may not match every entry");
     };
     const ignored = uniqueList(extras.ignored_patterns, "profile_manifest.extras.ignored_patterns", pattern);
     if (ignored.length === 0) fail("profile_manifest.extras.ignored_patterns", "ignored_patterns must name the renderer's lock entries, or the observer's own footprint would be classified");
@@ -1305,7 +1314,7 @@ function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnost
     const lockPattern = isRecord(renderer) && typeof renderer.lock_pattern === "string" ? renderer.lock_pattern : null;
     if (lockPattern !== null && ignored.length > 0) {
       const sample = lockPattern.replaceAll("{profile_name}", "sample-profile");
-      const covered = ignored.some((glob) => segmentGlob(glob.replaceAll("{profile_name}", "*")).test(sample));
+      const covered = ignored.some((glob) => rootEntryGlob(glob.replaceAll("{profile_name}", "*")).test(sample));
       if (!covered) fail("profile_manifest.extras.ignored_patterns", `must cover renderer.lock_pattern (${lockPattern}); the renderer's lock entries would otherwise be classified as extras`);
     }
   }
