@@ -814,3 +814,12 @@ source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
 severity: low
 reason: The renderer's lock helper gives up on a held `flock` with a FATAL on stderr and exit 1, and this observer never reads stderr -- so that exit is indistinguishable from any other renderer failure. To make a held lock the bounded `renderer-timeout` the story requires, the child is told (`HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS`) it may wait `lock_timeout_seconds + 30` while the observer's own child budget is `lock_timeout_seconds + 1` second, so the observer's SIGKILL arrives first. The consequence: a legitimately slow `check` -- three small files parsed, measured at well under 100 ms -- that took longer than the contract's 2 s plus one would also read `renderer-timeout`. A cleaner answer reads the helper's exit reason, which means the renderer contract growing a distinguishable exit code; that is the template's change, not this observer's.
 status: open
+
+### DW-95: A gated profile's domain rolls up to `unobserved`, not `fail`.
+origin: spec-deferred story-1.7
+location: src/fleet/status.ts (rollUp over the five profile observations), src/fleet/profile.ts (the path gate)
+source_spec: `spec-1-7-prove-generated-profile-health-and-classify-extras.md`
+severity: low
+reason: A profile that fails the path gate (symlink, missing, twin, duplicate name) is one `fail` on `profiles.{profile_name}` plus four `unobserved` dependents, by design: nothing beneath the directory was read, and saying so is more honest than four fails about files nobody looked at. But `FLEET_STATUS_STATE_PRECEDENCE` ranks `unobserved` above `fail`, so `agents[].domains.profile` reads `unobserved` for exactly the profiles whose defect is PROVEN -- while the `fail` still sits on its own field, counts into `health.failed`, keeps `health.healthy` false and demotes the lifecycle. Two readings of the vocabulary are both defensible: "the domain was not fully read" (the current rollup) and "the domain has a proven defect" (what an operator scanning `domains` expects). `tests/fleet-health-regressions.mjs` pins the current reading. Resolving it means either a precedence exception for a domain whose unread half is unread BECAUSE of its proven half, or a `gated` state of its own; both are vocabulary changes story 1.4 owns, not this observer's to make.
+status: open
+

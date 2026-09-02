@@ -2,7 +2,7 @@
 title: 'Story 1.7: Prove Generated Profile Health and Classify Extras'
 type: 'feature'
 created: '2026-09-02'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'c93503709badcd13a9f0ec14174101f15cfa3620'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -390,6 +390,36 @@ profile_manifest:
   memory:   { pin_file: hindsight/config.json, bank_id_template: "agent-{profile_name}" }
   skill_core: { canonical_dir: "{HOME}/.agents/skills", required: [33god-projects, …] }
 ```
+
+**Review pass (documented behaviour changes).** Host findings reach the
+justification gate: a host `warn`/`skip` with no `allowed_warnings`/`allowed_skips`
+entry counts into `health.unjustified` and blocks `proven`, never `healthy`. A
+third host finding, `profile.skill-core`, names the core skills the canonical
+projection lacks; the canonical directory resolves `CANONICAL_SKILLS_DIR`, then
+the template config's `[fleet] canonical_skills_dir`, then the manifest
+placeholder. The fleet base is the renderer's own `config.yaml`
+(`RENDERER_BASE_FILE`), never derived from `profile_layout.generated_file`. The
+root vocabulary is its own (`FLEET_PROFILE_ROOT_CODES`), the interpreter codes
+their own (`FLEET_PROFILE_PYTHON_CODES`, the probe script exiting 3/4 itself),
+and a failed git probe is `renderer-source-unobserved`, never a content verdict.
+Gate additions: `ambiguous:duplicate-profile-name` for a profile more than one
+row claims, `case-collision:unverified` over a capped root listing,
+`root-unreadable` in every scope when the root cannot be enumerated, an
+`unreadable` directory as the one `error` gate, and `unverifiable` (warn) for
+singleton links a row without `role_dir` or `project_path` cannot have judged
+(with `role_dir` defaulting to `<project_path>/agents/hermes/<role>` as the
+scaffold observer does). Config additions: `delta-not-override-only` for a
+delta carrying the generated marker or equal to the base or generated mapping;
+a drift report naming no parseable section is one `semantic-drift` item
+(`unparsed`); `in-sync` is claimed only with no item at all. Rule agreement
+compares the path aspect on its own (a symlinked or missing profile against
+the rule's own detail), treats `misowned-link` as the rule's `wrong-target`,
+and pins every detail pattern against the rule's literals. `agents[].profile.bank.code`
+and `data.profile.identity.bank_invalid` make the bank buckets sum to `real`;
+`extras_seen` is uncapped; fleet `core_missing` counts dangling, foreign and
+canonical-missing kinds; every read is opened without following and re-checked
+after the read. A gated profile's `domains.profile` rollup reading is recorded
+as DW-95.
 
 ## Verification
 

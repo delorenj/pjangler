@@ -1863,13 +1863,18 @@ export interface FleetStatus {
  * value, a memory, or an absolute path.
  */
 export const FLEET_PROFILE_ITEM_KINDS = [
-  // The path gate: the profile directory itself.
-  "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "unreadable", "misowned-link",
+  // The path gate: the profile directory itself. `ambiguous` is a duplicate
+  // profile name across registry rows; `unverifiable` is a singleton link the
+  // observer could not judge because the row records neither a role directory
+  // nor a project path to derive one from.
+  "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "ambiguous", "unreadable",
+  "misowned-link", "unverifiable",
   // The identity file.
   "malformed", "unknown-key", "inert-config-block", "identity-mismatch",
-  // The generated config and its inputs.
+  // The generated config and its inputs. `delta-not-override-only` is a delta
+  // that carries the generated marker or equals the base or generated mapping.
   "base-missing", "generated-missing", "generated-symlink", "marker-missing", "delta-missing", "delta-symlink",
-  "semantic-drift", "unparsed", "renderer-failed", "renderer-timeout", "renderer-unavailable", "too-large",
+  "delta-not-override-only", "semantic-drift", "renderer-failed", "renderer-timeout", "renderer-unavailable", "too-large",
   // The Hindsight bank pin.
   "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
   // The skill core.
@@ -1910,37 +1915,67 @@ export type FleetProfileExtraClass = (typeof FLEET_PROFILE_EXTRA_CLASSES)[number
  * failure carried onto every agent.
  */
 export const FLEET_PROFILE_PATH_CODES = [
-  "ok", "misowned-link", "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "unreadable", "root",
+  "ok", "misowned-link", "unverifiable", "unnamed", "symlink", "missing", "not-a-directory", "name-unsafe", "case-collision", "ambiguous", "unreadable", "root",
 ] as const;
 export type FleetProfilePathCode = (typeof FLEET_PROFILE_PATH_CODES)[number];
 
 /**
- * Why the canonical renderer could not be trusted or run, when it could not.
+ * What the ROOT gate concluded.
+ *
+ * `ok`                         the root is `<fleet home>/profiles`, reached through real directories.
+ * `layout-undeclared`          the contract declares no `service_model.profile_layout.root`.
+ * `renderer-layout-mismatch`   the contract's root is not the directory the renderer reads.
+ * `root-missing`               a component of the root does not exist.
+ * `root-unreadable`            a component could not be lstat'ed, or the root could not be enumerated.
+ * `root-symlink`               the root itself is a symlink.
+ * `root-ancestor-symlink`      a component above the root is a symlink (DW-28).
+ * `root-not-a-directory`       a component is not a directory.
+ *
+ * Any code but `ok` is a HOST finding (`profile.root`) and marks every selected
+ * agent's five fields `error` naming `root:<code>`.
+ */
+export const FLEET_PROFILE_ROOT_CODES = [
+  "ok", "layout-undeclared", "renderer-layout-mismatch", "root-missing", "root-unreadable", "root-symlink",
+  "root-ancestor-symlink", "root-not-a-directory",
+] as const;
+export type FleetProfileRootCode = (typeof FLEET_PROFILE_ROOT_CODES)[number];
+
+/**
+ * Why the canonical renderer's SOURCE could not be trusted, when it could not.
  *
  * `ok`                          the worktree copies of the script and its lock
  *                               helper are regular files whose blob ids equal
  *                               the blobs at the COMMITTED gitlink.
  * `renderer-gitlink-missing`    the parent's HEAD records no gitlink for the submodule.
  * `renderer-gitlink-unstable`   the index gitlink differs from HEAD's.
- * `renderer-source-missing`     the submodule is not a repository root, or the
- *                               pinned tree or the worktree lacks a file.
+ * `renderer-source-missing`     the submodule is not a repository root of its
+ *                               own, or the pinned tree or the worktree lacks a file.
  * `renderer-source-mismatched`  a worktree copy's bytes differ from the gitlink's.
- * `renderer-source-unobserved`  a git probe failed or timed out.
- * `renderer-layout-mismatch`    the contract's profile root is not `<fleet home>/profiles`,
- *                               which is the only root the renderer reads.
- * `renderer-python-unavailable` no `python3` on PATH (or the probe timed out).
- * `renderer-python-too-old`     `python3` is older than 3.11.
- * `renderer-pyyaml-missing`     `import yaml` fails.
+ * `renderer-source-unobserved`  a git probe failed, timed out or was cancelled
+ *                               before a verdict; the renderer can only be
+ *                               proven inside a git checkout of pjangler.
  *
  * Any code but `ok` is a HOST finding (`profile.renderer`), marks every
  * selected agent's `config.yaml` field `error`, and spawns NO renderer.
  */
 export const FLEET_PROFILE_RENDERER_CODES = [
   "ok", "renderer-gitlink-missing", "renderer-gitlink-unstable", "renderer-source-missing", "renderer-source-mismatched",
-  "renderer-source-unobserved", "renderer-layout-mismatch", "renderer-python-unavailable", "renderer-python-too-old",
-  "renderer-pyyaml-missing",
+  "renderer-source-unobserved",
 ] as const;
 export type FleetProfileRendererCode = (typeof FLEET_PROFILE_RENDERER_CODES)[number];
+
+/**
+ * Whether an interpreter that can run the renderer answered.
+ *
+ * `not-probed` when the source was not `ok` (nothing would run anyway). The
+ * probe script exits with codes it controls -- 3 for a python older than 3.11,
+ * 4 for a failed `import yaml` -- and every other nonzero or absent status is
+ * `renderer-python-unavailable`.
+ */
+export const FLEET_PROFILE_PYTHON_CODES = [
+  "ok", "not-probed", "renderer-python-unavailable", "renderer-python-too-old", "renderer-pyyaml-missing",
+] as const;
+export type FleetProfilePythonCode = (typeof FLEET_PROFILE_PYTHON_CODES)[number];
 
 /** What the renderer's `check` concluded for one profile. */
 export const FLEET_PROFILE_RENDERER_STATES = ["in-sync", "drifted", "fail", "error", "not-run", "unobserved"] as const;
@@ -1997,6 +2032,8 @@ export interface FleetStatusAgentProfile {
     observed: string | null;
     expected: string | null;
     state: FleetStatusState;
+    /** The item kind that decided a non-pass (`bank-alias`, `pin-malformed`, ...), or null on a pass or an unread field. */
+    code: string | null;
   };
   skills: {
     state: FleetStatusState;
@@ -2039,7 +2076,8 @@ export interface FleetProfileSummary {
     /** `total_registered - selected`, plus selected agents the observer never reached. */
     unobserved: number;
   };
-  identity: { bank_ok: number; bank_alias: number; bank_custom: number; bank_missing: number; bank_mismatch: number };
+  /** One bucket per REAL profile: the six sum to `agents.real`. `bank_invalid` is a pin that is a symlink, unparseable or over the cap. */
+  identity: { bank_ok: number; bank_alias: number; bank_custom: number; bank_missing: number; bank_mismatch: number; bank_invalid: number };
   skills: { core_complete: number; core_missing: number; core_replaced: number; extras_seen: number };
   extras: {
     coverage: "swept" | "not-swept";

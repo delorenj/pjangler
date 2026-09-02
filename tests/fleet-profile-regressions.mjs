@@ -338,6 +338,11 @@ function seedFleet() {
   // observer spawns the check, and the renderer exits 1 with a FATAL on stderr
   // and no drift block on stdout.
   repoFor("crash-pm"); seedProfile("crash-pm", { links: ownLinks("crash-pm"), deltaText: "model: {unterminated\n" }); register("crash-pm");
+  // Deltas that are not override-only: a frozen copy of the generated file
+  // (marker and all) and a copy of the base. Both still merge to the base, so
+  // the renderer reads them in sync; the observer does not.
+  repoFor("frozen-pm"); seedProfile("frozen-pm", { links: ownLinks("frozen-pm"), deltaText: generatedText({}) }); register("frozen-pm");
+  repoFor("basecopy-pm"); seedProfile("basecopy-pm", { links: ownLinks("basecopy-pm"), deltaText: BASE_TEXT }); register("basecopy-pm");
 
   // -- the bank pin -------------------------------------------------------------
   repoFor("alias-pm"); seedProfile("alias-pm", { links: ownLinks("alias-pm"), pin: { bank_id: "agent-Alias-pm" } }); register("alias-pm");
@@ -361,9 +366,20 @@ function seedFleet() {
       mkdirSync(join(dir, "33god-projects"), { recursive: true });
       writeFileSync(join(dir, "33god-projects", "SKILL.md"), `# a replaced copy\n\n${SECRET_SENTINEL}\n`, "utf8");
       symlinkSync(join(canonicalSkills, "extra-tool"), join(dir, "extra-tool"));
+      symlinkSync(join(canonicalSkills, "extra-tool"), join(dir, "extra-tool2"));
     },
   });
   register("skills-pm");
+  // The shape 27 of 28 live profiles have: `skills` is a symlink into the
+  // fleet home, holding optional skills only, and the core arrives through
+  // the generated config's external_dirs.
+  mkdirSync(join(fleetHome, "skills", "extra-linked"), { recursive: true });
+  writeFileSync(join(fleetHome, "skills", "extra-linked", "SKILL.md"), "---\nname: extra-linked\n---\n\n# extra-linked\n", "utf8");
+  repoFor("skills-link-pm"); seedProfile("skills-link-pm", { links: { ...ownLinks("skills-link-pm"), skills: join(fleetHome, "skills") }, skills: null }); register("skills-link-pm");
+  mkdirSync(join(outside, "skills-dir", "hindsight"), { recursive: true });
+  cpSync(join(canonicalSkills, "hindsight", "SKILL.md"), join(outside, "skills-dir", "hindsight", "SKILL.md"));
+  repoFor("skills-outside-pm"); seedProfile("skills-outside-pm", { links: { ...ownLinks("skills-outside-pm"), skills: join(outside, "skills-dir") }, skills: null }); register("skills-outside-pm");
+  repoFor("skills-dangling-pm"); seedProfile("skills-dangling-pm", { links: { ...ownLinks("skills-dangling-pm"), skills: join(fleetHome, "no-such-skills") }, skills: null }); register("skills-dangling-pm");
   repoFor("foreign-pm");
   mkdirSync(join(outside, "delonet-dotenv"), { recursive: true });
   cpSync(join(canonicalSkills, "delonet-dotenv", "SKILL.md"), join(outside, "delonet-dotenv", "SKILL.md"));
@@ -379,6 +395,13 @@ function seedFleet() {
   repoFor("idconfig-pm"); seedProfile("idconfig-pm", { links: ownLinks("idconfig-pm"), identity: { name: "idconfig-pm", config: { inherit_from: "default", save_mode: "delta" } } }); register("idconfig-pm");
   repoFor("idname-pm"); seedProfile("idname-pm", { links: ownLinks("idname-pm"), identity: { name: "somebody-else" } }); register("idname-pm");
   repoFor("iddisplay-pm"); seedProfile("iddisplay-pm", { links: ownLinks("iddisplay-pm"), identity: { display_name: "Somebody Else" } }); register("iddisplay-pm");
+
+  // -- the role directory ------------------------------------------------------
+  // A row with no role_dir: the canonical default applies, so a link into
+  // another agent's runtime is still misowned. A row with neither: the links
+  // are unverifiable, said so, never silently ok.
+  repoFor("norole-pm"); seedProfile("norole-pm", { links: { "SOUL.md": join(RUNTIMES["clean-pm"], "SOUL.md"), memories: join(RUNTIMES["norole-pm"], "memories") } }); register("norole-pm", { role_dir: undefined });
+  repoFor("noproj-pm"); seedProfile("noproj-pm", { links: ownLinks("noproj-pm") }); register("noproj-pm", { role_dir: undefined, project_path: undefined });
 
   // -- the profile root's extras ----------------------------------------------
   seedProfile("clean-pm.bak", { identity: null, delta: null, generated: "none", pin: null, skills: null, lock: false });
@@ -718,6 +741,9 @@ process.exit(report.ok ? 0 : 1);
 const SINGLETON_RULE_PASS = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "pass", summary: "singleton runtime contract satisfied", details: [], fixable: true, scope: "project" };
 const SINGLETON_RULE_FAIL = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["config.delta.yaml missing — profile is not under base+delta inheritance: x"], fixable: true, scope: "project" };
 const SINGLETON_RULE_OTHER_FAIL = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["shared seed missing: auth.json"], fixable: true, scope: "project" };
+const SINGLETON_RULE_SYMLINK = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["profile dir is a symlink (must be a real dir): x"], fixable: true, scope: "project" };
+const SINGLETON_RULE_WRONG_TARGET = { id: "hermes.runtime-singleton", title: "Singleton runtime", status: "fail", summary: "1 singleton issue(s)", details: ["wrong-target: x/SOUL.md -> y/runtime/SOUL.md"], fixable: true, scope: "project" };
+const PROFILE_WIRING_WARN = { id: "hermes.profile-wiring", title: "Hermes profile wiring", status: "warn", summary: "the shared profile root is wired unusually", details: [], fixable: false, scope: "host" };
 
 /** A PATH whose only `python3` is a script of the caller's choosing (or none), with a real `git` beside it. */
 function pathShim(name, python3Body) {
@@ -776,11 +802,12 @@ try {
     skip("the whole suite", "dist/ is not built; run `npm run build` first");
     throw new SkipCase("unbuilt");
   }
-  const python = spawnSync("python3", ["-B", "-c", "import sys, yaml; sys.exit(0 if sys.version_info >= (3, 11) else 3)"], { encoding: "utf8" });
-  if (python.status !== 0) {
-    skip("the whole suite", "python3 with PyYAML at 3.11 or newer is not on PATH; the canonical renderer cannot run");
-    throw new SkipCase("no python");
-  }
+  // Renderer-dependent cases skip INDIVIDUALLY, each printing its skip, when
+  // no python3 with PyYAML at 3.11 or newer is on PATH; the contract,
+  // registration, scoping, gate-code and extras cases run regardless.
+  const python = spawnSync("python3", ["-B", "-c", "import sys\nif sys.version_info < (3, 11):\n    sys.exit(3)\ntry:\n    import yaml\nexcept Exception:\n    sys.exit(4)\nsys.exit(0)\n"], { encoding: "utf8" });
+  const RENDERER_AVAILABLE = python.status === 0;
+  const requireRenderer = (label) => { if (!RENDERER_AVAILABLE) skipCase(label, "python3 with PyYAML at 3.11 or newer is not on PATH; the canonical renderer cannot run"); };
   seedTemplate();
   seedFleet();
   git(ROOT, ["update-index", "--refresh"]);
@@ -818,6 +845,7 @@ try {
     const twin = fieldOf(agentNamed(data, "twin-pm"), FIELDS.path);
     assert.equal(itemsOf(twin)[0].detail, "case-collision:Twin-pm", "the colliding entry is named");
     assert.equal(data.profile.agents.blocked_at_path, 5);
+    assert.equal(hostNamed(data, "profile.skill-core").state, "pass", "the fixture's canonical projection holds every core skill");
     // Renderer children ran only for gate-passing profiles: no probe of kind
     // profile targets a gated one with anything but `skipped`.
     for (const id of ["symlink-pm", "missing-pm", "file-pm", "twin-pm", "unsafe-pm"]) {
@@ -828,6 +856,7 @@ try {
   });
 
   check("a clean profile reads five passes, an in-sync renderer, three digests and a pinned bank", () => {
+    requireRenderer("a clean profile reads five passes, an in-sync renderer, three digests and a pinned bank");
     const data = status(cliAt(mainRoot, STATUS_ARGS));
     const agent = agentNamed(data, "clean-pm");
     const fields = agent.observations.filter((item) => item.source === "fleet-profile");
@@ -851,7 +880,7 @@ try {
     assert.deepEqual(agent.profile.renderer.sections, []);
     for (const side of ["base", "delta", "generated"]) assert.match(agent.profile.digests[side], /^[0-9a-f]{12}$/u, `${side} digest`);
     assert.equal(agent.profile.digests.base, sha256Prefix(Buffer.from(BASE_TEXT, "utf8")));
-    assert.deepEqual(agent.profile.bank, { observed: "agent-clean-pm", expected: "agent-clean-pm", state: "pass" });
+    assert.deepEqual(agent.profile.bank, { observed: "agent-clean-pm", expected: "agent-clean-pm", state: "pass", code: null });
     assert.deepEqual(agent.profile.skills, { state: "pass", core_present: 6, core_missing: [], extra: [], sources_unresolvable: 1 });
     assert.deepEqual(agent.profile.identity, { state: "pass", keys: ["display_name", "name"] });
     assert.equal(agent.domains.profile, "unobserved", "without --live the audit half is still unread");
@@ -868,11 +897,26 @@ try {
     assert.equal(fieldOf(agent, FIELDS.config).state, "pass", "the gate passed, so the config was still proven");
     assert.equal(fieldOf(agent, FIELDS.bank).state, "pass");
     assert.equal(textOf(agent).includes(SECRET_SENTINEL), false, "the other agent's memory was never read");
+
+    // No role_dir on the row: the canonical default <project_path>/agents/hermes/<role> judges the links.
+    const norole = agentNamed(data, "norole-pm");
+    assert.equal(norole.profile.path.code, "misowned-link", "the default role directory still catches a link into another agent's runtime");
+    assert.deepEqual(itemsOf(fieldOf(norole, FIELDS.path)).map((item) => item.detail), ["misowned-link:SOUL.md"]);
+    // Neither role_dir nor project_path: the links exist and nothing can judge them.
+    const noproj = agentNamed(data, "noproj-pm");
+    const noprojPath = fieldOf(noproj, FIELDS.path);
+    assert.equal(noprojPath.state, "warn");
+    assert.deepEqual(kindsOf(noprojPath), ["unverifiable", "unverifiable"]);
+    assert.deepEqual(itemsOf(noprojPath).map((item) => item.detail).sort(), ["unverifiable:SOUL.md", "unverifiable:memories"]);
+    assert.equal(noproj.profile.path.code, "unverifiable");
+    assert.equal(fieldOf(noproj, FIELDS.bank).state, "pass", "an unverifiable link does not block the dependents");
+    assert.equal(noproj.healthy, true, "a warn is not a proven failure");
   });
 
   // -- AC2: the generated config through the canonical renderer ------------
 
   check("a config rendered from an older base is semantic drift naming the section; a base edit flips a clean profile the same way", () => {
+    requireRenderer("a config rendered from an older base is semantic drift naming the section; a base edit flips a clean profile the same way");
     const first = status(cliAt(mainRoot, STATUS_ARGS));
     const stale = agentNamed(first, "stale-pm");
     const config = fieldOf(stale, FIELDS.config);
@@ -908,6 +952,7 @@ try {
   });
 
   check("a symlinked generated config, a missing marker and a missing delta are their own kinds and the renderer is not spawned for them", () => {
+    requireRenderer("a symlinked generated config, a missing marker and a missing delta are their own kinds and the renderer is not spawned for them");
     const data = status(cliAt(mainRoot, STATUS_ARGS));
     const gensym = agentNamed(data, "gensym-pm");
     assert.deepEqual(kindsOf(fieldOf(gensym, FIELDS.config)), ["generated-symlink"]);
@@ -920,6 +965,18 @@ try {
     assert.deepEqual(kindsOf(fieldOf(marker, FIELDS.config)), ["marker-missing"]);
     assert.equal(marker.profile.renderer.state, "in-sync", "the renderer compares parsed dicts and still runs for a marker-less regular file");
     assert.equal(fieldOf(marker, FIELDS.config).state, "fail");
+    assert.notEqual(fieldOf(marker, FIELDS.config).observed, "in-sync", "an in-sync merge beside a marker-less file is not reported as in-sync");
+    assert.doesNotMatch(fieldOf(marker, FIELDS.config).summary, /equals deep_merge/u);
+
+    // Override-only means override-only: a frozen copy of the generated file
+    // and a copy of the base both merge clean and both fail the delta.
+    const frozen = agentNamed(data, "frozen-pm");
+    assert.deepEqual(itemsOf(fieldOf(frozen, FIELDS.config)).map((item) => [item.path, item.kind, item.detail]), [["config.delta.yaml", "delta-not-override-only", "generated-marker"]]);
+    assert.equal(fieldOf(frozen, FIELDS.config).state, "fail");
+    assert.equal(frozen.profile.renderer.state, "in-sync", "the renderer still ran and still found the merge in sync");
+    const basecopy = agentNamed(data, "basecopy-pm");
+    assert.deepEqual(itemsOf(fieldOf(basecopy, FIELDS.config)).map((item) => [item.kind, item.detail]), [["delta-not-override-only", "equals-base"]]);
+    assert.equal(textOf(basecopy).includes("fleet-model"), false, "the delta was parsed for equality only; no value reaches the payload");
 
     const nodelta = agentNamed(data, "nodelta-pm");
     assert.deepEqual(kindsOf(fieldOf(nodelta, FIELDS.config)), ["delta-missing"]);
@@ -974,10 +1031,12 @@ try {
     assert.equal(hostNamed(missing, "profile.renderer").state, "error");
     assert.equal(fieldOf(agentNamed(missing, "clean-pm"), FIELDS.config).state, "error");
 
+    // The probe script owns exits 3 and 4; every other status is unavailable.
     for (const [name, body, code] of [
       ["absent", null, "renderer-python-unavailable"],
       ["old", "#!/bin/sh\nexit 3\n", "renderer-python-too-old"],
-      ["noyaml", "#!/bin/sh\nexit 1\n", "renderer-pyyaml-missing"],
+      ["noyaml", "#!/bin/sh\nexit 4\n", "renderer-pyyaml-missing"],
+      ["crashing", "#!/bin/sh\nexit 1\n", "renderer-python-unavailable"],
     ]) {
       const shim = pathShim(name, body);
       const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { PATH: shim }));
@@ -990,14 +1049,38 @@ try {
       assert.equal(itemsOf(config).find((item) => item.kind === "renderer-unavailable").detail, code, name);
       assert.equal(data.probes.find((probe) => probe.kind === "profile" && probe.target === "python3").reason, code, name);
     }
+
+    // A staged-but-uncommitted pin is unstable: nothing is proven and no
+    // renderer probe runs at all.
+    const unstable = makePackageRoot("pkg-unstable", contract, { after: (root, submodule) => {
+      gitOk(submodule, ["commit", "--quiet", "--allow-empty", "-m", "a newer template"]);
+      const newer = gitOk(submodule, ["rev-parse", "HEAD"]);
+      gitOk(root, ["update-index", "--cacheinfo", `160000,${newer},templates/hermes-agent`]);
+    } });
+    const staged = status(cliAt(unstable, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.equal(staged.profile.renderer.source, "renderer-gitlink-unstable");
+    assert.equal(staged.profile.renderer.python, "not-probed");
+    assert.equal(staged.profile.renderer.gitlink, TEMPLATE_HEAD, "the COMMITTED gitlink is reported, not the staged one");
+    assert.equal(hostNamed(staged, "profile.renderer").state, "error");
+    assert.equal(staged.probes.filter((probe) => probe.kind === "profile" && probe.outcome === "ok").length, 0, "zero renderer probes behind an unstable pin");
+    assert.equal(fieldOf(agentNamed(staged, "clean-pm"), FIELDS.config).state, "error");
   });
 
   check("a held profile lock is a bounded renderer-timeout for that profile, and the run still succeeds", () => {
+    const label = "a held profile lock is a bounded renderer-timeout for that profile, and the run still succeeds";
+    requireRenderer(label);
+    if (spawnSync("sh", ["-c", "command -v flock"], { encoding: "utf8" }).status !== 0) skipCase(label, "flock is not on PATH");
     const lock = join(profilesRoot, ".clean-pm.config.lock");
     const holder = spawn("flock", [lock, "sleep", "30"], { detached: true, stdio: "ignore" });
     try {
-      // Give flock a moment to take the lock before the renderer asks for it.
-      spawnSync("sh", ["-c", "sleep 0.3"]);
+      // Wait until the holder ACTUALLY holds the lock: `flock -n` on it fails
+      // only then. A fixed sleep proves nothing on a loaded machine.
+      let held = false;
+      for (let attempt = 0; attempt < 100 && !held; attempt += 1) {
+        held = spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+        if (!held) spawnSync("sh", ["-c", "sleep 0.05"]);
+      }
+      assert.ok(held, "the fixture holder never took the lock");
       const started = Date.now();
       const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
       const elapsed = Date.now() - started;
@@ -1065,6 +1148,7 @@ try {
   });
 
   check("a delta the renderer cannot parse is renderer-failed: exit 1 with no drift block, stderr never read, and the run still succeeds", () => {
+    requireRenderer("a delta the renderer cannot parse is renderer-failed: exit 1 with no drift block, stderr never read, and the run still succeeds");
     const result = cliAt(mainRoot, [...STATUS_ARGS, "--agent", "crash-pm"]);
     assert.equal(result.status, 0, `a renderer crash is one profile's error, never a command failure: ${result.stderr}`);
     const data = status(result);
@@ -1125,7 +1209,15 @@ try {
     expect("pinbad-pm", "pin-malformed");
     expect("pinlink-pm", "pin-symlink", "symlink");
     assert.equal(itemsOf(fieldOf(agentNamed(data, "template-pm"), FIELDS.bank))[0].detail, "bank_id_template", "a generic template never satisfies the pin");
-    assert.deepEqual(data.profile.identity, { bank_ok: data.profile.identity.bank_ok, bank_alias: 2, bank_custom: 1, bank_missing: 2, bank_mismatch: 1 });
+    // EXACT, from the fixture: 31 real profiles, of which two alias, one
+    // custom, two unpinned (template-pm, nopin-pm), one mismatched, two
+    // invalid (pinbad-pm, pinlink-pm), and the rest pinned. The six sum to
+    // `agents.real`.
+    assert.deepEqual(data.profile.identity, { bank_ok: 23, bank_alias: 2, bank_custom: 1, bank_missing: 2, bank_mismatch: 1, bank_invalid: 2 });
+    assert.equal(Object.values(data.profile.identity).reduce((sum, count) => sum + count, 0), data.profile.agents.real, "the bank buckets sum to the real profiles");
+    assert.equal(data.profile.agents.real, 31);
+    assert.equal(agentNamed(data, "pinbad-pm").profile.bank.code, "pin-malformed");
+    assert.equal(agentNamed(data, "alias-pm").profile.bank.code, "bank-alias");
     assert.equal(textOf(data).includes("secret memory"), false, "nothing under memories/ was read");
   });
 
@@ -1144,7 +1236,7 @@ try {
     assert.notEqual(replaced.desired, replaced.observed);
     assert.deepEqual(agent.profile.skills.core_missing, ["33god-projects", "hindsight"]);
     assert.equal(agent.profile.skills.core_present, 4, "the remaining four read present through skills.external_dirs");
-    assert.deepEqual(agent.profile.skills.extra, ["extra-tool"]);
+    assert.deepEqual(agent.profile.skills.extra, ["extra-tool", "extra-tool2"]);
     assert.ok(kindsOf(skills).includes("extra-skill"));
     assert.equal(agent.profile.skills.sources_unresolvable, 1, "the relative external_dirs entry is counted, not resolved");
     assert.equal(textOf(agent).includes("a replaced copy"), false, "no SKILL.md body reaches the payload");
@@ -1153,8 +1245,28 @@ try {
     assert.deepEqual(itemsOf(fieldOf(foreign, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.kind, item.detail]), [["core-foreign", "core-foreign:delonet-dotenv"]]);
     assert.equal(fieldOf(foreign, FIELDS.skills).state, "fail", "identical bytes outside every allowed root never count");
     assert.equal(foreign.profile.skills.core_present, 5);
-    assert.equal(data.profile.skills.core_replaced, 1);
-    assert.ok(data.profile.skills.extras_seen >= 1);
+
+    // The shape 27 of 28 live profiles have: `skills` links into the fleet
+    // home, the optional skill there is listed, and the core still resolves
+    // 6/6 through external_dirs. A link outside every allowed root fails the
+    // entry; a dangling one is dangling.
+    const linked = agentNamed(data, "skills-link-pm");
+    assert.equal(fieldOf(linked, FIELDS.skills).state, "pass", JSON.stringify(fieldOf(linked, FIELDS.skills).items));
+    assert.deepEqual(linked.profile.skills.extra, ["extra-linked"]);
+    assert.equal(linked.profile.skills.core_present, 6);
+    const outsideLink = agentNamed(data, "skills-outside-pm");
+    assert.equal(fieldOf(outsideLink, FIELDS.skills).state, "fail");
+    assert.deepEqual(itemsOf(fieldOf(outsideLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind, item.detail]), [["skills", "core-foreign", "core-foreign:skills"]]);
+    assert.equal(outsideLink.profile.skills.core_present, 6, "the core still resolves through external_dirs; the entry itself is the defect");
+    const danglingLink = agentNamed(data, "skills-dangling-pm");
+    assert.deepEqual(itemsOf(fieldOf(danglingLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind, item.detail]), [["skills", "core-dangling", "core-dangling:skills"]]);
+
+    // EXACT fleet tallies, from the fixture: 31 real profiles, four with a
+    // skills defect (skills-pm, foreign-pm, skills-outside-pm,
+    // skills-dangling-pm); two core skills missing (skills-pm's dangling
+    // hindsight, foreign-pm's foreign delonet-dotenv), one replaced; three
+    // optional skills seen (two on skills-pm, one on skills-link-pm).
+    assert.deepEqual(data.profile.skills, { core_complete: 27, core_missing: 2, core_replaced: 1, extras_seen: 3 });
   });
 
   // -- identity-file shapes ------------------------------------------------------
@@ -1247,6 +1359,7 @@ try {
   });
 
   check("a root whose every extra is declared reads profile.extras pass, and the slice can be healthy", () => {
+    requireRenderer("a root whose every extra is declared reads profile.extras pass, and the slice can be healthy");
     // A SECOND home with one clean agent, the declared gateway profile and one
     // declared intentionally-unmanaged directory: the only way an extra becomes
     // `pass` is a contract classification naming it.
@@ -1265,15 +1378,23 @@ try {
     seedProfile("solo-pm", { root: root2, links: { "SOUL.md": join(repo.runtime, "SOUL.md"), memories: join(repo.runtime, "memories") } });
     seedProfile("fleet-bloodbank-gateway", { root: root2, identity: { name: "fleet-bloodbank-gateway" }, pin: { bank_id: "agent-fleet-bloodbank-gateway" }, skills: null, lock: false });
     seedProfile("keeper", { root: root2, identity: null, pin: null, skills: null, lock: false });
+    // Declared, but for another policy domain: the claim does not reach the profile sweep.
+    seedProfile("elsewhere", { root: root2, identity: null, pin: null, skills: null, lock: false });
     const soloFleet = [{ name: "solo-pm", rowOverrides: {} }];
     writeAgentRegistry(join(fleet2, "agents-registry.yaml"), soloFleet);
     writeProjectRegistry(join(home2, ".config", "pjangler", "projects.yaml"), soloFleet);
     cpSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), join(home2, ".config", "hermes-agent-template", "config.toml"));
     const declared = policyContract((document) => {
-      document.classifications.intentionally_unmanaged.entries = [{
-        id: "keeper-profile", kind: "standalone-profile", owner: "operator", source: "profiles.keeper",
-        lifecycle_state: "kept", rationale: "an operator-run profile the control plane observes and leaves alone", policy_domains: ["profile"],
-      }];
+      document.classifications.intentionally_unmanaged.entries = [
+        {
+          id: "keeper-profile", kind: "standalone-profile", owner: "operator", source: "profiles.keeper",
+          lifecycle_state: "kept", rationale: "an operator-run profile the control plane observes and leaves alone", policy_domains: ["profile"],
+        },
+        {
+          id: "elsewhere-profile", kind: "standalone-profile", owner: "operator", source: "profiles.elsewhere",
+          lifecycle_state: "kept", rationale: "ruled on for systemd only; the profile sweep must not honour it", policy_domains: ["systemd"],
+        },
+      ];
     });
     const root = makePackageRoot("pkg-declared", YAML.stringify(declared, { lineWidth: 0 }));
     const env2 = {
@@ -1282,6 +1403,12 @@ try {
       HERMES_FLEET_ENV: join(fleet2, "no-fleet.env"), HERMES_TEMPLATE_CONFIG: join(home2, ".config", "hermes-agent-template", "config.toml"),
       PJ_PROJECT_REGISTRY: join(home2, ".config", "pjangler", "projects.yaml"),
     };
+    // A claim without `profile` in its policy domains is no claim here.
+    const undeclaredDomain = status(cliAt(root, STATUS_ARGS, env2));
+    assert.equal(hostNamed(undeclaredDomain, "profile.extras").state, "warn");
+    assert.equal((hostNamed(undeclaredDomain, "profile.extras").items ?? []).find((item) => item.path === "elsewhere").class, "unclassified", "a ruling for another policy domain does not reach the profile sweep");
+    rmSync(join(root2, "elsewhere"), { recursive: true, force: true });
+
     const data = status(cliAt(root, STATUS_ARGS, env2));
     const extras = hostNamed(data, "profile.extras");
     assert.equal(extras.state, "pass", JSON.stringify(extras.items));
@@ -1311,21 +1438,229 @@ try {
     assert.equal(after.health.unjustified, 1, "an unjustified host warn counts against proof");
     assert.equal(after.health.verdict, "unproven");
     assert.equal(after.health.proven, false);
+
+    // The blunt instrument: `allowed_warnings` naming profile.extras blankets
+    // every extra. The reading is unchanged; only its justification is.
+    const blanket = policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = declared.classifications.intentionally_unmanaged.entries;
+      document.health_policy.allowed_warnings.push({ rule_id: "profile.extras", reason: "the operator accepts every unregistered entry for now", owner: "suite" });
+    });
+    const blanketRoot = makePackageRoot("pkg-blanket", YAML.stringify(blanket, { lineWidth: 0 }));
+    const lifted = status(cliAt(blanketRoot, STATUS_ARGS, env2));
+    assert.equal(hostNamed(lifted, "profile.extras").state, "warn", "still a warn");
+    assert.equal(hostNamed(lifted, "profile.extras").justification.kind, "allowed_warning");
+    assert.equal(lifted.health.unjustified, 0);
+
+    // A declared `retired` sighting is a retired-candidate that STAYS warn:
+    // the contract has recorded that the entry should go.
+    seedProfile("retiredone", { root: root2, identity: null, pin: null, skills: null, lock: false });
+    const retired = policyContract((document) => {
+      document.classifications.intentionally_unmanaged.entries = declared.classifications.intentionally_unmanaged.entries;
+      document.classifications.retired.entries = [{
+        id: "retiredone-profile", kind: "standalone-profile", owner: "operator", source: "profiles.retiredone",
+        lifecycle_state: "retired", rationale: "superseded; to be removed", policy_domains: ["profile"],
+      }];
+    });
+    const retiredRoot = makePackageRoot("pkg-retired", YAML.stringify(retired, { lineWidth: 0 }));
+    const sighted = status(cliAt(retiredRoot, STATUS_ARGS, env2));
+    const sighting = (hostNamed(sighted, "profile.extras").items ?? []).find((item) => item.path === "retiredone");
+    assert.deepEqual([sighting.class, sighting.detail, sighting.guidance], ["retired-candidate", "classifications.retired.entries[0]", "retirement"]);
+    assert.equal(hostNamed(sighted, "profile.extras").state, "warn", "a declared retired sighting stays warn until the entry is gone");
+
+    // An entry the sweep cannot read is unclassified for manual review, never debris.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      skip("an unreadable extra is unclassified", "running as root, which reads every directory");
+    } else {
+      const sealed = join(root2, "sealed");
+      mkdirSync(join(sealed, "hindsight"), { recursive: true });
+      chmodSync(sealed, 0o000);
+      try {
+        // Direct spawn: the zero-write snapshot cannot walk a directory it may not read.
+        const result = spawnSync(process.execPath, [join(root, "dist", "index.js"), ...STATUS_ARGS], {
+          cwd: workdir, encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...isolation, ...env2 },
+        });
+        const unreadable = (hostNamed(status(result), "profile.extras").items ?? []).find((item) => item.path === "sealed");
+        assert.deepEqual([unreadable.class, unreadable.detail, unreadable.guidance], ["unclassified", "unreadable", "manual-review"]);
+      } finally {
+        chmodSync(sealed, 0o700);
+        rmSync(sealed, { recursive: true, force: true });
+      }
+    }
+  });
+
+  check("a duplicate profile_name across rows gates every claimant ambiguous, and a row with no profile_name is unnamed", () => {
+    // Two rows naming one profile: neither may read it, one probe per directory.
+    const rows = [...AGENTS, { name: "dup-pm", rowOverrides: { profile_name: "clean-pm" } }, { name: "noname-pm", rowOverrides: { profile_name: undefined } }];
+    const agents = writeAgentRegistry(join(temp, "dup-agents.yaml"), rows);
+    const data = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent-registry", agents]));
+    for (const id of ["clean-pm", "dup-pm"]) {
+      const agent = agentNamed(data, id);
+      const path = fieldOf(agent, FIELDS.path);
+      assert.equal(path.state, "fail", id);
+      assert.deepEqual(itemsOf(path).map((item) => [item.kind, item.detail]), [["ambiguous", "ambiguous:duplicate-profile-name"]], id);
+      for (const field of [FIELDS.identity, FIELDS.config, FIELDS.bank, FIELDS.skills]) assert.equal(fieldOf(agent, field).state, "unobserved", `${id} ${field}`);
+      assert.equal(agent.profile.path.code, "ambiguous", id);
+      assert.equal(agent.profile.renderer.state, "unobserved", `${id}: no renderer spawn`);
+    }
+    const probes = data.probes.filter((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/clean-pm"));
+    assert.equal(probes.length, 1, "one probe id per directory, however many rows claim it");
+    assert.deepEqual([probes[0].outcome, probes[0].reason], ["skipped", "ambiguous"]);
+    const unnamed = agentNamed(data, "noname-pm");
+    assert.deepEqual(kindsOf(fieldOf(unnamed, FIELDS.path)), ["unnamed"]);
+    assert.equal(unnamed.profile.path.code, "unnamed");
+    assert.equal(fieldOf(unnamed, FIELDS.config).state, "unobserved");
+  });
+
+  check("the canonical skills directory follows CANONICAL_SKILLS_DIR, then the template config, then the manifest; a lacking projection is one named host finding", () => {
+    // A second projection missing one core skill, named by the template config.
+    // Five of the six project into the SAME skill directories (links, the way
+    // skillex projects), so a profile's own links still resolve to the
+    // canonical realpath; hindsight is simply absent.
+    const partial = join(temp, "partial-skills");
+    mkdirSync(partial, { recursive: true });
+    for (const skill of CORE_SKILLS.filter((name) => name !== "hindsight")) symlinkSync(join(canonicalSkills, skill), join(partial, skill));
+    const config = join(temp, "config-partial.toml");
+    writeFileSync(config, `${readFileSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), "utf8")}canonical_skills_dir = "${partial}"\n`, "utf8");
+    const viaConfig = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { HERMES_TEMPLATE_CONFIG: config }));
+    const core = hostNamed(viaConfig, "profile.skill-core");
+    assert.equal(core.state, "fail");
+    assert.match(core.summary, /lacks 1 core skill\(s\): hindsight/u);
+    assert.match(core.summary, /\(template-config\)/u, "the finding says how the directory was chosen");
+    assert.equal(core.observed, "missing hindsight");
+    assert.equal(core.summary.includes(partial), false, "the directory is shown, never absolute");
+    const agent = agentNamed(viaConfig, "clean-pm");
+    assert.deepEqual(itemsOf(fieldOf(agent, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.kind, item.detail]), [["canonical-missing", "canonical-missing:hindsight"]]);
+    assert.equal(fieldOf(agent, FIELDS.skills).state, "fail", "a fleet defect, not a collection error");
+    assert.deepEqual(agent.profile.skills.core_missing, ["hindsight"]);
+    assert.equal(agent.profile.skills.core_present, 5, "the other five still resolve: the partial projection links into the same skill directories");
+    assert.equal(viaConfig.profile.skills.core_missing, 1);
+    assert.equal(viaConfig.profile.skills.core_complete, 0);
+    // The environment override outranks the template config.
+    const viaEnv = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"], { HERMES_TEMPLATE_CONFIG: config, CANONICAL_SKILLS_DIR: canonicalSkills }));
+    assert.equal(hostNamed(viaEnv, "profile.skill-core").state, "pass");
+    assert.match(hostNamed(viaEnv, "profile.skill-core").summary, /\(env\)/u);
+    assert.equal(fieldOf(agentNamed(viaEnv, "clean-pm"), FIELDS.skills).state, "pass");
+    // And the manifest placeholder is the default.
+    const viaManifest = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.match(hostNamed(viaManifest, "profile.skill-core").summary, /\(manifest\)/u);
+  });
+
+  check("a missing or symlinked fleet base is base-missing on the config field, the renderer probe is skipped, and nothing is checked", () => {
+    for (const [name, shape, detail] of [["home-no-base", "missing", "base-missing"], ["home-link-base", "symlink", "base-symlink"]]) {
+      const alt = makeAltHome(name);
+      const base = join(alt.fleet, "config.yaml");
+      rmSync(base);
+      if (shape === "symlink") symlinkSync(join(fleetHome, "config.yaml"), base);
+      const data = status(cliAt(mainRoot, STATUS_ARGS, alt.env));
+      const config = fieldOf(agentNamed(data, "solo-pm"), FIELDS.config);
+      assert.equal(config.state, "error", name);
+      assert.deepEqual(itemsOf(config).map((item) => [item.path, item.kind, item.detail]), [["config.yaml", "base-missing", detail]], name);
+      assert.equal(agentNamed(data, "solo-pm").profile.renderer.state, "error", name);
+      assert.equal(agentNamed(data, "solo-pm").profile.digests.base, null, name);
+      const probe = data.probes.find((item) => item.kind === "profile" && item.target.endsWith("/profiles/solo-pm"));
+      assert.deepEqual([probe.outcome, probe.reason], ["skipped", detail], name);
+      assert.equal(data.profile.renderer.checked, 0, name);
+      assert.equal(hostNamed(data, "profile.renderer").state, "pass", `${name}: the renderer itself is fine`);
+      assert.equal(fieldOf(agentNamed(data, "solo-pm"), FIELDS.bank).state, "pass", `${name}: the other fields are still read`);
+    }
+  });
+
+  check("a contract whose profile root is not the renderer's is renderer-layout-mismatch on profile.root, with no renderer child", () => {
+    const elsewhere = policyContract((document) => { document.service_model.profile_layout.root = "{HERMES_FLEET_HOME}/agents/{profile_name}"; });
+    const root = makePackageRoot("pkg-layout", YAML.stringify(elsewhere, { lineWidth: 0 }));
+    const data = status(cliAt(root, [...STATUS_ARGS, "--agent", "clean-pm"]));
+    assert.deepEqual(data.profile.root, { state: "error", code: "renderer-layout-mismatch" });
+    assert.equal(hostNamed(data, "profile.root").state, "error");
+    assert.equal(hostNamed(data, "profile.root").observed, "renderer-layout-mismatch");
+    const agent = agentNamed(data, "clean-pm");
+    for (const field of FIELD_ORDER) assert.equal(fieldOf(agent, field).state, "error", field);
+    assert.equal(agent.profile.path.code, "root:renderer-layout-mismatch");
+    const probes = data.probes.filter((probe) => probe.kind === "profile" && !probe.target.endsWith("templates/hermes-agent") && probe.target !== "python3");
+    assert.ok(probes.every((probe) => probe.outcome === "skipped"), `no renderer child behind a mismatched layout: ${JSON.stringify(probes)}`);
+    assert.equal(data.profile.renderer.checked, 0);
+  });
+
+  check("lowered limits prove the counts are taken before every cap: extras, root entries, optional skills, and the items clip", () => {
+    // max_extra_skills 1: skills-pm lists one, sees two; the fleet tally is uncapped.
+    const skillsCap = policyContract((document) => { document.profile_manifest.limits.max_extra_skills = 1; });
+    const capRoot = makePackageRoot("pkg-skills-cap", YAML.stringify(skillsCap, { lineWidth: 0 }));
+    const capped = status(cliAt(capRoot, [...STATUS_ARGS, "--agent", "skills-pm"]));
+    assert.deepEqual(agentNamed(capped, "skills-pm").profile.skills.extra, ["extra-tool"], "listed names are capped");
+    assert.equal(capped.profile.skills.extras_seen, 2, "seen is counted uncapped");
+    assert.equal(kindsOf(fieldOf(agentNamed(capped, "skills-pm"), FIELDS.skills)).filter((kind) => kind === "extra-skill").length, 1);
+
+    // max_root_entries 3: the listing stops at the cap, so no profile can be
+    // proven unambiguous -- every agent is gated, by name -- and the sweep says
+    // it was truncated.
+    const rootCap = policyContract((document) => { document.profile_manifest.limits.max_root_entries = 3; });
+    const rootCapRoot = makePackageRoot("pkg-root-cap", YAML.stringify(rootCap, { lineWidth: 0 }));
+    const truncated = status(cliAt(rootCapRoot, STATUS_ARGS));
+    assert.equal(truncated.profile.extras.truncated, true);
+    for (const agent of truncated.agents) {
+      // A row the earlier gates already refuse (no safe name) never reaches
+      // the collision gate; every other row is refused there, by name.
+      if (agent.profile.path.code === "name-unsafe") continue;
+      assert.equal(agent.profile.path.code, "case-collision", `${agent.agent_id} is gated over a partial listing`);
+      assert.equal(itemsOf(fieldOf(agent, FIELDS.path))[0].detail, "case-collision:unverified", agent.agent_id);
+      assert.equal(agent.profile.renderer.state, "unobserved", `${agent.agent_id}: nothing beneath is read`);
+    }
+    assert.equal(truncated.profile.agents.blocked_at_path, truncated.profile.agents.selected);
+    assert.ok(truncated.truncated.some((note) => note.includes("host[profile.extras]") && note.includes("more than 3 entries")), JSON.stringify(truncated.truncated));
+
+    // FLEET_STATUS_MAX_ITEMS: a root with 105 unregistered entries lists 100,
+    // counts 105, and records the clip.
+    const alt = makeAltHome("home-many-extras");
+    for (let index = 0; index < 105; index += 1) writeFileSync(join(alt.realProfiles, `stray-${String(index).padStart(3, "0")}.txt`), "", "utf8");
+    const many = status(cliAt(mainRoot, STATUS_ARGS, alt.env));
+    const extras = hostNamed(many, "profile.extras");
+    assert.equal((extras.items ?? []).length, MAX_ITEMS);
+    assert.equal(many.profile.extras.entries_total, 105);
+    assert.equal(many.profile.extras.listed, MAX_ITEMS);
+    assert.equal(many.profile.extras.by_class["debris-candidate"], 105, "by_class is counted over every entry before the cap");
+    assert.ok(many.truncated.some((note) => note.startsWith("host[profile.extras].items: 5 of 105 items dropped")), JSON.stringify(many.truncated));
+    assert.equal(many.health.truncated, true);
+  });
+
+  check("every rule-detail pattern the observer compares against matches a literal detail the rule actually emits", () => {
+    // The agreement check reads `hermes.runtime-singleton`'s detail lines by
+    // prefix. Each prefix is pinned here against the rule's own source, so a
+    // reworded detail turns this red instead of silently making the two never
+    // meet.
+    const statusSource = readFileSync(join(ROOT, "src", "fleet", "status.ts"), "utf8");
+    const block = /const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp\[\] = \[([\s\S]*?)\];/u.exec(statusSource);
+    assert.ok(block, "status.ts must declare PROFILE_RULE_DETAIL_PATTERNS");
+    const patterns = [...block[1].matchAll(/\/((?:\\\/|[^\/\n])+)\/u/gu)].map((match) => new RegExp(match[1], "u"));
+    assert.ok(patterns.length >= 9, `expected the nine patterns, parsed ${patterns.length}`);
+    const rules = readFileSync(join(ROOT, "src", "parity", "rules.ts"), "utf8");
+    const auditStart = rules.indexOf('id: "hermes.runtime-singleton",');
+    const audit = rules.slice(auditStart, rules.indexOf("migrate: (ctx, finding) => {", auditStart));
+    const findings = rules.slice(rules.indexOf("function profileConfigFindings("), rules.indexOf("function isDanglingLink("));
+    const literals = [];
+    for (const source of [audit, findings]) {
+      for (const match of source.matchAll(/(?:details|out)\.push\(\s*`([^`]*)`/gu)) literals.push(match[1]);
+    }
+    // `${state}: ...` is the link check; `linkState` returns these three words.
+    const expanded = literals.flatMap((literal) => (literal.startsWith("${state}: ") ? ["missing", "not-a-symlink", "wrong-target"].map((word) => literal.replace("${state}", word)) : [literal]));
+    assert.ok(expanded.length >= 8, `expected the rule's detail literals, found ${expanded.length}`);
+    for (const pattern of patterns) {
+      assert.ok(expanded.some((literal) => pattern.test(literal)), `pattern ${pattern} matches none of the rule's detail literals: ${JSON.stringify(expanded)}`);
+    }
   });
 
   // -- AC7: scoping ------------------------------------------------------------------
 
   check("--agent inspects one profile, never sweeps, and keeps fleet totals; --domain registry spawns zero profile probes", () => {
+    requireRenderer("--agent inspects one profile, never sweeps, and keeps fleet totals; --domain registry spawns zero profile probes");
     const scoped = status(cliAt(mainRoot, [...STATUS_ARGS, "--agent", "clean-pm"]));
     assert.equal(scoped.profile.extras.coverage, "not-swept");
     assert.equal(scoped.profile.extras.reason, "agent-scope");
     assert.equal(scoped.profile.extras.entries_total, 0);
     assert.equal(scoped.host.some((finding) => finding.rule_id === "profile.extras"), false, "no profile.extras host finding in agent scope");
-    assert.deepEqual(scoped.host.map((finding) => finding.rule_id).sort(), ["profile.renderer", "profile.root"]);
+    assert.deepEqual(scoped.host.map((finding) => finding.rule_id).sort(), ["profile.renderer", "profile.root", "profile.skill-core"], "the three machine-level findings, never the sweep");
     assert.deepEqual(scoped.profile.agents, {
       total_registered: REGISTERED, selected: 1, real: 1, blocked_at_path: 0,
       structurally_healthy: 1, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: REGISTERED - 1,
-    });
+    }, `got ${JSON.stringify(scoped.profile.agents)} for ${JSON.stringify(agentNamed(scoped, "clean-pm").profile)}`);
     const profileProbes = scoped.probes.filter((probe) => probe.kind === "profile");
     assert.ok(profileProbes.some((probe) => probe.target.endsWith("/profiles/clean-pm")), "the selected profile was read");
     assert.ok(profileProbes.every((probe) => !probe.target.includes("/profiles/stale-pm")), "no other profile was read");
@@ -1345,9 +1680,12 @@ try {
   // -- AC8: rule agreement under --live ------------------------------------------
 
   check("under --live the observer and hermes.runtime-singleton agree, disagree, or are not compared -- by name", () => {
+    requireRenderer("under --live the observer and hermes.runtime-singleton agree, disagree, or are not compared -- by name");
     const passShim = entry("rule-pass", syntheticReport([SINGLETON_RULE_PASS]));
     const failShim = entry("rule-fail", syntheticReport([SINGLETON_RULE_FAIL]));
     const otherFailShim = entry("rule-other-fail", syntheticReport([SINGLETON_RULE_OTHER_FAIL]));
+    const symlinkShim = entry("rule-symlink", syntheticReport([SINGLETON_RULE_SYMLINK]));
+    const wrongTargetShim = entry("rule-wrong-target", syntheticReport([SINGLETON_RULE_WRONG_TARGET]));
     const live = (agent, shim) => status(cliAt(mainRoot, [...STATUS_ARGS, "--live", "--agent", agent], { PJ_FLEET_CLI_ENTRY: shim }));
 
     const agree = live("clean-pm", passShim);
@@ -1379,14 +1717,53 @@ try {
     // Semantic drift alone is coverage the rule never had: not compared.
     const semantic = live("stale-pm", passShim);
     assert.deepEqual(semantic.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
-    // A gated profile is a partial reading: not compared.
-    const gated = live("symlink-pm", passShim);
-    assert.deepEqual(gated.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+    // A GATED profile is compared on its path alone: the rule reads "profile
+    // dir is a symlink" too, so a rule pass beside it is a disagreement and a
+    // rule fail naming the symlink is agreement -- even though the four
+    // dependents are unobserved.
+    const gatedDisagree = live("symlink-pm", passShim);
+    assert.deepEqual(gatedDisagree.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
+    assert.match(gatedDisagree.findings.find((item) => item.code === "profile-rule-disagreement").detail, /reports pass while the profile observer finds drift/u);
+    assert.equal(fieldOf(agentNamed(gatedDisagree, "symlink-pm"), FIELDS.config).state, "unobserved", "the dependents stay unobserved; only the path was compared");
+    const gatedAgree = live("symlink-pm", symlinkShim);
+    assert.deepEqual(gatedAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
+    // A misowned singleton link is the rule's wrong-target reading.
+    const misownedAgree = live("misowned-pm", wrongTargetShim);
+    assert.deepEqual(misownedAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
+    const misownedDisagree = live("misowned-pm", passShim);
+    assert.deepEqual(misownedDisagree.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
+    // A gate the rule never checks (a case-insensitive twin) is a partial reading: not compared.
+    const twinGated = live("twin-pm", passShim);
+    assert.deepEqual(twinGated.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+  });
+
+  check("a warning HOST rule counts against proof until an allowed_warnings entry lifts it, and never touches healthy", () => {
+    // Story 1.7 widened `health.unjustified` to host findings. A host-scoped
+    // rule for the profile domain that warns, with nothing authorizing it,
+    // flips the verdict to unproven on a clean agent; the same run under a
+    // contract naming the rule in `allowed_warnings` is justified again.
+    const warnShim = entry("rule-host-warn", syntheticReport([SINGLETON_RULE_PASS, PROFILE_WIRING_WARN]));
+    const before = status(cliAt(mainRoot, [...STATUS_ARGS, "--live", "--agent", "clean-pm"], { PJ_FLEET_CLI_ENTRY: warnShim }));
+    const wiring = hostNamed(before, "hermes.profile-wiring");
+    assert.equal(wiring.state, "warn");
+    assert.equal(wiring.justification, null);
+    assert.equal(before.health.unjustified, 1, "the host warn is the one unjustified gap");
+    assert.equal(before.health.verdict, "unproven");
+    const ruled = policyContract((document) => {
+      document.health_policy.allowed_warnings.push({ rule_id: "hermes.profile-wiring", reason: "the shared profile root is wired on purpose", owner: "suite" });
+    });
+    const root = makePackageRoot("pkg-host-warn", YAML.stringify(ruled, { lineWidth: 0 }));
+    const after = status(cliAt(root, [...STATUS_ARGS, "--live", "--agent", "clean-pm"], { PJ_FLEET_CLI_ENTRY: warnShim }));
+    assert.equal(hostNamed(after, "hermes.profile-wiring").state, "warn", "the reading is unchanged");
+    assert.equal(hostNamed(after, "hermes.profile-wiring").justification.kind, "allowed_warning");
+    assert.equal(after.health.unjustified, 0);
+    assert.equal(after.health.healthy, before.health.healthy, "a host warn never touched healthy either way");
   });
 
   // -- exceptions ride the existing axis ----------------------------------------
 
   check("an agent_exceptions entry makes a drifted profile an exception and leaves health.healthy alone", () => {
+    requireRenderer("an agent_exceptions entry makes a drifted profile an exception and leaves health.healthy alone");
     const ruled = policyContract((document) => {
       document.health_policy.agent_exceptions = [
         { domain: "profile", agent_id: "stale-pm", reason: "this profile pins the older base on purpose", owner: "suite" },
@@ -1411,6 +1788,7 @@ try {
   // -- caps, payloads, deadlines -----------------------------------------------------
 
   check("the payload survives a real pipe past 64 KiB, and two runs plus the MCP tool are byte-identical with no secret, body, value or timestamp", () => {
+    requireRenderer("the payload survives a real pipe past 64 KiB, and two runs plus the MCP tool are byte-identical with no secret, body, value or timestamp");
     const before = snapshotIsolated();
     const piped = spawnSync("sh", ["-c", `"$0" "$@" | cat`, process.execPath, join(mainRoot, "dist", "index.js"), ...STATUS_ARGS], {
       cwd: workdir, env: { ...process.env, ...isolation }, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000,
@@ -1508,6 +1886,7 @@ try {
       ["limit-over-ceiling", (document) => { document.profile_manifest.limits.max_file_bytes = 2 * 1024 * 1024; }, /may not exceed this build's ceiling/u],
       ["undeclared-pin-leaf", (document) => { document.profile_manifest.memory.pin_file = "memory/pin.json"; }, /not declared writable by any authority/u],
       ["inert-and-allowed", (document) => { document.profile_manifest.identity.inert_keys.push("role"); }, /already an allowed identity key/u],
+      ["lock-not-ignored", (document) => { document.profile_manifest.extras.ignored_patterns = ["*.tmp"]; }, /must cover renderer\.lock_pattern/u],
     ];
     for (const [name, mutate, hint] of cases) {
       const path = writeContract(name, policyContract(mutate));
@@ -1580,6 +1959,14 @@ try {
     // DW-81 is used twice, so the next free number was verified rather than assumed.
     assert.equal((ledger.match(/^### DW-81:/gmu) ?? []).length, 2, "the ledger's double DW-81 is a known state this suite pins so the next writer counts too");
     assert.match(ledger, /^### DW-90:/mu);
+    assert.match(ledger, /^### DW-95:/mu, "the rollup modelling question is recorded");
+    assert.match(section, /bank_invalid/u);
+    assert.match(section, /profile\.skill-core/u);
+    assert.match(section, /renderer-source-unobserved/u);
+    assert.match(section, /root-ancestor-symlink/u);
+    assert.match(section, /delta-not-override-only/u);
+    assert.match(section, /ambiguous:duplicate-profile-name/u);
+    assert.match(readme.slice(readme.indexOf("`health.unjustified`")), /host findings too/u, "the unjustified definition names host findings");
     const provenance = readFileSync(join(ROOT, "src", "fleet", "provenance.ts"), "utf8");
     assert.equal(provenance.includes("profile.render_generation"), false, "the provenance fact is deleted, not kept beside the observer");
   });
@@ -1602,9 +1989,18 @@ try {
 
     const liveEnv = { ...process.env, NO_COLOR: "1" };
     const porcelainBefore = git(SUBMODULE, ["status", "--porcelain"]).stdout;
+    // The real root, before and after: entry names, types and mtimes. The
+    // renderer's check opens existing lock files and creates none, so nothing
+    // may move.
+    const rootSnapshot = () => readdirSync(realRoot).sort().map((name) => {
+      const stat = lstatSync(join(realRoot, name));
+      return `${name}:${stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : stat.isFile() ? "file" : "other"}:${stat.mtimeMs}`;
+    });
+    const rootBefore = rootSnapshot();
     const result = spawnSync(process.execPath, [CLI, ...STATUS_ARGS], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 180_000, env: liveEnv });
     assert.equal(result.status, 0, `the live fleet must report at exit 0: ${result.stderr}`);
     assert.equal(git(SUBMODULE, ["status", "--porcelain"]).stdout, porcelainBefore, "the submodule worktree is untouched by a live run");
+    assert.deepEqual(rootSnapshot(), rootBefore, "the live profile root is untouched by a live run");
     const data = JSON.parse(result.stdout).data;
     assert.equal(data.profile.agents.total_registered, Object.keys(registered).length);
     assert.equal(data.profile.renderer.source, "ok", `the live renderer must be canonical: ${JSON.stringify(data.profile.renderer)}`);

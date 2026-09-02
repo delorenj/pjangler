@@ -342,6 +342,13 @@ interface RawStore {
   duplicateKeys: string[];
   schemaVersion: number | null;
   top: Record<string, unknown>;
+  /**
+   * Sibling top-level blocks a caller asked for beside the keyed collection,
+   * materialised from the SAME parse. The profile observer reads
+   * `gateways.bloodbank.profile_name` this way rather than opening the
+   * registry a second time.
+   */
+  siblings: Record<string, unknown>;
 }
 
 function readYamlDocument(path: string, label: string): { document: YAML.Document.Parsed; text: string } {
@@ -411,7 +418,7 @@ function countCollectionRows(text: string, collection: string): number | null {
  * The count and the entries come from two independent parses on purpose; see
  * `countCollectionRows`.
  */
-function readKeyedStore(path: string, label: string, collection: string): RawStore {
+function readKeyedStore(path: string, label: string, collection: string, siblingKeys: readonly string[] = []): RawStore {
   // The guards inside `readYamlDocument` -- existence, regular file, size cap --
   // must run BEFORE any read, so the text comes back out of it rather than being
   // read ahead of it. Reading first turned a missing registry into a raw ENOENT,
@@ -457,11 +464,13 @@ function readKeyedStore(path: string, label: string, collection: string): RawSto
 
   let top: Record<string, unknown> = {};
   let schemaVersion: number | null = null;
+  const siblings: Record<string, unknown> = {};
   try {
     const tree = document.toJS() as unknown;
     if (isRecord(tree)) {
       top = tree;
       schemaVersion = typeof tree.schema_version === "number" ? tree.schema_version : null;
+      for (const key of siblingKeys) if (Object.prototype.hasOwnProperty.call(tree, key)) siblings[key] = tree[key];
     }
   } catch {
     // An alias bomb materialises only here. The per-entry salvage above already
@@ -480,28 +489,19 @@ function readKeyedStore(path: string, label: string, collection: string): RawSto
     duplicateKeys: [...seen].filter(([, count]) => count > 1).map(([key]) => key).sort((a, b) => (a < b ? -1 : 1)),
     schemaVersion,
     top,
+    siblings,
   };
 }
 
+/** The agent rows, plus the fleet-shared `gateways` block from the same parse. */
 export function readAgentRegistryRaw(path: string): RawStore {
-  return readKeyedStore(path, "Hermes agent registry", "agents");
+  return readKeyedStore(path, "Hermes agent registry", "agents", ["gateways"]);
 }
 
 export function readProjectRegistryRaw(path: string): RawStore {
   return readKeyedStore(path, "PJangler project registry", "projects");
 }
 
-/**
- * The agent registry's fleet-shared `gateways:` block, raw, keyed by gateway id.
- *
- * Read by the profile observer (story 1.7) for `gateways.bloodbank.profile_name`,
- * the one registry value that can make a profile-root entry an approved
- * managed exception. The same tolerant reader as the agent rows, so a registry
- * without the block reads as `collection: "missing"` rather than throwing.
- */
-export function readAgentRegistryGatewaysRaw(path: string): RawStore {
-  return readKeyedStore(path, "Hermes agent registry", "gateways");
-}
 
 // ---------------------------------------------------------------------------
 // Store resolution
@@ -656,11 +656,23 @@ function addFinding(ctx: InventoryContext, finding: FleetInventoryFinding): void
  * opened, so the alternative was a second copy of the substitution -- and two
  * copies of a contract-derived path are two paths.
  */
+/**
+ * The fleet home: `HERMES_FLEET_HOME`, else `<home>/.hermes`.
+ *
+ * ONE function, shared by the inventory's profile layout and the profile
+ * observer (story 1.7), so the two can never disagree about which directory
+ * the renderer reads. A `~` or relative value is kept as written; expanding
+ * it is a separate, deferred decision.
+ */
+export function resolveFleetHome(env: NodeJS.ProcessEnv, home: string): string {
+  return env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes");
+}
+
 export function resolveProfileLayout(contract: FleetContract, env: NodeJS.ProcessEnv, home: string): { root: string | null; template: string | null } {
   const layout = contract.service_model?.profile_layout;
   const raw = isRecord(layout) ? nonEmptyString(layout.root) : null;
   if (raw === null) return { root: null, template: null };
-  const fleetHome = env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes");
+  const fleetHome = resolveFleetHome(env, home);
   const template = raw.replaceAll("{HERMES_FLEET_HOME}", fleetHome);
   const marker = template.indexOf("{profile_name}");
   if (marker < 0) return { root: null, template: null };

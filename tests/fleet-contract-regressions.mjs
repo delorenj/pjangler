@@ -1428,6 +1428,9 @@ try {
   profileRejects("a pin file under a leaf no authority declares", (manifest) => {
     manifest.setIn(["memory", "pin_file"], "memory/pin.json");
   }, "profile_manifest.memory.pin_file", /not declared writable by any authority/u);
+  profileRejects("an ignore list that does not cover the renderer's lock pattern", (manifest) => {
+    manifest.setIn(["extras", "ignored_patterns"], ["*.tmp"]);
+  }, "profile_manifest.extras.ignored_patterns", /must cover renderer\.lock_pattern/u);
 
   check("profile_manifest: a schema-3 contract with no manifest still loads", () => {
     // OPTIONAL, and that is load-bearing: a contract that predates the block is

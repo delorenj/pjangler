@@ -73,9 +73,9 @@ import {
   buildAuthorityIndex,
   collectFleetInventory,
   matchException,
-  readAgentRegistryGatewaysRaw,
   readAgentRegistryRaw,
   readProjectRegistryRaw,
+  resolveFleetHome,
   resolveInventoryStores,
   resolveProfileLayout,
   type FleetAuthorityIndex,
@@ -134,6 +134,7 @@ import {
   type FleetStatusTotals,
   type FleetStatusTransition,
 } from "./types";
+import { resolveTemplateConfigPath } from "../project/boardUrl";
 import { resolvePjanglerRoot } from "../project/index";
 import { recipeRegistry } from "../recipes/catalog";
 
@@ -401,6 +402,7 @@ const SOURCE_PROFILE = "fleet-profile";
 const PROFILE_ROOT_RULE_ID = "profile.root";
 const PROFILE_RENDERER_RULE_ID = "profile.renderer";
 const PROFILE_EXTRAS_RULE_ID = "profile.extras";
+const PROFILE_SKILL_CORE_RULE_ID = "profile.skill-core";
 
 /**
  * The five fields the profile observer reports on, as `profiles.{profile_name}`
@@ -420,24 +422,31 @@ const PROFILE_FIELD_SKILLS = "profiles.{profile_name}.skills";
  * The subset of the profile the `hermes.runtime-singleton` recipe rule ALSO
  * reads, so the two can be checked for agreement under `--live`.
  *
- * The rule checks the profile directory is not a symlink, `config.yaml` is a
- * real rendered file, `config.delta.yaml` is a real file, and the bank pin is
- * present and exact. It parses no config, reads no identity file and no skill,
- * so semantic drift, identity and skill findings are coverage it never had --
- * an observer finding there is not a disagreement. The regexes are the rule's
- * own detail lines (`src/parity/rules.ts`, `profileConfigFindings`).
+ * The rule checks the profile directory exists and is not a symlink, each
+ * singleton link points at its runtime target, `config.yaml` is a real
+ * rendered file, `config.delta.yaml` is a real file, and the bank pin is
+ * present and exact. It parses no config, reads no identity file and no
+ * skill, so semantic drift, identity and skill findings are coverage it
+ * never had -- an observer finding there is not a disagreement. The patterns
+ * are anchored on the rule's OWN literal detail prefixes (`src/parity/rules.ts`,
+ * the `hermes.runtime-singleton` audit and `profileConfigFindings`), and the
+ * suite pins each against that source so a reworded detail goes red.
  */
 const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
-  /config\.yaml is a symlink/u,
-  /not a rendered artifact/u,
-  /profile config missing/u,
-  /config\.delta\.yaml missing/u,
-  /must be a real file/u,
-  /identity-memory/u,
-  /profile dir is a symlink/u,
+  /^profile dir missing: /u,
+  /^profile dir is a symlink \(must be a real dir\): /u,
+  /^wrong-target: /u,
+  /^profile config missing /u,
+  /^config\.yaml is a symlink /u,
+  /^config\.yaml is not a rendered artifact /u,
+  /^config\.delta\.yaml missing /u,
+  /^config\.delta\.yaml must be a real file/u,
+  /^identity-memory /u,
 ];
+/** Path-gate kinds the rule also sees: it reports a missing or symlinked profile directory and a wrong-target singleton link. */
+const PROFILE_RULE_COVERED_GATE_KINDS: ReadonlySet<string> = new Set(["symlink", "missing", "not-a-directory"]);
 const PROFILE_RULE_COVERED_KINDS: ReadonlySet<string> = new Set([
-  "symlink", "generated-symlink", "generated-missing", "marker-missing", "delta-missing", "delta-symlink",
+  "misowned-link", "generated-symlink", "generated-missing", "marker-missing", "delta-missing", "delta-symlink",
   "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
 ]);
 
@@ -1586,6 +1595,7 @@ function observeFromProfile(ctx: FleetStatusContext, input: ProfileObservationIn
         observed: result.bank.bankId === null ? null : bounded(result.bank.bankId, 64),
         expected: result.bank.expectedBank === null ? null : bounded(result.bank.expectedBank, 64),
         state: result.bank.state,
+        code: result.bank.code === null ? null : bounded(result.bank.code, 64),
       },
       skills: {
         state: result.skills.state,
@@ -1615,23 +1625,38 @@ function profileRuleVerdict(rule: Record<string, unknown> | undefined): "pass" |
   return details.some((line) => PROFILE_RULE_DETAIL_PATTERNS.some((pattern) => pattern.test(line))) ? "fail" : null;
 }
 
-/** Whether the profile observer found drift the rule would also have seen. Null when the shared subset was not fully read. */
+/**
+ * Whether the profile observer found drift the rule would also have seen.
+ * Null when the shared subset was not fully read.
+ *
+ * The PATH aspect is compared on its own, even when the four dependents are
+ * `unobserved`: a symlinked or missing profile directory is exactly the
+ * reading the rule's "profile dir is a symlink" / "profile dir missing"
+ * details carry, so a gated profile against a rule `pass` is a disagreement,
+ * not a partial reading. A gate the rule never checks (`name-unsafe`,
+ * `case-collision`, `ambiguous`, `unnamed`, `unreadable`, a root error) is a
+ * partial reading and is not compared.
+ */
 function profileObserverDrift(result: FleetProfileAgentResult | undefined): boolean | null {
   if (result === undefined) return null;
-  // The rule reads the path, the two config files and the pin. An `error` or
-  // an `unobserved` on any of those is a partial reading, and a verdict over a
-  // partial reading is not one to hold the rule against.
-  const shared = [result.path, result.config, result.bank];
+  if (result.path.state === "error") return null;
+  const gateKinds = result.path.items.map((item) => item.kind);
+  if (gateKinds.some((kind) => PROFILE_RULE_COVERED_GATE_KINDS.has(kind))) return true;
+  if (result.path.items.some((item) => item.kind === "misowned-link")) return true;
+  // The rule reads the two config files and the pin. An `error` or an
+  // `unobserved` on either is a partial reading, and a verdict over a partial
+  // reading is not one to hold the rule against.
+  const shared = [result.config, result.bank];
   if (shared.some((aspect) => aspect.state === "error" || aspect.state === "unobserved")) return null;
   const subsetDrift = shared.some((aspect) => aspect.items.some((item) => PROFILE_RULE_COVERED_KINDS.has(item.kind)));
   if (subsetDrift) return true;
-  // Drift the rule never reads -- semantic drift the renderer found, an
-  // identity-file defect, a skill-core defect -- is not "no drift" either: a
-  // rule `pass` beside it is coverage the rule never had, and holding the two
-  // against each other would report agreement about a thing one side never
-  // looked at. Not compared.
-  const otherDrift = result.identity.state === "fail" || result.skills.state === "fail"
-    || result.config.items.some((item) => item.kind === "semantic-drift" || item.kind === "unparsed");
+  // Drift the rule never reads -- semantic drift the renderer found, a
+  // non-override-only delta, an identity-file defect, a skill-core defect, an
+  // unverifiable link -- is not "no drift" either: a rule `pass` beside it is
+  // coverage the rule never had, and holding the two against each other would
+  // report agreement about a thing one side never looked at. Not compared.
+  const otherDrift = result.identity.state === "fail" || result.skills.state === "fail" || result.path.state === "warn"
+    || result.config.items.some((item) => item.kind === "semantic-drift" || item.kind === "delta-not-override-only");
   return otherDrift ? null : false;
 }
 
@@ -2066,6 +2091,11 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
   // one profile against a case-insensitive twin.
   const profileNameByAgent = new Map<string, string | null>();
   const displayNameByAgent = new Map<string, string | null>();
+  // The profile observer's role directory: the row's, else the canonical
+  // default `<project_path>/agents/hermes/<role>` exactly as the scaffold
+  // observer resolves it -- held apart from `roleDirByAgent`, which the
+  // scaffold observer reads to report `role_dir_source`.
+  const profileRoleDirByAgent = new Map<string, string | null>();
   for (const entry of agentRaw.entries) {
     const raw = isRecord(entry.value) ? entry.value : {};
     if (!profileNameByAgent.has(entry.key)) {
@@ -2077,8 +2107,18 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     if (declared !== null) repoByAgent.set(entry.key, resolve(expandHome(declared, home)));
     const declaredRoleDir = nonEmptyString(raw.role_dir);
     roleDirByAgent.set(entry.key, declaredRoleDir === null ? null : expandHome(declaredRoleDir, home));
+    const role = nonEmptyString(raw.role);
+    const projectPath = declared === null ? null : resolve(expandHome(declared, home));
+    profileRoleDirByAgent.set(entry.key, declaredRoleDir !== null
+      ? (isAbsolute(expandHome(declaredRoleDir, home)) ? resolve(expandHome(declaredRoleDir, home)) : projectPath === null ? null : resolve(projectPath, declaredRoleDir))
+      : projectPath !== null && role !== null && role !== "." && role !== ".." && !role.includes("/") ? join(projectPath, "agents", "hermes", role) : null);
     rawRowByAgent.set(entry.key, raw);
   }
+  // A profile name more than one row claims is ambiguous for EVERY row that
+  // claims it: which agent owns the directory cannot be decided, so none reads it.
+  const profileNameClaims = new Map<string, number>();
+  for (const name of profileNameByAgent.values()) if (name !== null) profileNameClaims.set(name, (profileNameClaims.get(name) ?? 0) + 1);
+  const duplicateProfileNames = new Set([...profileNameClaims.entries()].filter(([, count]) => count > 1).map(([name]) => name));
 
   const policy = readHealthPolicy(contract);
   // The manifest is read only when the domain it feeds is selected: a
@@ -2321,27 +2361,31 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     throwIfCancelled(runContext);
     const layout = resolveProfileLayout(contract, env, home);
     const profileLayout = isRecord(contract.service_model?.profile_layout) ? contract.service_model.profile_layout : {};
-    const gateways = readAgentRegistryGatewaysRaw(stores.agents.inspectedPath);
-    const bloodbank = gateways.entries.find((entry) => entry.key === "bloodbank");
+    // The fleet-shared gateways block, from the SAME parse the agent rows came
+    // from: never a second read of the registry.
+    const gateways = isRecord(agentRaw.siblings.gateways) ? agentRaw.siblings.gateways : {};
+    const bloodbank = isRecord(gateways.bloodbank) ? gateways.bloodbank : null;
     profileHealth = await collectProfileHealth({
       run: runContext,
       pjanglerRoot: resolvePjanglerRoot(),
       home,
       env,
-      fleetHome: env.HERMES_FLEET_HOME?.trim() || join(home, ".hermes"),
+      fleetHome: resolveFleetHome(env, home),
       root: layout.root,
       generatedMarker: nonEmptyString(profileLayout.generated_marker) ?? "GENERATED FILE -- DO NOT EDIT",
       generatedFile: nonEmptyString(profileLayout.generated_file) ?? "config.yaml",
       overrideFile: nonEmptyString(profileLayout.override_file) ?? "config.delta.yaml",
+      templateConfigPath: resolveTemplateConfigPath(env, home),
       manifest: profileManifest,
       classifications: contract.classifications,
-      gatewayProfileName: bloodbank && isRecord(bloodbank.value) ? nonEmptyString(bloodbank.value.profile_name) : null,
+      gatewayProfileName: bloodbank === null ? null : nonEmptyString(bloodbank.profile_name),
       registeredProfileNames: [...profileNameByAgent.values()].filter((name): name is string => name !== null),
+      duplicateProfileNames,
       agents: agentIds.map((agentId) => ({
         agentId,
         profileName: profileNameByAgent.get(agentId) ?? null,
         displayName: displayNameByAgent.get(agentId) ?? null,
-        roleDir: roleDirByAgent.get(agentId) ?? null,
+        roleDir: profileRoleDirByAgent.get(agentId) ?? null,
       })),
       // Fleet scope only: an `--agent` run inspects one registered profile and
       // never enumerates the root for extras.
@@ -2357,7 +2401,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     real: 0, blocked_at_path: 0, structurally_healthy: 0, drifted: 0, incomplete: 0, exception_authorized: 0, unobserved: 0,
   };
   const profileRenderer = { checked: 0, in_sync: 0, drifted: 0, failed: 0, timeout: 0 };
-  const profileIdentity = { bank_ok: 0, bank_alias: 0, bank_custom: 0, bank_missing: 0, bank_mismatch: 0 };
+  const profileIdentity = { bank_ok: 0, bank_alias: 0, bank_custom: 0, bank_missing: 0, bank_mismatch: 0, bank_invalid: 0 };
   const profileSkills = { core_complete: 0, core_missing: 0, core_replaced: 0, extras_seen: 0 };
   const profileRuleAgreement = { compared: 0, agree: 0, disagree: 0, not_compared: 0 };
 
@@ -2607,6 +2651,23 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       rendererOk ? "ok" : profileHealth.renderer.source !== "ok" ? profileHealth.renderer.source : profileHealth.renderer.python,
       "the renderer and its lock helper in the submodule worktree equal the bytes at the committed gitlink, and a python3 with PyYAML can run them",
     );
+    // The canonical projection as ONE named cause: twenty-six identical
+    // per-agent `canonical-missing` items have one host fact behind them.
+    hostFinding(
+      PROFILE_SKILL_CORE_RULE_ID,
+      profileHealth.skillCore.missing.length === 0 ? "pass" : "fail",
+      PROFILE_FIELD_SKILLS,
+      profileHealth.skillCore.missing.length === 0
+        ? `the canonical skill projection at ${profileHealth.skillCore.canonicalDir} (${profileHealth.skillCore.source}) holds every core skill`
+        : `the canonical skill projection at ${profileHealth.skillCore.canonicalDir} (${profileHealth.skillCore.source}) lacks ${profileHealth.skillCore.missing.length} core skill(s): ${profileHealth.skillCore.missing.join(", ")}; every real profile reads them missing`,
+      [
+        `canonical ${profileHealth.skillCore.canonicalDir}`,
+        `resolved from ${profileHealth.skillCore.source}`,
+        ...profileHealth.skillCore.missing.map((skill) => `canonical-missing:${skill}`),
+      ],
+      profileHealth.skillCore.missing.length === 0 ? "ok" : `missing ${profileHealth.skillCore.missing.join(", ")}`,
+      "every core skill the contract requires present as a readable SKILL.md in the canonical projection",
+    );
     if (profileHealth.extras !== null) {
       const all = profileHealth.extras.items;
       const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
@@ -2707,12 +2768,13 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
     let profileSummary: FleetStatusAgentProfile | null = null;
     const profileResult = profileHealth?.agents.get(agentId);
     const profileObserved = profileManifest !== null && profileResult !== undefined;
+    const profileException = domainSet.has("profile") ? profileExceptionFor(agentId) : null;
     if (domainSet.has("profile")) {
       const profile = observeFromProfile(ctx, {
         agentId,
         result: profileResult,
         manifestDeclared: profileManifest !== null,
-        exception: profileExceptionFor(agentId),
+        exception: profileException,
         notes: agentNotes,
       });
       own.push(...profile.observations);
@@ -2720,7 +2782,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
       if (!profileObserved) profileCounts.unobserved += 1;
       else {
         const aspects = [profileResult.path, profileResult.identity, profileResult.config, profileResult.bank, profileResult.skills];
-        const gateFailed = profileResult.path.state !== "pass" && profileResult.path.code !== "misowned-link";
+        const gateFailed = profileResult.path.state !== "pass" && profileResult.path.code !== "misowned-link" && profileResult.path.code !== "unverifiable";
         if (gateFailed) {
           if (profileResult.path.state === "fail") profileCounts.blocked_at_path += 1;
           else profileCounts.incomplete += 1;
@@ -2728,7 +2790,7 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
           profileCounts.real += 1;
           if (aspects.some((aspect) => aspect.state === "error" || aspect.state === "unobserved")) profileCounts.incomplete += 1;
           else if (aspects.some((aspect) => aspect.state === "fail")) {
-            if (profileExceptionFor(agentId) !== null) profileCounts.exception_authorized += 1;
+            if (profileException !== null) profileCounts.exception_authorized += 1;
             else profileCounts.drifted += 1;
           } else profileCounts.structurally_healthy += 1;
         }
@@ -2739,19 +2801,28 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
         }
         if (profileResult.config.items.some((item) => item.kind === "renderer-failed")) { profileRenderer.checked += 1; profileRenderer.failed += 1; }
         if (profileResult.config.items.some((item) => item.kind === "renderer-timeout")) { profileRenderer.checked += 1; profileRenderer.timeout += 1; }
-        if (profileResult.bank.state === "pass") profileIdentity.bank_ok += 1;
-        for (const item of profileResult.bank.items) {
-          if (item.kind === "bank-alias") profileIdentity.bank_alias += 1;
-          else if (item.kind === "bank-custom") profileIdentity.bank_custom += 1;
-          else if (item.kind === "bank-missing" || item.kind === "pin-missing") profileIdentity.bank_missing += 1;
-          else if (item.kind === "bank-mismatch") profileIdentity.bank_mismatch += 1;
+        // ONE bucket per real profile, so the six sum to `real`: the bank
+        // field is either a pass or exactly one item, and the gate above
+        // decided the profile was read at all.
+        if (!gateFailed) {
+          const bankCode = profileResult.bank.code;
+          if (profileResult.bank.state === "pass") profileIdentity.bank_ok += 1;
+          else if (bankCode === "bank-alias") profileIdentity.bank_alias += 1;
+          else if (bankCode === "bank-custom") profileIdentity.bank_custom += 1;
+          else if (bankCode === "bank-missing" || bankCode === "pin-missing") profileIdentity.bank_missing += 1;
+          else if (bankCode === "bank-mismatch") profileIdentity.bank_mismatch += 1;
+          else profileIdentity.bank_invalid += 1;
         }
-        if (profileResult.skills.state === "pass" && profileResult.skills.coreMissing.length === 0 && profileResult.path.state !== "unobserved") profileSkills.core_complete += 1;
-        // A core skill absent from the canonical projection is missing for
-        // this profile too: nothing holds what it would resolve.
-        profileSkills.core_missing += profileResult.skills.items.filter((item) => item.kind === "core-missing" || item.kind === "canonical-missing").length;
+        if (profileResult.skills.state === "pass" && profileResult.skills.coreMissing.length === 0 && !gateFailed) profileSkills.core_complete += 1;
+        // Every way a core skill can be absent for this profile: not there,
+        // dangling, foreign, or absent from the canonical projection itself
+        // (nothing holds what it would resolve). Replaced is its own count.
+        profileSkills.core_missing += profileResult.skills.items.filter((item) => (
+          item.path.startsWith("skills/")
+          && (item.kind === "core-missing" || item.kind === "core-dangling" || item.kind === "core-foreign" || item.kind === "canonical-missing")
+        )).length;
         profileSkills.core_replaced += profileResult.skills.items.filter((item) => item.kind === "core-replaced").length;
-        profileSkills.extras_seen += profileResult.skills.extra.length;
+        profileSkills.extras_seen += profileResult.skills.extraTotal;
       }
     }
 

@@ -57,7 +57,6 @@ import {
   collectFleetInventory,
   readAgentRegistryRaw,
   resolveInventoryStores,
-  resolveProfileLayout,
   type FleetAuthorityIndex,
   type FleetInventoryOptions,
 } from "./inventory";
@@ -982,7 +981,6 @@ export async function collectFleetProvenance(options: FleetProvenanceOptions): P
   const sources = resolveProvenanceSources(options);
   const pin = readConfiguredPin(sources, home);
   const authority = buildAuthorityIndex(contract);
-  const layout = resolveProfileLayout(contract, env, home);
   const root = resolvePjanglerRoot();
 
   const ctx: ProvenanceContext = {

@@ -990,6 +990,12 @@ function validateHealthPolicy(policy: Record<string, unknown>): FleetDiagnostic[
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const RENDER_INPUT_NAME = /^[a-z_][a-z0-9_]*$/u;
 
+/** One root-entry glob (`*` and `?` only) as a regular expression over a whole name. */
+function segmentGlob(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*").replace(/\?/gu, ".");
+  return new RegExp(`^${escaped}$`, "u");
+}
+
 /** A relative path that stays inside the tree it is relative to: no leading `/`, no `.`/`..` segment, no blank segment. */
 function relativeInside(value: unknown): value is string {
   if (typeof value !== "string" || value === "" || value.startsWith("/") || value.includes("\\")) return false;
@@ -1292,6 +1298,16 @@ function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnost
     const ignored = uniqueList(extras.ignored_patterns, "profile_manifest.extras.ignored_patterns", pattern);
     if (ignored.length === 0) fail("profile_manifest.extras.ignored_patterns", "ignored_patterns must name the renderer's lock entries, or the observer's own footprint would be classified");
     uniqueList(extras.backup_patterns, "profile_manifest.extras.backup_patterns", pattern);
+    // The renderer's lock entries are the observer's own footprint. The sweep
+    // excludes `renderer.lock_pattern` itself, and the declared ignore list
+    // must cover it too, so the two cannot drift apart into a footprint that
+    // is skipped by one rule and classified by the other.
+    const lockPattern = isRecord(renderer) && typeof renderer.lock_pattern === "string" ? renderer.lock_pattern : null;
+    if (lockPattern !== null && ignored.length > 0) {
+      const sample = lockPattern.replaceAll("{profile_name}", "sample-profile");
+      const covered = ignored.some((glob) => segmentGlob(glob.replaceAll("{profile_name}", "*")).test(sample));
+      if (!covered) fail("profile_manifest.extras.ignored_patterns", `must cover renderer.lock_pattern (${lockPattern}); the renderer's lock entries would otherwise be classified as extras`);
+    }
   }
 
   // -- limits -----------------------------------------------------------------

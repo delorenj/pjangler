@@ -159,10 +159,14 @@ authorities:
       - HERMES_FLEET_HOME
     notes:
       - >-
-        The parts of a generated profile the template's provisioning scripts
-        write once and the renderer never touches: the identity file, the
-        explicit Hindsight bank pin, and the skill entries (six core skills
-        symlinked from the canonical projection, one copied by bytes).
+        The parts of a generated profile the renderer never touches, and who
+        really writes them: Hermes' own profile tooling
+        (`hermes_cli/profiles.py`, `write_profile_meta`) writes `profile.yaml`;
+        the template's provisioning step 10 (`10-hermes-profile.sh`) writes the
+        explicit Hindsight bank pin and the skill entries (six core skills
+        symlinked from the canonical projection, one copied by bytes) and never
+        touches `profile.yaml`. One owner block, two writers, both outside the
+        renderer.
       - >-
         Held apart from generated_profile_inputs so the renderer's three
         rewritten leaves and the provisioner's three written leaves cannot be

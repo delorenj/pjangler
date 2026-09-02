@@ -891,7 +891,9 @@ function severityColor(severity: FleetStatusSeverity): (value: string | number) 
 }
 
 /** Item kinds that are imperfections rather than failures: painted yellow, not red. */
-const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set(["wrong-mode", "unexpected-owned", "unknown-key", "bank-alias"]);
+const REPORT_SOFT_ITEM_KINDS: ReadonlySet<string> = new Set(["wrong-mode", "unexpected-owned", "unknown-key", "unverifiable"]);
+/** Bank codes that mean the pin file exists but cannot be read as a pin. Printed `bank invalid`, never `unpinned`. */
+const REPORT_BANK_INVALID_CODES: ReadonlySet<string> = new Set(["pin-symlink", "pin-malformed", "too-large"]);
 /** Item kinds that are information beside a pass: painted dim. */
 const REPORT_INFO_ITEM_KINDS: ReadonlySet<string> = new Set(["inert-config-block", "extra-skill", "source-unresolvable"]);
 
@@ -1004,7 +1006,11 @@ function agentLine(agent: FleetStatusAgent, width: number, domains: readonly Fle
     const renderer = profile.renderer.state;
     const cells = [
       profile.path.state === "pass" ? dim(`profile ${renderer}`) : red(`profile ${profile.path.code}`),
-      profile.bank.state === "pass" ? dim("bank ok") : profile.bank.state === "unobserved" ? dim("bank unobserved") : red(`bank ${profile.bank.observed ?? "unpinned"}`),
+      profile.bank.state === "pass"
+        ? dim("bank ok")
+        : profile.bank.state === "unobserved" || profile.bank.state === "error"
+          ? dim(`bank ${profile.bank.state}`)
+          : red(`bank ${profile.bank.observed ?? (REPORT_BANK_INVALID_CODES.has(profile.bank.code ?? "") ? "invalid" : "unpinned")}`),
       profile.skills.state === "pass"
         ? dim(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`)
         : profile.skills.state === "unobserved" ? dim("skills unobserved") : red(`skills ${profile.skills.core_present}/${profile.skills.core_present + profile.skills.core_missing.length}`),
@@ -1142,8 +1148,8 @@ export function formatFleetStatusReport(status: FleetStatus): string {
         profile.renderer.drifted ? red(`${profile.renderer.drifted} drifted`) : dim("0 drifted"),
         profile.renderer.failed || profile.renderer.timeout ? red(`${profile.renderer.failed} failed, ${profile.renderer.timeout} timed out`) : dim("0 failed"),
         dim(`bank ok ${profile.identity.bank_ok}`),
-        profile.identity.bank_alias || profile.identity.bank_custom || profile.identity.bank_missing || profile.identity.bank_mismatch
-          ? red(`bank ${profile.identity.bank_alias} alias, ${profile.identity.bank_custom} custom, ${profile.identity.bank_missing} missing, ${profile.identity.bank_mismatch} mismatch`)
+        profile.identity.bank_alias || profile.identity.bank_custom || profile.identity.bank_missing || profile.identity.bank_mismatch || profile.identity.bank_invalid
+          ? red(`bank ${profile.identity.bank_alias} alias, ${profile.identity.bank_custom} custom, ${profile.identity.bank_missing} missing, ${profile.identity.bank_mismatch} mismatch, ${profile.identity.bank_invalid} invalid`)
           : dim("bank 0 wrong"),
         dim(`skill core complete ${profile.skills.core_complete}`),
       ])}`);
