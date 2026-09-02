@@ -2,7 +2,7 @@
 title: 'Story 1.7: Prove Generated Profile Health and Classify Extras'
 type: 'feature'
 created: '2026-09-02'
-status: 'done'
+status: 'in-progress'
 baseline_revision: 'c93503709badcd13a9f0ec14174101f15cfa3620'
 review_loop_iteration: 0
 followup_review_recommended: false

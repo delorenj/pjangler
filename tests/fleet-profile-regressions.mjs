@@ -334,6 +334,10 @@ function seedFleet() {
   repoFor("gensym-pm"); seedProfile("gensym-pm", { links: ownLinks("gensym-pm"), generated: "none" }); symlinkSync(join(fleetHome, "config.yaml"), join(profilesRoot, "gensym-pm", "config.yaml")); register("gensym-pm");
   repoFor("marker-pm"); seedProfile("marker-pm", { links: ownLinks("marker-pm"), generated: YAML.stringify(deepMerge(baseConfig(), {})) }); register("marker-pm");
   repoFor("nodelta-pm"); seedProfile("nodelta-pm", { links: ownLinks("nodelta-pm"), delta: null }); register("nodelta-pm");
+  // A delta the renderer's PyYAML cannot parse: both files are regular, so the
+  // observer spawns the check, and the renderer exits 1 with a FATAL on stderr
+  // and no drift block on stdout.
+  repoFor("crash-pm"); seedProfile("crash-pm", { links: ownLinks("crash-pm"), deltaText: "model: {unterminated\n" }); register("crash-pm");
 
   // -- the bank pin -------------------------------------------------------------
   repoFor("alias-pm"); seedProfile("alias-pm", { links: ownLinks("alias-pm"), pin: { bank_id: "agent-Alias-pm" } }); register("alias-pm");
@@ -729,6 +733,40 @@ function pathShim(name, python3Body) {
   return dir;
 }
 
+/**
+ * A SECOND home with one clean registered profile, so a case can put the
+ * fleet home or the profile root behind a symlink without touching the main
+ * fixture. The real directories live beside the link; the base, the canonical
+ * projection (shared with the main fixture) and the registries are all there.
+ */
+function makeAltHome(name, { hermesIsLink = false, profilesIsLink = false } = {}) {
+  const home = join(temp, name);
+  const realFleet = hermesIsLink ? join(home, "real-hermes") : join(home, ".hermes");
+  const realProfiles = profilesIsLink ? join(realFleet, "real-profiles") : join(realFleet, "profiles");
+  mkdirSync(realProfiles, { recursive: true });
+  mkdirSync(join(home, ".config", "pjangler"), { recursive: true });
+  mkdirSync(join(home, ".config", "hermes-agent-template"), { recursive: true });
+  mkdirSync(join(home, ".agents"), { recursive: true });
+  symlinkSync(canonicalSkills, join(home, ".agents", "skills"));
+  writeFileSync(join(realFleet, "config.yaml"), BASE_TEXT, "utf8");
+  if (hermesIsLink) symlinkSync(realFleet, join(home, ".hermes"));
+  if (profilesIsLink) symlinkSync(realProfiles, join(realFleet, "profiles"));
+  const fleet = join(home, ".hermes");
+  const repo = makeRepo(`${name}-solo`);
+  seedProfile("solo-pm", { root: realProfiles, links: { "SOUL.md": join(repo.runtime, "SOUL.md"), memories: join(repo.runtime, "memories") } });
+  const rows = [{ name: "solo-pm", rowOverrides: { repo: `${name}-solo`, project_path: repo.dir, role_dir: repo.roleDir } }];
+  writeAgentRegistry(join(realFleet, "agents-registry.yaml"), rows);
+  writeProjectRegistry(join(home, ".config", "pjangler", "projects.yaml"), rows);
+  cpSync(join(scratchHome, ".config", "hermes-agent-template", "config.toml"), join(home, ".config", "hermes-agent-template", "config.toml"));
+  const env = {
+    HOME: home, XDG_CONFIG_HOME: join(home, ".config"), HERMES_FLEET_HOME: fleet,
+    HERMES_AGENTS_REGISTRY: join(fleet, "agents-registry.yaml"), HERMES_FLEET_REGISTRY_FILE: join(fleet, "agents-registry.yaml"),
+    HERMES_FLEET_ENV: join(fleet, "no-fleet.env"), HERMES_TEMPLATE_CONFIG: join(home, ".config", "hermes-agent-template", "config.toml"),
+    PJ_PROJECT_REGISTRY: join(home, ".config", "pjangler", "projects.yaml"),
+  };
+  return { home, fleet, realProfiles, env };
+}
+
 const STATUS_ARGS = ["fleet", "status", "--domain", "profile", "--json"];
 
 console.log("fleet profile health: every registered profile gated, read and proven; every extra classified");
@@ -974,6 +1012,91 @@ try {
     } finally {
       try { process.kill(-holder.pid, "SIGKILL"); } catch { try { holder.kill("SIGKILL"); } catch { /* gone */ } }
     }
+  });
+
+  check("a profile root under a symlink -- the fleet home or the root itself -- is a profile.root error, every field errors, and no renderer is spawned", () => {
+    // DW-28: the inventory lstats the leaf only, so an ancestor symlink was
+    // invisible. The root gate walks every component below the home.
+    const recorder = join(shimRoot, "python3-root-invocations.log");
+    rmSync(recorder, { force: true });
+    const realPython = spawnSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+    const shim = pathShim("recording-root", `#!/bin/sh\nprintf '%s\\n' "$*" >> "${recorder}"\nexec "${realPython}" "$@"\n`);
+    for (const [name, layout, code] of [
+      ["home-hermes-link", { hermesIsLink: true }, "root-ancestor-symlink"],
+      ["home-profiles-link", { profilesIsLink: true }, "root-symlink"],
+    ]) {
+      const alt = makeAltHome(name, layout);
+      const before = snapshotTree(name, alt.home);
+      const result = cliAt(mainRoot, STATUS_ARGS, { ...alt.env, PATH: `${shim}:${process.env.PATH}` });
+      assert.equal(result.status, 0, `${name}: a gated root is an observation, never a command failure: ${result.stderr}`);
+      assertUnchanged(before, snapshotTree(name, alt.home), `${name}: the run`);
+      const data = status(result);
+      const rootFinding = hostNamed(data, "profile.root");
+      assert.equal(rootFinding.state, "error", name);
+      assert.equal(rootFinding.observed, code, name);
+      assert.equal(rootFinding.domain, "profile");
+      assert.match(rootFinding.details.join("\n"), new RegExp(`root ${code}`, "u"), name);
+      assert.deepEqual(data.profile.root, { state: "error", code }, name);
+      const agent = agentNamed(data, "solo-pm");
+      for (const field of FIELD_ORDER) {
+        const observation = fieldOf(agent, field);
+        assert.equal(observation.state, "error", `${name} ${field} must be error behind a gated root`);
+        assert.match(observation.summary, new RegExp(code, "u"), `${name} ${field} names the root code`);
+      }
+      assert.equal(agent.profile.path.code, `root:${code}`, name);
+      assert.equal(agent.profile.renderer.state, "error", name);
+      assert.equal(agent.profile.bank.observed, null, `${name}: nothing beneath the root was read`);
+      assert.equal(agent.complete, false, name);
+      const probes = data.probes.filter((probe) => probe.kind === "profile" && probe.target.endsWith("/profiles/solo-pm"));
+      assert.deepEqual(probes.map((probe) => [probe.outcome, probe.reason]), [["skipped", `root:${code}`]], `${name}: the renderer probe is skipped, by name`);
+      assert.deepEqual(data.profile.agents, {
+        total_registered: 1, selected: 1, real: 0, blocked_at_path: 0,
+        structurally_healthy: 0, drifted: 0, incomplete: 1, exception_authorized: 0, unobserved: 0,
+      }, name);
+      assert.equal(data.profile.renderer.checked, 0, name);
+      assert.equal(data.profile.extras.coverage, "not-swept", `${name}: a gated root is never enumerated`);
+      assert.equal(data.profile.extras.reason, `root:${code}`, name);
+      assert.equal(data.host.some((finding) => finding.rule_id === "profile.extras"), false, name);
+      assert.notEqual(data.health.verdict, "healthy", name);
+    }
+    // The interpreter probe may run; the RENDERER never did.
+    const invocations = existsSync(recorder) ? readFileSync(recorder, "utf8") : "";
+    assert.equal(invocations.includes("hermes-profile-config.py"), false, `the renderer was invoked behind a gated root: ${invocations}`);
+  });
+
+  check("a delta the renderer cannot parse is renderer-failed: exit 1 with no drift block, stderr never read, and the run still succeeds", () => {
+    const result = cliAt(mainRoot, [...STATUS_ARGS, "--agent", "crash-pm"]);
+    assert.equal(result.status, 0, `a renderer crash is one profile's error, never a command failure: ${result.stderr}`);
+    const data = status(result);
+    const agent = agentNamed(data, "crash-pm");
+    const config = fieldOf(agent, FIELDS.config);
+    assert.equal(config.state, "error");
+    assert.deepEqual(kindsOf(config), ["renderer-failed"]);
+    assert.equal(itemsOf(config)[0].observed, "exit 1", "the exit status is the only thing kept from a child that said nothing usable");
+    assert.equal(itemsOf(config)[0].detail, "renderer-failed");
+    assert.equal(agent.profile.renderer.state, "error");
+    assert.deepEqual(agent.profile.renderer.sections, []);
+    assert.match(agent.profile.digests.delta, /^[0-9a-f]{12}$/u, "the delta bytes were still digested; nothing was parsed by the observer");
+    const probe = data.probes.find((item) => item.kind === "profile" && item.target.endsWith("/profiles/crash-pm"));
+    assert.ok(probe, "the renderer probe ran");
+    assert.deepEqual([probe.outcome, probe.reason], ["failed", "renderer-failed"]);
+    assert.equal(data.profile.renderer.failed, 1);
+    assert.equal(data.profile.renderer.checked, 1, "a crashed check is still a checked profile");
+    assert.equal(data.profile.renderer.in_sync + data.profile.renderer.drifted + data.profile.renderer.timeout, 0);
+    assert.equal(data.profile.agents.incomplete, 1);
+    assert.equal(agent.complete, false, "a collection error makes the agent incomplete");
+    assert.equal(agent.healthy, false, "an error is never a pass");
+    assert.equal(fieldOf(agent, FIELDS.bank).state, "pass", "the other fields are still read");
+    assert.equal(fieldOf(agent, FIELDS.identity).state, "pass");
+    assert.equal(hostNamed(data, "profile.renderer").state, "pass", "one profile's crash is not the renderer's integrity");
+    // The renderer's FATAL names the delta's absolute path on stderr, which is
+    // never read: neither the message nor the path reaches the payload.
+    assert.equal(textOf(data).includes("cannot parse"), false, "the renderer's FATAL never reaches the payload");
+    assert.equal(textOf(data).includes(profilesRoot), false, "no absolute profile path reaches the payload");
+    // Fleet-wide, the same profile is the only failed check.
+    const fleet = status(cliAt(mainRoot, STATUS_ARGS));
+    assert.equal(fleet.profile.renderer.failed, 1);
+    assert.equal(fieldOf(agentNamed(fleet, "crash-pm"), FIELDS.config).state, "error");
   });
 
   // -- AC4: the bank pin ----------------------------------------------------------
