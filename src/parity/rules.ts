@@ -1420,6 +1420,13 @@ function legacyCommittedSkillNames(
   // so the audit agrees with the engine instead of demanding a duplicate.
   const repoSkillsRoot = resolve(skillsDir, "..", "..", "skills");
   for (const name of entries) {
+    // Match the engine's own `scan_children`, which skips every "." / "_" entry
+    // at each level: those are bookkeeping, not skills. Without this the audit
+    // reported a projection's own `.gitignore`, `.lastagent` and `.system` as
+    // "declared by nothing" and pointed the operator at
+    // `--accept-registry-matches`, which would then try to map a dotfile into
+    // `skills[]` as if it were a skill.
+    if (name.startsWith(".") || name.startsWith("_")) continue;
     if (expectedNames.has(name) || manifestNames.has(name)) continue;
     if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
     const path = join(skillsDir, name);

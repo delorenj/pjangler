@@ -8079,6 +8079,7 @@ function legacyCommittedSkillNames(skillsDir, backupDir, expectedNames, packRoot
   }
   const repoSkillsRoot = resolve3(skillsDir, "..", "..", "skills");
   for (const name of entries) {
+    if (name.startsWith(".") || name.startsWith("_")) continue;
     if (expectedNames.has(name) || manifestNames.has(name)) continue;
     if (name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
     const path = join4(skillsDir, name);
