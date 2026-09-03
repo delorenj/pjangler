@@ -723,7 +723,7 @@ try {
       ].join("\n"), "utf8");
       const hangingStatusEnv = fleetEnvFor({ PJ_FLEET_CLI_ENTRY: statusHangEntry });
 
-      const cliStatusCancel = await new Promise((settle) => {
+      const cliStatusCancel = /** @type {{ code: number, out: string, pidRecorded: boolean, envelope?: object }} */ (await new Promise((settle) => {
         const child = spawn(process.execPath, [resolve(root, "dist", "index.js"), "fleet", "status", "--live", "--json"], {
           cwd: root, env: hangingStatusEnv, stdio: ["ignore", "pipe", "ignore"],
         });
@@ -736,15 +736,31 @@ try {
         // assertion below went red for a reason that has nothing to do with
         // cancellation. Waiting for the child to record its pid makes the
         // signal land where the case means it to, whatever runs before it.
+        // The poll has a DEADLINE of its own. Unbounded, a child that never
+        // records a pid ran to the 60 s SIGKILL and then threw inside
+        // `JSON.parse` on a truncated stdout -- a stack trace about JSON where
+        // the real failure is "no audit child ever started".
+        const POLL_DEADLINE_MS = 20_000;
+        const startedAt = Date.now();
+        let pidRecorded = false;
         const killer = setInterval(() => {
-          if (existsSync(statusHangPids) && readFileSync(statusHangPids, "utf8").trim() !== "") {
-            clearInterval(killer);
-            child.kill("SIGINT");
-          }
+          pidRecorded = existsSync(statusHangPids) && readFileSync(statusHangPids, "utf8").trim() !== "";
+          if (!pidRecorded && Date.now() - startedAt < POLL_DEADLINE_MS) return;
+          clearInterval(killer);
+          child.kill("SIGINT");
         }, 100);
         const guard = setTimeout(() => child.kill("SIGKILL"), 60_000);
-        child.on("close", (code) => { clearInterval(killer); clearTimeout(guard); settle({ code, envelope: JSON.parse(out) }); });
-      });
+        child.on("close", (code) => { clearInterval(killer); clearTimeout(guard); settle({ code, out, pidRecorded }); });
+      }));
+      assert.ok(
+        cliStatusCancel.pidRecorded,
+        `the cancelled status run never recorded an audit child within ${20_000} ms, so the SIGINT below landed somewhere this case does not mean to test (exit ${cliStatusCancel.code})`,
+      );
+      cliStatusCancel.envelope = (() => {
+        try { return JSON.parse(cliStatusCancel.out); } catch (error) {
+          return assert.fail(`a cancelled status run must still write one complete envelope; got ${JSON.stringify(cliStatusCancel.out.slice(0, 200))} (exit ${cliStatusCancel.code}): ${error.message}`);
+        }
+      })();
       assert.equal(cliStatusCancel.code, 8, "a cancelled status run must exit 8");
       assert.equal(cliStatusCancel.envelope.error?.code, "CANCELLED");
       // Non-vacuity: with no pid recorded, the survivor check below would pass

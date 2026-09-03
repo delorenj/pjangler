@@ -840,6 +840,14 @@ severity: low
 reason: Pre-existing in src/fleet/inventory.ts (story 1.2). The story-1.7 observer now resolves the fleet home through that same function (review patch 20), so the two adapters can no longer disagree, but neither expands `~`. Surfaced by the edge-case review; the live fleet.env carries an absolute path, so the live fleet is unaffected.
 status: open
 
+### DW-99: `sleepBounded`'s already-aborted guard is correct by contract and unreachable from this build's one caller.
+origin: review-patch story-1.8 (PJAN-110)
+location: src/fleet/runtime.ts (sleepBounded)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: `AbortSignal` never fires `abort` for a listener added AFTER the abort, so a sleep started on an already-cancelled run waited out the full interval before anything noticed -- the opposite of the "CANCELLATION WAKES IT" guarantee the function documents. The guard is one line and is applied. It has no executable test: the only production caller is `sampleWindow`, whose loop is `sleep -> throwIfCancelled -> probe -> throwIfCancelled`, so every path that could reach a sleep with an already-aborted signal throws at the `throwIfCancelled` immediately after the previous probe instead. Proving the branch would mean removing that guard or exporting the helper to a unit-test harness this repository does not have (every suite drives the built CLI in a subprocess). Recorded rather than tested so the next caller -- a future observer that sleeps between reads without a cancellation check in front of it -- inherits a true guarantee instead of a documented one.
+status: open
+
 ### DW-97: A unit's drop-in overrides are read as one merged reading, so which file supplied an ExecStart is not reported.
 origin: spec-deferred story-1.8 (PJAN-110)
 location: src/fleet/systemd.ts (parseExecStart / classifyEntrypoint)

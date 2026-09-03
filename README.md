@@ -534,9 +534,9 @@ fields and three units, all five declared writable under the contract's
 | --- | --- | --- |
 | `agents.{agent_id}.systemd.gateway_unit` | the canonical triple `service_model.per_agent` derives is loaded, the row names it, and nothing retired sits beside it | `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`, `misnamed-gateway:<unit>`, `duplicate-gateway:<unit>`, `retired-unit:<unit>`, `registry-retired-key:<key>` |
 | `agents.{agent_id}.systemd.heartbeat_timer` | the row records the timer the contract derives, and the manager loads it | `registry-undeclared` (units on disk, no field), `unit-missing`, `misnamed-heartbeat-timer:<unit>` |
-| `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared`, `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `absent` |
-| `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, its last tick is current, and a tick in flight is progressing | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `tick-overdue`, `tick-never`, `stuck`, `in-progress` (warn), `property-malformed:<Key>` (error), `absent` |
-| `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest COMPLETED invocation actually succeeded, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `never-completed`, `entrypoint-unpinned`, `checkpoint-only`, `reconcile-undeclared` (warn), `reconcile-opt-out-undeclared` (warn), `property-malformed:<Key>` (error), `absent` |
+| `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared` (`warn` when disabled+inactive), `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success:<result>`/`exec-status:<n>`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `unit-file-state-unclassified:<state>` (`warn`), `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
+| `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, its last tick is current, and a tick in flight is progressing | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `schedule-unknown` (`warn`), `tick-overdue`, `tick-never`, `tick-unknown` (`warn`), `stuck`, `in-progress` (`warn`), `fragment-unsafe`, `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
+| `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest COMPLETED invocation actually succeeded, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `latest-result-unknown` (`warn`), `never-completed`, `entrypoint-unpinned`, `checkpoint-only`, `reconcile-undeclared` (`warn`), `reconcile-opt-out-undeclared` (`warn`), `reconcile-unverifiable` (`warn`), `policy-unreadable`/`state-unreadable` (`error`), `fragment-unsafe`, `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
 
 **The desired gateway state comes from the DECLARATION, never from the unit.**
 `70-systemd.sh` enables a gateway only when a platform's `provisioning_status`
@@ -606,6 +606,16 @@ entirely and every selected agent's five leaves read `error` with
 `manager-unavailable` or `manager-timeout`; `degraded` is an **available**
 manager, because a failed unit elsewhere does not make the fleet unobservable.
 
+**What `--agent` scope cannot see.** An `--agent` run samples that agent's own
+units and never lists the manager, so two topology readings are structurally
+out of reach: `duplicate-gateway:<unit>` (a second `hermes-<id>-*gateway.service`
+is found by the listing, not by the sample) and the units-on-disk half of
+`registry-undeclared` for a row that declares no `heartbeat_timer` while its
+unit file exists but is not loaded. Both are reported by a fleet-scope run over
+the same manager. This is a coverage difference, not a clean reading, and it
+sits beside the two the payload names outright (`shared.coverage: "unobserved"`,
+`unregistered.coverage: "not-swept"`).
+
 `data.systemd` carries the manager and its window, the unit counts, per-aspect
 agent tallies (`complete`, `topology_ok`, `gateway_healthy`, `gateway_deferred`,
 `heartbeat_healthy`, `unstable`, `crash_looping`, `drifted`, `incomplete`,
@@ -618,6 +628,13 @@ than an empty sweep. The shared gateway is `pass` only when the contract's
 `gateways.bloodbank.systemd_unit` name ONE unit and it is enabled, active,
 stable and rooted at the declared shared profile; two names is
 `identity-mismatch`.
+
+A listing the manager ANSWERED and this run could not read
+(`listing-failed`, `listing-timeout`, `listing-malformed`) is its own
+`systemd.unregistered` finding at `error`, naming the reason: the manager
+finding still reads `pass` because the manager itself answered, and a sweep
+nobody performed must never look like a clean one. A listing that hit
+`limits.max_units` is reported as a `truncated[]` note for the same reason.
 
 **Unregistered units are findings, never a licence.** Every `hermes-*` unit no
 registered row claims lands in exactly one of five classes — `retired` (a name

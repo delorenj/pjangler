@@ -2256,11 +2256,11 @@ export const FLEET_SYSTEMD_ITEM_KINDS = [
   // Topology (agents.{agent_id}.systemd.gateway_unit): the canonical triple
   // against what the manager loads and what the registry row records.
   "gateway-missing", "heartbeat-timer-missing", "heartbeat-service-missing", "misnamed-gateway", "duplicate-gateway",
-  "retired-unit", "extra-unit", "registry-retired-key",
+  "retired-unit", "registry-retired-key",
   // The registry's heartbeat_timer field (agents.{agent_id}.systemd.heartbeat_timer).
   "registry-undeclared", "unit-missing", "misnamed-heartbeat-timer",
   // Any unit leaf.
-  "absent", "load-error", "fragment-unsafe",
+  "absent", "load-error", "fragment-unsafe", "unit-file-state-unclassified",
   // The gateway (units.hermes-{agent_id}-gateway.service).
   "deferred-but-enabled", "deferred-but-active", "verified-channel-gateway-disabled", "verified-channel-gateway-inactive",
   "channel-undeclared", "channel-identity-incomplete", "channel-secret-unreferenced", "platform-enablement-inherited",
@@ -2360,8 +2360,15 @@ export type FleetSystemdReconcileEvidence = (typeof FLEET_SYSTEMD_RECONCILE_EVID
 export const FLEET_SYSTEMD_SHARED_STATES = ["healthy", "drifted", "absent", "identity-mismatch", "registry-undeclared", "error", "unobserved"] as const;
 export type FleetSystemdSharedState = (typeof FLEET_SYSTEMD_SHARED_STATES)[number];
 
-/** How an extra unit attributed to an agent is classed on its topology leaf. */
-export const FLEET_SYSTEMD_EXTRA_CLASSES = ["retired", "duplicate-gateway", "unexpected"] as const;
+/**
+ * How an extra unit attributed to an agent is classed on its topology leaf.
+ *
+ * Two classes, because two are emitted. A third (`unexpected`) shipped with no
+ * emit site, which asks every consumer to handle a case this build cannot
+ * produce -- and would have let a real one be added later without anyone
+ * noticing the vocabulary already claimed it.
+ */
+export const FLEET_SYSTEMD_EXTRA_CLASSES = ["retired", "duplicate-gateway"] as const;
 export type FleetSystemdExtraClass = (typeof FLEET_SYSTEMD_EXTRA_CLASSES)[number];
 
 /** One unit as the manager last showed it. Words only: no pid, no timestamp, no path. */
@@ -2387,7 +2394,7 @@ export interface FleetStatusSystemdUnregisteredItem extends FleetStatusSystemdUn
   correlated_profile: string | null;
   process_reference: "unobserved";
   guidance: FleetProfileExtraGuidance;
-  /** A stable category naming what classified it (`retired-pattern:-consumer\.service`, `classifications.managed_shared_service.entries[0]`), never a body. */
+  /** A stable category naming what classified it (`retired:<retired mode id>`, `unit-file-state:transient`, `hermes-home-under-profile-root`, `classifications.managed_shared_service.entries[0]`), never a body. */
   detail: string | null;
 }
 

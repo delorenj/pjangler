@@ -1450,6 +1450,14 @@ function validateServiceManifest(policy: Record<string, unknown>): FleetDiagnost
     // At least ONE sample, or nothing is observed and "stable" is vacuous.
     wholeNumber(stabilization.samples, "service_manifest.stabilization.samples", 1, SYSTEMD_MAX_SAMPLES, "samples");
     wholeNumber(stabilization.interval_ms, "service_manifest.stabilization.interval_ms", 0, SYSTEMD_MAX_INTERVAL_MS, "interval_ms");
+    // The same vacuity `samples >= 1` refuses, through the other knob: three
+    // samples taken with no wait between them are three reads of one instant,
+    // unanimous about nothing. Zero is still legal for a single-sample window,
+    // where nothing waits at all.
+    if (typeof stabilization.samples === "number" && stabilization.samples > 1
+      && typeof stabilization.interval_ms === "number" && stabilization.interval_ms === 0) {
+      fail("service_manifest.stabilization.interval_ms", "interval_ms must be positive when samples is greater than 1: samples with no wait between them cannot show a unit changing");
+    }
   }
 
   // -- probe ------------------------------------------------------------------

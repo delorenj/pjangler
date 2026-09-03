@@ -2,7 +2,7 @@
 title: 'Story 1.8: Prove Canonical systemd Topology and Service Health'
 type: 'feature'
 created: '2026-09-02'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '378051d690e29c73acbb0560c35a475eb60f15a5'
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -454,6 +454,46 @@ Two host dependencies were removed rather than skipped. `tick-never` compared th
 in its own contract, which any host running the suite has exceeded. The overdue threshold is proven by a
 290 s / 310 s pair around `60 s x 5`, which pins the multiplier in both directions with ten seconds of margin
 for the run's own duration.
+
+**2026-09-02, step-04 adversarial review (29 patch findings).** Four review layers ran against the whole
+change. Nothing was triaged intent_gap or bad_spec, so nothing was reverted; every finding was applied on top.
+Four changed observable behaviour:
+
+1. **`emptyAgentResult` named the wrong units on every collection-error path.** `expected` is sorted for the
+   payload, and the canonical triple sorts gateway, heartbeat.service, heartbeat.timer -- so destructuring it
+   as `[gateway, timer, service]` handed the timer leaf the SERVICE and the service leaf the TIMER on every
+   `manager-unavailable`, `manager-timeout` and `show-failed` result. The three are now derived BY KEY. The
+   hole that hid it is closed too: the error-path cases asserted only `state` and the item kinds, never the
+   item `path` or `view.unit`, so the swap was invisible to a green suite.
+2. **A listing the manager answered and this run could not read emitted NOTHING.** `systemd.manager` read
+   `pass`, no `systemd.unregistered` finding was produced at all, and the only trace was
+   `data.systemd.unregistered.reason` several levels down the payload -- an operator reading the host findings
+   saw a clean sweep of a manager nobody swept. All three codes (`listing-failed`, `listing-timeout`,
+   `listing-malformed`) now raise an `error` finding naming the reason, with the manager's own finding left
+   alone because the manager did answer.
+3. **The gateway swallowed a malformed `ExecMainStatus`** (`NaN` fails the `!== 0` test, so a unit read as a
+   clean exit with `exec_status: null` and no item), and **a `UnitFileState` in neither vocabulary passed as
+   "correctly disabled"** -- `static`, `generated` and `indirect` are none of enabled, disabled or masked, and
+   nobody disabled a static unit. Both are items now; the second is a `warn` named
+   `unit-file-state-unclassified:<state>`, and it is what finally reads the `isDisabled` the module computed
+   and never used.
+4. **The code beside a state named the wrong item.** `gateway.code` and `heartbeat.code` took `items[0]`,
+   which is not necessarily the item whose rank produced the verdict; they now name the deciding item and fall
+   back to the first.
+
+The rest hardened the proof rather than the payload: the fake's window marker was a PRODUCTION constant
+(`properties.includes("NRestarts")`), so dropping that property would have frozen every stability window at
+sample 0 with the suite green; the one credential-shaped exemption in the contract grammar
+(`messaging.secret_env`) had no test at all, so weakening its `ENV_KEY` bound would have let a real token
+validate and ship; `interval_ms: 0` was the same vacuity `samples >= 1` refuses, through the other knob; and
+the live case -- the story's entire Problem statement -- asserted parser agreement for one agent and none of
+the eight named drifts, so `deferred-but-enabled` could have stopped firing for `pjangler-pm` with nothing
+red. It now asserts five named live readings, each skipping out loud when that agent is not on the host.
+
+Three reviewer claims were rejected with evidence and are recorded in the review brief: the fake's
+`LastTriggerUSecMonotonic` duration string is FAITHFUL to the live manager (which prints it beside a raw
+integer `ExecMainStartTimestampMonotonic`); `observeFromInventory`'s deleted systemd stub was a spec
+requirement; and `row.expected_units` still has a producer and parity assertions.
 
 ## Review Triage Log
 

@@ -1792,8 +1792,11 @@ function observeFromSystemd(ctx: FleetStatusContext, input: SystemdObservationIn
   const worseHeartbeat = heartbeatLeaves
     .reduce((worst, leaf) => (stateRank(leaf.state) < stateRank(worst.state) ? leaf : worst), heartbeatLeaves[0]!);
   const heartbeatState = worseHeartbeat.state;
+  // The code comes from the leaf's OWN `code`, which names the item whose rank
+  // equals that leaf's state -- the item that caused the verdict, not whichever
+  // one happened to be pushed first.
   const codeSource = worseHeartbeat.items.length > 0 ? worseHeartbeat : heartbeatLeaves.find((leaf) => leaf.items.length > 0);
-  const heartbeatCode = codeSource === undefined ? null : codeSource.items[0]!.detail ?? codeSource.items[0]!.kind;
+  const heartbeatCode = codeSource === undefined ? null : codeSource.code;
 
   return {
     observations,
@@ -3219,11 +3222,37 @@ export async function collectFleetStatus(options: FleetStatusOptions): Promise<F
         shared.state,
         "one fleet-shared Bloodbank gateway, named identically by the contract and the registry, enabled, active and stable at the declared shared profile",
       );
+      // A sweep the manager was AVAILABLE for and this run still could not read
+      // -- a failed, timed-out or malformed listing -- has to be a finding.
+      // Before this it emitted nothing at all: `systemd.manager` read `pass`,
+      // no `systemd.unregistered` finding existed, and the only trace was
+      // `data.systemd.unregistered.reason` several levels down a JSON payload.
+      // An operator reading the host findings saw a clean sweep of a manager
+      // nobody swept. A manager failure keeps its own finding and is not
+      // repeated here.
+      if (systemdHealth.unregistered === null && systemdHealth.manager.code === "available") {
+        hostFinding(
+          SYSTEMD_UNREGISTERED_RULE_ID,
+          "error",
+          SYSTEMD_FIELD_TOPOLOGY,
+          `the user manager answered but its ${serviceManifest!.unregistered.unit_glob} listing could not be read (${systemdHealth.unregisteredReason ?? "unknown"}), so no unregistered unit was classified on this run`,
+          [
+            `reason ${systemdHealth.unregisteredReason ?? "unknown"}`,
+            `manager ${systemdHealth.manager.state}`,
+            "coverage not-swept",
+          ],
+          systemdHealth.unregisteredReason ?? "unknown",
+          "every unregistered hermes unit on this manager claimed by a contract classification",
+        );
+      }
       if (systemdHealth.unregistered !== null) {
         const all = systemdHealth.unregistered.items;
         const kept = all.slice(0, FLEET_STATUS_MAX_ITEMS);
         if (all.length > kept.length) {
           systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}].items: ${all.length - kept.length} of ${all.length} items dropped; data.systemd.unregistered.by_class is counted over every unit before the cap`);
+        }
+        if (systemdHealth.listingTruncated) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest!.limits.max_units} ${serviceManifest!.unregistered.unit_glob} unit(s); every listing this run read is a prefix of what the manager holds, so an over-cap unit is neither swept nor correlated`);
         }
         if (systemdHealth.unregistered.truncated) {
           systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest!.limits.max_unregistered_units} unregistered ${serviceManifest!.unregistered.unit_glob} unit(s); the sweep stopped at the cap and data.systemd.unregistered.truncated says so`);

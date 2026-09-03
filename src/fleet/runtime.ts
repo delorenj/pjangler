@@ -505,6 +505,11 @@ function runBoundedChild(
  *     timer would let the process exit mid-window with the envelope unwritten.
  */
 export function sleepBounded(ctx: FleetRunContext, ms: number): Promise<void> {
+  // An ALREADY-aborted signal never fires `abort` for a listener added after
+  // the fact, so the guarantee above ("cancellation wakes it") held only for a
+  // cancellation that arrived DURING the sleep: a run cancelled a moment before
+  // one waited out the whole interval before anything noticed.
+  if (ctx.signal.aborted) return Promise.reject(new FleetError("CANCELLED", "Fleet command was cancelled before it completed"));
   const remaining = remainingMs(ctx);
   const wait = Math.max(0, Math.min(ms, Number.isFinite(remaining) ? remaining : ms));
   if (wait === 0) return Promise.resolve();

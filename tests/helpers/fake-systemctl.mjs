@@ -22,6 +22,20 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FAKE_SYSTEMCTL_BIN = join(HERE, "fake-systemctl-bin.mjs");
 
+/**
+ * How many `-p` properties a `show` must ask for to be the SAMPLED window.
+ *
+ * The fake has to tell the sampled multi-unit `show` (which advances the
+ * scripted window) from the ONE classification `show` over unregistered units
+ * (which must not). It used to key that on `properties.includes("NRestarts")`
+ * -- a production constant -- so dropping `NRestarts` from
+ * `SYSTEMD_SHOW_PROPERTIES` would have made every stability window vacuously
+ * unanimous with the suite still green. The threshold is a property of the
+ * FAKE, and the suite asserts that the two production sets still straddle it,
+ * so a set that stops separating them goes red rather than silent.
+ */
+export const FAKE_SAMPLED_PROPERTY_FLOOR = 12;
+
 /** CLOCK_MONOTONIC now in microseconds -- the clock systemd's `*USecMonotonic` properties use. */
 export function monotonicNowUs() {
   return process.hrtime.bigint() / 1000n;

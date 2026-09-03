@@ -18100,6 +18100,9 @@ function validateServiceManifest(policy) {
   if (closed(stabilization, "service_manifest.stabilization", FLEET_SERVICE_MANIFEST_STABILIZATION_KEYS)) {
     wholeNumber(stabilization.samples, "service_manifest.stabilization.samples", 1, SYSTEMD_MAX_SAMPLES, "samples");
     wholeNumber(stabilization.interval_ms, "service_manifest.stabilization.interval_ms", 0, SYSTEMD_MAX_INTERVAL_MS, "interval_ms");
+    if (typeof stabilization.samples === "number" && stabilization.samples > 1 && typeof stabilization.interval_ms === "number" && stabilization.interval_ms === 0) {
+      fail("service_manifest.stabilization.interval_ms", "interval_ms must be positive when samples is greater than 1: samples with no wait between them cannot show a unit changing");
+    }
   }
   const probe2 = block.probe;
   if (closed(probe2, "service_manifest.probe", FLEET_SERVICE_MANIFEST_PROBE_KEYS)) {
@@ -18900,6 +18903,7 @@ function runBoundedChild(ctx, command, args, options = {}) {
   });
 }
 function sleepBounded(ctx, ms) {
+  if (ctx.signal.aborted) return Promise.reject(new FleetError("CANCELLED", "Fleet command was cancelled before it completed"));
   const remaining = remainingMs(ctx);
   const wait = Math.max(0, Math.min(ms, Number.isFinite(remaining) ? remaining : ms));
   if (wait === 0) return Promise.resolve();
@@ -22395,7 +22399,16 @@ var SYSTEMD_CLASSIFY_PROPERTIES = [
   "Environment",
   "FragmentPath"
 ];
-var SYSTEMD_SYSTEM_UNIT_DIRS = ["/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user"];
+var SYSTEMD_SYSTEM_UNIT_DIRS = [
+  "/usr/lib/systemd/user",
+  "/lib/systemd/user",
+  "/etc/systemd/user",
+  "/usr/local/lib/systemd/user",
+  "/usr/share/systemd/user",
+  "/usr/local/share/systemd/user",
+  "/run/systemd/user",
+  "/run/systemd/generator"
+];
 var SYSTEMD_REQUIRED_PROPERTIES = ["LoadState", "UnitFileState", "ActiveState", "SubState"];
 var ENABLED_STATES = /* @__PURE__ */ new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
 var DISABLED_STATES = /* @__PURE__ */ new Set(["disabled", "masked", "masked-runtime"]);
@@ -22445,6 +22458,11 @@ function within3(root, candidate) {
 }
 function aspect2(state, items, observed, desired, summary) {
   return { state, items, observed, desired, summary };
+}
+function decisiveCode(items, state, rank) {
+  if (items.length === 0) return null;
+  const decisive = items.find((item) => rank(item.kind) === state) ?? items[0];
+  return decisive.detail ?? decisive.kind;
 }
 var RANK = ["pass", "warn", "fail", "error"];
 function worseOf(a, b) {
@@ -22530,7 +22548,7 @@ function parseEnvironment(lines, keys) {
   const out = {};
   for (const key of keys) out[key] = null;
   for (const line of lines) {
-    for (const token of line.split(/\s+/u)) {
+    for (const token of splitEnvironmentLine(line)) {
       const at = token.indexOf("=");
       if (at <= 0) continue;
       const key = token.slice(0, at);
@@ -22538,6 +22556,40 @@ function parseEnvironment(lines, keys) {
       out[key] = token.slice(at + 1);
     }
   }
+  return out;
+}
+function splitEnvironmentLine(line) {
+  const out = [];
+  let token = "";
+  let quote2 = null;
+  let started = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const ch = line[index];
+    if (quote2 === null && (ch === " " || ch === "	")) {
+      if (started) {
+        out.push(token);
+        token = "";
+        started = false;
+      }
+      continue;
+    }
+    started = true;
+    if (quote2 === null && (ch === '"' || ch === "'")) {
+      quote2 = ch;
+      continue;
+    }
+    if (quote2 !== null && ch === quote2) {
+      quote2 = null;
+      continue;
+    }
+    if (ch === "\\" && quote2 !== "'" && index + 1 < line.length) {
+      index += 1;
+      token += line[index];
+      continue;
+    }
+    token += ch;
+  }
+  if (started) out.push(token);
   return out;
 }
 function parseTimersMonotonic(lines) {
@@ -22768,6 +22820,7 @@ function evaluateTickActivation(sample, monotonicNowUs, maxTickSeconds) {
   if (sample === null || one(sample, "LoadState") !== "loaded") return null;
   const active = one(sample, "ActiveState") ?? "";
   if (active !== "activating" && active !== "active") return null;
+  if (one(sample, "SubState") === "exited") return null;
   const timeout = parseSystemdUsec(one(sample, "TimeoutStartUSec")) ?? BigInt(maxTickSeconds) * 1000000n;
   const start = parseSystemdUsec(one(sample, "ExecMainStartTimestampMonotonic"));
   const age = start === null || start === 0n ? null : monotonicNowUs - start;
@@ -22779,7 +22832,8 @@ function classifyEntrypoint(path, roleDir, launcher, hermesBin) {
   if (launcherPath !== null && resolve22(path) === launcherPath) return { family: "launcher", pinned: true };
   if (hermesBin !== null && resolve22(path) === resolve22(hermesBin)) return { family: "hermes-bin", pinned: true };
   if (/(?:^|\/)hermes$/u.test(path)) return { family: "hermes-bin", pinned: false };
-  if (path.endsWith(launcher.slice(launcher.lastIndexOf("/") + 1))) return { family: "launcher", pinned: false };
+  const launcherName = launcher.slice(launcher.lastIndexOf("/") + 1);
+  if (launcherName !== "" && path.slice(path.lastIndexOf("/") + 1) === launcherName) return { family: "launcher", pinned: false };
   return { family: "other", pinned: false };
 }
 function classifyHome(home, expected, fleetHomeReal) {
@@ -22878,9 +22932,9 @@ function readReconcile(ctx, roleDir) {
 function erroredAspect2(kind, unit, detail, summary) {
   return aspect2("error", [{ path: unit, kind, desired: "an observation of the user manager", observed: kind, detail }], kind, "an observation of the user manager", summary);
 }
-function emptyAgentResult2(input, expected, failure, platforms) {
+function emptyAgentResult2(input, expected, units, failure, platforms) {
   const view = (unit) => ({ unit, load: null, unit_file: null, active: null, sub: null });
-  const [gatewayUnit, timerUnit, serviceUnit] = expected;
+  const { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit } = units;
   return {
     agentId: input.agentId,
     topology: { ...failure(gatewayUnit ?? input.agentId), expected, installed: [], missing: [], extra: [] },
@@ -22901,10 +22955,11 @@ function emptyAgentResult2(input, expected, failure, platforms) {
       home: "unknown",
       stability: { samples: 0, stable: false, transitions: [] }
     },
-    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), paired: false, schedule: "unknown", tick: "unknown" },
+    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), code: null, paired: false, schedule: "unknown", tick: "unknown" },
     service: {
       ...failure(serviceUnit ?? input.agentId),
       view: view(serviceUnit ?? "(underivable)"),
+      code: null,
       result: null,
       execStatus: null,
       entrypoint: { family: "unknown", pinned: false },
@@ -22923,10 +22978,10 @@ function inspectAgent2(ctx, shared, input) {
   const expected = [gatewayUnit, timerUnit, serviceUnit].filter((unit) => unit !== null).sort();
   if (shared.manager.code !== "available") {
     const kind = shared.manager.code === "manager-timeout" ? "manager-timeout" : "manager-unavailable";
-    return emptyAgentResult2(input, expected, (unit) => erroredAspect2(kind, unit, shared.manager.code, `not observed: ${shared.manager.detail}`), platforms);
+    return emptyAgentResult2(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => erroredAspect2(kind, unit, shared.manager.code, `not observed: ${shared.manager.detail}`), platforms);
   }
   if (gatewayUnit === null || timerUnit === null || serviceUnit === null) {
-    return emptyAgentResult2(input, expected, (unit) => aspect2(
+    return emptyAgentResult2(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => aspect2(
       "error",
       [{ path: unit, kind: "agent-id-unsafe", desired: "a unit name derived from service_model.per_agent", observed: "underivable", detail: null }],
       "underivable",
@@ -22936,7 +22991,7 @@ function inspectAgent2(ctx, shared, input) {
   }
   if (shared.window.taken === 0) {
     const kind = shared.window.error === "show-timeout" ? "show-timeout" : shared.window.error === "show-too-large" ? "show-too-large" : "show-failed";
-    return emptyAgentResult2(input, expected, (unit) => erroredAspect2(kind, unit, shared.window.error ?? "show-failed", "not observed: the stability window produced no sample of the user manager"), platforms);
+    return emptyAgentResult2(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => erroredAspect2(kind, unit, shared.window.error ?? "show-failed", "not observed: the stability window produced no sample of the user manager"), platforms);
   }
   const samplesOf = (unit) => shared.window.samples.get(unit) ?? [];
   const latest = (unit) => {
@@ -23086,6 +23141,18 @@ function inspectAgent2(ctx, shared, input) {
     for (const key of gatewayStability.malformed) {
       gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: `property-malformed:${word2(key)}` });
     }
+    if (gatewayStatus !== void 0 && Number.isNaN(gatewayStatus)) {
+      gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: "property-malformed:ExecMainStatus" });
+    }
+    if (!isEnabled && !isDisabled) {
+      gatewayItems.push({
+        path: gatewayUnit,
+        kind: "unit-file-state-unclassified",
+        desired: `${[...ENABLED_STATES].sort().join("|")} or ${[...DISABLED_STATES].sort().join("|")}`,
+        observed: word2(unitFileState),
+        detail: `unit-file-state-unclassified:${word2(unitFileState)}`
+      });
+    }
     if (capability === "active") {
       if (!isEnabled) gatewayItems.push({ path: gatewayUnit, kind: "verified-channel-gateway-disabled", desired: "enabled", observed: word2(unitFileState || "absent"), detail: "verified-channel-gateway-disabled" });
       if (activeState !== "active" || one(gatewaySample, "SubState") !== "running") {
@@ -23150,10 +23217,10 @@ function inspectAgent2(ctx, shared, input) {
       else if (gatewayHome === "mismatch") gatewayItems.push({ path: gatewayUnit, kind: "home-mismatch", desired: profileHome === null ? "this agent's profile directory" : ctx.shown(profileHome), observed: ctx.shown(gatewayEnvironment[manifest.entrypoint.home_env] ?? ""), detail: "home-mismatch" });
     }
   }
-  const gatewayRank = (kind) => kind === "property-malformed" ? "error" : kind === "channel-undeclared" && !isEnabled && !isActive ? "warn" : "fail";
+  const gatewayRank = (kind) => kind === "property-malformed" ? "error" : kind === "unit-file-state-unclassified" || kind === "channel-undeclared" && !isEnabled && !isActive ? "warn" : "fail";
   let gatewayState = "pass";
   for (const item of gatewayItems) gatewayState = worseOf(gatewayState, gatewayRank(item.kind));
-  const gatewayCode = gatewayItems.length === 0 ? null : gatewayItems[0].detail ?? gatewayItems[0].kind;
+  const gatewayCode = decisiveCode(gatewayItems, gatewayState, gatewayRank);
   const gateway = {
     ...aspect2(
       gatewayState,
@@ -23249,6 +23316,7 @@ function inspectAgent2(ctx, shared, input) {
       timerItems.length === 0 ? "the heartbeat timer is enabled, active, correctly paired, on policy and current" : `${timerItems.length} heartbeat-timer defect(s): an active timer proves nothing on its own`
     ),
     view: unitView(timerUnit, timerSample),
+    code: decisiveCode(timerItems, timerState, timerRank),
     paired,
     schedule,
     tick
@@ -23313,6 +23381,7 @@ function inspectAgent2(ctx, shared, input) {
       serviceItems.length === 0 ? "the heartbeat oneshot completed its latest tick successfully" : `${serviceItems.length} heartbeat-service defect(s): an active timer proves nothing without a successful tick`
     ),
     view: unitView(serviceUnit, serviceSample),
+    code: decisiveCode(serviceItems, serviceState, serviceRank),
     result: serviceResult === null ? null : word2(serviceResult),
     execStatus: serviceStatus === void 0 || Number.isNaN(serviceStatus) ? null : serviceStatus,
     entrypoint: serviceEntrypoint,
@@ -23512,7 +23581,12 @@ async function collectSystemdHealth(ctx) {
   const unitsOfInterest = [...interest].sort();
   const sampled = available ? await sampleWindow(ctx, unitsOfInterest) : { samples: /* @__PURE__ */ new Map(), taken: 0, probes: [], error: "manager-unavailable" };
   probes.push(...sampled.probes);
-  const unitDirs = [join36(ctx.configHome, "systemd", "user"), ...SYSTEMD_SYSTEM_UNIT_DIRS].map((dir) => resolve22(dir));
+  const dataHome = ctx.env.XDG_DATA_HOME && ctx.env.XDG_DATA_HOME.trim() !== "" ? ctx.env.XDG_DATA_HOME : join36(ctx.home, ".local", "share");
+  const unitDirs = [
+    join36(ctx.configHome, "systemd", "user"),
+    join36(dataHome, "systemd", "user"),
+    ...SYSTEMD_SYSTEM_UNIT_DIRS
+  ].map((dir) => resolve22(dir));
   const shared = {
     manager: manager.record,
     window: sampled,
@@ -23545,6 +23619,7 @@ async function collectSystemdHealth(ctx) {
   return {
     manager: manager.record,
     window,
+    listingTruncated: listing.truncated,
     units: {
       listed: listing.units.size,
       unit_files: listing.files.size,
@@ -24542,7 +24617,7 @@ function observeFromSystemd(ctx, input) {
   const worseHeartbeat = heartbeatLeaves.reduce((worst2, leaf) => stateRank(leaf.state) < stateRank(worst2.state) ? leaf : worst2, heartbeatLeaves[0]);
   const heartbeatState = worseHeartbeat.state;
   const codeSource = worseHeartbeat.items.length > 0 ? worseHeartbeat : heartbeatLeaves.find((leaf) => leaf.items.length > 0);
-  const heartbeatCode = codeSource === void 0 ? null : codeSource.items[0].detail ?? codeSource.items[0].kind;
+  const heartbeatCode = codeSource === void 0 ? null : codeSource.code;
   return {
     observations,
     summary: {
@@ -25511,11 +25586,29 @@ async function collectFleetStatus(options) {
         shared.state,
         "one fleet-shared Bloodbank gateway, named identically by the contract and the registry, enabled, active and stable at the declared shared profile"
       );
+      if (systemdHealth.unregistered === null && systemdHealth.manager.code === "available") {
+        hostFinding(
+          SYSTEMD_UNREGISTERED_RULE_ID,
+          "error",
+          SYSTEMD_FIELD_TOPOLOGY,
+          `the user manager answered but its ${serviceManifest.unregistered.unit_glob} listing could not be read (${systemdHealth.unregisteredReason ?? "unknown"}), so no unregistered unit was classified on this run`,
+          [
+            `reason ${systemdHealth.unregisteredReason ?? "unknown"}`,
+            `manager ${systemdHealth.manager.state}`,
+            "coverage not-swept"
+          ],
+          systemdHealth.unregisteredReason ?? "unknown",
+          "every unregistered hermes unit on this manager claimed by a contract classification"
+        );
+      }
       if (systemdHealth.unregistered !== null) {
         const all2 = systemdHealth.unregistered.items;
         const kept = all2.slice(0, FLEET_STATUS_MAX_ITEMS);
         if (all2.length > kept.length) {
           systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}].items: ${all2.length - kept.length} of ${all2.length} items dropped; data.systemd.unregistered.by_class is counted over every unit before the cap`);
+        }
+        if (systemdHealth.listingTruncated) {
+          systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest.limits.max_units} ${serviceManifest.unregistered.unit_glob} unit(s); every listing this run read is a prefix of what the manager holds, so an over-cap unit is neither swept nor correlated`);
         }
         if (systemdHealth.unregistered.truncated) {
           systemdUnregisteredNotes.push(`host[${SYSTEMD_UNREGISTERED_RULE_ID}]: the manager listed more than ${serviceManifest.limits.max_unregistered_units} unregistered ${serviceManifest.unregistered.unit_glob} unit(s); the sweep stopped at the cap and data.systemd.unregistered.truncated says so`);

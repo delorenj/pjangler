@@ -146,8 +146,21 @@ export const SYSTEMD_CLASSIFY_PROPERTIES = [
   "Id", "LoadState", "UnitFileState", "ActiveState", "SubState", "Description", "Environment", "FragmentPath",
 ] as const;
 
-/** Directories a canonical `FragmentPath` may live in: the user unit dir, and the system-wide user units. */
-export const SYSTEMD_SYSTEM_UNIT_DIRS = ["/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user"] as const;
+/**
+ * Directories a canonical `FragmentPath` may live in, beside the two
+ * home-relative ones the context resolves (`$XDG_CONFIG_HOME/systemd/user` and
+ * `$XDG_DATA_HOME/systemd/user`).
+ *
+ * `systemd.unit(5)`'s user unit load path, not a hand-picked subset: a
+ * package-installed unit under `/usr/share/systemd/user` and a generated one
+ * under `/run/systemd/user` are exactly as canonical as `/usr/lib/systemd/user`,
+ * and reporting either as `fragment-unsafe` would send an operator hunting a
+ * defect systemd itself put there.
+ */
+export const SYSTEMD_SYSTEM_UNIT_DIRS = [
+  "/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user",
+  "/usr/share/systemd/user", "/usr/local/share/systemd/user", "/run/systemd/user", "/run/systemd/generator",
+] as const;
 
 /**
  * The properties EVERY unit reading is built on, required in every sample.
@@ -180,7 +193,14 @@ const WORD = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$/u;
 /** `--profile <name>` in a transient scope's description. EXACT token, never a substring guess. */
 const PROFILE_TOKEN = /(?:^|\s)--profile[\s=]+([A-Za-z0-9][A-Za-z0-9_-]{0,63})(?:\s|$)/u;
 
-/** Microseconds per systemd duration unit. `min` and `ms` are matched before `s`; there is no bare `m`. */
+/**
+ * Microseconds per systemd duration unit, looked up by EXACT suffix.
+ *
+ * The lookup is an equality match on the whole suffix a token carries, not a
+ * prefix scan, so ordering carries no meaning: `min` and `m` are both here and
+ * `1min` can never be read as one minute plus an `in`. systemd itself accepts
+ * a bare `m` for minutes (`systemd.time(7)`), which is why it is listed.
+ */
 const DURATION_UNITS: ReadonlyArray<readonly [string, bigint]> = [
   ["usec", 1n], ["us", 1n], ["msec", 1_000n], ["ms", 1_000n],
   ["minutes", 60_000_000n], ["minute", 60_000_000n], ["min", 60_000_000n], ["m", 60_000_000n],
@@ -326,12 +346,16 @@ export interface FleetSystemdAgentResult {
   };
   timer: FleetSystemdAspect & {
     view: FleetStatusSystemdUnitView;
+    /** The stable code of the item that decided this leaf's state, or null. */
+    code: string | null;
     paired: boolean;
     schedule: FleetSystemdSchedule;
     tick: FleetSystemdTick;
   };
   service: FleetSystemdAspect & {
     view: FleetStatusSystemdUnitView;
+    /** The stable code of the item that decided this leaf's state, or null. */
+    code: string | null;
     result: string | null;
     execStatus: number | null;
     entrypoint: { family: FleetSystemdEntrypointFamily; pinned: boolean };
@@ -345,6 +369,8 @@ export interface FleetSystemdHealth {
   window: { samples: number; interval_ms: number };
   /** Fleet scope only; zeros under `--agent`, which lists nothing. */
   units: { listed: number; unit_files: number; transient: number };
+  /** A listing that hit `limits.max_units`: the sweep saw a PREFIX of the manager's units, and says so. */
+  listingTruncated: boolean;
   agents: Map<string, FleetSystemdAgentResult>;
   shared: FleetSystemdSharedRecord;
   /** Null in agent scope and when the manager could not be reached. */
@@ -381,6 +407,26 @@ function within(root: string, candidate: string): boolean {
 
 function aspect(state: FleetStatusState, items: FleetSystemdItem[], observed: string, desired: string, summary: string): FleetSystemdAspect {
   return { state, items, observed, desired, summary };
+}
+
+/**
+ * The item that DECIDED a leaf's state, as its stable code.
+ *
+ * `items[0]` was not it: an `error` leaf whose first item is a `warn` reported
+ * the warning's code beside the error's state, so the one line an operator
+ * reads (`gw <code>` / `hb <code>`) named a reading that did not cause the
+ * verdict. The first item whose OWN rank equals the leaf's state is the cause;
+ * the first item is the fallback, which is what a `pass` leaf with items or a
+ * rank function and a state that disagree would fall back to.
+ */
+function decisiveCode(
+  items: readonly FleetSystemdItem[],
+  state: FleetStatusState,
+  rank: (kind: FleetSystemdItemKind) => FleetStatusState,
+): string | null {
+  if (items.length === 0) return null;
+  const decisive = items.find((item) => rank(item.kind) === state) ?? items[0]!;
+  return decisive.detail ?? decisive.kind;
 }
 
 /** The precedence this module ranks its own items by: error beats fail beats warn beats pass. */
@@ -535,7 +581,7 @@ export function parseEnvironment(lines: readonly string[], keys: readonly string
   const out: Record<string, string | null> = {};
   for (const key of keys) out[key] = null;
   for (const line of lines) {
-    for (const token of line.split(/\s+/u)) {
+    for (const token of splitEnvironmentLine(line)) {
       const at = token.indexOf("=");
       if (at <= 0) continue;
       const key = token.slice(0, at);
@@ -543,6 +589,37 @@ export function parseEnvironment(lines: readonly string[], keys: readonly string
       out[key] = token.slice(at + 1);
     }
   }
+  return out;
+}
+
+/**
+ * One `Environment=` line split into assignments the way systemd QUOTES them.
+ *
+ * Splitting on whitespace was wrong for the one thing this parser exists to
+ * read: systemd prints a value containing a space as `"HERMES_HOME=/a b/c"`,
+ * so a naive split truncated the home at the space and the observer reported
+ * `home-unsafe` or `home-mismatch` about a path the unit does not have. Double
+ * and single quotes both open a token, a backslash escapes the next character
+ * outside single quotes, and whitespace outside quotes ends it.
+ */
+export function splitEnvironmentLine(line: string): string[] {
+  const out: string[] = [];
+  let token = "";
+  let quote: string | null = null;
+  let started = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const ch = line[index]!;
+    if (quote === null && (ch === " " || ch === "\t")) {
+      if (started) { out.push(token); token = ""; started = false; }
+      continue;
+    }
+    started = true;
+    if (quote === null && (ch === '"' || ch === "'")) { quote = ch; continue; }
+    if (quote !== null && ch === quote) { quote = null; continue; }
+    if (ch === "\\" && quote !== "'" && index + 1 < line.length) { index += 1; token += line[index]!; continue; }
+    token += ch;
+  }
+  if (started) out.push(token);
   return out;
 }
 
@@ -740,6 +817,12 @@ async function listFleet(ctx: FleetSystemdContext): Promise<Listing> {
 
 // ---------------------------------------------------------------------------
 // Phase 4: the stability window
+//
+// Phase 3 -- the universe of units to sample -- is derived in the entry point
+// at the bottom of this file rather than here, because it needs the whole
+// context (every selected agent, every REGISTERED agent's owned names, and the
+// shared gateway) and produces no function of its own. The numbers follow the
+// RUN order, so they skip here rather than renumber around it.
 // ---------------------------------------------------------------------------
 
 interface Window {
@@ -890,6 +973,12 @@ function evaluateTickActivation(sample: Sample, monotonicNowUs: bigint, maxTickS
   if (sample === null || one(sample, "LoadState") !== "loaded") return null;
   const active = one(sample, "ActiveState") ?? "";
   if (active !== "activating" && active !== "active") return null;
+  // `RemainAfterExit=yes` leaves a SUCCESSFULLY completed oneshot sitting at
+  // `active/exited`. That is a finished tick, not one in flight: reading it as
+  // `in-progress` would age into `stuck` and never recover. Every heartbeat
+  // unit this fleet provisions is `RemainAfterExit=no`, so this is the latent
+  // half of the rule rather than the live one.
+  if (one(sample, "SubState") === "exited") return null;
   const timeout = parseSystemdUsec(one(sample, "TimeoutStartUSec")) ?? BigInt(maxTickSeconds) * 1_000_000n;
   const start = parseSystemdUsec(one(sample, "ExecMainStartTimestampMonotonic"));
   const age = start === null || start === 0n ? null : monotonicNowUs - start;
@@ -911,7 +1000,11 @@ function classifyEntrypoint(
   // still the `hermes-bin` FAMILY -- naming it `other` would hide that the unit
   // runs Hermes at all -- but it is not pinned.
   if (/(?:^|\/)hermes$/u.test(path)) return { family: "hermes-bin", pinned: false };
-  if (path.endsWith(launcher.slice(launcher.lastIndexOf("/") + 1))) return { family: "launcher", pinned: false };
+  // By BASENAME, never by bare suffix: `endsWith` alone classed
+  // `/opt/anything/foo-credential-launch.sh` as this role's launcher, and a
+  // launcher is the one family this build calls PINNED when it resolves.
+  const launcherName = launcher.slice(launcher.lastIndexOf("/") + 1);
+  if (launcherName !== "" && path.slice(path.lastIndexOf("/") + 1) === launcherName) return { family: "launcher", pinned: false };
   return { family: "other", pinned: false };
 }
 
@@ -1030,9 +1123,27 @@ function erroredAspect(kind: FleetSystemdItemKind, unit: string, detail: string,
   return aspect("error", [{ path: unit, kind, desired: "an observation of the user manager", observed: kind, detail }], kind, "an observation of the user manager", summary);
 }
 
-function emptyAgentResult(input: FleetSystemdAgentInput, expected: string[], failure: (unit: string) => FleetSystemdAspect, platforms: readonly string[]): FleetSystemdAgentResult {
+/**
+ * Every leaf of one agent, filled in with a collection failure.
+ *
+ * The three unit names arrive BY KEY, never as positions in `expected`.
+ * `expected` is SORTED for the payload, and the canonical triple sorts
+ * `…-gateway.service`, `…-heartbeat.service`, `…-heartbeat.timer` -- so
+ * destructuring it as `[gateway, timer, service]` handed the heartbeat SERVICE
+ * to the timer leaf and the TIMER to the service leaf on every
+ * `manager-unavailable`, `manager-timeout` and `show-failed` result. The error
+ * path is exactly where an operator has the least other evidence, so it is the
+ * worst place to name the wrong unit.
+ */
+function emptyAgentResult(
+  input: FleetSystemdAgentInput,
+  expected: string[],
+  units: { gateway: string | null; timer: string | null; service: string | null },
+  failure: (unit: string) => FleetSystemdAspect,
+  platforms: readonly string[],
+): FleetSystemdAgentResult {
   const view = (unit: string): FleetStatusSystemdUnitView => ({ unit, load: null, unit_file: null, active: null, sub: null });
-  const [gatewayUnit, timerUnit, serviceUnit] = expected;
+  const { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit } = units;
   return {
     agentId: input.agentId,
     topology: { ...failure(gatewayUnit ?? input.agentId), expected, installed: [], missing: [], extra: [] },
@@ -1048,9 +1159,9 @@ function emptyAgentResult(input: FleetSystemdAgentInput, expected: string[], fai
       entrypoint: { family: "unknown", pinned: false }, home: "unknown",
       stability: { samples: 0, stable: false, transitions: [] },
     },
-    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), paired: false, schedule: "unknown", tick: "unknown" },
+    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), code: null, paired: false, schedule: "unknown", tick: "unknown" },
     service: {
-      ...failure(serviceUnit ?? input.agentId), view: view(serviceUnit ?? "(underivable)"),
+      ...failure(serviceUnit ?? input.agentId), view: view(serviceUnit ?? "(underivable)"), code: null,
       result: null, execStatus: null, entrypoint: { family: "unknown", pinned: false },
       latestResult: "unknown", reconcile: { declared: "unverifiable", evidence: "not-read" },
     },
@@ -1069,10 +1180,10 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   // -- the collection gates, carried onto every leaf --------------------------
   if (shared.manager.code !== "available") {
     const kind: FleetSystemdItemKind = shared.manager.code === "manager-timeout" ? "manager-timeout" : "manager-unavailable";
-    return emptyAgentResult(input, expected, (unit) => erroredAspect(kind, unit, shared.manager.code, `not observed: ${shared.manager.detail}`), platforms);
+    return emptyAgentResult(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => erroredAspect(kind, unit, shared.manager.code, `not observed: ${shared.manager.detail}`), platforms);
   }
   if (gatewayUnit === null || timerUnit === null || serviceUnit === null) {
-    return emptyAgentResult(input, expected, (unit) => aspect(
+    return emptyAgentResult(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => aspect(
       "error",
       [{ path: unit, kind: "agent-id-unsafe", desired: "a unit name derived from service_model.per_agent", observed: "underivable", detail: null }],
       "underivable", "a unit name derived from service_model.per_agent",
@@ -1081,7 +1192,7 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
   }
   if (shared.window.taken === 0) {
     const kind: FleetSystemdItemKind = shared.window.error === "show-timeout" ? "show-timeout" : shared.window.error === "show-too-large" ? "show-too-large" : "show-failed";
-    return emptyAgentResult(input, expected, (unit) => erroredAspect(kind, unit, shared.window.error ?? "show-failed", "not observed: the stability window produced no sample of the user manager"), platforms);
+    return emptyAgentResult(input, expected, { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit }, (unit) => erroredAspect(kind, unit, shared.window.error ?? "show-failed", "not observed: the stability window produced no sample of the user manager"), platforms);
   }
 
   const samplesOf = (unit: string): Sample[] => shared.window.samples.get(unit) ?? [];
@@ -1255,6 +1366,25 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
     for (const key of gatewayStability.malformed) {
       gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: `property-malformed:${word(key)}` });
     }
+    // A present-but-unparseable `ExecMainStatus`, reported the way the oneshot's
+    // leaf already reports it. Without this it was silently swallowed: `NaN`
+    // fails the `!== 0` test, so the unit read as a clean exit and the summary
+    // carried `exec_status: null` with no item to say why.
+    if (gatewayStatus !== undefined && Number.isNaN(gatewayStatus)) {
+      gatewayItems.push({ path: gatewayUnit, kind: "property-malformed", desired: "a whole number", observed: "unparsed", detail: "property-malformed:ExecMainStatus" });
+    }
+    // A `UnitFileState` in NEITHER set -- `static`, `generated`, `indirect`,
+    // `bad`. The observer's whole deferred verdict is "this unit is disabled",
+    // and a static or indirectly-enabled unit is not a unit anyone disabled: it
+    // is a reading this vocabulary cannot classify, and saying so is the only
+    // honest option. `warn`, because nothing is proven either way.
+    if (!isEnabled && !isDisabled) {
+      gatewayItems.push({
+        path: gatewayUnit, kind: "unit-file-state-unclassified",
+        desired: `${[...ENABLED_STATES].sort().join("|")} or ${[...DISABLED_STATES].sort().join("|")}`,
+        observed: word(unitFileState), detail: `unit-file-state-unclassified:${word(unitFileState)}`,
+      });
+    }
     if (capability === "active") {
       if (!isEnabled) gatewayItems.push({ path: gatewayUnit, kind: "verified-channel-gateway-disabled", desired: "enabled", observed: word(unitFileState || "absent"), detail: "verified-channel-gateway-disabled" });
       if (activeState !== "active" || one(gatewaySample, "SubState") !== "running") {
@@ -1329,12 +1459,12 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
 
   const gatewayRank = (kind: FleetSystemdItemKind): FleetStatusState => (
     kind === "property-malformed" ? "error"
-      : kind === "channel-undeclared" && !isEnabled && !isActive ? "warn"
+      : kind === "unit-file-state-unclassified" || (kind === "channel-undeclared" && !isEnabled && !isActive) ? "warn"
         : "fail"
   );
   let gatewayState: FleetStatusState = "pass";
   for (const item of gatewayItems) gatewayState = worseOf(gatewayState, gatewayRank(item.kind));
-  const gatewayCode = gatewayItems.length === 0 ? null : gatewayItems[0]!.detail ?? gatewayItems[0]!.kind;
+  const gatewayCode = decisiveCode(gatewayItems, gatewayState, gatewayRank);
   const gateway = {
     ...aspect(
       gatewayState, gatewayItems,
@@ -1462,6 +1592,7 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
         : `${timerItems.length} heartbeat-timer defect(s): an active timer proves nothing on its own`,
     ),
     view: unitView(timerUnit, timerSample),
+    code: decisiveCode(timerItems, timerState, timerRank),
     paired, schedule, tick,
   };
 
@@ -1534,6 +1665,7 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
         : `${serviceItems.length} heartbeat-service defect(s): an active timer proves nothing without a successful tick`,
     ),
     view: unitView(serviceUnit, serviceSample),
+    code: decisiveCode(serviceItems, serviceState, serviceRank),
     result: serviceResult === null ? null : word(serviceResult),
     execStatus: serviceStatus === undefined || Number.isNaN(serviceStatus) ? null : serviceStatus,
     entrypoint: serviceEntrypoint,
@@ -1735,7 +1867,7 @@ export async function collectSystemdHealth(ctx: FleetSystemdContext): Promise<Fl
   const listing = available && ctx.sweep ? await listFleet(ctx) : emptyListing();
   probes.push(...listing.probes);
 
-  // -- the universe of interest ---------------------------------------------
+  // -- Phase 3: the universe of interest (see the Phase 4 header) ------------
   const perAgent = ctx.serviceModel?.per_agent ?? {};
   const interest = new Set<string>();
   const owned = new Set<string>();
@@ -1772,7 +1904,20 @@ export async function collectSystemdHealth(ctx: FleetSystemdContext): Promise<Fl
   const sampled = available ? await sampleWindow(ctx, unitsOfInterest) : { samples: new Map<string, Sample[]>(), taken: 0, probes: [], error: "manager-unavailable" };
   probes.push(...sampled.probes);
 
-  const unitDirs = [join(ctx.configHome, "systemd", "user"), ...SYSTEMD_SYSTEM_UNIT_DIRS].map((dir) => resolve(dir));
+  // The user unit load path: the two home-relative directories systemd reads
+  // (`$XDG_CONFIG_HOME/systemd/user` for an operator's own units,
+  // `$XDG_DATA_HOME/systemd/user` for a package's or a `systemctl --user link`)
+  // plus the system-wide ones. `$XDG_DATA_HOME` is resolved the way every
+  // other consumer in this build resolves it, so an operator who moved it does
+  // not read `fragment-unsafe` for units systemd itself loaded.
+  const dataHome = ctx.env.XDG_DATA_HOME && ctx.env.XDG_DATA_HOME.trim() !== ""
+    ? ctx.env.XDG_DATA_HOME
+    : join(ctx.home, ".local", "share");
+  const unitDirs = [
+    join(ctx.configHome, "systemd", "user"),
+    join(dataHome, "systemd", "user"),
+    ...SYSTEMD_SYSTEM_UNIT_DIRS,
+  ].map((dir) => resolve(dir));
   const shared: Shared = {
     manager: manager.record,
     window: sampled,
@@ -1812,6 +1957,7 @@ export async function collectSystemdHealth(ctx: FleetSystemdContext): Promise<Fl
   return {
     manager: manager.record,
     window,
+    listingTruncated: listing.truncated,
     units: {
       listed: listing.units.size,
       unit_files: listing.files.size,

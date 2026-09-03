@@ -12,6 +12,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { FAKE_SAMPLED_PROPERTY_FLOOR } from "./fake-systemctl.mjs";
 
 const [shimDir, ...argv] = process.argv.slice(2);
 const statePath = join(shimDir, "systemctl-state.json");
@@ -43,24 +44,6 @@ function readCounter() {
 
 function bumpCounter() {
   writeFileSync(counterPath, String(readCounter() + 1), "utf8");
-}
-
-/** `1w 5d 14h 16min 26.297365s`, the way systemd renders a monotonic timespan. */
-function formatTimespan(us) {
-  const value = BigInt(us);
-  if (value === 0n) return "0";
-  const units = [["w", 604800000000n], ["d", 86400000000n], ["h", 3600000000n], ["min", 60000000n]];
-  let rest = value;
-  const parts = [];
-  for (const [suffix, size] of units) {
-    const count = rest / size;
-    if (count > 0n) { parts.push(`${count}${suffix}`); rest -= count * size; }
-  }
-  if (rest > 0n) {
-    const seconds = Number(rest) / 1e6;
-    parts.push(`${seconds.toFixed(6).replace(/0+$/u, "").replace(/\.$/u, "")}s`);
-  }
-  return parts.join(" ");
 }
 
 const NOT_FOUND = (unit) => ({
@@ -105,6 +88,18 @@ if (verb === "is-system-running") {
 }
 
 if (verb === "list-units" || verb === "list-unit-files") {
+  // A scripted LISTING failure: the manager answers `is-system-running` and
+  // then cannot list its units. `state.malformed` is the third shape (valid
+  // exit, unparseable body); together they are the three codes `listFleet`
+  // can produce with an available manager.
+  const listing = state.listing ?? null;
+  if (listing !== null) {
+    sleepMs(listing.delay_ms ?? 0);
+    if (typeof listing.exit === "number" && listing.exit !== 0) {
+      process.stderr.write(`fake systemctl: scripted ${verb} failure\n`);
+      process.exit(listing.exit);
+    }
+  }
   if (state.malformed === true) {
     process.stdout.write("{not json\n");
     process.exit(0);
@@ -124,8 +119,11 @@ if (verb === "show") {
   const units = positional.slice(1);
   // The SAMPLED show is the one that advances the window; the classification
   // show over unregistered units asks for a narrower property set and must not
-  // move a scripted unit on to its next reading.
-  const sampled = properties.includes("NRestarts");
+  // move a scripted unit on to its next reading. Told apart by the SIZE of the
+  // requested set, never by one production property name: keying it on
+  // `includes("NRestarts")` meant dropping that property from the observer
+  // would have frozen every window at sample 0 with the suite still green.
+  const sampled = properties.length > FAKE_SAMPLED_PROPERTY_FLOOR;
   const index = sampled ? readCounter() : Math.max(0, readCounter() - 1);
   const blocks = units.map((unit) => {
     const found = sampleOf(unit, index) ?? NOT_FOUND(unit);
@@ -150,5 +148,3 @@ if (verb === "show") {
 // is asserting over a fake that would have obeyed one.
 process.stderr.write(`fake systemctl: refusing unexpected verb ${verb}\n`);
 process.exit(2);
-
-export { formatTimespan };
