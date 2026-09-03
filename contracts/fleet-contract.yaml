@@ -409,7 +409,10 @@ health_policy:
   # canonical renderer's own check, so `profile.render_generation` is answered
   # rather than deferred. Neither is systemd topology: the systemd observer
   # (story 1.8) samples the user manager itself, so `unit_topology` is answered
-  # too, and only the live-process and Bloodbank-liveness halves remain.
+  # too. THREE deferrals remain, not two: live-process attribution (owner 1.9)
+  # and Bloodbank routing liveness (owner 1.10), both whole-domain, plus the
+  # capability-level `release_provenance`/`fleet.registry_file` (owner 1.1) --
+  # that last one is easy to forget because its domain still reports verdicts.
   required_domains:
     - registry
     - project_binding

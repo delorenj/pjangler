@@ -651,8 +651,15 @@ over a declared stabilization window and lands five observations per agent -- tw
 (`agents.{agent_id}.systemd.gateway_unit`, `.heartbeat_timer`) and three unit leaves
 (`units.hermes-{agent_id}-gateway.service`, `-heartbeat.timer`, `-heartbeat.service`) -- plus three
 host findings (`systemd.manager`, `systemd.shared-gateway`, `systemd.unregistered`), `agents[].systemd`
-and `data.systemd`. The `systemd`/`unit_topology` deferral is removed from the contract, so seven of
-nine domains are now answered rather than declared unanswerable.
+and `data.systemd`. The `systemd`/`unit_topology` deferral is removed from the contract, so SIX of the
+nine required domains now carry no deferral at all -- registry, project_binding, template_scaffold,
+profile, runtime and systemd -- up from five before this story. Three deferrals remain:
+`live_process`/`process_attribution` (owner 1.9) and `bloodbank`/`routing_liveness` (owner 1.10), both
+whole-domain, and `release_provenance`/`fleet.registry_file` (owner 1.1), which is capability-level --
+that domain still produces verdicts. Measured on the live fleet rather than asserted:
+`health.unsupported` is 57 = 28 live_process + 28 bloodbank + 1 release_provenance.
+(Corrected after closure: this paragraph first claimed "seven of nine domains are now answered",
+which the landing gate falsified against a live full-fleet run. The overclaim was one domain.)
 
 Four decisions carry the story. It samples the MANAGER, not the agents: one `is-system-running`, two
 listings and `stabilization.samples` multi-unit `show` calls covering every unit at once, so the child

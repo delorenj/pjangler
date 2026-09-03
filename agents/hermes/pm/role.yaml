@@ -24,6 +24,13 @@ telegram:
 ticket_provider:
   name: plane
   timezone: "America/New_York"
+  # This board has TWO states in Plane's `unstarted` group -- "Todo" and
+  # "Ready for Implementation" -- so the adapter refuses to guess and every
+  # `transition <id> unstarted` fails until one is named here. A story that has
+  # a ticket but no spec yet belongs in Todo; "Ready for Implementation" means
+  # planning is already done. Named after PJAN-111 and PJAN-112 were swept into
+  # a completed state by a bulk transition and could not be walked back.
+  unstarted: "Todo"
 
 # Scrum Master sentinel knobs (only meaningful for role: scrum-master).
 scrum_master:
