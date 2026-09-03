@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-31-2026 21:03
-last_updated: 09-02-2026 13:30
+last_updated: 09-02-2026 22:15
 project: pjangler
 project_key: PJAN
 tracking_system: plane
@@ -58,7 +58,7 @@ development_status:
   1-5-make-partial-health-truthful-and-actionable: done  # PJAN-96
   1-6-audit-tracked-pm-scaffold-parity-fleet-wide: done  # PJAN-108
   1-7-prove-generated-profile-health-and-classify-extras: done  # PJAN-109
-  1-8-prove-canonical-systemd-topology-and-service-health: in-progress  # PJAN-110
+  1-8-prove-canonical-systemd-topology-and-service-health: done  # PJAN-110
   1-9-attribute-live-hermes-processes-and-expose-runtime-sprawl: backlog  # PJAN-111
   1-10-prove-bloodbank-routing-readiness-without-granting-activatio: backlog  # PJAN-112
   1-11-produce-scoped-versioned-dry-run-reconciliation-plans: backlog

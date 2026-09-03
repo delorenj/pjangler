@@ -2,16 +2,40 @@
 title: 'Story 1.8: Prove Canonical systemd Topology and Service Health'
 type: 'feature'
 created: '2026-09-02'
-status: 'in-review'
+status: 'done'
 baseline_revision: '378051d690e29c73acbb0560c35a475eb60f15a5'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-7-prove-generated-profile-health-and-classify-extras.md'
   - '{project-root}/contracts/fleet-contract.yaml'
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      A unit's drop-in overrides are read as one merged reading, so which file supplied an
+      ExecStart is not reported.
+    evidence: |-
+      `systemctl show` returns the EFFECTIVE property set, so `entrypoint-unpinned` is a true
+      statement about the unit as systemd runs it and a silent one about whether the fragment or a
+      drop-in supplied the value. Attribution belongs to the convergence story (1.16), which is the
+      first to need to know which file to rewrite. Tracked as DW-97.
+    location: >-
+      src/fleet/systemd.ts (parseExecStart / classifyEntrypoint)
+    severity: low
+  - summary: >-
+      `sleepBounded`'s already-aborted guard is correct by contract and unreachable from this
+      build's only caller, so it ships without a test.
+    evidence: |-
+      The guard makes the function's documented "cancellation wakes it at once" guarantee true for
+      the next caller. It cannot be driven today: `sampleWindow`'s loop throws at the
+      `throwIfCancelled` in front of every sleep, and this repo has no unit-test harness for module
+      internals -- every suite drives the built CLI in a subprocess. Recorded rather than tested,
+      deliberately, instead of adding a fixture that would only confirm the assumption. Tracked as
+      DW-99.
+    location: >-
+      src/fleet/runtime.ts (sleepBounded)
+    severity: low
 ---
 
 <intent-contract>
@@ -497,6 +521,61 @@ requirement; and `row.expected_units` still has a producer and parity assertions
 
 ## Review Triage Log
 
+### 2026-09-02 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 29: (high 3, medium 13, low 13)
+- defer: 1: (high 0, medium 0, low 1)
+- reject: 3: (high 0, medium 0, low 3)
+- addressed_findings:
+  - `[high]` `[patch]` P1 `emptyAgentResult` destructured a `.sort()`ed array positionally, so every
+    collection-error path named the heartbeat SERVICE where the TIMER belonged and vice versa
+    (verified by execution, not by reading). The three unit names are now taken by key; `expected`
+    stays sorted for the payload. The hole that hid it is closed too: the error-path cases asserted
+    only `state` and `kindsOf`, never the item `path`, so a new `assertErrorLeavesNameTheirUnits`
+    helper pins the `path` on all five leaves and `systemd.{gateway,heartbeat.timer,heartbeat.service}.unit`
+    across all three collection-error cases.
+  - `[high]` `[patch]` P2 A failed, timed-out or malformed unit listing emitted NO host finding while
+    `systemd.manager` still read `pass`, so an unreadable sweep was indistinguishable from a clean
+    fleet -- the exact liveness theatre this epic exists to remove. It now raises `systemd.unregistered`
+    at `error` naming the reason, and a new case drives all three listing codes through the fake's
+    `state.malformed` hook, which had existed unused since the suite was written.
+  - `[high]` `[patch]` P3 `service_manifest.messaging.secret_env` is the one path in the contract
+    grammar where a plaintext credential is syntactically permitted, and its only bound was a single
+    unasserted `ENV_KEY` line -- weaken it and a token committed into the tracked contract validates
+    and ships. A `serviceRejects` case now pins the diagnostic path and message.
+  - `[medium]` `[patch]` P4-P16 Thirteen medium findings: a swallowed malformed gateway
+    `ExecMainStatus`; a launcher matched by bare suffix rather than basename; `interval_ms: 0`
+    permitted beside a `samples >= 1` rule guarding the same vacuity; the fake's sample counter keyed
+    on the production constant `NRestarts`; the never-driven `misnamed-heartbeat-timer` arm; the
+    unasserted worse-leaf heartbeat rollup; `result-not-success`/`type-not-oneshot`/`load-error` whose
+    fixture knobs existed and were never turned; rule-agreement patterns that were copied literals
+    never pinned to `src/parity/rules.ts`; a live case that proved parser round-tripping but none of
+    the named live drifts; an unbounded MCP cancellation poll; two `--agent` scope blind spots;
+    `code` naming an item that did not decide the state; and an unclassified `UnitFileState` passing
+    as correctly disabled.
+  - `[low]` `[patch]` P17-P29 Thirteen low findings: an already-aborted `sleepBounded`; a dead
+    `isDisabled`; an unreported `Listing.truncated` cap; exported vocabulary with no emit site
+    (dropped, with a scan asserting every exported kind has one); a doc/code detail mismatch; a
+    self-contradicting `DURATION_UNITS` comment; a phase-numbering hole; four README omissions; a
+    duplicated `formatTimespan` with an unreachable export; an unasserted remediation string; a
+    `RemainAfterExit` oneshot reading `stuck` forever; unquoted `Environment=` parsing; and three
+    missing standard user-unit directories.
+
+Rejected, recorded so they are not re-raised: (1) the fake's `LastTriggerUSecMonotonic` shape,
+claimed inconsistent with its raw-integer sibling -- verified FALSE against the live manager, which
+prints `LastTriggerUSecMonotonic=1w 5d 21h 38min 32.086352s` and
+`ExecMainStartTimestampMonotonic=1114712115986` in the same breath, so the fake is faithful and
+"fixing" it would break fidelity; (2) `observeFromInventory` no longer emitting a systemd leaf --
+the spec required deleting that stub, since leaving it would manufacture a `status-contradiction`;
+(3) `row.expected_units` left unread -- it still has a producer and parity assertions.
+
+No bad_spec loopback was taken, deliberately and against the workflow's "when in doubt prefer
+bad_spec" default. That default exists because a spec-level fix produces more coherent code. Here
+the code was already coherent and verified three separate times against the live fleet; the defects
+were in what the regression net locked down, not in what the code did. A loopback would have
+reverted ~10,000 working lines to re-derive something identical.
+
 ## Design Notes
 
 **Sample the manager, not the agents.** One `show` call can carry every unit of interest; three fleet-wide
@@ -558,3 +637,106 @@ service_manifest:
   `fleet:sync`, another agent) fails it while proving nothing about this read-only observer. Content hashes
   fail only on a real write. The gating zero-mutation proof remains the fake's invocation log, which must
   contain no verb outside `is-system-running|list-units|list-unit-files|show`.
+
+## Auto Run Result
+
+Status: done
+Blocking condition: none
+
+### Implemented change
+
+`fleet status` now OBSERVES each registered agent's systemd reality instead of deriving expectations
+from the contract. A new read-only observer (`src/fleet/systemd.ts`) samples the user manager itself
+over a declared stabilization window and lands five observations per agent -- two registry leaves
+(`agents.{agent_id}.systemd.gateway_unit`, `.heartbeat_timer`) and three unit leaves
+(`units.hermes-{agent_id}-gateway.service`, `-heartbeat.timer`, `-heartbeat.service`) -- plus three
+host findings (`systemd.manager`, `systemd.shared-gateway`, `systemd.unregistered`), `agents[].systemd`
+and `data.systemd`. The `systemd`/`unit_topology` deferral is removed from the contract, so seven of
+nine domains are now answered rather than declared unanswerable.
+
+Four decisions carry the story. It samples the MANAGER, not the agents: one `is-system-running`, two
+listings and `stabilization.samples` multi-unit `show` calls covering every unit at once, so the child
+count is bounded regardless of fleet size and every agent's window is literally the same window.
+Desired gateway state comes from the registry's DECLARATION and is never read back from the unit,
+which is what makes "deferred but enabled" and "verified but disabled" read as drift rather than as
+two alternate healthy modes. It is read-only structurally: `systemctlArgv` refuses any verb outside
+the four read verbs, and children get an allowlist rather than a copy of `process.env`. And it reports
+BUCKETS, never ages, so two runs over unchanged state are byte-identical.
+
+### Files changed
+
+- `src/fleet/systemd.ts` (new, 1,972 lines) -- the observer: manager probe, listings, unit universe,
+  sampled `show`, property and duration parsers, topology/capability/gateway/heartbeat/provenance
+  evaluation, shared-gateway correlation, unregistered classification, probe records.
+- `contracts/fleet-contract.yaml` -- schema 4 -> 5, `contract_version` 1.4.0, new `service_manifest`
+  policy block, `systemd`/`unit_topology` deferral removed.
+- `src/fleet/contract.ts` -- `validateServiceManifest`, a ninth validation stage.
+- `src/fleet/types.ts` -- schema constants, manifest types, item kinds, unregistered classes,
+  `FleetStatusAgentSystemd`, `FleetSystemdSummary`, `agents[].systemd`, `data.systemd`.
+- `src/fleet/status.ts` -- stub deleted, collection phase, `observeFromSystemd`, three host findings,
+  legacy-rule agreement, payload assembly.
+- `src/fleet/output.ts` -- data key, item painting, the agent systemd cell, the Domains block.
+- `src/fleet/runtime.ts` -- `sleepBounded`, abort-aware and deadline-capped.
+- `src/fleet/profile.ts` -- `readBounded`, `entryStat` and the config-home resolution exported so the
+  two observers share one read idiom.
+- `src/fleet/health.ts`, `index.ts`, `cli.ts`, `mcp.ts`, `provenance.ts` -- evidence mapping, exports,
+  truthful no-observer hints.
+- `tests/fleet-systemd-regressions.mjs` (new, 2,689 lines, 68 cases, none skipped) and
+  `tests/helpers/fake-systemctl{,-bin}.mjs` (new) -- a scripted, recording user manager.
+- `tests/fleet-{status,health,contract,profile,scaffold}-regressions.mjs`,
+  `tests/mcp-server-regressions.mjs`, `scripts/run-tests.mjs` -- re-pinned truth tables, service-state
+  fixtures, suite registration.
+- `README.md`, `mise.toml`, `CHANGELOG.md`, `deferred-work.md` -- docs and ledger.
+
+### Review findings breakdown
+
+29 patches applied (3 high, 13 medium, 13 low); 1 deferred (low, DW-99); 3 rejected. 0 intent_gap,
+0 bad_spec, so no revert and no re-derivation. Details in the Review Triage Log above.
+
+### Follow-up review recommendation
+
+`true`. Patched findings this pass: high 3, medium 13, low 13. Two independent triggers fire -- a
+high-severity patched finding exists (three do), and `3 x 13 + 1 x 13 = 52`, far above the threshold
+of 5.
+
+### Verification performed
+
+- `npm run typecheck && npm run build` clean, and `git status --porcelain` empty afterwards, so the
+  tracked `dist` genuinely matches source rather than certifying an older bundle.
+- `npm test`: **70/70 suites green**, 0 failed, 0 quarantined. Run three times over the story --
+  independently by the orchestrator at 785 s and 817 s, and by the implementer at 872 s. The systemd
+  suite's live case RAN (not skipped) every time.
+- Matrix Test Audit: all 23 I/O matrix rows mapped to a named proving assertion. It FAILED on the
+  first attempt with 70/70 green -- seven blocking gaps where the tests passed without proving the
+  matrix -- and was closed code-first, never by editing an expectation to match the code.
+- Proof by mutation rather than by construction: 15 mutations during the audit closure and 17 during
+  the review batch, each deleting or inverting the line a test claimed to cover. All 32 went red.
+- Spec `## Verification` block, re-run at the end: live two-run `data.systemd` diff outside the
+  transient sweep -- no diff; `--domain registry` systemd probes -- 0; `fleet contract validate` --
+  exit 0 at schema 5; live unit-directory CONTENT hash unchanged before and after; independent
+  `systemctl --user show` agrees with the payload field-for-field;
+  `grep -c 'USec|Monotonic|op://|/home/|TOKEN='` on the 332 KB live payload -- 0.
+- Live fleet close-out (AC10), confirmed directly: 28 registered agents, manager `degraded` (an
+  available state), capability `{active: 3, deferred: 5, undeclared: 20}`, shared gateway `pass`,
+  `pjangler-pm` `deferred-but-enabled` + `deferred-but-active` with `stability.stable: true`,
+  `drumjangler-pm` `verified-channel-gateway-disabled`, `automatic-ai-pm` `latest-result-failed` +
+  `entrypoint-unpinned`, `ssbnk-pm` exactly one `platform-enablement-inherited:telegram`,
+  `delonet-director` `absent` x3, and 15 unregistered units classified with every
+  `process_reference: "unobserved"` so story 1.9's boundary is respected.
+
+### Residual risks
+
+1. **The live case now asserts real fleet state.** A genuine operator repair -- enabling
+   `drumjangler-pm`'s gateway, fixing `automatic-ai-pm`'s heartbeat -- will turn it red until the
+   expectation is updated. That is the deliberate trade for putting the story's own motivating drifts
+   under regression instead of leaving them to a transcribed manual run, but it is a maintenance cost
+   the next person should expect.
+2. **The regression net still proves the rule engine against a scripted manager.** 43 of 68 cases
+   cannot reach the real manager by construction (`DBUS_SESSION_BUS_ADDRESS` points at a path that
+   does not exist), which is correct -- a fixture agent's units are not on the developer's host -- but
+   it means live classification is proven by one skip-guarded case rather than throughout.
+3. **`unit-file-state-unclassified` is a new `warn`** that would appear on a fleet whose gateways are
+   `static` or `generated`. None on this host today; all 29 live gateways read `enabled` or `disabled`.
+4. **Two low deferrals ship open**, DW-97 (drop-in attribution, owned by story 1.16) and DW-99
+   (`sleepBounded`'s guard is unreachable from this build's only caller, so it ships untested rather
+   than with a fixture that would only confirm the assumption).
