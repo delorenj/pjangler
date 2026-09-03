@@ -147,19 +147,35 @@ export const SYSTEMD_CLASSIFY_PROPERTIES = [
 ] as const;
 
 /**
- * Directories a canonical `FragmentPath` may live in, beside the two
- * home-relative ones the context resolves (`$XDG_CONFIG_HOME/systemd/user` and
- * `$XDG_DATA_HOME/systemd/user`).
+ * The SYSTEM-WIDE half of the user unit load path: the directories a canonical
+ * `FragmentPath` may live in that do not depend on this operator's environment.
  *
- * `systemd.unit(5)`'s user unit load path, not a hand-picked subset: a
- * package-installed unit under `/usr/share/systemd/user` and a generated one
- * under `/run/systemd/user` are exactly as canonical as `/usr/lib/systemd/user`,
- * and reporting either as `fragment-unsafe` would send an operator hunting a
- * defect systemd itself put there.
+ * Not a copy of the manager's `UnitPath` -- that is 16 entries on this host,
+ * varies per machine, and reading it back would cost another child and make
+ * the safe set depend on the thing being audited. It is a bounded allowlist of
+ * the load-path entries this build can resolve on its own: these, plus the
+ * four the context derives from the environment (`$XDG_CONFIG_HOME/systemd/user`,
+ * `$XDG_DATA_HOME/systemd/user`, and the `$XDG_RUNTIME_DIR/systemd/*` set a
+ * `--runtime` enable or link writes into). A package-installed unit under
+ * `/usr/share/systemd/user` and a runtime one under `/run/user/<uid>/systemd/user`
+ * are as canonical as `/usr/lib/systemd/user`, and reporting either as
+ * `fragment-unsafe` would send an operator hunting a defect systemd put there.
  */
 export const SYSTEMD_SYSTEM_UNIT_DIRS = [
   "/usr/lib/systemd/user", "/lib/systemd/user", "/etc/systemd/user", "/usr/local/lib/systemd/user",
-  "/usr/share/systemd/user", "/usr/local/share/systemd/user", "/run/systemd/user", "/run/systemd/generator",
+  "/usr/share/systemd/user", "/usr/local/share/systemd/user", "/run/systemd/user",
+] as const;
+
+/**
+ * The `$XDG_RUNTIME_DIR`-relative load-path entries, in the manager's own order.
+ *
+ * `systemctl --user enable --runtime` and `--link --runtime` write here, and
+ * `enabled-runtime`/`linked-runtime` are states this module already reads as
+ * legitimately enabled -- so leaving these out made the one shape the enabled
+ * vocabulary explicitly allows read `fragment-unsafe`.
+ */
+export const SYSTEMD_RUNTIME_UNIT_SUBDIRS = [
+  "user", "user.control", "transient", "generator", "generator.early", "generator.late",
 ] as const;
 
 /**
@@ -1144,24 +1160,36 @@ function emptyAgentResult(
 ): FleetSystemdAgentResult {
   const view = (unit: string): FleetStatusSystemdUnitView => ({ unit, load: null, unit_file: null, active: null, sub: null });
   const { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit } = units;
+  // ONE aspect per leaf, and its code comes from that aspect's own item -- the
+  // same rule a READ leaf follows. Hardcoding `code: null` here blanked
+  // `agents[].systemd.gateway.code` and `.heartbeat.code` on every collection
+  // failure: the leaves still carried an item naming the failure, and the two
+  // summary fields a JSON consumer reads to learn WHY the domain is not proven
+  // said nothing at all.
+  const gatewayAspect = failure(gatewayUnit ?? input.agentId);
+  const timerAspect = failure(timerUnit ?? input.agentId);
+  const serviceAspect = failure(serviceUnit ?? input.agentId);
+  const codeOf = (leaf: FleetSystemdAspect): string | null => (
+    leaf.items.length === 0 ? null : leaf.items[0]!.detail ?? leaf.items[0]!.kind
+  );
   return {
     agentId: input.agentId,
-    topology: { ...failure(gatewayUnit ?? input.agentId), expected, installed: [], missing: [], extra: [] },
-    heartbeatTimerRow: failure(timerUnit ?? input.agentId),
+    topology: { ...gatewayAspect, expected, installed: [], missing: [], extra: [] },
+    heartbeatTimerRow: timerAspect,
     capability: {
       declared: "undeclared",
       platforms: Object.fromEntries(platforms.map((platform) => [platform, "undeclared" as const])),
       deltaDisabled: Object.fromEntries(platforms.map((platform) => [platform, null])),
     },
     gateway: {
-      ...failure(gatewayUnit ?? input.agentId), view: view(gatewayUnit ?? "(underivable)"), code: null,
+      ...gatewayAspect, view: view(gatewayUnit ?? "(underivable)"), code: codeOf(gatewayAspect),
       result: null, execStatus: null, restarts: null,
       entrypoint: { family: "unknown", pinned: false }, home: "unknown",
       stability: { samples: 0, stable: false, transitions: [] },
     },
-    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), code: null, paired: false, schedule: "unknown", tick: "unknown" },
+    timer: { ...timerAspect, view: view(timerUnit ?? "(underivable)"), code: codeOf(timerAspect), paired: false, schedule: "unknown", tick: "unknown" },
     service: {
-      ...failure(serviceUnit ?? input.agentId), view: view(serviceUnit ?? "(underivable)"), code: null,
+      ...serviceAspect, view: view(serviceUnit ?? "(underivable)"), code: codeOf(serviceAspect),
       result: null, execStatus: null, entrypoint: { family: "unknown", pinned: false },
       latestResult: "unknown", reconcile: { declared: "unverifiable", evidence: "not-read" },
     },
@@ -1380,8 +1408,13 @@ function inspectAgent(ctx: FleetSystemdContext, shared: Shared, input: FleetSyst
     // honest option. `warn`, because nothing is proven either way.
     if (!isEnabled && !isDisabled) {
       gatewayItems.push({
+        // SHORT on purpose: `desired` is clipped to 64 characters with no
+        // marker on the way into the payload, and the full two vocabularies are
+        // 85 -- so spelling them here ended the enumeration mid-word in the one
+        // item whose whole job is to say which vocabulary the reading fell
+        // outside of. The lists live in the README table instead.
         path: gatewayUnit, kind: "unit-file-state-unclassified",
-        desired: `${[...ENABLED_STATES].sort().join("|")} or ${[...DISABLED_STATES].sort().join("|")}`,
+        desired: "an enabled or a disabled UnitFileState",
         observed: word(unitFileState), detail: `unit-file-state-unclassified:${word(unitFileState)}`,
       });
     }
@@ -1913,9 +1946,12 @@ export async function collectSystemdHealth(ctx: FleetSystemdContext): Promise<Fl
   const dataHome = ctx.env.XDG_DATA_HOME && ctx.env.XDG_DATA_HOME.trim() !== ""
     ? ctx.env.XDG_DATA_HOME
     : join(ctx.home, ".local", "share");
+  const runtimeDir = ctx.env.XDG_RUNTIME_DIR && ctx.env.XDG_RUNTIME_DIR.trim() !== "" ? ctx.env.XDG_RUNTIME_DIR : null;
   const unitDirs = [
     join(ctx.configHome, "systemd", "user"),
+    join(ctx.configHome, "systemd", "user.control"),
     join(dataHome, "systemd", "user"),
+    ...(runtimeDir === null ? [] : SYSTEMD_RUNTIME_UNIT_SUBDIRS.map((name) => join(runtimeDir, "systemd", name))),
     ...SYSTEMD_SYSTEM_UNIT_DIRS,
   ].map((dir) => resolve(dir));
   const shared: Shared = {

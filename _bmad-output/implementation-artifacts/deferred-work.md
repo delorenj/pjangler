@@ -845,7 +845,63 @@ origin: review-patch story-1.8 (PJAN-110)
 location: src/fleet/runtime.ts (sleepBounded)
 source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
 severity: low
-reason: `AbortSignal` never fires `abort` for a listener added AFTER the abort, so a sleep started on an already-cancelled run waited out the full interval before anything noticed -- the opposite of the "CANCELLATION WAKES IT" guarantee the function documents. The guard is one line and is applied. It has no executable test: the only production caller is `sampleWindow`, whose loop is `sleep -> throwIfCancelled -> probe -> throwIfCancelled`, so every path that could reach a sleep with an already-aborted signal throws at the `throwIfCancelled` immediately after the previous probe instead. Proving the branch would mean removing that guard or exporting the helper to a unit-test harness this repository does not have (every suite drives the built CLI in a subprocess). Recorded rather than tested so the next caller -- a future observer that sleeps between reads without a cancellation check in front of it -- inherits a true guarantee instead of a documented one.
+reason: BELT AND BRACES, not a fix for a reachable defect -- the original entry claimed a hazard that never existed and is corrected here. It is true that `AbortSignal` never fires `abort` for a listener added after the abort. It is NOT true that a sleep on an already-cancelled run waited out its interval: the next statement is `const remaining = remainingMs(ctx)` and `remainingMs` opens with `throwIfCancelled(ctx)` (src/fleet/runtime.ts:110), which raises the byte-identical `CANCELLED` error, so an aborted run never reached `setTimeout` in the first place. The guard's only observable difference is a synchronous throw where there used to be one from the line below it. It stays because it makes the function's own documented guarantee true at the top of the function rather than by accident two lines down, and because a future caller that sleeps without a cancellation check in front of it inherits the guarantee rather than the accident. It has no test for the same reason it has no defect: the branch cannot be reached from this build's only caller, and this repository has no harness that imports internals (every suite drives the built CLI in a subprocess).
+status: open
+
+### DW-100: An unparseable fleet base reads as "no platform inherits enablement" rather than as a file nobody could read.
+origin: review-followup story-1.8 (PJAN-110)
+location: src/fleet/systemd.ts (readBaseEnablement, the deferred branch of inspectAgent)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: `readBaseEnablement` returns all-null when `HERMES_HOME/config.yaml` cannot be parsed, and the effective-enablement rule (`pinned ?? base ?? null`) collapses null to "nothing enables it" -- so a deferred agent's gateway leaf flips from `fail platform-enablement-inherited:<platform>` to a clean `pass` whose summary affirmatively states "no platform inherits enablement". Reproduced live against `ssbnk-pm` by pointing HERMES_FLEET_HOME at a copy whose base is `platforms: [unclosed`. This is the same shape story 1.8's own P2 fixed for the unregistered listing, and the null fallback itself is deliberate and documented; the overclaim is the SUMMARY string, not the fallback. Narrower than it looks: a missing or unreadable base is already caught by the profile domain (`base-missing`), so the genuinely silent case is "present, readable, syntactically invalid" -- and the profile domain's renderer probe would object to that on an unfiltered run. Resolving it means carrying the base read's outcome onto `Shared` and either emitting a `warn` item or softening the summary, which is a payload change this story's contract is already frozen against.
+status: open
+
+### DW-101: `stabilization.samples: 1` is the twin of the interval vacuity the contract now refuses.
+origin: review-followup story-1.8 (PJAN-110)
+location: src/fleet/contract.ts (validateServiceManifest), src/fleet/systemd.ts (evaluateStability)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: The review batch added "interval_ms must be positive when samples > 1" because three reads of one instant are unanimous about nothing. A single-sample window has the same property from the other direction: `evaluateStability` loops from index 1, so a one-element window never executes the body and returns `stable: true` unconditionally, and `crashLooping` (which needs two `NRestarts` readings) is unreachable. Demonstrated with a scratch contract at `samples: 1, interval_ms: 0`: it validates with no diagnostics and paints `stability.stable: true` for 26 of 28 live gateways off a single instant, while `samples: 3, interval_ms: 0` is refused. The shipped contract is 3 samples / 1000 ms, so this is a grammar gap rather than a live reading. Resolving it means either raising the `samples` floor to 2 -- a contract change that would reject a deployment deliberately sampling once -- or making the payload stop asserting `stable` below two samples, which is a schema decision.
+status: open
+
+### DW-102: The listing-truncation note is unreachable when a later listing also fails.
+origin: review-followup story-1.8 (PJAN-110)
+location: src/fleet/status.ts (the `unregistered !== null` branch that owns the note)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: `listFleet` sets `truncated` while parsing `list-units` and then sets `error` and returns if the subsequent `list-unit-files` child fails or times out. `collectSystemdHealth` leaves `unregistered` null whenever `listing.error !== null`, so status.ts takes the new listing-failure finding and skips the block that owns the truncation note -- the run reports the listing failure and says nothing about having correlated every agent's topology against a PREFIX of the manager's units. Requires exceeding `limits.max_units` (1000) AND a subsequent listing failure, so it is near-unreachable on a real fleet; the two cases this story added each drive one half. Resolving it means hoisting the note or folding the cap into the failure finding's details.
+status: open
+
+### DW-103: Only one of `decisiveCode`'s three call sites is discriminated by a test.
+origin: review-followup story-1.8 (PJAN-110)
+location: tests/fleet-systemd-regressions.mjs (the heartbeat rollup case), src/fleet/systemd.ts (the timer and service `decisiveCode` sites)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: The gateway site is pinned by a fixture whose `items[0]` is a `warn` and whose deciding item is the second. The timer and service sites are exercised only by a fixture with ONE item on the deciding leaf, where `decisiveCode(...)` and the pre-patch `items[0].detail` return the same string -- so reverting those two sites leaves the suite green. This is the hole that let the `heartbeat.code` regression ship (fixed separately); the error-path codes are asserted now, but the multi-item ordering on the timer and service leaves is still undiscriminated. Closing it needs a heartbeat fixture whose worse leaf carries two items of different rank.
+status: open
+
+### DW-104: Four collection-error codes reach every leaf and have no regression case.
+origin: review-followup story-1.8 (PJAN-110)
+location: tests/fleet-systemd-regressions.mjs (collection-error cases), src/fleet/systemd.ts (the unsampled-window and agent-id gates)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: `show-failed`, `show-timeout`, `show-too-large` and `agent-id-unsafe` all return the same `emptyAgentResult` shape the two driven codes (`manager-unavailable`, `manager-timeout`) return, so the P1 keyed-unit fix and the code fix are correct by construction on those paths -- but nothing drives them. The gates are reachable with the existing fake (a `show` that fails, delays past the probe budget, or answers past `max_show_bytes`) and with a registry row whose id is not one safe segment; each needs its own fixture. Recorded rather than claimed: the helper docstring and the spec now name only the two codes actually driven.
+status: open
+
+### DW-105: The vocabulary emit-site scans assert a source substring, not an emission.
+origin: review-followup story-1.8 (PJAN-110)
+location: tests/fleet-systemd-regressions.mjs (the two exported-vocabulary scans)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: The scans assert that `"<kind>"` appears somewhere in `systemd.ts` or `status.ts`. For `in-progress` and `stuck` that is satisfied by the return type, the return expression, an `observed` ternary and a rank comparison -- neither is ever written as a literal `kind:` value (they arrive as `kind: activation`), so deleting the push that emits them leaves the scan green. `EXTRA_CLASSES` has the same shape: `class: "retired"` in the unregistered sweep satisfies the check for the topology extra class. The guard did its job once -- it is what removed the dead `extra-unit` -- but it is a proxy for emission rather than emission itself. Closing it means asserting over the PAYLOAD: every exported kind appears in some case's `items[].kind` across the suite.
+status: open
+
+### DW-106: The `--agent` blind-spot case pins one of its two readings; the other is proven by README prose.
+origin: review-followup story-1.8 (PJAN-110)
+location: tests/fleet-systemd-regressions.mjs (the agent-scope case), src/fleet/systemd.ts (`timerOnDisk`)
+source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
+severity: low
+reason: `duplicate-gateway` is genuinely pinned as a fleet-vs-agent difference. The `registry-undeclared` half is not: the scope-dependent branch is `files.has(timerUnit) || loaded(timerUnit)`, and the fixture leaves the timer LOADED, so both scopes read the item identically and the case asserts exactly that. The blind spot itself is asserted only by a regex over README prose. Driving it needs a fixture whose `unit_files` carries the timer while the sampled `show` reports it `not-found` -- a shape the fake supports but no case builds.
 status: open
 
 ### DW-97: A unit's drop-in overrides are read as one merged reading, so which file supplied an ExecStart is not reported.
@@ -853,7 +909,7 @@ origin: spec-deferred story-1.8 (PJAN-110)
 location: src/fleet/systemd.ts (parseExecStart / classifyEntrypoint)
 source_spec: `spec-1-8-prove-canonical-systemd-topology-and-service-health.md`
 severity: low
-reason: `systemctl --user show` returns the EFFECTIVE property set -- the fragment merged with every drop-in -- so an `entrypoint-unpinned` reading is true about the unit as systemd will run it and silent about which file made it so. On the live fleet that matters: 23 of the 26 gateways carry a `10-versioned-runtime.conf` drop-in overriding `ExecStart=` to a versioned release binary while 17 fragments still name `~/.hermes/hermes-agent/.venv/bin/hermes`, so "the fragment says one thing and the drop-in another" is the actual state of most of the fleet and the observer reports only the merged answer. `DropInPaths` IS sampled and could be reported beside the item, but attributing a property to a specific drop-in means reading those files, which is a second source with its own trust question (a drop-in outside `$XDG_CONFIG_HOME/systemd/user` is not this fleet's). The convergence story that rewrites a unit (1.16) needs the attribution and is where the read belongs; a read-only observer reporting the effective value is the honest half.
+reason: `systemctl --user show` returns the EFFECTIVE property set -- the fragment merged with every drop-in -- so an `entrypoint-unpinned` reading is true about the unit as systemd will run it and silent about which file made it so. On the live fleet that matters: 23 of the 29 gateways carry a `10-versioned-runtime.conf` drop-in overriding `ExecStart=` to a versioned release binary while 17 fragments still name `~/.hermes/hermes-agent/.venv/bin/hermes`, so "the fragment says one thing and the drop-in another" is the actual state of most of the fleet and the observer reports only the merged answer. `DropInPaths` IS sampled and could be reported beside the item, but attributing a property to a specific drop-in means reading those files, which is a second source with its own trust question (a drop-in outside `$XDG_CONFIG_HOME/systemd/user` is not this fleet's). The convergence story that rewrites a unit (1.16) needs the attribution and is where the read belongs; a read-only observer reporting the effective value is the honest half.
 status: open
 
 ### DW-98: A deferred platform is judged by the delta's pin alone, never against the base it would inherit.

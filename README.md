@@ -534,7 +534,7 @@ fields and three units, all five declared writable under the contract's
 | --- | --- | --- |
 | `agents.{agent_id}.systemd.gateway_unit` | the canonical triple `service_model.per_agent` derives is loaded, the row names it, and nothing retired sits beside it | `gateway-missing`, `heartbeat-timer-missing`, `heartbeat-service-missing`, `misnamed-gateway:<unit>`, `duplicate-gateway:<unit>`, `retired-unit:<unit>`, `registry-retired-key:<key>` |
 | `agents.{agent_id}.systemd.heartbeat_timer` | the row records the timer the contract derives, and the manager loads it | `registry-undeclared` (units on disk, no field), `unit-missing`, `misnamed-heartbeat-timer:<unit>` |
-| `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared` (`warn` when disabled+inactive), `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success:<result>`/`exec-status:<n>`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `unit-file-state-unclassified:<state>` (`warn`), `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
+| `units.hermes-{agent_id}-gateway.service` | the gateway is in the state its row's *declaration* requires, stable across the whole window, entered from a pinned entrypoint at this agent's own profile home | `deferred-but-enabled`, `deferred-but-active`, `platform-enablement-inherited:<platform>`, `verified-channel-gateway-disabled`, `verified-channel-gateway-inactive`, `channel-undeclared` (`warn` when disabled+inactive), `channel-identity-incomplete:<platform>`, `channel-secret-unreferenced:<platform>`, `unstable`, `crash-looping`, `result-not-success:<result>`/`exec-status:<n>`, `entrypoint-unpinned`, `home-mismatch`/`home-absent`/`home-unsafe`, `fragment-unsafe`, `unit-file-state-unclassified:<state>` (`warn` — the enabled vocabulary is `enabled`, `enabled-runtime`, `linked`, `linked-runtime`, `alias`; the disabled one is `disabled`, `masked`, `masked-runtime` and an empty state; anything else, such as `static`, `generated` or `indirect`, is neither), `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
 | `units.hermes-{agent_id}-heartbeat.timer` | the timer is enabled, active, waiting, paired with its own service, on the declared schedule, its last tick is current, and a tick in flight is progressing | `timer-disabled`, `timer-inactive`, `timer-substate`, `timer-unpaired`, `schedule-off-policy`, `schedule-unknown` (`warn`), `tick-overdue`, `tick-never`, `tick-unknown` (`warn`), `stuck`, `in-progress` (`warn`), `fragment-unsafe`, `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
 | `units.hermes-{agent_id}-heartbeat.service` | the oneshot's latest COMPLETED invocation actually succeeded, from a pinned entrypoint, with a declared reconcile policy | `type-not-oneshot`, `latest-result-failed:<result>`, `latest-result-unknown` (`warn`), `never-completed`, `entrypoint-unpinned`, `checkpoint-only`, `reconcile-undeclared` (`warn`), `reconcile-opt-out-undeclared` (`warn`), `reconcile-unverifiable` (`warn`), `policy-unreadable`/`state-unreadable` (`error`), `fragment-unsafe`, `load-error:<state>`, `property-malformed:<Key>` (`error`), `absent` |
 
@@ -605,6 +605,14 @@ there is an unregistered unit to classify. A failed manager probe skips sampling
 entirely and every selected agent's five leaves read `error` with
 `manager-unavailable` or `manager-timeout`; `degraded` is an **available**
 manager, because a failed unit elsewhere does not make the fleet unobservable.
+Four more collection codes reach those same five leaves the same way: a window
+that produced no usable sample reads `show-failed`, `show-timeout` (a `show`
+child past `probe.timeout_ms`) or `show-too-large` (a payload past
+`limits.max_show_bytes`), and an agent id that is not one safe lower-case
+segment reads `agent-id-unsafe`, because no canonical unit name can be derived
+for it. On every one of those paths the leaf's items, `gateway.code` and
+`heartbeat.code` all name the failure -- an `error` leaf that reports no code
+tells a consumer the domain is unproven and nothing about why.
 
 **What `--agent` scope cannot see.** An `--agent` run samples that agent's own
 units and never lists the manager, so two topology readings are structurally

@@ -24,17 +24,90 @@ deferred:
       src/fleet/systemd.ts (parseExecStart / classifyEntrypoint)
     severity: low
   - summary: >-
-      `sleepBounded`'s already-aborted guard is correct by contract and unreachable from this
-      build's only caller, so it ships without a test.
+      `sleepBounded`'s already-aborted guard is belt-and-braces in front of `remainingMs`'s own
+      cancellation check, not a fix for a reachable hazard, and ships without a test.
     evidence: |-
-      The guard makes the function's documented "cancellation wakes it at once" guarantee true for
-      the next caller. It cannot be driven today: `sampleWindow`'s loop throws at the
-      `throwIfCancelled` in front of every sleep, and this repo has no unit-test harness for module
-      internals -- every suite drives the built CLI in a subprocess. Recorded rather than tested,
-      deliberately, instead of adding a fixture that would only confirm the assumption. Tracked as
-      DW-99.
+      The guard raises `CANCELLED` at the top of the function. The statement below it calls
+      `remainingMs`, which opens with the same `throwIfCancelled` and raises the byte-identical
+      error, so an aborted run never reached `setTimeout` even before the guard: the only observable
+      difference is a synchronous throw instead of one from the line below. It stays because it makes
+      the function's own documented guarantee true where the guarantee is written. Untestable for the
+      same reason it is undetectable -- the branch cannot be reached from this build's only caller,
+      and this repo has no harness that imports module internals. Tracked as DW-99, whose original
+      wording claimed a defect that never existed and is corrected.
     location: >-
       src/fleet/runtime.ts (sleepBounded)
+    severity: low
+  - summary: >-
+      An unparseable fleet base `config.yaml` reads as "no platform inherits enablement" instead of
+      as a file this run could not read.
+    evidence: |-
+      `readBaseEnablement` returns all-null on a parse failure and the effective-enablement rule
+      collapses null to "nothing enables it", so a deferred agent's gateway flips from `fail
+      platform-enablement-inherited:<platform>` to a `pass` that affirmatively states the opposite.
+      Reproduced live against `ssbnk-pm`. Narrower than it looks: a missing or unreadable base is
+      already caught by the profile domain, so the silent case is "present, readable, syntactically
+      invalid". Tracked as DW-100.
+    location: >-
+      src/fleet/systemd.ts (readBaseEnablement)
+    severity: low
+  - summary: >-
+      `stabilization.samples: 1` is the twin of the interval vacuity the contract now refuses.
+    evidence: |-
+      `evaluateStability` loops from index 1, so a one-sample window never executes the body and
+      returns `stable: true` unconditionally while `crash-looping` is unreachable -- the same
+      vacuity `interval_ms: 0` was just refused for, through the other knob. The shipped contract is
+      3 samples / 1000 ms, so this is a grammar gap, and closing it is either a `samples` floor of 2
+      or a payload that stops asserting `stable` below two samples. Tracked as DW-101.
+    location: >-
+      src/fleet/contract.ts (validateServiceManifest)
+    severity: low
+  - summary: >-
+      The listing-truncation note is unreachable when a later listing also fails.
+    evidence: |-
+      `truncated` is set while parsing `list-units`; a subsequent `list-unit-files` failure sets
+      `error`, which makes status.ts take the listing-failure finding and skip the block that owns
+      the note. Requires exceeding `max_units` AND a later listing failure. Tracked as DW-102.
+    location: >-
+      src/fleet/status.ts (the unregistered branch)
+    severity: low
+  - summary: >-
+      Only one of `decisiveCode`'s three call sites is discriminated by a test.
+    evidence: |-
+      The gateway site is pinned by a two-item fixture; the timer and service sites are exercised
+      only where the deciding leaf carries ONE item, so reverting them to `items[0]` leaves the suite
+      green. This is the hole that let the `heartbeat.code` regression ship. Tracked as DW-103.
+    location: >-
+      tests/fleet-systemd-regressions.mjs (the heartbeat rollup case)
+    severity: low
+  - summary: >-
+      Four collection-error codes reach every leaf and have no regression case.
+    evidence: |-
+      `show-failed`, `show-timeout`, `show-too-large` and `agent-id-unsafe` return the same
+      `emptyAgentResult` shape as the two codes the suite drives, so the keyed-unit and code fixes
+      are correct by construction there -- but nothing drives them. Tracked as DW-104.
+    location: >-
+      tests/fleet-systemd-regressions.mjs (collection-error cases)
+    severity: low
+  - summary: >-
+      The exported-vocabulary scans assert a source substring, not an emission.
+    evidence: |-
+      `in-progress` and `stuck` satisfy the scan through their return type and rank comparisons
+      although they are emitted as `kind: activation`, so deleting that push leaves the scan green.
+      Closing it means asserting over the payload's `items[].kind` across the suite. Tracked as
+      DW-105.
+    location: >-
+      tests/fleet-systemd-regressions.mjs (the vocabulary scans)
+    severity: low
+  - summary: >-
+      The `--agent` blind-spot case pins one of its two readings; the other is proven by README
+      prose.
+    evidence: |-
+      `duplicate-gateway` is genuinely pinned as a scope difference; the `registry-undeclared` half
+      is not, because the fixture leaves the timer LOADED so both scopes read it identically.
+      Driving it needs a unit-file-present-but-not-loaded fixture. Tracked as DW-106.
+    location: >-
+      tests/fleet-systemd-regressions.mjs (the agent-scope case)
     severity: low
 ---
 
@@ -488,7 +561,10 @@ Four changed observable behaviour:
    as `[gateway, timer, service]` handed the timer leaf the SERVICE and the service leaf the TIMER on every
    `manager-unavailable`, `manager-timeout` and `show-failed` result. The three are now derived BY KEY. The
    hole that hid it is closed too: the error-path cases asserted only `state` and the item kinds, never the
-   item `path` or `view.unit`, so the swap was invisible to a green suite.
+   item `path` or `view.unit`, so the swap was invisible to a green suite. TWO of those codes are driven by
+   the suite (`manager-unavailable`, `manager-timeout`); the unsampled-window codes (`show-failed`,
+   `show-timeout`, `show-too-large`) and `agent-id-unsafe` return the same shape from the same function and
+   have no case of their own -- recorded as DW-104 rather than claimed as covered.
 2. **A listing the manager answered and this run could not read emitted NOTHING.** `systemd.manager` read
    `pass`, no `systemd.unregistered` finding was produced at all, and the only trace was
    `data.systemd.unregistered.reason` several levels down the payload -- an operator reading the host findings
@@ -737,13 +813,25 @@ of 5.
    `drumjangler-pm`'s gateway, fixing `automatic-ai-pm`'s heartbeat -- will turn it red until the
    expectation is updated. That is the deliberate trade for putting the story's own motivating drifts
    under regression instead of leaving them to a transcribed manual run, but it is a maintenance cost
-   the next person should expect.
-2. **The regression net still proves the rule engine against a scripted manager.** 43 of 68 cases
-   cannot reach the real manager by construction (`DBUS_SESSION_BUS_ADDRESS` points at a path that
-   does not exist), which is correct -- a fixture agent's units are not on the developer's host -- but
-   it means live classification is proven by one skip-guarded case rather than throughout.
+   the next person should expect. The two OTHER ways a healthy host could have failed it are closed:
+   a registry naming none of the five annotated agents now SKIPS the case (it used to skip each agent
+   out loud and then fail the aggregate anyway), and a stopped Bloodbank gateway now skips rather than
+   failing -- what the case asserts about the shared gateway is that the host finding AGREES with the
+   reading it is built from, which is this story's contract and holds whatever state the unit is in.
+2. **The regression net still proves the rule engine against a scripted manager.** 67 of the suite's
+   68 cases cannot reach the real manager by construction: every one of them runs through `cli()`,
+   which merges an isolation environment whose `DBUS_SESSION_BUS_ADDRESS` points at a socket that
+   does not exist and whose PATH carries the scripted `systemctl`. That is correct -- a fixture
+   agent's units are not on the developer's host -- but it means live classification is proven by the
+   ONE case that spawns with the real environment. (A previous revision of this line said "43 of 68",
+   which matched no counting of the suite and understated the isolation.)
 3. **`unit-file-state-unclassified` is a new `warn`** that would appear on a fleet whose gateways are
    `static` or `generated`. None on this host today; all 29 live gateways read `enabled` or `disabled`.
-4. **Two low deferrals ship open**, DW-97 (drop-in attribution, owned by story 1.16) and DW-99
-   (`sleepBounded`'s guard is unreachable from this build's only caller, so it ships untested rather
-   than with a fixture that would only confirm the assumption).
+4. **Deferrals ship open**: DW-97 (drop-in attribution, owned by story 1.16 -- its live figures are
+   23 drop-ins and 17 legacy-venv fragments of **29** gateways, re-measured on this host), DW-99
+   (`sleepBounded`'s guard, which is belt-and-braces in front of `remainingMs`'s own
+   `throwIfCancelled` rather than a fix for a reachable hazard), and DW-100 through DW-106 from the
+   follow-up review: an unparseable fleet base that still reads "no platform inherits enablement", the
+   `samples: 1` twin of the interval vacuity, a truncation note unreachable when a later listing also
+   fails, one code-ordering nicety, and three test-strength items. None is a live misreading on this
+   fleet; each names its own trigger.

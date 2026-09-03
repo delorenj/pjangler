@@ -26228,8 +26228,15 @@ var SYSTEMD_SYSTEM_UNIT_DIRS = [
   "/usr/local/lib/systemd/user",
   "/usr/share/systemd/user",
   "/usr/local/share/systemd/user",
-  "/run/systemd/user",
-  "/run/systemd/generator"
+  "/run/systemd/user"
+];
+var SYSTEMD_RUNTIME_UNIT_SUBDIRS = [
+  "user",
+  "user.control",
+  "transient",
+  "generator",
+  "generator.early",
+  "generator.late"
 ];
 var SYSTEMD_REQUIRED_PROPERTIES = ["LoadState", "UnitFileState", "ActiveState", "SubState"];
 var ENABLED_STATES = /* @__PURE__ */ new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
@@ -26757,19 +26764,23 @@ function erroredAspect2(kind, unit, detail, summary) {
 function emptyAgentResult2(input, expected, units, failure, platforms) {
   const view = (unit) => ({ unit, load: null, unit_file: null, active: null, sub: null });
   const { gateway: gatewayUnit, timer: timerUnit, service: serviceUnit } = units;
+  const gatewayAspect = failure(gatewayUnit ?? input.agentId);
+  const timerAspect = failure(timerUnit ?? input.agentId);
+  const serviceAspect = failure(serviceUnit ?? input.agentId);
+  const codeOf = (leaf) => leaf.items.length === 0 ? null : leaf.items[0].detail ?? leaf.items[0].kind;
   return {
     agentId: input.agentId,
-    topology: { ...failure(gatewayUnit ?? input.agentId), expected, installed: [], missing: [], extra: [] },
-    heartbeatTimerRow: failure(timerUnit ?? input.agentId),
+    topology: { ...gatewayAspect, expected, installed: [], missing: [], extra: [] },
+    heartbeatTimerRow: timerAspect,
     capability: {
       declared: "undeclared",
       platforms: Object.fromEntries(platforms.map((platform2) => [platform2, "undeclared"])),
       deltaDisabled: Object.fromEntries(platforms.map((platform2) => [platform2, null]))
     },
     gateway: {
-      ...failure(gatewayUnit ?? input.agentId),
+      ...gatewayAspect,
       view: view(gatewayUnit ?? "(underivable)"),
-      code: null,
+      code: codeOf(gatewayAspect),
       result: null,
       execStatus: null,
       restarts: null,
@@ -26777,11 +26788,11 @@ function emptyAgentResult2(input, expected, units, failure, platforms) {
       home: "unknown",
       stability: { samples: 0, stable: false, transitions: [] }
     },
-    timer: { ...failure(timerUnit ?? input.agentId), view: view(timerUnit ?? "(underivable)"), code: null, paired: false, schedule: "unknown", tick: "unknown" },
+    timer: { ...timerAspect, view: view(timerUnit ?? "(underivable)"), code: codeOf(timerAspect), paired: false, schedule: "unknown", tick: "unknown" },
     service: {
-      ...failure(serviceUnit ?? input.agentId),
+      ...serviceAspect,
       view: view(serviceUnit ?? "(underivable)"),
-      code: null,
+      code: codeOf(serviceAspect),
       result: null,
       execStatus: null,
       entrypoint: { family: "unknown", pinned: false },
@@ -26968,9 +26979,14 @@ function inspectAgent2(ctx, shared, input) {
     }
     if (!isEnabled && !isDisabled) {
       gatewayItems.push({
+        // SHORT on purpose: `desired` is clipped to 64 characters with no
+        // marker on the way into the payload, and the full two vocabularies are
+        // 85 -- so spelling them here ended the enumeration mid-word in the one
+        // item whose whole job is to say which vocabulary the reading fell
+        // outside of. The lists live in the README table instead.
         path: gatewayUnit,
         kind: "unit-file-state-unclassified",
-        desired: `${[...ENABLED_STATES].sort().join("|")} or ${[...DISABLED_STATES].sort().join("|")}`,
+        desired: "an enabled or a disabled UnitFileState",
         observed: word2(unitFileState),
         detail: `unit-file-state-unclassified:${word2(unitFileState)}`
       });
@@ -27404,9 +27420,12 @@ async function collectSystemdHealth(ctx) {
   const sampled = available ? await sampleWindow(ctx, unitsOfInterest) : { samples: /* @__PURE__ */ new Map(), taken: 0, probes: [], error: "manager-unavailable" };
   probes.push(...sampled.probes);
   const dataHome = ctx.env.XDG_DATA_HOME && ctx.env.XDG_DATA_HOME.trim() !== "" ? ctx.env.XDG_DATA_HOME : join38(ctx.home, ".local", "share");
+  const runtimeDir = ctx.env.XDG_RUNTIME_DIR && ctx.env.XDG_RUNTIME_DIR.trim() !== "" ? ctx.env.XDG_RUNTIME_DIR : null;
   const unitDirs = [
     join38(ctx.configHome, "systemd", "user"),
+    join38(ctx.configHome, "systemd", "user.control"),
     join38(dataHome, "systemd", "user"),
+    ...runtimeDir === null ? [] : SYSTEMD_RUNTIME_UNIT_SUBDIRS.map((name) => join38(runtimeDir, "systemd", name)),
     ...SYSTEMD_SYSTEM_UNIT_DIRS
   ].map((dir) => resolve24(dir));
   const shared = {

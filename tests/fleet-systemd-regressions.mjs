@@ -671,13 +671,22 @@ function detailsOf(observation) {
 }
 
 /**
- * Every error leaf of one agent names ITS OWN unit, on the item and in the view.
+ * Every error leaf of one agent names ITS OWN unit and its OWN failure.
  *
- * The three collection-failure paths (`manager-unavailable`, `manager-timeout`,
- * `show-failed`) all build their result from one shape, so one helper proves
- * all three -- and the two heartbeat leaves are the pair that can silently swap.
+ * Two collection-failure paths are driven by this suite -- `manager-unavailable`
+ * and `manager-timeout` -- and both build their result from the one shape
+ * `emptyAgentResult` returns, which is also what the unsampled-window
+ * (`show-failed`, `show-timeout`, `show-too-large`) and `agent-id-unsafe` gates
+ * return. Those four codes have no case of their own; this helper proves the
+ * shape, not those gates.
+ *
+ * The two heartbeat leaves are the pair that can silently swap units, and the
+ * two summary CODES are the pair that can silently blank: `heartbeat.code` is
+ * the field a JSON consumer reads to learn why the domain is not proven, and
+ * nothing asserted it on an error path until it had already been null for a
+ * commit.
  */
-function assertErrorLeavesNameTheirUnits(agent) {
+function assertErrorLeavesNameTheirUnits(agent, code) {
   const units = unitsOf(agent.agent_id);
   const named = (field) => (leafOf(agent, field).items ?? []).map((item) => item.path);
   assert.deepEqual(named(FIELDS.gateway), [units.gateway], `${agent.agent_id} gateway item path`);
@@ -689,6 +698,12 @@ function assertErrorLeavesNameTheirUnits(agent) {
   assert.equal(agent.systemd.heartbeat.timer.unit, units.timer, `${agent.agent_id} timer view`);
   assert.equal(agent.systemd.heartbeat.service.unit, units.service, `${agent.agent_id} service view`);
   assert.deepEqual(agent.systemd.topology.expected, [units.gateway, units.service, units.timer].sort(), `${agent.agent_id} expected stays sorted`);
+  // The two summary codes NAME the failure. A leaf that carries an item and
+  // reports no code tells a consumer the domain is `error` and nothing about
+  // why -- on exactly the path where there is no other reading to fall back on.
+  assert.equal(agent.systemd.gateway.code, code, `${agent.agent_id} gateway code`);
+  assert.equal(agent.systemd.heartbeat.code, code, `${agent.agent_id} heartbeat code`);
+  assert.equal(agent.systemd.heartbeat.state, "error", `${agent.agent_id} heartbeat state`);
 }
 
 function hostNamed(data, ruleId) {
@@ -1533,7 +1548,7 @@ async function main() {
       // gateway, heartbeat.service, heartbeat.timer, so a positional read handed
       // the timer leaf the service and the service leaf the timer. This is the
       // path where an operator has the least other evidence.
-      assertErrorLeavesNameTheirUnits(agentNamed(data, id));
+      assertErrorLeavesNameTheirUnits(agentNamed(data, id), "manager-unavailable");
     }
     assert.equal(hostNamed(data, "systemd.manager").state, "error");
     assert.equal(data.systemd.manager.code, "manager-unavailable");
@@ -1566,7 +1581,7 @@ async function main() {
         assert.deepEqual(kindsOf(leafOf(agentNamed(broken, id), field)), ["manager-unavailable"], `${id} ${field}`);
         assert.equal(leafOf(agentNamed(broken, id), field).state, "error", `${id} ${field}`);
       }
-      assertErrorLeavesNameTheirUnits(agentNamed(broken, id));
+      assertErrorLeavesNameTheirUnits(agentNamed(broken, id), "manager-unavailable");
     }
     assert.deepEqual(
       broken.agents.map((agent) => `${agent.agent_id} registry:${agent.domains.registry} profile:${agent.domains.profile}`),
@@ -1591,7 +1606,7 @@ async function main() {
         assert.deepEqual(kindsOf(leafOf(agentNamed(data, id), field)), ["manager-timeout"], `${id} ${field}`);
         assert.equal(leafOf(agentNamed(data, id), field).state, "error", `${id} ${field}`);
       }
-      assertErrorLeavesNameTheirUnits(agentNamed(data, id));
+      assertErrorLeavesNameTheirUnits(agentNamed(data, id), "manager-timeout");
     }
     // ZERO sampling, asserted over the whole invocation log and the probe
     // ledger rather than over `show` alone: a stray listing after a failed
@@ -1689,6 +1704,12 @@ async function main() {
       // directory. The default fixture's `FragmentPath` is empty and
       // short-circuits, so nothing proved the allowlist ever ACCEPTS anything.
       "bravo-pm": { gatewayFragment: join(scratchHome, ".config", "systemd", "user", "hermes-bravo-pm-gateway.service") },
+      // The RUNTIME control: `systemctl --user enable|link --runtime` installs
+      // under `$XDG_RUNTIME_DIR/systemd/user`, and `enabled-runtime` /
+      // `linked-runtime` are states this build already reads as legitimately
+      // enabled -- so leaving that directory out of the safe set made the one
+      // shape the enabled vocabulary explicitly allows read `fragment-unsafe`.
+      "charlie-pm": { gatewayFragment: join(temp, "no-runtime", "systemd", "user", "hermes-charlie-pm-gateway.service") },
     }));
     const data = systemdRun();
     const alphaGateway = leafOf(agentNamed(data, "alpha-pm"), FIELDS.gateway);
@@ -1706,6 +1727,11 @@ async function main() {
     const bravoGateway = leafOf(agentNamed(data, "bravo-pm"), FIELDS.gateway);
     assert.equal(kindsOf(bravoGateway).includes("fragment-unsafe"), false, "a fragment in the declared unit directory is accepted");
     assert.equal(bravoGateway.state, "pass");
+    const charlieGateway = leafOf(agentNamed(data, "charlie-pm"), FIELDS.gateway);
+    assert.equal(
+      kindsOf(charlieGateway).includes("fragment-unsafe"), false,
+      `a runtime-installed fragment is accepted: ${JSON.stringify(detailsOf(charlieGateway))}`,
+    );
     // And a home that is a REAL profile home, just not this agent's.
     setState(canonicalState({ "alpha-pm": { gatewayEnabled: true, gatewayActive: true, gatewayHome: join(profileRoot, "bravo-pm") } }));
     const second = systemdRun();
@@ -1857,6 +1883,11 @@ async function main() {
     ], JSON.stringify(kindsOf(alphaGateway)));
     assert.equal(alphaGateway.state, "fail");
     assert.match(alphaGateway.items[0].observed, /static/u);
+    // `desired` is clipped to 64 characters with no marker, so it has to FIT:
+    // spelling both vocabularies here ended the sentence mid-word in the one
+    // item whose job is to name the vocabulary the reading fell outside of.
+    assert.ok(alphaGateway.items[0].desired.length <= 64, `desired is clipped at 64: ${alphaGateway.items[0].desired}`);
+    assert.match(alphaGateway.items[0].desired, /enabled or a disabled UnitFileState$/u, alphaGateway.items[0].desired);
     // The CODE names the item that DECIDED the state. `items[0]` here is the
     // `warn` this case just added, so a build that reports the first item would
     // paint `gw unit-file-state-unclassified:static` beside a `fail` caused by
@@ -1895,10 +1926,12 @@ async function main() {
       assert.equal(leafOf(alpha, FIELDS.service).state, "warn", JSON.stringify(kindsOf(leafOf(alpha, FIELDS.service))));
       assert.equal(alpha.systemd.heartbeat.state, "fail", "the worse of the two halves decides the summary");
       assert.equal(alpha.systemd.heartbeat.code, "timer-disabled", "and the code comes from the half that decided it");
-      // The human report paints exactly that pair.
+      // The rollup itself is proven by the two JSON assertions above. The human
+      // report paints `hb <latest_result>·<tick>` and never the state or the
+      // code, so all this adds is that the systemd cell is still rendered.
       resetFakeSystemctl(systemctlShim);
       const out = cli(["fleet", "status", "--domain", "systemd"]).stdout;
-      assert.match(out, /hb .*never|hb success/u, "the heartbeat cell is still painted");
+      assert.match(out, /gw .+ hb /u, "the systemd cell must still carry a gateway and a heartbeat reading");
     } finally {
       writeFileSync(policy, saved, "utf8");
     }
@@ -2649,7 +2682,12 @@ async function main() {
       assert.equal(leaf.state, "fail", `${id} ${field}`);
       liveAsserted += 1;
     }
-    assert.ok(liveAsserted > 0, "at least one named live drift must have been asserted, or this case proved nothing about the live fleet");
+    if (liveAsserted === 0) {
+      // Every named agent skipped out loud above, so this host runs a different
+      // fleet. That is not a defect in the observer and must not be a red
+      // suite -- the case's own promise is that a missing agent SKIPS.
+      skipCase("live systemd", "this host's registry names none of the five agents the matrix rows annotate");
+    }
     if (byId.has("delonet-director")) {
       for (const field of [FIELDS.gateway, FIELDS.timer, FIELDS.service]) {
         assert.deepEqual(liveCodes("delonet-director", field), ["absent"], `delonet-director ${field}`);
@@ -2659,10 +2697,32 @@ async function main() {
       assert.equal(liveCodes("ssbnk-pm", FIELDS.gateway).filter((code) => code.startsWith("platform-enablement-inherited")).length, 1,
         "exactly one platform inherits enablement: the base enables telegram and nothing else");
     }
-    assert.equal(data.systemd.shared.state, "healthy", `the fleet-shared Bloodbank gateway reads ${data.systemd.shared.state}`);
-    assert.equal(hostNamed(data, "systemd.shared-gateway").state, "pass");
+    // CORRELATION, not fleet health. Asserting the shared gateway is `healthy`
+    // made a stopped Bloodbank unit -- an operator's runtime decision, on a
+    // machine this suite does not own -- a red suite. What is always true, and
+    // what this story owns, is that the host finding agrees with the reading it
+    // is built from.
+    const sharedFinding = hostNamed(data, "systemd.shared-gateway");
+    assert.equal(
+      sharedFinding.state,
+      data.systemd.shared.state === "healthy" ? "pass" : data.systemd.shared.state === "error" || data.systemd.shared.state === "unobserved" ? "error" : "fail",
+      `the shared-gateway finding must agree with data.systemd.shared.state (${data.systemd.shared.state})`,
+    );
+    if (data.systemd.shared.state !== "healthy") {
+      skip("live systemd", `the fleet-shared Bloodbank gateway reads ${data.systemd.shared.state} on this host; its matrix row is proven by the scripted case`);
+    }
+    // The manager was asserted `available` at the top of this case, so the
+    // finding it produces is a consequence of that, not of fleet health.
     assert.equal(hostNamed(data, "systemd.manager").state, "pass");
-    assert.equal(data.systemd.unregistered.coverage, "swept");
+    // A sweep either happened or said why it did not -- the P2 contract, which
+    // holds whatever the manager's listing did on this host.
+    if (data.systemd.unregistered.coverage === "swept") {
+      assert.equal(data.systemd.unregistered.reason, null);
+    } else {
+      const sweep = hostNamed(data, "systemd.unregistered");
+      assert.equal(sweep.state, "error", `an unreadable sweep must be a finding: ${JSON.stringify(sweep)}`);
+      assert.ok(sweep.summary.includes(data.systemd.unregistered.reason), sweep.summary);
+    }
 
     assert.equal(fragmentHash(), before, "the observer wrote to the live unit directory");
     console.log(`       live: ${data.systemd.agents.total_registered} registered, manager ${data.systemd.manager.state}, `
