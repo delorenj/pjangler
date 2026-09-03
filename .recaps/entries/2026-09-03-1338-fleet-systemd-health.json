@@ -1,0 +1,20 @@
+{
+  "id": "2026-09-03-1338-fleet-systemd-health",
+  "generated_at": 1788456255,
+  "window": {
+    "start": 1788359774,
+    "end": 1788456255,
+    "basis": "session-start-head",
+    "confidence": "high"
+  },
+  "head_sha": "a106d6e1d86ff14edf2c14bde3c2ca5032bc2165",
+  "host": "big-chungus",
+  "capability_headline": "See real systemd state for all 28 agents: pjangler fleet status --domain systemd",
+  "counts": {
+    "capabilities": 2,
+    "commits": 8,
+    "repos": 2
+  },
+  "title": "Fleet health stopped being a guess.",
+  "path": "2026-09-03-1338-fleet-systemd-health.html"
+}
