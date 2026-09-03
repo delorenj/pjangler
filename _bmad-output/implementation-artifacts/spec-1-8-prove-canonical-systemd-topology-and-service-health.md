@@ -4,8 +4,8 @@ type: 'feature'
 created: '2026-09-02'
 status: 'done'
 baseline_revision: '378051d690e29c73acbb0560c35a475eb60f15a5'
-review_loop_iteration: 0
-followup_review_recommended: true
+review_loop_iteration: 1
+followup_review_recommended: false  # the recommended pass RAN; see the follow-up Auto Run Result
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-1-7-prove-generated-profile-health-and-classify-extras.md'
@@ -835,3 +835,83 @@ of 5.
    `samples: 1` twin of the interval vacuity, a truncation note unreachable when a later listing also
    fails, one code-ordering nicety, and three test-strength items. None is a live misreading on this
    fleet; each names its own trigger.
+
+## Auto Run Result — follow-up review pass
+
+Status: done
+Blocking condition: none
+
+The first pass computed `followup_review_recommended: true` (three high-severity patched findings;
+weighted score 52 against a threshold of 5) and story 1.7 had honored the identical recommendation, so
+this pass was RUN rather than overridden. It was scoped to the sharpest possible target: the 1,057
+insertions that no reviewer had ever seen. The 29 findings of the first review were patched and
+committed straight from the fix agent to main -- code written IN RESPONSE to review is exactly the code
+most likely to carry a hasty regression, and nothing had looked at it.
+
+Four fresh lenses (regression, correctness, test-integrity, contract-doc) produced 23 findings; an
+adversarial adjudicator reproduced each against the tree, confirmed 17 and refuted 1.
+
+### It found a regression the batch had introduced
+
+`P15`/`P16` switched the heartbeat rollup to read `codeSource.code` while `emptyAgentResult` hardcoded
+`code: null` on the timer and service leaves. Proven by running the baseline bundle and HEAD side by
+side with `systemctl` off `PATH`, on the live registry:
+
+| | `heartbeat.code` | `timer.unit` | `service.unit` |
+| --- | --- | --- | --- |
+| baseline `6583eba` | `manager-unavailable` | `...heartbeat.service` (the P1 bug) | `...heartbeat.timer` |
+| after the batch | `null` | `...heartbeat.timer` (fixed) | `...heartbeat.service` |
+
+So `P1` genuinely fixed the swapped unit names AND blanked, in the same edit, the field a JSON consumer
+reads to learn why a heartbeat is not proven -- on every `manager-unavailable` / `manager-timeout` /
+`show-failed` / `show-timeout` / `show-too-large` / `agent-id-unsafe` path. `CHANGELOG.md` shipped the
+now-false claim that those fields name the deciding item. It survived because NOTHING asserted a code on
+an error path: the helper added by `P1` pinned item paths and views only. Fixed, and now asserted:
+zero of 28 agents report a null heartbeat code where all 28 did.
+
+### Three patches, seven documentation corrections, seven deferrals
+
+PATCH: the regression above; the unit-load-path allowlist (it omitted every `$XDG_RUNTIME_DIR/systemd/*`
+directory -- where the transient `hermes-worker-proc_*.scope` units actually live -- while adding
+`/run/systemd/generator`, which is on the SYSTEM path); and an 85-character `desired` string clipped to
+64 mid-vocabulary.
+
+DOCUMENT -- these were false claims in artifacts, several of them the orchestrator's own, and each was
+corrected against the live system rather than recomputed from the source that was wrong:
+DW-99 justified shipping untested code for a hazard that never existed (`remainingMs` already opens
+with `throwIfCancelled`, so the guard requested as `P17` is a no-op); DW-97 said 26 gateways where the
+fleet has 29; residual risk 2 said "43 of 68 cases" where the true figure is 67 of 68; a helper
+docstring and the spec's own `P1` entry claimed `show-failed` coverage the suite lacks; the README
+omitted four emitted collection codes; and one assertion's comment claimed to check a painted pair that
+its regex checked neither half of.
+
+DEFER: DW-100 through DW-106, recorded in the ledger and in this spec's `deferred` list.
+
+### Verification
+
+`npm run typecheck && npm run build` clean with a byte-identical tracked `dist`; `npm test` 70/70 green
+(860 s), systemd suite 68 cases with zero skips; the spec's `## Verification` block re-run in full; and
+the regression reproduced and confirmed fixed by the same baseline-versus-HEAD method that found it.
+Four mutations were applied to the new fixes and all four went red.
+
+### One mutation came back green, and it is recorded rather than papered over
+
+`PATCH1-timer-code-null` did NOT go red. `heartbeatLeaves = [service, timer]` and the reduce keeps its
+accumulator on ties, so when both leaves are `error` the rollup sources its code from the SERVICE leaf
+and the timer leaf's error-path `code` is unobservable in the payload. That is not the shipped defect
+(which nulled both) and it cannot be pinned from outside the module; it is exactly DW-103, deferred.
+Reported because a green mutation is evidence about the test, not a formality to omit.
+
+### Follow-up recommendation, recomputed
+
+This pass patched 1 medium and 2 low findings, so the formula gives `3 x 1 + 1 x 2 = 5`, which reaches
+the threshold. The policy's `max_followup_reviews: 1` is now SPENT, so the flag is set false and the
+residual is recorded here instead of triggering a third pass: the remaining work is DW-100..DW-106,
+none of which the adjudicator considered blocking for story 1.9.
+
+### Residual risks
+
+Unchanged from the first pass, minus the two false-failure modes now closed in the live case (a host
+whose registry names none of the five drifted agents now skips instead of failing, and the shared-gateway
+assertions are guarded). `unit-file-state-unclassified` remains a new `warn` that no live gateway
+currently triggers.
