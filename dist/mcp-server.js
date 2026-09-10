@@ -7870,6 +7870,41 @@ function sentinelPromptInputs(role) {
     ticket_provider: role.ticketProviderName || "plane"
   };
 }
+function templateLineageProbe(templateRoot) {
+  const seen = /* @__PURE__ */ new Map();
+  let usable = null;
+  return (id) => {
+    if (!id) return true;
+    const memo = seen.get(id);
+    if (memo !== void 0) return memo;
+    if (usable === null) {
+      let root = null;
+      try {
+        root = realpathSync(templateRoot);
+      } catch {
+        root = null;
+      }
+      const top = spawnSync("git", ["-C", templateRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+      let found = null;
+      if (top.status === 0) {
+        try {
+          found = realpathSync(top.stdout.trim());
+        } catch {
+          found = null;
+        }
+      }
+      usable = root !== null && found !== null && root === found;
+    }
+    if (!usable) return true;
+    const hit = spawnSync("git", ["-C", templateRoot, "cat-file", "-e", id], { encoding: "utf8" }).status === 0;
+    seen.set(id, hit);
+    return hit;
+  };
+}
+function scaffoldLocallyModified(path, inLineage) {
+  const seen = observeScaffoldAsset(path);
+  return seen.present && seen.blobId !== null && !inLineage(seen.blobId);
+}
 function observeScaffoldAsset(path) {
   const seen = { present: false, type: null, executable: false, blobId: null, unsafeSymlink: false, unreadable: null, wip: false };
   try {
@@ -10229,6 +10264,9 @@ function createHermesChecks() {
         const details = [...selection.blockers];
         const templateRoleDir = join3(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
         const managedScripts = templateFiles(join3(templateRoleDir, ".scripts")).filter((rel) => rel !== "sentinel.prompt.md.jinja");
+        const probe2 = templateLineageProbe(join3(ctx.pjanglerRoot, "templates", "hermes-agent"));
+        const verbatim = new Set(managedScripts.map((rel) => `.scripts/${rel}`));
+        const inLineage = (blobId2, path) => verbatim.has(path) ? probe2(blobId2) : true;
         for (const role of selection.roles) {
           const prefix = role.agentId || role.role;
           const memory = join3(role.roleDir, "runtime", "memories", "MEMORY.md");
@@ -10237,7 +10275,7 @@ function createHermesChecks() {
           const findings = compareAssets(
             desired,
             (asset) => observeScaffoldAsset(join3(role.roleDir, ...asset.path.split("/"))),
-            { inLineage: () => true, modes: false }
+            { inLineage, modes: false }
           );
           for (const finding2 of findings) {
             const word3 = finding2.kind === "stale-content" ? "stale" : finding2.kind;
@@ -10269,8 +10307,11 @@ function createHermesChecks() {
           return { id: finding2.id, title: finding2.title, status: "blocked", summary: "No provisioned pm or director role present", changedFiles, details: [] };
         }
         const templateRoleDir = join3(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+        const inLineage = templateLineageProbe(join3(ctx.pjanglerRoot, "templates", "hermes-agent"));
+        const preserved = [];
         const managedScripts = templateFiles(join3(templateRoleDir, ".scripts")).filter((rel) => rel !== "sentinel.prompt.md.jinja");
         for (const role of selection.roles) {
+          const prefix = role.agentId || role.role;
           const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
           details.push(...retirement.details);
           if (!retirement.ok) {
@@ -10284,13 +10325,29 @@ function createHermesChecks() {
           for (const rel of managedScripts) {
             const source = join3(templateRoleDir, ".scripts", rel);
             const executable = (lstatSync2(source).mode & 73) !== 0;
-            writeIfDifferent(join3(role.roleDir, ".scripts", rel), readText(source), ctx.dryRun, changedFiles, executable ? 493 : void 0);
+            const target = join3(role.roleDir, ".scripts", rel);
+            if (scaffoldLocallyModified(target, inLineage)) {
+              preserved.push(`${prefix}: preserved locally-modified .scripts/${rel}`);
+              continue;
+            }
+            writeIfDifferent(target, readText(source), ctx.dryRun, changedFiles, executable ? 493 : void 0);
           }
           writeIfDifferent(join3(role.roleDir, ".scripts", "sentinel.prompt.md"), renderSentinelPrompt(role, templateRoleDir), ctx.dryRun, changedFiles);
           const profileMetaUpdated = upsertInheritedProfileMeta(join3(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
           if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
           const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
           if (registryUpdated) details.push(`updated ${registryUpdated}`);
+        }
+        details.push(...preserved);
+        if (preserved.length > 0) {
+          return {
+            id: finding2.id,
+            title: finding2.title,
+            status: "partial",
+            summary: `${preserved.length} locally-modified script(s) preserved; reconcile them into the template before this rule can pass`,
+            changedFiles,
+            details
+          };
         }
         return {
           id: finding2.id,
