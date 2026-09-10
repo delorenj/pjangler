@@ -6,6 +6,26 @@ import { spawnSync } from "node:child_process";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+
+/**
+ * An earlier version of a template-shipped role asset, or null when the
+ * template's object database is unavailable. `hermes.pm-scaffold` decides
+ * stale-versus-locally-modified by asking whether the bytes on disk are ones
+ * the template ever shipped, so a fixture that wants "stale" has to supply
+ * real ones.
+ */
+function priorTemplateVersion(relPath) {
+  const templateRoot = join(root, "templates", "hermes-agent");
+  const filePath = `template/${relPath}`;
+  const log = spawnSync("git", ["-C", templateRoot, "log", "--format=%H", "--", filePath], { encoding: "utf8" });
+  if (log.status !== 0) return null;
+  const commits = log.stdout.trim().split("\n").filter(Boolean);
+  for (const commit of commits.slice(1)) {
+    const show = spawnSync("git", ["-C", templateRoot, "show", `${commit}:${filePath}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    if (show.status === 0 && show.stdout) return show.stdout;
+  }
+  return null;
+}
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
 const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
@@ -988,7 +1008,13 @@ run = "echo still here"
     writeFileSync(join(roleDir, "SOUL.md"), "custom director soul\n");
     writeFileSync(join(roleDir, "hermes"), "#!/usr/bin/env bash\n# stale wrapper\n");
     writeFileSync(join(roleDir, ".gitignore"), "stale\n");
-    writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "#!/usr/bin/env bash\n# stale systemd\n");
+    // A stale script holds bytes the template really shipped once. Synthetic
+    // content is indistinguishable from somebody's edit, which migrate now
+    // preserves rather than destroys, so simulate staleness with a genuine
+    // prior version. With no git available the probe cannot decide lineage
+    // either and falls back to the historical "stale" reading, so the
+    // synthetic fallback below still exercises the same path.
+    writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), priorTemplateVersion(".scripts/70-systemd.sh") ?? "#!/usr/bin/env bash\n# stale systemd\n");
     writeFileSync(join(roleDir, ".runtime-scaffold", "README.md"), "scaffold\n");
     writeFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "private state\n");
     writeFileSync(join(roleDir, "runtime", "profile.yaml"), "config:\n  inherit_from: default\n  save_mode: delta\n");
@@ -1036,6 +1062,28 @@ run = "echo still here"
     assert.match(systemdScript, /^\$ENV_TERMINAL_CWD$/m);
     assert.match(readFileSync(join(roleDir, ".scripts", "20-runtime-repo.sh"), "utf8"), /migrate hermes\.runtime-singleton/);
     assert.equal(readFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "utf8"), "private state\n");
+
+    // A script carrying bytes the template never shipped is somebody's work,
+    // not staleness, and `writeIfDifferent` keeps no backup — so migrate must
+    // preserve it and say why rather than overwrite the only copy. Skipped
+    // when lineage is undecidable, which is exactly when the rule keeps its
+    // historical overwrite-everything behaviour.
+    if (priorTemplateVersion(".scripts/70-systemd.sh") !== null) {
+      const repaired = readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8");
+      const forked = "#!/usr/bin/env bash\n# hand-extended systemd wiring nobody else has\n";
+      writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), forked);
+      const reaudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
+      const scaffold = reaudit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
+      assert.match(scaffold.details.join("\n"), /demo-director: locally-modified agents\/hermes\/director\/\.scripts\/70-systemd\.sh/);
+      const second = JSON.parse(runAllowFailure(["migrate", "hermes.pm-scaffold", repo, "--json"], root, env));
+      const preserve = second.results.find((entry) => entry.id === "hermes.pm-scaffold");
+      assert.equal(preserve.status, "partial", JSON.stringify(preserve));
+      assert.match(preserve.details.join("\n"), /preserved locally-modified \.scripts\/70-systemd\.sh/);
+      assert.equal(readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8"), forked, "migrate must not overwrite a local edit");
+      // Hand the role back the template's own bytes; the assertions below this
+      // block are about a repo migrate has fully repaired.
+      writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), repaired);
+    }
 
     const postAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
     const postFinding = postAudit.rules.find((entry) => entry.id === "hermes.pm-scaffold");

@@ -2818,11 +2818,23 @@ function templateLineageProbe(templateRoot: string): (blobId: string) => boolean
     if (!id) return true;
     const memo = seen.get(id);
     if (memo !== undefined) return memo;
-    if (usable === null) usable = spawnSync("git", ["-C", templateRoot, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
+    if (usable === null) {
+      // `rev-parse` answers for the nearest enclosing repository, so a plain
+      // copy of the template nested inside some other checkout would silently
+      // probe THAT repository's objects and find none of the template's --
+      // reporting every file as locally-modified. Require the checkout found
+      // to be the template itself.
+      let root: string | null = null;
+      try { root = realpathSync(templateRoot); } catch { root = null; }
+      const top = spawnSync("git", ["-C", templateRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+      let found: string | null = null;
+      if (top.status === 0) { try { found = realpathSync(top.stdout.trim()); } catch { found = null; } }
+      usable = root !== null && found !== null && root === found;
+    }
     if (!usable) return true;
-    const found = spawnSync("git", ["-C", templateRoot, "cat-file", "-e", id], { encoding: "utf8" }).status === 0;
-    seen.set(id, found);
-    return found;
+    const hit = spawnSync("git", ["-C", templateRoot, "cat-file", "-e", id], { encoding: "utf8" }).status === 0;
+    seen.set(id, hit);
+    return hit;
   };
 }
 
@@ -6132,9 +6144,16 @@ return [
       }
       const details: string[] = [...selection.blockers];
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
-      const inLineage = templateLineageProbe(join(ctx.pjanglerRoot, "templates", "hermes-agent"));
       const managedScripts = templateFiles(join(templateRoleDir, ".scripts"))
         .filter((rel) => rel !== "sentinel.prompt.md.jinja");
+      // Lineage is decidable only for the assets the template ships verbatim.
+      // `hermes`, `.gitignore` and `sentinel.prompt.md` are rendered per role,
+      // so their bytes never appear in the object database at all and a blob
+      // probe would call every one of them locally-modified — which would stop
+      // migrate ever repairing them. Those keep the historical "stale" reading.
+      const probe = templateLineageProbe(join(ctx.pjanglerRoot, "templates", "hermes-agent"));
+      const verbatim = new Set(managedScripts.map((rel) => `.scripts/${rel}`));
+      const inLineage = (blobId: string, path: string): boolean => (verbatim.has(path) ? probe(blobId) : true);
       for (const role of selection.roles) {
         const prefix = role.agentId || role.role;
         // The runtime memory file is the one presence check outside the shared
@@ -6186,6 +6205,8 @@ return [
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No provisioned pm or director role present", changedFiles, details: [] };
       }
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      // Only consulted for the verbatim managed scripts below; the rendered
+      // assets are rewritten unconditionally, exactly as before.
       const inLineage = templateLineageProbe(join(ctx.pjanglerRoot, "templates", "hermes-agent"));
       const preserved: string[] = [];
       const managedScripts = templateFiles(join(templateRoleDir, ".scripts"))
