@@ -31,7 +31,9 @@ ticket_provider:
   # planning is already done. Named after PJAN-111 and PJAN-112 were swept into
   # a completed state by a bulk transition and could not be walked back.
   unstarted: "Todo"
-
+  started: "In Progress"
+  in_review: "E2E Testing & QA"
+  completed: "Done"
 # Scrum Master sentinel knobs (only meaningful for role: scrum-master).
 scrum_master:
   grace_hours: 0             # 0 = no human-approval wait (adversarially-reviewed review-lane = done); set >0 to require a wait
