@@ -2798,7 +2798,41 @@ function sentinelPromptInputs(role: RoleMeta): Record<string, string | null> {
   };
 }
 
-/** What is on disk at one owned path, by `lstat`. Filesystem only: this rule may not invoke git. */
+/**
+ * Whether the hermes-agent template ever shipped exactly these bytes.
+ *
+ * `blobId` is git's own digest — sha1 over `blob <len>\0` — so one
+ * `cat-file -e` against the template's object database decides
+ * stale-versus-modified without the async lineage probe the fleet observer
+ * uses. Answers `true` (the historical "stale" reading, and the behaviour of
+ * every release before this) whenever that database is unavailable: an
+ * npm-installed pjangler ships `templates/` as plain files with no git dir, so
+ * a packaged install is unchanged. Failing closed matters — calling an
+ * undecidable file "locally-modified" would make `migrate` skip a genuinely
+ * stale script and quietly stop repairing it.
+ */
+function templateLineageProbe(templateRoot: string): (blobId: string) => boolean {
+  const seen = new Map<string, boolean>();
+  let usable: boolean | null = null;
+  return (id) => {
+    if (!id) return true;
+    const memo = seen.get(id);
+    if (memo !== undefined) return memo;
+    if (usable === null) usable = spawnSync("git", ["-C", templateRoot, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
+    if (!usable) return true;
+    const found = spawnSync("git", ["-C", templateRoot, "cat-file", "-e", id], { encoding: "utf8" }).status === 0;
+    seen.set(id, found);
+    return found;
+  };
+}
+
+/** Whether the file at `path` holds bytes the template never shipped — somebody's edit, not staleness. */
+function scaffoldLocallyModified(path: string, inLineage: (blobId: string) => boolean): boolean {
+  const seen = observeScaffoldAsset(path);
+  return seen.present && seen.blobId !== null && !inLineage(seen.blobId);
+}
+
+/** What is on disk at one owned path, by `lstat`. Filesystem only; lineage is decided separately. */
 function observeScaffoldAsset(path: string): ScaffoldObservedAsset {
   const seen: ScaffoldObservedAsset = { present: false, type: null, executable: false, blobId: null, unsafeSymlink: false, unreadable: null, wip: false };
   try {
@@ -6098,6 +6132,7 @@ return [
       }
       const details: string[] = [...selection.blockers];
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      const inLineage = templateLineageProbe(join(ctx.pjanglerRoot, "templates", "hermes-agent"));
       const managedScripts = templateFiles(join(templateRoleDir, ".scripts"))
         .filter((rel) => rel !== "sentinel.prompt.md.jinja");
       for (const role of selection.roles) {
@@ -6108,16 +6143,18 @@ return [
         if (!existsSync(memory)) details.push(`${prefix}: missing ${relative(ctx.repoRoot, memory)}`);
         // ONE comparison for the rule and the fleet observer (story 1.6):
         // `compareAssets` from the shared core, over the rule's historical
-        // asset set. The rule is filesystem-only, so lineage is undecidable
-        // here and every content mismatch keeps its historical word, "stale";
-        // modes are deliberately not compared, because `migrate` writes bytes
-        // and never lowers a mode, and a rule that cannot pass after its own
-        // repair is a lie.
+        // asset set. Lineage comes from `templateLineageProbe`, so a file
+        // carrying bytes the template never shipped reports as
+        // "locally-modified" rather than "stale" — the two need different
+        // answers, because `migrate` overwrites without a backup and only
+        // staleness is safe to overwrite. Modes are deliberately not compared,
+        // because `migrate` writes bytes and never lowers a mode, and a rule
+        // that cannot pass after its own repair is a lie.
         const desired = scaffoldDesiredForRule(role, templateRoleDir, managedScripts);
         const findings = compareScaffoldAssets(
           desired,
           (asset) => observeScaffoldAsset(join(role.roleDir, ...asset.path.split("/"))),
-          { inLineage: () => true, modes: false },
+          { inLineage, modes: false },
         );
         for (const finding of findings) {
           const word = finding.kind === "stale-content" ? "stale" : finding.kind;
@@ -6149,9 +6186,12 @@ return [
         return { id: finding.id, title: finding.title, status: "blocked", summary: "No provisioned pm or director role present", changedFiles, details: [] };
       }
       const templateRoleDir = join(ctx.pjanglerRoot, "templates", "hermes-agent", "template");
+      const inLineage = templateLineageProbe(join(ctx.pjanglerRoot, "templates", "hermes-agent"));
+      const preserved: string[] = [];
       const managedScripts = templateFiles(join(templateRoleDir, ".scripts"))
         .filter((rel) => rel !== "sentinel.prompt.md.jinja");
       for (const role of selection.roles) {
+        const prefix = role.agentId || role.role;
         const retirement = retireRuntimeSubmodule(ctx.repoRoot, role, changedFiles, ctx.dryRun);
         details.push(...retirement.details);
         if (!retirement.ok) {
@@ -6165,13 +6205,36 @@ return [
         for (const rel of managedScripts) {
           const source = join(templateRoleDir, ".scripts", rel);
           const executable = (lstatSync(source).mode & 0o111) !== 0;
-          writeIfDifferent(join(role.roleDir, ".scripts", rel), readText(source), ctx.dryRun, changedFiles, executable ? 0o755 : undefined);
+          const target = join(role.roleDir, ".scripts", rel);
+          // Never overwrite bytes the template never shipped. `writeIfDifferent`
+          // keeps no backup, so clobbering a local edit destroys the only copy;
+          // a stale-but-shipped script is still repaired as before.
+          if (scaffoldLocallyModified(target, inLineage)) {
+            preserved.push(`${prefix}: preserved locally-modified .scripts/${rel}`);
+            continue;
+          }
+          writeIfDifferent(target, readText(source), ctx.dryRun, changedFiles, executable ? 0o755 : undefined);
         }
         writeIfDifferent(join(role.roleDir, ".scripts", "sentinel.prompt.md"), renderSentinelPrompt(role, templateRoleDir), ctx.dryRun, changedFiles);
         const profileMetaUpdated = upsertInheritedProfileMeta(join(role.roleDir, "runtime", "profile.yaml"), changedFiles, ctx.dryRun);
         if (profileMetaUpdated) details.push(`updated ${profileMetaUpdated}`);
         const registryUpdated = upsertRegistryEntry(role, ctx.homeDir, changedFiles, ctx.dryRun);
         if (registryUpdated) details.push(`updated ${registryUpdated}`);
+      }
+      details.push(...preserved);
+      // A preserved local edit means this rule cannot reach parity without
+      // destroying work, so say so instead of reporting a clean pass the
+      // postcondition would then contradict. Reconciling those bytes into the
+      // template is a person's decision, not a migration's.
+      if (preserved.length > 0) {
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: "partial",
+          summary: `${preserved.length} locally-modified script(s) preserved; reconcile them into the template before this rule can pass`,
+          changedFiles,
+          details,
+        };
       }
       return {
         id: finding.id,
