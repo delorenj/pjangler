@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -76,6 +77,9 @@ try {
   mkdirSync(packDir, { recursive: true });
   mkdirSync(installDir, { recursive: true });
   mkdirSync(isolatedHome, { recursive: true });
+  const globalIgnore = join(isolatedHome, ".config", "git", "ignore");
+  mkdirSync(join(isolatedHome, ".config", "git"), { recursive: true });
+  writeFileSync(globalIgnore, `${supportedRoots.map((cliRoot) => `${cliRoot}/`).join("\n")}\n`);
 
   run("npm", ["pack", "--pack-destination", packDir], { cwd: root });
   const tarballs = readdirSync(packDir).filter((name) => name.endsWith(".tgz"));
@@ -166,6 +170,9 @@ try {
     PJ_BMAD_INSTALLER: selectedBmadInstaller,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.excludesFile",
+    GIT_CONFIG_VALUE_0: globalIgnore,
   };
   for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
     delete baseEnv[key];
@@ -213,10 +220,9 @@ try {
     assert.equal(existsSync(rootPath), true, `${cliRoot} missing`);
     assert.equal(lstatSync(rootPath).isDirectory(), true, `${cliRoot} must be a real configuration root`);
     assert.equal(existsSync(join(rootPath, "skills", "bmad-help", "SKILL.md")), true, `${cliRoot} lacks BMAD skill configuration`);
-    // PJAN-76: the skills under each root are written by `bmad-method install`
-    // and rewritten wholesale on every upgrade, so they are deliberately NOT
-    // committed — `_bmad/_config/manifest.yaml` pins the version that
-    // reproduces them. The root itself still holds tracked configuration.
+    // PJAN-126: client roots are local generated projections covered by the
+    // operator's effective global ignore. `_bmad/_config/manifest.yaml` pins
+    // the version that reproduces them; `.agents/` is the committed source.
     const trackedSkills = run("git", ["ls-files", "--error-unmatch", `${cliRoot}/skills`], { cwd: target, env: retryEnv, allowFailure: true });
     assert.notEqual(
       trackedSkills.status,
@@ -226,6 +232,9 @@ try {
     const ignored = run("git", ["check-ignore", "-q", `${cliRoot}/skills/`], { cwd: target, env: retryEnv, allowFailure: true });
     assert.equal(ignored.status, 0, `${cliRoot}/skills/ must be gitignored, not merely untracked`);
   }
+  const renderedIgnore = readFileSync(join(target, ".gitignore"), "utf8");
+  assert.doesNotMatch(renderedIgnore, /^!\.(?:claude|codex|gemini|copilot|opencode|kimi-code)\//m);
+  assert.doesNotMatch(renderedIgnore, /^\.(?:claude|codex|gemini|copilot|opencode|kimi-code)\//m, "global client rules must not be copied into the repo contract");
   for (const cliRoot of unsupportedRoots) assert.equal(existsSync(join(target, cliRoot)), false, `unsupported generated root ${cliRoot}`);
 
   const configToml = readFileSync(join(target, "_bmad", "config.toml"), "utf8");

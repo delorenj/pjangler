@@ -109,7 +109,7 @@ Representative checks (use `pjangler recipe list` / `pjangler_list_parity_rules`
 | `secrets.env-op` | `.env.op` and the canonical atomic materialization script |
 | `provenance.copier` | copier answers/provenance present |
 | `bmad.scaffold` | BMAD (`bmm,bmb,cis`) installed from source inputs |
-| `bmad.cli-roots` | Exactly six supported CLI projections, with manifest/inventory provenance for safe cleanup |
+| `bmad.cli-roots` | Exactly six local CLI projections, `.agents/` as canonical config, and exact cleanup of pjangler's retired client-root `.gitignore` overrides |
 | `bmad.version` | Standalone audit follows cached `next`; a fresh transaction must match its exact installer pin |
 | `hermes.pm-scaffold` | The PM role scaffold under `agents/hermes/pm` is complete |
 | `hermes.untracked-runtimes` | Hermes runtime submodules are untracked/gitignored, not committed |
@@ -130,7 +130,21 @@ TOML normalization operates on complete hook array-of-table records. It replaces
 | OpenCode | `opencode` | `.opencode` |
 | Kimi | `kimi-code` | `.kimi-code` |
 
-Fresh init must create all six and no unsupported integration root. It preflights and installs the immutable, contract-tested `bmad-method@6.11.1-next.1`; the independently authenticated Skillex pack remains separately pinned. Core plus every enabled optional module must retain the requested project name rather than the target basename. Legacy cleanup is allowed only when BMAD manifests, inventories, and installer metadata prove ownership and every owned file remains unmodified.
+Fresh init must create all six and no unsupported integration root. These roots
+are local generated projections: `.agents/` is the only canonical agent-config
+tree committed by a project. CommonProject never copies `core.excludesFile`
+into `.gitignore`; it appends only the portable repo contract for secrets,
+`.agents/local.json`, and `.agents/skills`. `bmad.cli-roots` can remove the exact
+legacy unignore/re-ignore lines pjangler used to generate, but it never changes
+Git's index. Already-tracked paths that become ignored are reconciled with the
+`gitignore-maintenance` skill after a human reviews the effective-ignore audit.
+
+Fresh init preflights and installs the immutable, contract-tested
+`bmad-method@6.11.1-next.1`; the independently authenticated Skillex pack
+remains separately pinned. Core plus every enabled optional module must retain
+the requested project name rather than the target basename. Legacy filesystem
+cleanup is allowed only when BMAD manifests, inventories, and installer
+metadata prove ownership and every owned file remains unmodified.
 
 ### 4. Hermes agent provisioning (`src/commands/hermes/`)
 

@@ -118,7 +118,22 @@ check("bmad-method is only ever invoked with the six supported --tools", () => {
 check("a create on a cold cache installs BMAD and emits only supported CLI roots", () => {
   const home = join(workspace, "home");
   const target = join(workspace, "freshproj");
-  mkdirSync(home, { recursive: true });
+  const globalIgnore = join(home, ".config", "git", "ignore");
+  mkdirSync(join(home, ".config", "git"), { recursive: true });
+  const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+  writeFileSync(globalIgnore, `${SUPPORTED.map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
+
+  const isolatedEnv = {
+    ...process.env,
+    HOME: home,
+    XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    GIT_CEILING_DIRECTORIES: workspace,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.excludesFile",
+    GIT_CONFIG_VALUE_0: globalIgnore,
+    NO_COLOR: "1",
+  };
 
   const result = spawnSync(
     process.execPath,
@@ -127,14 +142,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
       cwd: workspace,
       encoding: "utf8",
       timeout: 900_000,
-      env: {
-        ...process.env,
-        HOME: home,
-        XDG_CACHE_HOME: join(home, ".cache"),
-        XDG_CONFIG_HOME: join(home, ".config"),
-        GIT_CEILING_DIRECTORIES: workspace,
-        NO_COLOR: "1",
-      },
+      env: isolatedEnv,
     },
   );
   assert.equal(result.status, 0, `project init failed:\n${result.stdout}\n${result.stderr}`);
@@ -163,7 +171,6 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   assert.deepEqual(declaredBmad, [], ".agents/skills.json records bmad-* skills that bmad-method owns");
 
   // The deluge check: only the six supported roots, nothing else.
-  const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
   const ALLOWED_OTHER = [".agents", ".github", ".mise", ".git", ".gitignore", ".env.op", ".project.json", ".copier-answers.yml"];
   const unexpected = readdirSync(target)
     .filter((name) => name.startsWith("."))
@@ -173,19 +180,19 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
     assert.ok(existsSync(join(target, supported)), `supported CLI root ${supported} was not created`);
   }
 
-  // ...and the generated projections stay out of git.
-  //
-  // PJAN-82: no trailing slash. A trailing slash matches a directory only, and
-  // the projection is not always a directory: bmad-method writes a real one
-  // into .claude/.codex/.opencode while sync-skills.py projects
-  // .gemini/.copilot/.kimi-code as a SYMLINK to ../.agents/skills. So
-  // `.gemini/skills/` never matched, the `!.gemini/**` un-ignore won, and
-  // `git add -A` staged three generated projections as tracked symlinks.
+  // ...and the generated projections stay out of git through the effective
+  // global policy. The repository contract keeps only canonical `.agents`.
   const gitignore = readFileSync(join(target, ".gitignore"), "utf8").split(/\r?\n/);
   assert.ok(gitignore.includes("/.agents/skills"), ".gitignore must ignore the generated /.agents/skills");
   for (const supported of SUPPORTED) {
-    assert.ok(gitignore.includes(`${supported}/skills`), `.gitignore must ignore the generated ${supported}/skills`);
-    assert.ok(!gitignore.includes(`${supported}/skills/`), `${supported}/skills must have NO trailing slash — it can be a symlink`);
+    assert.ok(!gitignore.includes(`!${supported}/`), `.gitignore must not unignore the local ${supported} projection`);
+    assert.ok(!gitignore.includes(`${supported}/skills`), `.gitignore must not duplicate global policy for ${supported}/skills`);
+    const ignored = spawnSync("git", ["check-ignore", "-q", `${supported}/skills`], {
+      cwd: target,
+      encoding: "utf8",
+      env: isolatedEnv,
+    });
+    assert.equal(ignored.status, 0, `${supported}/skills must be ignored by the effective global policy`);
   }
 });
 

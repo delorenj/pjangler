@@ -96,7 +96,7 @@ Add the check to its owning concrete recipe. Shared parsers and filesystem helpe
 
 CLI and MCP both call `recipeRegistry.initRecipe("project", …)`. `ProjectRecipe` owns plan execution and composition. Fresh init initializes declared dependencies, proves a clean final audit, initializes Git and creates HEAD exactly once, and persists the central registry last. Init must produce its own audit-clean output; do not add a closure migrate-all. Existing-repo sync applies only explicitly selected migrations.
 
-The supported generated CLI matrix lives only in `src/recipes/supported-clis.ts`: Claude/`claude-code`/`.claude`, Codex/`codex`/`.codex`, Gemini/`gemini`/`.gemini`, Copilot/`github-copilot`/`.copilot`, OpenCode/`opencode`/`.opencode`, and Kimi/`kimi-code`/`.kimi-code`.
+The supported generated CLI matrix lives only in `src/recipes/supported-clis.ts`: Claude/`claude-code`/`.claude`, Codex/`codex`/`.codex`, Gemini/`gemini`/`.gemini`, Copilot/`github-copilot`/`.copilot`, OpenCode/`opencode`/`.opencode`, and Kimi/`kimi-code`/`.kimi-code`. All six are local projections; `.agents/` is the only canonical agent-config tree. CommonProject must never copy a developer's global Git ignore into a repo, and parity code must never auto-untrack already-indexed paths. Route effective-ignore/index reconciliation to `gitignore-maintenance`.
 
 ## Gotchas
 
@@ -105,4 +105,5 @@ The supported generated CLI matrix lives only in `src/recipes/supported-clis.ts`
 - **Generated mise normalization is ownership-based** — preserve full foreign `[[hooks.enter]]`/leave records, comments, blank lines, `condition`, `shell`, and unknown keys. Replace only positively owned records.
 - **Do not inline secret shell complexity into TOML** — keep `.env` materialization in the managed script and retain its temp-file cleanup/atomic-move contract.
 - **CommonProject carries source inputs, not generated BMAD output** — never vendor `template/_bmad` or stale installer snapshots. Runtime package inventory must exclude the submodule's development-only root content.
+- **Repository `.gitignore` is only the portable project contract** — preserve existing rules, never copy `core.excludesFile`, and remove only exact pjangler-owned legacy lines. Index cleanup is a reviewed `gitignore-maintenance` operation.
 - **`copier` must be on PATH** for any scaffolding/apply path to work; dry-runs don't need it.
