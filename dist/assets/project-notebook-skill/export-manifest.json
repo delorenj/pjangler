@@ -19,17 +19,17 @@
     },
     {
       "path": "hooks/session-end.sh",
-      "sha256": "848d2f5ba9000c2538e21d5a21257c72a5e4799ee3a9145a4eb9d7b00179e52b",
+      "sha256": "f024d5ff3a3e87bba2994033f3ba6c3d66db5037154a24efa058f9504eb8f2cd",
       "mode": "0755"
     },
     {
       "path": "hooks/session-start.sh",
-      "sha256": "f146a81c3e6cfbbce28c85c3c2163255974abef61339638c2a0ac9902346905e",
+      "sha256": "955652cd38f47a216a5baa4a7a364a1c707545109957d7aa39fbdbb45e2e0918",
       "mode": "0755"
     },
     {
       "path": "references/configuration.md",
-      "sha256": "a25d1d34f9960b2b3bf17a00191d5477b81a05bffe5d4e183c2954cc3975b535",
+      "sha256": "70bc3e9b084ef4f2e760987dea1f1cf97d85c6e4ad6312853fd4b9281c57184e",
       "mode": "0644"
     },
     {
@@ -39,7 +39,7 @@
     },
     {
       "path": "scripts/project-hooks.py",
-      "sha256": "95d1b6199b0416f7fdf3306215bc10a9a647f64654ccbb26786cc228fc35ac37",
+      "sha256": "62b15b5de6a67f2cf26d279119e1160ea82e31658446af660727643c76f9f3f4",
       "mode": "0755"
     },
     {
@@ -49,7 +49,7 @@
     },
     {
       "path": "tests/test_project_hooks.py",
-      "sha256": "7e16380d079277ee08b8ea64767b1596dc4e8f7ce1bd89c45d9d4821f6d493d3",
+      "sha256": "d4dca28cb7074edce3cf1e13b85e9cd57b6509c2726a561a5d02ea8e36ca1028",
       "mode": "0644"
     }
   ]
