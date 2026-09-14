@@ -127,7 +127,7 @@ export class WireMiseAgentHooks extends Command {
     }
 
     const cr = WireMiseAgentHooks.CR;
-    const enterAdds = [`  "sync-skills.py --scope project",`, `  "${cr}/.agents/hooks/sync.py --install --quiet",`].join("\n");
+    const enterAdds = `  "${cr}/.agents/hooks/sync.py --install --quiet",`;
     const leaveBlock = [
       "leave = [",
       `  "${cr}/.agents/hooks/sync.py --uninstall --quiet",`,
@@ -160,13 +160,10 @@ export class WireMiseAgentHooks extends Command {
       WireMiseAgentHooks.MARKER + " (generated — see .agents/hooks/README.md)",
       // PJAN-61: task names use the colon namespace form. A colon is not legal
       // in a BARE toml key, so every header here MUST stay quoted.
-      "[[watch_files]]",
-      'patterns = [".agents/skills.json"]',
-      'task = "skills:sync"',
-      "",
       '[tasks."skills:sync"]',
-      'description = "Sync skills from manifest to local CLI dirs"',
-      'run = "sync-skills.py --scope project"',
+      'description = "Reconcile this project selected skills"',
+      'tools = { "npm:@delorenj/skillex" = "0.1.1", node = "24" }',
+      `run = "skillex sync --scope project --project '${cr}'"`,
       "",
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
@@ -203,7 +200,7 @@ export class WireMiseAgentHooks extends Command {
       message: this.formatMessage(
         "✅ Added agent-hooks tasks to mise.toml.\n" +
           "   ⚠️  Could not find a [hooks].enter array to extend — add these to your [hooks] block manually:\n" +
-          `     enter += "sync-skills.py --scope project", "${cr}/.agents/hooks/sync.py --install --quiet"\n` +
+          `     enter += "${cr}/.agents/hooks/sync.py --install --quiet"\n` +
           `     leave += "${cr}/.agents/hooks/sync.py --uninstall --quiet"`
       ),
     };

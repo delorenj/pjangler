@@ -98,7 +98,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
     const changedFiles: string[] = [];
 
     for (const check of this.checks) {
-      const finding = check.audit(ctx);
+      const finding = await check.audit(ctx);
       if (finding.status === "pass" || finding.status === "skip") {
         phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: finding.summary });
         continue;
@@ -125,7 +125,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
         break;
       }
       if (!ctx.dryRun) {
-        const postcondition = check.audit(ctx);
+        const postcondition = await check.audit(ctx);
         if (postcondition.status !== "pass" && postcondition.status !== "skip") {
           const detail = postcondition.details.length ? ` (${postcondition.details.join("; ")})` : "";
           errors.push(`${check.id}: init postcondition failed: ${postcondition.summary}${detail}`);
@@ -149,13 +149,17 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
   /** Every concrete recipe declares its own initialization policy. */
   abstract init(ctx: LifecycleContext, input: TInput): Promise<RecipeInitResult>;
 
-  audit(ctx: LifecycleContext): LifecycleAuditFinding[] {
-    return this.checks.map((check) => auditCheck(check, ctx, this.metadata.id));
+  async audit(ctx: LifecycleContext): Promise<LifecycleAuditFinding[]> {
+    return Promise.all(this.checks.map((check) => auditCheck(check, ctx, this.metadata.id)));
   }
 
-  migrate(ctx: LifecycleContext, ruleIds: readonly string[]): LifecycleMigrationResult[] {
+  async migrate(ctx: LifecycleContext, ruleIds: readonly string[]): Promise<LifecycleMigrationResult[]> {
     const selected = this.checks.filter((check) => ruleIds.includes(check.id));
-    return selected.map((check) => ({ ...check.migrate(ctx, check.audit(ctx)), recipeId: this.metadata.id }));
+    const results: LifecycleMigrationResult[] = [];
+    for (const check of selected) {
+      results.push({ ...await check.migrate(ctx, await check.audit(ctx)), recipeId: this.metadata.id });
+    }
+    return results;
   }
 
   /** @deprecated Compatibility alias; registry dispatch is authoritative. */

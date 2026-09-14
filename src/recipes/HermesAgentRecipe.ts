@@ -257,8 +257,8 @@ export class HermesAgentRecipe extends Recipe {
       ...createProjectChecks().filter((check) => check.id === "sot.project-json"),
     ];
     const findings = [
-      ...this.audit(ctx),
-      ...crossChecks.map((check) => check.audit(ctx)),
+      ...await this.audit(ctx),
+      ...await Promise.all(crossChecks.map((check) => check.audit(ctx))),
     ].filter((finding) => finding.status !== "pass" && finding.status !== "skip");
     const verification: RecipeInitResult = {
       recipeId: this.metadata.id,

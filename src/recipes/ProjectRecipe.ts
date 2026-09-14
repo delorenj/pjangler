@@ -132,7 +132,7 @@ export function unsafeToRemove(targetDir: string): string | null {
   return null;
 }
 
-function publicAudit(report: ReturnType<RecipeRegistry["auditRecipes"]>): AuditReport {
+function publicAudit(report: Awaited<ReturnType<RecipeRegistry["auditRecipes"]>>): AuditReport {
   return {
     ...report,
     rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding),
@@ -449,7 +449,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       }
 
       const eligibilityAudit = errors.length === 0
-        ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
+        ? publicAudit(await this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
         : undefined;
       audit = eligibilityAudit;
       if (eligibilityAudit && !eligibilityAudit.ok) {
@@ -567,7 +567,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
                 ? Object.freeze({ ...projectedNotebook.binding })
                 : null;
               transactionContext.notebookObservation = Object.freeze(await notebookRecipe.observeExternal(plan, notebookPlan));
-              const candidateAudit = publicAudit(this.registry.auditRecipes(transactionContext, ["notebook"]));
+              const candidateAudit = publicAudit(await this.registry.auditRecipes(transactionContext, ["notebook"]));
               if (!candidateAudit.ok) errors.push(...candidateAudit.rules.filter((item) => item.status === "fail" || item.status === "warn").map((item) => `${item.id}: ${item.summary}`));
             }
             phases.push({
@@ -632,7 +632,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       }
 
       audit = errors.length === 0
-        ? publicAudit(this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
+        ? publicAudit(await this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
         : audit;
       if (errors.length === 0 && audit && !audit.ok) {
         errors.push(...audit.rules

@@ -712,7 +712,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         cwd: process.cwd(),
         scaffold: !target.syncMode,
       });
-      const preAudit = target.syncMode ? runAudit(target.targetDir) : undefined;
+      const preAudit = target.syncMode ? await runAudit(target.targetDir) : undefined;
       const selection = await selectProjectInitOperations({
         plan,
         auditRules: preAudit?.rules ?? [],
@@ -1208,7 +1208,7 @@ program
         console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
         await exitAfterFlush(1);
       }
-      const report = runAudit(repo, options.registry as string | undefined);
+      const report = await runAudit(repo, options.registry as string | undefined);
       if (options.json) {
         await writeStdout(`${JSON.stringify(report, null, 2)}\n`);
       } else {
@@ -1251,7 +1251,7 @@ program
         if (ruleId && !actualRepo) {
           actualRepo = ruleId;
         }
-        const report = runMigration(undefined, actualRepo, dryRun, true, acceptRegistryMatches, registryOverride);
+        const report = await runMigration(undefined, actualRepo, dryRun, true, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -1262,14 +1262,14 @@ program
           console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
           process.exit(1);
         }
-        const report = runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches, registryOverride);
+        const report = await runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
 
       // Single valid rule-id applies to cwd.
       if (ruleId && getParityRuleIds().includes(ruleId)) {
-        const report = runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches, registryOverride);
+        const report = await runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
@@ -1288,13 +1288,13 @@ program
 
       // No rule-id (or a lone positional that isn't a valid rule-id) opens the TUI.
       const targetRepo = ruleId ?? repo;
-      const audit = runAudit(targetRepo);
+      const audit = await runAudit(targetRepo);
       const ruleIds = await promptForRuleIds(audit.rules);
       if (!ruleIds.length) {
         console.log(`  ${cyan(glyph.info)} ${dim("No rules selected; nothing to migrate.")}`);
         process.exit(0);
       }
-      const report = runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches, registryOverride);
+      const report = await runMigrationForRules(ruleIds, targetRepo, dryRun, acceptRegistryMatches, registryOverride);
       printMigrationReport(report, false);
       process.exit(report.ok ? 0 : 1);
     } catch (err) {
@@ -1412,7 +1412,7 @@ program
   .option("-i, --interactive", "Tick off fixable findings and apply them")
   .action(async (repo: string | undefined, options) => {
     try {
-      const description = describeProject({ repoArg: repo, registryPath: options.registry });
+      const description = await describeProject({ repoArg: repo, registryPath: options.registry });
 
       if (options.json) {
         if (options.interactive) {
@@ -1458,7 +1458,7 @@ program
         return;
       }
 
-      const report = runMigrationForRules(result.selected, description.repo, false, false, options.registry as string | undefined);
+      const report = await runMigrationForRules(result.selected, description.repo, false, false, options.registry as string | undefined);
       printMigrationReport(report, false);
       if (!report.ok) process.exit(1);
     } catch (err) {

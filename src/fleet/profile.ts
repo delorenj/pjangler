@@ -1154,11 +1154,7 @@ async function inspectAgent(ctx: FleetProfileContext, shared: Shared, input: Fle
     let profileSkillsRoot: string | null = null;
     if (skillsStat.kind === "directory") profileSkillsRoot = skillsEntry;
     else if (skillsStat.kind === "symlink") {
-      let real: string | null = null;
-      try { real = realpathSync(skillsEntry); } catch { real = null; }
-      if (real === null) skillItems.push({ path: "skills", kind: "core-dangling", desired: "a skills directory", observed: "dangling-symlink", detail: "core-dangling:skills" });
-      else if (within(shared.fleetHomeReal, real) || within(shared.canonicalReal, real)) profileSkillsRoot = real;
-      else skillItems.push({ path: "skills", kind: "core-foreign", desired: "a skills directory inside the fleet home or the canonical projection", observed: "a directory elsewhere", detail: "core-foreign:skills" });
+      skillItems.push({ path: "skills", kind: "core-foreign", desired: "a real profile skills directory managed by skillex profile sync", observed: "whole-root symlink", detail: "Run an explicit skillex profile migration; the shared target must remain untouched" });
     } else if (skillsStat.kind !== "absent") {
       // A regular file, a special file or an entry that could not be lstat'ed
       // where the template provisions a directory: Hermes loads nothing from

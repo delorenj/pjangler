@@ -1,3 +1,4 @@
+import { createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 // PJAN-84: a finding's SCOPE, and what `ok` is allowed to mean.
 //
 // `auditRecipes` computed `ok = every(pass || skip)`, and `ProjectRecipe` turned
@@ -58,7 +59,8 @@ try {
   const home = join(root, "home");
   mkdirSync(join(home, ".agents", "skills", "project-notebook"), { recursive: true });
   writeFileSync(join(home, ".agents", "skills", "project-notebook", "SKILL.md"), "not the pinned export\n");
-  const hostEnv = { HOME: home, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state") };
+  createSkillPackFixture(join(root, "skill-registry"));
+  const hostEnv = { PATH: `${createSkillexMiseFixture(root)}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(root, "skill-registry"), HOME: home, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state") };
 
   check("a broken HOST does not stop a project being created", () => {
     const created = cli(["init", "scoped", "--target-dir", target, "--registry", registry, "--skip-board", "--apply", "-y", "--no-tui"], hostEnv);

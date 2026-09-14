@@ -172,7 +172,7 @@ run = "echo untouched"
     // Twice: once in the [[hooks.enter]] record, once in the managed task's run.
     assert.equal(hookCount(bytes[0]), 2, `exactly one managed hook + one task reference: ${bytes[0]}`);
     assert.match(bytes[0], /link-agentfiles\.sh' '\{\{config_root\}\}'/, "the managed hook hands the script its subject root");
-    assert.match(bytes[0], /sync-skills\.py' --scope project --root '\{\{config_root\}\}'/, "the skills hook hands the script its subject root");
+    assert.match(bytes[0], /skillex sync --scope project --project '\{\{config_root\}\}'/, "the explicit skills task identifies its project");
     assert.match(bytes[0], /\[tasks\.keepme\]\nrun = "echo untouched"/, "a foreign task survives");
   }
 

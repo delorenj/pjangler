@@ -619,21 +619,14 @@ profile_manifest:
     reserved_bank_ids:
       - custom
       - hermes
-  # The six skills every deployed PM runs, by BYTES: a skill is present when a
-  # `SKILL.md` reachable through the profile's `skills` entry or the generated
-  # config's `skills.external_dirs` resolves inside an allowed root and equals
-  # the canonical copy. `source` names where the template declares the set.
+  # Optional fleet byte-policy, separate from Skillex activation health. The
+  # default imposes no global projection or fixed skill list: project/global
+  # manifests and profile-local precedence define the profile's selection.
   skill_core:
     canonical_dir: "{HOME}/.agents/skills"
     canonical_dir_env: CANONICAL_SKILLS_DIR
-    required:
-      - 33god-projects
-      - delonet-conventions
-      - delonet-dotenv
-      - hermes-pm-template-maintenance
-      - hindsight
-      - subagent-driven-development
-    source: template/.scripts/10-hermes-profile.sh CORE_RUNTIME_SKILLS
+    required: []
+    source: explicit fleet byte-policy; activation uses skillex profile sync
   # Root entries the sweep skips (the renderer's lock files: the observer's own
   # footprint, never counted) and the shapes that make an entry a retired
   # candidate.

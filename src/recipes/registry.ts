@@ -159,14 +159,16 @@ export class RecipeRegistry {
     return this.aggregateInit(recipeId, ctx, results);
   }
 
-  auditRecipes(ctx: LifecycleContext, recipeIds?: readonly RecipeId[]): LifecycleAuditReport {
+  async auditRecipes(ctx: LifecycleContext, recipeIds?: readonly RecipeId[]): Promise<LifecycleAuditReport> {
     this.ensureValid();
     const selected = recipeIds ? recipeIds.map((id) => {
       const recipe = this.recipes.get(id);
       if (!recipe) throw new Error(`Unknown recipe: ${id}`);
       return recipe;
     }) : [...this.recipes.values()];
-    const rules = selected.flatMap((recipe) => recipe.audit(ctx).map((finding) => ({ ...finding, recipeId: finding.recipeId ?? recipe.metadata.id })));
+    const rules = (await Promise.all(selected.map(async (recipe) =>
+      (await recipe.audit(ctx)).map((finding) => ({ ...finding, recipeId: finding.recipeId ?? recipe.metadata.id }))
+    ))).flat();
     return {
       repo: ctx.repoRoot,
       // PJAN-84: `ok` answers "is the audited PROJECT in parity?".
@@ -203,14 +205,14 @@ export class RecipeRegistry {
    * say the work did not happen, and a dry run has nothing to verify because
    * nothing was written.
    */
-  private verifyMigration(ctx: LifecycleContext, result: LifecycleMigrationResult): LifecycleMigrationResult {
+  private async verifyMigration(ctx: LifecycleContext, result: LifecycleMigrationResult): Promise<LifecycleMigrationResult> {
     if (ctx.dryRun) return result;
     if (result.status !== "applied" && result.status !== "noop") return result;
     const owner = this.ruleOwners.get(result.id);
     if (!owner) return result;
     let postcondition;
     try {
-      postcondition = auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx);
+      postcondition = await auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx);
     } catch (err) {
       return {
         ...result,
@@ -234,7 +236,7 @@ export class RecipeRegistry {
     };
   }
 
-  migrateRules(ctx: LifecycleContext, ruleIds: readonly RuleId[]): LifecycleMigrationReport {
+  async migrateRules(ctx: LifecycleContext, ruleIds: readonly RuleId[]): Promise<LifecycleMigrationReport> {
     this.ensureValid();
     const unknown = ruleIds.filter((id) => !this.ruleOwners.has(id));
     if (unknown.length) throw new Error(`Unknown parity rules: ${unknown.join(", ")}`);
@@ -254,7 +256,7 @@ export class RecipeRegistry {
     for (const id of ruleIds) {
       const owner = this.ruleOwners.get(id)!;
       try {
-        const migrated = owner.recipe.migrate(ctx, [id]);
+        const migrated = await owner.recipe.migrate(ctx, [id]);
         raw.push(...migrated.map((result) => ({
           ...result,
           recipeId: result.recipeId ?? owner.recipe.metadata.id,
@@ -272,7 +274,7 @@ export class RecipeRegistry {
         });
       }
     }
-    const results = raw.map((result) => this.verifyMigration(ctx, result));
+    const results = await Promise.all(raw.map((result) => this.verifyMigration(ctx, result)));
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),
@@ -297,10 +299,10 @@ export class RecipeRegistry {
    * not allowed to fix may still have been fixed as a side effect of one it
    * was.
    */
-  migrateAll(ctx: LifecycleContext): LifecycleMigrationReport {
-    const audit = this.auditRecipes(ctx);
+  async migrateAll(ctx: LifecycleContext): Promise<LifecycleMigrationReport> {
+    const audit = await this.auditRecipes(ctx);
     const failing = audit.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
-    const report = this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
+    const report = await this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
 
     const manual: LifecycleMigrationResult[] = [];
     for (const rule of failing.filter((candidate) => !candidate.fixable)) {
@@ -308,7 +310,7 @@ export class RecipeRegistry {
       let current = rule;
       if (owner) {
         try {
-          current = auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx, rule.recipeId);
+          current = await auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx, rule.recipeId);
         } catch {
           // Keep the pre-migration finding rather than dropping the rule.
         }

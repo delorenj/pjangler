@@ -146,15 +146,17 @@ class FakeRecipe implements LifecycleRecipe {
     this.events.push(`init:${this.id}`);
     return initResult(this.id, this.initOk);
   }
-  audit(context: LifecycleContext): LifecycleAuditFinding[] {
+  async audit(context: LifecycleContext): Promise<LifecycleAuditFinding[]> {
     this.events.push(`audit:${this.id}`);
-    return this.checks.map((item) => ({ ...item.audit(context), recipeId: this.id }));
+    return Promise.all(this.checks.map(async (item) => ({ ...await item.audit(context), recipeId: this.id })));
   }
-  migrate(context: LifecycleContext, ruleIds: readonly string[]): LifecycleMigrationResult[] {
+  async migrate(context: LifecycleContext, ruleIds: readonly string[]): Promise<LifecycleMigrationResult[]> {
     this.events.push(`migrate:${this.id}:${ruleIds.join(",")}`);
-    return this.checks
-      .filter((item) => ruleIds.includes(item.id))
-      .map((item) => ({ ...item.migrate(context, item.audit(context)), recipeId: this.id }));
+    const result: LifecycleMigrationResult[] = [];
+    for (const item of this.checks.filter((item) => ruleIds.includes(item.id))) {
+      result.push({ ...await item.migrate(context, await item.audit(context)), recipeId: this.id });
+    }
+    return result;
   }
 }
 
@@ -175,12 +177,12 @@ assert.throws(() => new RecipeRegistry([new FakeRecipe("one", [], ["two"]), new 
   assert.equal(initialized.ok, true);
   assert.deepEqual(events.filter((event) => event.startsWith("init:")), ["init:base", "init:middle", "init:top"]);
   events.length = 0;
-  assert.deepEqual(registry.auditRecipes(ctx(tmpdir())).rules.map((rule) => rule.id), ["base.rule", "middle.rule", "top.rule"]);
-  const selected = registry.migrateRules(ctx(tmpdir()), ["middle.rule", "base.rule"]);
+  assert.deepEqual((await registry.auditRecipes(ctx(tmpdir()))).rules.map((rule) => rule.id), ["base.rule", "middle.rule", "top.rule"]);
+  const selected = await registry.migrateRules(ctx(tmpdir()), ["middle.rule", "base.rule"]);
   assert.deepEqual(selected.selectedRules, ["middle.rule", "base.rule"]);
   assert.deepEqual(events.filter((event) => event.startsWith("migrate:")), ["migrate:middle:middle.rule", "migrate:base:base.rule"]);
   events.length = 0;
-  const all = registry.migrateAll(ctx(tmpdir()));
+  const all = await registry.migrateAll(ctx(tmpdir()));
   assert.deepEqual(all.selectedRules, ["base.rule", "middle.rule"]);
 }
 
@@ -536,3 +538,19 @@ for (const retired of ["PARITY_CHECKS", "RECIPE_RULE_OWNERS", "OwnedLifecycleRec
 assert.match(readFileSync(join(root, "src", "recipes", "HermesAgentRecipe.ts"), "utf8"), /status === "failed" \|\| status === "cancelled"[\s\S]*break/);
 
 console.log("PJAN-57 lifecycle registry/dispatch regressions: PASS");
+
+// PJAN-127: real asynchronous checks must finish before postconditions and reports.
+{
+  let repaired = false;
+  const asyncCheck: RecipeCheck = {
+    id: "async.selection", title: "Async selection",
+    audit: async () => { await Promise.resolve(); return { id: "async.selection", title: "Async selection", status: repaired ? "pass" : "fail", summary: "selection", details: [], fixable: true }; },
+    migrate: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); repaired = true; return { id: "async.selection", title: "Async selection", status: "applied", summary: "reconciled", changedFiles: [], details: [] }; },
+  };
+  const registry = new RecipeRegistry([new FakeRecipe("async", [asyncCheck])]);
+  const report = await registry.migrateAll(ctx(tmpdir()));
+  assert.equal(repaired, true);
+  assert.equal(report.ok, true);
+  assert.equal(report.results[0]?.status, "applied");
+  assert.equal((await registry.auditRecipes(ctx(tmpdir()))).rules[0]?.status, "pass");
+}

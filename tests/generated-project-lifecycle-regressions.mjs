@@ -18,6 +18,7 @@ import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
   createSkillPackFixture,
+  createSkillexMiseFixture,
 } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -154,6 +155,7 @@ try {
   const npmCache = join(temporary, "empty-npm-cache");
   const baseEnv = {
     ...process.env,
+    PATH: `${createSkillexMiseFixture(temporary)}:${process.env.PATH}`,
     HOME: isolatedHome,
     XDG_CONFIG_HOME: join(isolatedHome, ".config"),
     XDG_CACHE_HOME: join(isolatedHome, ".cache"),
@@ -166,7 +168,7 @@ try {
     npm_config_cache: npmCache,
     npm_config_offline: "true",
     PJ_PROJECT_REGISTRY: registry,
-    PJ_PACK_ROOT_PJTEST: selectedBmadPack,
+    PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
     PJ_BMAD_INSTALLER: selectedBmadInstaller,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",

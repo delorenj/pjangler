@@ -616,13 +616,13 @@ function describeNextSteps(
 // ---------------------------------------------------------------------------
 
 /** Read a repo and produce its full machine-readable description. */
-export function describeProject(input: DescribeInput = {}): ProjectDescription {
+export async function describeProject(input: DescribeInput = {}): Promise<ProjectDescription> {
   const repo = resolve(input.repoArg ?? process.cwd());
   if (!existsSync(repo)) throw new Error(`Path does not exist: ${repo}`);
   if (!statSync(repo).isDirectory()) throw new Error(`Not a directory: ${repo}`);
 
   const registryPath = input.registryPath ?? projectRegistryPath();
-  const report = recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath }));
+  const report = await recipeRegistry.auditRecipes(lifecycleContext(repo, true, false, { registryPath }));
   const findings = report.rules;
 
   const counts: Record<LifecycleStatus, number> = { pass: 0, fail: 0, warn: 0, skip: 0 };

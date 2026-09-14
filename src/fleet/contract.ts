@@ -1316,7 +1316,6 @@ function validateProfileManifest(policy: Record<string, unknown>): FleetDiagnost
     const required = uniqueList(core.required, "profile_manifest.skill_core.required", (item, where) => {
       if (!SAFE_SEGMENT.test(item) || item.includes("/")) fail(where, "a skill name must be one safe path segment");
     });
-    if (required.length === 0) fail("profile_manifest.skill_core.required", "required must name at least one core skill");
     nonEmpty(core.source, "profile_manifest.skill_core.source");
     requireDeclared("profiles.{profile_name}.skills", "profile_manifest.skill_core");
   }

@@ -221,7 +221,7 @@ async function executeRegisteredProjectPlan(
 function projectPreflightFailure(
   plan: ReturnType<typeof planProjectInit>,
   errors: readonly string[],
-  audit?: ReturnType<typeof runAudit>,
+  audit?: Awaited<ReturnType<typeof runAudit>>,
 ): ProjectRecipeResult {
   return {
     recipeId: "project",
@@ -250,11 +250,11 @@ function projectPreflightFailure(
  * filesystem-only, so this check cannot itself invoke git, systemd, a provider,
  * or another subprocess.
  */
-function preflightExistingHermesScaffold(targetDir: string): string | undefined {
+async function preflightExistingHermesScaffold(targetDir: string): Promise<string | undefined> {
   if (!existsSync(join(targetDir, "agents", "hermes"))) return undefined;
   const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
   if (!owner) return "Hermes lifecycle owner is unavailable";
-  const finding = owner.check.audit(lifecycleContext(targetDir, true));
+  const finding = await owner.check.audit(lifecycleContext(targetDir, true));
   if ((finding.status === "fail" || finding.status === "warn") && !finding.fixable) {
     const detail = finding.details.length ? ` (${finding.details.join("; ")})` : "";
     return `${finding.id}: ${finding.summary}${detail}`;
@@ -287,20 +287,20 @@ function plannedNotebookBindingRepairsDrift(plan: ReturnType<typeof planProjectI
   );
 }
 
-function preflightProjectApply(
+async function preflightProjectApply(
   plan: ReturnType<typeof planProjectInit>,
   pjanglerRoot: string,
-): ProjectApplyPreflight {
+): Promise<ProjectApplyPreflight> {
   const createsScaffold = plan.actions.some((action) => action.kind === "copier.copy.commonproject");
   const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
 
   if (!createsScaffold && provisionsAgent) {
-    const hermesBlocker = preflightExistingHermesScaffold(plan.project.repo_path);
+    const hermesBlocker = await preflightExistingHermesScaffold(plan.project.repo_path);
     if (hermesBlocker) return { failure: projectPreflightFailure(plan, [hermesBlocker]) };
   }
 
   if (!createsScaffold) {
-    const audit = runAudit(plan.project.repo_path);
+    const audit = await runAudit(plan.project.repo_path);
     const blocking = audit.rules.filter((finding) => {
       if (finding.status === "pass" || finding.status === "skip") return false;
       if (finding.id === "sot.project-json") return false;
@@ -341,7 +341,7 @@ function preflightProjectApply(
   return {};
 }
 
-function auditSummary(report: ReturnType<typeof runAudit>) {
+function auditSummary(report: Awaited<ReturnType<typeof runAudit>>) {
   const counts = report.rules.reduce<Record<string, number>>((acc, rule) => {
     acc[rule.status] = (acc[rule.status] ?? 0) + 1;
     return acc;
@@ -352,7 +352,7 @@ function auditSummary(report: ReturnType<typeof runAudit>) {
   return { counts, nextActions };
 }
 
-function migrationSummary(report: ReturnType<typeof runMigration>) {
+function migrationSummary(report: Awaited<ReturnType<typeof runMigration>>) {
   const counts = report.results.reduce<Record<string, number>>((acc, result) => {
     acc[result.status] = (acc[result.status] ?? 0) + 1;
     return acc;
@@ -455,7 +455,7 @@ server.registerTool(
   async ({ targetDir, json }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
-      const report = runAudit(resolvedTarget);
+      const report = await runAudit(resolvedTarget);
       const payload = { ...report, summary: auditSummary(report), guidance: parityGuidance() };
       return asText(json === false ? formatAuditReport(report) : payload);
     } catch (err) {
@@ -483,7 +483,7 @@ server.registerTool(
       if (!runAll && !ruleId) throw new Error("Either ruleId or all=true is required");
       if (runAll && ruleId) throw new Error("Pass either ruleId or all=true, not both");
       const resolvedTarget = resolveTargetDir(targetDir);
-      const report = runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
+      const report = await runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
       return {
         isError: !report.ok,
         ...asText({
@@ -596,7 +596,7 @@ server.registerTool(
         return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
 
-      const preflight = preflightProjectApply(plan, pjanglerRoot);
+      const preflight = await preflightProjectApply(plan, pjanglerRoot);
       if (preflight.failure) {
         return {
           isError: true,
@@ -708,7 +708,7 @@ server.registerTool(
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
       if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
-      const preflight = preflightProjectApply(plan, resolvePjanglerRoot());
+      const preflight = await preflightProjectApply(plan, resolvePjanglerRoot());
       if (preflight.failure) {
         return {
           isError: true,
@@ -781,7 +781,7 @@ server.registerTool(
   },
   async ({ targetDir, registryPath, json }) => {
     try {
-      const description = describeProject({
+      const description = await describeProject({
         repoArg: resolveTargetDir(targetDir),
         registryPath: registryPath ?? projectRegistryPath(),
       });
@@ -903,7 +903,7 @@ server.registerTool(
       let trustedCopier: TrustedCopierIdentity | undefined;
 
       if (apply) {
-        const hermesBlocker = preflightExistingHermesScaffold(resolvedTarget);
+        const hermesBlocker = await preflightExistingHermesScaffold(resolvedTarget);
         if (hermesBlocker) {
           return {
             isError: true,

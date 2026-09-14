@@ -11,7 +11,7 @@ import { runMigrationForRules } from "../parity/index";
  */
 export class WireMiseOpInject extends Command {
   async invoke(): Promise<InvokeResult> {
-    const report = runMigrationForRules(
+    const report = await runMigrationForRules(
       ["mise.config-root", "secrets.env-op"],
       this.context.targetDir,
       Boolean(this.context.dryRun)

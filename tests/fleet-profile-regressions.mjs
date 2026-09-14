@@ -555,6 +555,9 @@ function writeContract(name, document) {
 /** The tracked contract, mutated. */
 function policyContract(mutate = () => {}) {
   const document = contractDocument();
+  // This suite opts into a byte-policy. The shipped default has no mandatory
+  // global projection; Node activation parity is checked independently.
+  document.profile_manifest.skill_core.required = [...CORE_SKILLS];
   mutate(document);
   return document;
 }
@@ -2259,7 +2262,6 @@ try {
       // The ignore list covers the path-shaped pattern (`?` matches `/`), so the ONE diagnostic is the path itself.
       ["lock-pattern-path", (document) => { document.profile_manifest.renderer.lock_pattern = "{profile_name}/lock"; document.profile_manifest.extras.ignored_patterns = ["*?lock"]; }, /never a path/u],
       ["canonical-dir-env-not-a-key", (document) => { document.profile_manifest.skill_core.canonical_dir_env = "not a key"; }, /canonical_dir_env must be an environment key/u],
-      ["no-required-skills", (document) => { document.profile_manifest.skill_core.required = []; }, /required must name at least one core skill/u],
       ["no-ignored-patterns", (document) => { document.profile_manifest.extras.ignored_patterns = []; }, /ignored_patterns must name the renderer's lock entries/u],
       ["wildcard-only-pattern", (document) => { document.profile_manifest.extras.ignored_patterns.push("?*"); }, /may not match every entry/u],
     ];
@@ -2292,13 +2294,10 @@ try {
     assert.ok(Number.parseInt(contract.contract_version.split(".")[1] ?? "0", 10) >= 4, contract.contract_version);
     assert.equal(contract.health_policy.deferred_capabilities.some((entry) => entry.capability === "profile.render_generation"), false, "the profile.render_generation deferral is gone: the observer answers it");
     assert.deepEqual(contract.authorities.provisioned_profile_state.writable_fields, [FIELDS.identity, FIELDS.bank, FIELDS.skills]);
-    // The skill core the contract declares IS the template's, read at the gitlink.
     const script = pinned(PROFILE_SCRIPT_REL).toString("utf8");
-    const block = /CORE_RUNTIME_SKILLS=\(([^)]*)\)/u.exec(script);
-    assert.ok(block, "the template must declare CORE_RUNTIME_SKILLS");
-    const declared = block[1].split(/\s+/u).map((item) => item.trim()).filter(Boolean);
-    assert.deepEqual([...contract.profile_manifest.skill_core.required].sort(), [...declared].sort(), "profile_manifest.skill_core.required must equal the template's CORE_RUNTIME_SKILLS");
-    assert.equal(contract.profile_manifest.skill_core.source, `${PROFILE_SCRIPT_REL} CORE_RUNTIME_SKILLS`);
+    assert.doesNotMatch(script, /CORE_RUNTIME_SKILLS=/, "the template delegates selection to Skillex");
+    assert.deepEqual(contract.profile_manifest.skill_core.required, [], "default fleet policy does not require a global projection");
+    assert.match(contract.profile_manifest.skill_core.source, /explicit fleet byte-policy/);
     // And the singleton links the observer checks are the ones the rule provisions.
     const rules = readFileSync(join(ROOT, "src", "parity", "rules.ts"), "utf8");
     const entriesBlock = /const OWNED_PROFILE_ENTRIES = \[([^\]]*)\]/u.exec(rules);

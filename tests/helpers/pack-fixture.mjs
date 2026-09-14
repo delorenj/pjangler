@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 export const PACK_FIXTURE_NAME = "pjtest";
 export const PACK_FIXTURE_VERSION = "6.10.1-next.31";
 export const BMAD_INSTALLER_FIXTURE_VERSION = "6.11.1-next.1";
 
-// A deliberately small authenticated pack. It exercises inventory, integrity,
-// projections, and multi-link rollback.
+// A small reference-only pack. Canonical definitions live once in all-skills;
+// pack.toml declares the generated child links consumed by the Node core.
 //
 // PJAN-76: this fixture used to be named `bmad`, back when pjangler pinned a
 // Skillex `bmad` pack implicitly. BMAD is the installer's now, and a pack that
@@ -41,25 +42,15 @@ export function createSkillPackFixture(parentDir) {
     "[freeform]",
     `skills = [${PACK_FIXTURE_SKILLS.map((name) => JSON.stringify(name)).join(", ")}]`,
     "",
-    "[policy]",
-    "sealed = true",
-    "",
   ].join("\n");
   writeFileSync(join(root, "pack.toml"), packToml, "utf8");
   for (const name of PACK_FIXTURE_SKILLS) {
-    const skillDir = join(root, name);
+    const skillDir = join(parentDir, "all-skills", name);
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n# ${name}\n`, "utf8");
+    mkdirSync(join(root, "skills"), { recursive: true });
+    symlinkSync(skillDir, join(root, "skills", name));
   }
-  const payload = [
-    "pack.toml",
-    ...PACK_FIXTURE_SKILLS.map((name) => `${name}/SKILL.md`),
-  ].sort();
-  writeFileSync(
-    join(root, "SHA256SUMS"),
-    `${payload.map((path) => `${sha256(readFileSync(join(root, path)))}  ${path}`).join("\n")}\n`,
-    "utf8",
-  );
   return root;
 }
 
@@ -152,4 +143,33 @@ process.stdout.write("installed BMAD fixture " + version + "\\n");
 `, "utf8");
   chmodSync(executable, 0o755);
   return executable;
+}
+
+/** Replace only package provisioning in isolated Copier tests; execute the installed Node CLI. */
+export function createSkillexMiseFixture(parentDir) {
+  const bin = join(parentDir, "skillex-mise-bin");
+  const executable = join(bin, "mise");
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const coreCli = join(root, "node_modules", ".bin", "skillex");
+  const realMise = process.env.PATH.split(":").map((part) => join(part, "mise")).find((path) => {
+    try { return statSync(path).isFile(); } catch { return false; }
+  });
+  if (!realMise) throw new Error("mise is required for generated-project acceptance");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(executable, `#!${process.execPath}
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+let command = ${JSON.stringify(realMise)}, forwarded = args;
+if (args[0] === "run" && args[1] === "skills:sync") {
+  command = process.execPath;
+  forwarded = [${JSON.stringify(coreCli)}, "sync", "--scope", "project", "--project", process.cwd()];
+} else if (args[0] === "exec" && args[1] === "npm:@delorenj/skillex@0.1.1" && args[2] === "--" && args[3] === "skillex") {
+  command = process.execPath;
+  forwarded = [${JSON.stringify(coreCli)}, ...args.slice(4)];
+}
+const result = spawnSync(command, forwarded, { stdio: "inherit", env: process.env });
+if (result.error) process.stderr.write(result.error.message + "\\n");
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
+  return bin;
 }

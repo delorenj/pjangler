@@ -141,8 +141,8 @@ export interface RecipeCheck {
   readonly title: string;
   /** Defaults to "project" when absent. */
   readonly scope?: LifecycleScope;
-  audit(ctx: LifecycleContext): LifecycleAuditFinding;
-  migrate(ctx: LifecycleContext, finding: LifecycleAuditFinding): LifecycleMigrationResult;
+  audit(ctx: LifecycleContext): LifecycleAuditFinding | Promise<LifecycleAuditFinding>;
+  migrate(ctx: LifecycleContext, finding: LifecycleAuditFinding): LifecycleMigrationResult | Promise<LifecycleMigrationResult>;
 }
 
 /**
@@ -165,12 +165,12 @@ export function stampFinding(
   };
 }
 
-export function auditCheck(
+export async function auditCheck(
   check: RecipeCheck,
   ctx: LifecycleContext,
   recipeId?: string,
-): LifecycleAuditFinding {
-  return stampFinding(check, check.audit(ctx), recipeId);
+): Promise<LifecycleAuditFinding> {
+  return stampFinding(check, await check.audit(ctx), recipeId);
 }
 
 /** A finding that must not gate the repository it was found in. */
@@ -194,8 +194,8 @@ export interface LifecycleRecipe<TInput = unknown> {
   readonly metadata: RecipeMetadata;
   readonly checks: readonly RecipeCheck[];
   init(ctx: LifecycleContext, input: TInput): Promise<RecipeInitResult>;
-  audit(ctx: LifecycleContext): LifecycleAuditFinding[];
-  migrate(ctx: LifecycleContext, ruleIds: readonly RuleId[]): LifecycleMigrationResult[];
+  audit(ctx: LifecycleContext): Promise<LifecycleAuditFinding[]>;
+  migrate(ctx: LifecycleContext, ruleIds: readonly RuleId[]): Promise<LifecycleMigrationResult[]>;
   /** Project-like orchestrators run their declared dependencies inside init. */
   readonly orchestratesDependencies?: boolean;
 }

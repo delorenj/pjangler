@@ -1415,8 +1415,8 @@ try {
     manifest.setIn(["renderer", "check_argv"], ["check", "--all"]);
   }, "profile_manifest.renderer.check_argv", /exactly one argument/u);
   profileRejects("a duplicate core skill", (manifest) => {
-    manifest.addIn(["skill_core", "required"], "hindsight");
-  }, "profile_manifest.skill_core.required[6]", /duplicate entry hindsight/u);
+    manifest.setIn(["skill_core", "required"], ["hindsight", "hindsight"]);
+  }, "profile_manifest.skill_core.required[1]", /duplicate entry hindsight/u);
   profileRejects("an absolute canonical directory", (manifest) => {
     manifest.setIn(["skill_core", "canonical_dir"], "/srv/skills");
   }, "profile_manifest.skill_core.canonical_dir", /placeholder, never an absolute host path/u);
@@ -1439,8 +1439,8 @@ try {
     manifest.addIn(["extras", "ignored_patterns"], "?*");
   }, "profile_manifest.extras.ignored_patterns[1]", /may not match every entry/u);
   profileRejects("an empty core", (manifest) => {
-    manifest.setIn(["skill_core", "required"], []);
-  }, "profile_manifest.skill_core.required", /at least one core skill/u);
+    manifest.setIn(["skill_core", "required"], "hindsight");
+  }, "profile_manifest.skill_core.required", /array/u);
 
   check("profile_manifest: a schema-3 contract with no manifest still loads", () => {
     // OPTIONAL, and that is load-bearing: a contract that predates the block is
@@ -1468,7 +1468,7 @@ try {
     assert.ok(manifest, "the tracked contract must declare a profile_manifest or the rejections above prove nothing");
     assert.equal(manifest.renderer.submodule, contract.scaffold_manifest.template_submodule);
     assert.deepEqual(manifest.renderer.check_argv, ["check", "--profile", "{profile_name}"]);
-    assert.equal(manifest.skill_core.required.length, 6, "six core skills");
+    assert.deepEqual(manifest.skill_core.required, [], "no mandatory global skill projection");
     assert.deepEqual(contract.authorities.provisioned_profile_state.writable_fields, [
       "profiles.{profile_name}.profile.yaml", "profiles.{profile_name}.hindsight.config.json", "profiles.{profile_name}.skills",
     ]);

@@ -145,8 +145,8 @@ _bmad/config.user.yaml
 .claude/*.lock
 .claude/*.pid
 
-# esbuild sourcemaps: needed for coverage, rebuilt every time, published from CI
-dist/*.js.map
+# Generated CLI bundles and sourcemaps are built for tests and publication.
+/dist/
 # c8 output
 coverage/
 # NOTE: `bmad-loop init` re-adds `.bmad-loop/policy.toml` here on every run.

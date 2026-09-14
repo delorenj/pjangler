@@ -11,14 +11,11 @@ export {
   formatMigrationReport,
   formatMomoReadinessReport,
   formatRulePicker,
-  provisionDeclaredPacks,
-  registryCacheDirName,
   runMomoReadinessAudit,
 } from "./rules";
 export type {
   AuditFinding,
   AuditReport,
-  PackProvisionHooks,
   Context,
   MigrationReport,
   MigrationRuleResult,
@@ -62,52 +59,52 @@ export function getParityRuleIds(): string[] {
   return [...recipeRegistry.listRuleIds()];
 }
 
-function publicAudit(report: ReturnType<typeof recipeRegistry.auditRecipes>): AuditReport {
+function publicAudit(report: Awaited<ReturnType<typeof recipeRegistry.auditRecipes>>): AuditReport {
   return {
     ...report,
     rules: report.rules.map(({ recipeId: _recipeId, ...finding }) => finding),
   } as AuditReport;
 }
 
-function publicMigration(report: ReturnType<typeof recipeRegistry.migrateRules>): MigrationReport {
+function publicMigration(report: Awaited<ReturnType<typeof recipeRegistry.migrateRules>>): MigrationReport {
   return {
     ...report,
     results: report.results.map(({ recipeId: _recipeId, ...result }) => result),
   } as MigrationReport;
 }
 
-export function runAudit(repoArg?: string, registryPath?: string): AuditReport {
+export async function runAudit(repoArg?: string, registryPath?: string): Promise<AuditReport> {
   // PJAN-84: the registry the caller asked for reaches the rules. Without this,
   // `pj audit` had no --registry at all and every registry-reading rule fell
   // back to projectRegistryPath() independently, so auditing a project outside
   // the default registry produced findings about a project the registry had
   // never heard of.
-  return publicAudit(recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath ? { registryPath } : {})));
+  return publicAudit(await recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath ? { registryPath } : {})));
 }
 
-export function runMigrationForRules(
+export async function runMigrationForRules(
   ruleIds: string[],
   repoArg: string | undefined,
   dryRun: boolean,
   acceptRegistryMatches = false,
   registryPath?: string,
-): MigrationReport {
-  return publicMigration(recipeRegistry.migrateRules(
+): Promise<MigrationReport> {
+  return publicMigration(await recipeRegistry.migrateRules(
     lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath ? { registryPath } : {}),
     ruleIds,
   ));
 }
 
-export function runMigration(
+export async function runMigration(
   selector: string | undefined,
   repoArg: string | undefined,
   dryRun: boolean,
   all: boolean,
   acceptRegistryMatches = false,
   registryPath?: string,
-): MigrationReport {
+): Promise<MigrationReport> {
   const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath ? { registryPath } : {});
-  return publicMigration(all
+  return publicMigration(await (all
     ? recipeRegistry.migrateAll(ctx)
-    : recipeRegistry.migrateRules(ctx, selector ? [selector] : []));
+    : recipeRegistry.migrateRules(ctx, selector ? [selector] : [])));
 }

@@ -438,7 +438,7 @@ export class NotebookModule {
         reason: "focused notebook audit",
       }),
     };
-    const rules = checks.map((check) => check.audit(lifecycle));
+    const rules = await Promise.all(checks.map((check) => check.audit(lifecycle)));
     const admission = publicCaptureAdmissionSummary(captureAdmissionSummary(this.stateRoot, local.config.project_slug, local.config.limits));
     return {
       config: local.config,

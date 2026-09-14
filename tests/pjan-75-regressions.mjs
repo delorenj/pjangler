@@ -142,7 +142,7 @@ function deferredSkillRepo(name) {
   writeFileSync(join(repoRoot, ".agents", "skills", "my-committed-skill", "SKILL.md"), "---\nname: my-committed-skill\n---\n", "utf8");
   writeFileSync(
     join(repoRoot, ".agents", "skills.json"),
-    `${JSON.stringify({ inherit_global: true, registry: "https://github.com/delorenj/skillex.git", skills: [] }, null, 2)}\n`,
+    `${JSON.stringify({ inherit_global: true, registry: "https://github.com/delorenj/skillex.git", skills: [{ name: "my-committed-skill", source: `file://${join(repoRoot, ".agents", "skills", "my-committed-skill")}`] }, null, 2)}\n`,
     "utf8",
   );
   writeFileSync(
@@ -162,7 +162,7 @@ function runCli(args, { home, expectOk }) {
       HOME: home,
       GIT_CEILING_DIRECTORIES: workspace,
       NO_COLOR: "1",
-      PJ_PACK_ROOT_PJTEST: bmadPack,
+      PJ_SKILLS_REGISTRY_ROOT: join(workspace, "packfix"),
     },
   });
   if (expectOk !== undefined) {
@@ -218,8 +218,8 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
   assert.equal(rule.status, "fail", "expected the undeclared skill entry to fail the audit");
   assert.equal(
     rule.fixable,
-    true,
-    `the scenario is only meaningful while the rule is fixable; got ${JSON.stringify(rule.details)}`,
+    false,
+    "legacy declaration mappings require explicit Skillex migration",
   );
 
   const migration = json(["migrate", "skills.project-manifest", repoRoot], { home });
@@ -232,11 +232,11 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
     "precondition: the deferred mapping must still be outstanding",
   );
   assert.notEqual(result.status, "applied", 'migrate reported "applied" for a rule that still fails its audit');
-  assert.equal(result.status, "partial");
+  assert.equal(result.status, "blocked");
   assert.equal(migration.ok, false, "`migrate` must not exit 0 while `audit` on the same repo exits 1");
   assert.equal(migration.ok, after.ok, "migrate and audit must not disagree about parity");
   assert.ok(
-    result.details.some((detail) => detail.includes("--accept-registry-matches")),
+    result.details.some((detail) => detail.includes("skillex migrate --project")),
     "the operator must be told how to finish the migration",
   );
 });

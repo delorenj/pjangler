@@ -22,7 +22,7 @@
     ".mise/scripts/link-agentfiles.sh"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outdir=dist && node scripts/export-project-notebook-skill.mjs",
@@ -56,11 +56,13 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.4.0",
+    "@delorenj/skillex": "0.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
     "pg": "^8.16.0",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "smol-toml": "^1.8.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
