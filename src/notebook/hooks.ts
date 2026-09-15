@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRegistryServiceLocation } from "../project/index";
 import { PJANGLER_VERSION } from "../utils/version";
 import { captureGitSnapshot } from "./git-evidence";
 import { sha256Hex } from "./notes";
@@ -62,8 +63,12 @@ export function captureWorkerEnvironment(
     if (typeof value === "string" && value.length > 0) result[name] = value;
   }
   const registryPath = source.PJ_PROJECT_REGISTRY;
-  if (typeof registryPath === "string" && isAbsolute(registryPath) && !registryPath.includes("\0") && Buffer.byteLength(registryPath, "utf8") <= 4_096) {
-    result.PJ_PROJECT_REGISTRY = resolve(registryPath);
+  if (typeof registryPath === "string" && (isAbsolute(registryPath) || isRegistryServiceLocation(registryPath)) && !registryPath.includes("\0") && Buffer.byteLength(registryPath, "utf8") <= 4_096) {
+    result.PJ_PROJECT_REGISTRY = isRegistryServiceLocation(registryPath) ? registryPath : resolve(registryPath);
+  }
+  const registryUrl = source.PJ_REGISTRY_URL;
+  if (typeof registryUrl === "string" && isRegistryServiceLocation(registryUrl) && !registryUrl.includes("\0") && Buffer.byteLength(registryUrl, "utf8") <= 4_096) {
+    result.PJ_REGISTRY_URL = registryUrl;
   }
   return result;
 }

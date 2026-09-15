@@ -55,7 +55,8 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   let identifier: string | undefined;
   try {
     const manifest = JSON.parse(readFileSync(join(root, ".project.json"), "utf8")) as Record<string, unknown>;
-    if (typeof manifest.project_slug === "string" && manifest.project_slug) slug = manifest.project_slug;
+    const projectId = manifest.project_id ?? manifest.project_slug;
+    if (typeof projectId === "string" && projectId.trim()) slug = projectId.trim().toLowerCase();
     const provider = manifest.ticket_provider as Record<string, unknown> | undefined;
     if (provider && typeof provider.identifier === "string" && provider.identifier) identifier = provider.identifier;
   } catch {
@@ -73,10 +74,11 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   };
 }
 
-/** `pjangler (PJAN) · 3m` — deliberately terse; a prompt is not a report. */
+/** `pjangler · 3m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts): string {
   const parts = [facts.slug];
-  if (facts.identifier) parts.push(`(${facts.identifier})`);
+  // The project ID is the only project identity in the prompt. Provider ticket
+  // prefixes remain board metadata and appear in ticket references.
   const head = parts.join(" ");
   return facts.age ? `${head} · ${facts.age}` : head;
 }

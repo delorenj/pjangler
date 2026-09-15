@@ -412,8 +412,11 @@ export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleE
   ], "CommonProject template");
   if (!files.ok) return files;
   const projectJson = readFileSync(join(templateRoot, "template", ".project.json.jinja"), "utf8");
-  for (const key of ["project_name", "project_slug", "repo_path", "ticket_provider", "agents"]) {
+  for (const key of ["project_name", "repo_path", "ticket_provider", "agents"]) {
     if (!projectJson.includes(`\"${key}\"`)) return { ok: false, error: `CommonProject projection is missing ${key}` };
+  }
+  if (!projectJson.includes('"project_id"') && !projectJson.includes('"project_slug"')) {
+    return { ok: false, error: "CommonProject manifest is missing project_id" };
   }
   return { ok: true };
 }

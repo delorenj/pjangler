@@ -54,13 +54,22 @@ authorities:
     owner: project-registry
     store: pjangler-project-registry
     store_env:
+      - PJ_REGISTRY_URL
       - PJ_PROJECT_REGISTRY
     notes:
-      - Project identity and project-to-board binding.
-      - Board provenance fields exist only here, never in the agent registry.
+      - Each repository .project.json owns its case-insensitive project_id and
+        project-to-board binding.
+      - The singleton PostgreSQL registry indexes manifests for system-wide
+        queries.
+      - PJ_PROJECT_REGISTRY is an explicit file adapter for import and isolated
+        tests.
+      - The legacy slug field mirrors project_id; it is not a separate identity.
+      - Board provenance is indexed from the manifest, never owned by the agent
+        registry.
     writable_fields:
       - projects.{slug}.name
       - projects.{slug}.slug
+      - projects.{slug}.project_id
       - projects.{slug}.repo_path
       - projects.{slug}.description
       - projects.{slug}.status

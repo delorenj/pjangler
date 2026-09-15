@@ -1,3 +1,4 @@
+import { normalizeProjectId } from "../project/registryClient";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, cpSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1320,15 +1321,17 @@ function numberSetting(value: unknown, fallback: number): number {
 function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[]; unprovisioned: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
-  const slug = typeof existing.project_slug === "string" && existing.project_slug ? existing.project_slug : slugifyRepoName(basename(ctx.repoRoot));
+  const slug = normalizeProjectId(existing.project_id ?? existing.project_slug ?? slugifyRepoName(basename(ctx.repoRoot)));
   const firstRole = roles[0];
   const ticketProvider = {
+    ...(existing.ticket_provider as Record<string, unknown> | undefined),
     type: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
     workspace: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
     identifier: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
     board_id: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
     state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
   };
+  delete (ticketProvider as Record<string, unknown>).board_url;
   if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
   const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; [key: string]: unknown }> | undefined) ?? {};
   const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
@@ -1398,7 +1401,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
-    project_slug: slug,
+    project_id: slug,
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
@@ -1420,9 +1423,11 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   if (!data) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json is not valid JSON", details: [], fixable: true };
   }
-  for (const key of ["project_name", "project_description", "project_slug", "repo_path", "ticket_provider", "agents", "automation"]) {
+  for (const key of ["project_name", "project_description", "project_id", "repo_path", "ticket_provider", "agents", "automation"]) {
     if (!(key in data)) details.push(`missing key: ${key}`);
   }
+  if ("project_slug" in data) details.push("legacy project_slug should be migrated to project_id");
+  if (typeof data.project_id === "string" && data.project_id !== data.project_id.toLowerCase()) details.push("project_id must be lowercase");
   if (data.repo_path !== ctx.repoRoot) details.push(`repo_path should be ${ctx.repoRoot}`);
   const agents = (data.agents as Record<string, unknown> | undefined) ?? {};
   for (const role of roles) {
@@ -3655,8 +3660,11 @@ return [
       const mise = safeReadText(join(ctx.repoRoot, "mise.toml"));
       const wiring = skillsWiringIssues(mise);
       const retired = retiredSkillsScripts(ctx);
-      const details = [...finding.details, ...wiring, ...retired.map((path) => `${path} is a retired skill writer`)];
+      const unsafe = retired.filter((path) => lstatIfPresent(path)?.isDirectory());
+      const details = [...finding.details, ...wiring, ...retired.map((path) => unsafe.includes(path)
+        ? `Inspect and preserve retired script directory: ${path}` : `${path} is a retired skill writer`)];
       return { ...finding, status: wiring.length || retired.length ? "fail" as const : finding.status,
+        fixable: unsafe.length ? false : finding.fixable,
         summary: details.length ? `${details.length} Skillex finding(s)` : finding.summary, details };
     },
     migrate: async (ctx, finding) => {
@@ -3794,6 +3802,7 @@ return [
       // Merge: canonical keys win, but preserve any extra keys the user added
       const { dropped: _dropped, unprovisioned: _unprovisioned, ...canonicalJson } = canonical;
       const merged = { ...existing, ...canonicalJson };
+      delete merged.project_slug;
       const expected = `${JSON.stringify(merged, null, 2)}\n`;
       if (safeReadText(path) !== expected) {
         changedFiles.push(path);
@@ -5183,12 +5192,9 @@ return [
           details.push(`agent.disabled_toolsets contains "memory" — memory tools are suppressed fleet-wide even though memory.provider is set (auto recall/retain still runs, which masks it)`);
         }
 
-        // Skills reach agents only through external_dirs; a profile that
-        // inherits an empty list silently has no skills at all.
-        const dirs: unknown = cfg?.skills?.external_dirs;
-        if (!Array.isArray(dirs) || dirs.length === 0) {
-          details.push(`skills.external_dirs is empty in the fleet base — no agent can see any shared skill`);
-        }
+        // Named profiles load their real skills/ overlay. Skill reachability
+        // is checked by hermes.runtime-singleton through the public core;
+        // external_dirs may intentionally be empty.
       }
 
       return {

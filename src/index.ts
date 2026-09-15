@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext } from "./commands/hermes/types";
 import { SOUL_TONES } from "./commands/hermes/types";
@@ -23,13 +23,17 @@ import {
   doctorProjectRegistry,
   formatProjectInitPlan,
   formatProjectList,
-  getProject,
   loadProjectRegistry,
+  getProject,
+  registryRequest,
+  resolveRegistryLocation,
   planProjectInit,
   projectRegistryPath,
+  projectRecordEquivalent,
   removeProjectRecord,
   type BoardDelivery,
 } from "./project/index";
+import { readProjectInfo, doctorCurrentProject } from "./project/info";
 import { resolveBoardUrl } from "./project/boardUrl";
 import { formatIdentityReport, linkProjectBoard, reconcileProjectIdentity } from "./project/identity";
 import {
@@ -72,6 +76,7 @@ interface ProjectInitCliOptions {
   apply?: boolean;
   dryRun?: boolean;
   live?: boolean;
+  id?: string;
   slug?: string;
   identifier?: string;
   ticketProvider?: string;
@@ -151,7 +156,9 @@ function packageNameToProjectName(value: string | undefined): string | undefined
     .trim();
 }
 
-function deriveProjectDefaults(targetDir: string): { name: string; description: string; slug?: string; identifier?: string } {
+interface LocalProjectDefaults { name: string; description: string; slug?: string; identifier?: string; boardId?: string; ticketProvider?: string; workspace?: string }
+
+function deriveProjectDefaults(targetDir: string): LocalProjectDefaults {
   const manifest = readJson(join(targetDir, ".project.json"));
   const pkg = readJson(join(targetDir, "package.json"));
   const name =
@@ -163,8 +170,11 @@ function deriveProjectDefaults(targetDir: string): { name: string; description: 
   return {
     name,
     description: String(manifest?.project_description ?? pkg?.description ?? ""),
-    slug: typeof manifest?.project_slug === "string" ? manifest.project_slug : undefined,
+    slug: typeof (manifest?.project_id ?? manifest?.project_slug) === "string" ? String(manifest?.project_id ?? manifest?.project_slug).trim().toLowerCase() : undefined,
     identifier: typeof ticketProvider.identifier === "string" ? ticketProvider.identifier : undefined,
+    boardId: typeof ticketProvider.board_id === "string" ? ticketProvider.board_id : undefined,
+    ticketProvider: typeof ticketProvider.type === "string" ? ticketProvider.type : undefined,
+    workspace: typeof ticketProvider.workspace === "string" ? ticketProvider.workspace : undefined,
   };
 }
 
@@ -218,7 +228,7 @@ function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: 
   // and echoing the intent underneath it reads like a contradiction.
   if (!board.intended && board.reason) log(`     ${dim(`why: ${board.reason}`)}`);
   if (!skipRequested) {
-    log(`     ${dim("fix:")} ${cyan(`pj project link ${slug} <board-id> --apply`)} ${dim("to bind an existing board")}`);
+    log(`     ${dim("fix:")} ${cyan(`pj link ${slug} <board-id> --apply`)} ${dim("to bind an existing board")}`);
     log(`     ${dim("  or")} ${cyan(`pj init --target-dir <repo>`)} ${dim("again once the provider credential resolves")}`);
     log(`     ${dim("  or")} ${cyan("--skip-board")} ${dim("if this project is meant to have none")}`);
   }
@@ -229,11 +239,11 @@ function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: 
 function projectInitActionLabel(kind: string): string {
   switch (kind) {
     case "registry.upsert":
-      return "Register/update project registry entry";
+      return "Refresh the project registry index";
     case "copier.copy.commonproject":
       return "Render CommonProject scaffold";
     case "project.write-manifest":
-      return "Write repo-local .project.json projection";
+      return "Write authoritative repo-local .project.json";
     case "ticket-provider.create-or-link":
       return "Create/link ticket provider project";
     case "hermes.provision-agent":
@@ -247,9 +257,7 @@ function registryNeedsUpsert(plan: ReturnType<typeof planProjectInit>): boolean 
   const registry = loadProjectRegistry(plan.registryPath);
   const existing = registry.projects[plan.project.slug];
   if (!existing) return true;
-  const { created_at: _existingCreated, updated_at: _existingUpdated, ...existingComparable } = existing;
-  const { created_at: _projectCreated, updated_at: _projectUpdated, ...projectComparable } = plan.project;
-  return JSON.stringify(existingComparable) !== JSON.stringify(projectComparable);
+  return !projectRecordEquivalent(existing, plan.project);
 }
 
 function actionNeedsRun(plan: ReturnType<typeof planProjectInit>, kind: string, syncMode: boolean): boolean {
@@ -313,7 +321,7 @@ async function selectProjectInitOperations(input: {
   };
 }
 
-async function resolveProjectInitTarget(name: string | undefined, options: ProjectInitCliOptions): Promise<{ name: string; targetDir: string; description: string; syncMode: boolean; slug?: string; identifier?: string }> {
+async function resolveProjectInitTarget(name: string | undefined, options: ProjectInitCliOptions): Promise<LocalProjectDefaults & { targetDir: string; syncMode: boolean }> {
   const interactive = isInteractiveProjectInit(options);
   const cwd = process.cwd();
   const cwdGitRoot = findGitRoot(cwd);
@@ -374,8 +382,11 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
     targetDir,
     description: options.description ?? defaults.description,
     syncMode,
-    slug: options.slug ?? defaults.slug,
+    slug: options.id ?? options.slug ?? defaults.slug,
     identifier: options.identifier ?? defaults.identifier,
+    boardId: options.boardId ?? defaults.boardId,
+    ticketProvider: options.ticketProvider ?? defaults.ticketProvider,
+    workspace: options.workspace ?? defaults.workspace,
   };
 }
 
@@ -428,24 +439,25 @@ program
 program
   .command("init")
   .argument("[name]", "Project name to bootstrap (omit inside an existing git repo)")
-  .description("Bootstrap a project: registry entry + CommonProject scaffold + .project.json")
+  .description("Initialize the project manifest, scaffold and registry index")
   .option("--description <text>", "Project description")
   .option("--target-dir <path>", "Target repo path")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
   .option("--provision-agent", "Plan local Hermes PM agent provisioning")
   .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
-  .option("--apply", "Write the registry and render the repo scaffold")
+  .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
-  .option("--slug <slug>", "Project registry slug override")
-  .option("--identifier <identifier>", "Ticket identifier override")
-  .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
+  .option("--id <project-id>", "Canonical project ID (case-insensitive)")
+  .addOption(new Option("--slug <slug>", "Legacy alias for --id").hideHelp())
+  .option("--identifier <identifier>", "Provider ticket prefix (board metadata)")
+  .option("--ticket-provider <type>", "Ticket provider: plane | trello (default: existing binding or plane)")
   .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
   .option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id")
   .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
   .option("-y, --yes", "Apply every proposed operation without prompting")
   .option("--no-tui", "Disable interactive prompts")
@@ -482,7 +494,7 @@ program
 // ============================================================================
 
 program
-  .command("list")
+  .command("subsystems")
   .description("List available subsystems")
   .action(() => {
     const width = Object.keys(RECIPE_REGISTRY).reduce((max, name) => Math.max(max, name.length), 0);
@@ -650,8 +662,8 @@ boardCmd
 // ============================================================================
 
 const projectCmd = program
-  .command("project")
-  .description("Manage the pjangler project registry");
+  .command("project", { hidden: true })
+  .description("Legacy aliases for project commands");
 
 projectCmd
   .command("init")
@@ -663,17 +675,18 @@ projectCmd
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
   .option("--provision-agent", "Plan local Hermes PM agent provisioning")
   .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
-  .option("--apply", "Write the registry and render the repo scaffold")
+  .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
-  .option("--slug <slug>", "Project registry slug override")
-  .option("--identifier <identifier>", "Ticket identifier override")
-  .option("--ticket-provider <type>", "Ticket provider: plane | trello", "plane")
+  .option("--id <project-id>", "Canonical project ID (case-insensitive)")
+  .addOption(new Option("--slug <slug>", "Legacy alias for --id").hideHelp())
+  .option("--identifier <identifier>", "Provider ticket prefix (board metadata)")
+  .option("--ticket-provider <type>", "Ticket provider: plane | trello (default: existing binding or plane)")
   .option("--board-id <id>", "Board id (Plane project UUID or Trello board id)")
   .option("--board-url <url>", "Deprecated no-op; board URLs are derived from provider + workspace + board-id")
   .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
   .option("-y, --yes", "Apply every proposed operation without prompting")
   .option("--no-tui", "Disable interactive prompts")
@@ -701,11 +714,11 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         live: options.live ?? false,
         projectSlug: target.slug,
         projectIdentifier: target.identifier,
-        ticketProvider: options.ticketProvider,
-        boardId: options.boardId,
+        ticketProvider: target.ticketProvider,
+        boardId: target.boardId,
         boardUrl: options.boardUrl,
         skipPlane: options.skipBoard ?? false,
-        boardWorkspace: options.workspace,
+        boardWorkspace: target.workspace,
         registryPath: options.registry,
         force: options.force ?? false,
         overwrite: options.force ?? false,
@@ -811,201 +824,257 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
     }
 }
 
-projectCmd
-  .command("list")
-  .description("List projects in the pjangler registry")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .option("--json", "Output machine-parseable JSON")
-  .action(async (options) => {
-    try {
-      const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
-      if (options.json) {
-        console.log(JSON.stringify(registry, null, 2));
-        return;
-      }
-      // Scan every registered repo concurrently so ordering by real recency
-      // does not cost a visible stall on a registry this size.
-      const activity = await computeRepoActivityBatch(
-        Object.values(registry.projects).map((project) => project.repo_path),
-      );
-      console.log(formatProjectList(registry, activity));
-    } catch (err) {
-      console.error(`${xmark} project list failed:`, err instanceof Error ? err.message : err);
-      process.exit(1);
-    }
-  });
-
-projectCmd
-  .command("show")
-  .argument("<slug>", "Project slug")
-  .description("Show one project from the pjangler registry")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .option("--json", "Output machine-parseable JSON")
-  .action((slug: string, options) => {
-    try {
-      const project = getProject(loadProjectRegistry(options.registry ?? projectRegistryPath()), slug);
-      if (options.json) {
-        console.log(JSON.stringify(project, null, 2));
-      } else {
-        console.log("");
-        console.log(`  ${heading(project.name)} ${dim(`(${project.slug})`)}`);
-        console.log(`  ${dim(project.repo_path)}`);
-        if (project.description) console.log(`  ${project.description}`);
-        console.log("");
-      }
-    } catch (err) {
-      console.error(`${xmark} project show failed:`, err instanceof Error ? err.message : err);
-      process.exit(1);
-    }
-  });
-
-projectCmd
-  .command("remove")
-  .alias("rm")
-  .argument("<slug>", "Project slug to drop from the registry")
-  .description("Remove a project from the pjangler registry (the repo and its board are left alone)")
-  .option("--apply", "Write the removal (default is a dry run)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .option("--json", "Output machine-parseable JSON")
-  .action((slug: string, options) => {
-    try {
-      const result = removeProjectRecord({ slug, apply: Boolean(options.apply), registryPath: options.registry });
-      if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
-        return;
-      }
-      const provider = result.removed.ticket_provider;
-      const binding = provider.board_id
-        ? `${provider.type}/${provider.workspace ?? ""}/${provider.identifier ?? ""} ${dim(provider.board_id)}`
-        : dim("no board");
-      console.log("");
-      console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Removed" : "Would remove")}  ${dim(glyph.dot)}  ${cyan(result.slug)} ${dim(`(${result.removed.name})`)}`);
-      console.log(`  ${dim("registry".padEnd(8))} ${dim(result.registryPath)}`);
-      console.log(`  ${dim("repo".padEnd(8))} ${dim(result.removed.repo_path)} ${dim("(left on disk)")}`);
-      console.log(`  ${dim("board".padEnd(8))} ${binding} ${dim("(left with the provider)")}`);
-      if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
-      console.log("");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-      else console.error(`${xmark} project remove failed: ${message}`);
-      process.exit(1);
-    }
-  });
-
-projectCmd
-  .command("link")
-  .argument("<slug>", "Project slug")
-  .argument("<board-id>", "Board id the provider already owns (Plane project UUID, Trello board id)")
-  .description("Bind a registry record to an existing board, reading its identity back from the provider")
-  .option("--apply", "Write the binding (default is a dry run)")
-  .option("--workspace <name>", "Workspace to look the board up in (default: the record's workspace)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .option("--json", "Output machine-parseable JSON")
-  .action(async (slug: string, boardId: string, options) => {
-    try {
-      const result = await linkProjectBoard({
-        slug,
-        boardId,
-        apply: Boolean(options.apply),
-        workspace: options.workspace,
-        registryPath: options.registry,
-      });
-      if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
-        return;
-      }
-      console.log("");
-      console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Linked" : "Would link")}  ${dim(glyph.dot)}  ${cyan(slug)} ${dim(glyph.pointer)} ${cyan(result.boardId)}${result.boardName ? dim(` (${result.boardName})`) : ""}`);
-      console.log(`  ${dim("provider".padEnd(18))} ${result.provider}${result.workspace ? dim(`/${result.workspace}`) : ""}`);
-      console.log(`  ${dim("identifier".padEnd(18))} ${cyan(result.identifier || dim("(none)"))}${result.before.identifier && result.before.identifier !== result.identifier ? dim(`  was ${result.before.identifier}`) : ""}`);
-      // The two provenance halves are separate facts and are printed as such:
-      // any provider can confirm a board exists; only Plane and Linear assign
-      // the key, so Trello's stays a proposal by contract, not by failure.
-      console.log(`  ${dim("identifier_source".padEnd(18))} ${result.identifierSource}${result.identifierSource === "proposed" ? dim(`  (${result.provider} assigns no key)`) : ""}`);
-      console.log(`  ${dim("board_confirmed_at".padEnd(18))} ${result.boardConfirmedAt}`);
-      console.log(`  ${dim("state".padEnd(18))} ${result.state === "linked" ? green(result.state) : yellow(result.state)}${result.before.state !== result.state ? dim(`  was ${result.before.state}`) : ""}`);
-      if (result.manifestPath) console.log(`  ${dim("manifest".padEnd(18))} ${dim(result.manifestPath)}${result.apply ? "" : dim(" (would be updated)")}`);
-      if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
-      console.log("");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-      else console.error(`${xmark} project link failed: ${message}`);
-      process.exit(1);
-    }
-  });
-
-projectCmd
-  .command("identity")
-  .argument("[slug]", "Project slug, agent id, or repo name")
-  .description("Read board identifiers back from the provider and repair the registries")
-  .option("--all", "Reconcile every agent in the Hermes fleet registry")
-  .option("--apply", "Write the repairs (default is a dry-run diff)")
-  .option("--json", "Output machine-parseable JSON")
-  .option("--hermes-registry <path>", "Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .action(async (slug: string | undefined, options) => {
-    try {
-      // No argument means "this project" — the same implicit resolution `pj board`
-      // and `pj describe` use. Only when cwd is not inside a project does the
-      // operator have to say which one they meant.
-      let target = slug;
-      if (!target && !options.all) {
-        try {
-          target = resolveProject(process.cwd()).slug;
-        } catch {
-          throw new Error(
-            "not inside a pjangler project — pass a project slug, an agent id, or --all",
-          );
+function registerProjectCommands(parent: Command, legacy = false): void {
+  parent
+    .command("list")
+    .description("List projects in the pjangler registry")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action(async (options) => {
+      try {
+        const registry = loadProjectRegistry(options.registry ?? projectRegistryPath());
+        if (options.json) {
+          console.log(JSON.stringify(registry, null, 2));
+          return;
         }
+        // Scan every registered repo concurrently so ordering by real recency
+        // does not cost a visible stall on a registry this size.
+        const activity = await computeRepoActivityBatch(
+          Object.values(registry.projects).map((project) => project.repo_path),
+        );
+        console.log(formatProjectList(registry, activity));
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error }, null, 2));
+        else console.error(`${xmark} list failed: ${error}`);
+        process.exit(1);
       }
-      const report = await reconcileProjectIdentity({
-        target,
-        all: Boolean(options.all),
-        apply: Boolean(options.apply),
-        hermesRegistryPath: options.hermesRegistry,
-        registryPath: options.registry,
-      });
-      console.log(options.json ? JSON.stringify(report, null, 2) : formatIdentityReport(report));
-      process.exit(report.ok ? 0 : 1);
-    } catch (err) {
-      console.error(`${xmark} project identity failed:`, err instanceof Error ? err.message : err);
-      process.exit(1);
-    }
-  });
+    });
 
-projectCmd
-  .command("doctor")
-  .argument("[slug]", "Optional project slug")
-  .description("Validate the project registry and local projections")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
-  .option("--json", "Output machine-parseable JSON")
-  .action((slug: string | undefined, options) => {
-    try {
-      const report = doctorProjectRegistry(options.registry ?? projectRegistryPath(), slug);
-      if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
-      } else if (!report.issues.length) {
+  parent
+    .command(legacy ? "show" : "info")
+    .argument("[project-id]", "Canonical project ID (defaults to the current repository)")
+    .description("Read the authoritative project manifest and its registry status")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action((projectId: string | undefined, options) => {
+      try {
+        const info = readProjectInfo({ projectId, registryPath: options.registry });
+        if (options.json) console.log(JSON.stringify(info, null, 2));
+        else {
+          console.log("");
+          console.log(`  ${heading(String(info.manifest.project_name ?? info.project_id))} ${dim(`(${info.project_id})`)}`);
+          console.log(`  ${dim(info.repo_path)}`);
+          if (info.manifest.project_description) console.log(`  ${info.manifest.project_description}`);
+          console.log(`  ${dim("registry")} ${info.registry.status}`);
+          if (info.registry.message) console.log(`  ${info.registry.message}`);
+          console.log("");
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error }, null, 2));
+        else console.error(`${xmark} info failed: ${error}`);
+        process.exitCode = 1;
+      }
+    });
+
+  parent
+    .command("remove")
+    .alias("rm")
+    .argument("[project-id]", "Canonical project ID (defaults to the current repository)")
+    .description("Remove a project from the pjangler registry (the repo and its board are left alone)")
+    .option("--apply", "Write the removal (default is a dry run)")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action((slug: string | undefined, options) => {
+      try {
+        const target = (slug ?? resolveProject(process.cwd()).slug).trim().toLowerCase();
+        const result = removeProjectRecord({ slug: target, apply: Boolean(options.apply), registryPath: options.registry });
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        const provider = result.removed.ticket_provider;
+        const binding = provider.board_id
+          ? `${provider.type}/${provider.workspace ?? ""}/${provider.identifier ?? ""} ${dim(provider.board_id)}`
+          : dim("no board");
         console.log("");
-        console.log(`  ${green(glyph.pass)} ${bold("Project registry OK")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+        console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Removed" : "Would remove")}  ${dim(glyph.dot)}  ${cyan(result.slug)} ${dim(`(${result.removed.name})`)}`);
+        console.log(`  ${dim("registry".padEnd(8))} ${dim(result.registryPath)}`);
+        console.log(`  ${dim("repo".padEnd(8))} ${dim(result.removed.repo_path)} ${dim("(left on disk)")}`);
+        console.log(`  ${dim("board".padEnd(8))} ${binding} ${dim("(left with the provider)")}`);
+        if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
         console.log("");
-      } else {
-        console.log("");
-        console.log(`  ${red(glyph.fail)} ${bold("Project registry issues")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
-        console.log("");
-        for (const issue of report.issues) {
-          const mark = issue.level === "error" ? red(glyph.fail) : yellow(glyph.warn);
-          console.log(`  ${mark}  ${bold(issue.slug ?? "registry")}  ${issue.message}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+        else console.error(`${xmark} project remove failed: ${message}`);
+        process.exit(1);
+      }
+    });
+
+  parent
+    .command("link")
+    .argument("<project-or-board-id>", "Project ID, or board UUID when using the current repository")
+    .argument("[board-id]", "Provider board UUID when a project ID is supplied")
+    .description("Bind the project to an existing board, reading its identity back from the provider")
+    .option("--apply", "Write the binding (default is a dry run)")
+    .option("--workspace <name>", "Workspace to look the board up in (default: the record's workspace)")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action(async (projectOrBoardId: string, explicitBoardId: string | undefined, options) => {
+      try {
+        const slug = (explicitBoardId ? projectOrBoardId : resolveProject(process.cwd()).slug).trim().toLowerCase();
+        const boardId = explicitBoardId ?? projectOrBoardId;
+        const result = await linkProjectBoard({
+          slug,
+          boardId,
+          apply: Boolean(options.apply),
+          workspace: options.workspace,
+          registryPath: options.registry,
+        });
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
         }
         console.log("");
+        console.log(`  ${result.apply ? green(glyph.pass) : yellow(glyph.warn)} ${bold(result.apply ? "Linked" : "Would link")}  ${dim(glyph.dot)}  ${cyan(slug)} ${dim(glyph.pointer)} ${cyan(result.boardId)}${result.boardName ? dim(` (${result.boardName})`) : ""}`);
+        console.log(`  ${dim("provider".padEnd(18))} ${result.provider}${result.workspace ? dim(`/${result.workspace}`) : ""}`);
+        console.log(`  ${dim("identifier".padEnd(18))} ${cyan(result.identifier || dim("(none)"))}${result.before.identifier && result.before.identifier !== result.identifier ? dim(`  was ${result.before.identifier}`) : ""}`);
+        // The two provenance halves are separate facts and are printed as such:
+        // any provider can confirm a board exists; only Plane and Linear assign
+        // the key, so Trello's stays a proposal by contract, not by failure.
+        console.log(`  ${dim("identifier_source".padEnd(18))} ${result.identifierSource}${result.identifierSource === "proposed" ? dim(`  (${result.provider} assigns no key)`) : ""}`);
+        console.log(`  ${dim("board_confirmed_at".padEnd(18))} ${result.boardConfirmedAt}`);
+        console.log(`  ${dim("state".padEnd(18))} ${result.state === "linked" ? green(result.state) : yellow(result.state)}${result.before.state !== result.state ? dim(`  was ${result.before.state}`) : ""}`);
+        if (result.manifestPath) console.log(`  ${dim("manifest".padEnd(18))} ${dim(result.manifestPath)}${result.apply ? "" : dim(" (would be updated)")}`);
+        if (!result.apply) console.log(`  ${dim("dry run — re-run with --apply to write")}`);
+        console.log("");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+        else console.error(`${xmark} project link failed: ${message}`);
+        process.exit(1);
       }
-      process.exit(report.ok ? 0 : 1);
+    });
+
+  parent
+    .command("identity")
+    .argument("[project-id]", "Canonical project ID (defaults to the current repository)")
+    .description("Read board identifiers back from the provider and repair the registries")
+    .option("--all", "Reconcile every agent in the Hermes fleet registry")
+    .option("--apply", "Write the repairs (default is a dry-run diff)")
+    .option("--json", "Output machine-parseable JSON")
+    .option("--hermes-registry <path>", "Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .action(async (slug: string | undefined, options) => {
+      try {
+        // No argument means "this project" — the same implicit resolution `pj board`
+        // and `pj describe` use. Only when cwd is not inside a project does the
+        // operator have to say which one they meant.
+        let target = slug?.trim().toLowerCase();
+        if (!target && !options.all) {
+          try {
+            target = resolveProject(process.cwd()).slug;
+          } catch {
+            throw new Error(
+              "not inside a pjangler project — pass a project ID or --all",
+            );
+          }
+        }
+        const report = await reconcileProjectIdentity({
+          target,
+          all: Boolean(options.all),
+          apply: Boolean(options.apply),
+          hermesRegistryPath: options.hermesRegistry,
+          registryPath: options.registry,
+        });
+        console.log(options.json ? JSON.stringify(report, null, 2) : formatIdentityReport(report));
+        process.exit(report.ok ? 0 : 1);
+      } catch (err) {
+        console.error(`${xmark} project identity failed:`, err instanceof Error ? err.message : err);
+        process.exit(1);
+      }
+    });
+
+  parent
+    .command("doctor")
+    .argument("[project-id]", "Canonical project ID (defaults to the current repository)")
+    .description("Validate the current project manifest and its registry entry")
+    .option("--all", "Validate every registered project")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action((slug: string | undefined, options) => {
+      try {
+        if (slug && options.all) throw new Error("Pass a project ID or --all, not both");
+        const report = options.all
+          ? doctorProjectRegistry(options.registry ?? projectRegistryPath())
+          : doctorCurrentProject({ projectId: slug, registryPath: options.registry });
+        if (options.json) {
+          console.log(JSON.stringify(report, null, 2));
+        } else if (!report.issues.length) {
+          console.log("");
+          console.log(`  ${green(glyph.pass)} ${bold("Project registry OK")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+          console.log("");
+        } else {
+          console.log("");
+          console.log(`  ${red(glyph.fail)} ${bold("Project registry issues")}  ${dim(glyph.dot)}  ${dim(report.registryPath)}`);
+          console.log("");
+          for (const issue of report.issues) {
+            const mark = issue.level === "error" ? red(glyph.fail) : yellow(glyph.warn);
+            console.log(`  ${mark}  ${bold(issue.slug ?? "registry")}  ${issue.message}`);
+          }
+          console.log("");
+        }
+        process.exit(report.ok ? 0 : 1);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error }, null, 2));
+        else console.error(`${xmark} doctor failed: ${error}`);
+        process.exit(1);
+      }
+    });
+
+}
+registerProjectCommands(program);
+registerProjectCommands(projectCmd, true);
+
+program
+  .command("reindex")
+  .argument("[project-id]", "Canonical project ID (defaults to the current repository)")
+  .description("Refresh the project index from authoritative manifests")
+  .option("--all", "Refresh every manifest already known to the registry")
+  .option("--receipt <path>", "Rebuild discovery from a migration receipt")
+  .option("--registry <location>", `Registry service URL (default: ${projectRegistryPath()})`)
+  .option("--json", "Output machine-parseable JSON")
+  .action((projectId: string | undefined, options) => {
+    try {
+      if (Number(Boolean(projectId)) + Number(Boolean(options.all)) + Number(Boolean(options.receipt)) > 1) {
+        throw new Error("Choose a project ID, --all or --receipt");
+      }
+      const location = resolveRegistryLocation(options.registry);
+      let result: Record<string, unknown>;
+      if (options.receipt) result = registryRequest(location, "POST", "/v1/rebuild", { receipt_path: resolve(options.receipt) });
+      else if (options.all) result = registryRequest(location, "POST", "/v1/reindex", {});
+      else {
+        const repo = projectId
+          ? getProject(loadProjectRegistry(location), projectId).repo_path
+          : resolveProject(process.cwd()).root;
+        result = registryRequest(location, "POST", "/v1/index", { manifest_path: join(repo, ".project.json") });
+      }
+      const statuses = result.__registry_status as Record<string, { status: string }> | undefined;
+      const stale = Object.entries(statuses ?? {}).filter(([, item]) => item.status !== "ok");
+      if (options.json) console.log(JSON.stringify(result, null, 2));
+      else console.log(stale.length ? `Registry refreshed; ${stale.length} manifest(s) unavailable or invalid. Run pj doctor --all.` : "Project registry index refreshed.");
+      if (stale.length) process.exitCode = 1;
     } catch (err) {
-      console.error(`${xmark} project doctor failed:`, err instanceof Error ? err.message : err);
-      process.exit(1);
+      const error = err instanceof Error ? err.message : String(err);
+      if (options.json) console.log(JSON.stringify({ ok: false, error }, null, 2));
+      else console.error(`${xmark} reindex failed: ${error}`);
+      process.exitCode = 1;
     }
   });
+
 
 // ============================================================================
 // RECIPE COMMANDS
@@ -1170,7 +1239,7 @@ program
   .description("Deterministic parity audit against 33god project standard")
   .option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)")
   .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
   // Async, and every write is FLUSHED before the exit that follows it.
   //
@@ -1236,7 +1305,7 @@ program
     "--accept-registry-matches",
     "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
   )
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
   .action(async (ruleId: string | undefined, repo: string | undefined, options) => {
     try {
@@ -1407,7 +1476,7 @@ program
   .command("describe")
   .argument("[repo]", "Path to the repo to describe (default: cwd)")
   .description("Describe the current project (for AI context)")
-  .option("--registry <path>", `Registry path override (default: ${projectRegistryPath()})`)
+  .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
   .option("-i, --interactive", "Tick off fixable findings and apply them")
   .action(async (repo: string | undefined, options) => {

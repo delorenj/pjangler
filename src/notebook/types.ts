@@ -200,7 +200,7 @@ export interface EffectiveNotebookConfigV1 {
   policy: NotebookPolicyV1;
   limits: NotebookLimitsV1;
   binding: ProjectNotebookBindingV1;
-  configuration_provenance: Record<string, "default" | "registry-global" | "project-registry" | "manifest-policy">;
+  configuration_provenance: Record<string, "default" | "registry-global" | "project-registry" | "manifest-policy" | "manifest-binding">;
   summarizer?: { executable: string; args: string[] };
 }
 

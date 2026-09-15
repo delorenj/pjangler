@@ -56,6 +56,12 @@ const GATES = [
  * place and can never be silently dropped from the chain.
  */
 const SUITES = [
+  "tests/pjan-80-cli-regressions.mjs",
+  "tests/pjan-80-bootstrap-regressions.mjs",
+  "tests/pjan-80-registry-consumers.mjs",
+  "tests/pjan-80-consumer-concurrency.mjs",
+  "tests/pjan-80-migration-regressions.mjs",
+  "tests/pjan-80-registry-regressions.mjs",
   "tests/package-lock-parity-regressions.mjs",
   "tests/portable-test-paths-regressions.mjs",
   "tests/release-regressions.mjs",
@@ -91,7 +97,6 @@ const SUITES = [
   "tests/pjan-87-board-read-regressions.mjs",
   "tests/pjan-126-gitignore-policy-regressions.mjs",
   "tests/skillex-init-regressions.mjs",
-  "tests/pjan-84-global-scope-regressions.mjs",
   "tests/pjan-84-registry-flag-regressions.mjs",
   "tests/pjan-84-finding-scope-regressions.mjs",
   "tests/pjan-84-orphan-adoption-regressions.mjs",

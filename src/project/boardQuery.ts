@@ -111,19 +111,19 @@ export class BoardError extends Error {
  * The project's slug.
  *
  * Same rule as the shell prompt (`src/prompt.ts`): the manifest's
- * `project_slug` when it has one, else the directory name. A manifest too
+ * `project_id` (or legacy `project_slug`) when it has one, else the directory name. A manifest too
  * broken to parse still sits in a directory with a name, and that name is a
  * truthful answer.
  */
 export function readProjectSlug(root: string): string {
   try {
     const manifest = JSON.parse(readFileSync(join(root, ".project.json"), "utf8")) as Record<string, unknown>;
-    const slug = manifest.project_slug;
-    if (typeof slug === "string" && slug.trim()) return slug.trim();
+    const slug = manifest.project_id ?? manifest.project_slug;
+    if (typeof slug === "string" && slug.trim()) return slug.trim().toLowerCase();
   } catch {
     // fall through to the directory name
   }
-  return basename(root);
+  return basename(root).toLowerCase();
 }
 
 /** Nearest enclosing project, or a message explaining there isn't one. */

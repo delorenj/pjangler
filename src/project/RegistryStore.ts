@@ -1,4 +1,6 @@
+// Legacy relational adapter below is retained for explicit migration tooling only.
 import { Pool } from "pg";
+import { normalizeProjectId, resolveRegistryLocation } from "./registryClient";
 import type { PoolClient } from "pg";
 import type {
   ProjectRecord,
@@ -71,7 +73,7 @@ export class YamlRegistryStore implements RegistryStore {
 
   async getBySlug(slug: string): Promise<ProjectRecord | undefined> {
     const registry = await this.load();
-    return getOwnRecordValue(registry.projects, slug);
+    return getOwnRecordValue(registry.projects, normalizeProjectId(slug));
   }
 
   async getByRepoPath(repoPath: string): Promise<ProjectRecord | undefined> {
@@ -449,86 +451,12 @@ export class PgRegistryStore implements RegistryStore {
   }
 }
 
-// ---------------------------------------------------------------------------
-// DualWriteRegistryStore — writes BOTH yaml (authoritative) AND PG;
-// reads from yaml.
-// ---------------------------------------------------------------------------
+/** Production adapter delegates to the singleton service through the shared boundary. */
+export class ServiceRegistryStore extends YamlRegistryStore {}
 
-export class DualWriteRegistryStore implements RegistryStore {
-  constructor(
-    private readonly yaml: YamlRegistryStore,
-    private readonly pg: PgRegistryStore
-  ) {}
-
-  async load(): Promise<ProjectRegistry> {
-    return this.yaml.load();
-  }
-
-  async save(registry: ProjectRegistry): Promise<void> {
-    await this.yaml.save(registry);
-    try {
-      await this.pg.save(registry);
-    } catch (err) {
-      console.error(`[DualWriteRegistryStore] PG write failed (yaml is authoritative): ${err instanceof Error ? err.message : err}`);
-    }
-  }
-
-  async upsert(slug: string, record: ProjectRecord): Promise<void> {
-    await this.yaml.upsert(slug, record);
-    try {
-      await this.pg.upsert(slug, record);
-    } catch (err) {
-      console.error(`[DualWriteRegistryStore] PG upsert failed (yaml is authoritative): ${err instanceof Error ? err.message : err}`);
-    }
-  }
-
-  async getBySlug(slug: string): Promise<ProjectRecord | undefined> {
-    return this.yaml.getBySlug(slug);
-  }
-
-  async getByRepoPath(repoPath: string): Promise<ProjectRecord | undefined> {
-    return this.yaml.getByRepoPath(repoPath);
-  }
-
-  async close(): Promise<void> {
-    await this.pg.close();
-  }
+export function getRegistryStore(path?: string, env: NodeJS.ProcessEnv = process.env): RegistryStore {
+  return new ServiceRegistryStore(resolveRegistryLocation(path, env));
 }
 
-// ---------------------------------------------------------------------------
-// Factory — returns the right store based on PJ_REGISTRY_PG env flag
-// ---------------------------------------------------------------------------
-
-export const PJ_REGISTRY_PG_ENV = "PJ_REGISTRY_PG";
-
-export function isPgRegistryEnabled(
-  env: NodeJS.ProcessEnv = process.env
-): boolean {
-  return env[PJ_REGISTRY_PG_ENV] === "1" || env[PJ_REGISTRY_PG_ENV] === "true";
-}
-
-let _store: RegistryStore | undefined;
-let _storePath: string | undefined;
-
-export function getRegistryStore(
-  path: string,
-  env: NodeJS.ProcessEnv = process.env
-): RegistryStore {
-  if (_store && _storePath === path) return _store;
-
-  const yamlStore = new YamlRegistryStore(path);
-
-  if (isPgRegistryEnabled(env)) {
-    const pgStore = new PgRegistryStore(pgRegistryConfigFromEnv(env));
-    _store = new DualWriteRegistryStore(yamlStore, pgStore);
-  } else {
-    _store = yamlStore;
-  }
-  _storePath = path;
-  return _store;
-}
-
-export function resetRegistryStore(): void {
-  _store = undefined;
-  _storePath = undefined;
-}
+/** Kept for test harness callers; stores no longer have a process-global cache. */
+export function resetRegistryStore(): void {}

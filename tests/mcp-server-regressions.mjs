@@ -110,11 +110,29 @@ try {
     "pjangler_project_init",
     "pjangler_project_list",
     "pjangler_project_show",
+    "pjangler_info",
   ]) {
     assert.ok(toolNames.has(tool), `${tool} should be exposed by the MCP server`);
   }
   for (const tool of listed.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} must reject unknown top-level arguments`);
+  }
+
+  const infoRepo = join(mcpTmp, "info-other-repository");
+  mkdirSync(infoRepo);
+  writeFileSync(join(infoRepo, ".project.json"), JSON.stringify({ project_id: "test-info", project_name: "Authoritative Info", ticket_provider: { type: "plane", board_id: "provider-only", identifier: "OTHER" } }));
+  const infoRegistry = join(mcpTmp, "info-registry.yaml");
+  writeFileSync(infoRegistry, YAML.stringify({ schema_version: 1, projects: { "test-info": {
+    slug: "test-info", project_id: "test-info", name: "Stale index", repo_path: infoRepo, description: "", status: "active", source_artifacts: [],
+    template: { commonproject: { enabled: true, primary_language: "typescript" } }, ticket_provider: { type: "plane", board_id: "provider-only", identifier: "OTHER" }, agents: {}, created_at: "", updated_at: "",
+  } } }));
+  for (const args of [{ project_id: "TEST-INFO", registryPath: infoRegistry }, { targetDir: infoRepo, registryPath: infoRegistry }]) {
+    const result = await client.callTool({ name: "pjangler_info", arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    const info = JSON.parse(result.content.find((item) => item.type === "text").text);
+    assert.equal(info.project_id, "test-info");
+    assert.equal(info.manifest.project_name, "Authoritative Info");
+    assert.equal(info.repo_path, infoRepo, "targetDir must win over the MCP server cwd");
   }
 
   const bootstrapTool = listed.tools.find((tool) => tool.name === "pjangler_bootstrap_33god_project");
@@ -145,6 +163,7 @@ try {
     ["pjangler_project_init", { name: "Strict Project", targetDir: strictProjectTarget, apply: true }],
     ["pjangler_project_list", {}],
     ["pjangler_project_show", { slug: "missing" }],
+    ["pjangler_info", { project_id: "TEST-INFO", registryPath: infoRegistry }],
     ["pjangler_describe_project", { targetDir: root }],
     ["pjangler_describe_recipe", { recipe: "node" }],
     ["pjangler_run_recipe", { recipe: "node", targetDir: strictRecipeTarget, apply: true }],

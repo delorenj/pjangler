@@ -19,13 +19,16 @@
     "templates/hermes-agent/copier.yml",
     "templates/hermes-agent/template",
     ".mise/scripts/versioning.sh",
-    ".mise/scripts/link-agentfiles.sh"
+    ".mise/scripts/link-agentfiles.sh",
+    "scripts/install-project-registry.mjs",
+    "scripts/migrate-project-registry.mjs",
+    "src/project/registryClient.ts"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outdir=dist && node scripts/export-project-notebook-skill.mjs",
+    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/project-registry-service.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outdir=dist && node scripts/export-project-notebook-skill.mjs",
     "check:audit:prod": "npm audit --omit=dev",
     "check:lock": "node scripts/check-package-lock-parity.mjs",
     "check:submodules": "node scripts/check-submodule-contract.mjs",
@@ -43,7 +46,9 @@
     "test:hermes-profile-inheritance": "node tests/hermes-profile-inheritance-regressions.mjs",
     "test:coverage": "npm run build && NODE_OPTIONS=--max-old-space-size=12288 c8 --exclude='**/.pjan-*/**' --reporter=json-summary --reporter=text-summary --src=src --report-dir=coverage node scripts/run-tests.mjs",
     "coverage:check": "node scripts/coverage-ratchet.mjs",
-    "coverage:apply": "node scripts/coverage-ratchet.mjs --apply"
+    "coverage:apply": "node scripts/coverage-ratchet.mjs --apply",
+    "registry:serve": "node dist/project-registry-service.js",
+    "registry:install": "node scripts/install-project-registry.mjs"
   },
   "keywords": [
     "cli",

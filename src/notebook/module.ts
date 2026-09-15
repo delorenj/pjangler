@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { isPgRegistryEnabled, PgRegistryStore, pgRegistryConfigFromEnv, projectRegistryPath, resolvePjanglerRoot, type ProjectRegistry } from "../project/index";
+import { projectRegistryPath, resolvePjanglerRoot, type ProjectRegistry } from "../project/index";
 import type { RegistryStore } from "../project/RegistryStore";
 import {
   loadEffectiveNotebookConfig,
@@ -175,7 +175,7 @@ export class NotebookModule {
   async declareNotebook(repo = process.cwd()): Promise<string[]> {
     const resolved = resolveNotebookProject(repo, this.registryPath);
     const changed = persistProjectNotebookDeclaration(resolved);
-    await this.persistPostgresMirror(resolved.registry);
+    await this.persistRegistryAdapter(resolved.registry);
     return changed;
   }
 
@@ -240,22 +240,20 @@ export class NotebookModule {
     const ctx = this.context(repo, true);
     const provisioned = await this.provisionResolved(ctx.resolved, ctx.config);
     const changedFiles = persistProjectNotebookBinding(ctx.resolved, provisioned.binding);
-    await this.persistPostgresMirror(ctx.resolved.registry);
+    await this.persistRegistryAdapter(ctx.resolved.registry);
     for (const journal of provisioned.journals) commitReconciledRemoteMutation(this.stateRoot, journal);
     const config = loadEffectiveNotebookConfig(repo, this.registryPath);
     return { config, health: "healthy", data: provisioned.data, changedFiles };
   }
 
-  private async persistPostgresMirror(registry: ProjectRegistry): Promise<void> {
-    if (!this.registryStore && !isPgRegistryEnabled(this.environment)) return;
-    let owned: PgRegistryStore | undefined;
-    const store = this.registryStore ?? (owned = new PgRegistryStore(pgRegistryConfigFromEnv(this.environment)));
+  private async persistRegistryAdapter(registry: ProjectRegistry): Promise<void> {
+    // Explicit adapters remain injectable for isolated callers. Production
+    // persistence already goes through saveProjectRegistry after the manifest.
+    if (!this.registryStore) return;
     try {
-      await store.save(registry);
+      await this.registryStore.save(registry);
     } catch (error) {
-      throw new NotebookError("SERVICE_UNAVAILABLE", "PostgreSQL Registry dual-write failed after YAML authority was durably preserved", true, {}, { cause: error });
-    } finally {
-      await owned?.close();
+      throw new NotebookError("SERVICE_UNAVAILABLE", "Project registry indexing failed after the canonical manifest was durably preserved", true, {}, { cause: error });
     }
   }
 

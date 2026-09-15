@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { isIP } from "node:net";
 import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   getOwnRecordValue,
   loadProjectRegistry,
+  isRegistryServiceLocation,
   projectRegistryPath,
   saveProjectRegistry,
   type ProjectManifest,
@@ -85,6 +87,14 @@ function validateManifestNotebookSurface(value: unknown): void {
   }
 }
 
+function requireAvailableManifest(registry: ProjectRegistry, project: ProjectRecord): void {
+  const statuses = (registry as unknown as { __registry_status?: Record<string, { status?: string; error?: string }> }).__registry_status;
+  const status = statuses?.[project.slug];
+  if (status && status.status !== "ok") {
+    throw new NotebookError("NOT_CONFIGURED", `Project ${project.slug} manifest is ${status.status}: ${status.error ?? "repair the canonical .project.json before using its notebook"}`);
+  }
+}
+
 export function resolveNotebookProject(repoArg = process.cwd(), registryFile = projectRegistryPath()): ResolvedNotebookProjectV1 {
   const registry = loadProjectRegistry(registryFile);
   const requested = realOrResolved(repoArg);
@@ -92,13 +102,15 @@ export function resolveNotebookProject(repoArg = process.cwd(), registryFile = p
   if (matches.length === 0) throw new NotebookError("NOT_FOUND", `Repository is not registered: ${requested}`);
   if (matches.length > 1) throw new NotebookError("CONFLICT", `More than one Registry project maps to repository: ${requested}`);
   const project = matches[0]!;
+  requireAvailableManifest(registry, project);
   return { registry, project, manifest: readManifest(project.repo_path), registry_path: registryFile };
 }
 
 export function resolveNotebookProjectBySlug(projectSlug: string, registryFile = projectRegistryPath()): ResolvedNotebookProjectV1 {
   const registry = loadProjectRegistry(registryFile);
-  const project = getOwnRecordValue(registry.projects, projectSlug);
+  const project = getOwnRecordValue(registry.projects, projectSlug.toLowerCase());
   if (!project) throw new NotebookError("NOT_FOUND", `Project is not registered: ${projectSlug}`);
+  requireAvailableManifest(registry, project);
   return { registry, project, manifest: readManifest(project.repo_path), registry_path: registryFile };
 }
 
@@ -247,9 +259,13 @@ export function notebookDisplayName(resolved: ResolvedNotebookProjectV1): string
 export function resolveEffectiveNotebookConfig(resolved: ResolvedNotebookProjectV1): EffectiveNotebookConfigV1 {
   const globalRaw = (resolved.registry as ProjectRegistry & { notebook?: unknown }).notebook;
   const global = isRecord(globalRaw) ? globalRaw as NotebookGlobalConfigV1 : {};
-  const project = projectNotebook(resolved.project);
+  const manifestNotebook = resolved.manifest?.notebook;
+  const localBinding = isRegistryServiceLocation(resolved.registry_path) && isRecord(manifestNotebook)
+    ? { ...resolved.project, notebook: manifestNotebook } as unknown as ProjectRecord
+    : resolved.project;
+  const project = projectNotebook(localBinding);
   const limits = resolveNotebookLimits(isRecord(global.limits) ? global.limits as Partial<NotebookLimitsV1> : {});
-  const declared = isRecord((resolved.project as ProjectRecord & { notebook?: unknown }).notebook);
+  const declared = isRecord((localBinding as ProjectRecord & { notebook?: unknown }).notebook);
   const localPolicy = manifestNotebookPolicy(resolved.manifest);
   const resolvedPolicy = resolvePolicy(global.defaults, localPolicy, limits);
   const policy = declared ? resolvedPolicy : { ...resolvedPolicy, enabled: false };
@@ -282,7 +298,7 @@ export function resolveEffectiveNotebookConfig(resolved: ResolvedNotebookProject
       base_url: baseUrl ? "registry-global" : "default",
       auth: global.auth ? "registry-global" : "default",
       policy: localPolicy ? "manifest-policy" : global.defaults ? "registry-global" : "default",
-      binding: "project-registry",
+      binding: localBinding !== resolved.project ? "manifest-binding" : "project-registry",
       limits: global.limits ? "registry-global" : "default",
     },
     ...(summarizer ? { summarizer } : {}),
@@ -307,7 +323,7 @@ export function requireRemoteNotebookConfig(config: EffectiveNotebookConfigV1): 
 }
 
 export function registryProjectBySlug(registry: ProjectRegistry, slug: string): ProjectRecord {
-  const project = getOwnRecordValue(registry.projects, slug);
+  const project = getOwnRecordValue(registry.projects, slug.toLowerCase());
   if (!project) throw new NotebookError("NOT_FOUND", `Project is not registered: ${slug}`);
   return project;
 }
@@ -319,6 +335,24 @@ export function persistProjectNotebookBinding(
 ): string[] {
   const changed: string[] = [];
   const manifestPath = resolve(resolved.project.repo_path, ".project.json");
+  if (isRegistryServiceLocation(resolved.registry_path)) {
+    const before = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : null;
+    const declaredPolicy = resolved.manifest?.notebook?.policy ?? {};
+    const nextProject = {
+      ...resolved.project,
+      notebook: { ...resolved.project.notebook, ...binding },
+      ...(policy ? { notebook_policy: { ...declaredPolicy, ...policy } } : {}),
+    };
+    const nextRegistry = { ...resolved.registry, projects: { ...resolved.registry.projects, [resolved.project.slug]: nextProject } };
+    // The service compares this snapshot's baseline before writing the manifest.
+    // A caller-side write here would erase a concurrent edit before that check.
+    saveProjectRegistry(nextRegistry, resolved.registry_path);
+    resolved.registry = loadProjectRegistry(resolved.registry_path);
+    resolved.project = registryProjectBySlug(resolved.registry, nextProject.slug);
+    resolved.manifest = readManifest(nextProject.repo_path);
+    const after = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : null;
+    return before === after ? [] : [manifestPath];
+  }
   const manifestRaw = existsSync(manifestPath)
     ? JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>
     : {};
@@ -328,6 +362,22 @@ export function persistProjectNotebookBinding(
   const previousBinding = isRecord(manifestNotebook.binding) ? manifestNotebook.binding : {};
   const foreignBinding = Object.fromEntries(Object.entries(previousBinding).filter(([key]) => !["state", "notebook_id", "notebook_name", "overview_note_id", "blocked_reason"].includes(key)));
   const previousPolicy = isRecord(manifestNotebook.policy) ? manifestNotebook.policy : {};
+  const baselineNotebook = resolved.manifest?.notebook;
+  const baselineBinding: Record<string, unknown> = isRecord(baselineNotebook?.binding) ? baselineNotebook.binding : {};
+  for (const key of Object.keys(binding)) {
+    const desired = (binding as unknown as Record<string, unknown>)[key];
+    if (!isDeepStrictEqual(previousBinding[key], baselineBinding[key]) && !isDeepStrictEqual(previousBinding[key], desired)) {
+      throw new NotebookError("CONFLICT", `Concurrent manifest change conflicts at notebook.binding.${key}; reload and retry`);
+    }
+  }
+  if (policy) {
+    const baselinePolicy: Record<string, unknown> = isRecord(baselineNotebook?.policy) ? baselineNotebook.policy : {};
+    for (const [key, desired] of Object.entries(policy)) {
+      if (!isDeepStrictEqual(previousPolicy[key], baselinePolicy[key]) && !isDeepStrictEqual(previousPolicy[key], desired)) {
+        throw new NotebookError("CONFLICT", `Concurrent manifest change conflicts at notebook.policy.${key}; reload and retry`);
+      }
+    }
+  }
   const manifestNext = {
     ...manifestRaw,
     notebook: {
@@ -363,10 +413,12 @@ export function persistProjectNotebookBinding(
 
   const current = (resolved.project as ProjectRecord & { notebook?: unknown }).notebook;
   resolved.project.notebook = { ...(isRecord(current) ? current : { state: "planned" }), ...binding } as ProjectNotebookBindingV1;
-  const registryBefore = existsSync(resolved.registry_path) ? readFileSync(resolved.registry_path, "utf8") : null;
+  const fileRegistry = !isRegistryServiceLocation(resolved.registry_path);
+  const registryBefore = fileRegistry && existsSync(resolved.registry_path) ? readFileSync(resolved.registry_path, "utf8") : null;
   saveProjectRegistry(resolved.registry, resolved.registry_path);
-  const registryAfter = existsSync(resolved.registry_path) ? readFileSync(resolved.registry_path, "utf8") : null;
+  const registryAfter = fileRegistry && existsSync(resolved.registry_path) ? readFileSync(resolved.registry_path, "utf8") : null;
   if (registryBefore !== registryAfter) changed.push(resolved.registry_path);
+  resolved.manifest = manifestNext as ProjectManifest;
   return changed;
 }
 

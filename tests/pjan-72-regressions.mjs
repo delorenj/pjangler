@@ -6,13 +6,16 @@
 // asserted about.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-72-"));
+// Skillex resolves its shipped schema from the installed package. Keep that
+// package boundary in scratch CLI bundles, just like the distributed CLI.
+symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
 
 // TMPDIR can itself sit inside a git work tree on this developer's machine.
 // Every fixture below therefore carries its own `.git`, so branch resolution
@@ -39,6 +42,7 @@ function bundle(entrySources, outName, { external = true, entryIsSource = false 
     [
       entry,
       "--bundle",
+      "--external:@delorenj/skillex",
       ...(external
         ? ["--packages=external"]
         : // Inlined CJS dependencies (commander) still call `require` at load
@@ -402,7 +406,7 @@ test("prompt --url outside a project prints nothing and exits non-zero", () => {
 test("the bare prompt contract is unchanged by --url", () => {
   const r = run(promptBin, [], live);
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.stdout.startsWith("live (PJAN)"), `unexpected prompt line: ${JSON.stringify(r.stdout)}`);
+  assert.ok(/^live(?: · |$)/.test(r.stdout), `unexpected prompt line: ${JSON.stringify(r.stdout)}`);
   assert.ok(!r.stdout.includes("\n"), "the prompt line must stay a single line");
   const quiet = run(promptBin, [], outside);
   assert.equal(quiet.stdout, "");

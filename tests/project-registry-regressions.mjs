@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
-import { createBmadInstallerFixture, createSkillPackFixture } from "./helpers/pack-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -28,7 +28,7 @@ function run(args, env, cwd = root) {
     let summary = result.stdout;
     try {
       const payload = JSON.parse(result.stdout);
-      summary = JSON.stringify({ ok: payload.ok, errors: payload.errors, failedRules: payload.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status)) }, null, 2);
+      summary = JSON.stringify({ ok: payload.ok, errors: payload.errors, logs: payload.logs, failedRules: payload.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status)) }, null, 2);
     } catch {
       // Preserve raw output for commands that are intentionally not JSON.
     }
@@ -117,6 +117,10 @@ function readFakeHermesCalls(callsFile) {
 }
 
 function git(args, cwd) {
+  if (args[0] === "init") {
+    mkdirSync(join(cwd, ".agents"), { recursive: true });
+    writeFileSync(join(cwd, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, packs: [], skills: [] }));
+  }
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
@@ -159,7 +163,7 @@ try {
         scaffold: false,
         pjanglerRoot: root,
       }),
-      /project slug.*safe.*segment/i,
+      /Invalid project_id:.*letters, digits and internal hyphens/i,
       `direct planProjectInit must reject ${JSON.stringify(projectSlug)}`,
     );
   }
@@ -269,10 +273,15 @@ try {
   assert.equal(Object.hasOwn(Object.prototype, "polluted"), false);
 
   const fixtureRoot = join(tmp, "bmad-fixtures");
+  mkdirSync(join(tmp, "isolated-home"), { recursive: true });
   portableLifecycleEnv = {
     HOME: join(tmp, "isolated-home"),
     XDG_CACHE_HOME: join(tmp, "isolated-home", ".cache"),
     XDG_CONFIG_HOME: join(tmp, "isolated-home", ".config"),
+    XDG_STATE_HOME: join(tmp, "state"),
+    PATH: `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`,
+    SKILLEX_REGISTRY_ROOT: fixtureRoot,
+    PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
     PJ_PACK_ROOT_PJTEST: createSkillPackFixture(fixtureRoot),
     PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
     npm_config_cache: join(tmp, "empty-npm-cache"),
@@ -386,7 +395,8 @@ try {
   assert.deepEqual(registry.projects.slowburns.agents, {}, "default apply must not register a planned agent");
 
   const manifest = JSON.parse(readFileSync(join(targetDir, ".project.json"), "utf8"));
-  assert.equal(manifest.project_slug, "slowburns");
+  assert.equal(manifest.project_id, "slowburns");
+  assert.equal(manifest.project_slug, undefined);
   assert.equal(manifest.ticket_provider.identifier, "SLOW");
   assert.equal(manifest.ticket_provider.state, "planned");
   assert.deepEqual(manifest.agents, {}, "default apply must not write a planned agent projection");
@@ -417,7 +427,7 @@ try {
   assert.equal(listed.projects.slowburns.repo_path, targetDir);
 
   const shown = JSON.parse(run(["project", "show", "slowburns", "--json"], env));
-  assert.equal(shown.name, "SlowBurns");
+  assert.equal(shown.manifest.project_name, "SlowBurns");
 
   const doctor = JSON.parse(run(["project", "doctor", "slowburns", "--json"], env));
   assert.equal(doctor.ok, true);
@@ -714,8 +724,13 @@ try {
   legacyStatusData.projects["legacy-status"].status = "planned";
   writeFileSync(legacyStatusRegistry, YAML.stringify(legacyStatusData, { lineWidth: 0 }), "utf8");
 
+  const legacyStatusManifestPath = join(legacyStatusRepo, ".project.json");
+  const legacyStatusManifest = JSON.parse(readFileSync(legacyStatusManifestPath, "utf8"));
+  legacyStatusManifest.status = "planned";
+  writeFileSync(legacyStatusManifestPath, JSON.stringify(legacyStatusManifest, null, 2));
+
   // Reading it back must not rewrite it.
-  assert.equal(JSON.parse(run(["project", "show", "legacy-status", "--json"], legacyStatusEnv)).status, "planned", "loading an existing record must not flip status to active");
+  assert.equal(JSON.parse(run(["project", "show", "legacy-status", "--json"], legacyStatusEnv)).manifest.status, "planned", "loading an existing record must not flip status to active");
   assert.equal(YAML.parse(readFileSync(legacyStatusRegistry, "utf8")).projects["legacy-status"].status, "planned", "a read must not rewrite the stored status");
 
   // An unrelated update (new description) must not flip it either.

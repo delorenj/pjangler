@@ -284,7 +284,7 @@ export function registerNotebookCli(program: Command, module = new NotebookModul
         const registryFile = projectRegistryPath();
         const registry = loadProjectRegistry(registryFile);
         const root = notebookStateRoot();
-        const explicit = process.env.PJ_NOTEBOOK_WORKER_PROJECT_SLUG;
+        const explicit = process.env.PJ_NOTEBOOK_WORKER_PROJECT_SLUG?.toLowerCase();
         const slug = explicit && registry.projects[explicit]
           ? explicit
           : Object.keys(registry.projects).find((candidate) => existsSync(statePathForReceipt(root, candidate, options.receiptId)));

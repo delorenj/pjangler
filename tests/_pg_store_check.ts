@@ -1,6 +1,6 @@
 // Runtime verification of the RegistryStore family against a scratch DB (bun).
 // Covers: YamlRegistryStore round-trip, PgRegistryStore round-trip + the
-// slug-NULL legacy-row safety boundary, and DualWriteRegistryStore (yaml + PG).
+// slug-NULL legacy-row safety boundary, with manifest-index service tested separately.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,6 @@ import { Pool } from "pg";
 import {
   PgRegistryStore,
   YamlRegistryStore,
-  DualWriteRegistryStore,
   pgRegistryConfigFromEnv,
 } from "../src/project/RegistryStore";
 import type { ProjectRecord, ProjectRegistry } from "../src/project/index";
@@ -119,28 +118,6 @@ assert.ok((await store.load()).projects[stale.slug]);
 await store.save(registryWithNotebook);
 assert.equal((await store.load()).projects[stale.slug], undefined, "authoritative full save removes absent slug-owned PG records");
 
-// ---- 3) DualWriteRegistryStore: writes yaml + PG, reads yaml ----
-const dual = new DualWriteRegistryStore(new YamlRegistryStore(join(tmp, "dual.yaml")), new PgRegistryStore(cfg));
-await dual.upsert("dual-proj", rec({ slug: "dual-proj", repo_path: "/tmp/dual", ticket_provider: { type: "plane", workspace: "33god", identifier: "DUAL", identifier_source: "provider", identifier_fetched_at: "2026-08-28T00:00:00.000Z", board_id: "b2", board_confirmed_at: "2026-08-28T00:00:00.000Z", state: "linked" } }));
-const dread = await dual.load(); // reads yaml
-assert.ok(dread.projects["dual-proj"], "dual-write yaml read");
-const pgAfterDual = await store.load(); // PG should also have it
-assert.ok(pgAfterDual.projects["dual-proj"], "dual-write should have written to PG too");
-await dual.close();
-
-// ---- 4) Dual-write failure is observable while YAML authority survives ----
-const failureYaml = new YamlRegistryStore(join(tmp, "dual-failure.yaml"));
-const pgFailure = { async save() { throw new Error("injected PG mirror failure"); }, async upsert() { throw new Error("injected PG mirror failure"); }, async close() {} } as unknown as PgRegistryStore;
-const failureDual = new DualWriteRegistryStore(failureYaml, pgFailure);
-const errors: string[] = [];
-const originalError = console.error;
-try {
-  console.error = (...parts: unknown[]) => { errors.push(parts.map(String).join(" ")); };
-  await failureDual.save({ ...registryWithNotebook, projects: { [r.slug]: { ...r, description: "yaml survives" } } });
-} finally { console.error = originalError; }
-assert.match(errors.join("\n"), /PG write failed.*injected PG mirror failure/u, "PG failure is operator-visible and not reported as synchronized");
-assert.equal((await failureYaml.load()).projects[r.slug]?.description, "yaml survives", "PG failure never rolls back or loses YAML authority");
-
 await store.close();
 rmSync(tmp, { recursive: true, force: true });
-console.log("PG_STORE_CHECK_OK: yaml + pg notebook/global/extensions round-trip correct; unique binding, dual-write failure, and legacy safety verified.");
+console.log("PG_STORE_CHECK_OK: yaml + pg notebook/global/extensions round-trip correct; unique binding and legacy safety verified.");

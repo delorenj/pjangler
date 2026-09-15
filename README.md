@@ -1,8 +1,13 @@
 # pjangler
 
+Project definitions now live in repository `.project.json` files with one case-insensitive `project_id`. Use `pj info`, `pj list`, and `pj doctor`; the singleton PostgreSQL registry indexes those manifests. See [project registry](docs/project-registry.md) for installation, migration, and compatibility details.
+
 Project subsystem bootstrapper CLI + MCP server.
 
 ## Install
+
+Requires Node 24 or newer. Project and Hermes skills use `@delorenj/skillex`
+0.1.1; see [the integration contract](docs/skillex-integration.md).
 
 ```bash
 npm install
@@ -403,8 +408,8 @@ its directory exists. The contract's `profile_manifest` block (schema 4) is the
 policy: which renderer decides "generated config == deep_merge(base, delta)"
 and where its bytes are pinned (`renderer`), which keys an identity file may
 carry and which it may carry inertly (`identity`), how the Hindsight bank pin
-is spelled and which ids are never an identity (`memory`), which six skills are
-the immutable core and where the canonical copies live (`skill_core`), which
+is spelled and which ids are never an identity (`memory`), any explicitly chosen fleet byte-policy and where its canonical copies live
+(`skill_core`, empty by default), which
 root entries are the observer's own footprint or a backup (`extras`), and how
 much may be read (`limits`).
 
@@ -417,7 +422,7 @@ leaf**, in this order:
 | `profiles.{profile_name}.profile.yaml` | an identity-only file — the declared identity keys and nothing Hermes reads as config; when it declares `name`, this profile's; when it declares `display_name`, the registry's. Written by Hermes' own profile tooling (`hermes_cli/profiles.py`, `write_profile_meta`), never by the renderer or the template | `missing`, `symlink`, `malformed`, `identity-mismatch:name` / `identity-mismatch:display_name`; `unknown-key:<k>` is a `warn`; a `config:` block is recorded as `inert-config-block` and passes, because Hermes reads it nowhere; an empty file is `malformed` (`empty`); `too-large` and `unreadable` (over `limits.max_file_bytes`, or a read that could not complete) are `error` |
 | `profiles.{profile_name}.config.yaml` | `config.yaml == deep_merge(<fleet home>/config.yaml, config.delta.yaml)`, proven by running the **canonical renderer's own `check`**, from an override-only delta | `generated-symlink`, `generated-missing`, `marker-missing`, `delta-missing`, `delta-symlink`, `delta-not-override-only` (the delta carries the generated marker or equals the base or generated mapping), `semantic-drift` naming each drifted top-level section (or `unparsed` when the report names none); `base-missing`, `renderer-unavailable`, `renderer-failed`, `renderer-timeout`, `too-large` and `unreadable` are `error` |
 | `profiles.{profile_name}.hindsight/config.json` | the bank pin is exactly `agent-<profile_name>`. Written by the template's provisioning step 10 (`10-hermes-profile.sh`), which never touches `profile.yaml` | `pin-missing`, `pin-symlink`, `pin-malformed`, `bank-missing` (a generic `bank_id_template` never satisfies it), `bank-custom`, `bank-alias` (case or `_`/`-` variant, a `fail`), `bank-mismatch`; `too-large` and `unreadable` are `error` |
-| `profiles.{profile_name}.skills` | every core skill resolves **by bytes** — through the profile's `skills` entry (a real directory, or a symlink into the fleet home or the canonical projection) or the generated config's `skills.external_dirs` — to a `SKILL.md` inside an allowed root that equals the canonical copy. The skill links are step 10's too | `core-missing:<n>` (absent, or a directory with no `SKILL.md`), `core-replaced:<n>`, `core-dangling:<n>`, `core-foreign:<n>`, `canonical-missing:<n>` (the canonical projection itself lacks it); optional skills beside the core are listed as `extra-skill`, capped at `limits.max_extra_skills` while `extras_seen` counts them all |
+| `profiles.{profile_name}.skills` | a real profile skills root; an optional explicit fleet byte-policy checks its required names against canonical bytes. The default requires no fixed list. Actual global/project selection, local precedence and receipt drift are inspected through Skillex by `hermes.runtime-singleton` | whole-root aliases require migration; optional byte-policy reports `core-missing`, `core-replaced`, `core-dangling`, `core-foreign` and `canonical-missing`; other skills are listed without being adopted |
 
 **Gate first, then look.** A profile that fails the gate is a `fail` on the
 first field and the other four are `unobserved` naming the gate code — not
@@ -497,13 +502,11 @@ the fleet stays `unproven` until the operator classifies the entry; an
 `allowed_warnings` entry with `rule_id: profile.extras` blankets every extra
 at once and is the blunt instrument, not the ruling. `--agent <id>` inspects
 one registered profile and never sweeps: `data.profile.extras.coverage` then
-reads `not-swept` and no `profile.extras` finding exists. A second host
-finding, `profile.skill-core`, names the core skills the canonical projection
-itself lacks (`fail`, with the directory and how it was chosen: the
-`CANONICAL_SKILLS_DIR` override, the template config's
-`[fleet] canonical_skills_dir`, or the manifest's `{HOME}` placeholder, in that
-order), so twenty-six identical per-agent `canonical-missing` items have one
-named cause.
+reads `not-swept` and no `profile.extras` finding exists. When a custom contract opts into required canonical bytes, the host finding
+`profile.skill-core` names missing policy inputs and the configured canonical
+source. The default policy has no required names and does not depend on a
+`~/.agents/skills` activation. Profile selection and local overrides follow the
+[Skillex integration contract](docs/skillex-integration.md).
 
 Nothing emitted is a file body, a config value, a delta value, a memory, a
 timestamp or an absolute path: digests are 12-hex sha256 prefixes, sections and
@@ -980,7 +983,7 @@ has to walk the registry. It spans more than the checked-out branch:
 The newest of those wins, and the winning source is always reported. Remote
 state reflects your last fetch — nothing here touches the network.
 
-`pjangler project list` orders by that signal, newest work first.
+`pj list` orders by that signal, newest work first.
 
 ## Shell prompt
 

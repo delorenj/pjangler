@@ -366,10 +366,16 @@ function describeIdentity(repo: string, registryPath: string): DescribeIdentity 
   let registryReadable = true;
   try {
     const registry = loadProjectRegistry(registryPath);
-    const slug = typeof manifest?.project_slug === "string" ? manifest.project_slug : undefined;
+    const identity = manifest?.project_id ?? manifest?.project_slug;
+    const slug = typeof identity === "string" ? identity.toLowerCase() : undefined;
     const resolved = resolve(repo);
     record = (slug ? registry.projects[slug] : undefined)
       ?? Object.values(registry.projects).find((project) => resolve(project.repo_path) === resolved);
+    const statuses = (registry as unknown as { __registry_status?: Record<string, { status?: string; error?: string }> }).__registry_status;
+    const status = record && statuses?.[record.slug];
+    if (status && status.status !== "ok") {
+      drift.push({ note: `canonical manifest is ${status.status}; displaying the last indexed record. ${status.error ?? ""}`, command: "pjangler doctor" });
+    }
   } catch (err) {
     registryReadable = false;
     drift.push({ note: `registry unreadable: ${err instanceof Error ? err.message : String(err)}` });
@@ -379,10 +385,10 @@ function describeIdentity(repo: string, registryPath: string): DescribeIdentity 
     drift.push({ note: ".project.json exists but this repo is not in the pjangler registry" });
   }
   if (record && !manifest) {
-    drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler project doctor" });
+    drift.push({ note: `registered as ${record.slug} but .project.json is missing`, command: "pjangler doctor" });
   }
   if (record && resolve(record.repo_path) !== resolve(repo)) {
-    drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler project doctor" });
+    drift.push({ note: `registry repo_path points elsewhere: ${record.repo_path}`, command: "pjangler doctor" });
   }
 
   // `.project.json` is the single source of truth for the board binding, so the
@@ -435,7 +441,7 @@ function describeIdentity(repo: string, registryPath: string): DescribeIdentity 
     manifest: Boolean(manifest),
     registered: Boolean(record),
     registryPath,
-    slug: record?.slug ?? (manifest?.project_slug as string | undefined),
+    slug: record?.slug ?? ((manifest?.project_id ?? manifest?.project_slug) as string | undefined),
     name: record?.name ?? (manifest?.project_name as string | undefined),
     description: record?.description ?? (manifest?.project_description as string | undefined),
     ticketProvider: provider

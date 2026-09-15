@@ -10,6 +10,7 @@ import type { CommandContext } from "./commands/Command";
 import type { HermesAgentContext, TicketProvider } from "./commands/hermes/types";
 import { PJANGLER_VERSION } from "./utils/version";
 import { lifecycleContext, recipeRegistry, formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
+import { readProjectInfo } from "./project/info";
 import { describeProject, formatProjectDescription } from "./describe/index";
 import {
   getProject,
@@ -733,6 +734,20 @@ server.registerTool(
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
+  }
+);
+
+server.registerTool(
+  "pjangler_info",
+  {
+    title: "Project information",
+    description: "Read the current repository manifest or look up a case-insensitive project_id in the PostgreSQL index.",
+    inputSchema: z.strictObject({ project_id: z.string().optional(), targetDir: z.string().optional(), registryPath: z.string().optional() }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  },
+  async ({ project_id, targetDir, registryPath }) => {
+    try { return asText(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath })); }
+    catch (err) { return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] }; }
   }
 );
 

@@ -1,3 +1,5 @@
+import { validateGlobalNotebookConfig } from "./notebookSettingsValidation";
+import { recordFromManifest } from "./manifestIndex";
 import { spawnSync } from "node:child_process";
 import { isIP } from "node:net";
 import { chmodSync, closeSync, copyFileSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -12,16 +14,9 @@ import {
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
 } from "../lifecycle/preflight";
-import {
-  isPgRegistryEnabled,
-  PgRegistryStore,
-  pgRegistryConfigFromEnv,
-  type RegistryStore,
-  type DualWriteRegistryStore,
-} from "./RegistryStore";
 import { dotenvValue, workspaceEnvKey } from "./boardQuery";
-
-export { isPgRegistryEnabled, pgRegistryConfigFromEnv, PgRegistryStore, type RegistryStore, type DualWriteRegistryStore };
+import { isRegistryServiceLocation, resolveRegistryLocation, registryRequest, normalizeProjectId } from "./registryClient";
+export { isRegistryServiceLocation, resolveRegistryLocation, registryRequest, normalizeProjectId };
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
 export const PROJECT_SOURCE_SKILL_ROOTS_ENV = "PJ_SOURCE_SKILL_ROOTS";
@@ -123,6 +118,8 @@ export interface ProjectAutomation {
 export interface ProjectRecord {
   [key: string]: unknown;
   name: string;
+  project_id?: string;
+  /** Internal compatibility spelling, always equal to project_id. */
   slug: string;
   repo_path: string;
   description: string;
@@ -154,7 +151,9 @@ export interface ProjectManifest {
   [key: string]: unknown;
   project_name: string;
   project_description: string;
-  project_slug: string;
+  project_id: string;
+  /** Legacy input only. */
+  project_slug?: string;
   repo_path: string;
   ticket_provider: {
     type: string;
@@ -228,6 +227,7 @@ export type ProjectInitAction =
     }
   | {
       kind: "project.write-manifest";
+      expectedContent?: string;
       path: string;
       manifest: ProjectManifest;
     }
@@ -320,7 +320,7 @@ const DEFAULT_SOURCE_SKILL_ROOTS = [
 ];
 
 export function projectRegistryPath(env: NodeJS.ProcessEnv = process.env): string {
-  return expandHome(env[PROJECT_REGISTRY_ENV] || join(homedir(), ".config", "pjangler", "projects.yaml"));
+  return resolveRegistryLocation(undefined, env);
 }
 
 /**
@@ -346,6 +346,11 @@ export function emptyProjectRegistry(): ProjectRegistry {
 }
 
 export function loadProjectRegistry(path = projectRegistryPath()): ProjectRegistry {
+  if (isRegistryServiceLocation(path)) {
+    const registry = registryRequest<ProjectRegistry>(path, "GET", "/v1/registry");
+    validateIndexedRegistry(registry);
+    return registry;
+  }
   if (!existsSync(path)) return emptyProjectRegistry();
   const raw = YAML.parse(readFileSync(path, "utf8")) as unknown;
   if (raw == null) return emptyProjectRegistry();
@@ -454,6 +459,13 @@ function fsyncDirectory(path: string): void {
 }
 
 export function saveProjectRegistry(registry: ProjectRegistry, path = projectRegistryPath()): void {
+  if (isRegistryServiceLocation(path)) {
+    validateIndexedRegistry(registry);
+    const saved = registryRequest<ProjectRegistry>(path, "PUT", "/v1/registry", registry);
+    for (const key of Object.keys(registry)) delete registry[key];
+    Object.assign(registry, saved);
+    return;
+  }
   validateProjectRegistry(registry);
   mkdirSync(dirname(path), { recursive: true });
   let text: string;
@@ -496,6 +508,18 @@ export function saveProjectRegistry(registry: ProjectRegistry, path = projectReg
     if (fd !== undefined) try { closeSync(fd); } catch { /* retain original error */ }
     try { unlinkSync(temp); } catch { /* retain original error */ }
     throw error;
+  }
+}
+
+/** Index validity is independent of provider-specific binding policy. A shared
+ * board or a legacy provider state must not make every other project unreadable. */
+function validateIndexedRegistry(registry: ProjectRegistry): void {
+  if (registry.schema_version !== PROJECT_REGISTRY_SCHEMA_VERSION || !isRecord(registry.projects)) throw new Error("Invalid project registry service response");
+  validateGlobalNotebookConfig(registry.notebook);
+  for (const [id, project] of Object.entries(registry.projects)) {
+    if (!isRecord(project) || normalizeProjectId(id) !== id || project.project_id !== id || project.slug !== id || typeof project.repo_path !== "string") {
+      throw new Error(`Invalid project index identity: ${id}`);
+    }
   }
 }
 
@@ -567,61 +591,6 @@ function ticketProviderScope(provider: ProjectTicketProvider): string {
   return `${provider.type ?? ""}\u0000${(provider.workspace ?? "").toLowerCase()}`;
 }
 
-function validateGlobalNotebookConfig(value: unknown): void {
-  if (value === undefined) return;
-  if (!isRecord(value)) throw new Error("Project registry notebook must be a mapping");
-  const credentialPath = notebookCredentialMaterialPath(value);
-  if (credentialPath) throw new Error(`Project registry Notebook configuration contains forbidden credential material at ${credentialPath}`);
-  if (value.base_url !== undefined) {
-    if (typeof value.base_url !== "string" || !value.base_url.trim()) throw new Error("Project registry notebook.base_url must be a nonempty URL");
-    let url: URL;
-    try { url = new URL(value.base_url); } catch { throw new Error("Project registry notebook.base_url must be an absolute URL"); }
-    if (url.username || url.password || url.search || url.hash) throw new Error("Project registry notebook.base_url may not contain credentials, query, or fragment");
-    const hostname = url.hostname.toLowerCase();
-    const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-    const loopback = hostname === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(host);
-    if (isIP(host) !== 0 && !loopback) throw new Error("Project registry notebook.base_url may not use a numeric non-loopback host");
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("Project registry notebook.base_url must use HTTPS or loopback HTTP");
-  }
-  if (value.auth !== undefined) {
-    if (!isRecord(value.auth) || (value.auth.mode !== "none" && value.auth.mode !== "environment")) throw new Error("Project registry notebook.auth is invalid");
-    if (value.auth.mode === "environment" && value.auth.env_var !== "OPEN_NOTEBOOK_PASSWORD") throw new Error("Project registry notebook.auth.env_var must be OPEN_NOTEBOOK_PASSWORD");
-    if (value.auth.mode === "none" && value.auth.env_var !== undefined) throw new Error("Project registry notebook.auth none mode may not name a credential variable");
-  }
-  const boundedList = (candidate: unknown, name: string): void => {
-    if (!Array.isArray(candidate) || candidate.length > 100 || candidate.some((entry) => typeof entry !== "string" || !entry || Buffer.byteLength(entry, "utf8") > 512)) throw new Error(`Project registry notebook.defaults.${name} must be a bounded string list`);
-  };
-  if (value.defaults !== undefined) {
-    if (!isRecord(value.defaults)) throw new Error("Project registry notebook.defaults must be a mapping");
-    for (const key of ["enabled", "session_start_enabled", "session_capture_enabled"] as const) {
-      if (value.defaults[key] !== undefined && typeof value.defaults[key] !== "boolean") throw new Error(`Project registry notebook.defaults.${key} must be boolean`);
-    }
-    if (value.defaults.overview_max_chars !== undefined && (!Number.isSafeInteger(value.defaults.overview_max_chars) || Number(value.defaults.overview_max_chars) <= 0)) throw new Error("Project registry notebook.defaults.overview_max_chars must be a positive integer");
-    for (const key of ["documentation_globs", "overview_references", "excluded_globs"] as const) if (value.defaults[key] !== undefined) boundedList(value.defaults[key], key);
-  }
-  const limits = { ...DEFAULT_NOTEBOOK_LIMITS } as NotebookLimitsV1;
-  if (value.limits !== undefined) {
-    if (!isRecord(value.limits)) throw new Error("Project registry notebook.limits must be a mapping");
-    for (const key of Object.keys(DEFAULT_NOTEBOOK_LIMITS) as Array<keyof NotebookLimitsV1>) {
-      const configured = value.limits[key];
-      if (configured === undefined) continue;
-      if (!Number.isSafeInteger(configured) || Number(configured) <= 0) throw new Error(`Project registry notebook.limits.${key} must be a positive integer`);
-      limits[key] = Number(configured) as never;
-    }
-  }
-  if (limits.schema_version !== 1) throw new Error("Project registry notebook.limits.schema_version must be 1");
-  if (limits.receipt_max_bytes > limits.unresolved_receipt_max_bytes) throw new Error("Project registry notebook receipt_max_bytes may not exceed unresolved_receipt_max_bytes");
-  if (limits.hook_payload_max_bytes > DEFAULT_NOTEBOOK_LIMITS.hook_payload_max_bytes) throw new Error("Project registry notebook hook_payload_max_bytes exceeds the packaged ceiling");
-  if (limits.note_detail_fetch_concurrency > DEFAULT_NOTEBOOK_LIMITS.note_detail_fetch_concurrency) throw new Error("Project registry notebook note_detail_fetch_concurrency exceeds the packaged ceiling");
-  if (limits.lease_seconds * 1_000 <= limits.overall_timeout_ms) throw new Error("Project registry notebook lease_seconds must exceed one request timeout");
-  if (isRecord(value.defaults) && value.defaults.overview_max_chars !== undefined && Number(value.defaults.overview_max_chars) > limits.note_max_bytes) throw new Error("Project registry notebook overview_max_chars exceeds note_max_bytes");
-  if (value.summarizer !== undefined) {
-    if (!isRecord(value.summarizer) || typeof value.summarizer.executable !== "string" || !isAbsolute(value.summarizer.executable)
-      || value.summarizer.executable.includes("\0") || Buffer.byteLength(value.summarizer.executable, "utf8") > 1_024) throw new Error("Project registry notebook.summarizer executable must be a bounded absolute path");
-    if (value.summarizer.args !== undefined && (!Array.isArray(value.summarizer.args) || value.summarizer.args.length > 32
-      || value.summarizer.args.some((entry) => typeof entry !== "string" || entry.includes("\0") || Buffer.byteLength(entry, "utf8") > 1_024))) throw new Error("Project registry notebook.summarizer args must be bounded strings");
-  }
-}
 
 /**
  * Build the `.project.json` ticket_provider block for a supported provider.
@@ -1107,10 +1076,10 @@ export function resolveAgentHooksLayer(input?: boolean, env: NodeJS.ProcessEnv =
 }
 
 function jsonStable(value: unknown): string {
-  return JSON.stringify(value);
+  return JSON.stringify(value, (_key, item) => isRecord(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 }
 
-function projectRecordEquivalent(a: ProjectRecord | undefined, b: ProjectRecord): boolean {
+export function projectRecordEquivalent(a: ProjectRecord | undefined, b: ProjectRecord): boolean {
   if (!a) return false;
   const { created_at: _aCreated, updated_at: _aUpdated, ...aComparable } = a;
   const { created_at: _bCreated, updated_at: _bUpdated, ...bComparable } = b;
@@ -1159,16 +1128,20 @@ export function resolveSourceSkillPath(sourceSkill?: string, env: NodeJS.Process
 
 export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (!input.name.trim()) throw new Error("Project name is required");
-  const slug = input.projectSlug === undefined
-    ? validateSafePathSegment(slugifyProjectName(input.name), "Project slug")
-    : validateSafePathSegment(input.projectSlug, "Project slug");
+  const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
+  const localManifestPath = join(targetDir, ".project.json");
+  const localManifestContent = existsSync(localManifestPath) ? readFileSync(localManifestPath, "utf8") : undefined;
+  const localManifest = localManifestContent === undefined ? undefined : JSON.parse(localManifestContent) as Record<string, unknown>;
+  const localId = localManifest?.project_id ?? localManifest?.project_slug;
+  const slug = normalizeProjectId(input.projectSlug ?? localId ?? slugifyProjectName(input.name));
+  if (localId && normalizeProjectId(localId) !== slug) throw new Error(`Project ID ${slug} conflicts with authoritative manifest ${localId}`);
   const agentRole = normalizeAgentRole(input.agentRole);
-  const registryPath = resolve(projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }));
+  const registryPath = resolveRegistryLocation(input.registryPath);
   const registry = loadProjectRegistry(registryPath);
   const now = (input.now ?? new Date()).toISOString();
-  const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
-  const identifier = (input.projectIdentifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
-  const existing = getOwnRecordValue(registry.projects, slug);
+  const indexed = getOwnRecordValue(registry.projects, slug);
+  const existing = localManifest ? recordFromManifest(localManifest, localManifestPath) as ProjectRecord : indexed;
+  const identifier = (input.projectIdentifier ?? existing?.ticket_provider?.identifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   // A board provisioned by an earlier run lives in the registry, not in the CLI
   // flags — inherit it so re-running init re-links instead of minting a second
   // board.
@@ -1207,9 +1180,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const candidateProject: ProjectRecord = {
     ...(existing ?? {}),
     name: input.name,
+    project_id: slug,
     slug,
     repo_path: targetDir,
-    description: input.description ?? "",
+    description: input.description ?? existing?.description ?? "",
     // A project the CLI is bootstrapping is being worked on right now, so a
     // NEW record starts "active" (PJAN-26). This is a default for new records,
     // NOT a migration: an already-registered project keeps whatever lifecycle
@@ -1220,24 +1194,26 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     status: existing?.status ?? DEFAULT_NEW_PROJECT_STATUS,
     source_artifacts: sourceSkillPath
       ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }]
-      : [],
+      : existing?.source_artifacts ?? [],
     template: {
+      ...existing?.template,
       commonproject: {
+        ...existing?.template?.commonproject,
         enabled: true,
-        primary_language: input.primaryLanguage ?? "python",
+        primary_language: input.primaryLanguage ?? existing?.template?.commonproject?.primary_language ?? "python",
       },
     },
-    ticket_provider: buildTicketProviderBlock({
-      type: input.ticketProvider ?? "plane",
+    ticket_provider: { ...existing?.ticket_provider, ...buildTicketProviderBlock({
+      type: input.ticketProvider ?? existing?.ticket_provider.type ?? "plane",
       identifier,
       boardId: resolvedBoardId,
-      workspace: input.boardWorkspace ?? input.planeWorkspace,
+      workspace: input.boardWorkspace ?? input.planeWorkspace ?? existing?.ticket_provider.workspace,
       // Provenance survives a re-plan. Without this, re-running init on an
       // already-confirmed board would demote it back to "planned" because the
       // CLI has no way to re-derive where the identifier came from.
       ...(inheritedProvenance ?? {}),
       ...(inheritedBoardConfirmation ?? {}),
-    }),
+    }) },
     agents,
     automation: existing?.automation ?? defaultProjectAutomation(),
     notebook: existing?.notebook
@@ -1304,7 +1280,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     }));
   }
   actions.push(
-    { kind: "project.write-manifest", path: join(targetDir, ".project.json"), manifest },
+    { kind: "project.write-manifest", path: join(targetDir, ".project.json"), manifest, expectedContent: localManifestContent },
     {
       kind: "ticket-provider.create-or-link",
       enabled: boardEnabled,
@@ -1484,6 +1460,10 @@ export async function executeProjectInitPlan(
         break;
       }
     } else if (action.kind === "project.write-manifest") {
+      if (action.expectedContent !== undefined && (!existsSync(action.path) || readFileSync(action.path, "utf8") !== action.expectedContent)) {
+        errors.push(`Manifest changed after planning: ${action.path}; re-plan before applying`);
+        break;
+      }
       mkdirSync(dirname(action.path), { recursive: true });
       let value = action.manifest as unknown as Record<string, unknown>;
       if (existsSync(action.path)) {
@@ -1507,8 +1487,10 @@ export async function executeProjectInitPlan(
               } : {}),
             };
           }
-        } catch { /* invalid existing manifest is replaced by the validated plan */ }
+        } catch { errors.push(`Cannot replace malformed manifest: ${action.path}`); break; }
       }
+      delete value.project_slug;
+      value.project_id = normalizeProjectId(value.project_id ?? action.manifest.project_id);
       const next = `${JSON.stringify(value, null, 2)}\n`;
       const current = existsSync(action.path) ? readFileSync(action.path, "utf8") : undefined;
       if (current !== next) {
@@ -1547,18 +1529,8 @@ export async function executeProjectInitPlan(
     if (!projectRecordEquivalent(getOwnRecordValue(registry.projects, pendingRegistryAction.slug), pendingRegistryAction.project)) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
       saveProjectRegistry(registry, pendingRegistryAction.registryPath);
-      changedFiles.push(pendingRegistryAction.registryPath);
-
-      if (isPgRegistryEnabled()) {
-        try {
-          const pgStore = new PgRegistryStore(pgRegistryConfigFromEnv());
-          await pgStore.save(registry);
-          await pgStore.close();
-          logs.push("registry: PG dual-write complete");
-        } catch (pgErr) {
-          logs.push(`registry: PG dual-write failed (yaml is authoritative): ${pgErr instanceof Error ? pgErr.message : pgErr}`);
-        }
-      }
+      if (!isRegistryServiceLocation(pendingRegistryAction.registryPath)) changedFiles.push(pendingRegistryAction.registryPath);
+      logs.push("registry: manifest indexed");
     }
   }
 
@@ -1566,10 +1538,12 @@ export async function executeProjectInitPlan(
 }
 
 export function projectManifestFromRegistryProject(project: ProjectRecord): ProjectManifest {
+  const { board_url: _derivedUrl, ...ticketProvider } = project.ticket_provider;
   const agents = Object.fromEntries(
     Object.entries(project.agents).map(([name, agent]) => [
-      `${project.slug}-${name}`,
+      name.startsWith(`${project.slug}-`) ? name : `${project.slug}-${name}`,
       {
+        ...agent,
         role: agent.role,
         role_dir: agent.role_dir,
         provisioning_state: agent.provisioning_state,
@@ -1579,9 +1553,15 @@ export function projectManifestFromRegistryProject(project: ProjectRecord): Proj
   return {
     project_name: project.name,
     project_description: project.description,
-    project_slug: project.slug,
+    project_id: normalizeProjectId(project.project_id ?? project.slug),
     repo_path: project.repo_path,
+    status: project.status,
+    source_artifacts: project.source_artifacts,
+    template: project.template,
+    created_at: project.created_at,
+    updated_at: project.updated_at,
     ticket_provider: {
+      ...ticketProvider,
       type: project.ticket_provider.type,
       workspace: project.ticket_provider.workspace ?? "",
       identifier: project.ticket_provider.identifier ?? "",
@@ -1659,7 +1639,9 @@ export function formatProjectList(
     // String.padEnd's length, so padding a colored string misaligns the column.
     const padded = relativeOf(project).padEnd(ageWidth);
     const age = activity?.active ? green(padded) : activity?.updatedUnix ? yellow(padded) : dim(padded);
-    lines.push(`  ${slug}  ${identifier}  ${age}  ${dim(project.repo_path)}`);
+    const indexed = (registry.__registry_status as Record<string, { status?: string; error?: string }> | undefined)?.[project.slug];
+    const condition = indexed && indexed.status !== "ok" ? `  ${yellow(indexed.status ?? "unavailable")}: ${indexed.error ?? "manifest unavailable"}` : "";
+    lines.push(`  ${slug}  ${age}  ${dim(project.repo_path)}${condition}`);
   }
   lines.push("");
   return lines.join("\n");
@@ -1723,23 +1705,26 @@ export function removeProjectRecord(input: {
   apply?: boolean;
   registryPath?: string;
 }): ProjectRemovalResult {
-  const registryPath = resolve(
-    projectRegistryPath({ ...process.env, [PROJECT_REGISTRY_ENV]: input.registryPath || process.env[PROJECT_REGISTRY_ENV] }),
-  );
+  const registryPath = resolveRegistryLocation(input.registryPath);
   const registry = loadProjectRegistry(registryPath);
   // getProject throws "Project not found in registry: <slug>" for an unknown
   // slug, which is the refusal this command owes the caller.
   const removed = getProject(registry, input.slug);
   const apply = input.apply ?? false;
   if (apply) {
-    delete registry.projects[input.slug];
-    saveProjectRegistry(registry, registryPath);
+    if (isRegistryServiceLocation(registryPath)) {
+      registryRequest(registryPath, "POST", "/v1/remove", { project_id: normalizeProjectId(input.slug) });
+    } else {
+      delete registry.projects[removed.slug];
+      saveProjectRegistry(registry, registryPath);
+    }
   }
   return { ok: true, apply, registryPath, slug: input.slug, removed };
 }
 
 export function getProject(registry: ProjectRegistry, slug: string): ProjectRecord {
-  const project = getOwnRecordValue(registry.projects, slug);
+  const id = normalizeProjectId(slug);
+  const project = getOwnRecordValue(registry.projects, id) ?? Object.entries(registry.projects).find(([key]) => key.toLowerCase() === id)?.[1];
   if (!project) throw new Error(`Project not found in registry: ${slug}`);
   return project;
 }
@@ -1749,6 +1734,9 @@ export function doctorProjectRegistry(registryPath = projectRegistryPath(), slug
   const registry = loadProjectRegistry(registryPath);
   const projects = slug ? [[slug, getProject(registry, slug)] as const] : Object.entries(registry.projects);
   for (const [projectSlug, project] of projects) {
+    const statuses = registry.__registry_status as Record<string, { status?: string; error?: string }> | undefined;
+    const indexed = statuses?.[project.slug];
+    if (indexed && indexed.status !== "ok") issues.push({ level: "error", slug: project.slug, message: indexed.error || `Manifest index is ${indexed.status}` });
     if (!existsSync(project.repo_path)) {
       issues.push({ level: "warn", slug: projectSlug, message: `repo_path does not exist: ${project.repo_path}` });
     } else if (!statSync(project.repo_path).isDirectory()) {

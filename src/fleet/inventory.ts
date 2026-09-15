@@ -35,6 +35,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "nod
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import YAML from "yaml";
+import { isRegistryServiceLocation, registryRequest, resolveRegistryLocation } from "../project/index";
 import { loadFleetContract, resolveFleetContractPath, validateFleetContract } from "./contract";
 import { bounded, redactHome } from "./output";
 import { throwIfCancelled, remainingMs, type FleetRunContext } from "./runtime";
@@ -499,7 +500,26 @@ export function readAgentRegistryRaw(path: string): RawStore {
 }
 
 export function readProjectRegistryRaw(path: string): RawStore {
-  return readKeyedStore(path, "PJangler project registry", "projects");
+  if (!isRegistryServiceLocation(path)) return readKeyedStore(path, "PJangler project registry", "projects");
+  let registry;
+  try {
+    registry = registryRequest<Record<string, unknown>>(path, "GET", "/v1/registry");
+    if (!isRecord(registry)) throw new Error("Expected a registry object");
+  } catch (error) {
+    throw new FleetError("INTERNAL_ERROR", `Project registry service could not be read: ${error instanceof Error ? error.message : String(error)}`, true, { path });
+  }
+  // Count the returned map before projecting its records into inventory rows.
+  const projects = isRecord(registry.projects) ? registry.projects : {};
+  const sourceRows = Object.keys(projects).length;
+  const entries: RawEntry[] = Object.entries(projects).map(([key, value]) => ({
+    key, keyIsString: true, value, malformed: !isRecord(value),
+  }));
+  return {
+    path, exists: true, parse: entries.some((entry) => entry.malformed) ? "salvaged" : "ok",
+    collection: isRecord(registry.projects) ? "ok" : registry.projects === undefined ? "missing" : "not-a-mapping", sourceRows,
+    countIndependent: true, entries, duplicateKeys: [],
+    schemaVersion: typeof registry.schema_version === "number" ? registry.schema_version : null, top: registry, siblings: {},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +573,7 @@ export function resolveInventoryStores(options: FleetInventoryOptions = {}): Res
   }
 
   const projectsKey = env.PJ_PROJECT_REGISTRY?.trim() ?? "";
-  const projectsConfigured = resolve(expandHome(projectsKey || join(home, ".config", "pjangler", "projects.yaml"), home));
+  const projectsConfigured = resolveRegistryLocation(projectsKey ? expandHome(projectsKey, home) : undefined, env);
 
   // The CLI guards these, but `collectFleetInventory` is exported and barrelled.
   // Reached directly, a whitespace-only override used to fall through to the
@@ -578,9 +598,9 @@ export function resolveInventoryStores(options: FleetInventoryOptions = {}): Res
     projects: {
       id: PROJECT_STORE,
       configuredPath: projectsConfigured,
-      inspectedPath: projectOverride ? resolve(expandHome(projectOverride, home)) : projectsConfigured,
+      inspectedPath: projectOverride ? resolveRegistryLocation(expandHome(projectOverride, home), env) : projectsConfigured,
       overridden: Boolean(projectOverride),
-      envKeys: ["PJ_PROJECT_REGISTRY"],
+      envKeys: ["PJ_REGISTRY_URL", "PJ_PROJECT_REGISTRY"],
     },
     disagreement,
   };
@@ -811,7 +831,7 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     }
   }
   if (!correlated && repo.value) {
-    correlated = ctx.projectsBySlug.get(repo.value);
+    correlated = ctx.projectsBySlug.get(repo.value.toLowerCase());
     if (correlated) basis = "repo";
   }
 
@@ -963,12 +983,13 @@ export function buildInventoryRow(entry: RawEntry, ctx: InventoryContext): Fleet
     compare("identifier", provider.identifier, binding.identifier);
     compare("board_id", provider.board_id, binding.project_id);
     compare("workspace", provider.workspace, binding.workspace);
-    compare("project_slug", manifestRead.parsed.project_slug, correlated?.slug ?? null);
+    const projectId = nonEmptyString(manifestRead.parsed.project_id) ?? nonEmptyString(manifestRead.parsed.project_slug);
+    compare("project_id", projectId?.toLowerCase(), correlated?.slug.toLowerCase() ?? null);
     manifestNotes.push(...disagreements);
     agrees = disagreements.length === 0;
     if (!agrees) {
       note("manifest-disagrees", "agents.{agent_id}.plane.identifier", boardOwner, "warn",
-        `.project.json contradicts the registries (${manifestNotes.join("; ")}); it is evidence, never a tiebreaker`);
+        `.project.json contradicts the registries (${manifestNotes.join("; ")}); the manifest owns the project definition; refresh its registry index`);
     }
   } else if (manifestRead.present && !manifestRead.parsed) {
     manifestNotes.push("manifest present but unreadable");
@@ -1349,7 +1370,7 @@ function projectIndex(store: RawStore): ProjectIndexEntry[] {
     const provider = isRecord(record.ticket_provider) ? record.ticket_provider : {};
     entries.push({
       key: entry.key,
-      slug: nonEmptyString(record.slug) ?? entry.key,
+      slug: (nonEmptyString(record.project_id) ?? nonEmptyString(record.slug) ?? entry.key).toLowerCase(),
       repoPath: nonEmptyString(record.repo_path),
       identifier: nonEmptyString(provider.identifier),
       boardId: nonEmptyString(provider.board_id),
@@ -1449,6 +1470,16 @@ export function collectFleetInventory(options: FleetInventoryOptions = {}): Flee
     findings: [],
     droppedFindings: 0,
   };
+
+  const indexStatuses = isRecord(projectRaw.top.__registry_status) ? projectRaw.top.__registry_status : {};
+  for (const [projectId, rawStatus] of Object.entries(indexStatuses)) {
+    if (!isRecord(rawStatus) || rawStatus.status === "ok") continue;
+    addFinding(ctx, {
+      code: "project-manifest-unavailable", field: `projects.${projectId}`, agent_id: null,
+      source: authority.ownerOf("projects.{slug}.project_id"), severity: "error",
+      detail: `Project ${projectId} manifest is ${String(rawStatus.status)}; the index retains its last valid snapshot. ${typeof rawStatus.error === "string" ? rawStatus.error : "Repair its canonical .project.json."}`,
+    });
+  }
 
   // Suppressed under an override: the two env keys did not choose this run's
   // store, so pointing an operator at them would be pointing at the wrong repair.

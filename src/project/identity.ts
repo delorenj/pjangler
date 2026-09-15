@@ -12,12 +12,12 @@
 //   ~/.hermes/agents-registry.yaml   the fleet projection n8n reads UNCACHED on
 //                                    every webhook execution — a wrong
 //                                    identifier here misroutes live traffic.
-//   ~/.config/pjangler/projects.yaml the registration SSOT.
+//   the singleton project registry index; repo manifests own project definitions.
 //
-// The repo-local `.project.json` is authoritative-on-read for a board binding
-// and is deliberately NEVER touched: a bulk rewrite of 25 manifests is exactly
-// the class of blast radius that created this mess.
+// The repo-local `.project.json` owns the board binding. Applied repairs
+// persist changed fields there through the registry service, then refresh its index.
 
+import { isDeepStrictEqual } from "node:util";
 import {
   closeSync,
   existsSync,
@@ -40,7 +40,8 @@ import {
   buildTicketProviderBlock,
   getProject,
   loadProjectRegistry,
-  projectRegistryPath,
+  isRegistryServiceLocation,
+  resolveRegistryLocation,
   saveProjectRegistry,
   type ProjectRegistry,
   type ProjectTicketProvider,
@@ -867,14 +868,14 @@ async function reconcileOneProject(
 function inScope(agent: HermesAgentBoard, slug: string | undefined, options: IdentityOptions): boolean {
   if (options.all || !options.target) return true;
   const target = options.target;
-  return agent.agentId === target || agent.repo === target || slug === target;
+  return agent.agentId === target || agent.repo === target || slug?.toLowerCase() === target.toLowerCase();
 }
 
 export async function reconcileProjectIdentity(options: IdentityOptions = {}): Promise<IdentityReport> {
   const env = options.env ?? process.env;
   const home = options.home ?? homedir();
   const hermesRegistryPath = options.hermesRegistryPath ?? hermesAgentsRegistryPath(env, home);
-  const registryPath = resolve(options.registryPath ?? projectRegistryPath(env));
+  const registryPath = resolveRegistryLocation(options.registryPath, env);
   const apply = options.apply ?? false;
   const now = options.now ?? new Date();
   const fetchedAt = now.toISOString();
@@ -888,7 +889,7 @@ export async function reconcileProjectIdentity(options: IdentityOptions = {}): P
     .filter(({ agent, slug }) => inScope(agent, slug, options));
 
   const projectSlugs = Object.keys(registry.projects)
-    .filter((slug) => options.all || !options.target || slug === options.target)
+    .filter((slug) => options.all || !options.target || slug.toLowerCase() === options.target.toLowerCase())
     .sort();
 
   // One list call per workspace beats 90 board lookups, and it is the only way
@@ -1117,7 +1118,7 @@ export interface ProjectLinkResult {
   changedFiles: string[];
 }
 
-function writeManifestTicketProvider(repoPath: string, provider: ProjectTicketProvider): string | undefined {
+function writeManifestTicketProvider(repoPath: string, provider: ProjectTicketProvider, expectedProvider: unknown): string | undefined {
   const path = join(repoPath, ".project.json");
   if (!existsSync(path)) return undefined;
   let existing: Record<string, unknown> = {};
@@ -1128,6 +1129,9 @@ function writeManifestTicketProvider(repoPath: string, provider: ProjectTicketPr
     throw new BoardError(`${path} is not readable JSON; fix it before linking a board`);
   }
   const currentProvider = isRecord(existing.ticket_provider) ? existing.ticket_provider : {};
+  if (!isDeepStrictEqual(currentProvider, expectedProvider ?? {})) {
+    throw new BoardError("Concurrent manifest board binding change; reload and retry before linking a board");
+  }
   const next = {
     ...existing,
     ticket_provider: {
@@ -1160,7 +1164,7 @@ export async function linkProjectBoard(options: {
 }): Promise<ProjectLinkResult> {
   const env = options.env ?? process.env;
   const home = options.home ?? homedir();
-  const registryPath = resolve(options.registryPath ?? projectRegistryPath(env));
+  const registryPath = resolveRegistryLocation(options.registryPath, env);
   const registry = loadProjectRegistry(registryPath);
   // Throws "Project not found in registry: <slug>" — the refusal an unknown
   // slug is owed, before any network call.
@@ -1168,6 +1172,10 @@ export async function linkProjectBoard(options: {
   const boardId = options.boardId.trim();
   if (!boardId) throw new BoardError("a board id is required");
 
+  const manifestFile = join(project.repo_path, ".project.json");
+  const expectedProvider = !isRegistryServiceLocation(registryPath) && existsSync(manifestFile)
+    ? (JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, unknown>).ticket_provider
+    : undefined;
   const current = project.ticket_provider;
   const type = (current.type || "plane").trim().toLowerCase();
   const workspace = (options.workspace ?? current.workspace ?? DEFAULT_PLANE_WORKSPACE).trim();
@@ -1224,11 +1232,19 @@ export async function linkProjectBoard(options: {
   const changedFiles: string[] = [];
   let manifestPath: string | undefined;
   if (apply) {
-    registry.projects[options.slug] = { ...project, ticket_provider: block, updated_at: now };
-    saveProjectRegistry(registry, registryPath);
-    changedFiles.push(registryPath);
-    manifestPath = writeManifestTicketProvider(project.repo_path, block);
-    if (manifestPath) changedFiles.push(manifestPath);
+    registry.projects[project.slug] = { ...project, ticket_provider: { ...current, ...block }, updated_at: now };
+    if (isRegistryServiceLocation(registryPath)) {
+      const beforeManifest = existsSync(manifestFile) ? readFileSync(manifestFile, "utf8") : null;
+      saveProjectRegistry(registry, registryPath);
+      manifestPath = manifestFile;
+      const afterManifest = existsSync(manifestFile) ? readFileSync(manifestFile, "utf8") : null;
+      if (beforeManifest !== afterManifest) changedFiles.push(manifestFile);
+    } else {
+      manifestPath = writeManifestTicketProvider(project.repo_path, block, expectedProvider);
+      if (manifestPath) changedFiles.push(manifestPath);
+      saveProjectRegistry(registry, registryPath);
+      changedFiles.push(registryPath);
+    }
   } else {
     manifestPath = existsSync(join(project.repo_path, ".project.json"))
       ? join(project.repo_path, ".project.json")

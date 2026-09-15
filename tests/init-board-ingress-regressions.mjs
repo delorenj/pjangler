@@ -28,6 +28,7 @@ import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -42,7 +43,7 @@ function check(label, body) {
     console.log(`  ok   ${label}`);
   } catch (error) {
     failures += 1;
-    console.log(`  FAIL ${label}: ${error?.message?.split("\n")[0] ?? error}`);
+    console.log(`  FAIL ${label}: ${error?.message ?? error}`);
   }
 }
 
@@ -52,7 +53,7 @@ async function checkAsync(label, body) {
     console.log(`  ok   ${label}`);
   } catch (error) {
     failures += 1;
-    console.log(`  FAIL ${label}: ${error?.message?.split("\n")[0] ?? error}`);
+    console.log(`  FAIL ${label}: ${error?.message ?? error}`);
   }
 }
 
@@ -65,6 +66,12 @@ function makeDir(name) {
 const workspace = makeDir("workspace");
 const home = join(workspace, "home");
 mkdirSync(home, { recursive: true });
+const skillRegistry = join(workspace, "skill-registry");
+createSkillPackFixture(skillRegistry);
+const skillMise = createSkillexMiseFixture(workspace);
+const bmadInstaller = createBmadInstallerFixture(skillRegistry);
+mkdirSync(join(home, ".cache", "pjangler"), { recursive: true });
+writeFileSync(join(home, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.11.1-next.1", next: "6.11.1-next.1" } }));
 
 /**
  * Every credential source pjangler consults, pointed somewhere empty.
@@ -74,6 +81,13 @@ mkdirSync(home, { recursive: true });
  * Plane — which is exactly what happened the first time this change was run.
  */
 const NO_CREDENTIALS = {
+  HOME: home,
+  XDG_STATE_HOME: join(workspace, "state"),
+  XDG_CACHE_HOME: join(home, ".cache"),
+  PATH: `${skillMise}:${process.env.PATH}`,
+  SKILLEX_REGISTRY_ROOT: skillRegistry,
+  PJ_SKILLS_REGISTRY_ROOT: skillRegistry,
+  PJ_BMAD_INSTALLER: bmadInstaller,
   PLANE_API_KEY: "",
   PLANE_DEFAULT_API_KEY: "",
   PLANE_33GOD_API_KEY: "",
@@ -114,6 +128,8 @@ function target(name) {
   const dir = join(workspace, name);
   mkdirSync(dir, { recursive: true });
   assert.equal(spawnSync("git", ["init", "-q"], { cwd: dir }).status, 0, "git init");
+  mkdirSync(join(dir, ".agents"), { recursive: true });
+  writeFileSync(join(dir, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, packs: [], skills: [] }));
   return dir;
 }
 
@@ -176,7 +192,7 @@ try {
     assert.equal(run.status, 1, `an unconfirmed board must fail the ingress:\n${output}`);
     assert.match(output, /No ticket board/);
     // Actionable, not just angry.
-    assert.match(output, /pj project link no-creds <board-id> --apply/);
+    assert.match(output, /pj link no-creds <board-id> --apply/);
     assert.match(output, /--skip-board/);
     // The local half of the transaction still lands, so the operator can repair
     // it rather than starting over.
