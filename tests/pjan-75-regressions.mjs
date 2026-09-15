@@ -142,7 +142,7 @@ function deferredSkillRepo(name) {
   writeFileSync(join(repoRoot, ".agents", "skills", "my-committed-skill", "SKILL.md"), "---\nname: my-committed-skill\n---\n", "utf8");
   writeFileSync(
     join(repoRoot, ".agents", "skills.json"),
-    `${JSON.stringify({ inherit_global: true, registry: "https://github.com/delorenj/skillex.git", skills: [{ name: "my-committed-skill", source: `file://${join(repoRoot, ".agents", "skills", "my-committed-skill")}`] }, null, 2)}\n`,
+    `${JSON.stringify({ inherit_global: true, registry: "https://github.com/delorenj/skillex.git", skills: [{ name: "my-committed-skill", source: `file://${join(repoRoot, ".agents", "skills", "my-committed-skill")}` }] }, null, 2)}\n`,
     "utf8",
   );
   writeFileSync(

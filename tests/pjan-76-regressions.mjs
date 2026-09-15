@@ -1,3 +1,4 @@
+import { createSkillPackFixture, createBmadInstallerFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 // PJAN-76 — BMAD is owned by bmad-method, not a frozen Skillex pack.
 //
 // pjangler used to pin `packs/bmad/<version>` in the Skillex registry and
@@ -27,6 +28,9 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-76-"));
+createSkillPackFixture(join(workspace, "catalog"));
+const skillexBin = createSkillexMiseFixture(workspace);
+const bmadInstaller = createBmadInstallerFixture(workspace);
 process.env.GIT_CEILING_DIRECTORIES = workspace;
 
 const failures = [];
@@ -52,10 +56,8 @@ function codeOnly(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 const rulesCode = codeOnly(rulesSource);
-const provisionCode = readFileSync(
-  join(root, "templates", "commonproject", "template", ".mise", "scripts", "provision-packs.py"),
-  "utf8",
-).replace(/^\s*#.*$/gm, "").replace(/"""[\s\S]*?"""/g, "");
+assert.equal(existsSync(join(root, "templates", "commonproject", "template", ".mise", "scripts", "provision-packs.py")), false, "the duplicate provisioner is retired");
+const provisionCode = "";
 
 // ---------------------------------------------------------------------------
 // 1. Neither side pins a BMAD pack any more.
@@ -124,7 +126,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   writeFileSync(globalIgnore, `${SUPPORTED.map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
 
   const isolatedEnv = {
-    ...process.env,
+    ...process.env, PATH: `${skillexBin}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(workspace, "catalog"), PJ_BMAD_INSTALLER: bmadInstaller,
     HOME: home,
     XDG_CACHE_HOME: join(home, ".cache"),
     XDG_CONFIG_HOME: join(home, ".config"),

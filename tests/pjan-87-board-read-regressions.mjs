@@ -23,13 +23,14 @@
 // pinned without the suite needing network or a credential.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-87-"));
+symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
 
 // TMPDIR can itself sit inside a git work tree on this machine. Every fixture
 // carries its own `.git` and the ceiling is pinned, so nothing here can walk up
@@ -64,6 +65,7 @@ function bundleCli() {
     [
       join(root, "src", "index.ts"),
       "--bundle",
+      "--external:@delorenj/skillex",
       "--banner:js=import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
       "--platform=node",
       "--format=esm",

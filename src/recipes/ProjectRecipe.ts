@@ -102,7 +102,7 @@ const PRODUCTION_RUNTIME: ProjectRecipeRuntime = {
  * symlinked PARENT components — so if any ancestor of the target became a
  * symlink during the transaction, the delete lands somewhere nobody named. Every
  * other place in this codebase that touches an unproved path checks this first
- * (src/notebook/hooks.ts, src/parity/pack.ts); the one operation that deletes a
+ * (src/notebook/hooks.ts); the one operation that deletes a
  * whole directory tree did not.
  *
  * Returns null when the path is safe to remove, or the reason it is not.
@@ -306,7 +306,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           id: "project.preflight:bmad",
           status: preflight.ok ? "unchanged" : "failed",
           changedFiles: [],
-          message: preflight.ok ? "Pinned BMAD installer and sealed pack are available" : preflight.error,
+          message: preflight.ok ? "Pinned BMAD installer is available" : preflight.error,
         });
         if (!preflight.ok) errors.push(`BMAD preflight failed: ${preflight.error ?? "unknown error"}`);
       }

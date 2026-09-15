@@ -73,7 +73,7 @@ const shimRoot = mkdtempSync(join(tmpdir(), "fleet-profile-shims-"));
 const scratchHome = join(temp, "home");
 const reposRoot = join(temp, "repos");
 const workdir = join(temp, "work");
-const outside = join(temp, "outside");
+const outside = join(scratchHome, "outside");
 
 let failures = 0;
 let skipped = 0;
@@ -1262,27 +1262,24 @@ try {
     assert.equal(fieldOf(foreign, FIELDS.skills).state, "fail", "identical bytes outside every allowed root never count");
     assert.equal(foreign.profile.skills.core_present, 5);
 
-    // The shape 27 of 28 live profiles have: `skills` links into the fleet
-    // home, the optional skill there is listed, and the core still resolves
-    // 6/6 through external_dirs. A link outside every allowed root fails the
-    // entry; a dangling one is dangling.
+    // Whole skills aliases are migration blockers regardless of their target.
+    // Explicit byte-policy may still read external_dirs, but the unsupported
+    // alias itself is not traversed or counted as a local skill collection.
     const linked = agentNamed(data, "skills-link-pm");
-    assert.equal(fieldOf(linked, FIELDS.skills).state, "pass", JSON.stringify(fieldOf(linked, FIELDS.skills).items));
-    assert.deepEqual(linked.profile.skills.extra, ["extra-linked"]);
+    assert.equal(fieldOf(linked, FIELDS.skills).state, "fail", "whole skills aliases need explicit migration");
+    assert.deepEqual(linked.profile.skills.extra, [], "unsupported root aliases are not traversed");
     assert.equal(linked.profile.skills.core_present, 6);
     const outsideLink = agentNamed(data, "skills-outside-pm");
     assert.equal(fieldOf(outsideLink, FIELDS.skills).state, "fail");
-    assert.deepEqual(itemsOf(fieldOf(outsideLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind, item.detail]), [["skills", "core-foreign", "core-foreign:skills"]]);
+    assert.deepEqual(itemsOf(fieldOf(outsideLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind]), [["skills", "core-foreign"]]);
     assert.equal(outsideLink.profile.skills.core_present, 6, "the core still resolves through external_dirs; the entry itself is the defect");
     const danglingLink = agentNamed(data, "skills-dangling-pm");
-    assert.deepEqual(itemsOf(fieldOf(danglingLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind, item.detail]), [["skills", "core-dangling", "core-dangling:skills"]]);
+    assert.deepEqual(itemsOf(fieldOf(danglingLink, FIELDS.skills)).filter((item) => item.kind !== "source-unresolvable").map((item) => [item.path, item.kind]), [["skills", "core-foreign"]]);
 
-    // EXACT fleet tallies, from the fixture: 31 real profiles, four with a
-    // skills defect (skills-pm, foreign-pm, skills-outside-pm,
-    // skills-dangling-pm); two core skills missing (skills-pm's dangling
-    // hindsight, foreign-pm's foreign delonet-dotenv), one replaced; three
-    // optional skills seen (two on skills-pm, one on skills-link-pm).
-    assert.deepEqual(data.profile.skills, { core_complete: 27, core_missing: 2, core_replaced: 1, extras_seen: 3 });
+    // 31 real profiles, five with a skills defect; two missing required
+    // skills, one replaced, and two local optional skills. Unsupported root
+    // aliases contribute no traversed local entries.
+    assert.deepEqual(data.profile.skills, { core_complete: 26, core_missing: 2, core_replaced: 1, extras_seen: 2 });
   });
 
   // -- identity-file shapes ------------------------------------------------------
@@ -1540,7 +1537,7 @@ try {
     // Five of the six project into the SAME skill directories (links, the way
     // skillex projects), so a profile's own links still resolve to the
     // canonical realpath; hindsight is simply absent.
-    const partial = join(temp, "partial-skills");
+    const partial = join(scratchHome, "partial-skills");
     mkdirSync(partial, { recursive: true });
     for (const skill of CORE_SKILLS.filter((name) => name !== "hindsight")) symlinkSync(join(canonicalSkills, skill), join(partial, skill));
     const config = join(temp, "config-partial.toml");
@@ -2051,16 +2048,15 @@ try {
     // Semantic drift alone is coverage the rule never had: not compared.
     const semantic = live("stale-pm", passShim);
     assert.deepEqual(semantic.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
-    // A GATED profile is compared on its path alone: the rule reads "profile
-    // dir is a symlink" too, so a rule pass beside it is a disagreement and a
-    // rule fail naming the symlink is agreement -- even though the four
-    // dependents are unobserved.
+    // The optional fleet policy rejects profile aliases while the core may
+    // safely accept them. These are different policies, so do not manufacture
+    // a disagreement or agreement from their path gates.
     const gatedDisagree = live("symlink-pm", passShim);
-    assert.deepEqual(gatedDisagree.profile.rule_agreement, { compared: 1, agree: 0, disagree: 1, not_compared: 0 });
-    assert.match(gatedDisagree.findings.find((item) => item.code === "profile-rule-disagreement").detail, /reports pass while the profile observer finds drift/u);
-    assert.equal(fieldOf(agentNamed(gatedDisagree, "symlink-pm"), FIELDS.config).state, "unobserved", "the dependents stay unobserved; only the path was compared");
+    assert.deepEqual(gatedDisagree.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
+    assert.equal(gatedDisagree.findings.some((item) => item.code === "profile-rule-disagreement"), false);
+    assert.equal(fieldOf(agentNamed(gatedDisagree, "symlink-pm"), FIELDS.config).state, "unobserved", "the policy dependents stay unobserved");
     const gatedAgree = live("symlink-pm", symlinkShim);
-    assert.deepEqual(gatedAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });
+    assert.deepEqual(gatedAgree.profile.rule_agreement, { compared: 0, agree: 0, disagree: 0, not_compared: 1 });
     // A misowned singleton link is the rule's wrong-target reading.
     const misownedAgree = live("misowned-pm", wrongTargetShim);
     assert.deepEqual(misownedAgree.profile.rule_agreement, { compared: 1, agree: 1, disagree: 0, not_compared: 0 });

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
+import { createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 // PJAN-49: `project init` built its copier command with no `--vcs-ref`. Whenever
 // templates/commonproject resolves to a git repo *root* — a standalone clone, so
@@ -52,6 +53,14 @@ function answersCommit(target) {
 }
 
 const tmp = mkdtempSync(join(tmpdir(), "pjan-49-"));
+process.env.HOME = join(tmp, "home");
+mkdirSync(process.env.HOME);
+const skillRegistry = join(tmp, "registry");
+createSkillPackFixture(skillRegistry);
+process.env.SKILLEX_REGISTRY_ROOT = skillRegistry;
+process.env.PJ_SKILLS_REGISTRY_ROOT = skillRegistry;
+process.env.XDG_STATE_HOME = join(tmp, "state");
+process.env.PATH = `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`;
 try {
   // --- the flag is on the command pjangler actually executes ---
   const planned = JSON.parse(run([

@@ -231,7 +231,7 @@ try {
       0,
       `${cliRoot}/skills must stay out of the tree; bmad-method regenerates it`,
     );
-    const ignored = run("git", ["check-ignore", "-q", `${cliRoot}/skills/`], { cwd: target, env: retryEnv, allowFailure: true });
+    const ignored = run("git", ["check-ignore", "-q", `${cliRoot}/skills`], { cwd: target, env: retryEnv, allowFailure: true });
     assert.equal(ignored.status, 0, `${cliRoot}/skills/ must be gitignored, not merely untracked`);
   }
   const renderedIgnore = readFileSync(join(target, ".gitignore"), "utf8");

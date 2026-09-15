@@ -52,7 +52,9 @@ function command(args, { cwd = root, home = makeHome("default"), extraEnv = {} }
       ...process.env,
       HOME: home,
       XDG_CACHE_HOME: join(home, ".cache"),
-      PJ_PACK_ROOT_PJTEST: selectedBmadPack,
+      PJ_SKILLS_REGISTRY_ROOT: bmadFixtureRoot,
+      SKILLEX_REGISTRY_ROOT: bmadFixtureRoot,
+      XDG_STATE_HOME: join(home, ".local", "state"),
       ...extraEnv,
     },
   });
@@ -82,12 +84,8 @@ function writeCanonicalGitignore(repo) {
 
 try {
   for (const script of ["provision-packs.py", "sync-skills.py"]) {
-    const packagedTemplate = join(root, "templates", "commonproject", "template", ".mise", "scripts", script);
-    assert.notEqual(
-      lstatSync(packagedTemplate).mode & 0o111,
-      0,
-      `packaged CommonProject executable mode must survive a fresh projection: ${script}`,
-    );
+    assert.equal(existsSync(join(root, "templates", "commonproject", "template", ".mise", "scripts", script)), false,
+      `the packaged template must not ship a second skill writer: ${script}`);
   }
 
   {
@@ -104,11 +102,8 @@ try {
     writeFileSync(
       join(repo, ".agents", "skills.json"),
       `${JSON.stringify({
-        unrelated_top_level: { keep: true },
-        skills: [
-          { name: "custom-real", source: `file://${custom}` },
-          { name: "bmad-private-custom", source: `file://${privateCustom}` },
-        ],
+        inherit_global: false,
+        skills: [],
       }, null, 2)}\n`,
     );
     mkdirSync(join(repo, ".claude"));
@@ -120,12 +115,7 @@ try {
     assert.equal(readFileSync(join(privateCustom, "SKILL.md"), "utf8"), "private custom must survive\n");
     assert.equal(readlinkSync(join(repo, ".claude", "skills")), "../.agents/skills");
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
-    assert.deepEqual(manifest.unrelated_top_level, { keep: true });
-    assert.deepEqual(manifest.skills[0], { name: "custom-real", source: `file://${custom}` });
-    assert.deepEqual(manifest.skills[1], { name: "bmad-private-custom", source: `file://${privateCustom}` });
-    // PJAN-76: the manifest carries exactly what the repo declared. pjangler no
-    // longer appends a pinned BMAD pack's members to it.
-    assert.equal(manifest.skills.length, 2, JSON.stringify(manifest.skills));
+    assert.deepEqual(manifest, { inherit_global: false, skills: [] }, "foreign local skills stay unselected and unowned");
     // ...and `bmad-agent-pm` stays the real directory it was. That name is the
     // installer's namespace now, so pjangler must not replace it with a symlink
     // into a pack — the content the test planted has to survive untouched.
@@ -140,42 +130,16 @@ try {
     const second = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(second, "skills.project-manifest").status, "noop");
 
-    const provisionScript = join(repo, ".mise", "scripts", "provision-packs.py");
     const syncScript = join(repo, ".mise", "scripts", "sync-skills.py");
-    const canonicalProvisionBytes = readFileSync(provisionScript);
-    const canonicalSyncBytes = readFileSync(syncScript);
-    chmodSync(provisionScript, 0o644);
-    chmodSync(syncScript, 0o644);
-    const modeAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
-    const modeDrift = finding(modeAudit, "skills.project-manifest");
-    assert.equal(modeDrift.status, "fail");
-    assert.equal(modeDrift.details.filter((detail) => detail.includes("is not executable")).length, 2);
-    assert.doesNotMatch(modeDrift.details.join("\n"), /differs from the shipped template/);
-
-    const modeRepair = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
-    assert.equal(migrationResult(modeRepair, "skills.project-manifest").status, "applied");
-    assert.deepEqual(readFileSync(provisionScript), canonicalProvisionBytes);
-    assert.deepEqual(readFileSync(syncScript), canonicalSyncBytes);
-    assert.notEqual(lstatSync(provisionScript).mode & 0o111, 0);
-    assert.notEqual(lstatSync(syncScript).mode & 0o111, 0);
-    const modePostAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
-    assert.equal(finding(modePostAudit, "skills.project-manifest").status, "pass", JSON.stringify(finding(modePostAudit, "skills.project-manifest")));
-    const modeNoop = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
-    assert.equal(migrationResult(modeNoop, "skills.project-manifest").status, "noop");
-
-    writeFileSync(syncScript, `${readFileSync(syncScript, "utf8")}\n# drift\n`);
-    chmodSync(syncScript, 0o644);
-    const driftAudit = jsonCommand(["audit", repo, "--json"], { home }).json;
-    const drift = finding(driftAudit, "skills.project-manifest");
+    mkdirSync(join(repo, ".mise", "scripts"), { recursive: true });
+    writeFileSync(syncScript, "# retired installed writer\n");
+    const drift = finding(jsonCommand(["audit", repo, "--json"], { home }).json, "skills.project-manifest");
     assert.equal(drift.status, "fail");
-    assert.match(drift.details.join("\n"), /differs from the shipped template/);
-    assert.match(drift.details.join("\n"), /not executable/);
-    const driftRepair = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
-    assert.equal(migrationResult(driftRepair, "skills.project-manifest").status, "applied");
-    assert.deepEqual(readFileSync(syncScript), canonicalSyncBytes);
-    assert.notEqual(lstatSync(syncScript).mode & 0o111, 0);
-    const driftNoop = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
-    assert.equal(migrationResult(driftNoop, "skills.project-manifest").status, "noop");
+    assert.equal(drift.fixable, true);
+    const repair = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
+    assert.equal(migrationResult(repair, "skills.project-manifest").status, "applied");
+    assert.equal(existsSync(syncScript), false, "repair retires the duplicate writer");
+    assert.equal(migrationResult(jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json, "skills.project-manifest").status, "noop");
   }
 
   {
@@ -184,8 +148,7 @@ try {
     const initial = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     assert.equal(migrationResult(initial, "skills.project-manifest").status, "applied");
     const target = join(repo, ".mise", "scripts", "provision-packs.py");
-    rmSync(target);
-    mkdirSync(target);
+    mkdirSync(target, { recursive: true });
     const sentinel = join(target, "user-sentinel.txt");
     writeFileSync(sentinel, "must remain byte-identical\n");
     const beforeEntries = readdirSync(target);
@@ -195,7 +158,7 @@ try {
     const unsafeFinding = finding(unsafeAudit, "skills.project-manifest");
     assert.equal(unsafeFinding.status, "fail");
     assert.equal(unsafeFinding.fixable, false);
-    assert.match(unsafeFinding.details.join("\n"), /missing or unsafe/);
+    assert.match(unsafeFinding.details.join("\n"), /Retired writer path is not a regular file|retired.*directory/i);
 
     const blocked = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     const blockedResult = migrationResult(blocked, "skills.project-manifest");
@@ -213,6 +176,7 @@ try {
     const home = makeHome("skills-unsafe-external");
     const managed = join(repo, ".agents", "skills");
     mkdirSync(managed, { recursive: true });
+    writeFileSync(join(repo, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
     writeFileSync(join(managed, "custom-sentinel"), "do-not-touch\n");
     mkdirSync(join(repo, ".codex"));
     const outside = mkdtempSync(join(tmpdir(), "pjan-43-outside-skills-"));
@@ -227,7 +191,7 @@ try {
     const unsafeFinding = finding(audit, "skills.project-manifest");
     assert.equal(unsafeFinding.status, "fail");
     assert.equal(unsafeFinding.fixable, false, "unsafe CLI topology must override otherwise-fixable drift");
-    assert.match(unsafeFinding.details.join("\n"), /unsupported skills directory symlink/);
+    assert.match(unsafeFinding.details.join("\n"), /E_ALIAS_CONFLICT|E_ALIAS_FOREIGN|alias|CLI/i);
 
     const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
     assert.equal(all.selectedRules.includes("skills.project-manifest"), false, "--all must exclude unsafe CLI topology blockers");
@@ -239,7 +203,7 @@ try {
     const report = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     const result = migrationResult(report, "skills.project-manifest");
     assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.match(result.details.join("\n"), /unsupported skills directory symlink/);
+    assert.match(result.details.join("\n"), /E_ALIAS_CONFLICT|E_ALIAS_FOREIGN|alias|CLI/i);
     assert.deepEqual(readdirSync(managed), beforeManaged);
     assert.deepEqual(readdirSync(outside), beforeOutside);
     assert.equal(readlinkSync(unsafeLink), outside);
@@ -512,7 +476,7 @@ printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config
     writeFileSync(join(custom, "SKILL.md"), "fixture custom skill\n");
     writeFileSync(
       join(repo, ".agents", "skills.json"),
-      `${JSON.stringify({ fixture_metadata: "preserve", skills: [{ name: "heyma-custom", source: `file://${custom}` }] }, null, 2)}\n`,
+      `${JSON.stringify({ inherit_global: false, skills: [] }, null, 2)}\n`,
     );
     mkdirSync(join(repo, ".claude"));
     symlinkSync("../.agents/skills", join(repo, ".claude", "skills"), "dir");
@@ -530,8 +494,7 @@ printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config
     assert.equal(migrated.results.some((entry) => entry.status === "blocked"), false);
     assert.equal(readFileSync(join(custom, "SKILL.md"), "utf8"), "fixture custom skill\n");
     const manifest = JSON.parse(readFileSync(join(repo, ".agents", "skills.json"), "utf8"));
-    assert.equal(manifest.fixture_metadata, "preserve");
-    assert.deepEqual(manifest.skills[0], { name: "heyma-custom", source: `file://${custom}` });
+    assert.deepEqual(manifest, { inherit_global: false, skills: [] });
     assert.equal(readlinkSync(join(repo, ".claude", "skills")), "../.agents/skills");
     assert.match(readFileSync(join(repo, ".env.op"), "utf8"), /VALID_FIXTURE_REF=op:\/\/FixtureVault\/FixtureItem\/FixtureField/);
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;

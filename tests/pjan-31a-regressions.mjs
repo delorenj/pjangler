@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
-import { createBmadInstallerFixture, createSkillPackFixture } from "./helpers/pack-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 // PJAN-31a: the CommonProject template shipped no .github at all, so no project
 // pjangler created ever got PR review. These guards render a REAL project with
@@ -41,11 +41,16 @@ function run(args, env = {}, cwd = root) {
 const tmp = mkdtempSync(join(tmpdir(), "pjan-31a-"));
 try {
   const homeDir = join(tmp, "home");
+  mkdirSync(homeDir);
   const fixtureRoot = join(tmp, "bmad-fixtures");
   lifecycleEnv = {
     HOME: homeDir,
     XDG_CACHE_HOME: join(homeDir, ".cache"),
     XDG_CONFIG_HOME: join(homeDir, ".config"),
+    XDG_STATE_HOME: join(tmp, "state"),
+    PATH: `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`,
+    SKILLEX_REGISTRY_ROOT: fixtureRoot,
+    PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
     PJ_AGENT_HOOKS_LAYER: "0",
     PJ_PACK_ROOT_PJTEST: createSkillPackFixture(fixtureRoot),
     PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),

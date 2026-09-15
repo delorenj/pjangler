@@ -1438,9 +1438,9 @@ try {
   profileRejects("an ignore pattern made of wildcards alone", (manifest) => {
     manifest.addIn(["extras", "ignored_patterns"], "?*");
   }, "profile_manifest.extras.ignored_patterns[1]", /may not match every entry/u);
-  profileRejects("an empty core", (manifest) => {
+  profileRejects("a non-list core", (manifest) => {
     manifest.setIn(["skill_core", "required"], "hindsight");
-  }, "profile_manifest.skill_core.required", /array/u);
+  }, "profile_manifest.skill_core.required", /list/u);
 
   check("profile_manifest: a schema-3 contract with no manifest still loads", () => {
     // OPTIONAL, and that is load-bearing: a contract that predates the block is

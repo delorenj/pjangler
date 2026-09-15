@@ -19,6 +19,7 @@ import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
   createSkillPackFixture,
+  createSkillexMiseFixture,
 } from "./helpers/pack-fixture.mjs";
 import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 import {
@@ -39,6 +40,9 @@ assert.equal(installedPython.status, 0, installedPython.stderr);
 const realPython = realpathSync(installedPython.stdout.trim());
 
 const temporary = mkdtempSync(join(root, ".pjan-67-trusted-lifecycle-"));
+const skillState = mkdtempSync("/tmp/pjan-67-state-");
+process.on("exit", () => rmSync(skillState, { recursive: true, force: true }));
+const skillMise = createSkillexMiseFixture(temporary);
 const fixturePjanglerRoot = join(temporary, "committed-parent-fixture");
 mkdirSync(join(fixturePjanglerRoot, "dist"), { recursive: true });
 copyFileSync(join(root, "package.json"), join(fixturePjanglerRoot, "package.json"));
@@ -258,7 +262,10 @@ const serverEnv = {
   // Provenance is anchored to the OS account, not ambient HOME. Execute the
   // actual metadata-bound UV tool while keeping all runtime/host state inside
   // the isolated HOME fixture.
-  PATH: `${dirname(installed.stdout.trim())}:${fakeBin}:${process.env.PATH}`,
+  PATH: `${skillMise}:${dirname(installed.stdout.trim())}:${fakeBin}:${process.env.PATH}`,
+  XDG_STATE_HOME: skillState,
+  SKILLEX_REGISTRY_ROOT: fixtureRoot,
+  PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
   HERMES_TEMPLATE_CONFIG: templateConfig,
   HERMES_FLEET_HOME: fleetHome,
   HERMES_FLEET_ENV: join(fleetHome, "fleet.env"),

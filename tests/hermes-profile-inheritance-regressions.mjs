@@ -168,7 +168,7 @@ const { repo } = makeRepo();
 }
 {
   const out = audit(repo, makeFleet({ overrides: { skills: { external_dirs: [] } } }));
-  assert.match(out, /skills\.external_dirs is empty/, "an empty skills path must be reported");
+  assert.doesNotMatch(out, /skills\.external_dirs is empty/, "a real named profile overlay needs no external skills root");
 }
 
 // 5. A healthy fleet base reports none of the above — guards against a rule

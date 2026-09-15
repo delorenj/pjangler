@@ -452,7 +452,6 @@ const PROFILE_FIELD_SKILLS = "profiles.{profile_name}.skills";
  */
 const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
   /^profile dir missing: /u,
-  /^profile dir is a symlink \(must be a real dir\): /u,
   /^wrong-target: /u,
   /^not-a-symlink: /u,
   /^profile config missing /u,
@@ -462,8 +461,8 @@ const PROFILE_RULE_DETAIL_PATTERNS: readonly RegExp[] = [
   /^config\.delta\.yaml must be a real file/u,
   /^identity-memory /u,
 ];
-/** Path-gate kinds the rule also sees: it reports a missing or symlinked profile directory and a wrong-target singleton link. */
-const PROFILE_RULE_COVERED_GATE_KINDS: ReadonlySet<string> = new Set(["symlink", "missing", "not-a-directory"]);
+/** The byte-policy observer may reject a profile alias the core supports. */
+const PROFILE_RULE_COVERED_GATE_KINDS: ReadonlySet<string> = new Set(["missing", "not-a-directory"]);
 const PROFILE_RULE_COVERED_KINDS: ReadonlySet<string> = new Set([
   "misowned-link", "generated-symlink", "generated-missing", "marker-missing", "delta-missing", "delta-symlink",
   "pin-missing", "pin-symlink", "pin-malformed", "bank-missing", "bank-custom", "bank-alias", "bank-mismatch",
@@ -1917,10 +1916,10 @@ function profileRuleVerdict(rule: Record<string, unknown> | undefined): "pass" |
  * Null when the shared subset was not fully read.
  *
  * The PATH aspect is compared on its own, even when the four dependents are
- * `unobserved`: a symlinked or missing profile directory is exactly the
- * reading the rule's "profile dir is a symlink" / "profile dir missing"
- * details carry, so a gated profile against a rule `pass` is a disagreement,
- * not a partial reading. A gate the rule never checks (`name-unsafe`,
+ * `unobserved`: a missing profile directory is shared evidence. A lexical
+ * profile alias may be accepted by the core while the explicit fleet policy
+ * requires a real directory, so that gate is not compared. Other gates the
+ * rule never checks (`name-unsafe`,
  * `case-collision`, `ambiguous`, `unnamed`, `unreadable`, a root error) is a
  * partial reading and is not compared.
  */

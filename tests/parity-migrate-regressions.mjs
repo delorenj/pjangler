@@ -28,11 +28,17 @@ function priorTemplateVersion(relPath) {
 }
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
+const parityHome = mkdtempSync(join(tmpdir(), "pjangler-parity-home-"));
+process.on("exit", () => rmSync(parityHome, { recursive: true, force: true }));
 const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 
 function childEnv(env = {}) {
   const merged = {
     ...process.env,
+    HOME: parityHome,
+    XDG_STATE_HOME: join(parityHome, ".local", "state"),
+    PJ_SKILLS_REGISTRY_ROOT: bmadFixtureRoot,
+    SKILLEX_REGISTRY_ROOT: bmadFixtureRoot,
     PJ_PACK_ROOT_PJTEST: selectedBmadPack,
     ...env,
   };
@@ -349,8 +355,8 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
       const audited = JSON.parse(runAllowFailure(["audit", bare, "--json"], root));
       const rule = audited.rules.find((entry) => entry.id === "mise.config-root");
       const subjectIssues = rule.details.filter((detail) => detail.includes("as its subject"));
-      assert.equal(subjectIssues.length, 3, `the remaining agent-files hook must be reported: ${JSON.stringify(rule.details)}`);
-      for (const name of ["link-agentfiles.sh", "sync-skills.py", "provision-packs.py"]) {
+      assert.equal(subjectIssues.length, 1, `the remaining agent-files hook must be reported: ${JSON.stringify(rule.details)}`);
+      for (const name of ["link-agentfiles.sh"]) {
         assert.ok(subjectIssues.some((detail) => detail.includes(name)), `${name} must be named`);
       }
       run(["migrate", "mise.config-root", bare, "--json"], root);
@@ -457,9 +463,10 @@ run = "echo still here"
     );
     assert.match(
       mise,
-      /script = "python3 '\{\{config_root\}\}\/\.mise\/scripts\/sync-skills\.py' --scope project --root '\{\{config_root\}\}'"/,
-      "migrate should install the shipped project-local skills sync engine, rooted at config_root"
+      /run = "skillex sync --scope project --project '\{\{config_root\}\}'"/,
+      "migrate should install the explicit Node sync task, rooted at config_root"
     );
+    assert.doesNotMatch(mise, /script = .*sync-skills|provision-packs/);
     assert.match(mise, /\[tasks\."skills:sync"\]/, "migrate should add the canonical skills:sync task");
     assertMiseParses(repo, "preserve-hooks");
   }
@@ -578,9 +585,9 @@ run = "echo still here"
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml from template should contain the link:agentfiles task");
     assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
-    assert.match(mise, /skillex sync --scope project --project/, "mise.toml should run project skill sync on enter");
+    assert.match(mise, /skillex sync --scope project --project/, "mise.toml should declare an explicit project skill sync task");
     assert.match(mise, /\[tasks\."skills:sync"\]/, "mise.toml should include the skills:sync task");
-    assert.match(mise, /patterns = \["\.agents\/skills\.json"\]/, "mise.toml should watch the project skills manifest");
+    assert.doesNotMatch(mise, /patterns = \["\.agents\/skills\.json"\]/, "selection changes must not trigger automatic writes");
     assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
     assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");

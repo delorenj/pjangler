@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = join(root, "dist", "mcp-server.js");
@@ -444,7 +445,13 @@ base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
 const rawTarget = join(temporary, "raw-stdio");
-mkdirSync(rawTarget);
+mkdirSync(join(rawTarget, ".agents"), { recursive: true });
+writeFileSync(join(rawTarget, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
+const rawRegistry = join(temporary, "raw-registry");
+createSkillPackFixture(rawRegistry);
+const rawMise = createSkillexMiseFixture(temporary);
+const rawHome = join(temporary, "raw-home");
+mkdirSync(rawHome);
 const rawInput = [
   {
     jsonrpc: "2.0",
@@ -471,7 +478,11 @@ const raw = spawnSync("node", [serverPath], {
   cwd: root,
   env: {
     ...serverEnv,
-    PATH: process.env.PATH,
+    PATH: `${rawMise}:${process.env.PATH}`,
+    HOME: rawHome,
+    XDG_STATE_HOME: join(temporary, "raw-state"),
+    SKILLEX_REGISTRY_ROOT: rawRegistry,
+    PJ_SKILLS_REGISTRY_ROOT: rawRegistry,
     HERMES_BIN: rawHermes,
     HERMES_FLEET_ENV: join(rawFleet, "fleet.env"),
     HERMES_FLEET_REGISTRY_FILE: join(rawFleet, "agents-registry.yaml"),

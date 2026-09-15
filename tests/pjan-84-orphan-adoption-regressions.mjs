@@ -18,11 +18,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
 const temporary = [];
 let failures = 0;
+let lifecycleEnv = {};
 
 function check(label, body) {
   try {
@@ -30,7 +32,7 @@ function check(label, body) {
     console.log(`  ok   ${label}`);
   } catch (error) {
     failures += 1;
-    console.log(`  FAIL ${label}: ${error.message.split("\n")[0]}`);
+    console.log(`  FAIL ${label}: ${error.message}`);
   }
 }
 
@@ -38,7 +40,7 @@ function cli(args, env = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: ROOT,
     encoding: "utf8",
-    env: { ...process.env, GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...env },
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv, ...env },
   });
 }
 
@@ -47,7 +49,7 @@ function orphan(root, name, { manifest = true, answers = true } = {}) {
   const dir = join(root, name);
   mkdirSync(join(dir, "_bmad"), { recursive: true });
   mkdirSync(join(dir, ".agents"), { recursive: true });
-  mkdirSync(join(dir, ".claude", "skills"), { recursive: true });
+  mkdirSync(join(dir, ".claude"), { recursive: true });
   writeFileSync(join(dir, "mise.toml"), "[env]\n");
   if (manifest) {
     writeFileSync(
@@ -66,6 +68,20 @@ console.log("pjan-84 orphan adoption");
 try {
   const root = mkdtempSync(join(tmpdir(), "pjan-84-orphan-"));
   temporary.push(root);
+  mkdirSync(join(root, "home"));
+  mkdirSync(join(root, "home", ".cache", "pjangler"), { recursive: true });
+  writeFileSync(join(root, "home", ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.11.1-next.1", next: "6.11.1-next.1" } }));
+  const fixtureRoot = join(root, "skill-registry");
+  createSkillPackFixture(fixtureRoot);
+  lifecycleEnv = {
+    HOME: join(root, "home"),
+    XDG_CACHE_HOME: join(root, "home", ".cache"),
+    XDG_STATE_HOME: join(root, "state"),
+    PATH: `${createSkillexMiseFixture(root)}:${process.env.PATH}`,
+    SKILLEX_REGISTRY_ROOT: fixtureRoot,
+    PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
+    PJ_BMAD_INSTALLER: createBmadInstallerFixture(fixtureRoot),
+  };
   const registry = join(root, "registry.yaml");
 
   check("an orphan with a manifest plans as sync, not create", () => {
