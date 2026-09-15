@@ -2,7 +2,7 @@
 title: One project identity and manifest-owned PostgreSQL registry
 type: refactor
 created: 2026-09-15
-status: validating
+status: completed
 baseline_commit: 8f1497c0644f8687873b62e2b41b3d6330ce4f4d
 ticket: PJAN-80
 review_loop_iteration: 1
@@ -57,7 +57,7 @@ context: []
 - [x] CLI files in Code Map: top-level info/list/doctor and project operations; implicit nearest-repo scope; legacy spellings only transitional compatibility.
 - [x] `tests/pjan-80-*.mjs`: real disposable PostgreSQL/service integration and CLI matrix regression tests.
 - [x] Service installation and migration script: deploy singleton, reconcile registered manifests plus Pilot, retire active YAML, validate idempotent rerun.
-- [ ] Documentation and ticket: record authority, migration and verification; commit/push changes and merge to main, preserving existing work.
+- [x] Documentation and ticket: record authority, migration and verification; commit/push changes and merge to main, preserving existing work.
 
 **Acceptance Criteria:**
 - Given the installed CLI in Pilot, when info and doctor run, then both identify px and correctly report its live PostgreSQL index entry.
@@ -123,3 +123,22 @@ point, but the filesystem cannot guarantee CAS against an uncoordinated process.
 3. [CLI commands](../../src/index.ts) and [local info](../../src/project/info.ts)
 4. [Migration](../../scripts/migrate-project-registry.mjs) and [operations](../../docs/project-registry.md)
 5. [Real PostgreSQL regression suite](../../tests/pjan-80-registry-regressions.mjs)
+
+## Final verification and landing
+
+All 29 distinct targeted suites passed: eight core registry/CLI/consumer suites,
+the bootstrap regression, and twenty fleet, identity, MCP, lifecycle and notebook
+suites. The main-branch checkout temporarily removed previously tracked generated
+CLI bundles during the wider run; after rebuilding, the three interrupted suites
+were rerun successfully (four-suite rerun including explicit identity). No failing
+checks remain in the targeted set.
+
+SQL verified `WHERE project_id = 'PX'` returns `px`. All 18 indexed hashes match
+manifest bytes; all entries have status `ok`. The legacy shared table still has
+eight rows. Active YAML is absent, and installed CLI/doctor/rebuild checks pass.
+
+Implementation landed on PJangler main at `dd9aec4`; shared template commits and
+all 18 manifest migrations are pushed to their main branches. The 33GOD parent
+records the migrated project and component references at `b9d2a48`, followed by
+this final verification record. `git unpushed` was run: task manifests and changes
+are saved remotely; unrelated existing workspace changes are outside this unit.
