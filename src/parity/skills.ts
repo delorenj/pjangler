@@ -45,7 +45,7 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
     status: result.exit === 0 ? "pass" : result.exit === 4 ? "warn" : "fail",
     summary: result.exit === 0 ? "Skillex declaration and activation are in parity" : `Skillex inspection returned exit ${result.exit}`,
     details,
-    fixable: result.exit === 0 || result.exit === 6 || result.findings.some((finding) => finding.code === "E_MANIFEST_MISSING"),
+    fixable: result.exit === 0 || result.exit === 6 || result.findings.some((finding) => finding.code === "E_NO_PROJECT_MANIFEST"),
   };
 }
 

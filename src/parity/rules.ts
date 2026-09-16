@@ -3489,6 +3489,10 @@ return [
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
       details.push(...retiredTaskNameIssues(text));
+      // PJAN-128: this owner already repairs skill hooks/tasks without touching
+      // skill content. Select it even when Skillex refuses a foreign CLI root
+      // or manifest: entering a repo must not depend on adopting those skills.
+      details.push(...skillsWiringIssues(text));
       return {
         id: "mise.config-root",
         title: "mise config_root + AGENTS link hooks",

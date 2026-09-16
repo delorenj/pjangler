@@ -72,6 +72,7 @@ const SUITES = [
   "tests/coverage-ratchet-regressions.mjs",
   "tests/parity-migrate-regressions.mjs",
   "tests/pjan-127-skills-core-regressions.mjs",
+  "tests/pjan-128-skills-wiring-regressions.mjs",
   "tests/hermes-profile-inheritance-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",
   "tests/pjan-57-dogfood-regressions.mjs",
