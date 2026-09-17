@@ -451,7 +451,21 @@ try {
   assert.equal(dedicatedNoBoardExternal.success, true, JSON.stringify(dedicatedNoBoardExternal));
   const noBoardExternalEffects = readFileSync(effectLog, "utf8");
   assert.match(noBoardExternalEffects, /runtime-migrate:/, "required role-local runtime convergence must run before external dispatch");
-  assert.match(noBoardExternalEffects, /systemctl:--user enable --now/, "non-board systemd grant must reach its selected child");
+  // The `enable --now` this used to look for came from the per-agent heartbeat
+  // timer, which hermes-agent-template 63466a8 retired. What the check is
+  // actually about is the GRANT reaching the selected child, so assert that
+  // directly: a state-changing systemctl call after the unit write
+  // (`daemon-reload`), and the gateway being driven to its declared state.
+  // This fixture's gateway is deferred — no channel credential — so that is
+  // `disable --now`; an active one would be `enable --now`. Matching either
+  // keeps the assertion about authority rather than about one unit's
+  // disposition, and it is two proofs where there was one.
+  assert.match(noBoardExternalEffects, /systemctl:--user daemon-reload/, "non-board systemd grant must reach its selected child");
+  assert.match(
+    noBoardExternalEffects,
+    /systemctl:--user (?:enable|disable) --now hermes-trusted-project-authority-external-gateway\.service/,
+    "the granted child must drive the gateway to its declared state",
+  );
   assertNoUngrantAuthority("dedicated Hermes selected non-board external path");
   assertEnclosingProjectUntouched("dedicated Hermes selected non-board external path");
 
@@ -478,7 +492,15 @@ try {
   const effectText = readFileSync(effectLog, "utf8");
   assert.equal((readFileSync(providerLog, "utf8").match(/-X POST/g) ?? []).length, 1, "the granted board provider must create exactly once");
   assert.match(effectText, /runtime-migrate:/, "required role-local runtime convergence must execute");
-  assert.match(effectText, /systemctl:--user enable --now/, "the granted systemd phase must execute");
+  // Same substitution as the non-board path above: the retired heartbeat timer
+  // was what made `enable --now` unconditional, so prove the phase executed by
+  // its state-changing calls instead.
+  assert.match(effectText, /systemctl:--user daemon-reload/, "the granted systemd phase must execute");
+  assert.match(
+    effectText,
+    /systemctl:--user (?:enable|disable) --now hermes-trusted-project-director-gateway\.service/,
+    "the granted systemd phase must drive the gateway to its declared state",
+  );
   const hostSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes host effects")) ?? "";
   assert.equal((hostSummary.match(/20-runtime-repo\.sh/g) ?? []).length, 1, "role-local runtime must be a required host/local phase");
   const deferredSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
