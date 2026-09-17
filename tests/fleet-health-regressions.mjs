@@ -1114,6 +1114,11 @@ try {
       assert.ok(readings.some((item) => item.state === "pass"), "the favourable reading survives");
       assert.ok(readings.some((item) => item.state === "fail"), "and so does the unfavourable one");
     } finally {
+      { // PJAN-132 TEMP DIAGNOSTIC
+        let kind = "absent";
+        try { const st = lstatSync(symlinked); kind = st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "DIRECTORY" : "file"; } catch { kind = "absent"; }
+        console.error(`PJAN132 site=A beta-pm=${kind} shared=${existsSync(shared)} npm_lifecycle=${process.env.npm_lifecycle_event} npm_cfg_ignore=${process.env.npm_config_ignore_scripts} CI=${process.env.CI}`);
+      }
       rmSync(symlinked, { force: true });
       // Restored renderer-CLEAN (story 1.7), so every later case reads the
       // fleet this suite seeded rather than a marker-only profile.
