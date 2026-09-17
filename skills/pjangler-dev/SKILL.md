@@ -68,7 +68,20 @@ export class Add<Name> extends Command {
 - `this.writeFile(path, content)` - Write file, creating dirs as needed
 - `this.createDirectory(path)` - Create directory structure
 
-### Command Patterns
+#### Shelling out to an external CLI
+
+A Command or rule may need a tool this repo does not own — `copier`, `op`, `px`.
+The house pattern is `spawnSync` with `shell: false` and an explicit `timeout`,
+after probing with `which` and failing with an actionable install hint
+(`src/commands/hermes/RunCopierTemplate.ts` is the reference; `src/parity/rules.ts`
+`board.schema` is the parity-rule version).
+
+Two rules for anything that reaches a live remote service:
+- treat "the tool is missing" and "the service is unreachable" as **skip**, not
+  failure — a hard failure here can roll back an in-flight project transaction;
+- never pass a destructive flag from an automated path.
+
+## Command Patterns
 
 - **File creation** (most common): guard with `if (this.fileExists(path) && !this.context.force)`, then `this.writeFile(path, content)`.
 - **Directory creation**: `this.createDirectory("src/components")`.

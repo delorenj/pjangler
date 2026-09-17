@@ -16,7 +16,14 @@ Each parity rule is an object with:
 - `audit(ctx)` — returns `{ status, summary, details, fixable }`
 - `migrate(ctx, finding)` — attempts to fix what audit caught; returns `{ status, summary, changedFiles, details }`
 
-`ctx` contains: `repoRoot`, `pjanglerRoot`, `homeDir`, `dryRun`.
+`ctx` (`Context`, `src/parity/rules.ts`) contains: `repoRoot`, `dryRun`,
+`pjanglerRoot`, `homeDir`, and optionally `bmadVersionPin` and
+`acceptRegistryMatches`. The `LifecycleContext` the recipe registry passes is a
+superset (`targetDir`, `force`, `registryPath`, `live`, …); honor
+`ctx.registryPath` rather than calling `projectRegistryPath()` yourself.
+
+A rule needing anything else — a board binding, a credential — reads it from the
+repo (`readProjectJson(ctx)`) or the environment. It does not arrive in `ctx`.
 
 Checks are returned by the owning recipe factories (for example,
 `createBmadChecks()`) and registered through the recipe catalog. The legacy
@@ -48,9 +55,35 @@ node dist/index.js migrate --all  # fix all fixable rules
 
 ## Pitfalls
 
+### Rules that write to something other than the repo
+
+`board.schema` is the reference case: its `migrate` shells out to Pilot
+(`px schema import`) and changes a **live Plane board**, not a file. Two
+consequences that no file-writing rule has to think about:
+
+- **`changedFiles` stays empty, on purpose.** Every other rule's `changedFiles`
+  is a real path; reporting one here would be a lie. The summary and `details`
+  carry what changed.
+- **Audit must never gate on a remote service.** `recipes/registry.ts` treats
+  anything but `pass`/`skip` as a failed postcondition, and `ProjectRecipe` turns
+  a failed postcondition into a transaction error — so a `warn` from an
+  unreachable API can **roll back a brand-new project**. Every "cannot tell"
+  path (tool missing, no credential, board unreachable, provider not Plane,
+  board not linked) must therefore return **`skip`**, never `warn`. Reserve
+  `warn`/`fail` for drift you actually observed.
+
+And because `migrateAll` auto-selects every `fixable` finding, a remote-writing
+migrate must be conservative by construction: `board.schema` never passes
+`--prune` (deletes) or `--adopt-default` (re-homes new tickets on a board that
+already holds work).
+
 ### Profile-based / report-only rules
 
-Some rules wrap a dedicated audit profile (e.g. the `momo-lifecycle-plane` profile that checks whether a repo is ready for the Momo PM orchestrator lifecycle). These rules cannot be fully auto-repaired by `pj migrate` and must be guarded so `pj project init` does not endlessly select them on legacy repos. See the `pjangler-parity` skill in the 33GOD PM runtime for the full recipe, including the guard pattern and the `momo-lifecycle-plane` regression-test fixture.
+Some rules wrap a dedicated audit profile (e.g. the `momo-lifecycle-plane` profile that checks whether a repo is ready for the Momo PM orchestrator lifecycle). These rules cannot be fully auto-repaired by `pj migrate` and must be guarded so `pj project init` does not endlessly select them on legacy repos. The guard pattern and the `momo-lifecycle-plane` regression fixture are in this
+repo. (A `pjangler-parity` skill under the 33GOD PM runtime tree used to be cited
+here; it is stale — it still says rules live in a `RULES` array in
+`src/parity/index.ts`, which has not been true since the recipe registry landed —
+and it is tracked by no repo. Do not follow it.)
 
 ### `ownedRegistryEntries` scoping after a repo move
 

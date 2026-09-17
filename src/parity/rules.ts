@@ -5640,11 +5640,227 @@ return [
 ];
 }
 
+
+// ---------------------------------------------------------------------------
+// board.schema — the project's Plane board matches the standard board schema
+//
+// pjangler owns board IDENTITY: `create_board` POSTs {name, identifier,
+// description} and stops, so a board it creates carries Plane's bare defaults —
+// five seeded states, no labels, no modules, module_view/cycle_view off. Making
+// that board usable is ~10 minutes of clicking, per project, across 70+ boards.
+//
+// Pilot (`px`) owns board SCHEMA. This rule is the seam: audit asks px what it
+// WOULD change (`--dry-run --json`, a pure read), and migrate lets it change it.
+// No Plane write logic lives here — pjangler's own HTTP client is GET-only by
+// design and this rule does not alter that.
+//
+// Two safety properties this rule must preserve, because migrateAll auto-selects
+// every fixable finding (see recipes/registry.ts) and init runs it as a
+// postcondition:
+//
+//   1. It must never GATE on a remote service. `registry.ts` treats anything but
+//      pass/skip as a failed postcondition, and ProjectRecipe turns that into a
+//      transaction error — so a warn here could ROLL BACK a brand-new project
+//      because Plane blipped or `px` was not installed. Every "cannot tell"
+//      path below therefore returns `skip`, never `warn`.
+//   2. It must never destroy or re-home. migrate never passes `--prune` (which
+//      deletes) or `--adopt-default` (which moves the default state and silently
+//      re-homes new tickets on a board that already holds work). px suppresses
+//      the latter on a non-empty board on its own; not passing the override is
+//      the second lock.
+
+const BOARD_SCHEMA_RULE_ID = "board.schema";
+const BOARD_SCHEMA_TITLE = "Board schema";
+
+interface PxPlan {
+  ok?: boolean;
+  board_has_work?: boolean;
+  schema_file?: string;
+  project?: { changed?: string[] };
+  states?: PxCollectionPlan;
+  labels?: PxCollectionPlan;
+  modules?: PxCollectionPlan;
+  failed?: { name?: string; action?: string; error?: string }[];
+  error?: string;
+}
+
+interface PxCollectionPlan {
+  created?: string[];
+  updated?: { name?: string }[];
+  unchanged?: string[];
+  extra?: string[];
+  suppressed?: { name?: string; field?: string; from?: unknown; to?: unknown }[];
+}
+
+function boardSchemaSkip(summary: string, details: string[] = []): AuditFinding {
+  return { id: BOARD_SCHEMA_RULE_ID, title: BOARD_SCHEMA_TITLE, status: "skip", summary, details, fixable: false };
+}
+
+/** The `.project.json` ticket_provider, when it is a *linked Plane* board. */
+function linkedPlaneBoard(ctx: Context): { boardId: string; workspace: string } | { skip: string } {
+  const manifest = readProjectJson(ctx);
+  if (!manifest) return { skip: "no .project.json — nothing binds a board here" };
+  const provider = manifest.ticket_provider;
+  if (!provider || typeof provider !== "object") return { skip: "no ticket_provider binding" };
+  const facts = provider as Record<string, unknown>;
+
+  const type = typeof facts.type === "string" ? facts.type.toLowerCase() : "plane";
+  if (type !== "plane") return { skip: `ticket provider is ${type}; board schema is Plane-only` };
+
+  const boardId = typeof facts.board_id === "string" ? facts.board_id.trim() : "";
+  if (!boardId) return { skip: "board is not created yet (no board_id)" };
+  if (facts.state !== "linked") return { skip: `board binding is "${String(facts.state ?? "unset")}", not linked` };
+
+  const workspace = typeof facts.workspace === "string" && facts.workspace.trim() ? facts.workspace.trim() : "33god";
+  return { boardId, workspace };
+}
+
+/** Run `px schema import` and parse its JSON. Never throws. */
+function runPx(args: string[], ctx: Context): { plan?: PxPlan; error?: string } {
+  const probe = spawnSync("which", ["px"], { encoding: "utf8" });
+  if (probe.status !== 0) {
+    return { error: "px not found on PATH — install Pilot to manage board schemas" };
+  }
+  const result = spawnSync("px", args, {
+    cwd: ctx.repoRoot,
+    encoding: "utf8",
+    shell: false,
+    timeout: 120_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.error) return { error: `px failed to run: ${result.error.message}` };
+  const raw = (result.stdout || "").trim();
+  if (!raw) return { error: `px produced no output (exit ${result.status ?? "?"})` };
+  const parsed = tryParseJson(raw) as PxPlan | null;
+  if (!parsed) return { error: `px returned unparseable output (exit ${result.status ?? "?"})` };
+  return { plan: parsed };
+}
+
+function planChanges(plan: PxPlan): { changes: string[]; suppressed: string[] } {
+  const changes: string[] = [];
+  const suppressed: string[] = [];
+  for (const kind of ["states", "labels", "modules"] as const) {
+    const collection = plan[kind];
+    if (!collection) continue;
+    const created = collection.created ?? [];
+    const updated = (collection.updated ?? []).map((entry) => entry?.name).filter((name): name is string => Boolean(name));
+    if (created.length) changes.push(`${kind}: create ${created.join(", ")}`);
+    if (updated.length) changes.push(`${kind}: update ${updated.join(", ")}`);
+    for (const held of collection.suppressed ?? []) {
+      suppressed.push(`${held.name}.${held.field}: ${String(held.from)} -> ${String(held.to)}`);
+    }
+  }
+  const features = plan.project?.changed ?? [];
+  if (features.length) changes.push(`project features: ${features.join(", ")}`);
+  return { changes, suppressed };
+}
+
+export function createBoardSchemaChecks(): RecipeOwnedCheck[] {
+  return [
+    {
+      id: BOARD_SCHEMA_RULE_ID,
+      title: BOARD_SCHEMA_TITLE,
+      audit: (ctx: Context): AuditFinding => {
+        const board = linkedPlaneBoard(ctx);
+        if ("skip" in board) return boardSchemaSkip(board.skip);
+
+        const { plan, error } = runPx(
+          ["schema", "import", "--dry-run", "--json", "--board", board.boardId, "--workspace", board.workspace],
+          ctx,
+        );
+        // Every failure to READ the board is a skip, not a warn: this rule runs
+        // as an init postcondition and a warn would roll the project back.
+        if (error) return boardSchemaSkip(`could not read board schema: ${error}`);
+        if (!plan || plan.ok === false) {
+          return boardSchemaSkip(`px could not plan a schema apply: ${plan?.error ?? "unknown error"}`);
+        }
+
+        const { changes, suppressed } = planChanges(plan);
+        const details = [...changes];
+        if (suppressed.length) {
+          details.push(
+            `held back (board has work; would re-home new tickets): ${suppressed.join("; ")}`,
+          );
+        }
+        if (plan.schema_file) details.push(`schema: ${plan.schema_file}`);
+
+        if (!changes.length) {
+          return {
+            id: BOARD_SCHEMA_RULE_ID,
+            title: BOARD_SCHEMA_TITLE,
+            status: "pass",
+            summary: "board matches the standard schema",
+            details,
+            fixable: false,
+          };
+        }
+        return {
+          id: BOARD_SCHEMA_RULE_ID,
+          title: BOARD_SCHEMA_TITLE,
+          status: "warn",
+          summary: `${changes.length} board schema difference(s)`,
+          details,
+          fixable: true,
+        };
+      },
+      migrate: (ctx: Context, finding: AuditFinding): MigrationRuleResult => {
+        const base = { id: BOARD_SCHEMA_RULE_ID, title: BOARD_SCHEMA_TITLE, changedFiles: [] as string[] };
+        const board = linkedPlaneBoard(ctx);
+        if ("skip" in board) return { ...base, status: "skipped", summary: board.skip, details: [] };
+
+        if (ctx.dryRun) {
+          return {
+            ...base,
+            status: "applied",
+            summary: "would apply the standard board schema",
+            details: finding.details,
+          };
+        }
+
+        // Deliberately no --prune and no --adopt-default: an automated repair
+        // may add and align, never delete a state or move where new tickets land.
+        const { plan, error } = runPx(
+          ["schema", "import", "--json", "--board", board.boardId, "--workspace", board.workspace],
+          ctx,
+        );
+        if (error) return { ...base, status: "blocked", summary: error, details: [] };
+        if (!plan || plan.ok === false) {
+          const failures = (plan?.failed ?? []).map((f) => `${f.action} ${f.name}: ${f.error}`);
+          return {
+            ...base,
+            status: failures.length ? "partial" : "blocked",
+            summary: plan?.error ?? "px could not apply the schema",
+            details: failures,
+          };
+        }
+
+        const { changes, suppressed } = planChanges(plan);
+        const details = [...changes];
+        if (suppressed.length) {
+          details.push(`left alone (board has work): ${suppressed.join("; ")}`);
+        }
+        return {
+          ...base,
+          // changedFiles stays empty ON PURPOSE: this migration writes to a
+          // remote board, not to the repository. Reporting a file here would be
+          // a lie, and every other rule's changedFiles is a real path.
+          status: changes.length ? "applied" : "noop",
+          summary: changes.length
+            ? `applied ${changes.length} board schema change(s)`
+            : "board already matched the standard schema",
+          details,
+        };
+      },
+    },
+  ];
+}
+
 export function createProjectChecks(): RecipeOwnedCheck[] {
   return [
     ...createProjectJsonChecks(),
     ...createProjectProvenanceChecks(),
     ...createProjectMomoChecks(),
+    ...createBoardSchemaChecks(),
   ];
 }
 

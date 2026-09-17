@@ -52,7 +52,7 @@ Every 33god/DeLoNET repo is assembled by **pjangler** out of two copier template
 ## The standard lifecycle (at a glance)
 
 ```
-1. CommonProject  →  mise run init-project        # repo skeleton + Plane board + .project.json + BMAD
+1. CommonProject  →  mise run init-project        # repo skeleton + Plane board + board schema + .project.json + BMAD
 2. pj hermes-agent --yes                          # one PM, real profile, repo board
    └─ sentinel duties ride the PM heartbeat timer (no separate scrum-master)
 3. mise trust && direnv-style `enter`             # links AGENTS.md, op-injects .env.op → .env
@@ -66,7 +66,26 @@ Every 33god/DeLoNET repo is assembled by **pjangler** out of two copier template
   projections, not canonical project state. Never add repo unignore rules for
   them; edit `.agents/` and regenerate.
 - No code changes in a hermes-managed repo without an active ticket on the repo board (`ALLOW_NO_TICKET=1` is the emergency bypass).
+- **Do not run `sot.project-json` migration from a Git worktree.** The current
+  migration derives `repo_path` and `project_slug` from `targetDir`; a worktree
+  therefore rewrites both to the worktree path/branch slug and may canonicalize
+  away provider metadata. Run it only against the canonical checkout, inspect
+  the full `.project.json` diff, and deliberately transplant a reviewed result
+  to a branch if the canonical checkout cannot be committed directly.
 - Board creation is outward-facing — confirm before running provisioning that hits a live workspace.
+- The board **schema** is a second live-workspace write, larger than creation:
+  the `board.schema` parity rule applies states, labels, modules and project
+  feature toggles via Pilot (`px schema import`). `pj audit` only ever reads
+  (`--dry-run`); `pj migrate board.schema` writes. Two guarantees make the
+  automated path safe, and both matter:
+  - it **adds and aligns only** — `--prune` (which deletes) is never passed;
+  - it **never moves the default state on a board that already holds tickets**,
+    because Plane routes new work items there and moving it silently re-homes
+    everything created afterwards. Such a change is reported as held back.
+
+  A board pjangler creates carries Plane's bare defaults (five seeded states, no
+  labels, no modules, `module_view`/`cycle_view` off), so without this step every
+  new board needs ~10 minutes of clicking.
 - Manifest mutation is transactional: malformed `.project.json` aborts
   byte-unchanged, and one lock spans read/validate/live board check-or-create
   through atomic replacement.
