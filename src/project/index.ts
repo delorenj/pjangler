@@ -107,12 +107,32 @@ export interface ProjectAgentRecord {
   role_dir?: string;
 }
 
+/**
+ * Automation settings carried through from an existing record.
+ *
+ * `reconcile` used to be a declared field here. 4a6c659 inverted
+ * `sot.project-json` to FAIL on its presence — it described an opt-in the
+ * heartbeat never implemented, since `reconcile_enabled()` reads role.yaml and
+ * never opens .project.json — but the emitter was left behind, so every
+ * `pj init --apply` wrote the key and then failed its own postcondition. There
+ * is no default any more: automation is carried through when a record has it,
+ * and never invented.
+ */
 export interface ProjectAutomation {
-  reconcile?: {
-    enabled: boolean;
-    grace_hours: number;
-    auto_review: boolean;
-  };
+  [key: string]: unknown;
+}
+
+/**
+ * Automation to persist for a record, or nothing.
+ *
+ * Strips `reconcile` on the way past so adopting or migrating one of the ~60
+ * repos that already carry the dead key rewrites it clean, rather than copying
+ * a value the parity rule now rejects straight back out.
+ */
+function carriedAutomation(automation: ProjectAutomation | undefined): { automation: ProjectAutomation } | Record<string, never> {
+  if (!automation) return {};
+  const { reconcile: _dropped, ...rest } = automation;
+  return Object.keys(rest).length ? { automation: rest } : {};
 }
 
 export interface ProjectRecord {
@@ -993,16 +1013,6 @@ export function provisionTicketProviderBoard(
   }
 }
 
-export function defaultProjectAutomation(): ProjectAutomation {
-  return {
-    reconcile: {
-      enabled: false,
-      grace_hours: 0,
-      auto_review: true,
-    },
-  };
-}
-
 export function slugifyProjectName(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
@@ -1281,7 +1291,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       ...(inheritedBoardConfirmation ?? {}),
     }) },
     agents,
-    automation: existing?.automation ?? defaultProjectAutomation(),
+    ...carriedAutomation(existing?.automation),
     notebook: existing?.notebook
       ? { ...existing.notebook, notebook_name: input.name.trim() }
       : { state: "planned", notebook_name: input.name.trim() },
@@ -1635,7 +1645,7 @@ export function projectManifestFromRegistryProject(project: ProjectRecord): Proj
       state: project.ticket_provider.state,
     },
     agents,
-    automation: project.automation ?? defaultProjectAutomation(),
+    ...carriedAutomation(project.automation),
     ...(project.notebook ? { notebook: { binding: { ...project.notebook } } } : {}),
   };
 }
