@@ -80,7 +80,14 @@ try {
   assert.equal(json(["remove", "PX"]).body.slug, "px");
   assert.equal(run(["board", "slug"]).stdout.trim(), "px");
   const prompt = spawnSync(process.execPath, [join(temporary, "bin/prompt.js")], { cwd: nested, encoding: "utf8" });
-  assert.equal(prompt.stdout.split(" · ")[0], "px");
+  // The manifest spells the id `Px` and the legacy field `PX`, so an exact head
+  // still proves what PJAN-80 came for: the prompt reports the canonical
+  // lowercase id and never the legacy spelling. The badge beside it is the
+  // board prefix, deliberately `FOREIGN` here — pinned rather than tolerated,
+  // because "metadata, not a lookup key" is a claim about resolution, and this
+  // line is the one that proves the prompt keeps showing it without ever
+  // letting it stand in for identity.
+  assert.equal(prompt.stdout.split(" · ")[0], "px (FOREIGN)");
   writeFileSync(manifestPath, JSON.stringify({ ...manifest, project_id: undefined, project_slug: "PX" }));
   assert.equal(json(["info"]).body.project_id, "px", "legacy manifests remain readable");
   writeFileSync(manifestPath, "{");

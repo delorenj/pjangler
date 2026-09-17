@@ -74,11 +74,18 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   };
 }
 
-/** `pjangler · 3m` — deliberately terse; a prompt is not a report. */
+/** `pjangler (PJAN) · 3m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts): string {
   const parts = [facts.slug];
-  // The project ID is the only project identity in the prompt. Provider ticket
-  // prefixes remain board metadata and appear in ticket references.
+  // The board prefix is context, not a competing identity. PJAN-80 collapsed
+  // project identity onto the manifest's `project_id` and dropped this badge on
+  // the way past, but that answers a different question: the canonical id says
+  // WHICH PROJECT, the prefix says which board the ticket refs you are about to
+  // type at this prompt belong to. Nothing else moved with it — `pj describe`
+  // still badges the same value beside the project name, and README documents
+  // this line as `pjangler (PJAN) · 3m` — so the prompt became the one surface
+  // that disagreed, while still parsing the identifier it no longer printed.
+  if (facts.identifier) parts.push(`(${facts.identifier})`);
   const head = parts.join(" ");
   return facts.age ? `${head} · ${facts.age}` : head;
 }

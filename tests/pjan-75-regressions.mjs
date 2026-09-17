@@ -75,6 +75,15 @@ process.on("exit", cleanup);
  * declares a PM agent, the fleet registry still carries its entry, the role
  * directory exists with its launcher and scripts — and `role.yaml`, the
  * identity SSOT, is absent. That is a half-provisioned role, not junk.
+ *
+ * The manifest must carry NO other parity drift. `sot.project-json` reports
+ * fixable/non-fixable for the whole rule, and it is fixable when at least one
+ * of its findings is something migrate can actually write. So any unrelated
+ * drift in here — a legacy key, a wrong repo_path — flips the rule to fixable
+ * for a reason that has nothing to do with the declaration, and the agreement
+ * check below stops testing what it names. PJAN-80 renamed the canonical key
+ * `project_slug` -> `project_id` and swept the other suites' fixtures; this one
+ * was missed, which is exactly how that happened once already.
  */
 function unprovisionedRoleRepo(name) {
   const repo = join(workspace, name);
@@ -96,7 +105,7 @@ function unprovisionedRoleRepo(name) {
       {
         project_name: "Heyma",
         project_description: "",
-        project_slug: "heyma",
+        project_id: "heyma",
         repo_path: repoRoot,
         ticket_provider: { type: "plane", workspace: "33god", identifier: "heyma", board_id: "b", state: "linked" },
         agents: { "heyma-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned" } },

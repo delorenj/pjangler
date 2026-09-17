@@ -406,7 +406,10 @@ test("prompt --url outside a project prints nothing and exits non-zero", () => {
 test("the bare prompt contract is unchanged by --url", () => {
   const r = run(promptBin, [], live);
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(/^live(?: · |$)/.test(r.stdout), `unexpected prompt line: ${JSON.stringify(r.stdout)}`);
+  // Restored to the pre-PJAN-80 assertion. The badge is half of what this line
+  // is for, so a pattern that passes with or without it cannot tell a working
+  // prompt from the one that quietly stopped printing the board.
+  assert.ok(r.stdout.startsWith("live (PJAN)"), `unexpected prompt line: ${JSON.stringify(r.stdout)}`);
   assert.ok(!r.stdout.includes("\n"), "the prompt line must stay a single line");
   const quiet = run(promptBin, [], outside);
   assert.equal(quiet.stdout, "");

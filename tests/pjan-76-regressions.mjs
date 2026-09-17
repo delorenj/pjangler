@@ -120,6 +120,16 @@ check("bmad-method is only ever invoked with the six supported --tools", () => {
 check("a create on a cold cache installs BMAD and emits only supported CLI roots", () => {
   const home = join(workspace, "home");
   const target = join(workspace, "freshproj");
+  // The registry defaults to the SERVICE at http://localhost:8764, so an
+  // unpinned create here registered `freshproj` in the operator's real Postgres
+  // — pointing at this temp dir, which is deleted on exit. `pj doctor` then
+  // reported a broken row forever, and, worse, the next run of this file hit
+  // "Project slug already exists in registry: freshproj" and could never pass
+  // again. registryClient.isRegistryServiceLocation() treats anything that is
+  // not ^https?:// as a fixture file, so a path here routes the whole registry
+  // through YAML inside the workspace. The env var covers any child the CLI
+  // spawns without the flag; the flag pins the create itself.
+  const registry = join(workspace, "registry.yaml");
   const globalIgnore = join(home, ".config", "git", "ignore");
   mkdirSync(join(home, ".config", "git"), { recursive: true });
   const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
@@ -127,6 +137,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
 
   const isolatedEnv = {
     ...process.env, PATH: `${skillexBin}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(workspace, "catalog"), PJ_BMAD_INSTALLER: bmadInstaller,
+    PJ_PROJECT_REGISTRY: registry,
     HOME: home,
     XDG_CACHE_HOME: join(home, ".cache"),
     XDG_CONFIG_HOME: join(home, ".config"),
@@ -139,7 +150,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
 
   const result = spawnSync(
     process.execPath,
-    [join(root, "dist", "index.js"), "project", "init", "--yes", "--apply", "--skip-board", "--target-dir", target, "--json"],
+    [join(root, "dist", "index.js"), "project", "init", "--yes", "--apply", "--skip-board", "--registry", registry, "--target-dir", target, "--json"],
     {
       cwd: workspace,
       encoding: "utf8",
