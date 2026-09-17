@@ -537,6 +537,21 @@ const isolation = {
   RUNTIME_SCAFFOLD_DIR: join(scratchHome, ".hermes", "runtime-scaffold"),
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_SYSTEM: "/dev/null",
+  // Git does its own housekeeping — auto-gc, repack, commit-graph,
+  // multi-pack-index — on a schedule it decides, and it rewrites `.git/objects`
+  // when it does. `snapshotTree` digests every path under the protected roots,
+  // `.git` included, so a repack triggered by a child's ordinary `git` call
+  // reads as "the CLI wrote to a protected root" and fails a case that has
+  // nothing to do with it. It never fires on this box (the submodule is already
+  // packed) and always fires in CI, where a fresh clone plus `npm pack` leaves
+  // enough loose objects to cross the gc threshold — which is why CI has been
+  // red since 2026-09-02 while every local run was green. Turn the housekeeping
+  // off rather than stop watching `.git`: the guard keeps its teeth.
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "gc.auto",
+  GIT_CONFIG_VALUE_0: "0",
+  GIT_CONFIG_KEY_1: "maintenance.auto",
+  GIT_CONFIG_VALUE_1: "0",
   GIT_DIR: undefined,
   GIT_WORK_TREE: undefined,
   // TMPDIR can itself sit inside a git work tree on this machine, which would
