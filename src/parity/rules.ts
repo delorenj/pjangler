@@ -4606,6 +4606,73 @@ return [
 ];
 }
 
+/** One list-valued key whose delta value replaces, rather than extends, the base. */
+interface ListOverride {
+  path: string;
+  lost: string[];
+  adds: string[];
+}
+
+function renderListEntry(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/**
+ * Identity of one list entry, independent of object key ORDER.
+ *
+ * Plain JSON.stringify would call `{provider, model}` and `{model, provider}`
+ * two different entries, so re-listing a base entry with its keys typed in a
+ * different order would be reported as dropping it. Real deltas carry
+ * object-valued lists (`fallback_providers`), so that false positive is
+ * reachable in exactly the place the rule is most likely to be believed.
+ */
+function listEntryKey(value: unknown): string {
+  const normalize = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(normalize);
+    if (!v || typeof v !== "object") return v;
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, inner]) => [k, normalize(inner)]),
+    );
+  };
+  return JSON.stringify(normalize(value));
+}
+
+/**
+ * Every list-valued key where the delta DROPS entries the fleet base provides.
+ *
+ * YAML deep-merge has no union semantics for arrays: a delta list replaces the
+ * base list wholesale. Keys are compared by path, and only where BOTH sides are
+ * arrays -- a delta that introduces a key the base never had takes nothing away
+ * and is not an override.
+ */
+function listOverrides(base: unknown, delta: unknown, path: string[] = []): ListOverride[] {
+  const found: ListOverride[] = [];
+  const isPlain = (v: unknown) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+  if (!isPlain(base) || !isPlain(delta)) return found;
+  for (const [key, deltaValue] of Object.entries(delta as Record<string, unknown>)) {
+    const baseValue = (base as Record<string, unknown>)[key];
+    const here = [...path, key];
+    if (Array.isArray(deltaValue) && Array.isArray(baseValue)) {
+      const kept = new Set(deltaValue.map(listEntryKey));
+      const inBase = new Set(baseValue.map(listEntryKey));
+      const lost = baseValue.filter((v) => !kept.has(listEntryKey(v)));
+      if (lost.length) {
+        found.push({
+          path: here.join("."),
+          lost: lost.map(renderListEntry),
+          adds: deltaValue.filter((v) => !inBase.has(listEntryKey(v))).map(renderListEntry),
+        });
+      }
+      continue;
+    }
+    if (isPlain(deltaValue)) found.push(...listOverrides(baseValue, deltaValue, here));
+  }
+  return found;
+}
+
+
 export function createHermesChecks(): RecipeOwnedCheck[] {
 return [
   {
@@ -5226,6 +5293,126 @@ return [
       details: finding.details.length
         ? [...finding.details, `Edit ${join(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`]
         : [`Edit ${join(ctx.homeDir, ".hermes", "config.yaml")} directly, then re-run audit`],
+    }),
+  },
+  {
+    // A delta that sets a LIST-valued key REPLACES the base list. YAML
+    // deep-merge has no union semantics for arrays, so one redundant line in a
+    // delta silently strips every base entry it did not repeat -- and the
+    // redundant line is the common case, because the obvious way to "add a
+    // plugin" is to write the one you want.
+    //
+    // Observed 2026-09-16: a profile delta carrying `plugins.enabled:
+    // [tts/vox]` -- an entry the fleet base ALREADY had -- dropped the other 16
+    // fleet plugins, including telegram-platform (the agent's own chat channel)
+    // and openai-codex (the live provider). The agent had been half-provisioned
+    // for two months with no error anywhere; its gateway simply never
+    // connected. Six profiles carried the same shape.
+    //
+    // Same failure mode as hermes.fleet-config: no error, no log, just a
+    // capability quietly missing.
+    id: "hermes.delta-list-override",
+    title: "Profile deltas extend fleet base lists instead of replacing them",
+    // PJAN-84: host-scoped -- $HOME/.hermes/profiles, shared across every repo.
+    scope: "host",
+    audit: (ctx) => {
+      const title = "Profile deltas extend fleet base lists instead of replacing them";
+      const roles = discoverRoles(ctx.repoRoot);
+      if (!roles.length) {
+        return { id: "hermes.delta-list-override", title, status: "skip", summary: "No Hermes roles present", details: [], fixable: false };
+      }
+      const fleetRoot = fleetHome(ctx);
+      const basePath = join(fleetRoot, "config.yaml");
+      if (!existsSync(basePath)) {
+        return { id: "hermes.delta-list-override", title, status: "skip", summary: `fleet base config missing: ${basePath}`, details: [], fixable: false };
+      }
+      let base: unknown;
+      try {
+        base = YAML.parse(readFileSync(basePath, "utf8")) ?? {};
+      } catch (err) {
+        return { id: "hermes.delta-list-override", title, status: "warn", summary: `fleet base config is unparseable YAML: ${basePath} (${(err as Error).message})`, details: [], fixable: false };
+      }
+
+      const profilesRoot = join(fleetRoot, "profiles");
+      if (!existsSync(profilesRoot)) {
+        return { id: "hermes.delta-list-override", title, status: "skip", summary: "No Hermes profiles present", details: [], fixable: false };
+      }
+
+      const details: string[] = [];
+      let profileDirs: string[] = [];
+      try {
+        profileDirs = readdirSync(profilesRoot, { withFileTypes: true })
+          // withFileTypes uses lstat semantics, so isDirectory() is FALSE for a
+          // symlinked profile dir. Filtering on it alone silently skipped three
+          // legacy profiles that symlink into repo-local runtime -- each one
+          // carrying exactly the defect this rule exists to find. The symlink
+          // topology is hermes.runtime-singleton's business; the capability loss
+          // inside it is still real, so it must be reported here too. The
+          // existsSync below (which does follow links) is what confirms a real
+          // profile, so a plain file named like one is still excluded.
+          .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+          .map((entry) => entry.name)
+          .sort();
+      } catch {
+        return { id: "hermes.delta-list-override", title, status: "warn", summary: `profiles directory unreadable: ${profilesRoot}`, details: [], fixable: false };
+      }
+
+      for (const name of profileDirs) {
+        // No delta means the profile is not under base+delta inheritance at
+        // all; hermes.runtime-singleton owns that, and flagging it here would
+        // report the same defect twice under two rule ids.
+        const deltaPath = join(profilesRoot, name, "config.delta.yaml");
+        if (!existsSync(deltaPath)) continue;
+        let delta: unknown;
+        try {
+          delta = YAML.parse(readFileSync(deltaPath, "utf8")) ?? {};
+        } catch (err) {
+          details.push(`${name}: config.delta.yaml is unparseable YAML (${(err as Error).message})`);
+          continue;
+        }
+        // Both lists are elided the same way: an entry can be an object, so an
+        // uncapped join puts a whole provider record inline and buries the
+        // sentence that says what to do about it.
+        const elide = (entries: string[], keep: number) =>
+          entries.slice(0, keep).join(", ") + (entries.length > keep ? `, +${entries.length - keep} more` : "");
+        for (const override of listOverrides(base, delta)) {
+          const shown = elide(override.lost, 4);
+          // A delta that adds nothing is pure redundancy: deleting the key
+          // restores inheritance outright. One that adds entries states a real
+          // intent, so the base entries have to be merged back by hand -- the
+          // operator may have meant to drop some of them.
+          const remedy = override.adds.length
+            ? `delta also adds ${elide(override.adds, 3)} -- merge the base entries back in, or confirm you meant to drop them`
+            : `delta adds nothing new, so removing "${override.path}" from the delta restores inheritance`;
+          details.push(`${name}: ${override.path} drops ${override.lost.length} fleet entr${override.lost.length === 1 ? "y" : "ies"} (${shown}) -- ${remedy}`);
+        }
+      }
+
+      return {
+        id: "hermes.delta-list-override",
+        title,
+        status: details.length === 0 ? "pass" : "fail",
+        summary: details.length === 0
+          ? "No profile delta replaces a fleet base list"
+          : `${details.length} profile delta list override(s) detected`,
+        details,
+        // Not auto-fixable. Even a pure-subset delta may be a deliberate
+        // restriction, and the alternative reading -- that the operator wanted
+        // to ADD one entry -- produces the opposite edit. Both change what a
+        // running agent can do, so pjangler reports and lets the operator pick.
+        fixable: false,
+      };
+    },
+    migrate: (ctx, finding) => ({
+      id: finding.id,
+      title: finding.title,
+      status: "blocked",
+      summary: "Profile deltas are operator-owned; pjangler will not guess which entries were meant to be dropped",
+      changedFiles: [],
+      details: [
+        ...finding.details,
+        `Edit the named config.delta.yaml under ${join(fleetHome(ctx), "profiles")}, then re-render with hermes-profile-config.py render --profile <name>`,
+      ],
     }),
   },
   {

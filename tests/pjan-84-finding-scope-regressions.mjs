@@ -78,6 +78,7 @@ try {
     assert.deepEqual(
       host,
       [
+        "hermes.delta-list-override",
         "hermes.fleet-config",
         "hermes.profile-wiring",
         "hermes.registry-parity",

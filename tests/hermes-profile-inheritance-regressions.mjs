@@ -76,6 +76,10 @@ const BASE_CONFIG = {
   memory: { provider: "hindsight" },
   agent: { disabled_toolsets: [] },
   skills: { external_dirs: [join(FLEET_HOME, ".agents", "skills")] },
+  // Three entries so a delta can drop some without dropping all of them.
+  plugins: { enabled: ["tts/vox", "telegram-platform", "openai-codex"] },
+  // An OBJECT-valued list, the shape real deltas carry for providers.
+  fallback_providers: [{ provider: "openai-codex", model: "gpt-5.6-sol" }],
 };
 
 function yamlDump(obj) {
@@ -86,14 +90,24 @@ function yamlDump(obj) {
 
 // Build a fleet home. `overrides` mutates the base config; `profileMode`
 // selects the profile-side topology under test.
-function makeFleet({ overrides = {}, profileMode = "rendered", profile = "demo-pm" } = {}) {
+function makeFleet({ overrides = {}, profileMode = "rendered", profile = "demo-pm", delta = {}, linkProfile = false } = {}) {
   const fleet = tmp("pjangler-inherit-fleet-");
   const cfg = { ...BASE_CONFIG, ...overrides };
   writeFileSync(join(fleet, "config.yaml"), yamlDump(cfg));
   writeFileSync(join(fleet, ".env"), "");
   mkdirSync(join(fleet, "skills"), { recursive: true });
   const pdir = join(fleet, "profiles", profile);
-  mkdirSync(pdir, { recursive: true });
+  // The legacy topology: profiles/<name> is a SYMLINK to a repo-local runtime
+  // dir rather than a real directory. readdirSync(withFileTypes) reports such an
+  // entry as a symlink, not a directory, so any rule that filters on
+  // isDirectory() alone skips the profile entirely and reports nothing.
+  if (linkProfile) {
+    const real = tmp("pjangler-inherit-runtime-");
+    mkdirSync(join(fleet, "profiles"), { recursive: true });
+    symlinkSync(real, pdir);
+  } else {
+    mkdirSync(pdir, { recursive: true });
+  }
   symlinkSync(join(fleet, ".env"), join(pdir, ".env"));
   symlinkSync(join(fleet, "skills"), join(pdir, "skills"));
 
@@ -109,7 +123,7 @@ function makeFleet({ overrides = {}, profileMode = "rendered", profile = "demo-p
       join(pdir, "config.yaml"),
       `# GENERATED FILE -- DO NOT EDIT.\n# source of truth : config.delta.yaml\n${yamlDump(cfg)}`,
     );
-    writeFileSync(join(pdir, "config.delta.yaml"), "{}\n");
+    writeFileSync(join(pdir, "config.delta.yaml"), yamlDump(delta));
     mkdirSync(join(pdir, "hindsight"), { recursive: true });
     writeFileSync(join(pdir, "hindsight", "config.json"), JSON.stringify({ bank_id: `agent-${profile}` }, null, 2));
   }
@@ -178,6 +192,84 @@ const { repo } = makeRepo();
   for (const pattern of [/tts\.provider is/, /no hooks: block/, /disabled_toolsets contains/, /external_dirs is empty/]) {
     assert.doesNotMatch(out, pattern, `healthy fleet base must not trip ${pattern}`);
   }
+}
+
+// 6. A delta list REPLACES the base list -- YAML deep-merge has no union
+//    semantics for arrays. Observed on a real profile whose delta carried one
+//    plugin the base already had, silently dropping the other sixteen.
+{
+  const out = audit(repo, makeFleet({ delta: { plugins: { enabled: ["tts/vox"] } } }));
+  assert.match(out, /plugins\.enabled drops 2 fleet entries/, "a delta that replaces a base list must be reported");
+  assert.match(out, /telegram-platform/, "the report must name what was lost, not just the count");
+  assert.match(out, /removing "plugins\.enabled" from the delta restores inheritance/,
+    "a delta that adds nothing is pure redundancy and the remedy must say so");
+}
+
+// 7. A delta that keeps every base entry and adds its own takes nothing away.
+//    Without this the rule could 'pass' by flagging any delta that mentions a list.
+{
+  const out = audit(repo, makeFleet({
+    delta: { plugins: { enabled: ["tts/vox", "telegram-platform", "openai-codex", "extra-plugin"] } },
+  }));
+  assert.doesNotMatch(out, /plugins\.enabled drops/, "a superset delta loses nothing and must not be reported");
+}
+
+// 8. A delta that drops some entries AND adds others states a real intent, so
+//    the remedy must not tell the operator to delete their own addition.
+{
+  const out = audit(repo, makeFleet({
+    delta: { plugins: { enabled: ["tts/vox", "extra-plugin"] } },
+  }));
+  assert.match(out, /plugins\.enabled drops 2 fleet entries/, "dropped entries are still reported when the delta adds");
+  assert.match(out, /delta also adds extra-plugin/, "the remedy must acknowledge the delta's own additions");
+  assert.doesNotMatch(out, /restores inheritance/, "a delta with additions must not be told to just delete the key");
+}
+
+// 9. A key the base never had cannot take anything away from it.
+{
+  const out = audit(repo, makeFleet({ delta: { mcp_servers: { allow: ["local-only"] } } }));
+  assert.doesNotMatch(out, /drops \d+ fleet entr/, "a delta-only key overrides nothing");
+}
+
+// 10. An empty delta is the healthy case.
+{
+  const out = audit(repo, makeFleet({}));
+  assert.doesNotMatch(out, /drops \d+ fleet entr/, "an empty delta must not trip the rule");
+}
+
+// 11. A SYMLINKED profile directory must still be scanned. withFileTypes uses
+//     lstat semantics, so filtering on isDirectory() alone silently skipped
+//     three real legacy profiles -- each carrying the very defect this rule
+//     exists to find, and reporting a confident clean result over them.
+{
+  const out = audit(repo, makeFleet({
+    linkProfile: true,
+    delta: { plugins: { enabled: ["tts/vox"] } },
+  }));
+  assert.match(out, /plugins\.enabled drops 2 fleet entries/,
+    "a symlinked profile dir must still be scanned for list overrides");
+}
+
+// 12. An object-valued entry re-listed with its keys in a DIFFERENT order is
+//     the same entry. Comparing raw JSON.stringify would call it dropped and
+//     tell the operator to restore something their delta already carries --
+//     a false positive in exactly the place the rule is most likely believed.
+{
+  const out = audit(repo, makeFleet({
+    delta: { fallback_providers: [{ model: "gpt-5.6-sol", provider: "openai-codex" }] },
+  }));
+  assert.doesNotMatch(out, /fallback_providers drops/,
+    "entry identity must ignore object key order");
+}
+
+// 13. ...but a genuinely different provider IS a drop, so 12 cannot pass by
+//     making the rule blind to object-valued lists altogether.
+{
+  const out = audit(repo, makeFleet({
+    delta: { fallback_providers: [{ provider: "kimi-coding", model: "k3" }] },
+  }));
+  assert.match(out, /fallback_providers drops 1 fleet entry/,
+    "a genuinely replaced object entry must still be reported");
 }
 
 for (const dir of tmpRoots) rmSync(dir, { recursive: true, force: true });

@@ -189,6 +189,7 @@ const RULE_DOMAIN: Readonly<Record<string, FleetStatusDomain>> = Object.freeze({
   // Generated profile tree.
   "hermes.runtime-singleton": "profile",
   "hermes.profile-wiring": "profile",
+  "hermes.delta-list-override": "profile",
   // Ignored role-local runtime bytes.
   "hermes.untracked-runtimes": "runtime",
   // Shared-host service topology.
