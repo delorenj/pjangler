@@ -4935,13 +4935,20 @@ return [
       if (!probe.ok && !/running|degraded|starting|maintenance/.test(`${probe.stdout} ${probe.stderr}`)) {
         const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
         const details: string[] = [];
+        // The per-agent heartbeat timer is NOT required. hermes-agent-template
+        // 63466a8 retired it — every agent got a 1-minute oneshot whose
+        // reconciliation pass was gated on a role.yaml flag that was true in one
+        // repo fleet-wide, so ~20,000 no-op invocations a day is all it did. The
+        // template stopped writing the unit; requiring it here made every freshly
+        // provisioned agent fail its own systemd parity immediately. Liveness is
+        // the gateway unit's job (Restart=on-failure) and scheduling is
+        // Bloodbank's. Retired units still SHOW UP in fleet status as topology —
+        // observing one is not the same as demanding it.
         for (const role of requiredRoles) {
           const gateway = role.serviceStateGateway || "active";
-          const heartbeat = role.serviceStateHeartbeat || "active";
-          for (const unit of [`hermes-${role.agentId}-gateway.service`, `hermes-${role.agentId}-heartbeat.timer`]) {
-            if (!existsSync(join(sysDir, unit))) details.push(`${unit} should be installed`);
+          if (!existsSync(join(sysDir, `hermes-${role.agentId}-gateway.service`))) {
+            details.push(`hermes-${role.agentId}-gateway.service should be installed`);
           }
-          if (heartbeat !== "installed") details.push(`${role.agentId} heartbeat should record installed while systemd --user is unavailable (got ${heartbeat})`);
           if (gateway !== "installed" && gateway !== "deferred") details.push(`${role.agentId} gateway should record installed or deferred while systemd --user is unavailable (got ${gateway})`);
         }
         return {
@@ -4956,17 +4963,12 @@ return [
       const details: string[] = [];
       const sysDir = join(ctx.homeDir, ".config", "systemd", "user");
       for (const role of requiredRoles) {
+        // Gateway only — see the note above: the heartbeat timer was retired in
+        // the template, so requiring it here fails every agent provisioned from
+        // the current pin.
         const gatewayUnit = `hermes-${role.agentId}-gateway.service`;
-        const heartbeatUnit = `hermes-${role.agentId}-heartbeat.timer`;
         const gatewayState = role.serviceStateGateway || "active";
-        const heartbeatState = role.serviceStateHeartbeat || "active";
-        for (const unit of [gatewayUnit, heartbeatUnit]) {
-          if (!existsSync(join(sysDir, unit))) details.push(`${unit} should be installed`);
-        }
-        const heartbeat = checkUnit(heartbeatUnit);
-        if (heartbeatState !== "active" || !heartbeat.enabled || !heartbeat.active) {
-          details.push(`${heartbeatUnit} should be enabled+active (manifest: ${heartbeatState || "missing"})`);
-        }
+        if (!existsSync(join(sysDir, gatewayUnit))) details.push(`${gatewayUnit} should be installed`);
         const gateway = checkUnit(gatewayUnit);
         if (gatewayState === "deferred") {
           if (gateway.enabled || gateway.active) details.push(`${gatewayUnit} is deferred and should be disabled+inactive`);
