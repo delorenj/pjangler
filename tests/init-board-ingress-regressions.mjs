@@ -378,7 +378,6 @@ server.listen(0, "127.0.0.1", () => console.log(server.address().port));
             template: { commonproject: { enabled: true, primary_language: "python" } },
             ticket_provider: { type: "trello", workspace: "", identifier: "TREL", identifier_source: "proposed", board_id: "", state: "planned" },
             agents: {},
-            automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
             created_at: "2026-01-01T00:00:00.000Z",
             updated_at: "2026-01-01T00:00:00.000Z",
           },

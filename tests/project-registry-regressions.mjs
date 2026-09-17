@@ -400,7 +400,10 @@ try {
   assert.equal(manifest.ticket_provider.identifier, "SLOW");
   assert.equal(manifest.ticket_provider.state, "planned");
   assert.deepEqual(manifest.agents, {}, "default apply must not write a planned agent projection");
-  assert.deepEqual(manifest.automation.reconcile, { enabled: false, grace_hours: 0, auto_review: true });
+  // 4a6c659 made `automation.reconcile` a parity FAILURE — a switch the
+  // heartbeat never read. A greenfield manifest must therefore carry no
+  // `automation` key at all, not an empty one.
+  assert.equal(manifest.automation, undefined, "init must not invent automation.reconcile");
 
   const agentPlan = JSON.parse(run([
     "project",

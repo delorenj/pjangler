@@ -256,7 +256,6 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
     ticket_provider: { type: "plane", workspace: "33god", identifier: "BOUN", board_id: "", state: "planned" },
     agents: {},
     notebook: { state: "disabled" },
-    automation: { reconcile: { enabled: false, grace_hours: 0, auto_review: true } },
     created_at: "2026-08-11T00:00:00.000Z",
     updated_at: "2026-08-11T00:00:00.000Z",
   } as const;
@@ -271,7 +270,6 @@ function projectFixture(): { dir: string; plan: ProjectInitPlan } {
       binding: project.notebook,
       policy: { enabled: false, session_start_enabled: false, session_capture_enabled: false },
     },
-    automation: project.automation,
   };
   writeFileSync(join(dir, ".project.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(dir, ".copier-answers.yml"), `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_src_path: ${join(root, "templates", "commonproject")}\nproject_description: ${project.description}\nproject_name: ${project.name}\nticket_provider: plane\n`);
