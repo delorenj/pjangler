@@ -109,6 +109,7 @@ function check(label, body) {
     if (error instanceof SkipCase) return;
     failures += 1;
     console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
+    console.log(`  PJAN132-STACK ${String(error.stack).split("\n").slice(0,6).join(" || ")}`);
   }
 }
 
