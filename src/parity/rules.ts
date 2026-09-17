@@ -1385,19 +1385,15 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
       ...declared.extras,
     };
   }
-  const existingAutomation = (existing.automation as Record<string, unknown> | undefined) ?? {};
-  const existingReconcile = (existingAutomation.reconcile as Record<string, unknown> | undefined) ?? {};
-  const legacyEnabled = roles.find((role) => role.legacyReconcileEnabled)?.legacyReconcileEnabled;
-  const legacyGrace = roles.find((role) => role.legacyReconcileGraceHours || role.legacyScrumGraceHours);
-  const legacyAutoReview = roles.find((role) => role.legacyReconcileAutoReview || role.legacyScrumAutoReview);
-  const automation = {
-    ...existingAutomation,
-    reconcile: {
-      enabled: boolSetting(existingReconcile.enabled, boolSetting(legacyEnabled, false)),
-      grace_hours: numberSetting(existingReconcile.grace_hours, numberSetting(legacyGrace?.legacyReconcileGraceHours || legacyGrace?.legacyScrumGraceHours, 0)),
-      auto_review: boolSetting(existingReconcile.auto_review, boolSetting(legacyAutoReview?.legacyReconcileAutoReview || legacyAutoReview?.legacyScrumAutoReview, true)),
-    },
-  };
+  // `automation.reconcile` is dropped, not carried forward. It described an
+  // opt-in that was never wired: `reconcile_enabled()` in .scripts/heartbeat.sh
+  // reads the `reconcile:` block in role.yaml and never opens .project.json.
+  // Canonicalizing it put a dead switch in ~60 repos and taught the PM's SOUL
+  // an opt-in that does not exist. Anything else under `automation` passes
+  // through; an `automation` with nothing left in it is omitted rather than
+  // written back as an empty object.
+  const { reconcile: _vestigialReconcile, ...automation } =
+    (existing.automation as Record<string, unknown> | undefined) ?? {};
   return {
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
@@ -1405,7 +1401,7 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
     repo_path: ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
-    automation,
+    ...(Object.keys(automation).length ? { automation } : {}),
     dropped,
     unprovisioned,
   };
@@ -1423,7 +1419,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   if (!data) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json is not valid JSON", details: [], fixable: true };
   }
-  for (const key of ["project_name", "project_description", "project_id", "repo_path", "ticket_provider", "agents", "automation"]) {
+  for (const key of ["project_name", "project_description", "project_id", "repo_path", "ticket_provider", "agents"]) {
     if (!(key in data)) details.push(`missing key: ${key}`);
   }
   if ("project_slug" in data) details.push("legacy project_slug should be migrated to project_id");
@@ -1467,10 +1463,15 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   if (!ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
     details.push("ticket_provider.board_id missing even though legacy role.yaml contains a board binding");
   }
+  // `automation.reconcile` is vestigial and is being removed fleet-wide. It
+  // described an opt-in the heartbeat never implemented: `reconcile_enabled()`
+  // in .scripts/heartbeat.sh reads the `reconcile:` block in role.yaml and
+  // never opens .project.json, so this key has never had an effect. Requiring
+  // it made every repo carry a switch wired to nothing, and its presence in
+  // the PM's SOUL taught agents an opt-in that does not exist.
   const automation = (data.automation as Record<string, unknown> | undefined) ?? {};
-  const reconcile = (automation.reconcile as Record<string, unknown> | undefined) ?? {};
-  for (const key of ["enabled", "grace_hours", "auto_review"]) {
-    if (!(key in reconcile)) details.push(`automation.reconcile.${key} missing`);
+  if ("reconcile" in automation) {
+    details.push("automation.reconcile is vestigial and should be removed; the heartbeat reads role.yaml, never this key");
   }
   if (existsSync(planeJsonPath)) details.push(".plane.json should not exist once .project.json is canonical");
   return {
@@ -1489,7 +1490,7 @@ function renderSoul(role: RoleMeta): string {
     ? "Direct and brief. Decision-forward. No throat-clearing, no apologies, no \"I'll help you with that\" preambles."
     : "Direct and brief.";
   const roleSpecific = role.role === "pm"
-    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checks runtime health; when this repo opts into reconciliation (\`automation.reconcile.enabled\` in repo-root \`.project.json\`), the same heartbeat also runs your continuous board-reconciliation pass out-of-band (\`.scripts/sentinel.prompt.md\`, \`--source cron\`), kept separate from your interactive session memory.`
+    ? `You are the project manager. You triage incoming work, create or refine tickets, and delegate implementation. You do not ship product code. A systemd heartbeat checks runtime health. Board work reaches you as a command on the Bloodbank gateway, not on a timer.`
     : `You operate as the ${role.role} agent for this repo.`;
   return `# ${role.displayName || role.agentId}\n\nYou are **${role.displayName || role.agentId}** — a Hermes agent provisioned to work inside the\n\`${role.repo}\` repository.\n\n## Identity\n\n| | |\n| --- | --- |\n| Agent ID | \`${role.agentId}\` |\n| Profile | \`${role.profileName || role.agentId}\` |\n| Repo | \`${role.repo}\` |\n| Role | \`${role.role}\` |\n| Telegram | \`${telegram}\` |\n| Purpose | ${role.purpose || `${role.role} agent for ${role.repo}`} |\n\n## Scope\n\nYou operate only within the working directory of \`${role.repo}\`. HERMES_HOME is the real named profile at \`~/.hermes/profiles/${role.profileName || role.agentId}\`; shared config/auth/skills remain linked to fleet truth while owned state lives in ignored \`./runtime/\`. The launcher supplies the project root through process-local \`TERMINAL_CWD\` and never persists it into shared config.\n\n## Tone\n\n${tone}\n\n## Role-specific behavior\n\n${roleSpecific}\n\n## Memory hygiene\n\nYour memory is stored locally at \`./runtime/memories/\`. Use durable memory deliberately and keep \`memories/MEMORY.md\` current.\n`;
 }
