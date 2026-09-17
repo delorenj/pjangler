@@ -43,6 +43,28 @@ jobs:
     permissions:
       id-token: write # OIDC trusted publishing to npm
       contents: write # the release commit + tag on main
+    # pjan-80-consumer-concurrency and pjan-80-registry-regressions talk to a
+    # real PostgreSQL — the registry service is Postgres-backed and there is no
+    # fake worth trusting for concurrency behaviour. They default PGHOST to the
+    # unix socket at /var/run/postgresql, which does not exist on a runner, so
+    # without this they failed with `connect ENOENT` on every run. PGHOST below
+    # sends them to the service container over TCP instead. (pg-registry
+    # -regressions has its own skip path and was the only one passing.)
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
     steps:
       - uses: actions/checkout@v4
         with:
