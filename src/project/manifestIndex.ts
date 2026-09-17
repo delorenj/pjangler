@@ -1,3 +1,4 @@
+import { validateExecutionBinding } from './executionBinding';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, lstatSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { lstat, open, readFile, realpath, unlink } from 'node:fs/promises';
@@ -27,6 +28,7 @@ function mergeMissing(current: any, fallback: any): any {
 function hash(data: string): string { return createHash('sha256').update(data).digest('hex'); }
 
 function validateManifestFields(manifest: Json, path: string): void {
+  validateExecutionBinding(manifest);
   const fail = (field: string, shape: string): never => { throw new RegistryError(`Manifest ${path}: ${field} must be ${shape}`); };
   const strings = (value: Json, names: string[], prefix = '') => {
     for (const name of names) if (value[name] !== undefined && typeof value[name] !== 'string') fail(`${prefix}${name}`, 'a string');

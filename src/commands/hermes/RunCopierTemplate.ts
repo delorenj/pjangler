@@ -1,3 +1,4 @@
+import { validateExecutionBinding, executionReadiness } from "../../project/executionBinding";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname, relative } from "node:path";
@@ -51,6 +52,7 @@ function registerRenderedAgent(ctx: HermesAgentContext, roleDir: string, role: s
     throw new Error(`${manifestPath} must contain a JSON object`);
   }
   const manifest = parsed as Record<string, unknown>;
+  validateExecutionBinding(manifest);
   const rawAgents = manifest.agents;
   if (rawAgents !== undefined && (!rawAgents || typeof rawAgents !== "object" || Array.isArray(rawAgents))) {
     throw new Error(`${manifestPath} agents must contain a JSON object`);
@@ -62,6 +64,7 @@ function registerRenderedAgent(ctx: HermesAgentContext, roleDir: string, role: s
       role,
       role_dir: relative(ctx.targetDir, roleDir),
       provisioning_state: "provisioned",
+      ...((manifest as any).execution ? { execution_readiness: executionReadiness(manifest), execution_mode: (manifest as any).execution.mode } : {}),
     },
     configurable: true,
     enumerable: true,

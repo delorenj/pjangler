@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { validateExecutionBinding, executionReadiness, EXECUTION_LANES } from '../src/project/executionBinding';
+const partial:any={execution:{mode:'shadow'}};
+validateExecutionBinding(partial);
+assert(executionReadiness(partial).includes('canonical project_id missing'));
+assert.throws(()=>validateExecutionBinding({execution:{mode:'managed'}}),/not ready/);
+const actor=(id:string)=>({native_user_id:id,key_ref:`op://DeLoSecrets/${id}/key`,runtime_id:'host',runtime:{adapter:'systemd',unit_prefix:id}});
+const manifest:any={project_id:'test',ticket_provider:{type:'plane',workspace:'test',board_id:'board'},execution:{mode:'managed',policy_version:2,skill_version:'sha256',pilot_helper_sha256:'a'.repeat(64),pm_actor:'pm',controller_actor:'repair',actors:{pm:actor('pm'),repair:actor('repair')},states:Object.fromEntries(EXECUTION_LANES.map((name,i)=>[name,String(i)])),working_label:'label',legacy_writers_fenced:true}};
+validateExecutionBinding(manifest);
+assert.deepEqual(executionReadiness(manifest),[]);
+manifest.execution.actors.repair.native_user_id='pm';
+assert.throws(()=>validateExecutionBinding(manifest),/duplicate native identity/);
+console.log('PJAN-129 execution binding readiness passed');
