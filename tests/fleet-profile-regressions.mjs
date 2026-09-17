@@ -1959,7 +1959,13 @@ try {
     assert.equal(checkRun.lock, "32", "the renderer's own lock wait is the contract's timeout plus the margin");
     assert.equal(checkRun.home, scratchHome);
     assert.equal(checkRun.fleet, fleetHome);
-    const allowed = new Set(["PATH", "LANG", "HOME", "HERMES_FLEET_HOME", "HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "PYTHONIOENCODING", "PWD", "OLDPWD", "SHLVL", "_"]);
+    // `NODE_V8_COVERAGE` is Node's own addition, not a leak: under coverage Node
+    // injects it into every child it spawns, including one handed a fully
+    // explicit `env`, so child coverage is collected. The renderer cannot
+    // suppress it and it names a directory, not a secret. Without it this case
+    // fails under `npm run test:coverage` — what CI runs — and passes under
+    // `npm test`, which is why CI and local disagreed.
+    const allowed = new Set(["PATH", "LANG", "HOME", "HERMES_FLEET_HOME", "HERMES_PROFILE_CONFIG_LOCK_TIMEOUT_SECONDS", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "PYTHONIOENCODING", "PWD", "OLDPWD", "SHLVL", "_", "NODE_V8_COVERAGE"]);
     const leaked = checkRun.keys.split(",").filter((key) => key !== "" && !allowed.has(key));
     assert.deepEqual(leaked, [], "no key outside the allowlist reaches the renderer");
     const probeRun = records.find((record) => record.argv.startsWith("-B -c "));

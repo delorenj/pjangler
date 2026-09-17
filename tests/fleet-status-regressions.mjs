@@ -1075,7 +1075,14 @@ try {
       // line `sh` script and every POSIX shell exports `PWD` -- so it is
       // filtered here rather than pretended away: everything else in the
       // child's environment came from the observer's allowlist.
-      const keys = Object.keys(record.env).filter((key) => key !== "PWD").sort();
+      // `NODE_V8_COVERAGE` is Node's own addition, not the observer's: when the
+      // parent runs under coverage Node injects it into EVERY child it spawns,
+      // even one given a fully explicit `env`, so that child coverage is
+      // collected. The observer cannot suppress it and it carries nothing
+      // sensitive. Filtered here for the same reason `PWD` already is —
+      // otherwise this case fails under `npm run test:coverage` (which is what
+      // CI runs) while passing under `npm test`.
+      const keys = Object.keys(record.env).filter((key) => key !== "PWD" && key !== "NODE_V8_COVERAGE").sort();
       assert.deepEqual(
         keys,
         ["DBUS_SESSION_BUS_ADDRESS", "HOME", "LC_ALL", "PATH", "SYSTEMD_COLORS", "SYSTEMD_PAGER", "SYSTEMD_URLIFY", "XDG_RUNTIME_DIR"],
@@ -1255,9 +1262,23 @@ setTimeout(() => {}, 120000);
       });
       let out = "";
       child.stdout.on("data", (chunk) => { out += chunk; });
-      const killer = setTimeout(() => child.kill("SIGINT"), 2500);
+      // SIGINT must arrive AFTER a child exists, or the case proves nothing —
+      // and a fixed delay cannot guarantee that. Under `npm run test:coverage`
+      // (what CI runs) c8 instrumentation pushes first-child spawn past 2500ms,
+      // so the interrupt landed before there was anything to kill and the case
+      // failed on its own precondition. Poll for the pid file instead and only
+      // then interrupt; the 30s ceiling keeps a genuinely stuck run from
+      // hanging the suite.
+      const pidPath = join(dirname_(hang), "pids");
+      const armedAt = Date.now();
+      const poll = setInterval(() => {
+        const started = existsSync(pidPath) && readFileSync(pidPath, "utf8").trim() !== "";
+        if (!started && Date.now() - armedAt < 30_000) return;
+        clearInterval(poll);
+        child.kill("SIGINT");
+      }, 100);
       const guard = setTimeout(() => child.kill("SIGKILL"), 90_000);
-      child.on("close", (code) => { clearTimeout(killer); clearTimeout(guard); settle({ code, out }); });
+      child.on("close", (code) => { clearInterval(poll); clearTimeout(guard); settle({ code, out }); });
     });
     assert.deepEqual(snapshotIsolated(), before, "a cancelled run must still have written nothing");
     assert.equal(captured.code, 8, `expected exit 8, got ${captured.code}`);
