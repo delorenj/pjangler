@@ -101,6 +101,7 @@ const SUITES = [
   "tests/pjan-84-registry-flag-regressions.mjs",
   "tests/pjan-84-finding-scope-regressions.mjs",
   "tests/pjan-84-orphan-adoption-regressions.mjs",
+  "tests/pjan-130-init-target-regressions.mjs",
   "tests/fleet-shared-bloodbank-regressions.mjs",
   "tests/fleet-contract-regressions.mjs",
   "tests/fleet-inventory-regressions.mjs",

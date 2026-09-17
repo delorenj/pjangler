@@ -32,6 +32,7 @@ It is delivered as a single npm package that exposes **two interfaces over one s
 ## What it does (capabilities)
 
 1. **Bootstrap a project** — `pj init <name>`: register centrally → render `CommonProject` scaffold via copier → write `.project.json` → optionally provision a Hermes PM agent. Dry-run by default.
+   `<name>` **creates `./<name>`** relative to your cwd; run `pj init` with *no* name to adopt the repo you are standing in. init refuses to adopt a directory you did not name, and refuses to rename an already-registered project, without `-f`.
 2. **Audit & migrate parity** — `pj audit` / `pj migrate`: 11 deterministic, idempotent rules keep a repo aligned with the 33god standard (`.project.json`, mise config, agent-file symlinks, secrets wiring, BMAD install, Hermes scaffold, systemd units).
 3. **Scaffold subsystems** — `pj add <subsystem>`: composable recipes drop in `mise`, `docker`, `node`, or the `agent-hooks` fan-out layer.
 4. **Deploy Hermes PM agents** — `pj hermes-agent --yes`: render the pinned template, keep runtime state local/untracked, and verify role, manifest, PATH, profile, registry, heartbeat, and gateway postconditions. Existing roles require explicit `--force`; unsupported `--email` fails before mutation.

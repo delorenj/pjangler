@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Command, CommanderError, Option } from "commander";
 import type { CommandContext } from "./commands/Command";
@@ -31,6 +31,7 @@ import {
   projectRegistryPath,
   projectRecordEquivalent,
   removeProjectRecord,
+  projectTargetDirUnder,
   type BoardDelivery,
 } from "./project/index";
 import { readProjectInfo, doctorCurrentProject } from "./project/info";
@@ -327,21 +328,44 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
   const cwdGitRoot = findGitRoot(cwd);
   let targetDir = options.targetDir ? resolve(options.targetDir) : undefined;
 
+  // A positional name is a request to CREATE `./<name>`. It is never a request
+  // to rename where you are standing.
+  //
+  // This block used to come AFTER the cwd-git-root adoption below, so
+  // `pj init sidepiece` inside /home/delorenj/code/33GOD never looked at
+  // `sidepiece` as a directory at all: targetDir was already the 33GOD root,
+  // `syncMode` was true because that root is a git root, and the name survived
+  // only as the DISPLAY name — which init then wrote into .project.json,
+  // .copier-answers.yml, every _bmad config and the live registry row. No new
+  // directory, one silently renamed platform, exit 0.
+  //
+  // findGitRoot is `git rev-parse --show-toplevel`, which answers with the repo
+  // ROOT from any depth, so this fired from subdirectories too.
+  //
+  // The help text has always said the positional is "omit inside an existing
+  // git repo": adoption is what you get when you say NOTHING. So adoption is
+  // now conditional on there being no name to honour.
+  if (!targetDir && name) {
+    targetDir = projectTargetDirUnder(name, cwd);
+    // A project directory inside an existing repo is legal and occasionally
+    // wanted, but it is never what someone means by accident. Say it out loud.
+    if (cwdGitRoot && !options.json) {
+      console.error(`${yellow(glyph.warn)} ${dim(`creating ${targetDir} inside the existing repo ${cwdGitRoot}`)}`);
+    }
+  }
+
   if (!targetDir && cwdGitRoot) {
     targetDir = cwdGitRoot;
   }
 
   if (!targetDir && interactive) {
-    const defaultName = name ?? basename(cwd);
-    const promptedName = name ?? await promptTextValue("Project name", packageNameToProjectName(defaultName));
-    const defaultDir = join(cwd, promptedName.replace(/[^A-Za-z0-9._-]/g, "") || promptedName.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
-    targetDir = await promptTextValue("Project directory", defaultDir);
+    const promptedName = await promptTextValue("Project name", packageNameToProjectName(basename(cwd)));
+    targetDir = resolve(await promptTextValue("Project directory", projectTargetDirUnder(promptedName, cwd)));
     name = promptedName;
   }
 
   if (!targetDir) {
-    if (!name) throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
-    targetDir = resolve(process.cwd(), name.replace(/[^A-Za-z0-9._-]/g, "") || name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+    throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
   }
 
   const targetExists = existsSync(targetDir);
@@ -371,6 +395,15 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
     (targetGitRoot && resolve(targetGitRoot) === resolve(targetDir))
     || alreadyScaffolded,
   );
+
+  // The MCP bootstrap tool has refused this since day one
+  // (mcp-server.ts: "Target already exists"). The CLI never did, so
+  // `pj init foo` onto a populated non-pjangler directory renders copier over
+  // whatever is in it. syncMode targets are exempt — adopting a half-built
+  // project is the whole point of PJAN-84.
+  if (targetExists && !syncMode && !options.force && readdirSync(targetDir).length > 0) {
+    throw new Error(`Target already exists and is not empty: ${targetDir} (pass --force to render over it)`);
+  }
 
   const defaults = targetExists ? deriveProjectDefaults(targetDir) : { name: packageNameToProjectName(basename(targetDir)) ?? "Project", description: "" };
   if (!name && interactive && !syncMode) {
@@ -438,10 +471,10 @@ program
 
 program
   .command("init")
-  .argument("[name]", "Project name to bootstrap (omit inside an existing git repo)")
+  .argument("[name]", "Name of a NEW project; creates ./<name>. Omit to adopt the repo you are standing in.")
   .description("Initialize the project manifest, scaffold and registry index")
   .option("--description <text>", "Project description")
-  .option("--target-dir <path>", "Target repo path")
+  .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
   .option("--provision-agent", "Plan local Hermes PM agent provisioning")
@@ -458,7 +491,7 @@ program
   .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
-  .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
+  .option("-f, --force", "Allow replacing an existing registry entry, re-rendering files, and renaming an already-registered project")
   .option("-y, --yes", "Apply every proposed operation without prompting")
   .option("--no-tui", "Disable interactive prompts")
   .option("--json", "Output machine-parseable JSON")
@@ -670,7 +703,7 @@ projectCmd
   .argument("[name]", "Project display name")
   .description("Plan or apply a registry-backed CommonProject initialization or legacy repo sync")
   .option("--description <text>", "Project description")
-  .option("--target-dir <path>", "Target repo path")
+  .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
   .option("--provision-agent", "Plan local Hermes PM agent provisioning")
@@ -687,7 +720,7 @@ projectCmd
   .option("--skip-board", "Do not create or link a ticket board (the record stays unlinked, and init says so)")
   .option("--workspace <name>", "Ticket workspace/org (Plane workspace; blank for Trello)")
   .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
-  .option("-f, --force", "Allow replacing an existing registry entry and re-rendering files")
+  .option("-f, --force", "Allow replacing an existing registry entry, re-rendering files, and renaming an already-registered project")
   .option("-y, --yes", "Apply every proposed operation without prompting")
   .option("--no-tui", "Disable interactive prompts")
   .option("--json", "Output machine-parseable JSON")

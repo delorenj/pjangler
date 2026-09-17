@@ -1103,6 +1103,40 @@ export function projectRecordEquivalent(a: ProjectRecord | undefined, b: Project
   return jsonStable(aComparable) === jsonStable(bComparable);
 }
 
+/**
+ * The directory a CLI positional name creates, as a single new segment under
+ * `parent`.
+ *
+ * Distinct from `defaultProjectTargetDir` below on purpose. That one is the
+ * LIBRARY path: it takes a name that may have come from anywhere and slugifies
+ * whatever it is into a safe segment, because a caller that passed no target
+ * still needs one. This one is the CLI path, where a human typed the name — so
+ * a name that is really a path is a mistake worth refusing out loud rather than
+ * silently turning into a surprise directory. `--target-dir` is the flag that
+ * takes paths.
+ *
+ * The refusal matters because the CLI used to sanitise with a bare
+ * `name.replace(/[^A-Za-z0-9._-]/g, "")`, which strips `/` but leaves `.` and
+ * `..` intact — so `pj init .` resolved to the cwd and `pj init ..` to its
+ * parent, and whatever repo was standing there got adopted and renamed.
+ */
+export function projectTargetDirUnder(name: string, parent: string): string {
+  const raw = name.trim();
+  if (raw === "." || raw === ".." || /[\\/]/.test(raw)) {
+    throw new Error(`Project name "${name}" is a path, not a name — use --target-dir to point init at a directory`);
+  }
+  const compactName = raw.replace(/[^A-Za-z0-9._-]/g, "");
+  const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(raw);
+  return resolve(resolve(parent), validateSafePathSegment(safeName, "Generated project directory"));
+}
+
+/**
+ * Where a plan puts a project when the caller named no target: a sibling of
+ * `cwd`. SAFE_PATH_SEGMENT already rejects ".", ".." and anything with a
+ * separator, so a hostile name slugifies into a safe segment here rather than
+ * escaping — this must keep slugifying instead of throwing, because callers
+ * without a target still need a directory.
+ */
 export function defaultProjectTargetDir(name: string, cwd = process.cwd()): string {
   const compactName = name.replace(/[^A-Za-z0-9._-]/g, "");
   const safeName = SAFE_PATH_SEGMENT.test(compactName) ? compactName : slugifyProjectName(name);
@@ -1152,6 +1186,21 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const localId = localManifest?.project_id ?? localManifest?.project_slug;
   const slug = normalizeProjectId(input.projectSlug ?? localId ?? slugifyProjectName(input.name));
   if (localId && normalizeProjectId(localId) !== slug) throw new Error(`Project ID ${slug} conflicts with authoritative manifest ${localId}`);
+  // …and neither is a NAME.
+  //
+  // project_id is guarded above, which is exactly why the 33GOD rename looked
+  // harmless: `pj init sidepiece` kept project_id "33god" and passed that line,
+  // then `input.name` went on to rewrite the registry record name,
+  // notebook.notebook_name, .project.json, .copier-answers.yml via
+  // synchronizeCopierIdentity and every _bmad config via the bmad.project-name
+  // parity rule. Identity is two fields and only one of them was defended.
+  //
+  // The manifest is authoritative (`sot.project-json`), so a name that
+  // disagrees with it is a mistake until the operator says otherwise.
+  const localName = typeof localManifest?.project_name === "string" ? localManifest.project_name.trim() : "";
+  if (localName && localName !== input.name.trim() && !(input.overwrite ?? input.force ?? false)) {
+    throw new Error(`Project name "${input.name.trim()}" conflicts with authoritative manifest "${localName}" (${slug}); pass --force to rename it`);
+  }
   const agentRole = normalizeAgentRole(input.agentRole);
   const registryPath = resolveRegistryLocation(input.registryPath);
   const registry = loadProjectRegistry(registryPath);

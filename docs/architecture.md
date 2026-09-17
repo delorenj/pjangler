@@ -213,6 +213,10 @@ MCP defaults are **safety-first**: `dryRun` and `local` default to `true`, netwo
 ## End-to-end flows
 
 **`pjangler init myproj --apply --provision-agent`**
+
+Run this from the PARENT directory: the positional name creates `./myproj`. Inside an existing
+repo it still creates a child — it does not adopt the repo. Adopting is `pjangler init` with no
+name, or an explicit `--target-dir`.
 1. `resolveProjectInitTarget` → decides create vs sync, resolves target dir/name.
 2. `planProjectInit` → `ProjectInitPlan` of typed actions.
 3. (interactive) `@clack/prompts` multiselect lets the user pick which actions + parity fixes to run.
