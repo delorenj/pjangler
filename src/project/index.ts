@@ -598,6 +598,23 @@ function ticketProviderScope(provider: ProjectTicketProvider): string {
  * manifest stores only stable identity. Lane→state mapping is NOT stored here —
  * that is per-repo config because kanban columns vary board to board.
  */
+/**
+ * The provider a record actually DECLARES, or undefined when it declares none.
+ *
+ * `recordFromManifest` (PJAN-80) projects a manifest carrying no
+ * `ticket_provider` block as the sentinel `{ type: "none", state: "skipped" }`,
+ * so the indexed record always has the column. That sentinel means "nothing was
+ * declared" -- it is not a provider selection, and feeding it to
+ * `normalizeTicketProvider` throws `Unsupported ticket provider: none`. Which is
+ * exactly what adopting an orphan did: a half-built directory whose
+ * `.project.json` predates the ticket_provider block could not be planned at
+ * all, so the tool meant to repair it refused to look at it.
+ */
+export function declaredTicketProvider(value?: string): string | undefined {
+  const type = (value ?? "").trim().toLowerCase();
+  return !type || type === "none" ? undefined : value;
+}
+
 export function normalizeTicketProvider(value?: string): SupportedTicketProvider {
   const type = (value || "plane").trim().toLowerCase();
   if (type === "plane" || type === "trello") return type;
@@ -1204,7 +1221,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       },
     },
     ticket_provider: { ...existing?.ticket_provider, ...buildTicketProviderBlock({
-      type: input.ticketProvider ?? existing?.ticket_provider.type ?? "plane",
+      type: declaredTicketProvider(input.ticketProvider) ?? declaredTicketProvider(existing?.ticket_provider?.type) ?? "plane",
       identifier,
       boardId: resolvedBoardId,
       workspace: input.boardWorkspace ?? input.planeWorkspace ?? existing?.ticket_provider.workspace,

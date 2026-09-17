@@ -33,7 +33,9 @@ function check(label, body) {
     console.log(`  ok   ${label}`);
   } catch (error) {
     failures += 1;
-    console.log(`  FAIL ${label}: ${error.message.split("\n")[0]}`);
+    // NOT .split("\n")[0]: assert.match puts the regex on line 1 and the actual
+    // input below it, so truncating to one line hides the thing that differed.
+    console.log(`  FAIL ${label}: ${error.message}`);
   }
 }
 
@@ -81,12 +83,16 @@ console.log("pjan-84 registry flag + migrate postcondition ordering");
 try {
   const it = project("registry-agreement");
 
+  // The placeholder is `<location>`, not `<path>`: PJAN-80 made the registry a
+  // service, so the value may be a URL as well as a fixture path. What these
+  // two assert is the defect in the header -- that audit and migrate advertise
+  // the flag at all -- so they pin the flag, not the wording around it.
   check("audit accepts --registry", () => {
-    assert.match(cli(["audit", "--help"]).stdout, /--registry <path>/);
+    assert.match(cli(["audit", "--help"]).stdout, /--registry <location>/);
   });
 
   check("migrate accepts --registry", () => {
-    assert.match(cli(["migrate", "--help"]).stdout, /--registry <path>/);
+    assert.match(cli(["migrate", "--help"]).stdout, /--registry <location>/);
   });
 
   check("describe --registry reaches the PARITY run, not just the identity block", () => {
