@@ -109,7 +109,6 @@ function check(label, body) {
     if (error instanceof SkipCase) return;
     failures += 1;
     console.log(`  FAIL ${label}: ${String(error.message).split("\n")[0]}`);
-    console.log(`  PJAN132-STACK ${String(error.stack).split("\n").slice(0,6).join(" || ")}`);
   }
 }
 
@@ -1115,17 +1114,15 @@ try {
       assert.ok(readings.some((item) => item.state === "pass"), "the favourable reading survives");
       assert.ok(readings.some((item) => item.state === "fail"), "and so does the unfavourable one");
     } finally {
-      { // PJAN-132 TEMP DIAGNOSTIC — self-contained, stdout only
-        const kindOf = (pth) => { try { const st = lstatSync(pth); return st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "DIRECTORY" : "file"; } catch { return "absent"; } };
-        const before = kindOf(symlinked);
-        try {
-          rmSync(symlinked, { force: true });
-          console.log(`  PJAN132 siteA OK before=${before} after=${kindOf(symlinked)}`);
-        } catch (e) {
-          console.log(`  PJAN132 siteA THREW before=${before} now=${kindOf(symlinked)} target=${(() => { try { return readlinkSync(symlinked); } catch { return "n/a"; } })()} err=${e.message}`);
-          throw e;
-        }
-      }
+      // `recursive` because this path is NOT always the symlink this case
+      // created: `seedRendererCleanProfile` below leaves it a real directory,
+      // and a fleet-status child can materialise it as one mid-case. A bare
+      // `force` rm throws EISDIR on a directory, which surfaced as this case
+      // failing with `Path is a directory` and masked whatever the try block
+      // was actually asserting. The setup at the top of each case already
+      // spells it `{ recursive: true, force: true }`; this is that same
+      // teardown and must match it.
+      rmSync(symlinked, { recursive: true, force: true });
       // Restored renderer-CLEAN (story 1.7), so every later case reads the
       // fleet this suite seeded rather than a marker-only profile.
       seedRendererCleanProfile(scratchHome, "beta-pm");
@@ -1263,7 +1260,15 @@ try {
       assert.ok(priority.includes("beta-pm · profile"), "the proven profile failure must lead the observation block");
       assert.ok(priority.includes("critical"), "and it must be shown with its severity");
     } finally {
-      rmSync(symlinked, { force: true });
+      // `recursive` because this path is NOT always the symlink this case
+      // created: `seedRendererCleanProfile` below leaves it a real directory,
+      // and a fleet-status child can materialise it as one mid-case. A bare
+      // `force` rm throws EISDIR on a directory, which surfaced as this case
+      // failing with `Path is a directory` and masked whatever the try block
+      // was actually asserting. The setup at the top of each case already
+      // spells it `{ recursive: true, force: true }`; this is that same
+      // teardown and must match it.
+      rmSync(symlinked, { recursive: true, force: true });
       // Restored renderer-CLEAN (story 1.7), so every later case reads the
       // fleet this suite seeded rather than a marker-only profile.
       seedRendererCleanProfile(scratchHome, "beta-pm");
@@ -1609,7 +1614,15 @@ try {
       assert.equal(alpha.healthy, true);
       assert.equal(alpha.member_class, "incomplete", "and an agent with only the unread half is incomplete");
     } finally {
-      rmSync(symlinked, { force: true });
+      // `recursive` because this path is NOT always the symlink this case
+      // created: `seedRendererCleanProfile` below leaves it a real directory,
+      // and a fleet-status child can materialise it as one mid-case. A bare
+      // `force` rm throws EISDIR on a directory, which surfaced as this case
+      // failing with `Path is a directory` and masked whatever the try block
+      // was actually asserting. The setup at the top of each case already
+      // spells it `{ recursive: true, force: true }`; this is that same
+      // teardown and must match it.
+      rmSync(symlinked, { recursive: true, force: true });
       // Restored renderer-CLEAN (story 1.7), so every later case reads the
       // fleet this suite seeded rather than a marker-only profile.
       seedRendererCleanProfile(scratchHome, "beta-pm");
