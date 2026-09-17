@@ -503,6 +503,16 @@ const isolation = {
   RUNTIME_SCAFFOLD_DIR: join(scratchHome, ".hermes", "runtime-scaffold"),
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_SYSTEM: "/dev/null",
+  // Git repacks on its own schedule and rewrites `.git/objects` when it does;
+  // the protected-root snapshot digests `.git` too, so that housekeeping reads
+  // as "the CLI wrote here". It only crosses the gc threshold on a fresh clone,
+  // which is why this was invisible locally and fatal in CI. Turn the
+  // housekeeping off rather than stop watching `.git`.
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "gc.auto",
+  GIT_CONFIG_VALUE_0: "0",
+  GIT_CONFIG_KEY_1: "maintenance.auto",
+  GIT_CONFIG_VALUE_1: "0",
   GIT_DIR: undefined,
   GIT_WORK_TREE: undefined,
   // TMPDIR can itself sit inside a git work tree on this machine, which would
