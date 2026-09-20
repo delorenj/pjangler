@@ -204,7 +204,6 @@ export interface ProjectInitInput {
   provisionRuntimeRepo?: boolean;
   /** Explicit external-effect grants. MCP callers pass these as false unless positively opted in. */
   provisionTicketBoard?: boolean;
-  enableSystemd?: boolean;
   /** Subtractive ticket-provider gate; always dominates live/positive consent. */
   skipPlane?: boolean;
   registryPath?: string;
@@ -1326,10 +1325,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   // So board provisioning defaults ON, and the only way out is the subtractive
   // `skipPlane` gate (CLI `--skip-board`), which the operator must ask for.
   // `--live` keeps its meaning for effects that change the HOST rather than the
-  // project's own identity: systemd units, the notebook endpoint, and the
-  // Hermes agent's own external tail.
+  // project's own identity: the ticket board and the notebook endpoint. systemd
+  // units left with the workforce.
   const provisionTicketBoard = input.provisionTicketBoard ?? true;
-  const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
   const boardEnabled = provisionTicketBoard && !skipPlane;
   const actions: ProjectInitAction[] = [

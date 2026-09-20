@@ -55,7 +55,7 @@ const PROJECT_SLUG_SCHEMA = safePathSegmentSchema("Project slug")
   .describe("A safe single path segment used as the project registry slug.");
 const AGENT_ROLE_SCHEMA = safePathSegmentSchema("Agent role")
   .describe("An arbitrary safe single path segment used beneath agents/hermes; not a fixed role enum.");
-const TARGET_REPO_SCHEMA = safePathSegmentSchema("Hermes target repository")
+const TARGET_REPO_SCHEMA = safePathSegmentSchema("Target repository")
   .describe("A safe repository/profile identity segment; defaults to the target directory basename.");
 const EXPLICIT_TARGET_DIR_SCHEMA = z.string().refine((value) => value.trim().length > 0, {
   message: "targetDir must be a non-empty explicit path",
@@ -71,17 +71,14 @@ interface ExternalEffectConsentInput {
   live?: boolean;
   local?: boolean;
   /** Deprecated no-op compatibility fields; neither grants nor subtracts authority. */
-  provisionRuntimeRepo?: boolean;
   skipRuntimeRepo?: boolean;
   provisionTicketBoard?: boolean;
-  enableSystemd?: boolean;
   skipPlane?: boolean;
   skipSystemd?: boolean;
 }
 
 interface ExternalEffectSelection {
   ticketBoard: boolean;
-  systemd: boolean;
 }
 
 /**
@@ -93,25 +90,20 @@ function validateExternalEffectConsent(
   input: ExternalEffectConsentInput,
   options: { requireNonLocal: boolean },
 ): ExternalEffectSelection {
+  // The board is the only external effect pjangler still has. systemd units
+  // are installed by Flume, so `enableSystemd` is gone rather than accepted and
+  // ignored -- an input that silently does nothing is worse than no input.
   const selected: ExternalEffectSelection = {
     ticketBoard: input.provisionTicketBoard === true,
-    systemd: input.enableSystemd === true,
   };
-  const anySelected = selected.ticketBoard || selected.systemd;
-  if (anySelected && input.live !== true) {
-    throw new Error("External Hermes effects require live=true in addition to explicit positive opt-ins");
+  if (selected.ticketBoard && input.live !== true) {
+    throw new Error("Creating a ticket board requires live=true in addition to the explicit positive opt-in");
   }
-  if (anySelected && options.requireNonLocal && input.local !== false) {
-    throw new Error("External Hermes effects require local=false in addition to live=true and explicit positive opt-ins");
+  if (selected.ticketBoard && options.requireNonLocal && input.local !== false) {
+    throw new Error("Creating a ticket board requires local=false in addition to live=true and the explicit positive opt-in");
   }
   if (selected.ticketBoard && input.skipPlane === true) {
     throw new Error("provisionTicketBoard=true contradicts skipPlane=true");
-  }
-  if (selected.systemd && input.skipSystemd === true) {
-    throw new Error("enableSystemd=true contradicts skipSystemd=true");
-  }
-  if (selected.systemd && process.platform === "darwin") {
-    throw new Error("enableSystemd=true is unavailable on macOS");
   }
   return selected;
 }
@@ -444,7 +436,7 @@ server.registerTool(
   "pjangler_bootstrap_33god_project",
   {
     title: "Bootstrap a new @33god project",
-    description: "Create a new CommonProject-based 33god repo with optional non-interactive Hermes provisioning. Preview is the default; each external effect requires live=true plus an explicit positive opt-in.",
+    description: "Create a new CommonProject-based 33god repo. Preview is the default; the ticket board requires live=true plus an explicit positive opt-in. Hiring an agent for it is `flume hire`.",
     inputSchema: z.strictObject({
       parentDir: z.string().optional(),
       targetDir: z.string().optional(),
@@ -462,9 +454,7 @@ server.registerTool(
       skipPlane: z.boolean().optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
-      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true, local=false, and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; also requires live=true and local=false."),
       force: z.boolean().optional(),
       overwrite: z.boolean().optional(),
       dryRun: z.boolean().optional(),
@@ -510,7 +500,6 @@ server.registerTool(
         apply: !dryRun,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,
-        enableSystemd: externalEffects.systemd,
         skipPlane,
         registryPath: input.registryPath,
         // A PROPOSAL only. The provider assigns the real identifier and
@@ -579,9 +568,7 @@ server.registerTool(
       primaryLanguage: z.string().optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
-      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to Hermes systemd installation/enablement; also requires live=true."),
       skipPlane: z.boolean().optional().describe("Disable project-board planning and provider invocation even when live=true."),
       slug: PROJECT_SLUG_SCHEMA.optional(),
       identifier: z.string().optional(),
@@ -605,7 +592,6 @@ server.registerTool(
         apply: input.apply ?? false,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,
-        enableSystemd: externalEffects.systemd,
         skipPlane: input.skipPlane ?? false,
         projectSlug: input.slug,
         projectIdentifier: input.identifier,
