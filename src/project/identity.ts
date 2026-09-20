@@ -944,8 +944,14 @@ export async function reconcileProjectIdentity(options: IdentityOptions = {}): P
       ...(slug ? { slug } : {}),
     };
     if ((DEAD_AGENT_IDS as readonly string[]).includes(agent.agentId)) {
-      deletions.push(agent.agentId);
-      resolutions.push({ ...base, status: "dead", detail: "abandoned agent; entry removed from the fleet registry" });
+      // REPORTED, not deleted.
+      //
+      // The handbook grants project-registry exactly three fields in the agent
+      // registry -- the board identifier, id and workspace, one-way projections
+      // out of .project.json. Removing a whole row is `agent_operational_records`,
+      // which hermes-agent-registry owns. pjangler used to delete rows here, which
+      // is the boundary the Flume split exists to draw.
+      resolutions.push({ ...base, status: "dead", detail: "abandoned agent; run `flume offboard " + agent.agentId + "` to remove the record" });
       continue;
     }
     if (!agent.boardId) {

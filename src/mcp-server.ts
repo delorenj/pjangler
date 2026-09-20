@@ -61,8 +61,10 @@ const EXPLICIT_TARGET_DIR_SCHEMA = z.string().refine((value) => value.trim().len
   message: "targetDir must be a non-empty explicit path",
 });
 
-const INTERACTIVE_RECIPE_IDS = new Set(["hermes-agent"]);
-const GENERIC_RECIPE_NAMES = getRecipeNames().filter((name) => !INTERACTIVE_RECIPE_IDS.has(name));
+// Every registered recipe is dispatchable. The exclusion set existed for exactly
+// one entry -- `hermes-agent`, which prompted and therefore could not be driven
+// generically. Hiring moved to Flume; nothing left here is interactive.
+const GENERIC_RECIPE_NAMES = getRecipeNames();
 if (GENERIC_RECIPE_NAMES.length === 0) throw new Error("No non-interactive recipes are registered for generic MCP execution");
 
 interface ExternalEffectConsentInput {
@@ -308,12 +310,11 @@ function migrationSummary(report: Awaited<ReturnType<typeof runMigration>>) {
 function parityGuidance() {
   return {
     skill: "@33god-projects",
-    guidance: "Use these tools before editing a project so the repo SOT, agent files, mise hooks, and Hermes role scaffold are current.",
+    guidance: "Use these tools before editing a project so the repo SOT, agent files and mise hooks are current.",
     workflows: [
       "audit -> pjangler_audit_project",
       "migrate -> pjangler_migrate_project",
       "bootstrap -> pjangler_bootstrap_33god_project",
-      "agent provisioning -> pjangler_deploy_hermes_agent",
     ],
   };
 }
@@ -346,18 +347,11 @@ server.registerTool(
   },
   async () => {
     const payload = {
-      recipes: Object.values(RECIPE_REGISTRY).filter((r) => !INTERACTIVE_RECIPE_IDS.has(r.name)).map((r) => ({
+      recipes: Object.values(RECIPE_REGISTRY).map((r) => ({
         name: r.name,
         description: r.description,
         commands: r.commands,
       })),
-      dedicatedRecipes: [
-        {
-          name: "hermes-agent",
-          description: "Non-interactive Hermes provisioning with explicit local and external-effect consent gates.",
-          tool: "pjangler_deploy_hermes_agent",
-        },
-      ],
       commands: Object.values(COMMAND_REGISTRY).map((c) => ({
         name: c.name,
         description: c.description,
@@ -368,7 +362,6 @@ server.registerTool(
         unfamiliarRepo: ["pjangler_describe_project", "pjangler_audit_project"],
         existingProject: ["pjangler_describe_project", "pjangler_audit_project", "pjangler_migrate_project"],
         new33godProject: ["pjangler_project_init", "pjangler_bootstrap_33god_project", "pjangler_audit_project"],
-        hermesAgentProvisioning: ["pjangler_deploy_hermes_agent", "pjangler_audit_project"],
       },
       skillSynergy: parityGuidance(),
     };
@@ -467,8 +460,6 @@ server.registerTool(
       projectIdentifier: z.string().optional(),
       primaryLanguage: z.string().optional(),
       skipPlane: z.boolean().optional(),
-      provisionAgent: z.boolean().optional(),
-      agentRole: AGENT_ROLE_SCHEMA.optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
       provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
@@ -586,8 +577,6 @@ server.registerTool(
       targetDir: z.string().optional(),
       sourceSkill: z.string().optional(),
       primaryLanguage: z.string().optional(),
-      provisionAgent: z.boolean().optional(),
-      agentRole: AGENT_ROLE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
       provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,

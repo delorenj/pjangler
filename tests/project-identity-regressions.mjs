@@ -554,7 +554,17 @@ await checkAsync("a dry run reports the repair and writes nothing", async () => 
       ["james-brennan-pm", "", "JIMB"],
     ],
   );
-  assert.deepEqual(report.changes.hermesDeleted, ["coachingagentframework-pm"]);
+  // REPORTED, not deleted. The handbook grants project-registry three fields in
+  // the agent registry -- board identifier, id and workspace -- and removing a
+  // whole row is `agent_operational_records`, which Flume owns.
+  assert.deepEqual(report.changes.hermesDeleted, []);
+  assert.ok(
+    report.resolutions.some((entry) =>
+      entry.agentId === "coachingagentframework-pm"
+      && entry.status === "dead"
+      && /flume offboard coachingagentframework-pm/.test(entry.detail)),
+    "an abandoned agent is named, with the command that can remove it",
+  );
   assert.equal(readFileSync(hermesRegistryPath, "utf8"), before.hermes, "a dry run must not write");
   assert.equal(readFileSync(registryPath, "utf8"), before.projects, "a dry run must not write");
 });
@@ -576,8 +586,11 @@ await checkAsync("--apply repairs both stores and touches nothing else", async (
   assert.equal(parsed.agents["holocene-pm"].plane.identifier, "HOLOC");
   assert.equal(parsed.agents["ssbnk-pm"].plane.identifier, "SSBNK");
   assert.equal(parsed.agents["james-brennan-pm"].plane.identifier, "JIMB", "a second workspace resolves too");
-  assert.equal(Object.hasOwn(parsed.agents, "coachingagentframework-pm"), false, "the abandoned agent is gone");
-  assert.equal(Object.keys(parsed.agents).length, 4, "exactly one agent was removed");
+  assert.equal(
+    Object.hasOwn(parsed.agents, "coachingagentframework-pm"), true,
+    "the abandoned agent's row survives -- pjangler reports it, Flume removes it",
+  );
+  assert.equal(Object.keys(parsed.agents).length, 5, "no agent row was removed");
 
   // Surgery, not a rewrite: everything the command was not asked to change
   // survives byte for byte, including a block sequence the YAML serializer
@@ -620,9 +633,10 @@ await checkAsync("a failed fetch PRESERVES the recorded identifier", async () =>
   assert.equal(report.changes.hermes.length, 0, "an outage must never rewrite identifiers");
   assert.ok(report.resolutions.some((entry) => entry.status === "error" && /preserved/.test(entry.detail)));
   assert.match(readFileSync(hermesRegistryPath, "utf8"), /identifier: HOLPM/, "the old value is still there");
-  // The abandoned agent is still removed: its removal is a user directive, not
-  // a consequence of what Plane says.
-  assert.notEqual(readFileSync(hermesRegistryPath, "utf8"), before);
+  // An outage now leaves the registry BYTE-IDENTICAL. It used to differ, because
+  // the abandoned agent was deleted on the way past regardless of what Plane
+  // said; that deletion is Flume's now, so an outage writes nothing at all.
+  assert.equal(readFileSync(hermesRegistryPath, "utf8"), before, "an outage writes nothing");
 });
 
 await checkAsync("a board Plane no longer has PRESERVES the recorded identifier", async () => {
