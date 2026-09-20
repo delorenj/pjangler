@@ -34,7 +34,7 @@ It is delivered as a single npm package that exposes **two interfaces over one s
 1. **Bootstrap a project** — `pj init <name>`: register centrally → render `CommonProject` scaffold via copier → write `.project.json`. Dry-run by default.
    `<name>` **creates `./<name>`** relative to your cwd; run `pj init` with *no* name to adopt the repo you are standing in. init refuses to adopt a directory you did not name, and refuses to rename an already-registered project, without `-f`.
 2. **Audit & migrate parity** — `pj audit` / `pj migrate`: 19 deterministic, idempotent rules keep a repo aligned with the 33god standard (`.project.json`, mise config, agent-file symlinks, secrets wiring, BMAD install, skill manifest, companion notebook, board schema). `pj audit --rules <ids>` narrows the report to the rules you name.
-3. **Scaffold subsystems** — `pj add <subsystem>`: composable recipes drop in `mise`, `docker`, `node`, `notebook`, or the `agent-hooks` fan-out layer.
+3. **Scaffold subsystems** — `pj add <subsystem>`: composable recipes drop in `mise`, `mise-op-inject`, `docker`, `node`, or the `agent-hooks` fan-out layer. The notebook is bound with `pj notebook`, not scaffolded.
 4. **Orient in a repo** — `pj describe`: what a repo actually is, for agent or human context, in any repo, 33god or not.
 5. **Agent-native** — every operation above is also an MCP tool with safety-first (`dryRun`/`local`) defaults.
 

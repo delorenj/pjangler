@@ -9,7 +9,7 @@
 
 1. **Bootstrap** a new project — register it centrally, render the `CommonProject` scaffold (via `copier`), and write a repo-local `.project.json`.
 2. **Audit & migrate** an existing repo against the deterministic "33god project standard" — a set of idempotent parity rules.
-3. **Scaffold subsystems** into any repo (`mise`, `docker`, `node`, `notebook`, `agent-hooks`) via composable recipes.
+3. **Scaffold subsystems** into any repo (`mise`, `mise-op-inject`, `docker`, `node`, `agent-hooks`) via composable recipes.
 
 The same core logic is exposed through **two interfaces that share one implementation**: a human-facing `commander` CLI (`src/index.ts`) and a stdio **MCP server** (`src/mcp-server.ts`) for agents. Neither interface owns project orchestration: both dispatch through the singleton `recipeRegistry`, and both project paths call `ProjectRecipe`.
 
@@ -18,7 +18,7 @@ The same core logic is exposed through **two interfaces that share one implement
 | Category | Technology | Version | Role |
 | --- | --- | --- | --- |
 | Language | TypeScript | ^5 | All source under `src/` (strict mode, ESNext, bundler resolution) |
-| Runtime | Node.js | >=20 | ESM (`"type": "module"`) |
+| Runtime | Node.js | >=24 | ESM (`"type": "module"`); `package.json` `engines` pins it |
 | CLI framework | `commander` | ^14 | Command/option parsing, subcommands (`src/index.ts`) |
 | Interactive prompts | `@clack/prompts` | ^1.4 | TUI multiselect/text for `init` and the `migrate` rule selector |
 | Agent interface | `@modelcontextprotocol/sdk` | ^1.29 | MCP server over stdio (`src/mcp-server.ts`) |
@@ -156,7 +156,7 @@ metadata prove ownership and every owned file remains unmodified.
 | Command | Purpose |
 | --- | --- |
 | `init [name]` | Full project bootstrap (registry + CommonProject scaffold + `.project.json`). Inside an existing git repo → **sync mode** (audit + selective migrate). |
-| `add <subsystem>` | Scaffold a subsystem/recipe into the cwd (`mise`, `docker`, `node`, `notebook`, `agent-hooks`, …) |
+| `add <subsystem>` | Scaffold a subsystem into the cwd — the five `pj subsystems` lists: `mise`, `mise-op-inject`, `docker`, `node`, `agent-hooks` |
 | `subsystems` | List available subsystems |
 | `notebook …` | Manage the repository's companion Open Notebook |
 | `board [ref]` | Open the ticket board, or one work item, in a browser; `board provider/slug/status/recent/modules` read it |

@@ -21,6 +21,12 @@ provider binding metadata, not alternate project lookup keys.
 }
 ```
 
+`agents` is a **one-way projection of the org chart**, not project intent. Flume
+writes the employee record; pjangler projects `role_dir` in and carries existing
+entries forward. `pj init` never authors one — the handbook's `projections:`
+block names `agent_role_directory` as `writable_by: project-registry` and nothing
+else. A repo with no employees has an empty map.
+
 ## Commands
 
 | Command | Scope |
@@ -35,7 +41,9 @@ provider binding metadata, not alternate project lookup keys.
 | `pj reindex --receipt <path>` | Rebuild discovery from a migration receipt |
 | `pj init --id px` | Initialize/register a project; use `--apply` to apply |
 | `pj link px <board-id>` | Bind an existing provider board |
-| `pj identity --all` | Inspect provider bindings |
+| `pj identity` | Read board identifiers back from the provider and repair the registries |
+| `pj identity --all` | Every registered agent, not just the current project |
+| `pj board [ref]` | Open the bound board, or one work item |
 | `pj remove px --apply` | Remove the index entry, retaining the repository |
 | `pj subsystems` | Available project subsystems |
 
@@ -50,6 +58,22 @@ or provider-prefix lookup.
 global lookups require the service; they never silently use YAML. Registration
 does not assert that a provider board was contacted. Provider verification is
 the separate `pj identity` operation.
+
+`pj identity` reads board identifiers back from the provider and repairs both
+the project index and the identifier fields projected into
+`~/.hermes/agents-registry.yaml`. It writes only the three fields the handbook
+grants it — board identifier, id, workspace — and **never removes a row**. An
+agent whose board has gone is reported `dead` with the command that owns the
+removal: `flume offboard <agent-id>`. A failed workspace fetch preserves the
+recorded value rather than blanking it.
+
+**An archived board answers, and lies.** Plane serves an archived project's
+record at HTTP 200 while returning empty `states/`, `labels/` and `issues/`
+collections with no error, so a binding to one looks healthy and reads as an
+empty board. `archived_at` on the project record is the only field that tells
+the truth. `pj identity` and `pj link` both check it: a candidate that matches
+only archived boards is refused with the reason named, and a recorded id
+pointing at an archived board keeps its binding and says so.
 
 ## Service and ownership
 
@@ -73,7 +97,7 @@ binding and policy both belong to `.project.json`. The service index is
 rebuildable by registering manifests; it is not a second writable definition.
 
 The synchronous adapter launches a bounded Node HTTP client for existing CLI,
-MCP, fleet and notebook APIs. No disk cache acts as a fallback authority.
+MCP and notebook APIs. No disk cache acts as a fallback authority.
 `PJ_REGISTRY_URL` overrides the service endpoint. Explicit `--registry` or
 `PJ_PROJECT_REGISTRY` file locations are retained for isolated fixtures and
 legacy import tooling; normal installations do not use them.
@@ -113,4 +137,4 @@ duplicate location is rejected.
 and a real service. It tests collisions, case variants, direct edits, concurrent
 writes, malformed/missing files, settings updates and recovery from an injected
 index failure. CLI and consumer suites additionally cover local/offline info,
-current-project doctor, fleet, notebook and endpoint forwarding.
+current-project doctor, notebook and endpoint forwarding.

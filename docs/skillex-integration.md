@@ -1,15 +1,15 @@
 # Skillex integration (PJAN-127)
 
 PJangler requires Node 24 or newer and `@delorenj/skillex` 0.1.1. Its project
-bootstrap, parity audit, migration and Hermes profile integration use the public
-Node core. The packaged CommonProject and Hermes templates pin the same release.
+bootstrap, parity audit and migration use the public Node core. The packaged
+CommonProject template pins the same release.
 
 A generated project has one explicit task:
 
 ```toml
 [tasks."skills:sync"]
-description = "Reconcile this project's selected skills"
-tools = { "npm:@delorenj/skillex" = "0.1.1", node = "24" }
+description = "Apply this project's declared skills with Skillex"
+tools = { "npm:@delorenj/skillex" = "0.1.1" }
 run = "skillex sync --scope project --project '{{config_root}}'"
 ```
 
@@ -26,6 +26,11 @@ discovery, pack exclusivity, canonical names, ownership receipts, pruning and
 filesystem refusal rules belong to Skillex. `PJ_SKILLS_REGISTRY_ROOT` remains the
 explicit offline registry override. No operation clones a registry.
 
+`skills.project-manifest` is the only rule in this surface, and `agent-hooks`
+owns it. Its subject is always a project root. Projecting skills into a Hermes
+profile is Flume's, along with the employee rules that inspect one — PJangler
+reads a role's profile *name* out of `role.yaml` and never opens its `skills/`.
+
 Missing sources, ambiguous legacy selections and conflicting real CLI roots
 remain visible blockers. Preview `skillex migrate --project /absolute/project`,
 provide an explicit mapping where requested, review the inventory, then apply
@@ -39,24 +44,12 @@ the dry-run includes the core's complete activation changes. Failure reports use
 actual applied changes, so a failed publication is not presented as a saved
 manifest. An interruption after saved intent can be resumed with explicit sync.
 
-Hermes profile projection uses `showProfile` and `syncProfile` with the role's
-explicit project and profile name. Global and project selections form a union;
-project exclusions affect only the project contribution. The profile's real
-`skills/` directory retains its inode, and existing local entries win without
-being adopted. No singleton link points the whole profile skills root at the
-fleet. A legacy whole-root skills alias requires explicit migration; its shared
-target is preserved.
-
-Fleet byte-policy is separate from activation parity. The shipped
-`profile_manifest.skill_core.required` is empty: no fixed list or generic global
-activation is required. A custom fleet contract can declare a required list and
-canonical bytes as an additional policy. `hermes.runtime-singleton` inspects
-actual profile activation through Skillex, including local precedence, independently
-of that optional policy. BMAD remains owned by its installer and supported CLI
-projection rules.
+BMAD remains owned by its installer and the supported CLI projection rules
+(`bmad.scaffold`, `bmad.version`, `bmad.cli-roots`), which are separate from
+skill activation parity.
 
 Recipe audit/migration dispatch, verification, CLI, MCP and project description
 now await asynchronous results. Individual synchronous checks remain valid. The
 regression suites exercise delayed checks and postconditions, source and installed
 bootstrap, inheritance, explicit nested roots, canonical pack/set selections,
-foreign preservation, profile overlays, no-op behavior and failed publication.
+foreign preservation, no-op behavior and failed publication.
