@@ -6,7 +6,7 @@
 // asserted about.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -285,19 +285,6 @@ test("resolveTemplateConfigPath honors HERMES_TEMPLATE_CONFIG then XDG then home
     resolveTemplateConfigPath({}, fakeHome),
     join(fakeHome, ".config", "hermes-agent-template", "config.toml"),
   );
-});
-
-// Drift tripwire, not a behaviour test: `EnsureTemplateConfig.ts` owns the twin
-// of the resolver above and cannot be imported here without dragging the
-// command layer into the prompt bundle. This only proves the two still name the
-// same file — if it fires, reconcile them by hand.
-test("TRIPWIRE: EnsureTemplateConfig still names the same config path", () => {
-  const source = readFileSync(join(root, "src", "commands", "hermes", "EnsureTemplateConfig.ts"), "utf8");
-  assert.ok(
-    source.includes('"hermes-agent-template", "config.toml"'),
-    "EnsureTemplateConfig.resolveTemplateConfigPath drifted from boardUrl.resolveTemplateConfigPath",
-  );
-  assert.ok(source.includes("HERMES_TEMPLATE_CONFIG"), "env override drifted");
 });
 
 // --------------------------------------------------------------------------

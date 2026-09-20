@@ -244,7 +244,7 @@ inspect_tarball() {
   ' "$package_name" "$package_version" || die "tarball metadata does not match package.json"
 
   for path in package/package.json package/dist/index.js package/dist/mcp-server.js \
-    package/templates/commonproject/copier.yml package/templates/hermes-agent/template/role.yaml.jinja \
+    package/templates/commonproject/copier.yml \
     package/.mise/scripts/versioning.sh package/.mise/scripts/link-agentfiles.sh; do
     tar -tzf "$TARBALL" | grep -Fx "$path" >/dev/null ||
       die "tarball missing required path: $path"

@@ -198,8 +198,6 @@ export interface ProjectInitInput {
   targetDir?: string;
   sourceSkill?: string;
   primaryLanguage?: string;
-  provisionAgent?: boolean;
-  agentRole?: string;
   apply?: boolean;
   live?: boolean;
   /** Deprecated no-op retained for API compatibility; runtime is always role-local and ignored. */
@@ -268,19 +266,6 @@ export type ProjectInitAction =
       boardId: string;
       state: string;
       reason?: string;
-    }
-  | {
-      kind: "hermes.provision-agent";
-      enabled: boolean;
-      local: boolean;
-      targetDir: string;
-      targetRepo: string;
-      role: string;
-      context: {
-        skipPlane: boolean;
-        skipBloodbank: boolean;
-        skipSystemd: boolean;
-      };
     };
 
 export interface ProjectInitPlan {
@@ -808,28 +793,34 @@ export function resolveTicketProviderCredentials(input: {
 }
 
 /**
- * Locate a `tp` provider adapter (`<provider>.sh`). Resolution mirrors
- * resolveTemplateRoot() in src/commands/AgentHooksCommands.ts: an env override
- * first, then a walk up from this module so it works from source, from the
- * bundled `dist/`, and from the published npm package (which ships
- * `templates/`), then the canonical ~/code/pjangler checkout.
+ * Locate a `tp` provider adapter (`<provider>.sh`).
  *
- * The distributable `templates/hermes-agent` submodule wins over the repo-local
- * `agents/hermes/pm` tree so pjangler runs the same adapter it ships to users.
+ * The adapters belong to KREBS, the ticket-lifecycle engine, and
+ * `33god-platform/components/krebs.yaml` has declared `../krebs/adapters/tp` as
+ * its source of truth all along.
+ *
+ * They used to be resolved out of `templates/hermes-agent/template/.scripts/
+ * providers/` -- the agent template. That made creating a PROJECT's ticket board
+ * depend on the agent template being on disk, and `provisionTicketProviderBoard`
+ * had to stage a fake Hermes role tree in a temp directory to run one. Board
+ * creation is a ticket concern and has nothing to do with employees, so the
+ * dependency is gone: pjangler reads Krebs, Flume renders a vendored mirror into
+ * each role directory, and neither reaches into the other.
+ *
+ * Resolution: an env override first, then a walk up from this module (so it
+ * works from source, from the bundled `dist/`, and from an npm install beside a
+ * 33GOD checkout), then the canonical checkout path.
  */
 export function resolveTicketProviderAdapter(provider: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const file = `${provider}.sh`;
   const candidates: string[] = [];
   const override = env[TICKET_PROVIDER_ADAPTERS_ENV];
   if (override) candidates.push(join(override, file));
-  const relativeRoots = [
-    join("templates", "hermes-agent", "template", ".scripts", "providers"),
-    join("agents", "hermes", "pm", ".scripts", "providers"),
-  ];
+  const relativeRoot = join("krebs", "adapters", "tp");
   try {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let depth = 0; depth < 8; depth++) {
-      for (const relativeRoot of relativeRoots) candidates.push(join(dir, relativeRoot, file));
+      candidates.push(join(dir, relativeRoot, file));
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -837,9 +828,7 @@ export function resolveTicketProviderAdapter(provider: string, env: NodeJS.Proce
   } catch {
     /* import.meta.url unavailable — rely on the other candidates */
   }
-  for (const relativeRoot of relativeRoots) {
-    candidates.push(join(homedir(), "code", "pjangler", relativeRoot, file));
-  }
+  candidates.push(join(homedir(), "code", "33GOD", relativeRoot, file));
   return candidates.find((candidate) => existsSync(candidate));
 }
 
@@ -906,14 +895,26 @@ export function provisionTicketProviderBoard(
     Object.values(values).reduce((acc, secret) => (secret ? acc.split(secret).join("***") : acc), text);
 
   // The adapters resolve their board binding from the nearest .project.json
-  // above their own role dir (`$0/../..`), NOT from the cwd or the environment.
-  // Running the vendored adapter in place would therefore make it inherit
-  // pjangler's own workspace/board. Stage it inside a throwaway repo shaped
-  // like a Hermes role tree whose .project.json carries exactly this plan's
-  // binding, so the adapter resolves the workspace we intend.
+  // above `$0/../..`, NOT from the cwd or the environment. Running one in place
+  // would therefore make it inherit pjangler's own workspace/board. Stage it in
+  // a throwaway tree whose .project.json carries exactly this plan's binding, so
+  // the adapter resolves the workspace we intend.
+  //
+  // The staging tree used to be shaped like a Hermes role directory
+  // (`agents/hermes/pm/.scripts/providers/`), which was cargo cult: two levels
+  // of nesting is the adapters' only structural requirement. It is `.tp/adapters/`
+  // now, so nothing here pretends to be an employee.
+  //
+  // The staging itself STAYS, and not only for the board binding. plane.sh reads
+  // `execution.mode` from the nearest .project.json and exits 78 for create_board
+  // when the mode is managed or shadow. The synthetic manifest has no `execution`
+  // key, so the adapter reads the default. Pointing it at the real manifest
+  // instead would start refusing board creation the moment managed execution
+  // ships -- latent today, because every manifest on this machine is still
+  // legacy, and a silent breakage the day that changes.
   const staging = mkdtempSync(join(tmpdir(), "pjangler-tp-"));
   try {
-    const providersDir = join(staging, "agents", "hermes", "pm", ".scripts", "providers");
+    const providersDir = join(staging, ".tp", "adapters");
     mkdirSync(providersDir, { recursive: true });
     writeFileSync(
       join(staging, ".project.json"),
@@ -1211,7 +1212,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (localName && localName !== input.name.trim() && !(input.overwrite ?? input.force ?? false)) {
     throw new Error(`Project name "${input.name.trim()}" conflicts with authoritative manifest "${localName}" (${slug}); pass --force to rename it`);
   }
-  const agentRole = normalizeAgentRole(input.agentRole);
   const registryPath = resolveRegistryLocation(input.registryPath);
   const registry = loadProjectRegistry(registryPath);
   const now = (input.now ?? new Date()).toISOString();
@@ -1244,13 +1244,15 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       : undefined;
   const sourceSkillPath = resolveSourceSkillPath(input.sourceSkill);
   const overwrite = input.overwrite ?? input.force ?? false;
+  // Existing entries are carried forward, never authored here.
+  //
+  // `.project.json.agents` is a PROJECTION of the org chart, not a place a
+  // project declares intent. The handbook says so: `agent_role_directory` flows
+  // agents.{id}.role_dir -> projects.{slug}.agents.{role}.role_dir, one way.
+  // `pj init --provision-agent` used to write a "planned" entry here for an
+  // employee nobody had hired yet; hiring is `flume hire <title>` now, and Flume
+  // owns the record.
   const agents = createSafeRecord<ProjectAgentRecord>(Object.entries(existing?.agents ?? {}));
-  if (input.provisionAgent) {
-    agents[agentRole] = {
-      role: agentRole,
-      provisioning_state: "planned",
-    };
-  }
   const scaffold = input.scaffold ?? true;
 
   const candidateProject: ProjectRecord = {
@@ -1330,10 +1332,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const enableSystemd = input.enableSystemd ?? live;
   const skipPlane = input.skipPlane ?? false;
   const boardEnabled = provisionTicketBoard && !skipPlane;
-  const systemdEnabled = live && enableSystemd && process.platform !== "darwin";
-  // The AGENT's external tail is a host effect and stays behind `--live`.
-  const agentBoardEffect = live && boardEnabled;
-  const anyExternalAgentEffect = agentBoardEffect || systemdEnabled;
   const actions: ProjectInitAction[] = [
     { kind: "registry.upsert", registryPath, slug, project },
   ];
@@ -1377,21 +1375,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
             ? "ticket-provider action requires explicit provisionTicketBoard=true"
             : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`,
     },
-    {
-      kind: "hermes.provision-agent",
-      enabled: input.provisionAgent ?? false,
-      local: !anyExternalAgentEffect,
-      targetDir,
-      targetRepo: slug,
-      role: agentRole,
-      context: {
-        skipPlane: !agentBoardEffect,
-        // Per-agent Bloodbank consumers are retired. Agent ingress always
-        // stays on the fleet-shared gateway, regardless of live/local mode.
-        skipBloodbank: true,
-        skipSystemd: !systemdEnabled,
-      },
-    }
   );
 
   return {
@@ -1596,8 +1579,6 @@ export async function executeProjectInitPlan(
           };
         }
       }
-    } else if (action.kind === "hermes.provision-agent") {
-      logs.push(action.enabled ? "hermes.provision-agent planned for the caller to execute" : "hermes.provision-agent skipped");
     }
   }
 

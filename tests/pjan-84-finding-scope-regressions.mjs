@@ -78,15 +78,10 @@ try {
     assert.deepEqual(
       host,
       [
-        "hermes.delta-list-override",
-        "hermes.fleet-config",
-        "hermes.profile-wiring",
-        "hermes.registry-parity",
         "notebook.hooks-projected",
         "notebook.skill-installed",
-        "systemd.sentinel",
       ],
-      "exactly the rules about $HOME, systemd and the fleet registry are host-scoped",
+      "exactly the rules about $HOME are host-scoped",
     );
   });
 
@@ -103,7 +98,7 @@ try {
     // the scope that feeds it.
     const report = JSON.parse(cli(["audit", target, "--registry", registry, "--json"], hostEnv).stdout);
     const hostRules = report.rules.filter((r) => r.scope === "host");
-    assert.ok(hostRules.length >= 6, "host rules must be present to reason about");
+    assert.ok(hostRules.length >= 2, "host rules must be present to reason about");
     const worst = hostRules.filter((r) => r.status === "fail" || r.status === "warn");
     if (worst.length) {
       assert.equal(report.ok, true, `a host failure must not fail the project: ${JSON.stringify(worst.map((r) => r.id))}`);

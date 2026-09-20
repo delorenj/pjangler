@@ -6,7 +6,6 @@ import { spawnSync } from "node:child_process";
 
 const SUPPORTED = new Map([
   ["templates/commonproject", { url: "git@github.com:delorenj/CommonProject.git", branch: "main" }],
-  ["templates/hermes-agent", { url: "git@github.com:delorenj/hermes-agent-template.git", branch: "main" }],
 ]);
 const FORBIDDEN_TRACKED = [
   { pattern: /^\.tmp(?:\/|$)/, label: "host-local .tmp cache" },
@@ -255,7 +254,7 @@ function validateNpm(root) {
   const packRecord = Array.isArray(payload) ? payload[0] : Object.values(payload ?? {})[0];
   const files = packRecord?.files?.map((entry) => entry.path) ?? [];
   assertNoForbiddenPayload(files, "npm package");
-  for (const required of ["templates/commonproject/copier.yml", "templates/hermes-agent/copier.yml"]) {
+  for (const required of ["templates/commonproject/copier.yml"]) {
     if (!files.includes(required)) fail(`npm package is missing populated ${required}`);
   }
 }

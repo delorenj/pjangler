@@ -30,8 +30,6 @@ import type {
   RecipeMetadata,
   RecipePhaseOutcome,
 } from "./types";
-import type { HermesAgentContext } from "../commands/hermes/types";
-import { ApplyDeferredExternalEffects } from "../commands/hermes/ApplyDeferredExternalEffects";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import type { TrustedCopierIdentity } from "../lifecycle/preflight";
 import type { NotebookPlanV1 } from "../notebook/observation";
@@ -42,7 +40,6 @@ export interface ProjectRecipeInput {
   mode: "create" | "sync";
   selectedRuleIds?: readonly string[];
   selectedOperations?: readonly string[];
-  agentContext?: Partial<HermesAgentContext>;
   quiet?: boolean;
   trustedCopier?: TrustedCopierIdentity;
   requireTrustedCopier?: boolean;
@@ -55,7 +52,6 @@ export interface ProjectRecipeResult extends RecipeInitResult {
   migrationReport?: MigrationReport;
   selectedOperations: readonly string[];
   selectedParityRules: readonly string[];
-  agentResult?: RecipeInitResult;
 }
 
 export interface ProjectRecipeRuntime {
@@ -288,8 +284,6 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       repoRoot: targetDir,
       bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin,
     };
-    let agentResult: RecipeInitResult | undefined;
-    let provisionedAgentContext: (LifecycleContext & HermesAgentContext) | undefined;
     let migrationReport: MigrationReport | undefined;
     let audit: AuditReport | undefined;
     let notebookPlan: NotebookPlanV1 | undefined;
@@ -317,7 +311,6 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         ...plan,
         actions: plan.actions.filter((action) =>
           action.kind !== "registry.upsert"
-          && action.kind !== "hermes.provision-agent"
           && action.kind !== "ticket-provider.create-or-link"),
       };
       const planBlocked = errors.length > 0;
@@ -370,45 +363,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         phases.push(...localNotebook.phases);
       }
 
-      const agentAction = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
-      if (errors.length === 0 && agentAction?.kind === "hermes.provision-agent") {
-        const agentContext: HermesAgentContext = {
-          targetRepo: agentAction.targetRepo,
-          role: agentAction.role,
-          agentPurpose: `${agentAction.role} agent for ${agentAction.targetRepo}`,
-          ticketProvider: plan.project.ticket_provider.type as "plane" | "trello",
-          local: agentAction.local,
-          force: Boolean(ctx.force),
-          skipTelegram: true,
-          skipEmail: true,
-          skipPlane: agentAction.context.skipPlane,
-          skipBloodbank: agentAction.context.skipBloodbank,
-          skipSystemd: agentAction.context.skipSystemd,
-          ...(normalized.agentContext ?? {}),
-          targetDir,
-          yes: true,
-          // Structured callers own stdout and prompt input. Do not allow a
-          // nested context object to weaken the transaction's quiet contract.
-          quiet: normalized.quiet ?? ctx.quiet ?? false,
-          dryRun: false,
-        };
-        provisionedAgentContext = { ...transactionContext, ...agentContext, targetDir, repoRoot: targetDir };
-        agentResult = await this.registry.initRecipe(
-          "hermes-agent",
-          provisionedAgentContext,
-          agentContext,
-        );
-        logs.push(...agentResult.logs);
-        errors.push(...agentResult.errors);
-        changedFiles.push(...agentResult.changedFiles);
-        phases.push(...agentResult.phases);
-      }
-
-      // A fresh scaffold and an agent-provisioning action both create state
-      // governed by this recipe. Close only ProjectRecipe's own checks here;
-      // existing syncs without such an action still require explicitly selected
-      // migrations and never receive an implicit migrate-all repair pass.
-      if (errors.length === 0 && (mode === "create" || agentResult)) {
+      if (errors.length === 0 && mode === "create") {
         const projectLifecycle = await this.initializeOwnedChecks(transactionContext);
         logs.push(...projectLifecycle.logs);
         errors.push(...projectLifecycle.errors);
@@ -583,25 +538,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         }
       }
 
-      const deferred = provisionedAgentContext?.deferredExternalEffects;
-      if (errors.length === 0 && deferred?.owner === "project" && (deferred.ticketBoard || deferred.systemd)) {
-        externalDispatchStarted = true;
-        rollbackEligible = false;
-        const beforeExternal = snapshotTree(targetDir);
-        const external = await new ApplyDeferredExternalEffects(provisionedAgentContext!).invoke();
-        const externalChanges = changedTreePaths(targetDir, beforeExternal, snapshotTree(targetDir));
-        logs.push(...(external.message ? [external.message] : []));
-        if (!external.success) errors.push(external.message || "Deferred Hermes external effects failed");
-        changedFiles.push(...externalChanges);
-        phases.push({
-          id: "project.external:hermes",
-          status: external.success ? "changed" : "failed",
-          changedFiles: external.success ? externalChanges : [],
-          message: external.message || undefined,
-        });
-      }
-
-      if (registryFinalizerEligible && (externalPlanActions.length || notebookPlan || deferred)) {
+      if (registryFinalizerEligible && (externalPlanActions.length || notebookPlan)) {
         try {
           refreshPlanFromCanonicalManifest(plan);
         } catch (error) {
@@ -732,7 +669,6 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       selectedOperations: normalized.selectedOperations ?? [],
       selectedParityRules: normalized.selectedRuleIds ?? [],
       migrationReport,
-      agentResult,
     };
   }
 

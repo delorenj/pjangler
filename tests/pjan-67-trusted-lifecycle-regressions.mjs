@@ -6,7 +6,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,18 +13,14 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import YAML from "yaml";
 import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
   createSkillPackFixture,
   createSkillexMiseFixture,
 } from "./helpers/pack-fixture.mjs";
-import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 import {
-  committedSubmoduleGitlink,
   materializeCommittedSubmodule,
-  materializeGitCommit,
   readGitCommitFile,
 } from "./helpers/committed-submodule.mjs";
 
@@ -35,9 +30,6 @@ if (installed.status !== 0 || !installed.stdout.trim()) {
   console.log("PJAN-67 trusted lifecycle integration: SKIP (Copier is not installed)");
   process.exit(0);
 }
-const installedPython = spawnSync("which", ["python3"], { encoding: "utf8" });
-assert.equal(installedPython.status, 0, installedPython.stderr);
-const realPython = realpathSync(installedPython.stdout.trim());
 
 const temporary = mkdtempSync(join(root, ".pjan-67-trusted-lifecycle-"));
 const skillState = mkdtempSync("/tmp/pjan-67-state-");
@@ -58,26 +50,6 @@ materializeCommittedSubmodule(
   join(fixturePjanglerRoot, "templates", "commonproject"),
 );
 
-// Build the Hermes fixture from the parent HEAD gitlink through git archive.
-// Deliberately dirty an independent source checkout first: neither that byte
-// nor the advanced shared submodule worktree may influence this lifecycle run.
-const HERMES_GITLINK = committedSubmoduleGitlink(root, "templates/hermes-agent");
-const dirtyHermesSource = join(temporary, "dirty-hermes-source");
-const clonedHermes = spawnSync(
-  "git",
-  ["clone", "--quiet", "--no-hardlinks", join(root, "templates", "hermes-agent"), dirtyHermesSource],
-  { cwd: root, encoding: "utf8" },
-);
-assert.equal(clonedHermes.status, 0, clonedHermes.stderr);
-writeFileSync(join(dirtyHermesSource, "copier.yml"), "PJAN-67 DIRTY WORKTREE SENTINEL\n");
-assert.match(
-  spawnSync("git", ["status", "--short"], { cwd: dirtyHermesSource, encoding: "utf8" }).stdout,
-  /copier\.yml/,
-);
-const committedHermesTemplate = join(fixturePjanglerRoot, "templates", "hermes-agent");
-materializeGitCommit(dirtyHermesSource, HERMES_GITLINK, committedHermesTemplate);
-assert.doesNotMatch(readFileSync(join(committedHermesTemplate, "copier.yml"), "utf8"), /DIRTY WORKTREE SENTINEL/);
-
 const serverPath = join(fixturePjanglerRoot, "dist", "mcp-server.js");
 const enclosingProjectManifest = join(temporary, ".project.json");
 const enclosingProjectManifestBefore = '{"project_name":"PJAN-67 enclosing sentinel","agents":{}}\n';
@@ -88,16 +60,11 @@ const isolatedHome = join(temporary, "home");
 const fakeBin = join(temporary, "bin");
 const registryPath = join(temporary, "projects.yaml");
 const providerAdapters = join(temporary, "providers");
-const effectLog = join(temporary, "effects.log");
 const providerLog = join(temporary, "provider.log");
 const templateConfig = join(isolatedHome, ".config", "hermes-agent-template", "config.toml");
-const fleetHome = join(isolatedHome, ".hermes");
-const fakeHermes = join(fakeBin, "hermes");
-const pjanglerWrapper = join(fakeBin, "pj");
 const fixtureRoot = join(temporary, "fixtures");
 const selectedBmadPack = createSkillPackFixture(fixtureRoot);
 const selectedBmadInstaller = createBmadInstallerFixture(fixtureRoot);
-const fleetAuthoritySentinel = "fleet-rehydrated-sentinel";
 
 function executable(path, source) {
   mkdirSync(dirname(path), { recursive: true });
@@ -105,75 +72,15 @@ function executable(path, source) {
   chmodSync(path, 0o755);
 }
 
-executable(fakeHermes, `#!/bin/sh
-printf 'local-hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:hermes:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
-if [ "$1" = profile ] && [ "$2" = create ]; then
-  mkdir -p "$HOME/.hermes/profiles/$3"
-fi
-exit 0
-`);
-
-executable(pjanglerWrapper, `#!/bin/sh
-printf 'runtime-migrate:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:pjangler:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
-exec "${process.execPath}" "${join(fixturePjanglerRoot, "dist", "index.js")}" "$@"
-`);
-
-executable(join(fakeBin, "python3"), `#!/bin/sh
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:python3:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
-exec "${realPython}" "$@"
-`);
-
-executable(join(fakeBin, "systemctl"), `#!/bin/sh
-printf 'systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:systemctl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
-case "$*" in
-  *is-system-running*) printf '%s\n' running; exit 0 ;;
-  *is-active*consumer.service*) printf '%s\n' inactive; exit 4 ;;
-  *is-enabled*consumer.service*) printf '%s\n' not-found; exit 4 ;;
-  *is-active*gateway.service*) printf '%s\n' inactive; exit 3 ;;
-  *is-enabled*gateway.service*) printf '%s\n' disabled; exit 1 ;;
-  *show*heartbeat.timer*)
-    printf '%s\n' 'LoadState=loaded' 'ActiveState=active' 'SubState=waiting'; exit 0 ;;
-  *show*heartbeat.service*)
-    printf '%s\n' 'LoadState=loaded' 'ActiveState=inactive' 'SubState=dead' \
-      'Result=success' 'ExecMainStatus=0' 'NRestarts=0' \
-      'ExecMainStartTimestampMonotonic=100' 'ExecMainExitTimestampMonotonic=200'; exit 0 ;;
-  *show*gateway.service*)
-    printf '%s\n' 'LoadState=loaded' 'ActiveState=active' 'SubState=running' \
-      'Result=success' 'ExecMainStatus=0' 'NRestarts=0'; exit 0 ;;
-  *is-active*) printf '%s\n' active; exit 0 ;;
-  *is-enabled*) printf '%s\n' enabled; exit 0 ;;
-esac
-exit 0
-`);
-
 executable(join(providerAdapters, "plane.sh"), `#!/bin/sh
-printf 'provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'provider:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:provider:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
 printf '%s\n' '{"board_id":"trusted-positive-board","identifier":"TRUST"}'
 `);
 copyFileSync(join(providerAdapters, "plane.sh"), join(providerAdapters, "trello.sh"));
 chmodSync(join(providerAdapters, "trello.sh"), 0o755);
 
 executable(join(fakeBin, "curl"), `#!/bin/sh
-printf 'curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
 printf 'curl:%s\n' "$*" >> "$PJAN67_PROVIDER_LOG"
-if env | grep -Fq '${fleetAuthoritySentinel}'; then
-  printf 'authority-visible:curl:%s\n' "$*" >> "$PJAN67_EFFECT_LOG"
-fi
 # plane.sh calls: curl -sS -o <body> -D <headers> -w '%{http_code}' -X <M> <url>
 # and captures stdout as the status. Honour -o/-D/-w, or the JSON body lands on
 # stdout where the status belongs and the caller reports "invalid HTTP status".
@@ -206,54 +113,13 @@ writeFileSync(bmadCache, JSON.stringify({
   fetchedAt: Date.now(),
   distTags: { next: BMAD_INSTALLER_FIXTURE_VERSION, latest: BMAD_INSTALLER_FIXTURE_VERSION },
 }), "utf8");
-writeFileSync(templateConfig, `[fleet]
-hermes_bin = "${fakeHermes}"
-hermes_repo = "${join(temporary, "hermes-agent") }"
-pjangler_bin = "${pjanglerWrapper}"
-hermes_git_url = "https://example.invalid/hermes.git"
-hermes_git_ref = "main"
-hermes_git_sha = "0000000000000000000000000000000000000000"
-runtime_scaffold_dir = "${join(temporary, "runtime-scaffold") }"
-fleet_env = "${join(fleetHome, "fleet.env") }"
-registry_file = "${join(fleetHome, "agents-registry.yaml") }"
-oauth_file = "${join(fleetHome, "auth.json") }"
-codex_home = "${join(isolatedHome, ".codex") }"
-canonical_skills_dir = "${join(temporary, "skills") }"
-canonical_pm_config = "${join(fleetHome, "config.yaml") }"
-symlinked_runtime_skills = []
-
-[github]
-runtime_repo_owner = ""
-
-[plane]
+// `src/project/boardUrl.ts` still resolves the Plane instance and workspace
+// through this file. Without a fixture copy the run falls back to the real
+// DEFAULT_PLANE_BASE, so an unexpected board URL would name a live host.
+writeFileSync(templateConfig, `[plane]
 base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
-for (const skill of [
-  "33god-projects",
-  "delonet-conventions",
-  "delonet-dotenv",
-  "hermes-pm-template-maintenance",
-  "hindsight",
-  "subagent-driven-development",
-]) {
-  const skillDir = join(temporary, "skills", skill);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${skill}\ndescription: PJAN-67 trusted fixture\n---\n`);
-}
-mkdirSync(fleetHome, { recursive: true });
-// See tests/helpers/fleet-base-config.mjs: the fleet base is operator-owned, so
-// a sandboxed HOME has none and hermes.fleet-config fails on it.
-writeFleetBaseConfig(fleetHome, isolatedHome);
-writeFileSync(join(fleetHome, "fleet.env"), [
-  `export PLANE_API_KEY=${fleetAuthoritySentinel}`,
-  `export PLANE_33GOD_API_KEY=${fleetAuthoritySentinel}`,
-  `export PLANE_DYNAMIC_WORKSPACE_API_KEY=${fleetAuthoritySentinel}`,
-  `export TRELLO_KEY=${fleetAuthoritySentinel}`,
-  `export TRELLO_TOKEN=${fleetAuthoritySentinel}`,
-  `export LINEAR_API_KEY=${fleetAuthoritySentinel}`,
-  "",
-].join("\n"), "utf8");
 
 const serverEnv = {
   ...process.env,
@@ -267,13 +133,6 @@ const serverEnv = {
   SKILLEX_REGISTRY_ROOT: fixtureRoot,
   PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,
   HERMES_TEMPLATE_CONFIG: templateConfig,
-  HERMES_FLEET_HOME: fleetHome,
-  HERMES_FLEET_ENV: join(fleetHome, "fleet.env"),
-  HERMES_FLEET_REGISTRY_FILE: join(fleetHome, "agents-registry.yaml"),
-  HERMES_BIN: fakeHermes,
-  HERMES_AGENT_REPO: join(temporary, "hermes-agent"),
-  PJANGLER_BIN: pjanglerWrapper,
-  PJANGLER_HERMES_TEMPLATE: "",
   PJ_PROJECT_REGISTRY: registryPath,
   PJ_PACK_ROOT_PJTEST: selectedBmadPack,
   PJ_BMAD_INSTALLER: selectedBmadInstaller,
@@ -281,11 +140,7 @@ const serverEnv = {
   PLANE_API_KEY: "trusted-positive-test-key",
   TRELLO_KEY: "trusted-positive-test-key",
   TRELLO_TOKEN: "trusted-positive-test-token",
-  PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
-  SYSTEMD_STABILIZATION_ATTEMPTS: "3",
-  SYSTEMD_STABLE_SAMPLES: "3",
-  SYSTEMD_STABILIZATION_INTERVAL_SECONDS: "0",
 };
 
 function assertEnclosingProjectUntouched(label) {
@@ -296,9 +151,7 @@ function assertEnclosingProjectUntouched(label) {
   );
 }
 
-function assertNoUngrantAuthority(label) {
-  const effects = existsSync(effectLog) ? readFileSync(effectLog, "utf8") : "";
-  assert.doesNotMatch(effects, /authority-visible:/, `${label}: FLEET_ENV provider authority must not reach any child`);
+function assertNoUngrantedProvider(label) {
   assert.equal(existsSync(providerLog), false, `${label}: no-board grant must invoke no provider`);
 }
 
@@ -356,31 +209,6 @@ try {
   assert.equal(readFileSync(join(target, ".copier-answers.yml"), "utf8"), copierAnswersBefore, "existing sync must not rerun Copier");
   assertEnclosingProjectUntouched("trusted project sync");
 
-  // Every MCP entry point that can reach Hermes must keep the no-board grant
-  // authoritative even after the real rendered _lib.sh sources fleet.env.
-  // Child wrappers observe the entire environment without relying on source
-  // text assertions, and the fleet sentinel is deliberately absent from the
-  // parent MCP process environment.
-  rmSync(effectLog, { force: true });
-  rmSync(providerLog, { force: true });
-  const dedicatedNoBoardResult = await client.callTool({
-    name: "pjangler_deploy_hermes_agent",
-    arguments: {
-      targetDir: target,
-      targetRepo: "trusted-project",
-      role: "authority-dedicated",
-      apply: true,
-      local: true,
-      live: false,
-      skipPlane: true,
-    },
-  });
-  const dedicatedNoBoard = payload(dedicatedNoBoardResult);
-  assert.equal(typeof dedicatedNoBoard.success, "boolean", JSON.stringify(dedicatedNoBoard));
-  assertNoUngrantAuthority("dedicated Hermes no-board path");
-  assertEnclosingProjectUntouched("dedicated Hermes no-board path");
-
-  rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
   const projectInitNoBoardTarget = join(temporary, "authority-project-init");
   const projectInitNoBoardResult = await client.callTool({
@@ -389,8 +217,9 @@ try {
       name: "Authority Project Init",
       targetDir: projectInitNoBoardTarget,
       slug: "authority-project-init",
-      provisionAgent: true,
-      agentRole: "authority-project-init",
+      // Both no-board fixtures slugify to the same proposed identifier, so pin
+      // them apart rather than have the second collide in the registry.
+      identifier: "APIN",
       apply: true,
       live: false,
       skipPlane: true,
@@ -398,10 +227,9 @@ try {
   });
   const projectInitNoBoard = payload(projectInitNoBoardResult);
   assert.equal(typeof projectInitNoBoard.ok, "boolean", JSON.stringify(projectInitNoBoard));
-  assertNoUngrantAuthority("project-init no-board path");
+  assertNoUngrantedProvider("project-init no-board path");
   assertEnclosingProjectUntouched("project-init no-board path");
 
-  rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
   const bootstrapNoBoardTarget = join(temporary, "authority-bootstrap");
   const bootstrapNoBoardResult = await client.callTool({
@@ -411,8 +239,7 @@ try {
       targetDir: bootstrapNoBoardTarget,
       projectName: "Authority Bootstrap",
       projectSlug: "authority-bootstrap",
-      provisionAgent: true,
-      agentRole: "authority-bootstrap",
+      projectIdentifier: "ABOO",
       dryRun: false,
       local: true,
       live: false,
@@ -421,109 +248,9 @@ try {
   });
   const bootstrapNoBoard = payload(bootstrapNoBoardResult);
   assert.equal(typeof bootstrapNoBoard.ok, "boolean", JSON.stringify(bootstrapNoBoard));
-  assertNoUngrantAuthority("bootstrap no-board path");
+  assertNoUngrantedProvider("bootstrap no-board path");
   assertEnclosingProjectUntouched("bootstrap no-board path");
 
-  // A readable empty fleet registry makes registry parity repairable, allowing
-  // the selected non-board external tail itself (rather than an earlier
-  // lifecycle blocker) to be exercised.
-  writeFileSync(join(fleetHome, "agents-registry.yaml"), "agents: {}\n", "utf8");
-  rmSync(effectLog, { force: true });
-  rmSync(providerLog, { force: true });
-  const dedicatedNoBoardExternalResult = await client.callTool({
-    name: "pjangler_deploy_hermes_agent",
-    arguments: {
-      targetDir: target,
-      targetRepo: "trusted-project",
-      role: "authority-external",
-      apply: true,
-      local: false,
-      live: true,
-      // Deprecated compatibility input: deliberately true to prove it cannot
-      // arm a remote runtime effect; role-local convergence is unconditional.
-      provisionRuntimeRepo: true,
-      enableSystemd: true,
-      skipPlane: true,
-    },
-  });
-  const dedicatedNoBoardExternal = payload(dedicatedNoBoardExternalResult);
-  assert.notEqual(dedicatedNoBoardExternalResult.isError, true, JSON.stringify(dedicatedNoBoardExternal));
-  assert.equal(dedicatedNoBoardExternal.success, true, JSON.stringify(dedicatedNoBoardExternal));
-  const noBoardExternalEffects = readFileSync(effectLog, "utf8");
-  assert.match(noBoardExternalEffects, /runtime-migrate:/, "required role-local runtime convergence must run before external dispatch");
-  // The `enable --now` this used to look for came from the per-agent heartbeat
-  // timer, which hermes-agent-template 63466a8 retired. What the check is
-  // actually about is the GRANT reaching the selected child, so assert that
-  // directly: a state-changing systemctl call after the unit write
-  // (`daemon-reload`), and the gateway being driven to its declared state.
-  // This fixture's gateway is deferred — no channel credential — so that is
-  // `disable --now`; an active one would be `enable --now`. Matching either
-  // keeps the assertion about authority rather than about one unit's
-  // disposition, and it is two proofs where there was one.
-  assert.match(noBoardExternalEffects, /systemctl:--user daemon-reload/, "non-board systemd grant must reach its selected child");
-  assert.match(
-    noBoardExternalEffects,
-    /systemctl:--user (?:enable|disable) --now hermes-trusted-project-authority-external-gateway\.service/,
-    "the granted child must drive the gateway to its declared state",
-  );
-  assertNoUngrantAuthority("dedicated Hermes selected non-board external path");
-  assertEnclosingProjectUntouched("dedicated Hermes selected non-board external path");
-
-  rmSync(effectLog, { force: true });
-  rmSync(providerLog, { force: true });
-  const deployedResult = await client.callTool({
-    name: "pjangler_deploy_hermes_agent",
-    arguments: {
-      targetDir: target,
-      targetRepo: "trusted-project",
-      role: "director",
-      apply: true,
-      local: false,
-      live: true,
-      provisionRuntimeRepo: true,
-      provisionTicketBoard: true,
-      enableSystemd: true,
-      ticketProvider: "plane",
-    },
-  });
-  const deployed = payload(deployedResult);
-  assert.notEqual(deployedResult.isError, true, JSON.stringify(deployed));
-  assert.equal(deployed.success, true, JSON.stringify(deployed.errors));
-  const effectText = readFileSync(effectLog, "utf8");
-  assert.equal((readFileSync(providerLog, "utf8").match(/-X POST/g) ?? []).length, 1, "the granted board provider must create exactly once");
-  assert.match(effectText, /runtime-migrate:/, "required role-local runtime convergence must execute");
-  // Same substitution as the non-board path above: the retired heartbeat timer
-  // was what made `enable --now` unconditional, so prove the phase executed by
-  // its state-changing calls instead.
-  assert.match(effectText, /systemctl:--user daemon-reload/, "the granted systemd phase must execute");
-  assert.match(
-    effectText,
-    /systemctl:--user (?:enable|disable) --now hermes-trusted-project-director-gateway\.service/,
-    "the granted systemd phase must drive the gateway to its declared state",
-  );
-  const hostSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes host effects")) ?? "";
-  assert.equal((hostSummary.match(/20-runtime-repo\.sh/g) ?? []).length, 1, "role-local runtime must be a required host/local phase");
-  const deferredSummary = deployed.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
-  assert.doesNotMatch(deferredSummary, /20-runtime-repo\.sh/, "external consent must not dispatch the retired runtime-repo effect");
-  for (const script of ["42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    assert.equal((deferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `${script} must be dispatched exactly once`);
-  }
-  // Ordering, stated so it cannot pass vacuously. The previous form compared
-  // against indexOf("curl:-fsS"), but -fsS only appears in plane.sh's
-  // describe_board; this path resolves through `tp resolve`, which uses -sS.
-  // A marker that never appears returns -1, so the comparison was false for a
-  // reason the message never revealed. Require BOTH markers, then order them.
-  const localAt = effectText.indexOf("local-hermes:");
-  const providerAt = effectText.search(/^curl:/m);
-  assert.notEqual(localAt, -1, `local rendering must run\n${effectText}`);
-  assert.notEqual(providerAt, -1, `a deferred provider effect must run\n${effectText}`);
-  assert.ok(localAt < providerAt, `local rendering must precede the deferred provider effect\n${effectText}`);
-  const deployedRole = YAML.parse(readFileSync(join(target, "agents", "hermes", "director", "role.yaml"), "utf8"));
-  assert.equal(deployedRole.deployment.local_only, false, "successful live deployment must clear temporary local-only metadata");
-  assert.equal(deployedRole.deployment.systemd, "required", "successful systemd grant must persist required deployment metadata");
-  assertEnclosingProjectUntouched("trusted dedicated Hermes deploy");
-
-  rmSync(effectLog, { force: true });
   rmSync(providerLog, { force: true });
   const projectTailTarget = join(temporary, "trusted-project-tail");
   const projectTailResult = await client.callTool({
@@ -535,13 +262,9 @@ try {
       projectSlug: "trusted-project-tail",
       projectIdentifier: "TAIL",
       dryRun: false,
-      provisionAgent: true,
-      agentRole: "director",
       local: false,
       live: true,
-      provisionRuntimeRepo: true,
       provisionTicketBoard: true,
-      enableSystemd: true,
       skipPlane: false,
       ticketProvider: "trello",
     },
@@ -553,25 +276,14 @@ try {
   const eligibilityIndex = phaseIds.indexOf("project.audit:eligibility");
   const gitIndex = phaseIds.indexOf("project.git");
   const providerIndex = phaseIds.indexOf("project.external:ticket-provider");
-  const hermesIndex = phaseIds.indexOf("project.external:hermes");
   const postconditionIndex = phaseIds.indexOf("project.audit");
   assert.ok(
     eligibilityIndex >= 0 && eligibilityIndex < gitIndex && gitIndex < providerIndex,
     "project eligibility and ordinary local Git work must complete before the provider tail",
   );
-  assert.ok(providerIndex < hermesIndex && hermesIndex < postconditionIndex, "project external phases must precede only the read-only postcondition audit");
+  assert.ok(providerIndex < postconditionIndex, "project external phases must precede only the read-only postcondition audit");
   assert.equal((readFileSync(providerLog, "utf8").match(/create_board/g) ?? []).length, 1, "project-owned board grant must invoke its adapter exactly once");
-  const projectHostSummary = projectTail.logs.find((line) => line.includes("Applied deferred Hermes host effects")) ?? "";
-  assert.equal((projectHostSummary.match(/20-runtime-repo\.sh/g) ?? []).length, 1, "project-owned role-local runtime must be a required host/local phase");
-  const projectDeferredSummary = projectTail.logs.find((line) => line.includes("Applied deferred Hermes external effects")) ?? "";
-  assert.doesNotMatch(projectDeferredSummary, /20-runtime-repo\.sh/, "project external consent must not dispatch a runtime repository");
-  for (const script of ["42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    assert.equal((projectDeferredSummary.match(new RegExp(script.replace(".", "\\."), "g")) ?? []).length, 1, `project owner must dispatch ${script} exactly once`);
-  }
-  const projectRole = YAML.parse(readFileSync(join(projectTailTarget, "agents", "hermes", "director", "role.yaml"), "utf8"));
-  assert.equal(projectRole.deployment.local_only, false);
-  assert.equal(projectRole.deployment.systemd, "required");
-  assertEnclosingProjectUntouched("trusted project-owned Hermes deploy");
+  assertEnclosingProjectUntouched("trusted project-owned board deploy");
 
   console.log("PJAN-67 trusted Copier create/sync/deferred-external regressions: PASS");
 } finally {

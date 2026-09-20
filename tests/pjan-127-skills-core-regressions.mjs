@@ -15,7 +15,7 @@ function fixture() {
   put(join(home, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, skills: ["alpha"] }) + "\n");
   put(join(project, "mise.toml"), '[env]\n_.path = [".mise/scripts"]\n');
   const env = { ...process.env, HOME: home, XDG_STATE_HOME: join(base, "state"), PJ_SKILLS_REGISTRY_ROOT: registry,
-    HERMES_FLEET_HOME: join(home, ".hermes"), PJ_AGENT_HOOKS_LAYER: "0", PLANE_API_KEY: "", PLANE_33GOD_API_KEY: "", TRELLO_TOKEN: "", PYTHONDONTWRITEBYTECODE: "1" };
+    PJ_AGENT_HOOKS_LAYER: "0", PLANE_API_KEY: "", PLANE_33GOD_API_KEY: "", TRELLO_TOKEN: "", PYTHONDONTWRITEBYTECODE: "1" };
   const run = (args, cwd = root) => {
     const result = spawnSync(process.execPath, [cli, ...args, "--json"], { cwd, env, encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
     assert.equal(result.error, undefined);
@@ -152,51 +152,6 @@ test("migration retires enter/watch/provision scripts and preserves unrelated ho
     assert.equal(f.audit().status, "pass"); assert.equal(f.migrate().report.results[0].status, "noop");
   } finally { f.close(); }
 });
-
-function profileFixture(f) {
-  const name = "fixture-pm", fleet = join(f.home, ".hermes"), profile = join(fleet, "profiles", name);
-  const role = join(f.project, "agents", "hermes", "pm"), runtime = join(role, "runtime");
-  put(join(role, "role.yaml"), `repo: fixture\nrole: pm\nagent_id: ${name}\nprofile: ${name}\n`);
-  put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":["beta"],"exclude":["alpha"]}\n');
-  put(join(fleet, ".env"), "# fixture\n"); mkdirSync(profile, { recursive: true });
-  symlinkSync(join(fleet, ".env"), join(profile, ".env"));
-  for (const entry of ["memories", "sessions", "workspace", "logs", "cron", "plans", "hooks", "pairing", "audio_cache", "image_cache"]) {
-    mkdirSync(join(runtime, entry), { recursive: true }); symlinkSync(join(runtime, entry), join(profile, entry));
-  }
-  for (const entry of ["SOUL.md", "state.db", "kanban.db"]) {
-    put(join(runtime, entry), "fixture\n"); symlinkSync(join(runtime, entry), join(profile, entry));
-  }
-  put(join(profile, "config.yaml"), "# GENERATED FILE -- DO NOT EDIT.\n{}\n");
-  put(join(profile, "config.delta.yaml"), "{}\n");
-  put(join(profile, "hindsight", "config.json"), JSON.stringify({ bank_id: `agent-${name}` }));
-  return { name, fleet, profile, role, runtime };
-}
-
-test("Hermes lifecycle projects the global/project union into a stable real skills root", () => {
-  const f = fixture(); try {
-    const p = profileFixture(f), skills = join(p.profile, "skills");
-    put(join(skills, "beta", "SKILL.md"), "Profile local winner\n");
-    const inode = lstatSync(skills).ino, local = snapshot(join(skills, "beta")), global = snapshot(join(f.home, ".agents"));
-    const result = f.run(["migrate", "hermes.runtime-singleton", f.project]);
-    assert.equal(result.exit, 0, JSON.stringify(result.report));
-    assert.equal(lstatSync(skills).ino, inode); assert.ok(!lstatSync(skills).isSymbolicLink());
-    assert.equal(realpathSync(join(skills, "alpha")), join(f.registry, "all-skills", "alpha"));
-    assert.deepEqual(snapshot(join(skills, "beta")), local); assert.deepEqual(snapshot(join(f.home, ".agents")), global);
-    const before = snapshot(f.base); assert.equal(f.run(["migrate", "hermes.runtime-singleton", f.project]).report.results[0].status, "noop");
-    assert.deepEqual(snapshot(f.base), before);
-  } finally { f.close(); }
-});
-
-test("Hermes lifecycle refuses a whole skills alias without touching the shared target", () => {
-  const f = fixture(); try {
-    const p = profileFixture(f); put(join(p.fleet, "skills", "legacy", "SKILL.md"), "Shared legacy\n");
-    symlinkSync(join(p.fleet, "skills"), join(p.profile, "skills"));
-    const before = snapshot(f.base); const result = f.run(["migrate", "hermes.runtime-singleton", f.project]);
-    assert.notEqual(result.exit, 0); assert.match(result.report.results[0].details.join("\n"), /explicit Skillex profile migration/);
-    assert.deepEqual(snapshot(f.base), before);
-  } finally { f.close(); }
-});
-
 test("task audit checks the actual run and pin, not comments or other tasks", () => {
   const f = fixture(); try {
     put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');

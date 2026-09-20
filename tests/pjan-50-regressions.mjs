@@ -1,7 +1,10 @@
 // PJAN-50 — cancellation must remain distinct from completion, and Plane issue
 // hydration must expose comments and attachments across API response variants.
 //
-// Fully hermetic: every adapter call uses a staged role tree and a recording
+// The adapters are canonical in Krebs (`krebs/adapters/tp/`); this suite reads
+// and runs the same copy `provisionTicketProviderBoard` resolves.
+//
+// Fully hermetic: every adapter call uses a staged adapter tree and a recording
 // curl stub. No request can reach a live Plane board.
 import assert from "node:assert/strict";
 import {
@@ -11,16 +14,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import {
-  materializeCommittedSubmodule,
-  readGitCommitFile,
-} from "./helpers/committed-submodule.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -36,38 +34,40 @@ function tempDir(label) {
   return path;
 }
 
-const committedTemplate = tempDir("committed-template");
-const HERMES_GITLINK = materializeCommittedSubmodule(
-  root,
-  "templates/hermes-agent",
-  committedTemplate,
-);
-
-function committedTemplateMode(path) {
-  const result = spawnSync(
-    "git",
-    ["ls-tree", HERMES_GITLINK, "--", `template/.scripts/${path}`],
-    {
-      cwd: join(root, "templates", "hermes-agent"),
-      encoding: "utf8",
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const mode = result.stdout.trim().split(/\s+/, 1)[0];
-  assert.ok(mode, `missing committed mode for ${path}`);
-  return mode;
+/**
+ * The canonical adapter directory, resolved the way
+ * `resolveTicketProviderAdapter` resolves it: the env override first, then a
+ * walk up from this repo, then the canonical 33GOD checkout.
+ */
+function resolveAdapters() {
+  const candidates = [];
+  const override = process.env.PJ_TICKET_PROVIDER_ADAPTERS;
+  if (override) candidates.push(override);
+  let dir = root;
+  for (let depth = 0; depth < 8; depth += 1) {
+    candidates.push(join(dir, "krebs", "adapters", "tp"));
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  candidates.push(join(homedir(), "code", "33GOD", "krebs", "adapters", "tp"));
+  const found = candidates.find((candidate) => existsSync(join(candidate, "plane.sh")));
+  assert.ok(found, "no tp adapters found; point PJ_TICKET_PROVIDER_ADAPTERS at a directory holding <provider>.sh");
+  return found;
 }
 
-const COPIES = {
-  "canonical-template": join(committedTemplate, "template", ".scripts"),
-  "deployed-pm": join(root, "agents", "hermes", "pm", ".scripts"),
-};
+const ADAPTERS = resolveAdapters();
 
-function stagePlane(copy) {
-  const dir = tempDir(copy);
-  const adapter = join(dir, "agents", "hermes", "pm", ".scripts", "providers", "plane.sh");
+/**
+ * Adapters resolve their board binding from the nearest .project.json ABOVE
+ * their own directory, so every run gets a throwaway `.tp/adapters/` tree whose
+ * manifest carries exactly this suite's fixture binding.
+ */
+function stagePlane() {
+  const dir = tempDir("stage");
+  const adapter = join(dir, ".tp", "adapters", "plane.sh");
   mkdirSync(dirname(adapter), { recursive: true });
-  writeFileSync(adapter, readFileSync(join(COPIES[copy], "providers", "plane.sh"), "utf8"));
+  writeFileSync(adapter, readFileSync(join(ADAPTERS, "plane.sh"), "utf8"));
   chmodSync(adapter, 0o755);
   writeFileSync(
     join(dir, ".project.json"),
@@ -126,8 +126,8 @@ function response(method, path, body) {
   return { method, url: `${BASE}/${path}`, body: JSON.stringify(body) };
 }
 
-function runPlane(copy, args, responses) {
-  const adapter = stagePlane(copy);
+function runPlane(args, responses) {
+  const adapter = stagePlane();
   const log = join(tempDir("log"), "requests.jsonl");
   const fixture = join(tempDir("responses"), "responses.json");
   const home = tempDir("home");
@@ -148,15 +148,6 @@ function runPlane(copy, args, responses) {
     ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
     : [];
   return { ...result, requests };
-}
-
-function runBoth(args, responses) {
-  const runs = Object.keys(COPIES).map((copy) => [copy, runPlane(copy, args, responses)]);
-  const [[, canonical], [name, deployed]] = runs;
-  assert.equal(deployed.status, canonical.status, `${name} exit status must match the canonical template`);
-  assert.equal(deployed.stdout, canonical.stdout, `${name} output must match the canonical template`);
-  assert.deepEqual(deployed.requests, canonical.requests, `${name} requests must match the canonical template`);
-  return canonical;
 }
 
 const states = [
@@ -188,81 +179,14 @@ const attachments = [
 ];
 
 try {
-  // The object reader used for the canonical fixture must be immune even to a
-  // deliberately dirty source checkout. This guards against quietly reverting
-  // to readFileSync(templates/hermes-agent/...) in future test refactors.
-  const dirtyTemplate = tempDir("dirty-template-source");
-  const cloned = spawnSync(
-    "git",
-    ["clone", "--quiet", "--no-hardlinks", join(root, "templates", "hermes-agent"), dirtyTemplate],
-    { cwd: root, encoding: "utf8" },
-  );
-  assert.equal(cloned.status, 0, cloned.stderr);
-  const dirtyPlane = join(dirtyTemplate, "template", ".scripts", "providers", "plane.sh");
-  writeFileSync(dirtyPlane, "PJAN-50 DIRTY WORKTREE SENTINEL\n");
+  // `cancelled` is a first-class normalized state, mapped by every provider.
   assert.match(
-    spawnSync("git", ["status", "--short"], { cwd: dirtyTemplate, encoding: "utf8" }).stdout,
-    /plane\.sh/,
-  );
-  const objectPlane = readGitCommitFile(
-    dirtyTemplate,
-    HERMES_GITLINK,
-    "template/.scripts/providers/plane.sh",
-  );
-  assert.equal(objectPlane, readFileSync(join(COPIES["canonical-template"], "providers", "plane.sh"), "utf8"));
-  assert.doesNotMatch(objectPlane, /DIRTY WORKTREE SENTINEL/);
-
-  // The canonical template is the source of truth. The deployed PM contract
-  // and provider scripts must be exact refreshes, not hand-merged variants.
-  for (const path of [
-    "lib/ticket-provider.sh",
-    "providers/linear.sh",
-    "providers/plane.sh",
-    "providers/trello.sh",
-    "sentinel/bin/issue-autonomous-review.sh",
-    "sentinel/bin/issue-close-gate.sh",
-  ]) {
-    assert.equal(
-      readFileSync(join(COPIES["deployed-pm"], path), "utf8"),
-      readFileSync(join(COPIES["canonical-template"], path), "utf8"),
-      `${path} must be refreshed byte-for-byte from the canonical template`,
-    );
-    assert.equal(
-      statSync(join(COPIES["deployed-pm"], path)).mode & 0o111,
-      statSync(join(COPIES["canonical-template"], path)).mode & 0o111,
-      `${path} executable bits must match the canonical template`,
-    );
-  }
-
-  for (const path of [
-    "sentinel/bin/issue-autonomous-review.sh",
-    "sentinel/bin/issue-close-gate.sh",
-  ]) {
-    assert.equal(
-      committedTemplateMode(path),
-      "100755",
-      `${path} must have executable Git mode for direct orchestration`,
-    );
-  }
-
-  // `cancelled` is a first-class normalized state in the shared contract.
-  for (const [copy, scripts] of Object.entries(COPIES)) {
-    const lib = readFileSync(join(scripts, "lib", "ticket-provider.sh"), "utf8");
-    assert.match(lib, /TP_STATES="[^"]*\bcancelled\b[^"]*"/, `${copy} contract must declare cancelled`);
-    const check = spawnSync(
-      "bash",
-      ["-c", '. "$1"; tp_is_valid_state cancelled', "_", join(scripts, "lib", "ticket-provider.sh")],
-      { cwd: root, encoding: "utf8" },
-    );
-    assert.equal(check.status, 0, `${copy} dispatcher must accept cancelled`);
-  }
-  assert.match(
-    readFileSync(join(COPIES["canonical-template"], "providers", "linear.sh"), "utf8"),
+    readFileSync(join(ADAPTERS, "linear.sh"), "utf8"),
     /cancelled\)\s+WANT_TYPE=canceled;/,
     "Linear must map normalized cancelled to its canceled workflow type",
   );
   assert.match(
-    readFileSync(join(COPIES["canonical-template"], "providers", "trello.sh"), "utf8"),
+    readFileSync(join(ADAPTERS, "trello.sh"), "utf8"),
     /cancelled\).*Cancelled/,
     "Trello must map normalized cancelled to a concrete list",
   );
@@ -275,7 +199,7 @@ try {
       response("PATCH", `projects/${BOARD}/issues/${ISSUE}/`, { sequence_id: 50 }),
       response("GET", `projects/${BOARD}/issues/${ISSUE}/`, issue),
     ];
-    const run = runBoth(["transition", ISSUE, "cancelled"], responses);
+    const run = runPlane(["transition", ISSUE, "cancelled"], responses);
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.stdout.trim(), "ok 50");
     assert.equal(run.requests.length, 3);
@@ -293,7 +217,7 @@ try {
 
   // Plane currently returns bare arrays for some collection endpoints.
   {
-    const run = runBoth(["get_issue", ISSUE], issueResponses(comments, attachments));
+    const run = runPlane(["get_issue", ISSUE], issueResponses(comments, attachments));
     assert.equal(run.status, 0, run.stderr);
     const hydrated = JSON.parse(run.stdout);
     assert.equal(hydrated.state, "Cancelled");
@@ -324,7 +248,7 @@ try {
 
   // Older/self-hosted Plane versions may paginate both collections.
   {
-    const run = runBoth(
+    const run = runPlane(
       ["get_issue", ISSUE],
       issueResponses({ results: comments, next_page_results: false }, { results: attachments, next_page_results: false }),
     );
@@ -338,16 +262,10 @@ try {
   // leave the core issue readable with an explicit empty attachment list.
   {
     const withoutAttachmentFixture = issueResponses({ results: comments }, []).slice(0, 3);
-    const run = runBoth(["get_issue", ISSUE], withoutAttachmentFixture);
+    const run = runPlane(["get_issue", ISSUE], withoutAttachmentFixture);
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(JSON.parse(run.stdout).attachments, []);
   }
-
-  const roleTemplate = readFileSync(join(committedTemplate, "template", "role.yaml.jinja"), "utf8");
-  assert.match(roleTemplate, /^\s+cancelled:\s+""/m, "rendered roles must expose a cancelled state override");
-  const providerDocs = readFileSync(join(committedTemplate, "docs", "sentinel", "providers.md"), "utf8");
-  assert.match(providerDocs, /`cancelled`/, "provider contract docs must list cancelled");
-  assert.match(providerDocs, /attachments/, "provider contract docs must describe attachment hydration");
 
   console.log("PJAN-50 regressions: passed");
 } finally {

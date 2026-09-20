@@ -4,8 +4,7 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyProjectRegistry, loadProjectRegistry, saveProjectRegistry, registryRequest, type ProjectRecord } from "../src/project/index";
-import { collectFleetInventory, readProjectRegistryRaw, resolveInventoryStores } from "../src/fleet/inventory";
+import { emptyProjectRegistry, loadProjectRegistry, saveProjectRegistry, type ProjectRecord } from "../src/project/index";
 import { persistProjectNotebookBinding, resolveEffectiveNotebookConfig, resolveNotebookProjectBySlug } from "../src/notebook/config";
 import { captureWorkerEnvironment } from "../src/notebook/hooks";
 
@@ -42,12 +41,6 @@ server.stdin.end(JSON.stringify(registry));
 try {
   const [output] = await once(server.stdout, "data");
   const url = `http://127.0.0.1:${String(output).trim()}`;
-  const stores = resolveInventoryStores({ env: { PJ_REGISTRY_URL: url }, home: repo });
-  assert.equal(stores.projects.configuredPath, url, "service URL must survive path resolution");
-  assert.equal(stores.projects.inspectedPath, url);
-  const raw = readProjectRegistryRaw(url);
-  assert.equal(raw.sourceRows, 1);
-  assert.equal(raw.entries[0]!.key, "px", "fleet reads the service through the production client");
   const resolved = resolveNotebookProjectBySlug("PX", url);
   assert.equal(resolved.project.slug, "px", "notebook lookup accepts case-insensitive project ids");
   const config = resolveEffectiveNotebookConfig(resolved);
@@ -63,15 +56,6 @@ try {
   unavailable.__registry_status = { px: { status: "missing", error: "manifest file missing" } };
   saveProjectRegistry(unavailable, url);
   assert.throws(() => resolveNotebookProjectBySlug("Px", url), /manifest is missing/);
-  const agentsPath = join(repo, "agents.yaml");
-  writeFileSync(agentsPath, "schema_version: 1\nagents: {}\n");
-  const inventory = collectFleetInventory({ agentRegistry: agentsPath, projectRegistry: url, home: repo, env: {} });
-  assert.equal(inventory.health.healthy, false, "a missing indexed manifest cannot produce healthy fleet status");
-  assert.ok(inventory.findings.some((finding) => finding.code === "project-manifest-unavailable"));
-  const malformedProject = structuredClone(unavailable) as unknown as Record<string, any>;
-  malformedProject.projects.px.ticket_provider.state = "active";
-  registryRequest(url, "PUT", "/v1/registry", malformedProject);
-  assert.equal(readProjectRegistryRaw(url).sourceRows, 1, "fleet diagnostics must tolerate a record normal registry validation rejects");
   console.log("pjan-80 registry consumer regressions: ok");
 } finally {
   server.kill();

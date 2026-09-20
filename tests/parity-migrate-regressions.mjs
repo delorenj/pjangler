@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,25 +7,6 @@ import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
-/**
- * An earlier version of a template-shipped role asset, or null when the
- * template's object database is unavailable. `hermes.pm-scaffold` decides
- * stale-versus-locally-modified by asking whether the bytes on disk are ones
- * the template ever shipped, so a fixture that wants "stale" has to supply
- * real ones.
- */
-function priorTemplateVersion(relPath) {
-  const templateRoot = join(root, "templates", "hermes-agent");
-  const filePath = `template/${relPath}`;
-  const log = spawnSync("git", ["-C", templateRoot, "log", "--format=%H", "--", filePath], { encoding: "utf8" });
-  if (log.status !== 0) return null;
-  const commits = log.stdout.trim().split("\n").filter(Boolean);
-  for (const commit of commits.slice(1)) {
-    const show = spawnSync("git", ["-C", templateRoot, "show", `${commit}:${filePath}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-    if (show.status === 0 && show.stdout) return show.stdout;
-  }
-  return null;
-}
 const cli = join(root, "dist", "index.js");
 const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
 const parityHome = mkdtempSync(join(tmpdir(), "pjangler-parity-home-"));
@@ -70,16 +51,6 @@ function runExpectError(args, cwd = root) {
     throw new Error(`expected command to fail: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}`);
   }
   return result.stderr;
-}
-
-function git(cwd, args, env) {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: env ? { ...process.env, ...env } : process.env,
-  });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  return result.stdout.trim();
 }
 
 // --- mise isolation ---------------------------------------------------------
@@ -210,60 +181,6 @@ function makeRepoWithoutMiseToml(name) {
   const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
   writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
   return repo;
-}
-
-function makeLegacyRuntimeRepo(name) {
-  const repo = makeRepo(name);
-  const runtimeSource = mkdtempSync(join(tmpdir(), `pjangler-${name}-runtime-source-`));
-  repos.push(repo, runtimeSource);
-
-  git(runtimeSource, ["init", "--quiet", "-b", "main"]);
-  git(runtimeSource, ["config", "user.email", "fixture@example.invalid"]);
-  git(runtimeSource, ["config", "user.name", "Fixture"]);
-  writeFileSync(join(runtimeSource, "version.txt"), "one\n");
-  git(runtimeSource, ["add", "version.txt"]);
-  git(runtimeSource, ["commit", "--quiet", "-m", "one"]);
-  const firstPin = git(runtimeSource, ["rev-parse", "HEAD"]);
-  writeFileSync(join(runtimeSource, "version.txt"), "two\n");
-  git(runtimeSource, ["commit", "--quiet", "-am", "two"]);
-  const secondPin = git(runtimeSource, ["rev-parse", "HEAD"]);
-
-  const roleDir = join(repo, "agents", "hermes", "pm");
-  const runtimeDir = join(roleDir, "runtime");
-  const privatePath = join(runtimeDir, "private-state.bin");
-  mkdirSync(runtimeDir, { recursive: true });
-  writeFileSync(join(roleDir, "role.yaml"), "repo: demo\nrole: pm\nagent_id: demo-pm\nprofile: demo-pm\n");
-  writeFileSync(join(roleDir, ".gitignore"), ".scripts/.provision.log\nruntime/\n");
-  writeFileSync(privatePath, Buffer.from([0, 17, 34, 51, 68, 255]));
-  writeFileSync(
-    join(repo, ".gitmodules"),
-    `[submodule "templates/commonproject"]
-\tpath = templates/commonproject
-\turl = git@github.com:delorenj/CommonProject.git
-[submodule "legacy-runtime-name"]
-\tpath = agents/hermes/pm/runtime
-\turl = git@github.com:example/agent-hm-demo-pm.git
-`,
-  );
-
-  git(repo, ["init", "--quiet", "-b", "main"]);
-  git(repo, ["config", "user.email", "fixture@example.invalid"]);
-  git(repo, ["config", "user.name", "Fixture"]);
-  git(repo, ["fetch", "--quiet", runtimeSource, "main"]);
-  git(repo, ["add", ".gitmodules", "AGENTS.md", "mise.toml", "agents/hermes/pm/role.yaml", "agents/hermes/pm/.gitignore"]);
-  git(repo, ["update-index", "--add", "--cacheinfo", `160000,${firstPin},agents/hermes/pm/runtime`]);
-  git(repo, ["commit", "--quiet", "-m", "legacy runtime gitlink"]);
-  git(repo, ["update-index", "--cacheinfo", `160000,${secondPin},agents/hermes/pm/runtime`]);
-
-  return {
-    repo,
-    roleDir,
-    runtimeDir,
-    privatePath,
-    privateBytes: readFileSync(privatePath),
-    runtimeEntries: readdirSync(runtimeDir),
-    secondPin,
-  };
 }
 
 function assertAgentSymlinks(repo) {
@@ -716,161 +633,6 @@ run = "echo still here"
     const noneFinding = noneAudit.rules.find((r) => r.id === "bmad.version");
     assert.equal(noneFinding.status, "skip", JSON.stringify(noneFinding));
     assert.equal(noneFinding.fixable, false, "absent BMAD version rule must not be fixable");
-  }
-
-  {
-    const repo = makeRepo("director-scaffold-parity");
-    const home = mkdtempSync(join(tmpdir(), "pjangler-director-scaffold-home-"));
-    repos.push(repo, home);
-    git(repo, ["init", "--quiet", "-b", "main"]);
-    const roleDir = join(repo, "agents", "hermes", "director");
-    mkdirSync(join(roleDir, ".scripts"), { recursive: true });
-    mkdirSync(join(roleDir, ".runtime-scaffold"), { recursive: true });
-    mkdirSync(join(roleDir, "runtime", "memories"), { recursive: true });
-    writeFileSync(
-      join(roleDir, "role.yaml"),
-      "repo: demo\nrole: director\nagent_id: demo-director\nprofile: demo-director\ndisplay_name: Demo Director\nbloodbank:\n  enabled: false\nticket_provider:\n  name: plane\n",
-    );
-    writeFileSync(join(roleDir, "SOUL.md"), "custom director soul\n");
-    writeFileSync(join(roleDir, "hermes"), "#!/usr/bin/env bash\n# stale wrapper\n");
-    writeFileSync(join(roleDir, ".gitignore"), "stale\n");
-    // A stale script holds bytes the template really shipped once. Synthetic
-    // content is indistinguishable from somebody's edit, which migrate now
-    // preserves rather than destroys, so simulate staleness with a genuine
-    // prior version. With no git available the probe cannot decide lineage
-    // either and falls back to the historical "stale" reading, so the
-    // synthetic fallback below still exercises the same path.
-    writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), priorTemplateVersion(".scripts/70-systemd.sh") ?? "#!/usr/bin/env bash\n# stale systemd\n");
-    writeFileSync(join(roleDir, ".runtime-scaffold", "README.md"), "scaffold\n");
-    writeFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "private state\n");
-    writeFileSync(join(roleDir, "runtime", "profile.yaml"), "config:\n  inherit_from: default\n  save_mode: delta\n");
-    writeFileSync(
-      join(repo, ".project.json"),
-      `${JSON.stringify({
-        project_name: "Demo",
-        repo_path: repo,
-        agents: {
-          "demo-director": {
-            role: "director",
-            role_dir: "agents/hermes/director",
-            provisioning_state: "planned",
-          },
-        },
-      }, null, 2)}\n`,
-    );
-    mkdirSync(join(home, ".hermes"), { recursive: true });
-    writeFileSync(
-      join(home, ".hermes", "agents-registry.yaml"),
-      `schema_version: 1\nagents:\n  demo-director:\n    bloodbank:\n      enabled: false\n      gateway_scope: fleet\n      target_agent_id: demo-director\n`,
-    );
-    const env = { HOME: home, XDG_CACHE_HOME: join(home, ".cache") };
-
-    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
-    const finding = audit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
-    assert.equal(finding.status, "fail", JSON.stringify(finding));
-    assert.match(finding.details.join("\n"), /demo-director: stale agents\/hermes\/director\/hermes/);
-    assert.match(finding.details.join("\n"), /demo-director: stale agents\/hermes\/director\/\.scripts\/70-systemd\.sh/);
-    assert.match(finding.details.join("\n"), /demo-director: missing agents\/hermes\/director\/\.scripts\/20-runtime-repo\.sh/);
-
-    const migrated = JSON.parse(run(["migrate", "hermes.pm-scaffold", repo, "--json"], root, env));
-    const result = migrated.results.find((entry) => entry.id === "hermes.pm-scaffold");
-    assert.equal(result.status, "applied", JSON.stringify(result));
-    assert.equal(readFileSync(join(roleDir, "SOUL.md"), "utf8"), "custom director soul\n", "existing role contract must be preserved");
-    assert.match(readFileSync(join(roleDir, "hermes"), "utf8"), /TERMINAL_CWD="\$REPO_ROOT"/);
-    // TERMINAL_CWD used to be a literal `Environment="TERMINAL_CWD=$REPO_ROOT"`
-    // line in the generated script. It now goes through
-    // parse-fleet-env.py --systemd-environment, which validates and quotes the
-    // value first; the line that reaches the unit is byte-identical
-    // (Environment="TERMINAL_CWD=<repo root>"). Assert the wiring rather than
-    // one spelling of the output — matching the spelling is what rotted here.
-    const systemdScript = readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8");
-    assert.match(systemdScript, /ENV_TERMINAL_CWD="\$\(systemd_environment TERMINAL_CWD "\$REPO_ROOT"\)"/);
-    assert.match(systemdScript, /^\$ENV_TERMINAL_CWD$/m);
-    assert.match(readFileSync(join(roleDir, ".scripts", "20-runtime-repo.sh"), "utf8"), /migrate hermes\.runtime-singleton/);
-    assert.equal(readFileSync(join(roleDir, "runtime", "memories", "MEMORY.md"), "utf8"), "private state\n");
-
-    // A script carrying bytes the template never shipped is somebody's work,
-    // not staleness, and `writeIfDifferent` keeps no backup — so migrate must
-    // preserve it and say why rather than overwrite the only copy. Skipped
-    // when lineage is undecidable, which is exactly when the rule keeps its
-    // historical overwrite-everything behaviour.
-    if (priorTemplateVersion(".scripts/70-systemd.sh") !== null) {
-      const repaired = readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8");
-      const forked = "#!/usr/bin/env bash\n# hand-extended systemd wiring nobody else has\n";
-      writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), forked);
-      const reaudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
-      const scaffold = reaudit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
-      assert.match(scaffold.details.join("\n"), /demo-director: locally-modified agents\/hermes\/director\/\.scripts\/70-systemd\.sh/);
-      const second = JSON.parse(runAllowFailure(["migrate", "hermes.pm-scaffold", repo, "--json"], root, env));
-      const preserve = second.results.find((entry) => entry.id === "hermes.pm-scaffold");
-      assert.equal(preserve.status, "partial", JSON.stringify(preserve));
-      assert.match(preserve.details.join("\n"), /preserved locally-modified \.scripts\/70-systemd\.sh/);
-      assert.equal(readFileSync(join(roleDir, ".scripts", "70-systemd.sh"), "utf8"), forked, "migrate must not overwrite a local edit");
-      // Hand the role back the template's own bytes; the assertions below this
-      // block are about a repo migrate has fully repaired.
-      writeFileSync(join(roleDir, ".scripts", "70-systemd.sh"), repaired);
-    }
-
-    const postAudit = JSON.parse(runAllowFailure(["audit", repo, "--json"], root, env));
-    const postFinding = postAudit.rules.find((entry) => entry.id === "hermes.pm-scaffold");
-    assert.equal(postFinding.status, "pass", JSON.stringify(postFinding));
-  }
-
-  {
-    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-mapping");
-    const { repo, roleDir, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
-    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`));
-    const report = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
-    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
-    assert.equal(result.status, "applied", JSON.stringify(result));
-    assert.deepEqual(readFileSync(privatePath), privateBytes, "index-only retirement must preserve private runtime bytes");
-    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "index-only retirement must preserve the runtime tree");
-    assert.equal(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), "", "runtime gitlink must be absent from the index");
-    const gitmodules = readFileSync(join(repo, ".gitmodules"), "utf8");
-    assert.match(gitmodules, /templates\/commonproject/);
-    assert.doesNotMatch(gitmodules, /agents\/hermes\/pm\/runtime/);
-    assert.match(readFileSync(join(roleDir, ".gitignore"), "utf8"), /^runtime\/$/m);
-
-    const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
-    const auditFinding = audit.rules.find((entry) => entry.id === "hermes.untracked-runtimes");
-    assert.equal(auditFinding.status, "pass", JSON.stringify(auditFinding));
-
-    const rerun = JSON.parse(run(["migrate", "hermes.untracked-runtimes", repo, "--json"]));
-    const rerunResult = rerun.results.find((entry) => entry.id === "hermes.untracked-runtimes");
-    assert.equal(rerunResult.status, "noop", JSON.stringify(rerunResult));
-  }
-
-  {
-    const fixture = makeLegacyRuntimeRepo("retired-runtime-submodule-git-failure");
-    const { repo, runtimeDir, privatePath, privateBytes, runtimeEntries, secondPin } = fixture;
-    const fakeBin = mkdtempSync(join(tmpdir(), "pjangler-failing-git-"));
-    repos.push(fakeBin);
-    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
-    const wrapper = join(fakeBin, "git");
-    writeFileSync(
-      wrapper,
-      `#!/usr/bin/env bash
-if [[ "$1" == "rm" ]]; then
-  printf 'injected git rm failure\\n' >&2
-  exit 97
-fi
-exec "$REAL_GIT" "$@"
-`,
-    );
-    chmodSync(wrapper, 0o755);
-
-    const report = JSON.parse(runAllowFailure(
-      ["migrate", "hermes.untracked-runtimes", repo, "--json"],
-      root,
-      { PATH: `${fakeBin}:${process.env.PATH}`, REAL_GIT: realGit },
-    ));
-    const result = report.results.find((entry) => entry.id === "hermes.untracked-runtimes");
-    assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.match(result.details.join("\n"), /injected git rm failure/);
-    assert.match(git(repo, ["ls-files", "--stage", "--", "agents/hermes/pm/runtime"]), new RegExp(`^160000 ${secondPin} 0\\t`), "failed removal must preserve the staged gitlink");
-    assert.match(readFileSync(join(repo, ".gitmodules"), "utf8"), /agents\/hermes\/pm\/runtime/, "failed removal must preserve the stale mapping");
-    assert.deepEqual(readFileSync(privatePath), privateBytes, "failed removal must preserve private runtime bytes");
-    assert.deepEqual(readdirSync(runtimeDir), runtimeEntries, "failed removal must preserve the runtime tree");
   }
 
   {

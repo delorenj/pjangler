@@ -13,11 +13,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { RunCopierTemplate } from "../src/commands/hermes/RunCopierTemplate";
-import type { HermesAgentContext } from "../src/commands/hermes/types";
 import {
   preflightCommonProjectTemplate,
-  preflightHermesTemplate,
   preflightTrustedCopier,
   verifyTrustedCopierIdentity,
   type TrustedCopierIdentity,
@@ -180,39 +177,8 @@ try {
   assert.equal(temporaryLocal.ok, false);
   assert.match(temporaryLocal.error ?? "", /temporary-local/);
 
-  // Check/use gap regression for the dedicated Hermes executor. The attested
+  // Check/use gap regression for the CommonProject executor. The attested
   // launcher is replaced after preflight with an effect-writing program.
-  const hermesMutation = syntheticUvCopier("hermes-check-use");
-  const hermesEffect = join(workspace, "hermes-check-use-effect.log");
-  executable(hermesMutation.launcher, `#!/bin/sh\nprintf ran > "${hermesEffect}"\n`);
-  const hermesTarget = join(workspace, "hermes-check-use", "target");
-  const hermesConfig = join(workspace, "hermes-check-use", "config.toml");
-  const previousConfig = process.env.HERMES_TEMPLATE_CONFIG;
-  process.env.HERMES_TEMPLATE_CONFIG = hermesConfig;
-  try {
-    const context: HermesAgentContext = {
-      targetDir: hermesTarget,
-      targetRepo: "check-use",
-      role: "pm",
-      yes: true,
-      quiet: true,
-      dryRun: false,
-      skipPlane: true,
-      trustedCopier: hermesMutation.identity,
-      deferredExternalEffects: { ticketBoard: false, systemd: false, owner: "hermes" },
-    };
-    const result = await new RunCopierTemplate(context).invoke();
-    assert.equal(result.success, false);
-    assert.match(result.message, /provenance revalidation failed|identity changed/);
-  } finally {
-    if (previousConfig === undefined) delete process.env.HERMES_TEMPLATE_CONFIG;
-    else process.env.HERMES_TEMPLATE_CONFIG = previousConfig;
-  }
-  assert.equal(existsSync(hermesTarget), false, "Hermes check/use rejection must precede target writes");
-  assert.equal(existsSync(hermesConfig), false, "Hermes check/use rejection must precede host config writes");
-  assert.equal(existsSync(hermesEffect), false, "Hermes must not execute a replaced attested launcher");
-
-  // The CommonProject executor observes the same last effect-free boundary.
   const projectMutation = syntheticUvCopier("project-check-use");
   const projectEffect = join(workspace, "project-check-use-effect.log");
   executable(projectMutation.launcher, `#!/bin/sh\nprintf ran > "${projectEffect}"\n`);
@@ -238,10 +204,6 @@ try {
   assert.equal(existsSync(plan.registryPath), false, "CommonProject check/use rejection must precede registry writes");
 
   assert.equal(preflightCommonProjectTemplate(root).ok, true, "the vendored CommonProject template must satisfy lifecycle eligibility");
-  assert.equal(preflightHermesTemplate(root).ok, true, "the vendored Hermes template must satisfy lifecycle eligibility");
-  const untrustedTemplate = preflightHermesTemplate(root, { PJANGLER_HERMES_TEMPLATE: join(workspace, "untrusted-template") });
-  assert.equal(untrustedTemplate.ok, false, "MCP must reject an unversioned Hermes template override");
-  assert.match(untrustedTemplate.error ?? "", /version-locked|unavailable/);
 
   console.log("PJAN-67 lifecycle eligibility/provenance/check-use regressions: PASS");
 } finally {

@@ -4,9 +4,6 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Command, CommanderError, Option } from "commander";
 import type { CommandContext } from "./commands/Command";
-import type { HermesAgentContext } from "./commands/hermes/types";
-import { SOUL_TONES } from "./commands/hermes/types";
-import { EnsureTemplateConfig } from "./commands/hermes/EnsureTemplateConfig";
 import {
   RECIPE_REGISTRY,
   COMMAND_REGISTRY,
@@ -58,8 +55,6 @@ import { exitAfterFlush, guardBrokenPipe, writeStdout } from "./utils/stdout";
 import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/style";
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
-import { fleetParserFailureEnvelope, isFleetJsonInvocation, registerFleetCli } from "./fleet/cli";
-import { fleetEnvelopeExitCode, renderFleetJson } from "./fleet/output";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 
 /** Red ✖ prefix for user-facing error lines. */
@@ -72,8 +67,6 @@ interface ProjectInitCliOptions {
   targetDir?: string;
   sourceSkill?: string;
   primaryLanguage?: string;
-  provisionAgent?: boolean;
-  agentRole?: string;
   apply?: boolean;
   dryRun?: boolean;
   live?: boolean;
@@ -247,8 +240,6 @@ function projectInitActionLabel(kind: string): string {
       return "Write authoritative repo-local .project.json";
     case "ticket-provider.create-or-link":
       return "Create/link ticket provider project";
-    case "hermes.provision-agent":
-      return "Provision Hermes agent";
     default:
       return kind;
   }
@@ -271,7 +262,6 @@ function actionNeedsRun(plan: ReturnType<typeof planProjectInit>, kind: string, 
   }
   if (kind === "copier.copy.commonproject") return true;
   if (kind === "ticket-provider.create-or-link") return plan.actions.some((action) => action.kind === kind && action.enabled);
-  if (kind === "hermes.provision-agent") return plan.actions.some((action) => action.kind === kind && action.enabled);
   return true;
 }
 
@@ -455,10 +445,9 @@ const program = new Command();
 const commandArgs = process.argv.slice(2);
 program.exitOverride();
 program.configureOutput({
-  writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs) && !isFleetJsonInvocation(commandArgs)) process.stderr.write(text); },
+  writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text); },
 });
 registerNotebookCli(program);
-registerFleetCli(program);
 
 program
   .name("pjangler")
@@ -477,8 +466,6 @@ program
   .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
-  .option("--provision-agent", "Plan local Hermes PM agent provisioning")
-  .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
   .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
@@ -706,8 +693,6 @@ projectCmd
   .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
   .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
-  .option("--provision-agent", "Plan local Hermes PM agent provisioning")
-  .option("--agent-role <role>", "Hermes agent role to plan when --provision-agent is set", "pm")
   .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
@@ -741,8 +726,6 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         targetDir: target.targetDir,
         sourceSkill: options.sourceSkill,
         primaryLanguage: options.primaryLanguage,
-        provisionAgent: options.provisionAgent ?? false,
-        agentRole: options.agentRole,
         apply,
         live: options.live ?? false,
         projectSlug: target.slug,
@@ -1271,6 +1254,7 @@ program
   .argument("[repo]", "Path to repo to audit (default: cwd)")
   .description("Deterministic parity audit against 33god project standard")
   .option("--profile <profile>", "Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)")
+  .option("--rules <ids>", "Comma-separated rule ids; report only these (an unknown id is an error, never an empty pass)")
   .option("--live", "Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)")
   .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
@@ -1310,7 +1294,8 @@ program
         console.error(`${xmark} Unknown audit profile: ${bold(profile)}`);
         await exitAfterFlush(1);
       }
-      const report = await runAudit(repo, options.registry as string | undefined);
+      const ruleIds = String(options.rules ?? "").split(",").map((id: string) => id.trim()).filter(Boolean);
+      const report = await runAudit(repo, options.registry as string | undefined, ruleIds);
       if (options.json) {
         await writeStdout(`${JSON.stringify(report, null, 2)}\n`);
       } else {
@@ -1406,102 +1391,6 @@ program
   });
 
 // ============================================================================
-// HERMES-AGENT COMMAND (provision a Hermes agent role into this repo)
-// ============================================================================
-
-program
-  .command("hermes-agent")
-  .alias("hermes")
-  .description("Render and postcondition-verify the PM agent for the current repo")
-  .option("-y, --yes", "Non-interactive defaults; never overwrites an existing role without --force")
-  .option("--target-repo <name>", "Target repo name (default: basename of cwd)")
-  .option("--role <role>", "Agent role override (default: pm — the only role in the fleet)")
-  .option("--purpose <text>", "One-line agent purpose (default: \"pm agent for <repo>\")")
-  .option(`--tone <tone>`, `Personality tone (default: direct; ${SOUL_TONES.join(" | ")})`)
-  .option("--model-provider <name>", 'Inference provider override ("" = inherit shared default profile)')
-  .option("--model-name <name>", 'Model name override ("" = inherit shared default profile)')
-  .option("--model-base-url <url>", 'Inference API base URL override ("" = inherit shared default profile)')
-  .option("--model-api-mode <mode>", 'Inference API mode override ("" = inherit shared default profile)')
-  .option("--model-key-env <name>", "Environment variable name holding the scoped model credential")
-  .option("--skip-telegram", "Skip the Telegram wire-up (no BotFather prompt)")
-  .option("--email", "Unsupported by the pinned template; rejected before any mutation")
-  .option("--skip-runtime-repo", "Deprecated no-op; Hermes always uses ignored role-local runtime state")
-  .option("--skip-plane", "Skip creating or linking the ticket board")
-  .option("--skip-bloodbank", "Deprecated compatibility flag; Bloodbank now uses one fleet-shared Hermes gateway")
-  .option("--skip-systemd", "Skip installing systemd --user units")
-  .option("--local", "Local-only: defer ticket-board creation and systemd; runtime remains ignored and role-local")
-  .option("--force-config", "Merge missing pinned-schema fields into the host config without replacing existing values")
-  .option("--dry-run", "Preview what would run; don't execute copier")
-  .option("-f, --force", "Re-render even if agents/hermes/<role>/role.yaml already exists")
-  .action(async (options) => {
-    const isDarwin = process.platform === "darwin";
-    const local: boolean = options.local ?? false;
-    const context: HermesAgentContext = {
-      targetDir: process.cwd(),
-      force: options.force ?? false,
-      dryRun: options.dryRun ?? false,
-      yes: options.yes ?? false,
-      local,
-      forceConfig: options.forceConfig ?? false,
-      targetRepo: options.targetRepo,
-      role: options.role,
-      agentPurpose: options.purpose,
-      soulTone: options.tone,
-      modelProvider: options.modelProvider,
-      modelName: options.modelName,
-      modelBaseUrl: options.modelBaseUrl,
-      modelApiMode: options.modelApiMode,
-      modelKeyEnv: options.modelKeyEnv,
-      skipTelegram: options.skipTelegram,
-      // Email is opt-in only: `--email` wires it, otherwise it's never done.
-      skipEmail: options.email ? false : undefined,
-      // --local (and macOS, for systemd) flip external steps off by default.
-      // --skip-runtime-repo is accepted above only as a deprecated no-op; the
-      // canonical ignored role-local runtime is always converged.
-      skipPlane: options.skipPlane ?? local,
-      skipBloodbank: options.skipBloodbank ?? local,
-      skipSystemd: options.skipSystemd ?? (local || isDarwin),
-    };
-    try {
-      const lifecycle = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context);
-      const result = await recipeRegistry.initRecipe("hermes-agent", lifecycle, {});
-      for (const line of result.logs) console.log(line);
-      for (const error of result.errors) console.error(`${xmark} ${error}`);
-      if (!result.ok) process.exit(1);
-    } catch (err) {
-      console.error(`${xmark} hermes-agent failed:`, err);
-      process.exit(1);
-    }
-  });
-
-// ============================================================================
-// CONFIG COMMAND (bootstrap host config for the hermes-agent template)
-// ============================================================================
-
-const configCmd = program
-  .command("config")
-  .description("Manage host/provisioner configuration");
-
-configCmd
-  .command("bootstrap")
-  .description("Create ~/.config/hermes-agent-template/config.toml with host-correct defaults if missing")
-  .option("--force", "Merge missing pinned-schema fields without replacing existing values")
-  .option("--dry-run", "Show what would be written without writing")
-  .action(async (options) => {
-    const ctx: HermesAgentContext = {
-      targetDir: process.cwd(),
-      dryRun: options.dryRun ?? false,
-      forceConfig: options.force ?? false,
-    };
-    const result = await new EnsureTemplateConfig(ctx).invoke();
-    if (!result.success) {
-      if (result.message) console.error(result.message);
-      process.exit(1);
-    }
-    if (result.message) console.log(result.message);
-  });
-
-// ============================================================================
 // DESCRIBE COMMAND (Project description)
 // ============================================================================
 
@@ -1584,13 +1473,6 @@ try {
     const envelope = notebookParserFailureEnvelope(commandArgs);
     process.stdout.write(renderNotebookJson(envelope));
     process.exitCode = notebookEnvelopeExitCode(envelope);
-  } else if (isFleetJsonInvocation(commandArgs)) {
-    // A caller that asked for --json gets JSON even when Commander is the one
-    // refusing. Without this the fleet namespace answered a rejected argument
-    // list with zero bytes and exit 1 -- outside its own exit taxonomy.
-    const envelope = fleetParserFailureEnvelope(commandArgs);
-    process.stdout.write(renderFleetJson(envelope));
-    process.exitCode = fleetEnvelopeExitCode(envelope);
   } else if (error instanceof CommanderError) {
     process.exitCode = error.exitCode;
   } else {

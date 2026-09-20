@@ -1,7 +1,6 @@
 import { AgentHooksRecipe } from "./AgentHooksRecipe";
 import { BmadRecipe } from "./BmadRecipe";
 import { DockerRecipe } from "./DockerRecipe";
-import { HermesAgentRecipe } from "./HermesAgentRecipe";
 import { MiseOpInjectRecipe } from "./MiseOpInjectRecipe";
 import { MiseRecipe } from "./MiseRecipe";
 import { NodeRecipe } from "./NodeRecipe";
@@ -17,7 +16,6 @@ export const recipeRegistry = new RecipeRegistry([
   new BmadRecipe(),
   new DockerRecipe(),
   new NodeRecipe(),
-  new HermesAgentRecipe(),
   new NotebookRecipe(),
   new ProjectRecipe(),
 ]);

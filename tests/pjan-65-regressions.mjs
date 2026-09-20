@@ -141,8 +141,11 @@ try {
     "unregistered-but-adopted repos need a registry step",
   );
   const agentStep = adoptedPayload.nextSteps.find((step) => step.source === "agents");
-  assert.ok(agentStep, "a planned agent should produce a provisioning step");
-  assert.match(agentStep.command, /hermes-agent/, "agent provisioning goes through hermes-agent");
+  assert.ok(agentStep, "an unprovisioned employee should produce a next step");
+  // pjangler still REPORTS employees -- `.project.json.agents` is a projection of
+  // the org chart and describing a repo means saying who works on it -- but it no
+  // longer hires them. The step has to name the tool that can.
+  assert.match(agentStep.command, /^flume hire /, "hiring goes through flume, not pjangler");
 
   // --- 6. Registry vs manifest board drift is reported, manifest wins --------
   // `.project.json` is the documented single source of truth for the board

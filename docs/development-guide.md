@@ -6,8 +6,8 @@
 
 | Tool | Requirement | Notes |
 | --- | --- | --- |
-| Node.js | ≥ 20 | ESM package (`"type": "module"`) |
-| npm | any recent | **npm-only** (PJAN-2) — do **not** use bun despite the README |
+| Node.js | ≥ 24 | ESM package (`"type": "module"`); `package.json` `engines` pins it |
+| npm | any recent | **npm-only** (PJAN-2) — there is a `bun.lock` in the tree; ignore it |
 | `mise` | recent | Dev env + tasks; `mise trust` on first entry |
 | `copier` | Python tool | Required at runtime for scaffolding: `uv tool install copier` (or `pip install copier`) |
 | 1Password CLI (`op`) | optional | For `.env.op` → `.env` injection on `mise` enter |
@@ -35,11 +35,11 @@ mise run setup        # trust + setup-plane.py; "Project ready."
 ### Build detail
 
 ```bash
-esbuild src/index.ts src/mcp-server.ts \
-  --bundle --packages=external --platform=node --format=esm --outdir=dist
+esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/project-registry-service.ts \
+  --bundle --packages=external --platform=node --format=esm --sourcemap --outdir=dist
 ```
 
-Both entry points bundle to ESM in `dist/`; runtime deps stay external (installed from `node_modules`). `dist/` is what npm publishes.
+`npm run build` then runs `scripts/export-project-notebook-skill.mjs`. All four entry points bundle to ESM in `dist/` — the CLI, the MCP server, the `pjangler-prompt` shell-prompt binary, and the project registry service; runtime deps stay external (installed from `node_modules`). `dist/` is what npm publishes.
 
 ## Testing
 
@@ -100,8 +100,7 @@ The supported generated CLI matrix lives only in `src/recipes/supported-clis.ts`
 
 ## Gotchas
 
-- **README is partially stale** — it says `bun`; the project is npm-only. It lists 4 MCP tools; there are 11. Trust the code.
-- **`templates/*` are git submodules** — run `git submodule update --init --recursive` if `templates/commonproject` / `templates/hermes-agent` are empty (they are in some worktrees).
+- **`templates/commonproject` is a git submodule** — the only one — so run `git submodule update --init --recursive` if it is empty (it is in some worktrees).
 - **Generated mise normalization is ownership-based** — preserve full foreign `[[hooks.enter]]`/leave records, comments, blank lines, `condition`, `shell`, and unknown keys. Replace only positively owned records.
 - **Do not inline secret shell complexity into TOML** — keep `.env` materialization in the managed script and retain its temp-file cleanup/atomic-move contract.
 - **CommonProject carries source inputs, not generated BMAD output** — never vendor `template/_bmad` or stale installer snapshots. Runtime package inventory must exclude the submodule's development-only root content.

@@ -9,11 +9,9 @@
 //      `--accept-registry-matches`, said so in a detail line, and still
 //      returned `applied` because OTHER files had changed.
 //   2. `sot.project-json` deleted a declared agent whose role_dir had no
-//      role.yaml — the exact state `hermes.registry-parity` calls a blocker
-//      with the message "provision or restore the role, do not delete its
-//      registry/declaration". The prune fixed nothing (the fleet registry
-//      entry outlives .project.json) and destroyed the only repo-local record
-//      of the agent's identity.
+//      role.yaml — a half-provisioned role, not junk. The prune fixed nothing
+//      (the fleet registry entry outlives .project.json) and destroyed the only
+//      repo-local record of the agent's identity.
 //   3. Nothing ever re-checked a migrated rule, so any rule could claim
 //      whatever it liked about itself.
 //
@@ -80,8 +78,8 @@ process.on("exit", cleanup);
  * fixable/non-fixable for the whole rule, and it is fixable when at least one
  * of its findings is something migrate can actually write. So any unrelated
  * drift in here — a legacy key, a wrong repo_path — flips the rule to fixable
- * for a reason that has nothing to do with the declaration, and the agreement
- * check below stops testing what it names. PJAN-80 renamed the canonical key
+ * for a reason that has nothing to do with the declaration, and the check below
+ * stops testing what it names. PJAN-80 renamed the canonical key
  * `project_slug` -> `project_id` and swept the other suites' fixtures; this one
  * was missed, which is exactly how that happened once already.
  */
@@ -272,26 +270,22 @@ check("an unprovisioned agent's declaration survives migrate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. sot.project-json and hermes.registry-parity must agree.
+// 3. sot.project-json reports an unprovisioned role without offering to prune.
 //
-// They used to reach opposite conclusions about the same declaration: one
-// called it a non-fixable blocker to preserve, the other called it invalid and
-// pruned it. Both now read the same predicate.
+// It used to call the declaration invalid and delete it. Provisioning a role is
+// an operator's job, so the rule has to say so and stay non-fixable.
 // ---------------------------------------------------------------------------
-check("sot.project-json and hermes.registry-parity agree", () => {
+check("sot.project-json refuses to prune an unprovisioned role", () => {
   const { repoRoot, home } = unprovisionedRoleRepo("agreement");
   const audit = json(["audit", repoRoot], { home });
   const projectJson = findings(audit, "sot.project-json");
-  const registryParity = findings(audit, "hermes.registry-parity");
 
   assert.equal(projectJson.status, "fail", "sot.project-json must report the unprovisioned role");
-  assert.equal(registryParity.status, "fail", "hermes.registry-parity must report the unprovisioned role");
   assert.equal(
     projectJson.fixable,
     false,
     "sot.project-json must not advertise a fix for a role only an operator can provision",
   );
-  assert.equal(registryParity.fixable, false);
   assert.ok(
     projectJson.details.some((detail) => detail.includes("do not delete its declaration")),
     `sot.project-json must tell the operator to restore the role, got: ${JSON.stringify(projectJson.details)}`,

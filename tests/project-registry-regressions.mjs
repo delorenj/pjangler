@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { writeFleetBaseConfig } from "./helpers/fleet-base-config.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -54,66 +53,6 @@ function createSkillFixture(baseDir) {
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(join(skillDir, "SKILL.md"), "---\nname: civilwar-letterifier\n---\n# Civil War Letterifier\n", "utf8");
   return skillDir;
-}
-
-function createFakeHermes(homeDir) {
-  const hermesRepo = join(homeDir, "code", "hermes-agent");
-  const hermesBin = join(hermesRepo, "venv", "bin", "hermes");
-  const callsFile = join(homeDir, "fake-hermes-calls.jsonl");
-  mkdirSync(dirname(hermesBin), { recursive: true });
-  writeFileSync(hermesBin, `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-
-const args = process.argv.slice(2);
-const callsFile = process.env.FAKE_HERMES_CALLS;
-const profileCreate = args.length === 4 && args[0] === "profile" && args[1] === "create" && args[2] && args[3] === "--no-alias";
-const configSet = args.length === 4 && args[0] === "config" && args[1] === "set" && process.env.HERMES_HOME;
-if (!callsFile || (!profileCreate && !configSet)) {
-  process.stderr.write("fake hermes: unsupported invocation: " + JSON.stringify(args) + "\\n");
-  process.exit(64);
-}
-fs.appendFileSync(callsFile, JSON.stringify({
-  args,
-  bin: path.resolve(process.argv[1]),
-  hermes_home: process.env.HERMES_HOME || "",
-  home: process.env.HOME || "",
-}) + "\\n");
-
-if (profileCreate) {
-  const fleetHome = path.join(process.env.HOME, ".hermes");
-  const profileHome = path.join(fleetHome, "profiles", args[2]);
-  if (fs.existsSync(profileHome)) {
-    process.stderr.write("fake hermes: profile already exists: " + profileHome + "\\n");
-    process.exit(65);
-  }
-  fs.mkdirSync(profileHome, { recursive: true });
-  fs.mkdirSync(path.join(fleetHome, "skills"), { recursive: true });
-  for (const [name, contents] of [["config.yaml", "{}\\n"], [".env", "\\n"]]) {
-    const shared = path.join(fleetHome, name);
-    if (!fs.existsSync(shared)) fs.writeFileSync(shared, contents);
-    fs.copyFileSync(shared, path.join(profileHome, name));
-  }
-  process.exit(0);
-}
-
-const configPath = path.join(process.env.HERMES_HOME, "config.yaml");
-fs.mkdirSync(process.env.HERMES_HOME, { recursive: true });
-let config = {};
-try { config = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch {}
-let cursor = config;
-const parts = args[2].split(".");
-for (const part of parts.slice(0, -1)) cursor = cursor[part] ||= {};
-cursor[parts.at(-1)] = args[3];
-fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\\n");
-`, "utf8");
-  chmodSync(hermesBin, 0o755);
-  return { hermesBin, hermesRepo, callsFile };
-}
-
-function readFakeHermesCalls(callsFile) {
-  if (!existsSync(callsFile)) return [];
-  return readFileSync(callsFile, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
 function git(args, cwd) {
@@ -167,21 +106,6 @@ try {
       `direct planProjectInit must reject ${JSON.stringify(projectSlug)}`,
     );
   }
-  for (const agentRole of ["", ".", "..", "__proto__", "../escaped", "/tmp/escaped", "ops/review", "ops\\review"]) {
-    assert.throws(
-      () => directPlanProjectInit({
-        name: "Unsafe Direct Role",
-        agentRole,
-        provisionAgent: true,
-        targetDir: directTarget,
-        registryPath: directRegistry,
-        scaffold: false,
-        pjanglerRoot: root,
-      }),
-      /agent role.*safe.*segment/i,
-      `direct planProjectInit must reject ${JSON.stringify(agentRole)}`,
-    );
-  }
   assert.equal(existsSync(directRegistry), false, "invalid direct plans must not mutate the registry");
   assert.equal(existsSync(directTarget), false, "invalid direct plans must not create their target");
   assert.equal(existsSync(join(directSafetyRoot, "escaped")), false, "invalid direct plans must not create escaped files");
@@ -196,20 +120,8 @@ try {
   assert.equal(generatedSafePlan.project.repo_path, join(directSafetyRoot, "project"), "generated targets must use the safe generated slug");
   assert.equal(existsSync(directRegistry), false, "a direct dry plan must remain side-effect free");
 
-  const arbitraryRolePlan = directPlanProjectInit({
-    name: "Arbitrary Role",
-    agentRole: "release-captain",
-    provisionAgent: true,
-    targetDir: directTarget,
-    registryPath: directRegistry,
-    scaffold: false,
-    pjanglerRoot: root,
-  });
-  assert.equal(arbitraryRolePlan.project.agents["release-captain"].role, "release-captain");
-  assert.ok(arbitraryRolePlan.actions.some((action) => action.kind === "hermes.provision-agent" && action.role === "release-captain"));
-
   // Safe dictionary keys that collide with Object.prototype must remain real
-  // project/agent records, while __proto__ stays rejected without mutating any
+  // project records, while __proto__ stays rejected without mutating any
   // prototype. Exercise planning, YAML persistence, loading, and lookup.
   const prototypeRegistry = join(directSafetyRoot, "prototype-projects.yaml");
   const objectPrototypeNames = Object.getOwnPropertyNames(Object.prototype).sort();
@@ -217,8 +129,6 @@ try {
     const specialPlan = directPlanProjectInit({
       name: `${specialKey} project`,
       projectSlug: specialKey,
-      agentRole: specialKey,
-      provisionAgent: true,
       targetDir: join(directSafetyRoot, specialKey),
       registryPath: prototypeRegistry,
       scaffold: false,
@@ -229,8 +139,6 @@ try {
       pjanglerRoot: root,
     });
     assert.equal(Object.getPrototypeOf(specialPlan.project.agents), null, "planned agent maps must have no inherited keys");
-    assert.ok(Object.hasOwn(specialPlan.project.agents, specialKey));
-    assert.equal(specialPlan.project.agents[specialKey].role, specialKey);
     const applied = await directExecuteProjectInitPlan(specialPlan);
     assert.equal(applied.ok, true, JSON.stringify(applied.errors));
   }
@@ -240,8 +148,6 @@ try {
     const project = directGetProject(specialRegistry, specialKey);
     assert.equal(project.slug, specialKey);
     assert.equal(Object.getPrototypeOf(project.agents), null, "loaded agent maps must have no prototype");
-    assert.ok(Object.hasOwn(project.agents, specialKey));
-    assert.equal(project.agents[specialKey].role, specialKey);
   }
 
   const maliciousProjectMap = Object.create(null);
@@ -405,27 +311,6 @@ try {
   // `automation` key at all, not an empty one.
   assert.equal(manifest.automation, undefined, "init must not invent automation.reconcile");
 
-  const agentPlan = JSON.parse(run([
-    "project",
-    "init",
-    "ReviewBot",
-    "--description",
-    "Reviewer agent role coverage",
-    "--target-dir",
-    join(tmp, "ReviewBot"),
-    "--provision-agent",
-    "--agent-role",
-    "review",
-    "--registry",
-    join(tmp, "agent-role.yaml"),
-    "--json",
-  ], env));
-  assert.equal(agentPlan.project.agents.review.role, "review");
-  // PJAN-26 guard: agent provisioning_state is its own lifecycle
-  // (planned -> provisioned) and must still default to "planned".
-  assert.equal(agentPlan.project.agents.review.provisioning_state, "planned");
-  assert.equal(agentPlan.actions.find((action) => action.kind === "hermes.provision-agent").role, "review");
-
   const listed = JSON.parse(run(["project", "list", "--json"], env));
   assert.equal(listed.projects.slowburns.repo_path, targetDir);
 
@@ -552,160 +437,6 @@ try {
   assert.ok(syncUpdateSecond.selectedOperations.includes("project.write-manifest"), "sync must select .project.json write when manifest differs");
   const secondSyncManifest = JSON.parse(readFileSync(join(syncUpdateRepo, ".project.json"), "utf8"));
   assert.equal(secondSyncManifest.project_description, "Updated description");
-
-  // Regression: provisioning a second agent role must preserve existing agents.
-  // The fake lives at the path discovered by EnsureTemplateConfig, so this exercises
-  // the production HERMES_BIN/HERMES_AGENT_REPO resolution without a host checkout.
-  const multiAgentRepo = join(tmp, "MultiAgent");
-  mkdirSync(multiAgentRepo, { recursive: true });
-  git(["init"], multiAgentRepo);
-  writeFileSync(join(multiAgentRepo, "package.json"), JSON.stringify({ name: "multi-agent", description: "Multi agent test" }, null, 2), "utf8");
-  const multiAgentRegistry = join(tmp, "multi-agent-projects.yaml");
-  const multiAgentHome = join(tmp, "multi-agent-home");
-  mkdirSync(multiAgentHome, { recursive: true });
-  const { hermesBin: fakeHermesBin, hermesRepo: fakeHermesRepo, callsFile: fakeHermesCalls } = createFakeHermes(multiAgentHome);
-  // `.scripts/20-runtime-repo.sh` shells the hermes.runtime-singleton migration
-  // out to the PJángler CLI, resolving it as `PJANGLER_BIN` -> template config
-  // `fleet.pjangler_bin` -> bare `pj` on PATH. A developer box has a `pj`
-  // symlink in ~/.local/bin; a clean runner has none, so the whole provisioning
-  // chain died at copier task 6 with "PJángler CLI not found". Bind the
-  // product's own escape hatch to the bundle this suite already exercises, so
-  // the real migration still runs and nothing here depends on a host install.
-  // A wrapper rather than `cli` directly: it pins the interpreter to the node
-  // running this suite instead of the shebang's `env node`, and it does not
-  // depend on dist/index.js carrying its executable bit through a rebuild.
-  const pjanglerBin = join(multiAgentHome, "bin", "pj");
-  mkdirSync(dirname(pjanglerBin), { recursive: true });
-  writeFileSync(pjanglerBin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} "$@"\n`, "utf8");
-  chmodSync(pjanglerBin, 0o755);
-  const fleetHome = join(multiAgentHome, ".hermes");
-  const fleetRegistry = join(fleetHome, "agents-registry.yaml");
-  const canonicalSkills = join(multiAgentHome, "canonical-skills");
-  for (const skill of [
-    "delonet-conventions",
-    "delonet-dotenv",
-    "hermes-pm-template-maintenance",
-    "hindsight",
-    "33god-projects",
-    "subagent-driven-development",
-  ]) {
-    mkdirSync(join(canonicalSkills, skill), { recursive: true });
-    writeFileSync(join(canonicalSkills, skill, "SKILL.md"), `---\nname: ${skill}\n---\n# ${skill}\n`);
-  }
-  // hermes.fleet-config audits the fleet base and is not auto-fixable, so a
-  // sandbox that never writes one fails the postcondition on state the test
-  // never configured.
-  writeFleetBaseConfig(fleetHome, multiAgentHome);
-  const multiAgentEnv = {
-    PJ_PROJECT_REGISTRY: multiAgentRegistry,
-    HOME: multiAgentHome,
-    XDG_CACHE_HOME: join(multiAgentHome, ".cache"),
-    XDG_CONFIG_HOME: join(multiAgentHome, ".config"),
-    HERMES_HOME: fleetHome,
-    HERMES_FLEET_HOME: fleetHome,
-    HERMES_TEMPLATE_CONFIG: "",
-    HERMES_FLEET_ENV: "",
-    HERMES_BIN: "",
-    HERMES_FLEET_BIN: "",
-    HERMES_AGENT_REPO: "",
-    HERMES_FLEET_REPO: "",
-    HERMES_OAUTH_FILE: "",
-    CODEX_HOME: "",
-    REGISTRY_FILE: "",
-    PJANGLER_HERMES_TEMPLATE: "",
-    PJANGLER_BIN: pjanglerBin,
-    FAKE_HERMES_CALLS: fakeHermesCalls,
-    CANONICAL_SKILLS_DIR: canonicalSkills,
-    VOX_PLUGIN_DIR: join(multiAgentHome, "absent-vox-plugin"),
-    PLANE_API_KEY: "",
-    PLANE_33GOD_API_KEY: "",
-    TELEGRAM_BOT_TOKEN: "",
-    TELEGRAM_ALLOWED_USERS: "",
-    SLACK_BOT_TOKEN: "",
-    SLACK_APP_TOKEN: "",
-    SLACK_ALLOWED_USERS: "",
-    SKIP_SLACK: "0",
-    ENABLE_SLACK: "0",
-  };
-  const multiAgentFirst = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "pm", "--json",
-  ], multiAgentEnv, multiAgentRepo));
-  assert.equal(multiAgentFirst.ok, true, JSON.stringify(multiAgentFirst.errors));
-  const firstMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
-  assert.equal(firstMultiRegistry.projects["multi-agent"].agents.pm.role, "pm");
-  const firstFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
-  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.bin, fakeHermesBin, "fleet registry must record the template-resolved Hermes binary");
-  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].hermes.repo, fakeHermesRepo, "fleet registry must record the matching Hermes checkout");
-  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].telegram.provisioning_status, "deferred");
-  assert.equal(firstFleetRegistry.agents["multi-agent-pm"].slack.provisioning_status, "deferred");
-  assert.deepEqual(
-    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "pm", "role.yaml"), "utf8")).model,
-    { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
-    "noninteractive PM provisioning must explicitly render safe model-route defaults",
-  );
-  assert.equal(
-    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "pm", "role.yaml"), "utf8")).bloodbank.enabled,
-    false,
-    "new PM Bloodbank ingress must remain quarantined",
-  );
-
-  const multiAgentSecond = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "director", "--json",
-  ], multiAgentEnv, multiAgentRepo));
-  assert.equal(multiAgentSecond.ok, true, JSON.stringify(multiAgentSecond.errors));
-  const hermesCalls = readFakeHermesCalls(fakeHermesCalls);
-  assert.deepEqual(hermesCalls, [
-    {
-      args: ["profile", "create", "multi-agent-pm", "--no-alias"],
-      bin: fakeHermesBin,
-      hermes_home: fleetHome,
-      home: multiAgentHome,
-    },
-    {
-      args: ["profile", "create", "multi-agent-director", "--no-alias"],
-      bin: fakeHermesBin,
-      hermes_home: fleetHome,
-      home: multiAgentHome,
-    },
-  ], `provisioning must use only the portable Hermes profile contract\n${JSON.stringify(hermesCalls, null, 2)}`);
-  const secondMultiRegistry = YAML.parse(readFileSync(multiAgentRegistry, "utf8"));
-  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.pm.role, "pm", "existing pm agent must be preserved in registry");
-  assert.equal(secondMultiRegistry.projects["multi-agent"].agents.director.role, "director", "new director agent must be added to registry");
-  const secondMultiManifest = JSON.parse(readFileSync(join(multiAgentRepo, ".project.json"), "utf8"));
-  assert.equal(secondMultiManifest.agents["multi-agent-pm"].role, "pm", "existing pm agent must be preserved in manifest");
-  assert.equal(secondMultiManifest.agents["multi-agent-director"].role, "director", "new director agent must be added to manifest");
-  assert.deepEqual(
-    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "director", "role.yaml"), "utf8")).model,
-    { provider: "", name: "", base_url: "", api_mode: "", key_env: "" },
-    "noninteractive Director provisioning must explicitly render safe model-route defaults",
-  );
-  assert.equal(
-    YAML.parse(readFileSync(join(multiAgentRepo, "agents", "hermes", "director", "role.yaml"), "utf8")).bloodbank.enabled,
-    false,
-    "new Director Bloodbank ingress must remain quarantined",
-  );
-  const secondFleetRegistry = YAML.parse(readFileSync(fleetRegistry, "utf8"));
-  assert.deepEqual(Object.keys(secondFleetRegistry.agents).sort(), ["multi-agent-director", "multi-agent-pm"], "both isolated fleet profiles must be registered");
-  assert.equal(secondFleetRegistry.agents["multi-agent-pm"].bloodbank.enabled, false);
-  assert.equal(secondFleetRegistry.agents["multi-agent-director"].bloodbank.enabled, false);
-
-  // The canonical-manifest refresh in ProjectRecipe builds its own role-keyed
-  // map. A first agent named `constructor` must be treated as an own record,
-  // not as the inherited Object constructor or a duplicate.
-  const constructorAgentRepo = join(tmp, "ConstructorAgent");
-  mkdirSync(constructorAgentRepo, { recursive: true });
-  git(["init"], constructorAgentRepo);
-  writeFileSync(join(constructorAgentRepo, "package.json"), JSON.stringify({ name: "constructor-agent", description: "Prototype-key agent test" }, null, 2), "utf8");
-  const constructorAgentRegistry = join(tmp, "constructor-agent-projects.yaml");
-  const constructorAgentResult = JSON.parse(run([
-    "project", "init", "--yes", "--apply", "--skip-board", "--provision-agent", "--agent-role", "constructor", "--json",
-  ], { ...multiAgentEnv, PJ_PROJECT_REGISTRY: constructorAgentRegistry }, constructorAgentRepo));
-  assert.equal(constructorAgentResult.ok, true, JSON.stringify(constructorAgentResult.errors));
-  const constructorAgentRegistryData = YAML.parse(readFileSync(constructorAgentRegistry, "utf8"));
-  assert.equal(constructorAgentRegistryData.projects["constructor-agent"].agents.constructor.role, "constructor");
-  const constructorAgentManifest = JSON.parse(readFileSync(join(constructorAgentRepo, ".project.json"), "utf8"));
-  assert.equal(constructorAgentManifest.agents["constructor-agent-constructor"].role, "constructor");
-  assert.equal(Object.hasOwn(Object.prototype, "polluted"), false, "constructor agent provisioning must not mutate Object.prototype");
 
   // PJAN-26: "active" is a default for NEW records, never a migration.
   // A project already recorded as "planned" keeps that status through a load

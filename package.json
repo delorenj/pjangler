@@ -16,8 +16,6 @@
     "contracts",
     "templates/commonproject/copier.yml",
     "templates/commonproject/template",
-    "templates/hermes-agent/copier.yml",
-    "templates/hermes-agent/template",
     ".mise/scripts/versioning.sh",
     ".mise/scripts/link-agentfiles.sh",
     "scripts/install-project-registry.mjs",

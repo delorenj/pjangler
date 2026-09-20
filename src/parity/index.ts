@@ -73,13 +73,25 @@ function publicMigration(report: Awaited<ReturnType<typeof recipeRegistry.migrat
   } as MigrationReport;
 }
 
-export async function runAudit(repoArg?: string, registryPath?: string): Promise<AuditReport> {
+export async function runAudit(repoArg?: string, registryPath?: string, ruleIds?: readonly string[]): Promise<AuditReport> {
   // PJAN-84: the registry the caller asked for reaches the rules. Without this,
   // `pj audit` had no --registry at all and every registry-reading rule fell
   // back to projectRegistryPath() independently, so auditing a project outside
   // the default registry produced findings about a project the registry had
   // never heard of.
-  return publicAudit(await recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath ? { registryPath } : {})));
+  const report = publicAudit(await recipeRegistry.auditRecipes(lifecycleContext(repoArg, true, false, registryPath ? { registryPath } : {})));
+  if (!ruleIds || ruleIds.length === 0) return report;
+
+  // A filtered audit answers about exactly the rules asked for. An id this
+  // registry does not own is an ERROR, not an empty pass: a caller probing a
+  // contract it depends on must not read "no findings" when the real answer is
+  // "I never checked". Flume's hire postcondition is the first such caller.
+  const known = new Set(recipeRegistry.listRuleIds());
+  const unknown = ruleIds.filter((id) => !known.has(id));
+  if (unknown.length) throw new Error(`Unknown parity rule id(s): ${unknown.join(", ")}`);
+  const wanted = new Set(ruleIds);
+  const rules = report.rules.filter((finding) => wanted.has(finding.id));
+  return { ...report, rules, ok: rules.every((finding) => finding.status === "pass" || finding.status === "skip") };
 }
 
 export async function runMigrationForRules(

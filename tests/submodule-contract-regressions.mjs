@@ -69,15 +69,10 @@ function fixture() {
 \tpath = templates/commonproject
 \turl = git@github.com:delorenj/CommonProject.git
 \tbranch = main
-[submodule "templates/hermes-agent"]
-\tpath = templates/hermes-agent
-\turl = git@github.com:delorenj/hermes-agent-template.git
-\tbranch = main
 `,
   );
   git(root, ["add", ".gitmodules"]);
   git(root, ["update-index", "--add", "--cacheinfo", `160000,${pin},templates/commonproject`]);
-  git(root, ["update-index", "--add", "--cacheinfo", `160000,${pin},templates/hermes-agent`]);
   return { root, pin };
 }
 
@@ -88,17 +83,13 @@ function fixture() {
 function worktreeFixture() {
   const cradle = mkdtempSync(join(tmpdir(), "pjangler-submodule-worktree-"));
   temporary.push(cradle);
-  const sources = {};
-  for (const template of ["commonproject", "hermes-agent"]) {
-    const source = join(cradle, `${template}.src`);
-    mkdirSync(join(source, "template", ".mise", "scripts"), { recursive: true });
-    git(cradle, ["init", "--quiet", "--initial-branch=main", source]);
-    configureFixtureIdentity(source);
-    writeFileSync(join(source, "template", ".mise", "scripts", "provision-packs.py"), "#!/usr/bin/env python3\n");
-    git(source, ["add", "-A"]);
-    git(source, ["commit", "--quiet", "-m", "seed template"]);
-    sources[template] = source;
-  }
+  const source = join(cradle, "commonproject.src");
+  mkdirSync(join(source, "template", ".mise", "scripts"), { recursive: true });
+  git(cradle, ["init", "--quiet", "--initial-branch=main", source]);
+  configureFixtureIdentity(source);
+  writeFileSync(join(source, "template", ".mise", "scripts", "provision-packs.py"), "#!/usr/bin/env python3\n");
+  git(source, ["add", "-A"]);
+  git(source, ["commit", "--quiet", "-m", "seed template"]);
 
   const root = join(cradle, "parent");
   mkdirSync(root, { recursive: true });
@@ -108,25 +99,19 @@ function worktreeFixture() {
   writeFileSync(join(root, "seed.txt"), "seed\n");
   git(root, ["add", "seed.txt"]);
   git(root, ["commit", "--quiet", "-m", "seed"]);
-  for (const template of ["commonproject", "hermes-agent"]) {
-    git(root, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", sources[template], `templates/${template}`]);
-    configureFixtureIdentity(join(root, "templates", template));
-  }
+  git(root, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", source, "templates/commonproject"]);
+  configureFixtureIdentity(join(root, "templates", "commonproject"));
   writeFileSync(
     join(root, ".gitmodules"),
     `[submodule "templates/commonproject"]
 \tpath = templates/commonproject
 \turl = git@github.com:delorenj/CommonProject.git
 \tbranch = main
-[submodule "templates/hermes-agent"]
-\tpath = templates/hermes-agent
-\turl = git@github.com:delorenj/hermes-agent-template.git
-\tbranch = main
 `,
   );
   git(root, ["add", ".gitmodules"]);
-  git(root, ["commit", "--quiet", "-m", "wire submodules"]);
-  return { root, sources };
+  git(root, ["commit", "--quiet", "-m", "wire submodule"]);
+  return { root, source };
 }
 
 function check(root, ...args) {
@@ -138,11 +123,9 @@ function materializePackage(root, payloads = []) {
     join(root, "package.json"),
     `${JSON.stringify({ name: "pjangler-contract-fixture", version: "1.0.0", files: ["templates"] }, null, 2)}\n`,
   );
-  for (const template of ["commonproject", "hermes-agent"]) {
-    const directory = join(root, "templates", template);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "copier.yml"), "_subdirectory: template\n");
-  }
+  const directory = join(root, "templates", "commonproject");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "copier.yml"), "_subdirectory: template\n");
   for (const [path, content] of payloads) {
     const target = join(root, path);
     mkdirSync(resolve(target, ".."), { recursive: true });
@@ -169,7 +152,7 @@ try {
   // CI clone — which is exactly what an earlier draft of this check did.
   {
     const { root } = worktreeFixture();
-    const sub = join(root, "templates", "hermes-agent");
+    const sub = join(root, "templates", "commonproject");
     assert.equal(check(root, "--recursive").status, 0, "an attached, current submodule satisfies the contract");
 
     git(sub, ["checkout", "--quiet", "--detach", "HEAD"]);
@@ -179,7 +162,7 @@ try {
     writeFileSync(join(sub, "template", "drift.txt"), "advanced\n");
     git(sub, ["add", "-A"]);
     git(sub, ["commit", "--quiet", "-m", "advance past the local branch"]);
-    git(root, ["add", "templates/hermes-agent"]);
+    git(root, ["add", "templates/commonproject"]);
     const stale = check(root, "--recursive");
     assert.equal(stale.status, 1, "a local branch behind the pin must fail: checking it out would rewind");
     assert.match(stale.stderr, /local main \([0-9a-f]{10}\) does not contain the pinned commit [0-9a-f]{10}; checking it out would rewind/);
@@ -228,9 +211,9 @@ try {
   {
     const { root } = fixture();
     materializePackage(root, [
-      ["templates/hermes-agent/.codegraph/daemon.pid", '{"pid":1234}\n'],
-      ["templates/hermes-agent/.omo/run-continuation/ses_private.json", '{"sessionID":"private"}\n'],
-      ["templates/hermes-agent/tmp/agent.sock", "socket\n"],
+      ["templates/commonproject/.codegraph/daemon.pid", '{"pid":1234}\n'],
+      ["templates/commonproject/.omo/run-continuation/ses_private.json", '{"sessionID":"private"}\n'],
+      ["templates/commonproject/tmp/agent.sock", "socket\n"],
     ]);
     const result = check(root, "--npm");
     assert.equal(result.status, 1);
@@ -301,18 +284,7 @@ try {
   }
 
   {
-    const source = ["index.ts", "rules.ts"]
-      .map((name) => readFileSync(join(ROOT, "src", "parity", name), "utf8"))
-      .join("\n");
-    const command = readFileSync(join(ROOT, "src", "commands", "hermes", "UntrackHermesRuntimes.ts"), "utf8");
     const active = readFileSync(join(ROOT, "agents", "hermes", "pm", ".scripts", "20-runtime-repo.sh"), "utf8");
-    assert.doesNotMatch(source, /function upsertSubmodule/);
-    assert.match(source, /removeRuntimeSubmoduleMapping/);
-    assert.match(source, /\["rm", "--cached", "-r", "-f", "--", runtimePath\]/);
-    assert.match(source, /runtime remains tracked after index-only removal/);
-    assert.match(command, /remove stale \.gitmodules mapping/);
-    assert.match(command, /\["rm", "--cached", "-r", "-f", "--", runtimePath\]/);
-    assert.match(command, /Runtime remains tracked after index-only removal/);
     for (const forbidden of ["gh repo create", "git submodule add", "git submodule update", 'rm -rf "$RUNTIME_LOCAL"']) {
       assert.ok(!active.includes(forbidden), `active runtime provisioner contains ${forbidden}`);
     }
@@ -322,18 +294,14 @@ try {
     const cloneRoot = mkdtempSync(join(tmpdir(), "pjangler-clean-clone-contract-"));
     temporary.push(cloneRoot);
     const commonBare = join(cloneRoot, "common.git");
-    const hermesBare = join(cloneRoot, "hermes.git");
     const clone = join(cloneRoot, "pjangler");
     const commonPin = standaloneBareSnapshot(join(ROOT, "templates", "commonproject"), commonBare);
-    const hermesPin = standaloneBareSnapshot(join(ROOT, "templates", "hermes-agent"), hermesBare);
     git(cloneRoot, ["clone", "--quiet", "--no-local", ROOT, clone]);
     git(clone, ["checkout", "--quiet", git(ROOT, ["rev-parse", "HEAD"])]);
     configureFixtureIdentity(clone);
     git(clone, ["update-index", "--cacheinfo", `160000,${commonPin},templates/commonproject`]);
-    git(clone, ["update-index", "--cacheinfo", `160000,${hermesPin},templates/hermes-agent`]);
-    git(clone, ["commit", "--quiet", "-m", "pin standalone template snapshots"]);
+    git(clone, ["commit", "--quiet", "-m", "pin standalone template snapshot"]);
     git(clone, ["config", "submodule.templates/commonproject.url", `file://${commonBare}`]);
-    git(clone, ["config", "submodule.templates/hermes-agent.url", `file://${hermesBare}`]);
     git(clone, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
     const result = run(
       process.execPath,

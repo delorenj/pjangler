@@ -7,9 +7,9 @@
 
 **pjangler** (`@delorenj/pjangler`) is a TypeScript **CLI + MCP server** that bootstraps and maintains **33GOD / DeLoNET** projects. It has one job with three faces:
 
-1. **Bootstrap** a new project — register it centrally, render the `CommonProject` scaffold (via `copier`), write a repo-local `.project.json`, and optionally provision a Hermes PM agent.
+1. **Bootstrap** a new project — register it centrally, render the `CommonProject` scaffold (via `copier`), and write a repo-local `.project.json`.
 2. **Audit & migrate** an existing repo against the deterministic "33god project standard" — a set of idempotent parity rules.
-3. **Scaffold subsystems** into any repo (`mise`, `docker`, `node`, `hermes-agent`, `agent-hooks`) via composable recipes.
+3. **Scaffold subsystems** into any repo (`mise`, `docker`, `node`, `notebook`, `agent-hooks`) via composable recipes.
 
 The same core logic is exposed through **two interfaces that share one implementation**: a human-facing `commander` CLI (`src/index.ts`) and a stdio **MCP server** (`src/mcp-server.ts`) for agents. Neither interface owns project orchestration: both dispatch through the singleton `recipeRegistry`, and both project paths call `ProjectRecipe`.
 
@@ -20,15 +20,15 @@ The same core logic is exposed through **two interfaces that share one implement
 | Language | TypeScript | ^5 | All source under `src/` (strict mode, ESNext, bundler resolution) |
 | Runtime | Node.js | >=20 | ESM (`"type": "module"`) |
 | CLI framework | `commander` | ^14 | Command/option parsing, subcommands (`src/index.ts`) |
-| Interactive prompts | `@clack/prompts` | ^1.4 | TUI multiselect/text for `init` and Hermes provisioning |
+| Interactive prompts | `@clack/prompts` | ^1.4 | TUI multiselect/text for `init` and the `migrate` rule selector |
 | Agent interface | `@modelcontextprotocol/sdk` | ^1.29 | MCP server over stdio (`src/mcp-server.ts`) |
 | Schema/validation | `zod` | ^4 | MCP tool input schemas |
-| Config format | `yaml` | ^2.9 | Project registry + role.yaml parsing |
+| Config format | `yaml` | ^2.9 | Registry fixtures, `role.yaml`, and generated config reads |
 | Bundler | `esbuild` | ^0.25 | `src/*.ts` → `dist/*.js` (ESM, `--packages=external`) |
-| Scaffolding engine | `copier` (external, Python) | — | Renders `templates/commonproject` and the Hermes template; invoked via `spawnSync` |
+| Scaffolding engine | `copier` (external, Python) | — | Renders `templates/commonproject`; invoked via `spawnSync` |
 | Version/task runner | `mise` | — | Dev environment + tasks (the tool also *manages* mise config in target repos) |
 
-**Architecture pattern:** layered CLI with **self-contained lifecycle recipes**, a **plan/apply transaction**, and recipe-owned idempotent checks. It is a stateless tool: the only out-of-repo persistent state it owns is the central project registry (`~/.config/pjangler/projects.yaml`); everything else is derived from, or written into, the target repo.
+**Architecture pattern:** layered CLI with **self-contained lifecycle recipes**, a **plan/apply transaction**, and recipe-owned idempotent checks. It is a stateless tool: the only out-of-repo persistent state it owns is the project registry service; everything else is derived from, or written into, the target repo.
 
 ## Layer map
 
@@ -45,13 +45,12 @@ The same core logic is exposed through **two interfaces that share one implement
         │ src/recipes/   │   │ src/project/     │   │ src/parity/      │
         │ src/commands/  │   │ index.ts         │   │ index.ts         │
         │ utils/registry │   │                  │   │                  │
-        └───────┬────────┘   └────────┬─────────┘   └──────────────────┘
-                │                      │ copier.copy               │
-        ┌───────▼────────┐   ┌─────────▼──────────┐        (reads/writes target repo:
-        │ Hermes agent   │   │ templates/         │         mise.toml, .project.json,
-        │ provisioning   │   │  commonproject/    │         AGENTS.md symlinks, .env.op,
-        │ commands/hermes│   │  hermes-agent/     │         agents/hermes/*, _bmad/ …)
-        └────────────────┘   │ (git submodules)   │
+        └────────────────┘   └────────┬─────────┘   └──────────────────┘
+                                      │ copier.copy
+                             ┌────────▼───────────┐        (reads/writes target repo:
+                             │ templates/         │         mise.toml, .project.json,
+                             │  commonproject/    │         AGENTS.md symlinks, .env.op,
+                             │ (git submodule)    │         _bmad/ …)
                              └────────────────────┘
 ```
 
@@ -68,23 +67,20 @@ The scaffolding engine is a small composition pattern:
 
 Adding a subsystem = write Command classes as needed, implement a lifecycle Recipe with explicit owned checks, declare truthful dependencies, and register one instance in `src/recipes/catalog.ts`. See the `pjangler-dev` / `project-jangler` skill for the authoring workflow.
 
-**Production lifecycle composition:** `mise-op-inject` → `mise` → `agent-hooks` → `bmad`; `project` composes those dependencies. Docker, Node, and Hermes are also registry-owned recipes.
-
-The `hermes-agent` recipe executes its ingredient chain under lifecycle init and **short-circuits on failure or cancellation**, so later commands cannot run against a partial agent.
+**Production lifecycle composition:** `mise-op-inject` → `mise` → `agent-hooks` → `bmad`; `project` composes those plus `notebook`. Docker and Node are also registry-owned recipes.
 
 ### 2. Project registry + bootstrap (`src/project/index.ts`)
 
 Owns project identity and the full bootstrap plan.
 
-- **Central registry:** `~/.config/pjangler/projects.yaml` (override with `PJ_PROJECT_REGISTRY`), `schema_version: 1`. `loadProjectRegistry` / `saveProjectRegistry` (atomic temp-file rename) / `validateProjectRegistry` enforce **unique slug, repo_path, and ticket identifier** across all projects.
-- **Schemas:** `ProjectRecord` (registry entry) and `ProjectManifest` (the repo-local `.project.json` projection). `projectManifestFromRegistryProject()` projects one to the other; agent keys are namespaced `<slug>-<role>`.
+- **Central registry:** the singleton registry service, `http://localhost:8764` by default (override with `PJ_PROJECT_REGISTRY` or `PJ_REGISTRY_URL`; a filesystem path is accepted as a fixture). `resolveRegistryLocation` refuses a URL carrying credentials, a query or a fragment. `loadProjectRegistry` / `saveProjectRegistry` / `validateProjectRegistry` enforce **unique slug, repo_path, and ticket identifier** across all projects. The authoritative record is each repo's `.project.json`; the service indexes those manifests. See [`project-registry.md`](./project-registry.md).
+- **Schemas:** `ProjectRecord` (registry entry) and `ProjectManifest` (the repo-local `.project.json` projection). `projectManifestFromRegistryProject()` projects one to the other; agent keys are namespaced `<slug>-<role>`. **`agents` is a one-way projection of the org chart, and init never authors an entry** — existing entries are carried forward untouched.
 - **Plan model:** `planProjectInit(input)` returns a `ProjectInitPlan` — a list of **typed actions** with no side effects:
   - `registry.upsert` — add/update the registry entry
   - `copier.copy.commonproject` — the exact `copier copy --trust … --defaults --data k=v …` argv (built by `buildCommonProjectCopierAction`)
   - `project.write-manifest` — write `.project.json`
-  - `ticket-provider.create-or-link` — gated behind `--live` (network/cloud). Invokes the `tp` provider adapter's `create_board <name> <identifier> <description>` op (`provisionTicketProviderBoard()`), then folds the returned `board_id` back into the registry record, the manifest, and the on-disk `.project.json` (`state` flips `planned` → `linked`). The adapters are themselves idempotent — they reuse a board whose identifier/name already matches — and a re-run that already has a `board_id` never calls the provider at all. **A missing credential is a graceful skip, not a failure:** the board stays `planned` and init still succeeds. Credentials resolve process env → repo `.env` → `<config>/zshyzsh/secrets.zsh`, and are never logged. Adapter lookup: `PJ_TICKET_PROVIDER_ADAPTERS` → vendored `templates/hermes-agent/template/.scripts/providers/` → repo-local `agents/hermes/pm/.scripts/providers/`.
-  - `hermes.provision-agent` — gated behind `--provision-agent`
-  `executeProjectInitPlan(plan)` is the low-level action executor. `ProjectRecipe` is the public transaction boundary used by CLI and MCP: it executes filesystem actions, initializes dependencies for fresh scaffolds, dispatches optional Hermes provisioning, applies only explicitly selected sync migrations, closes ProjectRecipe-owned postconditions when the transaction created that state, runs one final registry-wide audit, initializes and commits Git exactly once for a clean fresh project, and persists the registry last. **Dry-run is the default everywhere.** Existing sync never runs implicit migrate-all.
+  - `ticket-provider.create-or-link` — gated behind `--live` (network/cloud). Invokes the `tp` provider adapter's `create_board <name> <identifier> <description>` op (`provisionTicketProviderBoard()`), then folds the returned `board_id` back into the registry record, the manifest, and the on-disk `.project.json` (`state` flips `planned` → `linked`). The adapters are themselves idempotent — they reuse a board whose identifier/name already matches — and a re-run that already has a `board_id` never calls the provider at all. **A missing credential is a graceful skip, not a failure:** the board stays `planned` and init still succeeds. Credentials resolve process env → repo `.env` → `<config>/zshyzsh/secrets.zsh`, and are never logged. Adapter lookup: `PJ_TICKET_PROVIDER_ADAPTERS` → `krebs/adapters/tp/` found by walking up from the module → `~/code/33GOD/krebs/adapters/tp/`. The adapters are Krebs's, not pjangler's. `provisionTicketProviderBoard()` stages the resolved adapter under `<mkdtemp>/.tp/adapters/` with a synthetic `.project.json` carrying exactly this plan's binding: the adapter resolves its board binding — and its `execution.mode` — from the nearest manifest above `$0/../..`, so running it in place would make it inherit pjangler's own board and, under `managed`/`shadow`, refuse `create_board` with exit 78.
+  `executeProjectInitPlan(plan)` is the low-level action executor. `ProjectRecipe` is the public transaction boundary used by CLI and MCP: it executes filesystem actions, initializes dependencies for fresh scaffolds, applies only explicitly selected sync migrations, closes ProjectRecipe-owned postconditions when the transaction created that state, runs one final registry-wide audit, initializes and commits Git exactly once for a clean fresh project, and persists the registry last. **Dry-run is the default everywhere.** Existing sync never runs implicit migrate-all.
 - **`.project.json` `ticket_provider` block** is the single source of truth for the board binding. `buildTicketProviderBlock()` stores only stable identity (`type`, `workspace`, `identifier`, `board_id`, `state`); **board URLs are derived at runtime**, never persisted (`board_url` is a deprecated no-op input). Supported providers: `plane`, `trello`.
 - **`doctorProjectRegistry()`** validates that each project's `repo_path` exists, is a directory, has a `.project.json`, and that source artifacts resolve.
 - **Agent-hooks layer decision:** `resolveAgentHooksLayer()` — explicit input wins; then `PJ_AGENT_HOOKS_LAYER` (0/1); otherwise the layer is **skipped when a global `~/.agents/hooks` install exists**, so a fresh project never re-injects hooks into the caller's shared per-user CLI configs. (Mirrored inside the parity engine for generated `mise.toml`.)
@@ -98,7 +94,7 @@ The parity surface is a deterministic **audit → migrate** reconciler that keep
 - **Migrate** (`runMigration` / `runMigrationForRules`) delegates to `RecipeRegistry.migrateAll` or `migrateRules`; it never calls a rule owner directly. Results are `applied | noop | blocked | skipped` and are idempotent. `--dry-run` reports changes without writing.
 - **Formatting:** `formatAuditReport` / `formatMigrationReport` render the terminal output; the MCP server instead returns structured JSON with summary counts + `nextActions`.
 
-Representative checks (use `pjangler recipe list` / `pjangler_list_parity_rules` for the current catalog):
+Representative checks — 19 rules are registered; use `pjangler audit --json` / `pjangler_list_parity_rules` for the current catalog:
 
 | Rule id | Enforces |
 | --- | --- |
@@ -111,9 +107,9 @@ Representative checks (use `pjangler recipe list` / `pjangler_list_parity_rules`
 | `bmad.scaffold` | BMAD (`bmm,bmb,cis`) installed from source inputs |
 | `bmad.cli-roots` | Exactly six local CLI projections, `.agents/` as canonical config, and exact cleanup of pjangler's retired client-root `.gitignore` overrides |
 | `bmad.version` | Standalone audit follows cached `next`; a fresh transaction must match its exact installer pin |
-| `hermes.pm-scaffold` | The PM role scaffold under `agents/hermes/pm` is complete |
-| `hermes.untracked-runtimes` | Hermes runtime submodules are untracked/gitignored, not committed |
-| `systemd.sentinel` | Hermes `--user` gateway/consumer/heartbeat units are enabled + active |
+| `skills.project-manifest` | The project's Skillex declaration and its activation (see `skillex-integration.md`) |
+| `notebook.*` | Seven rules over the companion Open Notebook — `configuration`, `binding`, `remote-notebook`, `overview-note`, `skill-installed`, `hooks-projected`, `capture-receipts` — each of which `skip`s when the repo does not declare a notebook |
+| `board.schema` | The Plane board's own schema (states, labels, modules). pjangler owns board *identity*; Pilot (`px`) owns board *schema*, and this rule is the seam — audit is `px --dry-run --json`, a pure read |
 
 TOML normalization operates on complete hook array-of-table records. It replaces/deduplicates only positively owned records and preserves foreign enter hooks, all leave hooks, comments, blank lines, `condition`, `shell`, and additional keys. Secret materialization is delegated to `.mise/scripts/materialize-env.sh`, avoiding nested mise interpolation.
 
@@ -146,36 +142,7 @@ the requested project name rather than the target basename. Legacy filesystem
 cleanup is allowed only when BMAD manifests, inventories, and installer
 metadata prove ownership and every owned file remains unmodified.
 
-### 4. Hermes agent provisioning (`src/commands/hermes/`)
-
-The official non-interactive deploy command is `pj hermes-agent --yes`. It
-refuses an existing role unless the operator also supplies `--force`.
-
-The `hermes-agent` recipe runs seven ordered ingredients against a shared
-`HermesAgentContext`, then prints a summary only after postconditions pass:
-
-1. `PromptForAgentConfig` — TUI inputs or non-interactive defaults
-2. `ValidateHermesOptions` — effect-free overwrite and unsupported-option gates
-3. `EnsureTemplateConfig` — create or additively upgrade the pinned host schema
-4. `RunCopierTemplate` — `copier copy` the pinned vendored Hermes template
-5. `UntrackHermesRuntimes` — keep the local runtime untracked + gitignored
-6. `WireTelegram` — BotFather token capture (skippable)
-7. `WireEmail` — defense-in-depth rejection because the pinned template exposes no email provisioner
-
-`PrintHermesSummary` runs after lifecycle, project-manifest, mise-PATH, and
-service-state postconditions. It reports the role-local runtime and distinguishes
-verified active services from healthy deferred capabilities. `--email` is
-rejected before config, repository, or external mutation.
-
-The only supported runtime is ignored role-local state under
-`agents/hermes/<role>/runtime`; deployment never creates a per-agent GitHub
-repository or runtime submodule. The legacy `--skip-runtime-repo` flag is a
-deprecated no-op. External ticket-board creation and systemd `--user` units are
-**off by default under `--local`** (and systemd is auto-skipped on macOS).
-Bloodbank ingress remains fleet-shared. Fleet-wide operations belong to the
-`agent-fleet-operations` skill, not this repo.
-
-### 5. Utilities (`src/utils/`)
+### 4. Utilities (`src/utils/`)
 
 - `version.ts` — `PJANGLER_VERSION` is **read from `package.json` at runtime** (walks up from the module dir so it works in `src/` dev and bundled `dist/`). This exists because of PJAN-2: a hardcoded literal made `pj --version` report `1.0.0` forever after bumps.
 - `style.ts` — ANSI color/glyph helpers (`bold`, `cyan`, `dim`, `glyph`, `heading`, status colors) shared across CLI + parity output.
@@ -189,30 +156,30 @@ Bloodbank ingress remains fleet-shared. Fleet-wide operations belong to the
 | Command | Purpose |
 | --- | --- |
 | `init [name]` | Full project bootstrap (registry + CommonProject scaffold + `.project.json`). Inside an existing git repo → **sync mode** (audit + selective migrate). |
-| `add <subsystem>` | Scaffold a subsystem/recipe into the cwd (`mise`, `docker`, `node`, `agent-hooks`, …) |
-| `list` | List available subsystems |
-| `project init/list/show/doctor` | Manage the central project registry |
+| `add <subsystem>` | Scaffold a subsystem/recipe into the cwd (`mise`, `docker`, `node`, `notebook`, `agent-hooks`, …) |
+| `subsystems` | List available subsystems |
+| `notebook …` | Manage the repository's companion Open Notebook |
+| `board [ref]` | Open the ticket board, or one work item, in a browser; `board provider/slug/status/recent/modules` read it |
+| `list` / `info` / `remove` / `link` / `identity` / `doctor` / `reindex` | Manage the project registry and a repo's board binding |
 | `recipe list/describe/run` | Recipe metadata + execution |
 | `command|cmd list/describe/create` | Command metadata (`create` is a STORY-005 placeholder) |
-| `audit [repo]` | Deterministic parity audit (exit 1 if not ok) |
+| `audit [repo]` | Deterministic parity audit (exit 1 if not ok); `--rules <ids>` narrows it, and an unknown id is an error |
 | `migrate [rule-id] [repo]` | Idempotent migration; `--all`, or interactive rule selector TUI |
-| `hermes-agent` / `hermes` | Render and postcondition-verify the PM agent for the current repo |
-| `config bootstrap` | Create or additively upgrade the host `hermes-agent-template/config.toml` |
-| `describe` | Describe the current project (placeholder) |
+| `describe [repo]` | Report what a repo actually is, for agent context; `--interactive` applies fixable findings |
 
 **Deprecated shims (still work, warn):** `pjangler init <subsystem>` → `pjangler add <subsystem>`; `pjangler project init` → `pjangler init`.
 
 ### MCP tool surface (`src/mcp-server.ts`)
 
-`pjangler-mcp` over stdio. 11 tools (README lists only 4 — that list is **stale**):
+`pjangler-mcp` over stdio. 12 tools:
 
-`pjangler_list_capabilities`, `pjangler_list_parity_rules`, `pjangler_audit_project`, `pjangler_migrate_project`, `pjangler_bootstrap_33god_project`, `pjangler_project_init`, `pjangler_project_list`, `pjangler_project_show`, `pjangler_describe_recipe`, `pjangler_run_recipe`, `pjangler_deploy_hermes_agent`.
+`pjangler_list_capabilities`, `pjangler_list_parity_rules`, `pjangler_audit_project`, `pjangler_migrate_project`, `pjangler_bootstrap_33god_project`, `pjangler_project_init`, `pjangler_project_list`, `pjangler_project_show`, `pjangler_info`, `pjangler_describe_project`, `pjangler_describe_recipe`, `pjangler_run_recipe`.
 
 MCP defaults are **safety-first**: `dryRun` and `local` default to `true`, network/cloud actions require explicit opt-out. `runRecipeWithCapture()` redirects `console.log/error` to capture recipe output into structured `{ success, logs, errors }`. Every response embeds `parityGuidance()` pointing agents at the `@33god-projects` skill.
 
 ## End-to-end flows
 
-**`pjangler init myproj --apply --provision-agent`**
+**`pjangler init myproj --apply`**
 
 Run this from the PARENT directory: the positional name creates `./myproj`. Inside an existing
 repo it still creates a child — it does not adopt the repo. Adopting is `pjangler init` with no
@@ -221,7 +188,7 @@ name, or an explicit `--target-dir`.
 2. `planProjectInit` → `ProjectInitPlan` of typed actions.
 3. (interactive) `@clack/prompts` multiselect lets the user pick which actions + parity fixes to run.
 4. CLI dispatches `recipeRegistry.initRecipe("project", …)`.
-5. `ProjectRecipe` renders via Copier, initializes declared dependencies, optionally provisions Hermes, and closes the state those init actions own.
+5. `ProjectRecipe` renders via Copier, initializes declared dependencies, and closes the state those init actions own.
 6. A clean final audit gates Git initialization/initial commit; the central registry is persisted last. A fresh project is immediately audit-clean without a closure migrate-all pass.
 
 **`pjangler audit` / `pjangler migrate`**
@@ -246,8 +213,7 @@ No unit-test framework; correctness is guarded by Node `.mjs` regression suites 
 - **`.env.op` comment-only means intentional opt-out.** The managed materializer exits successfully without touching `.env`; missing or blank files are seeded with the neutral nonempty template. Active malformed references are blocked. Valid user content is preserved.
 - **Materialization is transactional.** The managed script uses collision-resistant `mktemp`, quotes all paths, traps failure/interruption cleanup, and atomically moves the result only after successful `op inject`.
 - **Generated mise hooks must remain record-preserving and space-safe.** Do not collapse `[[hooks.enter]]` records into string arrays or strip foreign record keys/comments.
-- **`templates/commonproject` and `templates/hermes-agent` are git submodules** and are not checked out in every worktree (they are empty in this `bmad-init` worktree). `resolvePjanglerRoot()` locates the package root by walking up until it finds `package.json` + `templates/commonproject/copier.yml`.
-- **README drift:** the README references `bun install` / `bun run` and lists only 4 MCP tools; the project is npm-only (esbuild) with 11 MCP tools. Trust `package.json` and the code.
+- **`templates/commonproject` is a git submodule** — the only one — and is not checked out in every worktree. `resolvePjanglerRoot()` locates the package root by walking up until it finds `package.json` + `templates/commonproject/copier.yml`.
 - **`copier` is an external Python tool** and must be on `PATH` (`uv tool install copier`); a missing `copier` surfaces as an `ENOENT` error in `executeProjectInitPlan`, not a crash.
 
 ## Where to look
@@ -259,5 +225,6 @@ No unit-test framework; correctness is guarded by Node `.mjs` regression suites 
 | Add/modify a lifecycle check | owning module in `src/recipes/*`; shared primitives in `src/parity/rules.ts` |
 | Change the CLI surface | `src/index.ts` |
 | Change the agent (MCP) surface | `src/mcp-server.ts` |
-| Change Hermes provisioning | `src/commands/hermes/*` + `templates/hermes-agent` |
-| Change the scaffold a new project gets | `templates/commonproject` (submodule) |
+| Change the scaffold a new project gets | `templates/commonproject` (the only submodule) |
+| Change a ticket-provider adapter | `krebs/adapters/tp/*` in the Krebs repo — pjangler resolves them, Krebs owns them |
+| Hire, inspect, or offboard an agent | Flume — pjangler does not provision agents |

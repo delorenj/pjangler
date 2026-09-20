@@ -1,22 +1,15 @@
 import { createHash } from "node:crypto";
-import {
-  accessSync,
-  constants,
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
+
 
 export interface LifecycleEligibilityResult {
   ok: boolean;
   error?: string;
 }
+
 
 export interface TrustedCopierResult extends LifecycleEligibilityResult {
   executable?: string;
@@ -24,6 +17,7 @@ export interface TrustedCopierResult extends LifecycleEligibilityResult {
   layout?: string;
   identity?: TrustedCopierIdentity;
 }
+
 
 export interface TrustedCopierFileIdentity {
   path: string;
@@ -36,6 +30,7 @@ export interface TrustedCopierFileIdentity {
   uid: number;
   gid: number;
 }
+
 
 /**
  * Read-only provenance captured before an MCP apply.
@@ -55,6 +50,7 @@ export interface TrustedCopierIdentity {
   files: readonly TrustedCopierFileIdentity[];
 }
 
+
 export interface TrustedCopierOptions {
   targetDir: string;
   env?: NodeJS.ProcessEnv;
@@ -65,19 +61,12 @@ export interface TrustedCopierOptions {
   systemRoots?: readonly string[];
 }
 
-export interface RenderedHermesEligibilityOptions {
-  pjanglerRoot: string;
-  targetDir: string;
-  roleDir: string;
-  targetRepo: string;
-  role: string;
-  agentId: string;
-}
 
 function containedBy(parent: string, candidate: string): boolean {
   const rel = relative(resolve(parent), resolve(candidate));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+
 
 function firstExecutableOnPath(env: NodeJS.ProcessEnv): string | undefined {
   for (const rawEntry of (env.PATH ?? "").split(delimiter)) {
@@ -95,9 +84,11 @@ function firstExecutableOnPath(env: NodeJS.ProcessEnv): string | undefined {
   return undefined;
 }
 
+
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("base64url");
 }
+
 
 function fingerprint(path: string): TrustedCopierFileIdentity {
   const absolute = resolve(path);
@@ -117,6 +108,7 @@ function fingerprint(path: string): TrustedCopierFileIdentity {
   };
 }
 
+
 function sameFingerprint(expected: TrustedCopierFileIdentity): LifecycleEligibilityResult {
   try {
     const actual = fingerprint(expected.path);
@@ -133,6 +125,7 @@ function sameFingerprint(expected: TrustedCopierFileIdentity): LifecycleEligibil
     };
   }
 }
+
 
 function consoleScriptContract(path: string): LifecycleEligibilityResult & { interpreter?: string } {
   let text: string;
@@ -158,12 +151,14 @@ function consoleScriptContract(path: string): LifecycleEligibilityResult & { int
   return { ok: true, interpreter: interpreterPath };
 }
 
+
 function defaultUvToolRoots(home: string): string[] {
   return [
     join(home, ".local", "share", "uv", "tools", "copier"),
     join(home, "Library", "Application Support", "uv", "tools", "copier"),
   ].map((path) => resolve(path));
 }
+
 
 function locateUvSitePackages(toolRoot: string): string {
   const lib = join(toolRoot, "lib");
@@ -177,6 +172,7 @@ function locateUvSitePackages(toolRoot: string): string {
   return realpathSync(candidates[0]!);
 }
 
+
 function parseRecordLine(line: string): { relativePath: string; digest: string; size: number } | undefined {
   // Copier's wheel paths contain no CSV quoting. Reject rather than attempting
   // a permissive parse if a future/unexpected distribution does.
@@ -189,6 +185,7 @@ function parseRecordLine(line: string): { relativePath: string; digest: string; 
     size: Number(parts[2]),
   };
 }
+
 
 function attestUvCopier(candidate: string, realCandidate: string, home: string): TrustedCopierResult {
   const toolRoot = defaultUvToolRoots(home).find((root) => realCandidate === join(root, "bin", "copier"));
@@ -305,6 +302,7 @@ function attestUvCopier(candidate: string, realCandidate: string, home: string):
   }
 }
 
+
 export function verifyTrustedCopierIdentity(identity: TrustedCopierIdentity): LifecycleEligibilityResult {
   if (!isAbsolute(identity.executable) || resolve(identity.executable) !== resolve(identity.files.find((file) => file.path === identity.executable)?.path ?? "")) {
     return { ok: false, error: "trusted Copier identity has no canonical absolute launcher" };
@@ -317,6 +315,7 @@ export function verifyTrustedCopierIdentity(identity: TrustedCopierIdentity): Li
   }
   return { ok: true };
 }
+
 
 /**
  * Resolve and attest Copier without executing it.
@@ -357,6 +356,7 @@ export function preflightTrustedCopier(options: TrustedCopierOptions): TrustedCo
   return attestUvCopier(candidate, realCandidate, home);
 }
 
+
 function regularContainedFile(root: string, path: string, label: string): LifecycleEligibilityResult {
   try {
     const rootReal = realpathSync(root);
@@ -368,6 +368,7 @@ function regularContainedFile(root: string, path: string, label: string): Lifecy
     return { ok: false, error: `${label} is unavailable: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
+
 
 function parseCopierConfig(templateRoot: string, label: string): { result: LifecycleEligibilityResult; config?: Record<string, unknown> } {
   const configPath = join(templateRoot, "copier.yml");
@@ -391,6 +392,7 @@ function parseCopierConfig(templateRoot: string, label: string): { result: Lifec
   }
 }
 
+
 function requireFiles(templateRoot: string, files: readonly string[], label: string): LifecycleEligibilityResult {
   for (const rel of files) {
     const result = regularContainedFile(templateRoot, join(templateRoot, rel), `${label} ${rel}`);
@@ -398,6 +400,7 @@ function requireFiles(templateRoot: string, files: readonly string[], label: str
   }
   return { ok: true };
 }
+
 
 export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleEligibilityResult {
   const templateRoot = join(resolve(pjanglerRoot), "templates", "commonproject");
@@ -421,160 +424,11 @@ export function preflightCommonProjectTemplate(pjanglerRoot: string): LifecycleE
   return { ok: true };
 }
 
-export function preflightHermesTemplate(pjanglerRoot: string, env: NodeJS.ProcessEnv = process.env): LifecycleEligibilityResult {
-  const templateRoot = join(resolve(pjanglerRoot), "templates", "hermes-agent");
-  const explicit = env.PJANGLER_HERMES_TEMPLATE?.trim();
-  if (explicit) {
-    try {
-      if (realpathSync(resolve(explicit)) !== realpathSync(templateRoot)) {
-        return { ok: false, error: "MCP Hermes apply requires the version-locked vendored template" };
-      }
-    } catch (error) {
-      return { ok: false, error: `Hermes template override is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  const parsed = parseCopierConfig(templateRoot, "Hermes template");
-  if (!parsed.result.ok) return parsed.result;
-  const required = requireFiles(templateRoot, [
-    "template/role.yaml.jinja",
-    "template/SOUL.md.jinja",
-    "template/hermes.jinja",
-    "template/.scripts/_lib.sh",
-    "template/.scripts/01-config.sh",
-    "template/.scripts/05-fleet-env.sh",
-    "template/.scripts/10-hermes-profile.sh",
-    "template/.scripts/20-runtime-repo.sh",
-    "template/.scripts/30-telegram.sh",
-    "template/.scripts/31-slack.sh",
-    "template/.scripts/42-ticket-provider.sh",
-    "template/.scripts/70-systemd.sh",
-    "template/.scripts/80-registry.sh",
-  ], "Hermes template");
-  if (!required.ok) return required;
-
-  const role = readFileSync(join(templateRoot, "template", "role.yaml.jinja"), "utf8");
-  if (!/^bloodbank:\s*$[\s\S]*?^\s+enabled:\s+(?:true|false)\s*$/m.test(role)) {
-    return { ok: false, error: "Hermes role projection must declare bloodbank.enabled as a strict boolean" };
-  }
-  const library = readFileSync(join(templateRoot, "template", ".scripts", "_lib.sh"), "utf8");
-  if (!library.includes("PJANGLER_PROJECT_ROOT") || !library.includes('"$explicit"/agents/hermes/*')) {
-    return { ok: false, error: "Hermes project-root resolver must honor the explicitly contained MCP target" };
-  }
-  const skipPlane = readFileSync(join(templateRoot, "template", ".scripts", "42-ticket-provider.sh"), "utf8");
-  const guard = skipPlane.indexOf('if [[ "${SKIP_PLANE:-0}" == "1" ]]');
-  const firstSource = skipPlane.search(/^source\s/m);
-  if (guard < 0 || firstSource < 0 || guard > firstSource) {
-    return { ok: false, error: "Hermes ticket-provider skip guard must precede all sourced provider/config logic" };
-  }
-  // 30/31 write into the profile root 10-hermes-profile.sh creates, so they
-  // must defer with it. Without the guard both died on "required profile root
-  // is unavailable" and took every deferred MCP render down with them.
-  for (const script of ["01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "30-telegram.sh", "31-slack.sh", "80-registry.sh"]) {
-    const text = readFileSync(join(templateRoot, "template", ".scripts", script), "utf8");
-    const hostGuard = text.indexOf('if [[ "${SKIP_HOST_STATE:-0}" == "1" ]]');
-    const source = text.search(/^source\s/m);
-    if (hostGuard < 0 || source < 0 || hostGuard > source) {
-      return { ok: false, error: `Hermes ${script} host-state guard must precede all sourced config/fleet logic` };
-    }
-  }
-  const tasks = Array.isArray(parsed.config?._tasks) ? parsed.config._tasks.map(String) : [];
-  for (const script of ["20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    if (!tasks.some((task) => task.includes(script))) return { ok: false, error: `Hermes copier task list is missing ${script}` };
-  }
-  return { ok: true };
-}
-
-/**
- * Validate the trusted Copier projection before any host-global script runs.
- *
- * The executable and version-locked template were attested before Copier was
- * launched. This second, read-only gate proves that the rendered identity,
- * strict lifecycle metadata, local project registration, and every script we
- * may execute in the host/external tails are exactly the expected projection.
- */
-export function preflightRenderedHermes(options: RenderedHermesEligibilityOptions): LifecycleEligibilityResult {
-  const target = resolve(options.targetDir);
-  const roleDir = resolve(options.roleDir);
-  if (!containedBy(target, roleDir)) return { ok: false, error: "rendered Hermes role escapes its project target" };
-  try {
-    const stat = lstatSync(roleDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      return { ok: false, error: "rendered Hermes role must be a real directory" };
-    }
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role is unavailable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-
-  const templateScripts = join(resolve(options.pjanglerRoot), "templates", "hermes-agent", "template", ".scripts");
-  const renderedScripts = join(roleDir, ".scripts");
-  const requiredFiles = [
-    "role.yaml",
-    "SOUL.md",
-    "hermes",
-    ".gitignore",
-    ".runtime-scaffold/README.md",
-    ...["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]
-      .map((script) => `.scripts/${script}`),
-  ];
-  const required = requireFiles(roleDir, requiredFiles, "rendered Hermes role");
-  if (!required.ok) return required;
-
-  for (const script of ["_lib.sh", "01-config.sh", "05-fleet-env.sh", "10-hermes-profile.sh", "20-runtime-repo.sh", "42-ticket-provider.sh", "70-systemd.sh", "80-registry.sh"]) {
-    try {
-      if (readFileSync(join(renderedScripts, script), "utf8") !== readFileSync(join(templateScripts, script), "utf8")) {
-        return { ok: false, error: `rendered Hermes script differs from the attested template: ${script}` };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot attest rendered Hermes script ${script}: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-
-  let role: Record<string, unknown>;
-  try {
-    const parsed = YAML.parse(readFileSync(join(roleDir, "role.yaml"), "utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, error: "rendered Hermes role.yaml must contain a mapping" };
-    }
-    role = parsed as Record<string, unknown>;
-  } catch (error) {
-    return { ok: false, error: `rendered Hermes role.yaml is invalid: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  if (role.repo !== options.targetRepo || role.role !== options.role || role.agent_id !== options.agentId) {
-    return { ok: false, error: "rendered Hermes role identity does not match the requested repo/role/agent" };
-  }
-  const bloodbank = role.bloodbank as Record<string, unknown> | undefined;
-  if (!bloodbank || typeof bloodbank.enabled !== "boolean") {
-    return { ok: false, error: "rendered Hermes bloodbank.enabled must be a strict boolean" };
-  }
-  const deployment = role.deployment as Record<string, unknown> | undefined;
-  if (!deployment || deployment.local_only !== true || deployment.systemd !== "deferred") {
-    return { ok: false, error: "rendered Hermes deployment must remain local-only/deferred until external grants run" };
-  }
-
-  const manifestPath = join(target, ".project.json");
-  if (existsSync(manifestPath)) {
-    try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-      const agents = manifest.agents as Record<string, Record<string, unknown>> | undefined;
-      const declared = agents?.[options.agentId];
-      if (!declared
-        || declared.role !== options.role
-        || declared.role_dir !== relative(target, roleDir)
-        || declared.provisioning_state !== "provisioned") {
-        return { ok: false, error: "rendered Hermes role is not canonically registered in .project.json" };
-      }
-    } catch (error) {
-      return { ok: false, error: `cannot validate rendered Hermes project registration: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  }
-  return { ok: true };
-}
 
 export function preflightMcpLifecycle(options: {
   pjanglerRoot: string;
   targetDir: string;
   commonProject: boolean;
-  hermes: boolean;
   env?: NodeJS.ProcessEnv;
 }): TrustedCopierResult {
   const copier = preflightTrustedCopier({ targetDir: options.targetDir, env: options.env });
@@ -582,10 +436,6 @@ export function preflightMcpLifecycle(options: {
   if (options.commonProject) {
     const common = preflightCommonProjectTemplate(options.pjanglerRoot);
     if (!common.ok) return { ...common, executable: copier.executable, realExecutable: copier.realExecutable };
-  }
-  if (options.hermes) {
-    const hermes = preflightHermesTemplate(options.pjanglerRoot, options.env);
-    if (!hermes.ok) return { ...hermes, executable: copier.executable, realExecutable: copier.realExecutable };
   }
   return copier;
 }

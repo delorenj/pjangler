@@ -76,8 +76,8 @@ try {
   const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish --provenance");
   assert.match(
     gitmodules,
-    /^\[submodule "templates\/commonproject"\]\n\tpath = templates\/commonproject\n\turl = git@github\.com:delorenj\/CommonProject\.git\n\tbranch = main\n\[submodule "templates\/hermes-agent"\]\n\tpath = templates\/hermes-agent\n\turl = git@github\.com:delorenj\/hermes-agent-template\.git\n\tbranch = main\n$/,
-    "canonical submodule metadata must retain the exact SSH URLs",
+    /^\[submodule "templates\/commonproject"\]\n\tpath = templates\/commonproject\n\turl = git@github\.com:delorenj\/CommonProject\.git\n\tbranch = main\n$/,
+    "canonical submodule metadata must retain the exact SSH URL",
   );
   assert.notEqual(transportBridgeStep, -1, "publish workflow must bridge canonical SSH URLs to HTTPS");
   assert.equal(

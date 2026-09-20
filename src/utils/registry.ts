@@ -38,7 +38,7 @@ export interface CommandInfo {
 /**
  * Registry of all available recipes
  */
-const LEGACY_PUBLIC_RECIPE_IDS = ["mise", "docker", "node", "hermes-agent", "agent-hooks", "mise-op-inject"] as const;
+const LEGACY_PUBLIC_RECIPE_IDS = ["mise", "docker", "node", "agent-hooks", "mise-op-inject"] as const;
 
 /** Read-only compatibility facade over the exact production recipe instances. */
 export const RECIPE_REGISTRY: Readonly<Record<string, RecipeInfo>> = Object.freeze(Object.fromEntries(

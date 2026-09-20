@@ -4,7 +4,7 @@
 
 ## What it is
 
-**pjangler** (`@delorenj/pjangler`) is the **project bootstrapper and parity keeper for the 33GOD / DeLoNET platform**. It creates new 33god projects from the shared `CommonProject` template, keeps existing repos in parity with the 33god standard, provisions Hermes PM agents, and scaffolds common subsystems (mise, docker, node, agent-hooks) into any repo.
+**pjangler** (`@delorenj/pjangler`) is the **project bootstrapper and parity keeper for the 33GOD / DeLoNET platform**. It creates new 33god projects from the shared `CommonProject` template, keeps existing repos in parity with the 33god standard, indexes them in the project registry, and scaffolds common subsystems (mise, docker, node, notebook, agent-hooks) into any repo.
 
 It is delivered as a single npm package that exposes **two interfaces over one shared core**:
 
@@ -15,14 +15,14 @@ It is delivered as a single npm package that exposes **two interfaces over one s
 
 | | |
 | --- | --- |
-| Package | `@delorenj/pjangler` v1.2.17 |
-| Type | CLI + MCP server (npm package, ESM, Node ≥ 20) |
+| Package | `@delorenj/pjangler` v1.5.0 |
+| Type | CLI + MCP server (npm package, ESM, Node ≥ 24) |
 | Language | TypeScript (strict) |
-| Entry points | `src/index.ts` (CLI), `src/mcp-server.ts` (MCP) |
-| Build | `esbuild` → `dist/index.js`, `dist/mcp-server.js` |
-| Binaries | `pjangler`, `pj`, `pjangler-mcp` |
+| Entry points | `src/index.ts` (CLI), `src/mcp-server.ts` (MCP), `src/prompt.ts` (shell prompt), `src/project-registry-service.ts` (registry service) |
+| Build | `esbuild` → `dist/*.js` (one bundle per entry point) |
+| Binaries | `pjangler`, `pj`, `pjangler-mcp`, `pjangler-prompt` |
 | Repo structure | **Monolith** (single cohesive package) |
-| Central state | `~/.config/pjangler/projects.yaml` (project registry) |
+| Central state | the project registry service (`http://localhost:8764` by default) indexing each repo's `.project.json` |
 | Board | Plane `pjangler` (PJAN) — see `.project.json` |
 
 ## Tech stack (summary)
@@ -31,20 +31,20 @@ It is delivered as a single npm package that exposes **two interfaces over one s
 
 ## What it does (capabilities)
 
-1. **Bootstrap a project** — `pj init <name>`: register centrally → render `CommonProject` scaffold via copier → write `.project.json` → optionally provision a Hermes PM agent. Dry-run by default.
+1. **Bootstrap a project** — `pj init <name>`: register centrally → render `CommonProject` scaffold via copier → write `.project.json`. Dry-run by default.
    `<name>` **creates `./<name>`** relative to your cwd; run `pj init` with *no* name to adopt the repo you are standing in. init refuses to adopt a directory you did not name, and refuses to rename an already-registered project, without `-f`.
-2. **Audit & migrate parity** — `pj audit` / `pj migrate`: 11 deterministic, idempotent rules keep a repo aligned with the 33god standard (`.project.json`, mise config, agent-file symlinks, secrets wiring, BMAD install, Hermes scaffold, systemd units).
-3. **Scaffold subsystems** — `pj add <subsystem>`: composable recipes drop in `mise`, `docker`, `node`, or the `agent-hooks` fan-out layer.
-4. **Deploy Hermes PM agents** — `pj hermes-agent --yes`: render the pinned template, keep runtime state local/untracked, and verify role, manifest, PATH, profile, registry, heartbeat, and gateway postconditions. Existing roles require explicit `--force`; unsupported `--email` fails before mutation.
+2. **Audit & migrate parity** — `pj audit` / `pj migrate`: 19 deterministic, idempotent rules keep a repo aligned with the 33god standard (`.project.json`, mise config, agent-file symlinks, secrets wiring, BMAD install, skill manifest, companion notebook, board schema). `pj audit --rules <ids>` narrows the report to the rules you name.
+3. **Scaffold subsystems** — `pj add <subsystem>`: composable recipes drop in `mise`, `docker`, `node`, `notebook`, or the `agent-hooks` fan-out layer.
+4. **Orient in a repo** — `pj describe`: what a repo actually is, for agent or human context, in any repo, 33god or not.
 5. **Agent-native** — every operation above is also an MCP tool with safety-first (`dryRun`/`local`) defaults.
 
 ## Architecture at a glance
 
-Thin CLI + MCP interfaces → shared core of three subsystems: **recipe/command composition** (`src/commands`, `src/recipes`), **project registry + bootstrap** (`src/project`), and the **parity engine** (`src/parity`). A **plan/apply** model (dry-run default) and **idempotent** reconciliation run through everything. See [`architecture.md`](./architecture.md).
+Thin CLI + MCP interfaces → shared core of three subsystems: **recipe/command composition** (`src/commands`, `src/recipes`), **project registry + bootstrap** (`src/project`), and the **parity engine** (`src/parity`, `src/notebook`). A **plan/apply** model (dry-run default) and **idempotent** reconciliation run through everything. See [`architecture.md`](./architecture.md).
 
 ## Repository structure
 
-Monolith. Source in `src/` (33 files, ~6,600 LOC). Vendored `copier` templates (`templates/commonproject`, `templates/hermes-agent`) are **git submodules**. Regression tests in `tests/`. Dev tooling in `.mise/`. See [`source-tree-analysis.md`](./source-tree-analysis.md).
+Monolith. Source in `src/` (75 files, ~24,500 LOC). The vendored `copier` template `templates/commonproject` is the repo's **only git submodule**. Regression tests in `tests/`. Dev tooling in `.mise/`. See [`source-tree-analysis.md`](./source-tree-analysis.md).
 
 ## Detailed docs
 

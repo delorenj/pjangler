@@ -533,7 +533,6 @@ assert.match(paritySource, /recipeRegistry\.migrateAll/);
 for (const retired of ["PARITY_CHECKS", "RECIPE_RULE_OWNERS", "OwnedLifecycleRecipe", "lifecycleInitializers"]) {
   assert.doesNotMatch(`${paritySource}\n${rulesSource}`, new RegExp(retired));
 }
-assert.match(readFileSync(join(root, "src", "recipes", "HermesAgentRecipe.ts"), "utf8"), /status === "failed" \|\| status === "cancelled"[\s\S]*break/);
 
 console.log("PJAN-57 lifecycle registry/dispatch regressions: PASS");
 

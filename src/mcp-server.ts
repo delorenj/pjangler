@@ -7,7 +7,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { getRecipeInfo, getRecipeNames, COMMAND_REGISTRY, RECIPE_REGISTRY } from "./utils/registry";
 import type { CommandContext } from "./commands/Command";
-import type { HermesAgentContext, TicketProvider } from "./commands/hermes/types";
 import { PJANGLER_VERSION } from "./utils/version";
 import { lifecycleContext, recipeRegistry, formatAuditReport, getParityRuleIds, runAudit, runMigration } from "./parity/index";
 import { readProjectInfo } from "./project/info";
@@ -26,7 +25,6 @@ import {
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
 import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
-import { registerFleetMcpTools } from "./fleet/mcp";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -147,71 +145,36 @@ function asText(payload: unknown) {
 }
 
 function publicProjectPlan(plan: ReturnType<typeof planProjectInit>) {
-  return {
-    ...plan,
-    actions: plan.actions.map((action) => {
-      if (action.kind !== "hermes.provision-agent") return action;
-      return {
-        ...action,
-        context: {
-          skipPlane: action.context.skipPlane,
-          skipSystemd: action.context.skipSystemd,
-        },
-      };
-    }),
-  };
+  return plan;
 }
 
 function publicCompositeProjectResponse<T extends object>(payload: T, plan: ReturnType<typeof planProjectInit>) {
-  const projectedPlan = publicProjectPlan(plan);
   const hasNestedPlan = "plan" in payload;
-  const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
   return {
     ...payload,
-    ...(hasNestedPlan ? { plan: projectedPlan } : {}),
-    ...(provisionsAgent ? {
-      bloodbankMode: "fleet-shared" as const,
-      runtimeMode: "role-local-ignored" as const,
-    } : {}),
+    ...(hasNestedPlan ? { plan: publicProjectPlan(plan) } : {}),
   };
 }
 
 async function executeRegisteredProjectPlan(
   plan: ReturnType<typeof planProjectInit>,
-  agentContext?: Partial<HermesAgentContext>,
   lifecycleOverrides: Partial<LifecycleContext> = {},
   trustedCopier?: TrustedCopierIdentity,
 ) {
-  const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent" && action.enabled);
   const projectInput: ProjectRecipeInput = {
     plan,
     mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
     selectedRuleIds: [],
     selectedOperations: plan.actions.map((action) => action.kind),
     trustedCopier,
-    requireTrustedCopier: Boolean(
-      plan.actions.some((action) => action.kind === "copier.copy.commonproject")
-      || plannedAgent?.kind === "hermes.provision-agent",
-    ),
-    agentContext: plannedAgent?.kind === "hermes.provision-agent"
-      ? {
-          ...agentContext,
-          trustedCopier,
-          deferredExternalEffects: {
-            ticketBoard: !plannedAgent.context.skipPlane,
-            systemd: !plannedAgent.context.skipSystemd,
-            owner: "project",
-          },
-        }
-      : agentContext,
+    requireTrustedCopier: plan.actions.some((action) => action.kind === "copier.copy.commonproject"),
     quiet: true,
   };
   return await recipeRegistry.initRecipe(
     "project",
     lifecycleContext(plan.project.repo_path, false, false, {
-      ...agentContext,
       ...lifecycleOverrides,
-      force: lifecycleOverrides.force ?? agentContext?.force ?? plan.actions.some((action) => action.kind === "copier.copy.commonproject" && action.overwrite),
+      force: lifecycleOverrides.force ?? plan.actions.some((action) => action.kind === "copier.copy.commonproject" && action.overwrite),
       live: lifecycleOverrides.live ?? plan.live,
       quiet: lifecycleOverrides.quiet ?? true,
     }),
@@ -251,17 +214,6 @@ function projectPreflightFailure(
  * filesystem-only, so this check cannot itself invoke git, systemd, a provider,
  * or another subprocess.
  */
-async function preflightExistingHermesScaffold(targetDir: string): Promise<string | undefined> {
-  if (!existsSync(join(targetDir, "agents", "hermes"))) return undefined;
-  const owner = recipeRegistry.ownerOf("hermes.pm-scaffold");
-  if (!owner) return "Hermes lifecycle owner is unavailable";
-  const finding = await owner.check.audit(lifecycleContext(targetDir, true));
-  if ((finding.status === "fail" || finding.status === "warn") && !finding.fixable) {
-    const detail = finding.details.length ? ` (${finding.details.join("; ")})` : "";
-    return `${finding.id}: ${finding.summary}${detail}`;
-  }
-  return undefined;
-}
 
 /**
  * Establish every lifecycle failure knowable without mutation before the
@@ -293,12 +245,6 @@ async function preflightProjectApply(
   pjanglerRoot: string,
 ): Promise<ProjectApplyPreflight> {
   const createsScaffold = plan.actions.some((action) => action.kind === "copier.copy.commonproject");
-  const provisionsAgent = plan.actions.some((action) => action.kind === "hermes.provision-agent" && action.enabled);
-
-  if (!createsScaffold && provisionsAgent) {
-    const hermesBlocker = await preflightExistingHermesScaffold(plan.project.repo_path);
-    if (hermesBlocker) return { failure: projectPreflightFailure(plan, [hermesBlocker]) };
-  }
 
   if (!createsScaffold) {
     const audit = await runAudit(plan.project.repo_path);
@@ -306,7 +252,6 @@ async function preflightProjectApply(
       if (finding.status === "pass" || finding.status === "skip") return false;
       if (finding.id === "sot.project-json") return false;
       if (finding.id === "notebook.binding" && plannedNotebookBindingRepairsDrift(plan)) return false;
-      if (provisionsAgent && finding.id.startsWith("hermes.")) return false;
       return true;
     });
     if (blocking.length) {
@@ -320,12 +265,11 @@ async function preflightProjectApply(
     }
   }
 
-  if (createsScaffold || provisionsAgent) {
+  if (createsScaffold) {
     const eligibility = preflightMcpLifecycle({
       pjanglerRoot,
       targetDir: plan.project.repo_path,
       commonProject: createsScaffold,
-      hermes: provisionsAgent,
     });
     if (!eligibility.ok) {
       return {
@@ -572,8 +516,6 @@ server.registerTool(
         projectSlug,
         sourceSkill: input.sourceSkill,
         primaryLanguage: input.primaryLanguage ?? "python",
-        provisionAgent: input.provisionAgent ?? false,
-        agentRole: input.agentRole ?? "pm",
         apply: !dryRun,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,
@@ -608,19 +550,7 @@ server.registerTool(
         };
       }
 
-      const plannedAgent = plan.actions.find((action) => action.kind === "hermes.provision-agent");
-      const result = await executeRegisteredProjectPlan(plan, input.provisionAgent ? {
-        targetRepo: projectSlug,
-        role: input.agentRole ?? "pm",
-        agentPurpose: input.agentPurpose ?? `Project manager for ${input.projectName}`,
-        local: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.local : local,
-        force: overwrite,
-        skipTelegram: true,
-        skipEmail: true,
-        skipPlane: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipPlane : true,
-        skipBloodbank: true,
-        skipSystemd: plannedAgent?.kind === "hermes.provision-agent" ? plannedAgent.context.skipSystemd : true,
-      } : undefined, {
+      const result = await executeRegisteredProjectPlan(plan, {
         force: overwrite,
         live: input.live ?? false,
         quiet: true,
@@ -635,15 +565,8 @@ server.registerTool(
         };
       }
 
-      const agentResult = input.provisionAgent
-        ? {
-            success: Boolean(result.agentResult?.ok),
-            logs: result.agentResult?.logs ?? [],
-            errors: result.agentResult?.errors ?? (result.ok ? [] : result.errors),
-          }
-        : undefined;
       return asText(publicCompositeProjectResponse(
-        { ...result, agentResult, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
+        { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
         plan,
       ));
     } catch (err) {
@@ -690,8 +613,6 @@ server.registerTool(
         targetDir: input.targetDir,
         sourceSkill: input.sourceSkill,
         primaryLanguage: input.primaryLanguage,
-        provisionAgent: input.provisionAgent ?? false,
-        agentRole: input.agentRole,
         apply: input.apply ?? false,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,
@@ -719,7 +640,7 @@ server.registerTool(
           )),
         };
       }
-      const result = await executeRegisteredProjectPlan(plan, undefined, {
+      const result = await executeRegisteredProjectPlan(plan, {
         force: input.force ?? false,
         live: input.live ?? false,
         quiet: true,
@@ -877,172 +798,6 @@ server.registerTool(
     }
   }
 );
-
-server.registerTool(
-  "pjangler_deploy_hermes_agent",
-  {
-    title: "Deploy Hermes agent",
-    description:
-      "Preview or apply a non-interactive Hermes agent deployment. Local writes require apply=true. External effects additionally require live=true, local=false, and an explicit positive opt-in for each effect. Bloodbank routing is always fleet-shared.",
-    inputSchema: z.strictObject({
-      targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
-      targetRepo: TARGET_REPO_SCHEMA.optional(),
-      role: AGENT_ROLE_SCHEMA,
-      agentPurpose: z.string().optional(),
-      soulTone: z.enum(["direct", "playful", "formal", "terse"]).optional(),
-      modelProvider: z.string().optional(),
-      modelName: z.string().optional(),
-      modelBaseUrl: z.string().optional(),
-      modelApiMode: z.enum(["", "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"]).optional(),
-      modelKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional(),
-      local: z.boolean().optional(),
-      apply: z.boolean().optional(),
-      live: z.boolean().optional(),
-      provisionRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; requires live=true, local=false, and skipPlane!=true."),
-      enableSystemd: z.boolean().optional().describe("Explicitly opt in to systemd installation/enablement; requires live=true, local=false, and skipSystemd!=true."),
-      force: z.boolean().optional(),
-      skipRuntimeRepo: RUNTIME_REPO_COMPAT_SCHEMA,
-      skipPlane: z.boolean().optional(),
-      skipSystemd: z.boolean().optional(),
-      ticketProvider: TICKET_PROVIDER_SCHEMA.optional(),
-    }),
-  },
-  async (input) => {
-    try {
-      const externalEffects = validateExternalEffectConsent(input, { requireNonLocal: true });
-      const resolvedTarget = resolveTargetDir(input.targetDir);
-      const local = input.local ?? true;
-      const apply = input.apply === true;
-      const live = input.live === true;
-      let trustedCopier: TrustedCopierIdentity | undefined;
-
-      if (apply) {
-        const hermesBlocker = await preflightExistingHermesScaffold(resolvedTarget);
-        if (hermesBlocker) {
-          return {
-            isError: true,
-            ...asText({
-              success: false,
-              recipe: "hermes-agent",
-              targetDir: resolvedTarget,
-              apply,
-              live,
-              logs: [],
-              errors: [`Lifecycle preflight failed: ${hermesBlocker}`],
-            }),
-          };
-        }
-        const eligibility = preflightMcpLifecycle({
-          pjanglerRoot: resolvePjanglerRoot(),
-          targetDir: resolvedTarget,
-          commonProject: false,
-          hermes: true,
-        });
-        if (!eligibility.ok) {
-          return {
-            isError: true,
-            ...asText({
-              success: false,
-              recipe: "hermes-agent",
-              targetDir: resolvedTarget,
-              apply,
-              live,
-              logs: [],
-              errors: [`Lifecycle preflight failed: ${eligibility.error ?? "unknown eligibility failure"}`],
-            }),
-          };
-        }
-        if (!eligibility.identity) {
-          return {
-            isError: true,
-            ...asText({
-              success: false,
-              recipe: "hermes-agent",
-              targetDir: resolvedTarget,
-              apply,
-              live,
-              logs: [],
-              errors: ["Lifecycle preflight failed: Copier attestation returned no executable identity"],
-            }),
-          };
-        }
-        trustedCopier = eligibility.identity;
-      }
-
-      const context: HermesAgentContext = {
-        targetDir: resolvedTarget,
-        yes: true,
-        quiet: true,
-        local,
-        live,
-        targetRepo: input.targetRepo ?? basename(resolvedTarget),
-        role: normalizeAgentRole(input.role),
-        agentPurpose: input.agentPurpose,
-        soulTone: input.soulTone,
-        modelProvider: input.modelProvider,
-        modelName: input.modelName,
-        modelBaseUrl: input.modelBaseUrl,
-        modelApiMode: input.modelApiMode,
-        modelKeyEnv: input.modelKeyEnv,
-        ticketProvider: input.ticketProvider as TicketProvider | undefined,
-        force: input.force ?? false,
-        dryRun: !apply,
-        // MCP has no prompt-capable Telegram/email inputs. These steps remain
-        // unreachable and therefore cannot consume JSON-RPC stdin.
-        skipTelegram: true,
-        skipEmail: true,
-        skipPlane: !externalEffects.ticketBoard,
-        skipBloodbank: true,
-        skipSystemd: !externalEffects.systemd || process.platform === "darwin",
-        trustedCopier,
-        deferredExternalEffects: {
-          ticketBoard: externalEffects.ticketBoard,
-          systemd: externalEffects.systemd,
-          owner: "hermes",
-        },
-      };
-
-      const result = await runRecipeWithCapture("hermes-agent", context);
-      return {
-        isError: !result.success,
-        ...asText({
-          success: result.success,
-          recipe: "hermes-agent",
-          targetDir: resolvedTarget,
-          apply,
-          live,
-          bloodbankMode: "fleet-shared",
-          runtimeMode: "role-local-ignored",
-          guidance: parityGuidance(),
-          context: {
-            targetRepo: context.targetRepo,
-            role: context.role,
-            local: context.local,
-            dryRun: context.dryRun,
-            quiet: context.quiet,
-            force: context.force,
-            skipPlane: context.skipPlane,
-            skipSystemd: context.skipSystemd,
-          },
-          logs: result.logs,
-          errors: result.errors,
-        }),
-      };
-    } catch (err) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-      };
-    }
-  }
-);
-
-// The fleet observation tools register from `src/fleet/mcp.ts`, so the claim
-// that they add only envelope wrapping and never policy stays reviewable in one
-// file. `asText` is handed in rather than imported there, because this module
-// connects a transport at load time and must never be imported for a helper.
-registerFleetMcpTools(server, asText);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

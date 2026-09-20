@@ -245,7 +245,7 @@ const CONFIG_FILES: readonly ConfigFileSpec[] = [
   { path: "_bmad", purpose: "BMAD methodology install", subsystem: "bmad" },
   { path: "_bmad-output", purpose: "BMAD work products", subsystem: "bmad" },
   { path: "AGENTS.md", purpose: "Agent instruction SSOT", subsystem: "-" },
-  { path: "agents/hermes", purpose: "Hermes agent roles for this repo", subsystem: "hermes-agent" },
+  { path: "agents/hermes", purpose: "Employee role directories, rendered by Flume", subsystem: "hermes-agent" },
   { path: "Dockerfile", purpose: "Container image definition", subsystem: "docker" },
   { path: "docker-compose.yml", purpose: "Local service composition", subsystem: "docker" },
   { path: "package.json", purpose: "Node package manifest", subsystem: "node" },
@@ -604,13 +604,16 @@ function describeNextSteps(
     });
   }
 
+  // pjangler still REPORTS employees -- `.project.json.agents` is a projection of
+  // the org chart and describing a repo means saying who works on it -- but it
+  // no longer hires them. That verb belongs to Flume.
   for (const agent of description.identity.agents) {
     if (agent.provisioningState === "provisioned") continue;
     steps.push({
-      title: `Provision the ${agent.role} agent`,
+      title: `Hire the ${agent.role}`,
       reason: `${agent.name} is ${agent.provisioningState}, not provisioned`,
       source: "agents",
-      command: `pjangler hermes-agent --role ${agent.role}`,
+      command: `flume hire ${agent.role}`,
     });
   }
 
