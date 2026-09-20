@@ -62,6 +62,19 @@ export interface PlaneBoardFacts {
   identifier: string;
   name: string;
   workspace: string;
+  /**
+   * Whether Plane has this project archived.
+   *
+   * An archived board is not a usable board, and it does not announce itself.
+   * Plane keeps serving the project record at HTTP 200 while every
+   * sub-collection under it — states, labels, modules, cycles, issues —
+   * returns a well-formed EMPTY page. Nothing is deleted and nothing errors,
+   * so a tool that only reads collections concludes "brand new empty board"
+   * and offers to fill it. `archived_at` on the project record is the only
+   * field that tells the truth, so it is carried here and every match path
+   * below has to reckon with it.
+   */
+  archived: boolean;
 }
 
 /** One agent's board binding as the fleet registry currently records it. */
@@ -233,7 +246,13 @@ export async function fetchPlaneBoards(
       const id = typeof entry.id === "string" ? entry.id : "";
       const identifier = typeof entry.identifier === "string" ? entry.identifier.trim() : "";
       if (!id || !identifier) continue;
-      boards.set(id, { id, identifier, name: typeof entry.name === "string" ? entry.name : "", workspace });
+      boards.set(id, {
+        id,
+        identifier,
+        name: typeof entry.name === "string" ? entry.name : "",
+        workspace,
+        archived: typeof entry.archived_at === "string" && entry.archived_at.trim() !== "",
+      });
     }
     const more = isRecord(body) && body.next_page_results === true;
     cursor = isRecord(body) && typeof body.next_cursor === "string" ? body.next_cursor : undefined;
@@ -517,10 +536,21 @@ function candidateBoardIds(
   return candidates;
 }
 
-/** Every live board identifier in a workspace, upper-cased, to the board that owns it. */
+/**
+ * Every LIVE board identifier in a workspace, upper-cased, to the board that owns it.
+ *
+ * Archived boards are excluded, and the word "live" in the name is the reason.
+ * This index drives the collision check that strips a proposed identifier when
+ * a real board already owns the key — but an archived board is not competing
+ * for anything, and letting one veto a key means a repo can never reclaim the
+ * identifier of a board that was retired years ago.
+ */
 function liveKeyIndex(boards: Map<string, PlaneBoardFacts>): Map<string, PlaneBoardFacts> {
   const index = new Map<string, PlaneBoardFacts>();
-  for (const board of boards.values()) index.set(board.identifier.toUpperCase(), board);
+  for (const board of boards.values()) {
+    if (board.archived) continue;
+    index.set(board.identifier.toUpperCase(), board);
+  }
   return index;
 }
 
@@ -546,6 +576,15 @@ interface HintMatch {
  *   2. a live board NAME equal, case-insensitively and exactly, to the record's
  *      slug or its name.
  *
+ * ARCHIVED boards are not candidates for either hint, and this is the whole
+ * reason `archived` exists on the facts. A retired board keeps its name and
+ * its key forever, so a name hint matches it just as cleanly as a live one —
+ * that is how the `flume` repo got bound to a board archived three months
+ * earlier, whose states, labels and eleven issues the API then reported as
+ * zero. Refusing the match out loud beats both alternatives: adopting it
+ * points the repo at a dead board, and dropping it silently hides the one
+ * board the user probably meant and can unarchive in a second.
+ *
  * An UNSTAMPED manifest identifier is deliberately not a hint. Those keys are
  * overwhelmingly `slug.slice(0, 4).toUpperCase()` output, and taking them at
  * face value is not a repair, it is the original bug with a new entry point:
@@ -562,7 +601,7 @@ function resolveBoardByHint(
   project: { name?: string; repo_path?: string },
   provider: ProjectTicketProvider,
 ): HintMatch {
-  const matches = (predicate: (board: PlaneBoardFacts) => boolean): PlaneBoardFacts[] => {
+  const matchAll = (predicate: (board: PlaneBoardFacts) => boolean): PlaneBoardFacts[] => {
     const found: PlaneBoardFacts[] = [];
     for (const boards of ctx.boardsByWorkspace.values()) {
       for (const board of boards.values()) if (predicate(board)) found.push(board);
@@ -572,6 +611,28 @@ function resolveBoardByHint(
   const describe = (boards: PlaneBoardFacts[]): string =>
     boards.map((board) => `${board.workspace}/${board.identifier} "${board.name}"`).join(", ");
 
+  /**
+   * Live matches only — but when a hint matches nothing live and something
+   * archived, say which, because "no board found" would be a lie about a board
+   * that is sitting right there one unarchive away.
+   */
+  const matches = (predicate: (board: PlaneBoardFacts) => boolean): HintMatch & { live: PlaneBoardFacts[] } => {
+    const all = matchAll(predicate);
+    const live = all.filter((board) => !board.archived);
+    if (live.length) return { live };
+    const archived = all.filter((board) => board.archived);
+    if (archived.length) {
+      return {
+        live,
+        refusal:
+          `matches only ARCHIVED board${archived.length > 1 ? "s" : ""} (${describe(archived)}) — ` +
+          `Plane reports an archived board's states, labels and issues as empty, so binding to ` +
+          `one looks like an empty board. Unarchive it, or bind a different board deliberately`,
+      };
+    }
+    return { live };
+  };
+
   const manifest = project.repo_path ? readManifestBoard(project.repo_path) : undefined;
   const claimedKey =
     manifest && manifest.identifierSource === "provider" && (!manifest.type || manifest.type === provider.type)
@@ -579,9 +640,12 @@ function resolveBoardByHint(
       : "";
   if (claimedKey) {
     const byKey = matches((board) => board.identifier.toUpperCase() === claimedKey);
-    if (byKey.length === 1) return { board: byKey[0] };
-    if (byKey.length > 1) {
-      return { refusal: `.project.json identifier ${claimedKey} matches ${byKey.length} boards (${describe(byKey)})` };
+    if (byKey.refusal) return { refusal: `.project.json identifier ${claimedKey} ${byKey.refusal}` };
+    if (byKey.live.length === 1) return { board: byKey.live[0] };
+    if (byKey.live.length > 1) {
+      return {
+        refusal: `.project.json identifier ${claimedKey} matches ${byKey.live.length} boards (${describe(byKey.live)})`,
+      };
     }
   }
 
@@ -590,7 +654,8 @@ function resolveBoardByHint(
   );
   if (!names.size) return {};
   const byName = matches((board) => names.has(board.name.trim().toLowerCase()));
-  const unique = new Map(byName.map((board) => [`${board.workspace}\u0000${board.id}`, board]));
+  if (byName.refusal) return { refusal: `board name ${byName.refusal}` };
+  const unique = new Map(byName.live.map((board) => [`${board.workspace}\u0000${board.id}`, board]));
   if (unique.size === 1) return { board: [...unique.values()][0] };
   if (unique.size > 1) {
     return { refusal: `board name matches ${unique.size} boards (${describe([...unique.values()])})` };
@@ -809,6 +874,19 @@ async function reconcileOneProject(
     const board = boards.get(boardId);
     if (!board) continue;
     claimed.set(`${type}\u0000${boardId}`, slug);
+    // A RECORDED id pointing at an archived board is a different case from a
+    // hint matching one: the binding is deliberate, might be temporary, and is
+    // the only pointer to that board anyone has. So it is kept and reported,
+    // never cleared. What it must not do is pass silently — every downstream
+    // read of an archived board (states, labels, modules, issues) comes back
+    // empty at HTTP 200, so a tool that trusts a quiet "linked" will report an
+    // empty board and offer to populate one that is already full.
+    if (board.archived) {
+      ctx.errors.push(
+        `${slug}: Plane board "${board.name}" (${workspace}/${board.identifier}) is ARCHIVED; ` +
+          `its states, labels and issues all read as empty until it is unarchived — binding preserved`,
+      );
+    }
     const bindingChanged =
       provider.board_id !== boardId ||
       provider.workspace !== workspace ||
@@ -844,7 +922,7 @@ async function reconcileOneProject(
       identifier: board.identifier,
       identifierSource: "provider",
       status: "linked",
-      detail: `Plane board "${board.name}"${recovered}`,
+      detail: `Plane board "${board.name}"${board.archived ? " (ARCHIVED)" : ""}${recovered}`,
     };
   }
 

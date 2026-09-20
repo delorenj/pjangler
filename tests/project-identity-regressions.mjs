@@ -94,6 +94,13 @@ const BOARD = {
   delodocs: "b0a93110-2801-4524-a491-927c5b125da8",
   twin33god: "11111111-1111-4111-8111-111111111111",
   twinAutomaticai: "22222222-2222-4222-8222-222222222222",
+  // Archived. This is `flume`: a board retired months ago whose name still
+  // matches a live repo exactly, and whose states/labels/issues Plane reports
+  // as zero for as long as it stays archived.
+  retired: "bf5663f0-8d37-41c6-97a3-437d45d64523",
+  // A second archived board, so the key-collision case can be exercised
+  // without two records claiming one identifier — the registry forbids that.
+  retiredKey: "33333333-3333-4333-8333-333333333333",
 };
 
 /**
@@ -194,21 +201,25 @@ function writeProjectRegistry(dir, ssbnkRepo) {
 function planeBoards(workspace) {
   if (workspace === "33god") {
     return new Map([
-      [BOARD.holocene, { id: BOARD.holocene, identifier: "HOLOC", name: "Holocene", workspace }],
-      [BOARD.ssbnk, { id: BOARD.ssbnk, identifier: "SSBNK", name: "SSBNK", workspace }],
-      [BOARD.momo, { id: BOARD.momo, identifier: "MOMO", name: "Momo", workspace }],
-      [BOARD.agentboard, { id: BOARD.agentboard, identifier: "ABRD", name: "AgentBoard", workspace }],
+      [BOARD.holocene, { id: BOARD.holocene, identifier: "HOLOC", name: "Holocene", workspace, archived: false }],
+      [BOARD.ssbnk, { id: BOARD.ssbnk, identifier: "SSBNK", name: "SSBNK", workspace, archived: false }],
+      [BOARD.momo, { id: BOARD.momo, identifier: "MOMO", name: "Momo", workspace, archived: false }],
+      [BOARD.agentboard, { id: BOARD.agentboard, identifier: "ABRD", name: "AgentBoard", workspace, archived: false }],
       // The trap: a real board whose key equals what a `slug.slice(0, 4)`
       // minter would produce for a completely different project.
-      [BOARD.delodocs, { id: BOARD.delodocs, identifier: "DOCS", name: "DeloDocs", workspace }],
-      [BOARD.twin33god, { id: BOARD.twin33god, identifier: "TWN1", name: "Twin", workspace }],
+      [BOARD.delodocs, { id: BOARD.delodocs, identifier: "DOCS", name: "DeloDocs", workspace, archived: false }],
+      [BOARD.twin33god, { id: BOARD.twin33god, identifier: "TWN1", name: "Twin", workspace, archived: false }],
+      // Plane lists archived projects alongside live ones and marks them only
+      // with `archived_at`. Nothing else in the listing distinguishes them.
+      [BOARD.retired, { id: BOARD.retired, identifier: "RETIRE", name: "Retired", workspace, archived: true }],
+      [BOARD.retiredKey, { id: BOARD.retiredKey, identifier: "RTIRD", name: "Retired Two", workspace, archived: true }],
     ]);
   }
   if (workspace === "automaticai") {
     return new Map([
-      [BOARD.jimb, { id: BOARD.jimb, identifier: "JIMB", name: "James Brennan", workspace }],
+      [BOARD.jimb, { id: BOARD.jimb, identifier: "JIMB", name: "James Brennan", workspace, archived: false }],
       // Two live boards genuinely share a name — "MarketJangler" does, today.
-      [BOARD.twinAutomaticai, { id: BOARD.twinAutomaticai, identifier: "TWN2", name: "Twin", workspace }],
+      [BOARD.twinAutomaticai, { id: BOARD.twinAutomaticai, identifier: "TWN2", name: "Twin", workspace, archived: false }],
     ]);
   }
   return new Map();
@@ -765,6 +776,22 @@ function projectFixture() {
     // Its name matches two live boards. There is no right answer to pick.
     record("twin", { type: "plane", workspace: "33god", identifier: "TWIN", board_id: "", state: "planned",
       identifier_source: "proposed" }),
+    // Unbound, and the ONLY board carrying its name is archived. This is the
+    // flume case: the name hint fired, the archived board was adopted, and
+    // every later read of it came back empty.
+    record("retired", { type: "plane", workspace: "33god", identifier: "", board_id: "", state: "planned" }),
+    // Unbound, proposing the key an ARCHIVED board happens to hold. A live
+    // board owning a key is a real collision; a retired one is not competing
+    // for anything, and stripping the proposal would deny a repo a key it is
+    // entitled to claim.
+    record("retired-key", { type: "plane", workspace: "33god", identifier: "RTIRD", board_id: "", state: "planned" }),
+    // Already bound to an archived board, deliberately. The binding is the
+    // only pointer anyone has to it, so it is kept — but it must be reported.
+    record("retired-bound", {
+      type: "plane", workspace: "33god", identifier: "RETIRE", board_id: BOARD.retired,
+      identifier_source: "provider", identifier_fetched_at: "2026-01-01T00:00:00.000Z",
+      board_confirmed_at: "2026-01-01T00:00:00.000Z", state: "linked",
+    }),
   );
   const registryPath = join(dir, "projects.yaml");
   saveProjectRegistry(registry, registryPath);
@@ -792,7 +819,7 @@ await checkAsync("every record is examined, agent or no agent", async () => {
   const fixture = projectFixture();
   const report = await runProjects(fixture);
   assert.equal(report.checked, 0, "this fleet has no agents at all");
-  assert.equal(report.projectsChecked, 15, "and every project record is still reconciled");
+  assert.equal(report.projectsChecked, 18, "and every project record is still reconciled");
 });
 
 await checkAsync("a board is recovered from the repo's own manifest, never guessed", async () => {
@@ -900,6 +927,47 @@ await checkAsync("a record whose name matches exactly one live board is recovere
   assert.equal(agentboard.board_id, BOARD.agentboard);
   assert.equal(agentboard.identifier, "ABRD", "AGEN was always a guess");
   assert.equal(agentboard.state, "linked");
+});
+
+await checkAsync("an archived board is never adopted by a name hint, and the refusal says why", async () => {
+  // `flume`'s repo was bound to a Plane board archived three months earlier
+  // purely because the names matched. Plane then reported that board's 9
+  // states, 10 labels and 11 issues as zero across the board, and every tool
+  // downstream concluded it was looking at a brand new empty project.
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects.retired.ticket_provider;
+  assert.equal(provider.board_id, "", "an archived board is not a board this may bind to");
+  assert.notEqual(provider.state, "linked");
+  const entry = report.projects.find((row) => row.slug === "retired");
+  assert.match(entry.detail, /ARCHIVED/, "and the refusal must name the reason, not report 'no board found'");
+  assert.match(entry.detail, /Retired/, "naming the board the user can go unarchive");
+});
+
+await checkAsync("a binding already pointing at an archived board is kept, but never kept quiet", async () => {
+  const fixture = projectFixture();
+  const report = await runProjects(fixture, { apply: true });
+  const provider = loadProjectRegistry(fixture.registryPath).projects["retired-bound"].ticket_provider;
+  assert.equal(provider.board_id, BOARD.retired, "a deliberate binding is the only pointer to that board");
+  assert.equal(provider.state, "linked");
+  const entry = report.projects.find((row) => row.slug === "retired-bound");
+  assert.match(entry.detail, /ARCHIVED/);
+  assert.equal(
+    report.errors.some((error) => /retired-bound.*ARCHIVED/s.test(error)),
+    true,
+    "a board whose every collection reads empty may not pass as a quiet success",
+  );
+});
+
+await checkAsync("an archived board does not veto the identifier it is sitting on", async () => {
+  // RTIRD is held by a board nobody can use. `shadow` proves a LIVE board's
+  // key is stripped from a record squatting on it; this proves an archived
+  // board's key is not, because a retired board is not competing for it.
+  const fixture = projectFixture();
+  await runProjects(fixture, { apply: true });
+  const projects = loadProjectRegistry(fixture.registryPath).projects;
+  assert.equal(projects["retired-key"].ticket_provider.identifier, "RTIRD", "an archived key is free to claim");
+  assert.equal(projects.shadow.ticket_provider.identifier, "", "while a LIVE key is still stripped");
 });
 
 await checkAsync("a manifest key the provider never stamped resolves NOTHING", async () => {
