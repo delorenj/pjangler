@@ -199,6 +199,37 @@ try {
     assert.equal(planned.project.name, "sidepiece", "an explicit --force rename is still allowed");
   });
 
+  // DeLoDocs is Syncthing-only: a .project.json, no .git. `pj init` with no
+  // name used to demand --target-dir there, because adoption keyed only on the
+  // cwd git root. GIT_CEILING_DIRECTORIES (see cli) keeps git from finding a
+  // parent repo, so this directory really is outside any work tree.
+  check("no positional name in a non-git project adopts the manifest directory", () => {
+    const vault = join(root, "syncthing-vault");
+    mkdirSync(vault, { recursive: true });
+    writeFileSync(
+      join(vault, ".project.json"),
+      `${JSON.stringify({ project_name: "Vault", project_id: "vault", repo_path: vault, status: "active" }, null, 2)}\n`,
+    );
+    const probe = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: vault,
+      encoding: "utf8",
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+    });
+    assert.notEqual(probe.status, 0, "fixture must sit outside every git work tree");
+    const planned = plan(["init", ...base], vault);
+    assert.equal(planned.mode, "sync", "a directory carrying .project.json is an adoption, git or not");
+    assert.equal(planned.project.repo_path, vault);
+    assert.equal(planned.project.project_id, "vault");
+  });
+
+  check("no positional name in a bare non-git directory is still refused", () => {
+    const bare = join(root, "bare-dir");
+    mkdirSync(bare, { recursive: true });
+    const run = cli(["init", ...base, "--dry-run", "--no-tui", "--json"], bare);
+    assert.notEqual(run.status, 0, "nothing to adopt and nothing to create");
+    assert.match(JSON.parse(run.stdout).error, /--target-dir is required/);
+  });
+
   // Parity with the MCP bootstrap tool, which has refused a populated target
   // since day one. The CLI would render copier straight over it.
   check("a populated, non-pjangler target directory is refused", () => {

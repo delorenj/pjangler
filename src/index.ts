@@ -349,6 +349,13 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
     targetDir = cwdGitRoot;
   }
 
+  // Not every project is a git repo. DeLoDocs is Syncthing-only: it carries a
+  // .project.json and no .git. Standing in one with no name is the same request
+  // as standing in a git root -- adopt it -- not an error demanding --target-dir.
+  if (!targetDir && !name && existsSync(join(cwd, ".project.json"))) {
+    targetDir = cwd;
+  }
+
   if (!targetDir && interactive) {
     const promptedName = await promptTextValue("Project name", packageNameToProjectName(basename(cwd)));
     targetDir = resolve(await promptTextValue("Project directory", projectTargetDirUnder(promptedName, cwd)));
@@ -356,7 +363,7 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
   }
 
   if (!targetDir) {
-    throw new Error("Project name or --target-dir is required when project init is not run inside a git repo");
+    throw new Error("Project name or --target-dir is required when project init is not run inside a git repo or a directory carrying .project.json");
   }
 
   const targetExists = existsSync(targetDir);
