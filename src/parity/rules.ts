@@ -6,10 +6,9 @@ import YAML from "yaml";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
-import { auditProjectSkills, synchronizeProjectSkills } from "./skills";
+import { auditProjectSkills, currentSkillActivations, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
-import { currentSkillActivations } from "./skills";
 
 
 /**
