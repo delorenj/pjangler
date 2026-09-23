@@ -74,6 +74,8 @@ const SUITES = [
   "tests/pjan-127-skills-core-regressions.mjs",
   "tests/pjan-128-skills-wiring-regressions.mjs",
   "tests/pjan-135-skill-roots-regressions.mjs",
+  "tests/pjan-135-skill-roots-safety-regressions.mjs",
+  "tests/pjan-135-skill-roots-property.mjs",
   "tests/pjan-135-guidance-commands-regressions.mjs",
   "tests/pjan-135-mise-hooks-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",

@@ -182,7 +182,7 @@ test("a real-directory collision with differing content leaves that root untouch
   } finally { f.close(); }
 });
 
-test("a dangling alias is replaced and an alias to another target blocks naming that target", async () => {
+test("a dangling alias is replaced, an alias already reaching .agents/skills is left alone, and one to another target blocks naming it", async () => {
   const f = await fixture(); try {
     mkdirSync(f.R, { recursive: true });
     mkdirSync(join(f.project, ".codex"), { recursive: true });
@@ -195,13 +195,16 @@ test("a dangling alias is replaced and an alias to another target blocks naming 
     const plan = planSkillRoots(f.project);
     const byAlias = Object.fromEntries(plan.aliases.map((entry) => [entry.alias, entry]));
     assert.equal(byAlias[".codex/skills"].state, "dangling");
-    assert.equal(byAlias[".opencode/skills"].state, "relink");
+    // Any spelling that reaches .agents/skills is the alias skillex accepts; skillex
+    // migrate writes this absolute form and records its inode (review F15).
+    assert.equal(byAlias[".opencode/skills"].state, "alias");
+    assert.deepEqual(byAlias[".opencode/skills"].operations, []);
     assert.equal(byAlias[".gemini/skills"].state, "foreign-link");
     assert.match(plan.blocks.join("\n"), new RegExp(`\\.gemini/skills is a symlink to ${elsewhere}`));
     const applied = applySkillRoots(f.project, { dryRun: false });
     assert.equal(applied.ok, false);
     assert.equal(readlinkSync(f.alias(".codex")), "../.agents/skills");
-    assert.equal(readlinkSync(f.alias(".opencode")), "../.agents/skills");
+    assert.equal(readlinkSync(f.alias(".opencode")), f.R, "an alias that reaches .agents/skills is never rewritten");
     assert.equal(readlinkSync(f.alias(".gemini")), elsewhere, "a foreign link is never replaced");
   } finally { f.close(); }
 });

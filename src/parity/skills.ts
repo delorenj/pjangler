@@ -3,14 +3,16 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   initScope,
   inspectStatus,
+  readActivationReceipt,
   readSelectionManifest,
   resolveSelection,
   sync,
   type Diagnostic,
+  type ResolvedBinding,
   type SyncOptions,
 } from "@delorenj/skillex";
 import type { AuditFinding, Context } from "./rules";
-import { planSkillRoots, repoOwnsPath, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, treesIdentical } from "./skill-roots";
+import { planSkillRoots, repoOwnsPath, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, treesIdentical, type SkillRootIncoming } from "./skill-roots";
 import { shellQuotePath } from "../skills/cli";
 
 /** The bundled Skillex CLI, as an operator types it (src/skills/cli.ts). */
@@ -91,11 +93,16 @@ function activationConflict(ctx: Context, findings: readonly Diagnostic[]): Acti
   return undefined;
 }
 
-async function canonicalSkillPath(ctx: Context, name: string): Promise<string | undefined> {
+/** The project scope's resolved bindings (selected catalog skills), in skillex's order. */
+async function projectBindings(ctx: Context): Promise<readonly ResolvedBinding[]> {
   const resolution = await resolveSelection(skillCoreOptions(ctx));
   const scopes = resolution.data?.scopes ?? [];
   const scope = scopes.find((item) => item.scope === "project") ?? scopes[scopes.length - 1];
-  return scope?.bindings.find((binding) => binding.name === name)?.path;
+  return scope?.bindings ?? [];
+}
+
+async function canonicalSkillPath(ctx: Context, name: string): Promise<string | undefined> {
+  return (await projectBindings(ctx)).find((binding) => binding.name === name)?.path;
 }
 
 export interface RootCollisionDecision {
@@ -115,16 +122,21 @@ export interface RootCollisionDecision {
  * touched.
  */
 export async function classifyRootCollision(ctx: Context, path: string): Promise<RootCollisionDecision> {
-  const name = basename(path);
   const label = relative(resolve(ctx.repoRoot), path) || path;
   let stat;
   try { stat = lstatSync(path); } catch { return { action: "block", detail: `${label} disappeared while resolving a root collision` }; }
-  if (!stat.isSymbolicLink()) {
-    return { action: "block", detail: `${label} is a real ${stat.isDirectory() ? "directory" : "entry"} that collides with the selected catalog skill ${name}; move or rename it, pjangler never removes real content` };
-  }
-  const text = readlinkSync(path);
+  if (!stat.isSymbolicLink()) return realEntryCollision(label, basename(path), stat.isDirectory());
   let real: string | undefined;
   try { real = realpathSync(path); } catch { real = undefined; }
+  return classifyCollidingLink(ctx, basename(path), label, readlinkSync(path), real);
+}
+
+function realEntryCollision(label: string, name: string, directory: boolean): RootCollisionDecision {
+  return { action: "block", detail: `${label} is a real ${directory ? "directory" : "entry"} that collides with the selected catalog skill ${name}; move or rename it, pjangler never removes real content` };
+}
+
+/** A colliding link, by what it resolves to (`real`, a path that exists now; undefined when it dangles). */
+async function classifyCollidingLink(ctx: Context, name: string, label: string, text: string, real: string | undefined): Promise<RootCollisionDecision> {
   if (real === undefined) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text} (dangling)` };
   if (!repoOwnsPath(ctx.repoRoot, real)) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text}` };
   const canonical = await canonicalSkillPath(ctx, name);
@@ -132,6 +144,73 @@ export async function classifyRootCollision(ctx: Context, path: string): Promise
     return { action: "unlink", detail: `replaced link ${label} -> ${text}: its repo-owned content is identical to the catalog skill` };
   }
   return { action: "block", detail: `repo-owned skill ${name} shadows a selected catalog skill (${label} -> ${text}); rename it or make it identical to the catalog copy` };
+}
+
+/** Activation paths the project's skillex receipt owns (skillex replaces those itself). */
+async function receiptOwnedLinks(ctx: Context): Promise<Set<string>> {
+  try {
+    const snapshot = await readActivationReceipt<{ links?: Record<string, unknown> }>(realpathSync(ctx.repoRoot), { home: ctx.homeDir, env: process.env });
+    return new Set(Object.keys(snapshot.document?.data?.links ?? {}));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The project's current skillex activations: the paths its activation receipt
+ * owns and the physical paths of the selected catalog skills. Other rules use
+ * it to tell a live activation from retired state (never evict the former).
+ */
+export async function currentSkillActivations(ctx: Context): Promise<{ owned: string[]; targets: string[] }> {
+  const owned = [...await receiptOwnedLinks(ctx)];
+  let targets: string[] = [];
+  try {
+    targets = (await projectBindings(ctx)).flatMap((binding) => [binding.path, realpathOf(binding.path)].filter((path): path is string => Boolean(path)));
+  } catch { /* no resolvable selection: nothing is selected */ }
+  return { owned, targets };
+}
+
+function realpathOf(path: string): string | undefined {
+  try { return realpathSync(path); } catch { return undefined; }
+}
+
+/**
+ * PJAN-135 (dry run): every `.agents/skills/<name>` the sync would refuse once
+ * the CLI skills-root plan has run, classified exactly as apply's collision loop
+ * classifies them. skillex's own preview stops at its first refusal (and before
+ * the root conversion it stops at the unconverted alias), so a preview that
+ * trusts it reports `applied` for a run that ends partial.
+ *
+ * Mirrors skillex's rule: a selected name is fine when its entry is absent, is
+ * a link resolving to the catalog skill, or is owned by the activation receipt
+ * (skillex replaces it); anything else collides. An entry the plan moves in is
+ * new, so no receipt owns it.
+ */
+async function predictRootCollisions(ctx: Context, incoming: readonly SkillRootIncoming[]): Promise<{ path: string; decision: RootCollisionDecision }[]> {
+  const root = join(resolve(ctx.repoRoot), ".agents", "skills");
+  const physicalRoot = join(realpathOf(ctx.repoRoot) ?? resolve(ctx.repoRoot), ".agents", "skills");
+  const planned = new Map(incoming.map((entry) => [entry.name, entry]));
+  const owned = await receiptOwnedLinks(ctx);
+  const predictions: { path: string; decision: RootCollisionDecision }[] = [];
+  for (const binding of await projectBindings(ctx)) {
+    const path = join(root, binding.name);
+    const label = relative(resolve(ctx.repoRoot), path);
+    const catalog = new Set([binding.path, realpathOf(binding.path)].filter(Boolean));
+    const entry = planned.get(binding.name);
+    if (entry) {
+      if (entry.kind !== "link") { predictions.push({ path, decision: realEntryCollision(label, binding.name, entry.kind === "directory") }); continue; }
+      const real = entry.resolves === undefined ? undefined : realpathOf(entry.resolves);
+      if (real !== undefined && catalog.has(real)) continue;
+      predictions.push({ path, decision: await classifyCollidingLink(ctx, binding.name, label, entry.text ?? "", real) });
+      continue;
+    }
+    let stat;
+    try { stat = lstatSync(path); } catch { continue; }
+    if (stat.isSymbolicLink() && catalog.has(realpathOf(path))) continue;
+    if (owned.has(join(physicalRoot, binding.name)) || owned.has(path)) continue;
+    predictions.push({ path, decision: await classifyRootCollision(ctx, path) });
+  }
+  return predictions;
 }
 
 export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
@@ -179,6 +258,8 @@ export interface SkillSynchronizationOptions {
    * pre-conversion state, not a blocker.
    */
   pendingAliases?: readonly string[];
+  /** Dry run only: the entries that plan moves into `.agents/skills` (SkillRootsPlan.incoming). */
+  incoming?: readonly SkillRootIncoming[];
 }
 
 /**
@@ -210,14 +291,25 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
     for (let round = 0; ; round++) {
       const result = await sync({ ...options, dryRun: Boolean(ctx.dryRun) });
       const conflict = result.ok ? undefined : activationConflict(ctx, result.findings);
+      const deferred = conflict?.kind === "alias"
+        && (extra.pendingAliases ?? []).some((alias) => projectPaths(ctx, alias).has(conflict.path));
+      if (ctx.dryRun && (conflict?.kind === "root" || deferred)) {
+        // Apply resolves collisions one refusal at a time; a preview must see
+        // every one, including those the planned root conversion introduces.
+        if (deferred) details.push(`Sync preview deferred: ${conflict!.path} is converted to the .agents/skills alias first; the root collisions that conversion introduces are classified here.`);
+        const predictions = await predictRootCollisions(ctx, extra.incoming ?? []);
+        for (const { path, decision } of predictions) {
+          if (decision.action === "unlink") {
+            changedFiles.push(path);
+            details.push(`would ${decision.detail.replace(/^replaced/, "replace")}`);
+          } else details.push(`blocked: ${decision.detail}`);
+        }
+        const ok = predictions.every(({ decision }) => decision.action !== "block");
+        if (!ok) details.push(migrationGuidance(ctx));
+        return { ok, changedFiles: [...new Set(changedFiles)], details };
+      }
       if (conflict?.kind === "root") {
         const decision = await classifyRootCollision(ctx, conflict.path);
-        if (decision.action === "unlink" && ctx.dryRun) {
-          changedFiles.push(conflict.path);
-          details.push(`would ${decision.detail.replace(/^replaced/, "replace")}`,
-            "More root collisions may follow; the sync preview stops at the first one.");
-          return { ok: true, changedFiles: [...new Set(changedFiles)], details };
-        }
         if (decision.action === "unlink" && !unlinked.has(conflict.path) && round < MAX_ROOT_COLLISION_ROUNDS) {
           unlinkSync(conflict.path);
           unlinked.add(conflict.path);
@@ -228,11 +320,6 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
         details.push(decision.action === "block" ? `blocked: ${decision.detail}`
           : unlinked.has(conflict.path) ? `no progress: ${conflict.path} collided again after it was replaced`
             : `stopped after ${MAX_ROOT_COLLISION_ROUNDS} root collision rounds`);
-      }
-      if (!result.ok && conflict?.kind === "alias" && ctx.dryRun
-        && (extra.pendingAliases ?? []).some((alias) => projectPaths(ctx, alias).has(conflict.path))) {
-        details.push(`Sync preview deferred: ${conflict.path} is converted to the .agents/skills alias first; root collisions the conversion introduces are resolved during apply.`);
-        return { ok: true, changedFiles: [...new Set(changedFiles)], details };
       }
       const changes = ctx.dryRun ? result.data?.changes : result.data?.applied;
       changedFiles.push(...(changes ?? []).map((change) => change.path));
