@@ -1,13 +1,14 @@
 import { normalizeProjectId } from "../project/registryClient";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
 import { auditProjectSkills, synchronizeProjectSkills } from "./skills";
+import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
+import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
 
 
 /**
@@ -231,7 +232,6 @@ const CODEGRAPH_SCRIPT =
 
 const BMAD_SKILL_NAME_PREFIX = "bmad-";
 
-const CANONICAL_CLI_SKILLS_ALIAS = "../.agents/skills";
 
 
 const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
@@ -2464,114 +2464,6 @@ const UNSUPPORTED_BMAD_ROOTS = {
 } as const;
 
 
-function parseCsvRows(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index]!;
-    if (quoted) {
-      if (char === '"' && text[index + 1] === '"') {
-        field += '"';
-        index++;
-      } else if (char === '"') {
-        quoted = false;
-      } else {
-        field += char;
-      }
-    } else if (char === '"') {
-      quoted = true;
-    } else if (char === ",") {
-      row.push(field);
-      field = "";
-    } else if (char === "\n") {
-      row.push(field.replace(/\r$/, ""));
-      rows.push(row);
-      row = [];
-      field = "";
-    } else {
-      field += char;
-    }
-  }
-  if (field || row.length) {
-    row.push(field.replace(/\r$/, ""));
-    rows.push(row);
-  }
-  return rows;
-}
-
-
-function csvObjects(text: string): Record<string, string>[] {
-  const [headers, ...rows] = parseCsvRows(text);
-  if (!headers?.length) return [];
-  return rows
-    .filter((row) => row.some(Boolean))
-    .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])));
-}
-
-
-function installedBmadTools(repoRoot: string): Set<string> {
-  const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
-  if (!raw) return new Set();
-  try {
-    const parsed = YAML.parse(raw) as { ides?: unknown } | undefined;
-    return new Set(Array.isArray(parsed?.ides) ? parsed.ides.filter((entry): entry is string => typeof entry === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
-
-
-/**
- * Reconstruct the installer-owned CLI inventory from BMAD's own durable
- * metadata. skill-manifest.csv maps a projected skill id to its source tree;
- * files-manifest.csv records the SHA-256 of every file in that tree.
- */
-function bmadCliProjectionInventory(repoRoot: string): { files: Map<string, string>; error?: string } {
-  const filesText = safeReadText(join(repoRoot, "_bmad", "_config", "files-manifest.csv"));
-  const skillsText = safeReadText(join(repoRoot, "_bmad", "_config", "skill-manifest.csv"));
-  if (!filesText || !skillsText) return { files: new Map(), error: "BMAD files/skill manifests are missing" };
-  const fileHashes = new Map<string, string>();
-  for (const row of csvObjects(filesText)) {
-    const hash = row.hash ?? "";
-    if (row.path && /^[a-f0-9]{64}$/i.test(hash)) fileHashes.set(row.path.replace(/^_bmad\//, ""), hash.toLowerCase());
-  }
-  const projected = new Map<string, string>();
-  for (const row of csvObjects(skillsText)) {
-    const canonicalId = row.canonicalId ?? "";
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(canonicalId)) continue;
-    const skillPath = (row.path ?? "").replace(/^_bmad\//, "");
-    if (!skillPath.endsWith("/SKILL.md")) continue;
-    const sourceRoot = dirname(skillPath);
-    for (const [sourcePath, hash] of fileHashes) {
-      if (sourcePath !== `${sourceRoot}/SKILL.md` && !sourcePath.startsWith(`${sourceRoot}/`)) continue;
-      const suffix = relative(sourceRoot, sourcePath);
-      if (!suffix || suffix.startsWith("..")) continue;
-      projected.set(join("skills", canonicalId, suffix), hash);
-    }
-  }
-  return projected.size ? { files: projected } : { files: projected, error: "BMAD manifests contain no projected skill inventory" };
-}
-
-
-function inventoryFilesUnder(root: string, current = root): { files: string[]; unsafe: string[] } {
-  if (!existsSync(current)) return { files: [], unsafe: [] };
-  const stat = lstatSync(current);
-  const rel = relative(root, current) || ".";
-  if (stat.isSymbolicLink()) return { files: [], unsafe: [rel] };
-  if (stat.isFile()) return { files: [relative(root, current)], unsafe: [] };
-  if (!stat.isDirectory()) return { files: [], unsafe: [rel] };
-  const result = { files: [] as string[], unsafe: [] as string[] };
-  for (const name of readdirSync(current)) {
-    const child = inventoryFilesUnder(root, join(current, name));
-    result.files.push(...child.files);
-    result.unsafe.push(...child.unsafe);
-  }
-  return result;
-}
-
-
 function unsupportedRootAttestation(repoRoot: string, rootName: keyof typeof UNSUPPORTED_BMAD_ROOTS): { safe: boolean; reason: string } {
   const root = join(repoRoot, rootName);
   const stat = lstatSync(root);
@@ -2584,14 +2476,7 @@ function unsupportedRootAttestation(repoRoot: string, rootName: keyof typeof UNS
   if (inventory.error) return { safe: false, reason: inventory.error };
   const walked = inventoryFilesUnder(root);
   if (walked.unsafe.length) return { safe: false, reason: `${rootName}/${walked.unsafe[0]} is a symlink or non-regular entry` };
-  if (!walked.files.length) return { safe: false, reason: `${rootName} has no installer-owned files` };
-  for (const rel of walked.files) {
-    const expectedHash = inventory.files.get(rel);
-    if (!expectedHash) return { safe: false, reason: `${rootName}/${rel} is outside the BMAD generated inventory` };
-    const actualHash = createHash("sha256").update(readFileSync(join(root, rel))).digest("hex");
-    if (actualHash !== expectedHash) return { safe: false, reason: `${rootName}/${rel} was locally modified after generation` };
-  }
-  return { safe: true, reason: `${walked.files.length} file(s) match BMAD installer inventory and hashes` };
+  return attestBmadInstallerFiles(inventory, root, walked.files, rootName);
 }
 
 
@@ -2850,44 +2735,67 @@ return [
       const unsafe = retired.filter((path) => lstatIfPresent(path)?.isDirectory());
       const details = [...finding.details, ...wiring, ...retired.map((path) => unsafe.includes(path)
         ? `Inspect and preserve retired script directory: ${path}` : `${path} is a retired skill writer`)];
+      // PJAN-135: fixable means "migrate makes progress", not "migrate reaches
+      // parity". Retiring writer files and normalizing the task no longer wait on
+      // the sync outcome, so either one alone is progress; auditProjectSkills
+      // already folded in the CLI skills-root plan and root-collision verdict.
+      // A retired path that is a directory is never touched, so it still gates.
       return { ...finding, status: wiring.length || retired.length ? "fail" as const : finding.status,
-        fixable: unsafe.length ? false : finding.fixable,
+        fixable: unsafe.length ? false : finding.fixable || wiring.length > 0 || retired.length > 0,
         summary: details.length ? `${details.length} Skillex finding(s)` : finding.summary, details };
     },
     migrate: async (ctx, finding) => {
       const changedFiles: string[] = [];
+      const details: string[] = [];
+      const result = (status: MigrationRuleResult["status"], summary: string): MigrationRuleResult =>
+        ({ id: finding.id, title: finding.title, status, summary, changedFiles: [...new Set(changedFiles)], details });
       let currentMise = safeReadText(join(ctx.repoRoot, "mise.toml"));
       if (currentMise === null) {
         const template = templateCommonProjectText(ctx, "mise.toml.jinja");
-        if (template === undefined) return { id: finding.id, title: finding.title, status: "blocked",
-          summary: "Generated-project mise template is unavailable", changedFiles, details: [] };
+        if (template === undefined) return result("blocked", "Generated-project mise template is unavailable");
         currentMise = renderGeneratedProjectMiseToml(ctx, template);
       }
+      // (1) A retired path that is a directory is someone's content, not a writer.
       const unsafeScript = retiredSkillsScripts(ctx).find((path) => lstatIfPresent(path)?.isDirectory());
-      if (unsafeScript) return { id: finding.id, title: finding.title, status: "blocked", summary: "A retired script path contains a directory", changedFiles, details: [`Inspect and preserve ${unsafeScript} before retiring that path`] };
-      // The core preflight runs before retiring project writers. Refusals retain
-      // the declaration and foreign or installer-owned activation content.
-      const reconciled = await synchronizeProjectSkills(ctx);
-      changedFiles.push(...reconciled.changedFiles);
-      if (!reconciled.ok) return { id: finding.id, title: finding.title,
-        status: changedFiles.length ? "partial" : "blocked", summary: "Skillex requires attention before project migration",
-        changedFiles, details: reconciled.details };
-      const misePath = join(ctx.repoRoot, "mise.toml");
-      const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
-      if (safeReadText(misePath) !== nextMise) {
-        changedFiles.push(misePath);
-        if (!ctx.dryRun) writeText(misePath, nextMise);
+      if (unsafeScript) {
+        details.push(`Inspect and preserve ${unsafeScript} before retiring that path`);
+        return result("blocked", "A retired script path contains a directory");
       }
+      // (2) Retire the writer FILES first, independently of the sync outcome.
+      // PJAN-128 removed every hook, task and watch that ran them, so keeping
+      // them on disk until skillex agrees protects nothing; it only left infra
+      // failing on "retired skill writer" while a skills root was blocked.
       for (const path of retiredSkillsScripts(ctx)) {
         const stat = lstatIfPresent(path);
         if (!stat || stat.isDirectory()) continue;
         changedFiles.push(path);
         if (!ctx.dryRun) unlinkSync(path);
       }
-      return { id: finding.id, title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Project skills use the Node core and explicit sync task" : "No changes required",
-        changedFiles, details: reconciled.details };
+      // (3) The explicit skills:sync task, likewise independent of the sync.
+      const misePath = join(ctx.repoRoot, "mise.toml");
+      const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
+      if (safeReadText(misePath) !== nextMise) {
+        changedFiles.push(misePath);
+        if (!ctx.dryRun) writeText(misePath, nextMise);
+      }
+      // (4) Lossless CLI skills-root conversion. A blocked root stays untouched
+      // and makes the sync below refuse at that alias, which is reported.
+      const roots = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
+      changedFiles.push(...roots.changedFiles);
+      details.push(...roots.details);
+      details.push(...roots.blocks.map((reason) => `blocked: ${reason}`).filter((line) => !details.includes(line)));
+      // (5) + (6) init the manifest if missing, then sync; the core owns both.
+      const reconciled = await synchronizeProjectSkills(ctx, {
+        pendingAliases: roots.plan.aliases.filter((entry) => entry.operations.length).map((entry) => entry.alias),
+      });
+      changedFiles.push(...reconciled.changedFiles);
+      details.push(...reconciled.details);
+      if (!reconciled.ok || !roots.ok) {
+        return result(changedFiles.length ? "partial" : "blocked", "Skillex requires attention before project migration");
+      }
+      return changedFiles.length
+        ? result("applied", "Project skills use the Node core and explicit sync task")
+        : result("noop", "No changes required");
     },
   },
   {
@@ -3268,7 +3176,7 @@ return [
 }
 
 
-function supportedCliProjectionIssues(repoRoot: string): string[] {
+function supportedCliProjectionIssues(repoRoot: string, plan: SkillRootsPlan): string[] {
   const issues: string[] = [];
   const managedSkills = join(repoRoot, ".agents", "skills");
   for (const rootName of SUPPORTED_CLI_ROOTS) {
@@ -3316,7 +3224,14 @@ function supportedCliProjectionIssues(repoRoot: string): string[] {
         continue;
       }
       projectedSkills = managedSkills;
-    } else if (!skillsStat.isDirectory()) {
+    } else if (skillsStat.isDirectory()) {
+      // PJAN-135: skillex refuses a real-directory alias outright, so this is an
+      // issue, not a valid projection. The shared plan says what converting it
+      // would do (or exactly why it cannot, losslessly).
+      const planned = plan.aliases.find((entry) => entry.path === skills);
+      issues.push(`${rootName}/skills is a real directory, not the ${CANONICAL_CLI_SKILLS_ALIAS} alias${planned ? ` (${planned.summary})` : ""}`);
+      continue;
+    } else {
       issues.push(`${rootName}/skills is not a directory`);
       continue;
     }
@@ -3340,6 +3255,12 @@ function supportedCliProjectionIssues(repoRoot: string): string[] {
  * not inspect or mutate Git's index: already-tracked ignored paths require the
  * reviewed `gitignore-maintenance` parity workflow so local copies are proved
  * preserved before any `git rm --cached` operation.
+ *
+ * The one exception is the CLI skills-root conversion (PJAN-135,
+ * skill-roots.ts): it untracks only content it has itself relocated or proven
+ * duplicate, and only when every tracked file hashes to BMAD's own installer
+ * manifest. The local copy is preserved by construction (rename(2) into
+ * `.agents/skills`, or byte-identical there already).
  */
 const CANONICAL_AGENT_GITIGNORE_COMMENT = "# Canonical agent config lives in .agents; generated skill projections stay local.";
 
@@ -3400,45 +3321,20 @@ function ensureSupportedCliGitignore(ctx: Context): string[] {
 }
 
 
-function ensureSupportedCliProjections(ctx: Context): { changedFiles: string[]; blockers: string[] } {
-  const changedFiles: string[] = [];
-  const blockers: string[] = [];
+/**
+ * The six CLI skills roots, through the one shared planner (PJAN-135): create an
+ * absent alias, relink a non-canonical or dangling one, and losslessly convert a
+ * real directory (the BMAD installer recreates one for claude-code whenever the
+ * alias is missing, and this rule runs after it). Blocked roots stay untouched.
+ */
+function ensureSupportedCliProjections(ctx: Context): { changedFiles: string[]; blockers: string[]; details: string[] } {
   const managedSkills = join(ctx.repoRoot, ".agents", "skills");
   const managedStat = lstatIfPresent(managedSkills);
   if (!managedStat || managedStat.isSymbolicLink() || !managedStat.isDirectory()) {
-    return { changedFiles, blockers: [".agents/skills must be a real BMAD-generated directory before CLI projections can be created"] };
+    return { changedFiles: [], details: [], blockers: [".agents/skills must be a real BMAD-generated directory before CLI projections can be created"] };
   }
-  for (const rootName of SUPPORTED_CLI_ROOTS) {
-    const root = join(ctx.repoRoot, rootName);
-    const rootStat = lstatIfPresent(root);
-    if (rootStat && (rootStat.isSymbolicLink() || !rootStat.isDirectory())) {
-      blockers.push(`${rootName} is not a real configuration directory`);
-      continue;
-    }
-    if (!rootStat) {
-      changedFiles.push(root);
-      if (!ctx.dryRun) mkdirSync(root, { recursive: false });
-    }
-    const skills = join(root, "skills");
-    const skillsStat = lstatIfPresent(skills);
-    if (!skillsStat) {
-      changedFiles.push(skills);
-      if (!ctx.dryRun) symlinkSync(CANONICAL_CLI_SKILLS_ALIAS, skills, "dir");
-      continue;
-    }
-    if (skillsStat.isSymbolicLink()) {
-      try {
-        if (readlinkSync(skills) !== CANONICAL_CLI_SKILLS_ALIAS || realpathSync(skills) !== realpathSync(managedSkills)) {
-          blockers.push(`${rootName}/skills is not the managed .agents/skills alias`);
-        }
-      } catch {
-        blockers.push(`${rootName}/skills is an unreadable or broken symlink`);
-      }
-    } else if (!skillsStat.isDirectory()) {
-      blockers.push(`${rootName}/skills is not a directory`);
-    }
-  }
-  return { changedFiles: [...new Set(changedFiles)].sort(), blockers };
+  const applied = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
+  return { changedFiles: applied.changedFiles, blockers: applied.blocks, details: applied.details };
 }
 
 
@@ -3738,10 +3634,12 @@ return [
       const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS) as (keyof typeof UNSUPPORTED_BMAD_ROOTS)[];
       const present = unsupportedNames.filter((name) => existsSync(join(ctx.repoRoot, name)));
       const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
-      const supportedIssues = supportedCliProjectionIssues(ctx.repoRoot);
+      const plan = planSkillRoots(ctx.repoRoot);
+      const supportedIssues = supportedCliProjectionIssues(ctx.repoRoot, plan);
       const gitignoreIssues = supportedCliGitignoreIssues(ctx.repoRoot);
       const details = [
         ...supportedIssues,
+        ...plan.blocks.map((reason) => `blocked: ${reason}`),
         ...gitignoreIssues,
         ...attestations.map((entry) => `${entry.name}: ${entry.safe ? "generated and safely removable" : `ambiguous/user-owned — ${entry.reason}`}`),
       ];
@@ -3753,7 +3651,7 @@ return [
           ? `${supportedIssues.length} supported projection issue(s); ${gitignoreIssues.length} repository-ignore issue(s); ${present.length} unsupported root(s)`
           : "All six local CLI projections are configured, .agents is canonical, and no unsupported roots are present",
         details,
-        fixable: attestations.every((entry) => entry.safe),
+        fixable: attestations.every((entry) => entry.safe) && (!supportedIssues.length || plan.clean),
       };
     },
     migrate: (ctx, finding) => {
@@ -3773,13 +3671,14 @@ return [
       }
       const projectionResult = ensureSupportedCliProjections(ctx);
       if (projectionResult.blockers.length) {
+        // Clean roots were still converted; say so instead of claiming nothing changed.
         return {
           id: finding.id,
           title: finding.title,
-          status: "blocked",
+          status: projectionResult.changedFiles.length ? "partial" : "blocked",
           summary: "Supported CLI projections contain unsafe or user-owned conflicts",
-          changedFiles: [],
-          details: projectionResult.blockers,
+          changedFiles: projectionResult.changedFiles,
+          details: [...projectionResult.details, ...projectionResult.blockers.map((reason) => `blocked: ${reason}`)],
         };
       }
       const gitignoreChanges = ensureSupportedCliGitignore(ctx);
@@ -3794,7 +3693,7 @@ return [
           ? `Reconciled six local projections, the .agents ignore contract, and ${removedRoots.length} attested unsupported root(s)`
           : "No changes required",
         changedFiles,
-        details: attestations.map((entry) => `${entry.name}: ${entry.reason}`),
+        details: [...projectionResult.details, ...attestations.map((entry) => `${entry.name}: ${entry.reason}`)],
       };
     },
   },
