@@ -271,6 +271,33 @@ test("an interrupted conversion re-plans from disk and converges", async () => {
   } finally { f.close(); }
 });
 
+test("a stub counterpart wholly contained in the alias entry is replaced by it (ssbnk shape)", async () => {
+  const f = await fixture(); try {
+    const claude = f.alias(".claude");
+    // .agents/skills holds only the tests a partial install left behind.
+    put(join(f.R, "bmad-advanced-elicitation", "scripts", "tests", "test_pick.py"), "def test(): pass\n");
+    put(join(claude, "bmad-advanced-elicitation", "SKILL.md"), skill("bmad-advanced-elicitation"));
+    put(join(claude, "bmad-advanced-elicitation", "scripts", "pick.py"), "print('pick')\n");
+    put(join(claude, "bmad-advanced-elicitation", "scripts", "tests", "test_pick.py"), "def test(): pass\n");
+    const inode = lstatSync(join(claude, "bmad-advanced-elicitation")).ino;
+    // A stub with ANY entry the complete copy lacks is not a subset: blocked.
+    put(join(f.R, "bmad-other", "notes.md"), "only here\n");
+    put(join(claude, "bmad-other", "SKILL.md"), skill("bmad-other"));
+    const blocked = planSkillRoots(f.project);
+    assert.match(blocked.blocks.join("\n"), /\.claude\/skills\/bmad-other differs from \.agents\/skills\/bmad-other: SKILL\.md is missing from the counterpart/);
+    rmSync(join(f.R, "bmad-other"), { recursive: true });
+    const plan = planSkillRoots(f.project);
+    assert.equal(plan.clean, true, plan.blocks.join("\n"));
+    assert.ok(plan.operations.some((op) => op.kind === "replace-subset-counterpart"));
+    const result = await f.migrate();
+    assert.equal(result.status, "applied", JSON.stringify(result, null, 2));
+    assert.equal(lstatSync(join(f.R, "bmad-advanced-elicitation")).ino, inode, "the complete copy moved in by rename(2)");
+    assert.equal(readFileSync(join(f.R, "bmad-advanced-elicitation", "scripts", "pick.py"), "utf8"), "print('pick')\n");
+    assert.equal(readFileSync(join(f.R, "bmad-advanced-elicitation", "scripts", "tests", "test_pick.py"), "utf8"), "def test(): pass\n");
+    assert.equal((await f.status()).exit, 0);
+  } finally { f.close(); }
+});
+
 test("root collisions: legacy links outside the repo are replaced; a repo-owned differing shadow blocks", async () => {
   const f = await fixture(); try {
     mkdirSync(f.R, { recursive: true });

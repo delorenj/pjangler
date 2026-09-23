@@ -32,8 +32,10 @@ import { attestBmadInstallerFiles, bmadCliProjectionInventory } from "./bmad-att
  *   byte, mode and timestamp) is the one that was there; a cross-device move is
  *   refused instead of degrading to copy+delete;
  * - nothing is deleted unless it is a proven duplicate: a dangling link, a link
- *   resolving to the same place as its `.agents/skills` counterpart, or a real
- *   entry every part of which already exists byte for byte in the counterpart;
+ *   resolving to the same place as its `.agents/skills` counterpart, a real
+ *   entry every part of which already exists byte for byte in the counterpart,
+ *   or a real-directory counterpart every part of which exists byte for byte in
+ *   the entry that then replaces it;
  * - a moved link resolves to the same target afterwards (verified);
  * - git-tracked content moves only when every tracked file is attested BMAD
  *   installer output (the same manifest-hash proof `bmad.cli-roots` uses to
@@ -66,6 +68,7 @@ export type SkillRootOperationKind =
   | "recreate-link"
   | "move-entry"
   | "drop-duplicate-entry"
+  | "replace-subset-counterpart"
   | "convert-alias";
 
 export interface SkillRootOperation {
@@ -76,7 +79,10 @@ export interface SkillRootOperation {
   from?: string;
   /** Link text written by this operation. */
   target?: string;
-  /** For drop-duplicate-entry: the counterpart that proves the duplicate. */
+  /**
+   * drop-duplicate-entry: the counterpart that contains `path`.
+   * replace-subset-counterpart: the stub (contained in `from`) removed first.
+   */
   counterpart?: string;
   /** Realpath a moved or recreated link must still resolve to. */
   expected?: string;
@@ -345,6 +351,29 @@ function planRealDirectoryAlias(ctx: PlanContext, alias: string, aliasPath: stri
     const counterpart = counterpartOf(ctx, name);
     if (counterpart) {
       const gap = treeContainmentGap(entry, counterpart.path);
+      const counterpartStat = counterpart.claimed ? undefined : lstatOrUndefined(counterpart.path);
+      if (gap && stat.isDirectory() && counterpartStat?.isDirectory() && !counterpartStat.isSymbolicLink()
+        && treeContainmentGap(counterpart.path, entry) === undefined) {
+        // The reverse subset: the .agents/skills copy is a stub (ssbnk's hold
+        // only scripts/tests/*) whose every entry already exists byte for byte
+        // in this one. Removing the stub loses nothing; the complete entry then
+        // takes its place by rename(2). Never applied to a link counterpart,
+        // which may be a catalog activation.
+        if (ctx.rootDevice !== undefined && stat.dev !== ctx.rootDevice) {
+          blocks.push(`${label} is on a different filesystem than .agents/skills; refusing a copying move`);
+          continue;
+        }
+        if (entryTracked.length) {
+          const refusal = attest(label, entryTracked);
+          if (refusal) { blocks.push(refusal); continue; }
+          untrack.push(...entryTracked);
+        }
+        counts.moved++;
+        operations.push({ kind: "replace-subset-counterpart", path: destination, from: entry, counterpart: destination,
+          detail: `replace .agents/skills/${name} (every entry already exists byte-identical in ${label}) with ${label} (rename, inode preserved)` });
+        claims.set(name, { source: entry, real: realpathOrUndefined(entry) });
+        continue;
+      }
       if (gap) {
         blocks.push(`${label} differs from .agents/skills/${name}${counterpart.claimed ? ` (claimed by ${relative(ctx.repoRoot, counterpart.path)})` : ""}: ${gap}`);
         continue;
@@ -539,6 +568,13 @@ function execute(repoRoot: string, root: string, operation: SkillRootOperation):
       const gap = treeContainmentGap(operation.path, operation.counterpart!);
       if (gap) throw new Error(`${operation.path} is no longer a duplicate: ${gap}`);
       rmSync(operation.path, { recursive: true });
+      return;
+    }
+    case "replace-subset-counterpart": {
+      const gap = treeContainmentGap(operation.counterpart!, operation.from!);
+      if (gap) throw new Error(`${operation.counterpart} is no longer contained in ${operation.from}: ${gap}`);
+      rmSync(operation.counterpart!, { recursive: true });
+      renameSync(operation.from!, operation.path);
       return;
     }
     case "convert-alias": {
