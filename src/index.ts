@@ -56,6 +56,7 @@ import { bold, cyan, dim, green, red, yellow, glyph, heading } from "./utils/sty
 import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
+import { registerSkillsCli } from "./skills/cli";
 
 /** Red ✖ prefix for user-facing error lines. */
 const xmark = `${red(glyph.fail)}`;
@@ -1321,7 +1322,7 @@ program
   .option("--dry-run", "Preview changes without writing files")
   .option(
     "--accept-registry-matches",
-    "Apply the proposed mapping of legacy committed .agents/skills entries into .agents/skills.json (reported only by default)"
+    "Retired: refuses and names the reviewed path instead (pj skills migrate --project <repo> [--apply])"
   )
   .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
   .option("--json", "Output machine-parseable JSON")
@@ -1457,6 +1458,18 @@ program
       process.exit(1);
     }
   });
+
+// ============================================================================
+// SKILLS COMMAND (bundled Skillex CLI passthrough)
+// ============================================================================
+
+// passThroughOptions needs positional options on the parent, so pjangler's own
+// program options (-V/--version, -h/--help) are recognized only BEFORE the
+// subcommand: `pj skills --version` is skillex's version, not pjangler's.
+// Enabled here, after every other command exists, so no earlier command
+// inherits the setting.
+program.enablePositionalOptions();
+registerSkillsCli(program, exitAfterFlush);
 
 try {
   await program.parseAsync();

@@ -128,7 +128,7 @@ test("malformed and legacy selections refuse without activation writes, with mig
       put(join(f.project, ".agents", "skills.json"), raw);
       const home = snapshot(f.home); const result = f.migrate();
       refusedWithoutActivation(f, result, raw);
-      assert.match(result.report.results[0].details.join("\n"), /skillex migrate --project/);
+      assert.match(result.report.results[0].details.join("\n"), /pj skills migrate --project/);
       assert.deepEqual(snapshot(f.home), home);
     } finally { f.close(); }
   }

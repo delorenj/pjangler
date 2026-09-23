@@ -11,6 +11,10 @@ import {
 } from "@delorenj/skillex";
 import type { AuditFinding, Context } from "./rules";
 import { planSkillRoots, repoOwnsPath, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, treesIdentical } from "./skill-roots";
+import { shellQuotePath } from "../skills/cli";
+
+/** The bundled Skillex CLI, as an operator types it (src/skills/cli.ts). */
+export const PJ_SKILLS = "pj skills";
 
 /** Every caller supplies its subject; nested cwd never changes project selection. */
 export function skillCoreOptions(ctx: Context): SyncOptions & { scope: "project"; project: string } {
@@ -27,14 +31,38 @@ export function skillCoreOptions(ctx: Context): SyncOptions & { scope: "project"
   };
 }
 
+/**
+ * PJAN-135: the core's fix text says "Run skillex <command>". On an operator
+ * shell bare `skillex` may be the retired Python CLI (no `migrate`, and a
+ * `sync` that runs the old reconciler) or nothing at all, so every skillex
+ * command pjangler relays is renamed to the bundled passthrough, which is the
+ * same version that produced the finding.
+ */
+export function relaySkillexCommands(text: string): string {
+  return text.replace(SKILLEX_COMMAND, PJ_SKILLS);
+}
+
+/** `skillex <subcommand>` as a command, never a path (`state/skillex/`) or package (`@delorenj/skillex`). */
+const SKILLEX_COMMAND = /(?<![\w/@.:-])skillex(?=\s+(?:skill|set|pack|init|enable|disable|inherit|sync|status|explain|doctor|vendor|profile|migrate)\b)/g;
+
 export function skillDiagnostics(findings: readonly Diagnostic[]): string[] {
   return findings.map((finding) =>
-    `${finding.code}: ${finding.message}${finding.path ? ` (${finding.path})` : ""}${finding.fix ? ` — ${finding.fix}` : ""}`,
+    `${finding.code}: ${finding.message}${finding.path ? ` (${finding.path})` : ""}${finding.fix ? ` — ${relaySkillexCommands(finding.fix)}` : ""}`,
   );
 }
 
-function migrationGuidance(ctx: Context): string {
-  return `Legacy selections or skill-root directories need explicit review: skillex migrate --project ${JSON.stringify(resolve(ctx.repoRoot))}. Supply a mapping for ambiguous content, then apply the reviewed migration. PJangler does not adopt foreign or installer-owned skills.`;
+/**
+ * The operator remedy for a refused skills plan. It names only commands that
+ * exist wherever pj runs (tests/pjan-135-guidance-commands-regressions.mjs runs
+ * each one against the real CLI).
+ */
+export function migrationGuidance(ctx: Context): string {
+  const project = `--project ${shellQuotePath(resolve(ctx.repoRoot))}`;
+  return "Legacy selections or skill-root content need explicit review. "
+    + `Preview: ${PJ_SKILLS} migrate ${project}. `
+    + `Apply the reviewed plan: ${PJ_SKILLS} migrate ${project} --apply (add --mapping <file> only for content the preview reports as ambiguous). `
+    + "PJangler relocates CLI-root skill entries losslessly into .agents/skills so each root can become the alias, "
+    + "but never claims ownership of foreign or installer-owned skills and never deletes content that is not a proven duplicate.";
 }
 
 /** Both spellings of a project path skillex may report: as given and physical. */

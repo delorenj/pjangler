@@ -241,7 +241,7 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
   assert.equal(migration.ok, false, "`migrate` must not exit 0 while `audit` on the same repo exits 1");
   assert.equal(migration.ok, after.ok, "migrate and audit must not disagree about parity");
   assert.ok(
-    result.details.some((detail) => detail.includes("skillex migrate --project")),
+    result.details.some((detail) => detail.includes("pj skills migrate --project")),
     "the operator must be told how to finish the migration",
   );
 });
