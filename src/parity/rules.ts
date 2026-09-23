@@ -2816,19 +2816,13 @@ return [
         }
       }
       const currentMise = readText(misePath);
-      let cleanedMise = currentMise;
-      if (!currentMise.includes("# >>> mise-versioning >>>")) {
-        const taskNames = ["version", "version:bump", "version:bump-patch", "version:bump-minor", "version:bump-major", "version:check", "version:sync"];
-        for (const taskName of taskNames) {
-          const escaped = taskName.replace(/:/g, "\\:");
-          const headerPattern = new RegExp(`^\\[tasks\\.(?:"${escaped}"|'${escaped}'|${escaped})\\]$`);
-          cleanedMise = removeTomlSection(cleanedMise, headerPattern);
-        }
-      }
-      const nextMise = replaceOrAppendManagedBlock(cleanedMise, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
-      if (nextMise !== currentMise) {
+      // PJAN-135: parse-verified like every other mise.toml rewrite.
+      const versioningPlan = planVersioningBlock(currentMise);
+      if (versioningPlan.refused) {
+        details.push(`mise.toml was not rewritten: ${versioningPlan.refused}`);
+      } else if (versioningPlan.text !== currentMise) {
         if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
-        if (!ctx.dryRun) writeText(misePath, nextMise);
+        if (!ctx.dryRun) writeText(misePath, versioningPlan.text);
       }
       const versioningPath = join(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
       const expectedScript = templateVersioningScript(ctx);
@@ -2851,15 +2845,57 @@ return [
       return {
         id: finding.id,
         title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
+        status: versioningPlan.refused ? "partial" : changedFiles.length ? "applied" : "noop",
+        summary: versioningPlan.refused ? "The versioning block needs a manual change in mise.toml"
+          : changedFiles.length ? "Versioning block/script/manifest normalized" : "No changes required",
         changedFiles,
-        details: [],
+        details,
       };
     },
   },
 ];
 }
+
+
+const VERSIONING_TASK_NAMES = ["version", "version:bump", "version:bump-patch", "version:bump-minor", "version:bump-major", "version:check", "version:sync"];
+
+/**
+ * The managed versioning block, parse-verified. Loose version tasks from
+ * before the block existed are removed as whole tables (the scanner knows a
+ * `[` line inside a multi-line string is not a header; the old line scan tore
+ * such a task apart and wrote invalid TOML). The result must mean the original
+ * with exactly the managed tasks replaced, or nothing is written.
+ */
+function planVersioningBlock(original: string): { text: string; refused?: string } {
+  const base = parseBaseline(original);
+  if ("refused" in base) return { text: original, refused: base.refused };
+  const managed = (parseToml(VERSIONING_BLOCK) as { tasks: Record<string, TomlTable> }).tasks;
+  const oldBlock = /# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</.exec(base.text)?.[0];
+  let text = base.text;
+  let replaced: string[] = [...VERSIONING_TASK_NAMES];
+  try {
+    if (base.text.includes("# >>> mise-versioning >>>")) {
+      if (oldBlock) replaced = Object.keys(record(record(parseToml(oldBlock)).tasks));
+    } else {
+      const statements = scanToml(text);
+      const edits = statements.flatMap((statement, index) => statement.type === "header" && !statement.arrayTable
+        && statement.path.length === 2 && statement.path[0] === "tasks" && VERSIONING_TASK_NAMES.includes(statement.path[1]!)
+        ? [{ start: tableSpan(statements, index).start, end: tableSpan(statements, index).end, lines: [] }] : []);
+      text = applyLineEdits(text, edits);
+    }
+    text = replaceOrAppendManagedBlock(text, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
+  } catch (error) {
+    return { text: original, refused: `the versioning block could not be laid out (${errorText(error)})` };
+  }
+  const expected = deepClone(base.parsed);
+  const tasks = isTable(expected.tasks) ? expected.tasks : (expected.tasks = {});
+  for (const name of replaced) delete tasks[name];
+  Object.assign(tasks, deepClone(managed));
+  const verdict = checkRewrite(expected, text);
+  return verdict.ok ? { text } : { text: original, refused: verdict.reason };
+}
+
+const record = (value: unknown): TomlTable => (isTable(value) ? value : {});
 
 
 const RETIRED_SKILL_SCRIPTS = [SYNC_SKILLS_SCRIPT_REL, PROVISION_PACKS_SCRIPT_REL, LEGACY_PROVISION_SCRIPT_REL,

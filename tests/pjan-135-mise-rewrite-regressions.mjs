@@ -40,7 +40,10 @@ process.env.GIT_CEILING_DIRECTORIES = "/tmp";
 const bundle = join(root, "node_modules", ".cache", `pjan-135-rewrite-${process.pid}.mjs`);
 buildSync({
   stdin: {
-    contents: 'export { createMiseChecks, createMiseOpInjectChecks, createAgentHooksChecks, SKILLS_SYNC_TOOLS, verifyMiseHookRewrite } from "./src/parity/rules";',
+    contents: [
+      'export { createMiseChecks, createMiseOpInjectChecks, createAgentHooksChecks, SKILLS_SYNC_TOOLS, verifyMiseHookRewrite } from "./src/parity/rules";',
+      'export { WireMiseAgentHooks } from "./src/commands/AgentHooksCommands";',
+    ].join("\n"),
     resolveDir: root,
   },
   outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm", logLevel: "warning",
@@ -500,5 +503,52 @@ test("the guard rejects every corrupted output the old rewrite produced", async 
     const verdict = verifyMiseRewrite(original, corrupted, owner);
     assert.equal(verdict.ok, false, `accepted:\n${corrupted}`);
     assert.match(verdict.reason, /hooks|tools/);
+  }
+});
+
+test("mise.versioning: a multi-line run string is not torn apart, and a task it cannot replace is refused, never duplicated", async () => {
+  const versioning = rules.createMiseChecks().find((check) => check.id === "mise.versioning");
+  // A `[` line inside a multi-line string is not a table header.
+  const multiline = `[tasks.version]\nrun = """\n[ -f VERSION ] && cat VERSION\n"""\n\n[tasks.build]\nrun = "echo build"\n`;
+  const repo = repoWith(multiline);
+  const { first, written } = await migrateToFixedPoint(versioning, repo);
+  assert.equal(first.status, "applied", JSON.stringify(first));
+  const parsed = parseToml(written);
+  assert.deepEqual(parsed.tasks.build, { run: "echo build" });
+  assert.equal(parsed.tasks.version.run, "'{{config_root}}/.mise/scripts/versioning.sh' current");
+  assertMiseClean(miseLoads(repo), "versioning multi-line");
+
+  // A managed name defined inline cannot be replaced in place: refused, untouched.
+  const inline = `[tasks]\nversion = { run = "cat VERSION" }\n`;
+  const refused = repoWith(inline);
+  for (const dryRun of [true, false]) {
+    const ctx = ctxFor(refused, dryRun);
+    const result = await versioning.migrate(ctx, await versioning.audit(ctx));
+    assert.equal(result.status, "partial", JSON.stringify(result));
+    assert.ok(result.details.some((detail) => /mise\.toml was not rewritten/.test(detail)), JSON.stringify(result.details));
+    assert.ok(!result.changedFiles.some((file) => file.endsWith("mise.toml")));
+    assert.equal(read(refused), inline);
+  }
+});
+
+test("WireMiseAgentHooks never writes a mise.toml that does not parse or drops meaning", async () => {
+  // A project mise.config-root already migrated carries the managed skills:sync task.
+  const repo = repoWith("[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
+  await mise.migrate(ctxFor(repo), await mise.audit(ctxFor(repo)));
+  const before = read(repo);
+  const previous = process.env.PJ_AGENT_HOOKS_LAYER;
+  process.env.PJ_AGENT_HOOKS_LAYER = "1";
+  try {
+    const wired = await new rules.WireMiseAgentHooks({ targetDir: repo }).invoke();
+    const after = read(repo);
+    assert.doesNotThrow(() => parseToml(after), `WireMiseAgentHooks wrote invalid TOML (${wired.message}):\n${after}`);
+    const parsedBefore = parseToml(before);
+    const parsedAfter = parseToml(after);
+    for (const [task, body] of Object.entries(parsedBefore.tasks)) assert.deepEqual(parsedAfter.tasks[task], body, `tasks.${task}`);
+    assert.deepEqual(hookModel(after), hookModel(before), "hooks are not touched when there is no [hooks] enter array");
+    if (after !== before) assert.ok(parsedAfter.tasks["hooks:sync"], "the agent-hooks tasks were added");
+    assertMiseClean(miseLoads(repo), "after WireMiseAgentHooks");
+  } finally {
+    if (previous === undefined) delete process.env.PJ_AGENT_HOOKS_LAYER; else process.env.PJ_AGENT_HOOKS_LAYER = previous;
   }
 });
