@@ -190,24 +190,28 @@ try {
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     const unsafeFinding = finding(audit, "skills.project-manifest");
     assert.equal(unsafeFinding.status, "fail");
-    assert.equal(unsafeFinding.fixable, false, "unsafe CLI topology must override otherwise-fixable drift");
-    assert.match(unsafeFinding.details.join("\n"), /E_ALIAS_CONFLICT|E_ALIAS_FOREIGN|alias|CLI/i);
+    // PJAN-135: the foreign alias is planned independently and reported as a
+    // block that names its target. It no longer vetoes the rest of the rule:
+    // the missing skills:sync task is progress that never touches the topology.
+    assert.equal(unsafeFinding.fixable, true, "task wiring stays fixable beside a blocked alias");
+    assert.match(unsafeFinding.details.join("\n"), new RegExp(`blocked: \\.codex/skills is a symlink to ${outside}`));
 
     const all = jsonCommand(["migrate", "--all", repo, "--dry-run", "--json"], { home }).json;
-    assert.equal(all.selectedRules.includes("skills.project-manifest"), false, "--all must exclude unsafe CLI topology blockers");
+    assert.equal(all.selectedRules.includes("skills.project-manifest"), true);
     assert.deepEqual(readdirSync(managed), beforeManaged);
     assert.deepEqual(readdirSync(outside), beforeOutside);
     assert.equal(readlinkSync(unsafeLink), outside);
-    assert.equal(existsSync(join(repo, ".mise", "scripts")), false, "--all must not mutate unsafe skills topology");
+    assert.equal(existsSync(join(repo, ".mise", "scripts")), false, "a dry run writes nothing");
 
     const report = jsonCommand(["migrate", "skills.project-manifest", repo, "--json"], { home }).json;
     const result = migrationResult(report, "skills.project-manifest");
-    assert.equal(result.status, "blocked", JSON.stringify(result));
-    assert.match(result.details.join("\n"), /E_ALIAS_CONFLICT|E_ALIAS_FOREIGN|alias|CLI/i);
+    assert.equal(result.status, "partial", JSON.stringify(result));
+    assert.match(result.details.join("\n"), /E_ACTIVATION_CONFLICT: Supported CLI alias is foreign/);
+    assert.match(result.details.join("\n"), /\.codex\/skills is a symlink to .* refusing to replace it/);
     assert.deepEqual(readdirSync(managed), beforeManaged);
     assert.deepEqual(readdirSync(outside), beforeOutside);
-    assert.equal(readlinkSync(unsafeLink), outside);
-    assert.equal(existsSync(join(repo, ".mise", "scripts")), false, "unsafe topology must fail before project mutation");
+    assert.equal(readlinkSync(unsafeLink), outside, "a foreign alias is never replaced");
+    assert.match(readFileSync(join(repo, "mise.toml"), "utf8"), /\[tasks\."skills:sync"\]/);
   }
 
   {

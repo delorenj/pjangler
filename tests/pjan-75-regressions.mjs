@@ -222,11 +222,10 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
   const before = json(["audit", repoRoot], { home });
   const rule = findings(before, "skills.project-manifest");
   assert.equal(rule.status, "fail", "expected the undeclared skill entry to fail the audit");
-  assert.equal(
-    rule.fixable,
-    false,
-    "legacy declaration mappings require explicit Skillex migration",
-  );
+  // PJAN-135: "fixable" means migrate makes progress. The missing skills:sync
+  // task is progress it can make; the legacy mapping is not, and stays failing.
+  assert.equal(rule.fixable, true, "the missing task wiring is independent progress");
+  assert.ok(rule.details.some((detail) => /E_LEGACY_FIELD/.test(detail)), "legacy declaration mappings require explicit Skillex migration");
 
   const migration = json(["migrate", "skills.project-manifest", repoRoot], { home });
   const after = json(["audit", repoRoot], { home });
@@ -238,7 +237,7 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
     "precondition: the deferred mapping must still be outstanding",
   );
   assert.notEqual(result.status, "applied", 'migrate reported "applied" for a rule that still fails its audit');
-  assert.equal(result.status, "blocked");
+  assert.equal(result.status, "partial");
   assert.equal(migration.ok, false, "`migrate` must not exit 0 while `audit` on the same repo exits 1");
   assert.equal(migration.ok, after.ok, "migrate and audit must not disagree about parity");
   assert.ok(

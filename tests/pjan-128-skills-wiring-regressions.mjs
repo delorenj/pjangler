@@ -110,3 +110,28 @@ for (const declaration of [null, '{ "inherit_global": false, "skills": [] }\n', 
     } finally { f.close(); }
   });
 }
+
+// PJAN-135: the blocked case above differs in content, so it stays blocked. A
+// real .claude/skills that only duplicates .agents/skills is converted by the
+// same --all run, and the dead wiring is repaired alongside it.
+test("--all converts a lossless real .claude/skills and repairs dead hooks in one run", async () => {
+  const f = await fixture(); try {
+    put(join(f.project, ".agents", "skills.json"), '{ "inherit_global": false, "skills": [] }\n');
+    put(join(f.project, ".agents", "skills", "bmad-native", "SKILL.md"), "Installer owned\n");
+    put(join(f.project, ".claude", "skills", "bmad-native", "SKILL.md"), "Installer owned\n");
+    put(join(f.project, ".claude", "skills", "bmad-claude-only", "SKILL.md"), "Installer owned (claude-code)\n");
+    const inode = lstatSync(join(f.project, ".claude", "skills", "bmad-claude-only")).ino;
+    f.addDeadWiring();
+    const report = await registry.migrateAll(f.ctx);
+    assert.equal(report.ok, true, JSON.stringify(report, null, 2));
+    assert.equal(report.results.find((item) => item.id === skills.id).status, "applied");
+    assert.equal(readlinkSync(join(f.project, ".claude", "skills")), "../.agents/skills");
+    assert.equal(lstatSync(join(f.project, ".agents", "skills", "bmad-claude-only")).ino, inode);
+    assert.equal(readFileSync(join(f.project, ".agents", "skills", "bmad-native", "SKILL.md"), "utf8"), "Installer owned\n");
+    assert.equal((await skills.audit(f.ctx)).status, "pass");
+    assert.doesNotMatch(readFileSync(join(f.project, "mise.toml"), "utf8"), /provision-packs\.py|sync-skills\.py/);
+    const settled = snapshot(f.base);
+    assert.deepEqual((await registry.migrateAll(f.ctx)).changedFiles, []);
+    assert.deepEqual(snapshot(f.base), settled);
+  } finally { f.close(); }
+});

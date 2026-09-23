@@ -106,26 +106,54 @@ test("core sync preserves installer real entries and correct foreign links witho
   } finally { f.close(); }
 });
 
-test("malformed and legacy selections refuse unchanged with migration guidance", () => {
+// PJAN-135: the explicit skills:sync task and the canonical CLI aliases are
+// written before the sync and independently of its outcome (retiring dead
+// wiring no longer waits on skillex agreeing). A refused selection still writes
+// no manifest, no activation root and no core state.
+const SIX_ALIASES = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+function refusedWithoutActivation(f, result, manifest) {
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.report.results[0].status, "partial", JSON.stringify(result.report));
+  assert.equal(readFileSync(join(f.project, ".agents", "skills.json"), "utf8"), manifest, "the selection is never rewritten");
+  assert.equal(existsSync(join(f.project, ".agents", "skills")), false, "no activation root");
+  assert.deepEqual(readdirSync(join(f.project, ".agents")), ["skills.json"]);
+  assert.equal(existsSync(join(f.base, "state")), false, "no core receipt or lock state");
+  assert.deepEqual([...result.report.changedFiles].sort(), [join(f.project, "mise.toml"),
+    ...SIX_ALIASES.flatMap((cli) => [join(f.project, cli), join(f.project, cli, "skills")])].sort());
+}
+
+test("malformed and legacy selections refuse without activation writes, with migration guidance", () => {
   for (const raw of ['{"skills":', '{"inherit_global":false,"skills":[{"name":"beta","source":"file:///legacy"}]}']) {
     const f = fixture(); try {
       put(join(f.project, ".agents", "skills.json"), raw);
-      const before = snapshot(f.base); const result = f.migrate();
-      assert.notEqual(result.exit, 0); assert.equal(result.report.results[0].status, "blocked");
+      const home = snapshot(f.home); const result = f.migrate();
+      refusedWithoutActivation(f, result, raw);
       assert.match(result.report.results[0].details.join("\n"), /skillex migrate --project/);
-      assert.deepEqual(snapshot(f.base), before);
+      assert.deepEqual(snapshot(f.home), home);
     } finally { f.close(); }
   }
 });
 
-test("unknown canonical selection and foreign root collisions refuse before task or state writes", () => {
+test("unknown canonical selection and a differing CLI-root collision refuse without activation writes", () => {
   const f = fixture(); try {
-    put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":["missing"]}\n');
-    const before = snapshot(f.base); assert.notEqual(f.migrate().exit, 0); assert.deepEqual(snapshot(f.base), before);
-    put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":["beta"]}\n');
-    put(join(f.project, ".claude", "skills", "installer", "SKILL.md"), "Foreign CLI data\n");
-    const collision = snapshot(f.base); assert.notEqual(f.migrate().exit, 0); assert.deepEqual(snapshot(f.base), collision);
+    const missing = '{"inherit_global":false,"skills":["missing"]}\n';
+    put(join(f.project, ".agents", "skills.json"), missing);
+    refusedWithoutActivation(f, f.migrate(), missing);
   } finally { f.close(); }
+  const g = fixture(); try {
+    // Lossless real-directory aliases are converted now (tests/pjan-135-*); one
+    // whose entry DIFFERS from its .agents/skills counterpart is still refused
+    // and left exactly as it was.
+    put(join(g.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":["beta"]}\n');
+    put(join(g.project, ".agents", "skills", "installer", "SKILL.md"), "Installer copy\n");
+    put(join(g.project, ".claude", "skills", "installer", "SKILL.md"), "Foreign CLI data\n");
+    const claude = snapshot(join(g.project, ".claude")), root = snapshot(join(g.project, ".agents", "skills"));
+    const result = g.migrate();
+    assert.notEqual(result.exit, 0);
+    assert.match(result.report.results[0].details.join("\n"), /\.claude\/skills\/installer differs from \.agents\/skills\/installer/);
+    assert.deepEqual(snapshot(join(g.project, ".claude")), claude);
+    assert.deepEqual(snapshot(join(g.project, ".agents", "skills")), root);
+  } finally { g.close(); }
 });
 
 test("dry-run of a valid selection plans complete activation without writing state", () => {
@@ -172,8 +200,9 @@ test("failed initial manifest publication reports no applied manifest write", ()
     f.env.NODE_OPTIONS = `--import ${inject}`;
     const result = f.migrate();
     assert.notEqual(result.exit, 0, JSON.stringify(result.report));
-    assert.equal(result.report.results[0].status, "blocked");
-    assert.deepEqual(result.report.changedFiles, []);
+    // The task and aliases are independent progress (PJAN-135); the manifest is not claimed.
+    assert.equal(result.report.results[0].status, "partial");
+    assert.equal(result.report.changedFiles.includes(destination), false);
     assert.equal(existsSync(destination), false);
   } finally { f.close(); }
 });
