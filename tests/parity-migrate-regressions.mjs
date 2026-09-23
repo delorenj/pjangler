@@ -314,7 +314,7 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.match(mise, /_\.path = \["\.mise\/scripts", "bin", "agents\/hermes\/pm"\]/, "mise.toml _.path should include agents/hermes/pm and preserve existing entries");
     assert.match(mise, /skillex sync --scope project --project/, "mise.toml should install the project-local skills sync hook");
-    assert.doesNotMatch(mise, /script = "sync-skills\.py --scope project"/, "mise.toml must not invoke a missing bare sync-skills executable");
+    assert.doesNotMatch(mise, /(?:run|script) = "sync-skills\.py --scope project"/, "mise.toml must not invoke a missing bare sync-skills executable");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");
@@ -365,17 +365,20 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.match(mise, /\[\[hooks\.enter\]\]/, "migrate should emit [[hooks.enter]] tables");
     assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "migrate must not emit the invalid enter = [ ... ] array form");
-    assert.match(mise, /script = "custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
-    assert.match(mise, /\[\[hooks\.leave\]\]\nscript = "custom-leave-hook"/, "migrate must preserve unrelated leave hooks as a table");
+    // PJAN-135: spawned hook commands are `run`; mise deprecated `script`
+    // for them (2026.7.8) and removes it in 2027.3.0.
+    assert.match(mise, /run = "custom-enter-hook"/, "migrate must preserve unrelated enter hooks");
+    assert.match(mise, /\[\[hooks\.leave\]\]\nrun = "custom-leave-hook"/, "migrate must preserve unrelated leave hooks as a table");
+    assert.doesNotMatch(mise, /^\s*scripts?\s*=/m, "migrate must never write the deprecated hook `script` key");
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
     // PJAN-82: every path is still single-quoted (space-safe), and the script is
     // now handed config_root as its SUBJECT. An enter hook's cwd is the entered
     // directory, so a script that reads its subject from cwd reshapes whichever
     // nested repo you cd'd into.
-    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh' '\{\{config_root\}\}'"/, "link-agentfiles hook must be single-quoted (space-safe) and carry its subject root");
+    assert.match(mise, /run = "'\{\{config_root\}\}\/\.mise\/scripts\/link-agentfiles\.sh' '\{\{config_root\}\}'"/, "link-agentfiles hook must be single-quoted (space-safe) and carry its subject root");
     assert.match(
       mise,
-      /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/,
+      /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/,
       "the env materialization recipe should install the managed script hook"
     );
     assert.match(
@@ -383,7 +386,7 @@ run = "echo still here"
       /run = "skillex sync --scope project --project '\{\{config_root\}\}'"/,
       "migrate should install the explicit Node sync task, rooted at config_root"
     );
-    assert.doesNotMatch(mise, /script = .*sync-skills|provision-packs/);
+    assert.doesNotMatch(mise, /(?:run|script) = .*sync-skills|provision-packs/);
     assert.match(mise, /\[tasks\."skills:sync"\]/, "migrate should add the canonical skills:sync task");
     assertMiseParses(repo, "preserve-hooks");
   }
@@ -416,7 +419,7 @@ run = "echo still here"
     assert.doesNotMatch(mise, /^\s*enter\s*=\s*\[/m, "migrate must not emit the invalid enter = [ ... ] array form");
     assert.match(
       mise,
-      /script = "\[ -f \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \] && \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \|\| true"/,
+      /run = "\[ -f \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \] && \{\{config_root\}\}\/\.mise\/scripts\/codegraph\.sh \|\| true"/,
       "migrate must preserve a foreign codegraph hook entry verbatim",
     );
     assert.match(mise, /\[tasks\.other\]\nrun = "echo still here"/, "migrate must preserve unrelated tasks");
@@ -501,7 +504,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml from template should contain the link:agentfiles task");
-    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
+    assert.match(mise, /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /skillex sync --scope project --project/, "mise.toml should declare an explicit project skill sync task");
     assert.match(mise, /\[tasks\."skills:sync"\]/, "mise.toml should include the skills:sync task");
     assert.doesNotMatch(mise, /patterns = \["\.agents\/skills\.json"\]/, "selection changes must not trigger automatic writes");
@@ -529,7 +532,7 @@ run = "echo still here"
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml should still contain the link:agentfiles task");
-    assert.match(mise, /script = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
+    assert.match(mise, /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
     assert.match(mise, /skillex sync --scope project --project/, "skills sync should stay enabled even when the hook layer is skipped");
     assert.match(mise, /\[tasks\."skills:sync"\]/, "skills:sync task should remain when the hook layer is skipped");
     assert.doesNotMatch(mise, /\[tasks\."hooks:sync"\]/, "agent-hooks layer OFF should omit the hooks:sync task");

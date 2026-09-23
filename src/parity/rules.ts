@@ -135,7 +135,7 @@ export interface RecipeOwnedCheck {
 }
 
 
-// mise runs each hook `script`/task `run` value through `sh -c`, expanding the
+// mise runs each hook/task `run` value through `sh -c`, expanding the
 // `{{config_root}}` tera template first. If the resolved path contains a space
 // (e.g. ".../James Brennan/...") an UNQUOTED reference word-splits and fails, so
 // every config_root path is wrapped in single quotes. Multiple commands are
@@ -242,6 +242,22 @@ const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 # any given level of nesting.`;
 
 
+/**
+ * PJAN-135: the skills:sync tool pin. mise 2026.9 refuses any npm package
+ * first published inside its 30-day `minimumPackageAge`, and 0.1.1 is younger
+ * than that, so the plain `"npm:@delorenj/skillex" = "0.1.1"` pin never
+ * installed and the task could not run. `allow_low_downloads = true` approves
+ * this exact version (measured with an isolated MISE_DATA_DIR on 2026.9.12:
+ * the string is refused, this table installs and `skillex --version` prints
+ * 0.1.1; mise 2026.5.0 parses it too). Keep every copy identical:
+ * src/commands/AgentHooksCommands.ts and both CommonProject templates.
+ */
+export const SKILLEX_TOOL_VERSION = "0.1.1";
+
+export const SKILLS_SYNC_TOOLS =
+  `{ "npm:@delorenj/skillex" = { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }, node = "24" }`;
+
+
 // Canonical managed enter-hook commands, always installed (space-safe).
 const LINK_AGENTFILES_HOOK_ENTRIES = [
   LINK_AGENTFILES_SCRIPT,
@@ -258,7 +274,7 @@ run = ${JSON.stringify(LINK_AGENTFILES_SCRIPT)}
 
 ${taskHeader(SKILLS_SYNC_TASK)}
 description = "Reconcile this project's selected skills"
-tools = { "npm:@delorenj/skillex" = "0.1.1", node = "24" }
+tools = ${SKILLS_SYNC_TOOLS}
 run = "skillex sync --scope project --project '{{config_root}}'"`;
 
 
@@ -902,7 +918,10 @@ function stripHookBlocks(text: string): { text: string; enter: string[]; leave: 
         // A managed-section marker starts a new logical region even though it
         // is a TOML comment rather than a table header.
         if (lines[j]!.trim().startsWith("# >>> mise-versioning >>>")) break;
-        const scriptMatch = /^\s*script\s*=\s*(.+)$/.exec(lines[j]!);
+        // `run` is the spawned-command key; `script` is its pre-2026.7.8
+        // spelling (PJAN-135: mise deprecates it and removes it in 2027.3.0),
+        // still read here so a legacy table is recognized by its owner.
+        const scriptMatch = /^\s*(?:run|script)\s*=\s*(.+)$/.exec(lines[j]!);
         if (scriptMatch) {
           const value = extractTomlStrings(scriptMatch[1]!)[0];
           if (value !== undefined) {
@@ -930,7 +949,7 @@ function stripHookBlocks(text: string): { text: string; enter: string[]; leave: 
           const chunk = lines.slice(j, end).filter((line) => !/^\s*#/.test(line)).join("\n");
           for (const value of extractTomlStrings(chunk)) {
             bucket.push(value);
-            records.push({ kind: keyMatch[1] as "enter" | "leave", script: value, raw: `[[hooks.${keyMatch[1]}]]\nscript = ${JSON.stringify(value)}` });
+            records.push({ kind: keyMatch[1] as "enter" | "leave", script: value, raw: renderHookTables([value], keyMatch[1] as "enter" | "leave")[0]! });
           }
           lastDrop = end - 1;
           j = end;
@@ -960,6 +979,19 @@ function stripHookBlocks(text: string): { text: string; enter: string[]; leave: 
 }
 
 
+/**
+ * A hook command line outside `[[hooks.enter]]`. `script =` is never a key of
+ * anything but a hook, so anywhere else it is an orphan (PJAN-57). `run =` is
+ * also every TASK's command, so it only counts inside another hook table.
+ */
+function strayHookCommand(line: string, table: string): string | undefined {
+  const match = /^\s*(script|run)\s*=\s*(.+)$/.exec(line);
+  if (!match || table === "hooks.enter") return undefined;
+  if (match[1] === "run" && !table.startsWith("hooks.")) return undefined;
+  return extractTomlStrings(match[2]!)[0];
+}
+
+
 function ownedOpInjectScriptsOutsideEnter(text: string): Array<{ line: number; value: string }> {
   const findings: Array<{ line: number; value: string }> = [];
   let table = "";
@@ -969,9 +1001,7 @@ function ownedOpInjectScriptsOutsideEnter(text: string): Array<{ line: number; v
       table = header[1]!.replace(/[\[\]\s]/g, "");
       continue;
     }
-    const script = /^\s*script\s*=\s*(.+)$/.exec(line);
-    if (!script || table === "hooks.enter") continue;
-    const value = extractTomlStrings(script[1]!)[0];
+    const value = strayHookCommand(line, table);
     if (value !== undefined && isOpInjectHookEntry(value)) findings.push({ line: index + 1, value });
   }
   return findings;
@@ -986,16 +1016,104 @@ function removeOwnedOpInjectScriptsOutsideEnter(text: string): string {
       table = header[1]!.replace(/[\[\]\s]/g, "");
       return true;
     }
-    const script = /^\s*script\s*=\s*(.+)$/.exec(line);
-    if (!script || table === "hooks.enter") return true;
-    const value = extractTomlStrings(script[1]!)[0];
+    const value = strayHookCommand(line, table);
     return value === undefined || !isOpInjectHookEntry(value);
   }).join("\n");
 }
 
 
+/**
+ * PJAN-135: a spawned hook command is `run`. mise 2026.7.8 deprecated the
+ * `script`/`scripts` spelling ("hook tables using `script` or `scripts` for
+ * spawned commands are deprecated. Use `run` instead") and 2027.3.0 removes it.
+ * Measured on mise 2026.9.12: `run` fires on directory entry and leave with the
+ * same cwd, the same {{config_root}} expansion and the same `sh -o errexit -c`
+ * command line, and prints no warning. mise older than 2026.5.6 cannot parse a
+ * `run` hook table at all.
+ */
 function renderHookTables(scripts: readonly string[], kind: "enter" | "leave"): string[] {
-  return scripts.map((script) => `[[hooks.${kind}]]\nscript = ${JSON.stringify(script)}`);
+  return scripts.map((script) => `[[hooks.${kind}]]\nrun = ${JSON.stringify(script)}`);
+}
+
+
+interface LegacyHookScriptKey {
+  /** 0-based line of the `script`/`scripts` key. */
+  line: number;
+  /** Exclusive end line of its value. */
+  end: number;
+  table: string;
+}
+
+
+/**
+ * Every hook table (any `[[hooks.<kind>]]` / `[hooks.<kind>]`, managed or not)
+ * that spells its spawned command `script` or `scripts`. A table with a
+ * `shell` key is excluded: that `script` is sourced into the operator's shell,
+ * is NOT deprecated, and `run` there would execute the text as a file path.
+ */
+function legacyHookScriptKeys(text: string): LegacyHookScriptKey[] {
+  const lines = text.split("\n");
+  const found: LegacyHookScriptKey[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const header = /^\s*(\[\[?\s*hooks\.[A-Za-z_]+\s*\]\]?)\s*(?:#.*)?$/.exec(lines[i]!);
+    if (!header) continue;
+    const table = header[1]!.replace(/[\[\]\s]/g, "");
+    const keys: LegacyHookScriptKey[] = [];
+    let shell = false;
+    let j = i + 1;
+    for (; j < lines.length && !/^\s*\[/.test(lines[j]!); j++) {
+      if (/^\s*shell\s*=/.test(lines[j]!)) shell = true;
+      if (/^\s*scripts?\s*=/.test(lines[j]!)) {
+        const end = tomlValueSpanEnd(lines, j, lines.length);
+        keys.push({ line: j, end, table });
+        j = end - 1;
+      }
+    }
+    if (!shell) found.push(...keys);
+    i = j - 1;
+  }
+  return found;
+}
+
+
+function legacyHookScriptIssues(text: string): string[] {
+  const keys = legacyHookScriptKeys(text);
+  if (!keys.length) return [];
+  return [`${keys.length} hook table(s) spell the spawned command \`script\`/\`scripts\` (line(s) ${keys.map((key) => key.line + 1).join(", ")}); ` +
+    "mise deprecated it and removes it in 2027.3.0, rename it to `run`"];
+}
+
+
+/**
+ * Rename every legacy hook command key to `run`, semantics preserved: a
+ * single string is a pure key rename (quoting and trailing comment kept); an
+ * array is joined with newlines, which is exactly what mise ran for it (one
+ * `sh -o errexit -c "a\nb"`, measured). A rewrite that would not parse (a table
+ * already holding `run`, say) is left alone for the operator.
+ */
+function renameLegacyHookScripts(text: string): string {
+  const keys = legacyHookScriptKeys(text);
+  if (!keys.length) return text;
+  const parses = (candidate: string) => { try { parseToml(candidate); return true; } catch { return false; } };
+  const guarded = parses(text);
+  let lines = text.split("\n");
+  // Bottom-up, so an array collapsing to one line never shifts a key above it.
+  for (const key of [...keys].reverse()) {
+    const first = lines[key.line]!;
+    const value = first.replace(/^\s*scripts?\s*=\s*/, "");
+    const next = [...lines];
+    if (!value.startsWith("[")) {
+      next[key.line] = first.replace(/^(\s*)scripts?(\s*=)/, "$1run$2");
+    } else {
+      const body = lines.slice(key.line, key.end).filter((line) => !/^\s*#/.test(line)).join("\n")
+        .replace(/^\s*scripts?\s*=\s*/, "");
+      const indent = /^\s*/.exec(first)![0];
+      next.splice(key.line, key.end - key.line, `${indent}run = ${JSON.stringify(extractTomlStrings(body).join("\n"))}`);
+    }
+    if (guarded && !parses(next.join("\n"))) continue;
+    lines = next;
+  }
+  return lines.join("\n");
 }
 
 
@@ -1170,7 +1288,7 @@ export function renameRetiredMiseTasks(text: string): string {
 
 
 function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
-  const withPath = upsertMisePath(renameRetiredMiseTasks(text), requiredMisePathEntries(ctx));
+  const withPath = upsertMisePath(renameRetiredMiseTasks(renameLegacyHookScripts(text)), requiredMisePathEntries(ctx));
   // Remove stale AGENTS-linking pieces before appending the canonical block.
   // Both the colon and the retired dash header forms are matched so a
   // half-migrated file can never end up holding two copies of the same task.
@@ -2549,6 +2667,7 @@ return [
       if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
       if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
       details.push(...managedHookSubjectIssues(text));
+      details.push(...legacyHookScriptIssues(text));
       details.push(...optionalTemplateScriptIssues(ctx));
       if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
       if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
@@ -2599,13 +2718,21 @@ return [
           chmodSync(linkAgentfilesPath, 0o755);
         }
       }
+      // A legacy hook table the rename could not rewrite (it would not parse,
+      // e.g. a table that already holds `run`) is left for the operator and
+      // said so, never reported as done.
+      const leftover = legacyHookScriptIssues(text);
       return {
         id: finding.id,
         title: finding.title,
-        status: changedFiles.length ? "applied" : "noop",
-        summary: changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
+        status: leftover.length ? "partial" : changedFiles.length ? "applied" : "noop",
+        summary: leftover.length ? "Legacy hook tables need a manual `run` rename"
+          : changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
         changedFiles,
-        details: changedFiles.length ? [`Normalized hooks/watch_files/tasks."${LINK_AGENTFILES_TASK}" block and script`] : [],
+        details: [
+          ...(changedFiles.length ? [`Normalized hooks/watch_files/tasks."${LINK_AGENTFILES_TASK}" block and script`] : []),
+          ...leftover.map((issue) => `left untouched (renaming would not parse): ${issue}`),
+        ],
       };
     },
   },
@@ -2712,7 +2839,11 @@ function skillsWiringIssues(text: string | null): string[] {
   if (typeof run !== "string" || !/^skillex\s+sync\s+--scope\s+project\s+--project\s+(['"])\{\{config_root\}\}\1\s*$/.test(run)) {
     issues.push("skills:sync must explicitly target {{config_root}} with the Node CLI");
   }
-  if (record(task.tools)["npm:@delorenj/skillex"] !== "0.1.1") issues.push("skills:sync must pin @delorenj/skillex 0.1.1 in its own tools table");
+  // The legacy plain-string pin and the table form both pin 0.1.1; accepting
+  // both means no forced churn of existing tasks (PJAN-135).
+  const pin = record(task.tools)["npm:@delorenj/skillex"];
+  const pinned = typeof pin === "string" ? pin : record(pin).version;
+  if (pinned !== SKILLEX_TOOL_VERSION) issues.push(`skills:sync must pin @delorenj/skillex ${SKILLEX_TOOL_VERSION} in its own tools table`);
   const retired = /sync-skills\.py|provision-(?:packs|bmad-skills)\.py|skills[:\-]provision/;
   if (Object.entries(tasks).some(([name, task]) => retired.test(name) || retired.test(JSON.stringify(record(task).run ?? "")))) issues.push("Retire Python skill sync/provision tasks from mise.toml");
   const hooks = JSON.stringify(parsed.hooks ?? {});

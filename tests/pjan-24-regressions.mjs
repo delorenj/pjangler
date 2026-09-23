@@ -190,7 +190,9 @@ ${foreignLeave}
     assert.equal(migrated.payload.results[0].status, "applied");
     const first = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.equal((first.match(/materialize-env\.sh/g) ?? []).length, 1, "migration must install exactly one managed hook");
-    assert.doesNotMatch(first, /^script = ".*op inject.*\.env"$/m, "owned truncating hooks must be removed");
+    assert.doesNotMatch(first, /^(?:run|script) = ".*op inject.*\.env"$/m, "owned truncating hooks must be removed");
+    // PJAN-135: the managed hook is a spawned command, so it is `run`.
+    assert.match(first, /^\[\[hooks\.enter\]\]\nrun = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"$/m);
     assert.ok(first.includes(foreignEnter), "foreign enter records and metadata must be preserved verbatim");
     assert.ok(first.includes(foreignLeave), "leave records and metadata must be preserved verbatim");
     assert.equal(lstatSync(join(repo, ".mise", "scripts", "materialize-env.sh")).mode & 0o111, 0o111);

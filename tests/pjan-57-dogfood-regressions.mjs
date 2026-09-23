@@ -125,7 +125,7 @@ run = "echo untouched"
       assert.equal(migrated.payload.ok, true, JSON.stringify(migrated.payload));
     }
     const first = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.doesNotMatch(first, /^script = "op inject -i \.env\.op > \.env"$/m, "orphan [env].script must be removed");
+    assert.doesNotMatch(first, /^(?:run|script) = "op inject -i \.env\.op > \.env"$/m, "orphan [env].script must be removed");
     assert.ok(first.includes(foreignEnter.trim()), "foreign enter record attributes/comments must survive byte-for-byte");
     assert.ok(first.includes(foreignLeave.trim()), "all leave-hook attributes/comments must survive byte-for-byte");
     assert.match(first, /\[tasks\.foreign\]\nrun = "echo untouched"/);
@@ -180,7 +180,7 @@ run = "echo untouched"
   //
   // It used to run against the record-preservation fixture above, whose foreign
   // hook records deliberately carry `condition` and a `custom_key`. mise's
-  // HookDef accepts only `script` and `shell` and rejects the whole config file
+  // HookDef accepts only `run`/`script` and `shell` and rejects the whole config file
   // on any other key, so that assertion could never pass and `npm test` — the
   // release gate — has been red on main. Preserving an operator's foreign keys
   // byte-for-byte is still the correct behaviour; whether the local mise likes
@@ -273,7 +273,9 @@ exit 42
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), "KEEP=original\n");
     assert.deepEqual(readdirSync(repo).filter((name) => /^\.env\.inject\./.test(name)).sort(), [".env.inject.XXXXXX"], "failed injection temp must be cleaned");
 
-    writeFileSync(join(repo, "mise.toml"), `[[hooks.enter]]\nscript = "'{{config_root}}/.mise/scripts/materialize-env.sh'"\n`);
+    // PJAN-135: the hook exactly as pjangler writes it. `script` here made mise
+    // 2026.7.8+ print a deprecation warning and failed the warning-free check.
+    writeFileSync(join(repo, "mise.toml"), `[[hooks.enter]]\nrun = "'{{config_root}}/.mise/scripts/materialize-env.sh'"\n`);
     writeFileSync(fakeOp, `#!/bin/sh
 set -eu
 out=""

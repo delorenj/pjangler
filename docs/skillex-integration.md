@@ -4,14 +4,23 @@ PJangler requires Node 24 or newer and `@delorenj/skillex` 0.1.1. Its project
 bootstrap, parity audit and migration use the public Node core. The packaged
 CommonProject template pins the same release.
 
-A generated project has one explicit task:
+A generated project has one explicit task, run as `mise run skills:sync`:
 
 ```toml
 [tasks."skills:sync"]
-description = "Apply this project's declared skills with Skillex"
-tools = { "npm:@delorenj/skillex" = "0.1.1" }
+description = "Reconcile this project's selected skills"
+tools = { "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }
 run = "skillex sync --scope project --project '{{config_root}}'"
 ```
+
+`allow_low_downloads = true` approves this one exact version past mise's npm
+`minimumPackageAge` gate (30 days by default in mise 2026.9): without it mise
+refuses to install `@delorenj/skillex@0.1.1` at all, and the task never runs.
+`node = "24"` is the runtime the Node CLI requires. Inside the task `skillex`
+is that pinned Node CLI; do not type bare `skillex sync` in a shell, where it can
+resolve to the retired Python reconciler. The legacy plain-string pin
+(`"npm:@delorenj/skillex" = "0.1.1"`) still passes the audit, so existing
+projects are not churned; newly written tasks use the table form.
 
 Copier invokes that task once during bootstrap, with process-local trust for the
 rendered configuration. Enter hooks and watch hooks do not sync skills. The
@@ -31,18 +40,36 @@ owns it. Its subject is always a project root. Projecting skills into a Hermes
 profile is Flume's, along with the employee rules that inspect one — PJangler
 reads a role's profile *name* out of `role.yaml` and never opens its `skills/`.
 
-Missing sources, ambiguous legacy selections and conflicting real CLI roots
-remain visible blockers. Preview `skillex migrate --project /absolute/project`,
-provide an explicit mapping where requested, review the inventory, then apply
-that migration before syncing. PJangler does not run a registry-wide migration
-implicitly. The former `--accept-registry-matches` backup/adoption path is retired;
-foreign and installer-owned definitions remain in place.
+`pj skills [args...]` runs the Skillex CLI bundled with PJangler, the same
+version the audit used, with every argument passed through unchanged. It needs no
+PATH entry, mise install or network. Every Skillex command PJangler names in a
+finding or remedy is spelled `pj skills …` (including relayed core fix text), and
+tests/pjan-135-guidance-commands-regressions.mjs runs each named command against
+the real CLI.
+
+`pj migrate` relocates CLI-root skill entries (`.claude/skills` and the other
+supported roots) losslessly into `.agents/skills`, so each root can become the
+`../.agents/skills` alias Skillex requires. It never claims ownership of foreign
+or installer-owned skills and never deletes content that is not a proven
+duplicate. Missing sources, ambiguous legacy selections and content that cannot
+be proven disposable remain visible blockers. For those:
+
+```sh
+pj skills migrate --project /absolute/project           # preview
+pj skills migrate --project /absolute/project --apply   # apply the reviewed plan
+```
+
+Add `--mapping <file>` only for content the preview reports as ambiguous, then
+run `mise run skills:sync`. PJangler does not run a registry-wide migration
+implicitly. The former `--accept-registry-matches` backup/adoption path is retired
+and now only refuses with this remedy.
 
 For a new declaration, a PJangler dry-run reports the manifest initialization;
 activation is resolved after that declaration exists. For existing declarations,
 the dry-run includes the core's complete activation changes. Failure reports use
 actual applied changes, so a failed publication is not presented as a saved
-manifest. An interruption after saved intent can be resumed with explicit sync.
+manifest. An interruption after saved intent can be resumed with
+`mise run skills:sync`.
 
 BMAD remains owned by its installer and the supported CLI projection rules
 (`bmad.scaffold`, `bmad.version`, `bmad.cli-roots`), which are separate from

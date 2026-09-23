@@ -89,7 +89,10 @@ for (const declaration of [null, '{ "inherit_global": false, "skills": [] }\n', 
       assert.equal((await mise.audit(f.ctx)).status, "pass");
       const text = readFileSync(join(f.project, "mise.toml"), "utf8");
       assert.doesNotMatch(text, /provision-packs\.py|sync-skills\.py|patterns = \["\.agents\/skills\.json"\]/);
-      assert.match(text, /echo keep-custom-hook/);
+      // PJAN-135: an unrelated legacy `script` hook survives as a pure key
+      // rename to `run`; nothing is left on the deprecated spelling.
+      assert.match(text, /\[\[hooks\.leave\]\]\nrun = "echo keep-custom-hook"/);
+      assert.doesNotMatch(text, /^\s*scripts?\s*=/m);
       assert.match(text, /skillex sync --scope project --project '\{\{config_root\}\}'/);
       assert.deepEqual(snapshot(join(f.project, ".claude")), foreign);
       assert.deepEqual(snapshot(join(f.project, ".agents", "skills")), native);

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { InvokeResult } from "./Command";
 import { Command } from "./Command";
 import { resolveAgentHooksLayer } from "../project/index";
+import { SKILLS_SYNC_TOOLS } from "../parity/rules";
 
 /** Shared skip result when a global ~/.agents/hooks install makes the project-scoped
  * layer redundant. Overridable with PJ_AGENT_HOOKS_LAYER=1. */
@@ -118,7 +119,7 @@ export class WireMiseAgentHooks extends Command {
     if (!existsSync(misePath)) {
       return {
         success: false,
-        message: "⚠️  No mise.toml found — run `pjangler init mise` first, then re-run.",
+        message: "⚠️  No mise.toml found — run `pj add mise` first, then re-run.",
       };
     }
     let content = readFileSync(misePath, "utf8");
@@ -161,8 +162,8 @@ export class WireMiseAgentHooks extends Command {
       // PJAN-61: task names use the colon namespace form. A colon is not legal
       // in a BARE toml key, so every header here MUST stay quoted.
       '[tasks."skills:sync"]',
-      'description = "Reconcile this project selected skills"',
-      'tools = { "npm:@delorenj/skillex" = "0.1.1", node = "24" }',
+      `description = "Reconcile this project's selected skills"`,
+      `tools = ${SKILLS_SYNC_TOOLS}`,
       `run = "skillex sync --scope project --project '${cr}'"`,
       "",
       "[[watch_files]]",

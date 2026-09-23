@@ -32,7 +32,7 @@ function assertProject(cli, project) {
   assert.deepEqual(manifest.skills, []);
   const mise = readFileSync(join(project, "mise.toml"), "utf8");
   assert.match(mise, /skillex sync --scope project --project '\{\{config_root\}\}'/);
-  assert.match(mise, /"npm:@delorenj\/skillex" = "0\.1\.1"/);
+  assert.match(mise, /"npm:@delorenj\/skillex" = \{ version = "0\.1\.1", allow_low_downloads = true \}, node = "24"/);
   for (const name of ["sync-skills.py", "provision-packs.py", "provision-bmad-skills.py"]) assert.equal(existsSync(join(project, ".mise", "scripts", name)), false);
   const skills = join(project, ".agents", "skills");
   const installed = readdirSync(skills).filter((name) => name.startsWith("bmad-"));
