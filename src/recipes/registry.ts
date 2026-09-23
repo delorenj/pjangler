@@ -298,12 +298,20 @@ export class RecipeRegistry {
    * They are re-checked AFTER the migrations run, because a rule this pass was
    * not allowed to fix may still have been fixed as a side effect of one it
    * was.
+   *
+   * PJAN-135: ...or merely UNBLOCKED by one. A rule that was not fixable
+   * before the first pass but is fixable now (an earlier migration removed
+   * what blocked it) is migrated in one bounded second pass and reported with
+   * its real result. Only what is still not fixable after that re-audit is
+   * reported as needing an operator. Previously it was reported "not
+   * auto-fixable" while fixable, and only a second `migrate --all` noticed.
    */
   async migrateAll(ctx: LifecycleContext): Promise<LifecycleMigrationReport> {
     const audit = await this.auditRecipes(ctx);
     const failing = audit.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
     const report = await this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
 
+    const unblocked: RuleId[] = [];
     const manual: LifecycleMigrationResult[] = [];
     for (const rule of failing.filter((candidate) => !candidate.fixable)) {
       const owner = this.ruleOwners.get(rule.id);
@@ -316,6 +324,11 @@ export class RecipeRegistry {
         }
       }
       if (current.status === "pass" || current.status === "skip") continue;
+      // A dry run wrote nothing, so a re-audit cannot have been unblocked by it.
+      if (current.fixable && owner && !ctx.dryRun) {
+        unblocked.push(current.id);
+        continue;
+      }
       manual.push({
         id: current.id,
         recipeId: current.recipeId,
@@ -326,8 +339,16 @@ export class RecipeRegistry {
         details: [...current.details, "not auto-fixable: this rule needs an operator decision or action"],
       });
     }
-    if (!manual.length) return report;
-    return { ...report, ok: false, results: [...report.results, ...manual] };
+    const second = unblocked.length ? await this.migrateRules(ctx, unblocked) : undefined;
+    if (!second && !manual.length) return report;
+    const results = [...report.results, ...(second?.results ?? []), ...manual];
+    return {
+      ...report,
+      ok: report.ok && (second?.ok ?? true) && !manual.length,
+      selectedRules: [...report.selectedRules, ...(second?.selectedRules ?? [])],
+      results,
+      changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort(),
+    };
   }
 
   listRuleIds(): readonly RuleId[] {
