@@ -19,8 +19,17 @@ refuses to install `@delorenj/skillex@0.1.1` at all, and the task never runs.
 `node = "24"` is the runtime the Node CLI requires. Inside the task `skillex`
 is that pinned Node CLI; do not type bare `skillex sync` in a shell, where it can
 resolve to the retired Python reconciler. The legacy plain-string pin
-(`"npm:@delorenj/skillex" = "0.1.1"`) still passes the audit, so existing
-projects are not churned; newly written tasks use the table form.
+(`"npm:@delorenj/skillex" = "0.1.1"`) fails both `mise.config-root` and
+`skills.project-manifest` as fixable drift: on a cold mise (a new machine, CI,
+a container) mise refuses to install it, so the task could not run. Either
+rule's migrate rewrites it to the table form above.
+
+Every mise.toml rewrite is structural and parse-verified: the rewritten file
+must parse and mean exactly the original plus the rule's intended changes
+(every hook's kind, order, command and `shell`; every task; tools; env). A
+rewrite that cannot be made safely is not written; the rule reports `partial`
+with the reason. A hook command that joins a retired skill writer with the
+operator's own commands is never split; it is reported for a manual edit.
 
 Copier invokes that task once during bootstrap, with process-local trust for the
 rendered configuration. Enter hooks and watch hooks do not sync skills. The

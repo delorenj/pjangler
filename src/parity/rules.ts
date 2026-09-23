@@ -9,6 +9,12 @@ import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-
 import { auditProjectSkills, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
+import {
+  applyLineEdits, canonicalJson, checkRewrite, decideHookDefs, deepClone, firstDifference, hookCommands, hookInventory,
+  isDeepStrictEqualLoose, isTable, miseModel, parseBaseline, parseBody, parseValue, rewriteMiseHooks, scanToml, shortCommand,
+  tableBody, tableSpan,
+  type HookInventory, type HookManual, type HookOwnerPolicy, type LineEdit, type RewriteVerdict, type TomlStatement, type TomlTable,
+} from "./mise-toml";
 
 
 /**
@@ -218,18 +224,6 @@ function taskHeaderPattern(name: string): RegExp {
   return new RegExp(`^\\[tasks\\.(?:"${esc}"|${esc})\\]$`);
 }
 
-const PROVISION_PACKS_SCRIPT =
-  `python3 '{{config_root}}/${PROVISION_PACKS_SCRIPT_REL}' --root '{{config_root}}'`;
-
-const LEGACY_PROVISION_BMAD_SKILLS_SCRIPT =
-  `python3 '{{config_root}}/${LEGACY_PROVISION_SCRIPT_REL}'`;
-
-const SYNC_SKILLS_SCRIPT =
-  `python3 '{{config_root}}/${SYNC_SKILLS_SCRIPT_REL}' --scope project --root '{{config_root}}'`;
-
-const CODEGRAPH_SCRIPT =
-  "[ -f '{{config_root}}/.mise/scripts/codegraph.sh' ] && '{{config_root}}/.mise/scripts/codegraph.sh' || true";
-
 const BMAD_SKILL_NAME_PREFIX = "bmad-";
 
 
@@ -256,12 +250,6 @@ export const SKILLEX_TOOL_VERSION = "0.1.1";
 
 export const SKILLS_SYNC_TOOLS =
   `{ "npm:@delorenj/skillex" = { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }, node = "24" }`;
-
-
-// Canonical managed enter-hook commands, always installed (space-safe).
-const LINK_AGENTFILES_HOOK_ENTRIES = [
-  LINK_AGENTFILES_SCRIPT,
-];
 
 
 const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
@@ -653,30 +641,6 @@ function requiredMisePathEntries(_ctx: Context): string[] {
 }
 
 
-function upsertMisePath(text: string, required = BASE_MISE_PATH_ENTRIES): string {
-  const render = (values: string[]) => `_.path = [${values.map((value) => JSON.stringify(value)).join(", ")}]`;
-  const envMatch = text.match(/(^|\n)(\[env\][\s\S]*?)(?=\n\[[^\]]+\]|$)/);
-  if (!envMatch || typeof envMatch.index !== "number") {
-    return `[env]\n${render(required)}\n\n${text.replace(/^\s+/, "")}`;
-  }
-
-  const prefix = text.slice(0, envMatch.index + envMatch[1]!.length);
-  const section = envMatch[2]!;
-  const suffix = text.slice(envMatch.index + envMatch[1]!.length + section.length);
-  const pathLine = section.match(/^_\.path\s*=\s*\[([^\]]*)\]\s*$/m);
-  if (!pathLine) {
-    return `${prefix}${section.replace(/\n?$/, "\n")}${render(required)}${suffix}`;
-  }
-
-  const current = [...pathLine[1]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
-  const merged = [...current];
-  for (const value of required) {
-    if (!merged.includes(value)) merged.push(value);
-  }
-  const nextLine = render(merged);
-  if (pathLine[0] === nextLine) return text;
-  return `${prefix}${section.replace(pathLine[0], nextLine)}${suffix}`;
-}
 
 
 function removeTomlSection(text: string, headerPattern: RegExp, marker?: RegExp, options?: { includePrecedingComments?: boolean }): string {
@@ -719,59 +683,6 @@ function removeTomlSection(text: string, headerPattern: RegExp, marker?: RegExp,
   }
   const result = lines.slice(0, start).concat(lines.slice(end)).join("\n");
   return result.replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
-}
-
-
-function insertTomlBlockBeforeVersioning(text: string, block: string): string {
-  const versioningIndex = text.indexOf("# >>> mise-versioning >>>");
-  if (versioningIndex >= 0) {
-    return `${text.slice(0, versioningIndex).replace(/\s*$/, "\n\n")}${block}\n\n${text.slice(versioningIndex)}`;
-  }
-  return `${text.replace(/\s*$/, "")}\n\n${block}\n`;
-}
-
-
-function insertHookBlock(text: string, block: string): string {
-  const structural = /^(?:\[\[watch_files\]\]|\[tasks(?:\.|\]))/m.exec(text);
-  const versioningIndex = text.indexOf("# >>> mise-versioning >>>");
-  const candidates = [structural?.index, versioningIndex >= 0 ? versioningIndex : undefined]
-    .filter((value): value is number => value !== undefined);
-  if (candidates.length) {
-    const index = Math.min(...candidates);
-    return `${text.slice(0, index).replace(/\s*$/, "\n\n")}${block}\n\n${text.slice(index)}`;
-  }
-  return `${text.replace(/\s*$/, "")}\n\n${block}\n`;
-}
-
-
-function extractTomlStrings(text: string): string[] {
-  const values: string[] = [];
-  const stringPattern = /"((?:\\.|[^"\\])*)"|'([^']*)'/g;
-  for (const match of text.matchAll(stringPattern)) {
-    if (match[1] !== undefined) {
-      try {
-        values.push(JSON.parse(`"${match[1]}"`) as string);
-      } catch {
-        values.push(match[1]);
-      }
-    } else if (match[2] !== undefined) {
-      values.push(match[2]);
-    }
-  }
-  return values;
-}
-
-
-/**
- * Blank out TOML string literals (and any trailing comment) so structural
- * scans can count brackets without being fooled by `[`/`]` that live inside a
- * quoted value — e.g. a hook entry like `"[ -f foo ] && foo || true"`.
- */
-function stripTomlStringsAndComments(line: string): string {
-  return line
-    .replace(/"(?:\\.|[^"\\])*"/g, '""')
-    .replace(/'[^']*'/g, "''")
-    .replace(/#.*$/, "");
 }
 
 
@@ -822,384 +733,15 @@ function opInjectOutputTarget(value: string): string | null {
  * and `.env.op`. A hook writing somewhere else — `.env.secrets` (the
  * WireMiseOpInject pattern, which is SAFER than what we install), `.env.local`,
  * `.env.staging` — belongs to the user. Claiming it is destructive, not
- * cosmetic: normalizeHookScript rewrites it to the canonical string and
- * dedupePreserve then collapses it into the managed entry, so the user's hook
- * disappears entirely. When in doubt, do not claim it.
+ * cosmetic: a claimed enter hook is replaced by the managed one and a claimed
+ * hook anywhere else is removed, so the user's hook disappears entirely. When
+ * in doubt, do not claim it.
  */
 function isOpInjectHookEntry(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed === OP_INJECT_SCRIPT) return true;
   return opInjectOutputTarget(trimmed) === ".env";
 }
-
-
-/**
- * Enter-hook values that materialize `.env` but are NOT the canonical atomic
- * command — i.e. every form that can still clobber a populated `.env`.
- *
- * The audit must test these extracted VALUES, never the raw mise.toml text: the
- * explanatory comments above the hook quote the truncating forms verbatim, so a
- * text scan would flag the very files that are already correct.
- */
-function truncatingOpInjectEntries(enterHooks: string[]): string[] {
-  return enterHooks.filter((value) => value.trim() !== OP_INJECT_SCRIPT && isOpInjectHookEntry(value));
-}
-
-
-/**
- * Normalize a preserved hook command so pjangler-managed scripts it references
- * are single-quoted (space-safe). Unknown user commands are kept verbatim.
- *
- * `kind` is load-bearing (PJAN-24): the dotenv rewrite applies to ENTER hooks
- * only. A LEAVE hook is a teardown step, so rewriting one to the materialization
- * command turns "clean up on exit" into "resolve secrets on exit" — the exact
- * inverse of its intent.
- */
-function normalizeHookScript(script: string, kind: "enter" | "leave"): string {
-  const trimmed = script.trim();
-  if (/codegraph\.sh/.test(trimmed)) return CODEGRAPH_SCRIPT;
-  if (kind === "enter" && isOpInjectHookEntry(trimmed)) return OP_INJECT_SCRIPT;
-  return trimmed;
-}
-
-
-/**
- * Determine the exclusive end line of a (possibly multi-line) TOML value that
- * begins at `start`, counting array brackets outside of string literals so a
- * `]` inside a quoted command can't be mistaken for the array close.
- */
-function tomlValueSpanEnd(lines: string[], start: number, limit: number): number {
-  let depth = 0;
-  let j = start;
-  for (; j < limit; j++) {
-    for (const ch of stripTomlStringsAndComments(lines[j]!)) {
-      if (ch === "[") depth++;
-      else if (ch === "]") depth--;
-    }
-    if (depth <= 0) break;
-  }
-  return Math.min(j, limit - 1) + 1;
-}
-
-
-/**
- * Remove every mise hook construct from the text — both the `[hooks]` table
- * (with `enter`/`leave` as a string or an array of strings) and any
- * `[[hooks.enter]]`/`[[hooks.leave]]` array-of-tables — and return the stripped
- * text alongside the collected enter/leave commands.
- */
-interface HookTableRecord {
-  kind: "enter" | "leave";
-  script?: string;
-  raw: string;
-}
-
-
-function stripHookBlocks(text: string): { text: string; enter: string[]; leave: string[]; records: HookTableRecord[] } {
-  const lines = text.split("\n");
-  const enter: string[] = [];
-  const leave: string[] = [];
-  const records: HookTableRecord[] = [];
-  const drop = new Array<boolean>(lines.length).fill(false);
-  const isHeader = (line: string) => /^\[/.test(line.trim());
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i]!.trim();
-    const tableMatch = /^\[\[\s*hooks\.(enter|leave)\s*\]\]$/.exec(trimmed);
-    if (tableMatch) {
-      const kind = tableMatch[1] as "enter" | "leave";
-      const bucket = kind === "enter" ? enter : leave;
-      let recordScript: string | undefined;
-      let j = i + 1;
-      // TOML array-of-table bodies extend to the next table header. Blank lines
-      // and comments are part of the current table and must never terminate the
-      // range (PJAN-57: the old heuristic orphaned script under [env]).
-      for (; j < lines.length && !isHeader(lines[j]!); j++) {
-        // A managed-section marker starts a new logical region even though it
-        // is a TOML comment rather than a table header.
-        if (lines[j]!.trim().startsWith("# >>> mise-versioning >>>")) break;
-        // `run` is the spawned-command key; `script` is its pre-2026.7.8
-        // spelling (PJAN-135: mise deprecates it and removes it in 2027.3.0),
-        // still read here so a legacy table is recognized by its owner.
-        const scriptMatch = /^\s*(?:run|script)\s*=\s*(.+)$/.exec(lines[j]!);
-        if (scriptMatch) {
-          const value = extractTomlStrings(scriptMatch[1]!)[0];
-          if (value !== undefined) {
-            recordScript = value;
-            bucket.push(value);
-          }
-        }
-      }
-      for (let k = i; k < j; k++) drop[k] = true;
-      records.push({ kind, script: recordScript, raw: lines.slice(i, j).join("\n").replace(/\n+$/, "") });
-      i = j - 1;
-      continue;
-    }
-    if (trimmed === "[hooks]") {
-      let j = i + 1;
-      let lastDrop = i; // last line index that is part of the [hooks] table proper
-      while (j < lines.length && !isHeader(lines[j]!)) {
-        const keyMatch = /^\s*(enter|leave)\s*=/.exec(lines[j]!);
-        if (keyMatch) {
-          const bucket = keyMatch[1] === "enter" ? enter : leave;
-          const end = tomlValueSpanEnd(lines, j, lines.length);
-          // Full-line comments are dropped before extraction: the explanatory
-          // comment above the op-inject hook quotes the truncating forms
-          // verbatim, and must not be read back as a hook value (PJAN-24).
-          const chunk = lines.slice(j, end).filter((line) => !/^\s*#/.test(line)).join("\n");
-          for (const value of extractTomlStrings(chunk)) {
-            bucket.push(value);
-            records.push({ kind: keyMatch[1] as "enter" | "leave", script: value, raw: renderHookTables([value], keyMatch[1] as "enter" | "leave")[0]! });
-          }
-          lastDrop = end - 1;
-          j = end;
-        } else if (/^\s*\]\s*$/.test(lines[j]!)) {
-          // Orphan bare-`]` left by a prior buggy run that duplicated the array
-          // close — absorb it (self-heal) rather than leaking invalid TOML.
-          lastDrop = j;
-          j++;
-        } else {
-          j++;
-        }
-      }
-      // Drop the header through the last key value only; keep trailing
-      // comment/blank lines that belong to the following section.
-      for (let k = i; k <= lastDrop; k++) drop[k] = true;
-      i = j - 1;
-      continue;
-    }
-  }
-
-  const kept = lines
-    .filter((_, idx) => !drop[idx])
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/\n+$/, "\n");
-  return { text: kept, enter, leave, records };
-}
-
-
-/**
- * A hook command line outside `[[hooks.enter]]`. `script =` is never a key of
- * anything but a hook, so anywhere else it is an orphan (PJAN-57). `run =` is
- * also every TASK's command, so it only counts inside another hook table.
- */
-function strayHookCommand(line: string, table: string): string | undefined {
-  const match = /^\s*(script|run)\s*=\s*(.+)$/.exec(line);
-  if (!match || table === "hooks.enter") return undefined;
-  if (match[1] === "run" && !table.startsWith("hooks.")) return undefined;
-  return extractTomlStrings(match[2]!)[0];
-}
-
-
-function ownedOpInjectScriptsOutsideEnter(text: string): Array<{ line: number; value: string }> {
-  const findings: Array<{ line: number; value: string }> = [];
-  let table = "";
-  for (const [index, line] of text.split("\n").entries()) {
-    const header = /^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      table = header[1]!.replace(/[\[\]\s]/g, "");
-      continue;
-    }
-    const value = strayHookCommand(line, table);
-    if (value !== undefined && isOpInjectHookEntry(value)) findings.push({ line: index + 1, value });
-  }
-  return findings;
-}
-
-
-function removeOwnedOpInjectScriptsOutsideEnter(text: string): string {
-  let table = "";
-  return text.split("\n").filter((line) => {
-    const header = /^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      table = header[1]!.replace(/[\[\]\s]/g, "");
-      return true;
-    }
-    const value = strayHookCommand(line, table);
-    return value === undefined || !isOpInjectHookEntry(value);
-  }).join("\n");
-}
-
-
-/**
- * PJAN-135: a spawned hook command is `run`. mise 2026.7.8 deprecated the
- * `script`/`scripts` spelling ("hook tables using `script` or `scripts` for
- * spawned commands are deprecated. Use `run` instead") and 2027.3.0 removes it.
- * Measured on mise 2026.9.12: `run` fires on directory entry and leave with the
- * same cwd, the same {{config_root}} expansion and the same `sh -o errexit -c`
- * command line, and prints no warning. mise older than 2026.5.6 cannot parse a
- * `run` hook table at all.
- */
-function renderHookTables(scripts: readonly string[], kind: "enter" | "leave"): string[] {
-  return scripts.map((script) => `[[hooks.${kind}]]\nrun = ${JSON.stringify(script)}`);
-}
-
-
-interface LegacyHookScriptKey {
-  /** 0-based line of the `script`/`scripts` key. */
-  line: number;
-  /** Exclusive end line of its value. */
-  end: number;
-  table: string;
-}
-
-
-/**
- * Every hook table (any `[[hooks.<kind>]]` / `[hooks.<kind>]`, managed or not)
- * that spells its spawned command `script` or `scripts`. A table with a
- * `shell` key is excluded: that `script` is sourced into the operator's shell,
- * is NOT deprecated, and `run` there would execute the text as a file path.
- */
-function legacyHookScriptKeys(text: string): LegacyHookScriptKey[] {
-  const lines = text.split("\n");
-  const found: LegacyHookScriptKey[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const header = /^\s*(\[\[?\s*hooks\.[A-Za-z_]+\s*\]\]?)\s*(?:#.*)?$/.exec(lines[i]!);
-    if (!header) continue;
-    const table = header[1]!.replace(/[\[\]\s]/g, "");
-    const keys: LegacyHookScriptKey[] = [];
-    let shell = false;
-    let j = i + 1;
-    for (; j < lines.length && !/^\s*\[/.test(lines[j]!); j++) {
-      if (/^\s*shell\s*=/.test(lines[j]!)) shell = true;
-      if (/^\s*scripts?\s*=/.test(lines[j]!)) {
-        const end = tomlValueSpanEnd(lines, j, lines.length);
-        keys.push({ line: j, end, table });
-        j = end - 1;
-      }
-    }
-    if (!shell) found.push(...keys);
-    i = j - 1;
-  }
-  return found;
-}
-
-
-function legacyHookScriptIssues(text: string): string[] {
-  const keys = legacyHookScriptKeys(text);
-  if (!keys.length) return [];
-  return [`${keys.length} hook table(s) spell the spawned command \`script\`/\`scripts\` (line(s) ${keys.map((key) => key.line + 1).join(", ")}); ` +
-    "mise deprecated it and removes it in 2027.3.0, rename it to `run`"];
-}
-
-
-/**
- * Rename every legacy hook command key to `run`, semantics preserved: a
- * single string is a pure key rename (quoting and trailing comment kept); an
- * array is joined with newlines, which is exactly what mise ran for it (one
- * `sh -o errexit -c "a\nb"`, measured). A rewrite that would not parse (a table
- * already holding `run`, say) is left alone for the operator.
- */
-function renameLegacyHookScripts(text: string): string {
-  const keys = legacyHookScriptKeys(text);
-  if (!keys.length) return text;
-  const parses = (candidate: string) => { try { parseToml(candidate); return true; } catch { return false; } };
-  const guarded = parses(text);
-  let lines = text.split("\n");
-  // Bottom-up, so an array collapsing to one line never shifts a key above it.
-  for (const key of [...keys].reverse()) {
-    const first = lines[key.line]!;
-    const value = first.replace(/^\s*scripts?\s*=\s*/, "");
-    const next = [...lines];
-    if (!value.startsWith("[")) {
-      next[key.line] = first.replace(/^(\s*)scripts?(\s*=)/, "$1run$2");
-    } else {
-      const body = lines.slice(key.line, key.end).filter((line) => !/^\s*#/.test(line)).join("\n")
-        .replace(/^\s*scripts?\s*=\s*/, "");
-      const indent = /^\s*/.exec(first)![0];
-      next.splice(key.line, key.end - key.line, `${indent}run = ${JSON.stringify(extractTomlStrings(body).join("\n"))}`);
-    }
-    if (guarded && !parses(next.join("\n"))) continue;
-    lines = next;
-  }
-  return lines.join("\n");
-}
-
-
-function dedupePreserve(scripts: string[]): string[] {
-  const out: string[] = [];
-  for (const script of scripts) {
-    if (script && !out.includes(script)) out.push(script);
-  }
-  return out;
-}
-
-
-function isMiseCoreHookEntry(value: string): boolean {
-  const trimmed = value.trim();
-  if (isOpInjectHookEntry(trimmed)) return false;
-  return trimmed === SYNC_SKILLS_SCRIPT
-    || trimmed === PROVISION_PACKS_SCRIPT
-    || trimmed === LEGACY_PROVISION_BMAD_SKILLS_SCRIPT
-    || /sync-skills(?:\.py)?["']?\s+--scope project/.test(trimmed)
-    || /provision-(?:packs|bmad-skills)\.py/.test(trimmed)
-    // PJAN-82: tolerate a trailing argument list.
-    //
-    // These patterns decide which existing hook records this owner REPLACES.
-    // They were anchored to end-of-string right after the script filename, so
-    // the moment the canonical form gained an explicit `'{{config_root}}'`
-    // subject argument the owner stopped recognizing its OWN output: every
-    // `pj migrate mise.config-root` found nothing it owned, prepended the
-    // canonical block again, and left the previous copy in place as a foreign
-    // record. Three runs produced three link-agentfiles enter hooks while
-    // `pj audit` reported "mise AGENTS-linking parity verified".
-    || /link-(?:project-skills-to-clis|agentfiles)\.sh'?(?:\s+\S.*)?$/.test(trimmed)
-    || /unlink-project-skills-from-clis\.sh'?(?:\s+\S.*)?$/.test(trimmed);
-}
-
-
-function reconcileHookOwner(
-  text: string,
-  owns: (record: HookTableRecord) => boolean,
-  canonicalScripts: readonly string[],
-  header = "",
-): string {
-  const { text: stripped, records } = stripHookBlocks(text);
-  const canonicalRecords = renderHookTables(canonicalScripts, "enter");
-  const output: string[] = [];
-  let inserted = false;
-  for (const record of records) {
-    if (owns(record)) {
-      if (!inserted) {
-        output.push(...canonicalRecords);
-        inserted = true;
-      }
-      continue;
-    }
-    output.push(record.raw);
-  }
-  if (!inserted) output.unshift(...canonicalRecords);
-
-  const effectiveHeader = header || (stripped.includes(HOOKS_COMMENT_HEADER) ? HOOKS_COMMENT_HEADER : "");
-  const withoutManagedHeader = effectiveHeader
-    ? stripped.replace(HOOKS_COMMENT_HEADER, "").replace(/\n{3,}/g, "\n\n")
-    : stripped;
-  const block = [effectiveHeader, ...output].filter(Boolean).join("\n");
-  return insertHookBlock(withoutManagedHeader, block);
-}
-
-
-function upsertLinkAgentfilesHooks(text: string): string {
-  return reconcileHookOwner(
-    text,
-    (record) => Boolean(record.script && (isMiseCoreHookEntry(record.script)
-      || /(?:skillex\s+sync|mise\s+(?:run\s+)?skills[:\-]sync)/.test(record.script))),
-    LINK_AGENTFILES_HOOK_ENTRIES,
-    HOOKS_COMMENT_HEADER,
-  );
-}
-
-
-function upsertOpInjectHook(text: string): string {
-  const withoutStrays = removeOwnedOpInjectScriptsOutsideEnter(text);
-  return reconcileHookOwner(
-    withoutStrays,
-    (record) => record.kind === "enter" && Boolean(record.script && isOpInjectHookEntry(record.script)),
-    [OP_INJECT_SCRIPT],
-  );
-}
-
 
 /**
  * PJAN-61: rewrite retired dash-era mise task names to their colon form in
@@ -1214,45 +756,6 @@ function upsertOpInjectHook(text: string): string {
  * same three syntactic positions `renameRetiredMiseTasks` rewrites. Anything
  * this reports is fixable by that function, so audit and migrate never disagree.
  */
-/**
- * PJAN-84: a hook must name its SUBJECT, not just the script to run.
- *
- * `{{config_root}}` in a hook string locates the FILE. Nothing located the
- * file's subject, and a mise enter hook runs with cwd set to the directory the
- * operator cd'd into — including for a PARENT config's hook — so a script that
- * read its subject from cwd reshaped whichever nested repo you entered. That is
- * how 33GOD's copies of provision-packs.py and sync-skills.py came to rewrite
- * `pjangler/.agents/skills.json` and plant dangling links in seven siblings.
- *
- * The check that was here verified only that the hook string CONTAINED
- * `'{{config_root}}/.mise/scripts/link-agentfiles.sh'`, which the subject-bearing
- * form also contains — so it passed on both, and never looked at the two python
- * hooks at all. Every cwd hazard PJAN-82 fixed sat under a green audit the whole
- * time.
- */
-const MANAGED_HOOK_SUBJECTS: ReadonlyArray<{ name: string; marker: string; subject: RegExp }> = [
-  { name: "link-agentfiles.sh", marker: "link-agentfiles.sh", subject: /link-agentfiles\.sh'?\s+'?\{\{config_root\}\}'?/u },
-];
-
-
-function managedHookSubjectIssues(text: string): string[] {
-  const issues: string[] = [];
-  for (const record of stripHookBlocks(text).records) {
-    if (record.kind !== "enter") continue;
-    const script = record.script?.trim();
-    if (!script) continue;
-    for (const managed of MANAGED_HOOK_SUBJECTS) {
-      if (!script.includes(managed.marker)) continue;
-      if (managed.subject.test(script)) continue;
-      issues.push(
-        `hooks.enter runs ${managed.name} without handing it {{config_root}} as its subject; ` +
-        "an enter hook's cwd is the directory you cd'd into, so it would act on that repo instead"
-      );
-    }
-  }
-  return issues;
-}
-
 
 function retiredTaskNameIssues(text: string): string[] {
   const issues: string[] = [];
@@ -1287,29 +790,532 @@ export function renameRetiredMiseTasks(text: string): string {
 }
 
 
-function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
-  const withPath = upsertMisePath(renameRetiredMiseTasks(renameLegacyHookScripts(text)), requiredMisePathEntries(ctx));
-  // Remove stale AGENTS-linking pieces before appending the canonical block.
-  // Both the colon and the retired dash header forms are matched so a
-  // half-migrated file can never end up holding two copies of the same task.
-  let cleaned = removeTomlSection(withPath, taskHeaderPattern(LINK_AGENTFILES_TASK), /link-agentfiles/, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-agentfiles\]$/, /link-agentfiles/, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, taskHeaderPattern(SKILLS_SYNC_TASK), undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-sync\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, taskHeaderPattern(PROVISION_PACKS_TASK), undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-packs\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-provision-bmad\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.link-project-skills-to-clis\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.unlink-project-skills-from-clis\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[tasks\.skills-relink\]$/, undefined, { includePrecedingComments: false });
-  cleaned = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /AGENTS\.md/, { includePrecedingComments: false });
-  for (;;) {
-    const next = removeTomlSection(cleaned, /^\[\[watch_files\]\]$/, /\.agents\/skills\.json|skills[:\-]sync/, { includePrecedingComments: false });
-    if (next === cleaned) break;
-    cleaned = next;
+// ---------------------------------------------------------------------------
+// PJAN-135: every mise.toml rewrite is structural and parse-verified.
+//
+// The hook rewrite that lived here scraped mise.toml with line regexes. The
+// adversarial review reproduced what that did on real mise 2026.9.12: a quoted
+// `rm -f` inside a `# ...` comment of a legacy `scripts` array became a hook
+// command and ran on leave; an apostrophe in such a comment fused two commands
+// into `t remove, codegen needs it`; `[hooks.enter]` shell tables, `[hooks]`
+// postinstall/cd keys, multi-line strings and inline-table arrays were torn
+// apart; a stray materializer removal left an empty `[[hooks.cd]]` mise refuses
+// to load; a retired writer claimed the operator's commands joined into the
+// same hook. Each was written to disk as `applied` and re-audited `pass`.
+//
+// The mechanics now live in ./mise-toml.ts. Here each owner only states which
+// commands it claims, and every rewrite ends in `checkRewrite`: the result must
+// parse and mean exactly the original plus the owner's intended changes, or
+// nothing is written and the rule says why.
+// ---------------------------------------------------------------------------
+
+/** Executables of the retired Python/shell skill writers (PJAN-128). */
+const RETIRED_SKILL_EXECUTABLES = new Set([
+  "sync-skills.py", "sync-skills", "provision-packs.py", "provision-bmad-skills.py",
+  "link-project-skills-to-clis.sh", "unlink-project-skills-from-clis.sh",
+]);
+
+/** Skill-sync and retired provision task names, in either namespace spelling. */
+const SKILL_TASK_NAME = /^skills[:\-](?:sync|provision(?:[:\-](?:packs|bmad))?)$/;
+
+/** A retired writer or an automatic skill sync mentioned ANYWHERE in a command. */
+const SKILL_WRITER_MENTION = /sync-skills|provision-(?:packs|bmad-skills)\.py|skills[:\-]provision|link-project-skills-to-clis\.sh|unlink-project-skills-from-clis\.sh|skillex\s+sync|skills[:\-]sync/;
+
+/** A watch that re-syncs skills automatically (PJAN-128: sync is explicit). */
+const SKILLS_WATCH = /skills\.json|skills[:\-]sync|sync-skills/;
+
+/**
+ * The words of `command` when it is ONE simple command (quotes removed), or
+ * null when it has shell structure: a newline, `;`, `&`, `|`, a redirect, a
+ * subshell or a substitution. Only a simple command is ever claimed whole;
+ * claiming a compound one deletes the operator's other commands with it.
+ */
+function simpleCommandWords(command: string): string[] | null {
+  const words: string[] = [];
+  const text = command.trim();
+  let word = "";
+  let started = false;
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (quote === '"' && (ch === "`" || (ch === "$" && text[index + 1] === "("))) return null;
+      else if (quote === '"' && ch === "\\") word += text[++index] ?? "";
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+    } else if (ch === "\\") {
+      word += text[++index] ?? "";
+      started = true;
+    } else if (/[\n;&|<>`()]/.test(ch) || (ch === "$" && text[index + 1] === "(") || (ch === "#" && !started)) {
+      return null;
+    } else if (ch === " " || ch === "\t") {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+    } else {
+      word += ch;
+      started = true;
+    }
   }
-  cleaned = upsertLinkAgentfilesHooks(cleaned);
-  return insertTomlBlockBeforeVersioning(cleaned, LINK_AGENTFILES_WATCH_TASK_BLOCK);
+  if (quote) return null;
+  if (started) words.push(word);
+  return words.length ? words : null;
+}
+
+const commandName = (word: string | undefined): string => (word ?? "").split("/").pop() ?? "";
+
+/** The command runs a retired skill writer, or an automatic skill sync, and nothing else. */
+function isRetiredSkillCommand(command: string): boolean {
+  const words = simpleCommandWords(command);
+  if (!words) return false;
+  const executable = /^python3?$/.test(commandName(words[0])) ? words[1] : words[0];
+  if (RETIRED_SKILL_EXECUTABLES.has(commandName(executable))) return true;
+  if (words[0] === "skillex" && words[1] === "sync") return true;
+  if (words[0] !== "mise") return false;
+  const task = words[1] === "run" || words[1] === "r" ? words[2] : words[1];
+  return Boolean(task && SKILL_TASK_NAME.test(task));
+}
+
+/** The command is the managed link-agentfiles.sh, in any quoting, with any arguments, and nothing else. */
+function isManagedLinkCommand(command: string): boolean {
+  const words = simpleCommandWords(command);
+  return Boolean(words && commandName(words[0]) === "link-agentfiles.sh");
+}
+
+/**
+ * mise.config-root (and skills.project-manifest, which shares its rewrite):
+ * owns the retired skill writers and automatic skill syncs in ANY hook kind
+ * (the audit reports them in any kind, so migrate removes them in any kind),
+ * and the managed link-agentfiles hook on enter/leave, which it installs once.
+ */
+const LINK_HOOK_POLICY: HookOwnerPolicy = {
+  name: "mise.config-root",
+  owns: (command, kind) => isRetiredSkillCommand(command)
+    || ((kind === "enter" || kind === "leave") && isManagedLinkCommand(command)),
+  ownsTask: (task) => SKILL_TASK_NAME.test(task),
+  mixed: (command, kind) => {
+    if (SKILL_WRITER_MENTION.test(command)) {
+      return "it runs a retired skill writer or skill sync inside a larger command; migrate never splits a command, so remove that part by hand";
+    }
+    if ((kind === "enter" || kind === "leave") && /link-agentfiles\.sh/.test(command)) {
+      return "it runs link-agentfiles.sh inside a larger command, so migrate does not add the managed hook beside it (it would run twice); make it the plain managed command by hand";
+    }
+    return undefined;
+  },
+  blocksCanonical: (command) => /link-agentfiles\.sh/.test(command) && !isManagedLinkCommand(command),
+  canonical: LINK_AGENTFILES_SCRIPT,
+  renameLegacy: true,
+  header: HOOKS_COMMENT_HEADER,
+};
+
+/**
+ * secrets.env-op: owns every hook that materializes `.env` itself (see
+ * isOpInjectHookEntry), in any kind. On enter the first one becomes the managed
+ * materializer; anywhere else it is removed, as a whole hook.
+ */
+const OP_HOOK_POLICY: HookOwnerPolicy = {
+  name: "secrets.env-op",
+  owns: (command) => isOpInjectHookEntry(command),
+  canonical: OP_INJECT_SCRIPT,
+  renameLegacy: false,
+};
+
+function manualHookLine(entry: HookManual): string {
+  return `hooks.${entry.kind} runs \`${shortCommand(entry.command)}\`: ${entry.reason}`;
+}
+
+function parsedOrUndefined(text: string | null): TomlTable | undefined {
+  if (text === null) return undefined;
+  try { return parseToml(text) as TomlTable; } catch { return undefined; }
+}
+
+/** Every hook table (or `[hooks]` key) still spelling its spawned command `script`/`scripts`. */
+function legacyHookScriptIssues(text: string): string[] {
+  let inventory: HookInventory;
+  try { inventory = hookInventory(text); } catch { return []; }
+  const lines: number[] = [];
+  for (const units of inventory.byKind.values()) {
+    for (const unit of units) {
+      if (!isTable(unit.value) || hookCommands(unit.value).shell) continue;
+      if (unit.value.script === undefined && unit.value.scripts === undefined) continue;
+      const key = unit.form === "aot" || unit.form === "table"
+        ? tableBody(inventory.statements, unit.statement).find((statement) => statement.path.length === 1 && /^scripts?$/.test(statement.path[0]!))
+        : undefined;
+      const line = (key ?? inventory.statements[unit.statement]!).start + 1;
+      if (!lines.includes(line)) lines.push(line);
+    }
+  }
+  if (!lines.length) return [];
+  return [`${lines.length} hook table(s) spell the spawned command \`script\`/\`scripts\` (line(s) ${lines.sort((a, b) => a - b).join(", ")}); ` +
+    "mise deprecated it and removes it in 2027.3.0, rename it to `run`"];
+}
+
+/**
+ * PJAN-84 / PJAN-82: the managed enter hook must be exactly the canonical,
+ * subject-bearing command, once. `{{config_root}}` in a hook locates the FILE;
+ * an enter hook's cwd is the directory the operator cd'd into (including for a
+ * PARENT config's hook), so a script that reads its subject from cwd reshapes
+ * whichever nested repo you entered. That is how 33GOD's copies of
+ * provision-packs.py and sync-skills.py rewrote pjangler/.agents/skills.json.
+ */
+function managedLinkHookIssues(parsed: TomlTable): string[] {
+  const decisions = decideHookDefs(parsed.hooks, LINK_HOOK_POLICY);
+  const issues: string[] = [];
+  for (const claim of decisions.claimed) {
+    if (!isManagedLinkCommand(claim.command) || claim.command.trim() === LINK_AGENTFILES_SCRIPT) continue;
+    if (claim.kind === "enter" && !/link-agentfiles\.sh'?\s+'?\{\{config_root\}\}'?/u.test(claim.command)) {
+      issues.push("hooks.enter runs link-agentfiles.sh without handing it {{config_root}} as its subject; " +
+        "an enter hook's cwd is the directory you cd'd into, so it would act on that repo instead");
+    } else {
+      issues.push(`hooks.${claim.kind} runs \`${shortCommand(claim.command)}\`, not the managed \`${LINK_AGENTFILES_SCRIPT}\` on enter`);
+    }
+  }
+  const blocked = decisions.manual.some((entry) => entry.kind === "enter" && /link-agentfiles\.sh/.test(entry.command));
+  if (!blocked && decisions.canonicalCount === 0 && !issues.some((issue) => issue.startsWith("hooks.enter "))) {
+    issues.push(`hooks.enter must run the managed \`${LINK_AGENTFILES_SCRIPT}\` (single-quoted {{config_root}} guard)`);
+  }
+  if (decisions.canonicalCount > 1) issues.push(`hooks.enter runs the managed link-agentfiles hook ${decisions.canonicalCount} times`);
+  return [...new Set(issues)];
+}
+
+// ---- managed task / watch tables ------------------------------------------
+
+/** Retired task names the AGENTS-linking owner deletes (after the colon renames). */
+const RETIRED_LINK_TASKS = ["skills-sync", "skills-provision-packs", PROVISION_PACKS_TASK, "skills-provision-bmad",
+  "link-project-skills-to-clis", "unlink-project-skills-from-clis", "skills-relink", "link-agentfiles"];
+
+interface ManagedTable { lines: string[]; value: TomlTable }
+
+function managedLinkTables(): { watch: ManagedTable; link: ManagedTable; sync: ManagedTable } {
+  const chunks = LINK_AGENTFILES_WATCH_TASK_BLOCK.split(/\n\s*\n/).map((chunk) => chunk.split("\n"));
+  const parsed = parseToml(LINK_AGENTFILES_WATCH_TASK_BLOCK) as { watch_files: TomlTable[]; tasks: Record<string, TomlTable> };
+  return {
+    watch: { lines: chunks[0]!, value: parsed.watch_files[0]! },
+    link: { lines: chunks[1]!, value: parsed.tasks[LINK_AGENTFILES_TASK]! },
+    sync: { lines: chunks[2]!, value: parsed.tasks[SKILLS_SYNC_TASK]! },
+  };
+}
+
+/** The first watch that dispatches the managed link task; later exact copies of the managed watch. */
+function managedWatchPlan(watches: readonly unknown[]): { managed: number; duplicates: number[]; skills: number[] } {
+  const canonical = managedLinkTables().watch.value;
+  const isManaged = (watch: unknown) => isTable(watch)
+    && (watch.task === LINK_AGENTFILES_TASK || /link-agentfiles/.test(canonicalJson(watch.run ?? "")));
+  const managed = watches.findIndex(isManaged);
+  const duplicates: number[] = [];
+  const skills: number[] = [];
+  watches.forEach((watch, index) => {
+    if (index === managed) return;
+    if (managed >= 0 && isDeepStrictEqualLoose(watch, canonical)) duplicates.push(index);
+    else if (SKILLS_WATCH.test(canonicalJson(watch))) skills.push(index);
+  });
+  return { managed, duplicates, skills };
+}
+
+/**
+ * The managed watch and the two managed tasks: kept in place when already
+ * canonical, replaced in place when not, added before the versioning block (or
+ * at the end) when missing. Retired tasks and skill watches are removed. A
+ * managed name written any other way, or an operator's own task under the
+ * managed name, is refused rather than duplicated.
+ */
+function reconcileManagedLinkTables(text: string): { text: string; refused?: string } {
+  const statements = scanToml(text);
+  const lines = text.split("\n");
+  const parsed = parseToml(text) as TomlTable;
+  const managed = managedLinkTables();
+  const edits: LineEdit[] = [];
+  const taskHeaders = new Map<string, number>();
+  const taskSubTables = new Set<string>();
+  statements.forEach((statement, index) => {
+    if (statement.type !== "header" || statement.path[0] !== "tasks" || statement.path.length < 2) return;
+    const name = statement.path[1]!;
+    if (statement.path.length === 2 && !statement.arrayTable) taskHeaders.set(name, index);
+    else taskSubTables.add(name);
+  });
+  const managedNames = [LINK_AGENTFILES_TASK, SKILLS_SYNC_TASK, ...RETIRED_LINK_TASKS];
+  const tasks = isTable(parsed.tasks) ? parsed.tasks : {};
+  for (const name of managedNames) {
+    if (tasks[name] === undefined) continue;
+    if (!taskHeaders.has(name) || taskSubTables.has(name)) {
+      return { text, refused: `tasks.${name} is not written as one [tasks."${name}"] table; change it by hand` };
+    }
+  }
+  const found = new Set<string>();
+  for (const [name, index] of taskHeaders) {
+    if (!managedNames.includes(name)) continue;
+    const span = tableSpan(statements, index);
+    if (RETIRED_LINK_TASKS.includes(name)) {
+      edits.push({ start: span.start, end: span.end, lines: [] });
+      continue;
+    }
+    const table = name === LINK_AGENTFILES_TASK ? managed.link : managed.sync;
+    found.add(name);
+    if (isDeepStrictEqualLoose(parseBody(lines, statements, index), table.value)) continue;
+    if (name === LINK_AGENTFILES_TASK && !lines.slice(span.start, span.end).join("\n").includes("link-agentfiles")) {
+      return { text, refused: `tasks."${LINK_AGENTFILES_TASK}" is the operator's own task (it never runs link-agentfiles.sh); rename it so pjangler can add the managed one` };
+    }
+    edits.push({ start: span.start, end: span.end, lines: table.lines });
+  }
+  const watchHeaders = statements.flatMap((statement, index) =>
+    statement.type === "header" && statement.path.length === 1 && statement.path[0] === "watch_files" && statement.arrayTable ? [index] : []);
+  const watches = Array.isArray(parsed.watch_files) ? parsed.watch_files : [];
+  if (watches.length !== watchHeaders.length) {
+    return { text, refused: "watch_files is not written as [[watch_files]] tables; change it by hand" };
+  }
+  const plan = managedWatchPlan(watches);
+  watchHeaders.forEach((index, position) => {
+    const span = tableSpan(statements, index);
+    if (position === plan.managed) {
+      if (!isDeepStrictEqualLoose(watches[position], managed.watch.value)) edits.push({ start: span.start, end: span.end, lines: managed.watch.lines });
+    } else if (plan.duplicates.includes(position) || plan.skills.includes(position)) {
+      edits.push({ start: span.start, end: span.end, lines: [] });
+    }
+  });
+  const missing = [
+    ...(plan.managed >= 0 ? [] : [managed.watch.lines]),
+    ...(found.has(LINK_AGENTFILES_TASK) ? [] : [managed.link.lines]),
+    ...(found.has(SKILLS_SYNC_TASK) ? [] : [managed.sync.lines]),
+  ];
+  if (missing.length) {
+    const block = missing.flatMap((chunk, index) => (index ? ["", ...chunk] : chunk));
+    const versioning = statements.find((statement) => statement.type === "trivia"
+      && statement.comments.some((comment) => comment.startsWith("# >>> mise-versioning >>>")));
+    if (versioning) {
+      edits.push({ start: versioning.start, end: versioning.start, lines: ["", ...block, ""] });
+    } else if (lines[lines.length - 1] === "") {
+      edits.push({ start: lines.length - 1, end: lines.length - 1, lines: ["", ...block] });
+    } else {
+      edits.push({ start: lines.length, end: lines.length, lines: ["", ...block, ""] });
+    }
+  }
+  return { text: applyLineEdits(text, edits) };
+}
+
+/**
+ * `[env]._.path` gains the required entries, appended in order. PJAN-135: the
+ * old regex swallowed the newline after the path line when a blank line
+ * followed, so every first migrate deleted that blank line on the NEXT run too
+ * (`applied` twice). An `[env]` created from nothing goes before the first
+ * table, never above root keys (which it would turn into env vars).
+ */
+function upsertMisePathText(text: string, required: readonly string[]): { text: string; refused?: string } {
+  const statements = scanToml(text);
+  const lines = text.split("\n");
+  const parsed = parseToml(text) as TomlTable;
+  const render = (values: readonly string[]) => `_.path = [${values.map((value) => JSON.stringify(value)).join(", ")}]`;
+  if (statements.some((statement) => statement.type === "header" && statement.path[0] === "env" && statement.path.length > 1)) {
+    return { text, refused: "[env] has sub-tables; add the _.path entries by hand" };
+  }
+  const envHeader = statements.findIndex((statement) => statement.type === "header" && !statement.arrayTable
+    && statement.path.length === 1 && statement.path[0] === "env");
+  if (envHeader < 0) {
+    if (parsed.env !== undefined) return { text, refused: "env is not written as an [env] table; add _.path by hand" };
+    const first = statements.findIndex((statement) => statement.type === "header");
+    if (first < 0) {
+      const at = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+      const before = at > 0 && lines[at - 1]!.trim() !== "" ? [""] : [];
+      return { text: applyLineEdits(text, [{ start: at, end: at, lines: [...before, "[env]", render(required), ...(at === lines.length ? [""] : [])] }]) };
+    }
+    let block = first;
+    while (block > 0 && statements[block - 1]!.type === "trivia" && statements[block - 1]!.comments.length) block--;
+    const at = statements[block]!.start;
+    const before = at > 0 && lines[at - 1]!.trim() !== "" ? [""] : [];
+    return { text: applyLineEdits(text, [{ start: at, end: at, lines: [...before, "[env]", render(required), ""] }]) };
+  }
+  const body = tableBody(statements, envHeader);
+  const pathStatement = body.find((statement) => statement.path.length === 2 && statement.path[0] === "_" && statement.path[1] === "path");
+  if (!pathStatement) {
+    if (body.some((statement) => statement.path[0] === "_" && statement.path.length === 1)) {
+      return { text, refused: "[env] sets `_` as one value; add the _.path entries by hand" };
+    }
+    const at = body.length ? body[body.length - 1]!.end : statements[envHeader]!.end;
+    return { text: applyLineEdits(text, [{ start: at, end: at, lines: [render(required)] }]) };
+  }
+  const value = parseValue(pathStatement.valueText);
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    return { text, refused: `[env]._.path is not a list of paths; add ${required.join(", ")} by hand` };
+  }
+  const missing = required.filter((entry) => !value.includes(entry));
+  if (!missing.length) return { text };
+  const indent = /^\s*/.exec(lines[pathStatement.start]!)![0];
+  const rendered = `${indent}${render([...value, ...missing])}`;
+  const replacement = pathStatement.end - pathStatement.start === 1 && pathStatement.comments.length === 1
+    ? [`${rendered}  ${pathStatement.comments[0]!.trim()}`]
+    : [...pathStatement.comments.map((comment) => `${indent}${comment.trim()}`), rendered];
+  return { text: applyLineEdits(text, [{ start: pathStatement.start, end: pathStatement.end, lines: replacement }]) };
+}
+
+// ---- intended meaning of each owner's rewrite (the guard's expectation) ----
+
+/** PJAN-61's text renames, applied to parsed values: what `renameRetiredMiseTasks` means. */
+function renameRetiredModel(model: TomlTable): TomlTable {
+  const renames = new Map(RETIRED_TASK_RENAMES);
+  const invocation = (value: string) => RETIRED_TASK_RENAMES.reduce((out, [oldName, newName]) =>
+    out.replace(new RegExp(`\\bmise run ${oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), `mise run ${newName}`), value);
+  const walk = (value: unknown, key?: string): unknown => {
+    if (typeof value === "string") return key === "task" && renames.has(value) ? renames.get(value) : invocation(value);
+    if (Array.isArray(value)) {
+      return value.map((entry) => (key === "depends" && typeof entry === "string" && renames.has(entry) ? renames.get(entry) : walk(entry)));
+    }
+    if (isTable(value)) return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, walk(entry, name)]));
+    return value;
+  };
+  const out = walk(model) as TomlTable;
+  if (isTable(out.tasks)) out.tasks = Object.fromEntries(Object.entries(out.tasks).map(([name, task]) => [renames.get(name) ?? name, task]));
+  return out;
+}
+
+/** What mise.config-root's rewrite must mean: the original plus exactly its intended changes. */
+function expectedLinkModel(base: TomlTable, required: readonly string[]): TomlTable {
+  const model = renameRetiredModel(deepClone(base));
+  model.hooks = decideHookDefs(model.hooks, LINK_HOOK_POLICY).expected;
+  const env = isTable(model.env) ? model.env : (model.env = {});
+  const underscore = isTable(env._) ? env._ : (env._ = {});
+  const current = Array.isArray(underscore.path) ? underscore.path as unknown[] : [];
+  underscore.path = [...current, ...required.filter((entry) => !current.includes(entry))];
+  const managed = managedLinkTables();
+  const tasks = isTable(model.tasks) ? model.tasks : (model.tasks = {});
+  for (const name of RETIRED_LINK_TASKS) delete tasks[name];
+  tasks[LINK_AGENTFILES_TASK] = deepClone(managed.link.value);
+  tasks[SKILLS_SYNC_TASK] = deepClone(managed.sync.value);
+  const watches = Array.isArray(model.watch_files) ? model.watch_files as unknown[] : [];
+  const plan = managedWatchPlan(watches);
+  model.watch_files = [
+    ...watches.filter((_, index) => index !== plan.managed && !plan.duplicates.includes(index) && !plan.skills.includes(index)),
+    deepClone(managed.watch.value),
+  ];
+  return model;
+}
+
+/** What secrets.env-op's rewrite must mean. */
+function expectedOpModel(base: TomlTable): TomlTable {
+  const model = deepClone(base);
+  // PJAN-57: a `script = "op inject … > .env"` outside the hook tables is an
+  // orphan an earlier rewrite left behind; it is removed.
+  const strip = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(strip);
+    if (!isTable(value)) return;
+    if (typeof value.script === "string" && isOpInjectHookEntry(value.script)) delete value.script;
+    Object.values(value).forEach(strip);
+  };
+  for (const [key, value] of Object.entries(model)) if (key !== "hooks") strip(value);
+  if (typeof model.script === "string" && isOpInjectHookEntry(model.script)) delete model.script;
+  model.hooks = decideHookDefs(base.hooks, OP_HOOK_POLICY).expected;
+  return model;
+}
+
+/** The orphan `script = "op inject …"` lines outside hook tables. */
+function strayOpInjectScriptStatements(statements: readonly TomlStatement[]): TomlStatement[] {
+  return statements.filter((statement) => {
+    if (statement.type !== "kv" || statement.path.length !== 1 || statement.path[0] !== "script") return false;
+    if (statement.table >= 0 && statements[statement.table]!.path[0] === "hooks") return false;
+    const value = parseValue(statement.valueText);
+    return typeof value === "string" && isOpInjectHookEntry(value);
+  });
+}
+
+interface MiseTomlPlan {
+  text: string;
+  /** Why mise.toml cannot be rewritten safely; `text` is then the original. */
+  refused?: string;
+  /** Hook commands the owner will not touch: the operator's to change. */
+  manual: HookManual[];
+  /** An earlier pjangler run's duplicate `]` was repaired. */
+  healed: boolean;
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message.split("\n")[0]! : String(error));
+
+/**
+ * Run `pass` until it stops changing the text (at most three times), then hold
+ * the result to `expected`. A migrate is a fixed point by construction: a
+ * second run finds nothing to do, or this refuses.
+ */
+function settleMiseRewrite(
+  original: string,
+  expected: (base: TomlTable) => TomlTable,
+  pass: (text: string) => { text: string; refused?: string; manual: HookManual[] },
+): MiseTomlPlan {
+  const base = parseBaseline(original);
+  if ("refused" in base) return { text: original, refused: base.refused, manual: [], healed: false };
+  let text = base.text;
+  let manual: HookManual[] = [];
+  for (let round = 0; ; round++) {
+    let step: { text: string; refused?: string; manual: HookManual[] };
+    try {
+      step = pass(text);
+    } catch (error) {
+      return { text: original, refused: `mise.toml could not be rewritten (${errorText(error)})`, manual, healed: false };
+    }
+    if (step.refused) return { text: original, refused: step.refused, manual: step.manual, healed: false };
+    manual = step.manual;
+    if (step.text === text) break;
+    if (round === 2) return { text: original, refused: "the rewrite does not settle (a second pass changes it again)", manual, healed: false };
+    text = step.text;
+  }
+  const verdict = checkRewrite(expected(base.parsed), text);
+  if (!verdict.ok) return { text: original, refused: verdict.reason, manual, healed: false };
+  return { text, manual, healed: base.healed };
+}
+
+function planLinkAgentfilesBlock(original: string, ctx: Context): MiseTomlPlan {
+  const required = requiredMisePathEntries(ctx);
+  return settleMiseRewrite(original, (base) => expectedLinkModel(base, required), (text) => {
+    const hooks = rewriteMiseHooks(renameRetiredMiseTasks(text), LINK_HOOK_POLICY);
+    if (hooks.refused) return { text, refused: hooks.refused, manual: hooks.decisions.manual };
+    const path = upsertMisePathText(hooks.text, required);
+    if (path.refused) return { text, refused: path.refused, manual: hooks.decisions.manual };
+    const managed = reconcileManagedLinkTables(path.text);
+    if (managed.refused) return { text, refused: managed.refused, manual: hooks.decisions.manual };
+    return { text: managed.text, manual: hooks.decisions.manual };
+  });
+}
+
+/**
+ * The AGENTS-linking rewrite shared with skills.project-manifest: the planned
+ * text, or the input unchanged when it cannot be made safely (mise.config-root
+ * reports why).
+ */
+function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
+  const plan = planLinkAgentfilesBlock(text, ctx);
+  return plan.refused ? text : plan.text;
+}
+
+function planOpInjectHook(original: string): MiseTomlPlan {
+  return settleMiseRewrite(original, expectedOpModel, (text) => {
+    const statements = scanToml(text);
+    const withoutStrays = applyLineEdits(text, strayOpInjectScriptStatements(statements)
+      .map((statement) => ({ start: statement.start, end: statement.end, lines: [] })));
+    const hooks = rewriteMiseHooks(withoutStrays, OP_HOOK_POLICY);
+    return hooks.refused ? { text, refused: hooks.refused, manual: [] } : { text: hooks.text, manual: [] };
+  });
+}
+
+/**
+ * The guard on its own, for one owner's hook rewrite: does `next` mean exactly
+ * `original` with only that owner's intended hook changes?
+ */
+export function verifyMiseHookRewrite(original: string, next: string, owner: "link" | "op"): RewriteVerdict {
+  const base = parseBaseline(original);
+  if ("refused" in base) return { ok: false, reason: base.refused };
+  const expected = owner === "op"
+    ? expectedOpModel(base.parsed)
+    : { ...base.parsed, hooks: decideHookDefs(base.parsed.hooks, LINK_HOOK_POLICY).expected };
+  return checkRewrite(expected, next);
+}
+
+/** Why a rewrite that no finding explains would still change mise.toml. */
+function describeRewrite(before: string, after: string): string {
+  const was = parsedOrUndefined(before);
+  const will = parsedOrUndefined(after);
+  const difference = was && will ? firstDifference(miseModel(was), miseModel(will)) : undefined;
+  return difference ? `migrate would still rewrite ${difference} in mise.toml` : "migrate would still re-lay out mise.toml (its meaning is unchanged)";
 }
 
 
@@ -2662,27 +2668,55 @@ return [
       const details: string[] = [];
       const linkAgentfilesPath = join(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       if (!existsSync(linkAgentfilesPath)) details.push(".mise/scripts/link-agentfiles.sh missing");
-      const pathValues = [...(text.match(/^_\.path\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-      const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
-      if (missingPathValues.length) details.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
-      if (!text.includes("'{{config_root}}/.mise/scripts/link-agentfiles.sh'")) details.push("link-agentfiles hook must use single-quoted {{config_root}} guard");
-      details.push(...managedHookSubjectIssues(text));
-      details.push(...legacyHookScriptIssues(text));
-      details.push(...optionalTemplateScriptIssues(ctx));
-      if (!text.includes("patterns = [\"AGENTS.md\"]")) details.push("watch_files must monitor AGENTS.md");
-      if (!text.includes(`task = "${LINK_AGENTFILES_TASK}"`)) details.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task`);
-      details.push(...retiredTaskNameIssues(text));
+      // PJAN-135: every mise.toml finding is read from the PARSED file and is
+      // something the planned rewrite changes, so audit and migrate agree.
+      const toml: string[] = [];
+      const manual: string[] = [];
+      const parsed = parsedOrUndefined(text);
+      if (parsed) {
+        const env = isTable(parsed.env) ? parsed.env : {};
+        const underscore = isTable(env._) ? env._ : {};
+        const pathValues = Array.isArray(underscore.path) ? underscore.path as unknown[] : [];
+        const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
+        if (missingPathValues.length) toml.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
+        toml.push(...managedLinkHookIssues(parsed));
+        const managed = managedLinkTables();
+        const watches = Array.isArray(parsed.watch_files) ? parsed.watch_files as unknown[] : [];
+        if (!watches.some((watch) => isDeepStrictEqualLoose(watch, managed.watch.value))) {
+          toml.push(`watch_files must dispatch the ${LINK_AGENTFILES_TASK} task when AGENTS.md changes`);
+        }
+        const tasks = isTable(parsed.tasks) ? parsed.tasks : {};
+        if (!isDeepStrictEqualLoose(tasks[LINK_AGENTFILES_TASK], managed.link.value)) {
+          toml.push(`tasks."${LINK_AGENTFILES_TASK}" must run the managed link-agentfiles.sh`);
+        }
+      }
+      toml.push(...legacyHookScriptIssues(text));
+      toml.push(...retiredTaskNameIssues(text));
       // PJAN-128: this owner already repairs skill hooks/tasks without touching
       // skill content. Select it even when Skillex refuses a foreign CLI root
       // or manifest: entering a repo must not depend on adopting those skills.
-      details.push(...skillsWiringIssues(text));
+      const wiring = skillsWiringFindings(text);
+      toml.push(...wiring.fixable);
+      manual.push(...wiring.manual);
+      const plan = planLinkAgentfilesBlock(text, ctx);
+      for (const line of plan.manual.map(manualHookLine)) if (!manual.includes(line)) manual.push(line);
+      if (plan.refused) {
+        // Nothing in mise.toml is fixable until the refusal's cause is.
+        manual.push(`migrate cannot rewrite mise.toml safely: ${plan.refused}`, ...toml);
+        toml.length = 0;
+      } else if (plan.text !== text && !toml.length) {
+        toml.push(describeRewrite(text, plan.text));
+      }
+      details.push(...toml, ...optionalTemplateScriptIssues(ctx));
+      const all = [...details, ...manual];
       return {
         id: "mise.config-root",
         title: "mise config_root + AGENTS link hooks",
-        status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "mise AGENTS-linking parity verified" : `${details.length} issue(s) detected in mise AGENTS-linking contract`,
-        details,
-        fixable: true,
+        status: all.length === 0 ? "pass" : "fail",
+        summary: all.length === 0 ? "mise AGENTS-linking parity verified" : `${all.length} issue(s) detected in mise AGENTS-linking contract`,
+        details: all,
+        // Only what migrate can change; a hook it will not split is the operator's.
+        fixable: details.length > 0,
       };
     },
     migrate: (ctx, finding) => {
@@ -2699,11 +2733,13 @@ return [
         }
       }
       let text = readText(path);
-      const next = upsertLinkAgentfilesBlock(text, ctx);
-      if (next !== text) {
+      // PJAN-135: the rewrite is parse-verified against the original's meaning;
+      // one that cannot be made safely is not written, and says why below.
+      const plan = planLinkAgentfilesBlock(text, ctx);
+      if (!plan.refused && plan.text !== text) {
         if (!changedFiles.includes(path)) changedFiles.push(path);
-        if (!ctx.dryRun) writeText(path, next);
-        text = next;
+        if (!ctx.dryRun) writeText(path, plan.text);
+        text = plan.text;
       }
       const linkAgentfilesPath = join(ctx.repoRoot, ".mise", "scripts", "link-agentfiles.sh");
       const expectedScript = templateLinkAgentfilesScript(ctx);
@@ -2719,19 +2755,28 @@ return [
         }
       }
       // A legacy hook table the rename could not rewrite (it would not parse,
-      // e.g. a table that already holds `run`) is left for the operator and
-      // said so, never reported as done.
-      const leftover = legacyHookScriptIssues(text);
+      // e.g. a table that already holds `run`), a compound hook command
+      // migrate will not split, and a rewrite the guard refused are all left
+      // for the operator and said so, never reported as done.
+      const leftover = plan.refused ? [] : legacyHookScriptIssues(text);
+      const manual = [
+        ...(plan.refused ? [`mise.toml was not rewritten: ${plan.refused}`] : []),
+        ...plan.manual.map(manualHookLine),
+        ...leftover.map((issue) => `left untouched (renaming would not parse): ${issue}`),
+      ];
       return {
         id: finding.id,
         title: finding.title,
-        status: leftover.length ? "partial" : changedFiles.length ? "applied" : "noop",
-        summary: leftover.length ? "Legacy hook tables need a manual `run` rename"
+        status: manual.length ? "partial" : changedFiles.length ? "applied" : "noop",
+        summary: plan.refused ? "mise.toml needs a manual change before pjangler can rewrite it"
+          : leftover.length ? "Legacy hook tables need a manual `run` rename"
+          : manual.length ? "Some mise hooks need a manual change"
           : changedFiles.length ? "Updated mise AGENTS-linking contract" : "No changes required",
         changedFiles,
         details: [
           ...(changedFiles.length ? [`Normalized hooks/watch_files/tasks."${LINK_AGENTFILES_TASK}" block and script`] : []),
-          ...leftover.map((issue) => `left untouched (renaming would not parse): ${issue}`),
+          ...(plan.healed && changedFiles.includes(path) ? ["Repaired a duplicate `]` an earlier pjangler run left in mise.toml"] : []),
+          ...manual,
         ],
       };
     },
@@ -2826,30 +2871,73 @@ function retiredSkillsScripts(ctx: Context): string[] {
 }
 
 
-function skillsWiringIssues(text: string | null): string[] {
-  if (text === null) return ["mise.toml is missing; add the explicit skills:sync task"];
-  let parsed: Record<string, unknown>;
-  try { parsed = parseToml(text); }
-  catch { return ["mise.toml is invalid TOML; repair it before running skills:sync"]; }
-  const record = (value: unknown): Record<string, unknown> =>
-    value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/**
+ * The skills:sync wiring in mise.toml, split by who can fix it: `fixable` is
+ * what the shared AGENTS-linking rewrite changes, `manual` is what it will not
+ * (an operator's task or compound hook command that merely mentions a retired
+ * writer), so neither audit claims a fix its migrate cannot make.
+ */
+function skillsWiringFindings(text: string | null): { fixable: string[]; manual: string[] } {
+  if (text === null) return { fixable: ["mise.toml is missing; add the explicit skills:sync task"], manual: [] };
+  const fixable: string[] = [];
+  const manual: string[] = [];
+  let parsed = parsedOrUndefined(text);
+  if (!parsed) {
+    const baseline = parseBaseline(text);
+    if ("refused" in baseline) return { fixable: [], manual: ["mise.toml is invalid TOML; repair it before running skills:sync"] };
+    parsed = baseline.parsed;
+    fixable.push("mise.toml repeats the close of a [hooks] array (an earlier pjangler run wrote it); migrate repairs it");
+  }
+  const record = (value: unknown): Record<string, unknown> => isTable(value) ? value : {};
   const tasks = record(parsed.tasks), task = record(tasks[SKILLS_SYNC_TASK]);
   const run = Array.isArray(task.run) && task.run.length === 1 ? task.run[0] : task.run;
-  const issues: string[] = [];
   if (typeof run !== "string" || !/^skillex\s+sync\s+--scope\s+project\s+--project\s+(['"])\{\{config_root\}\}\1\s*$/.test(run)) {
-    issues.push("skills:sync must explicitly target {{config_root}} with the Node CLI");
+    fixable.push("skills:sync must explicitly target {{config_root}} with the Node CLI");
   }
-  // The legacy plain-string pin and the table form both pin 0.1.1; accepting
-  // both means no forced churn of existing tasks (PJAN-135).
+  // PJAN-135: mise 2026.9 refuses to install npm:@delorenj/skillex@0.1.1
+  // (first published inside its 30-day minimumPackageAge) unless the tool
+  // table approves it, so the plain string pin is drift, not parity: on a cold
+  // mise (a new machine, CI, a container) `mise run skills:sync` cannot run.
   const pin = record(task.tools)["npm:@delorenj/skillex"];
   const pinned = typeof pin === "string" ? pin : record(pin).version;
-  if (pinned !== SKILLEX_TOOL_VERSION) issues.push(`skills:sync must pin @delorenj/skillex ${SKILLEX_TOOL_VERSION} in its own tools table`);
+  if (pinned !== SKILLEX_TOOL_VERSION) {
+    fixable.push(`skills:sync must pin @delorenj/skillex ${SKILLEX_TOOL_VERSION} in its own tools table`);
+  } else if (typeof pin === "string") {
+    fixable.push(`skills:sync pins @delorenj/skillex as the plain string "${pin}", which mise 2026.9 refuses to install inside its 30-day minimumPackageAge; pin { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }`);
+  } else if (record(pin).allow_low_downloads !== true) {
+    fixable.push(`skills:sync must approve @delorenj/skillex ${SKILLEX_TOOL_VERSION} with allow_low_downloads = true (mise 2026.9 refuses to install it otherwise)`);
+  }
+  // Tasks: a retired or managed NAME is rewritten or removed by migrate; any
+  // other task that merely runs a retired writer belongs to the operator.
   const retired = /sync-skills\.py|provision-(?:packs|bmad-skills)\.py|skills[:\-]provision/;
-  if (Object.entries(tasks).some(([name, task]) => retired.test(name) || retired.test(JSON.stringify(record(task).run ?? "")))) issues.push("Retire Python skill sync/provision tasks from mise.toml");
-  const hooks = JSON.stringify(parsed.hooks ?? {});
-  if (retired.test(hooks) || /(?:skillex\s+sync|skills[:\-]sync)/.test(hooks)) issues.push("Skill sync must not run from enter/leave hooks");
-  if (Array.isArray(parsed.watch_files) && parsed.watch_files.some((watch) => /skills\.json|skills[:\-]sync|sync-skills/.test(JSON.stringify(watch)))) issues.push("Remove the skills watch hook; run skills:sync explicitly");
-  return issues;
+  const renames = new Map(RETIRED_TASK_RENAMES);
+  const replaced = new Set([...RETIRED_LINK_TASKS, LINK_AGENTFILES_TASK, SKILLS_SYNC_TASK]);
+  for (const [name, entry] of Object.entries(tasks)) {
+    if (!retired.test(name) && !retired.test(JSON.stringify(record(entry).run ?? ""))) continue;
+    if (replaced.has(renames.get(name) ?? name)) {
+      if (!fixable.includes("Retire Python skill sync/provision tasks from mise.toml")) fixable.push("Retire Python skill sync/provision tasks from mise.toml");
+    } else {
+      manual.push(`tasks.${name} runs a retired Python skill writer; remove or rewrite it by hand`);
+    }
+  }
+  // Hooks: judged per command, exactly as the rewrite judges them.
+  const decisions = decideHookDefs(parsed.hooks, LINK_HOOK_POLICY);
+  const kinds = [...new Set(decisions.claimed.filter((claim) => isRetiredSkillCommand(claim.command)).map((claim) => claim.kind))];
+  if (kinds.length) {
+    fixable.push(kinds.every((kind) => kind === "enter" || kind === "leave")
+      ? "Skill sync must not run from enter/leave hooks"
+      : `Skill sync must not run from mise hooks (${kinds.map((kind) => `hooks.${kind}`).join(", ")})`);
+  }
+  manual.push(...decisions.manual.filter((entry) => SKILL_WRITER_MENTION.test(entry.command)).map(manualHookLine));
+  const watches = Array.isArray(parsed.watch_files) ? parsed.watch_files as unknown[] : [];
+  if (managedWatchPlan(watches).skills.length) fixable.push("Remove the skills watch hook; run skills:sync explicitly");
+  return { fixable, manual };
+}
+
+
+function skillsWiringIssues(text: string | null): string[] {
+  const findings = skillsWiringFindings(text);
+  return [...findings.fixable, ...findings.manual];
 }
 
 
@@ -3104,13 +3192,22 @@ return [
       if (!miseText) {
         details.push("mise.toml missing for .env materialization hook");
       } else {
-        const enterHookValues = stripHookBlocks(miseText).enter;
-        const truncating = truncatingOpInjectEntries(enterHookValues);
-        if (truncating.length) details.push(`hooks.enter has ${truncating.length} unsafe legacy .env op-inject hook(s)`);
-        const canonicalCount = enterHookValues.filter((value) => value.trim() === OP_INJECT_SCRIPT).length;
-        if (canonicalCount !== 1) details.push(`hooks.enter must contain exactly one managed materialize-env hook (found ${canonicalCount})`);
-        const strayOwned = ownedOpInjectScriptsOutsideEnter(miseText);
-        if (strayOwned.length) details.push(`owned .env materialization appears outside [[hooks.enter]] on line(s): ${strayOwned.map((entry) => entry.line).join(", ")}`);
+        // PJAN-135: read from the parsed hooks, per command, exactly as the
+        // rewrite reads them; a text scan took comment text for hook values.
+        const mise: string[] = [];
+        const parsed = parsedOrUndefined(miseText);
+        if (parsed) {
+          const decisions = decideHookDefs(parsed.hooks, OP_HOOK_POLICY);
+          const truncating = decisions.claimed.filter((claim) => claim.kind === "enter" && claim.command.trim() !== OP_INJECT_SCRIPT);
+          if (truncating.length) mise.push(`hooks.enter has ${truncating.length} unsafe legacy .env op-inject hook(s)`);
+          if (decisions.canonicalCount !== 1) mise.push(`hooks.enter must contain exactly one managed materialize-env hook (found ${decisions.canonicalCount})`);
+          const strayLines = strayOpInjectLines(miseText);
+          if (strayLines.length) mise.push(`owned .env materialization appears outside [[hooks.enter]] on line(s): ${strayLines.join(", ")}`);
+        }
+        const plan = planOpInjectHook(miseText);
+        if (plan.refused) mise.push(`migrate cannot rewrite mise.toml safely: ${plan.refused}`);
+        else if (plan.text !== miseText && !mise.length) mise.push(describeRewrite(miseText, plan.text));
+        details.push(...mise);
       }
       const materializePath = join(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
       const expectedMaterializer = templateMaterializeEnvScript(ctx);
@@ -3206,10 +3303,14 @@ return [
         // preview of a repo that had no mise.toml yet.
         currentMise = initialized;
       }
-      const nextOpInjectMise = upsertOpInjectHook(currentMise);
-      if (nextOpInjectMise !== currentMise) {
+      // PJAN-135: parse-verified; a rewrite that cannot be made safely is not
+      // written, and the result is partial with the reason.
+      const opPlan = planOpInjectHook(currentMise);
+      if (opPlan.refused) {
+        details.push(`mise.toml was not rewritten: ${opPlan.refused}`);
+      } else if (opPlan.text !== currentMise) {
         if (!changedFiles.includes(misePath)) changedFiles.push(misePath);
-        if (!ctx.dryRun) writeText(misePath, nextOpInjectMise);
+        if (!ctx.dryRun) writeText(misePath, opPlan.text);
       }
       const materializePath = join(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
       const expectedMaterializer = templateMaterializeEnvScript(ctx);
@@ -3239,14 +3340,30 @@ return [
       return {
         id: finding.id,
         title: finding.title,
-        status: uniqueChangedFiles.length ? "applied" : "noop",
-        summary: uniqueChangedFiles.length ? "Reconciled the canonical .env materialization contract" : "No changes required",
+        status: opPlan.refused ? "partial" : uniqueChangedFiles.length ? "applied" : "noop",
+        summary: opPlan.refused ? "mise.toml needs a manual change before the materialize-env hook can be installed"
+          : uniqueChangedFiles.length ? "Reconciled the canonical .env materialization contract" : "No changes required",
         changedFiles: uniqueChangedFiles,
         details,
       };
     },
   },
 ];
+}
+
+
+/** 1-based lines of owned `.env` materialization outside hooks.enter: hook definitions and orphan `script` keys. */
+function strayOpInjectLines(text: string): number[] {
+  let inventory: HookInventory;
+  try { inventory = hookInventory(text); } catch { return []; }
+  const lines = strayOpInjectScriptStatements(inventory.statements).map((statement) => statement.start + 1);
+  for (const [kind, units] of inventory.byKind) {
+    if (kind === "enter") continue;
+    for (const unit of units) {
+      if ((hookCommands(unit.value).commands ?? []).some((command) => OP_HOOK_POLICY.owns(command, kind))) lines.push(unit.start + 1);
+    }
+  }
+  return [...new Set(lines)].sort((a, b) => a - b);
 }
 
 
