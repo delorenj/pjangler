@@ -6,6 +6,8 @@ import type { InvokeResult } from "./Command";
 import { Command } from "./Command";
 import { resolveAgentHooksLayer } from "../project/index";
 import { SKILLS_SYNC_TOOLS } from "../parity/rules";
+import { canonicalJson, checkRewrite, deepClone, isTable, type TomlTable } from "../parity/mise-toml";
+import { parse as parseToml } from "smol-toml";
 
 /** Shared skip result when a global ~/.agents/hooks install makes the project-scoped
  * layer redundant. Overridable with PJ_AGENT_HOOKS_LAYER=1. */
@@ -126,6 +128,14 @@ export class WireMiseAgentHooks extends Command {
     if (content.includes(WireMiseAgentHooks.MARKER)) {
       return { success: true, message: this.formatMessage("✓ mise.toml already wired for agent-hooks") };
     }
+    const original = content;
+    let parsedOriginal: TomlTable;
+    try {
+      parsedOriginal = parseToml(original) as TomlTable;
+    } catch (error) {
+      return { success: false, message: `⚠️  mise.toml is not valid TOML (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); repair it, then re-run.` };
+    }
+    const existingTasks = isTable(parsedOriginal.tasks) ? parsedOriginal.tasks : {};
 
     const cr = WireMiseAgentHooks.CR;
     const enterAdds = `  "${cr}/.agents/hooks/sync.py --install --quiet",`;
@@ -156,16 +166,25 @@ export class WireMiseAgentHooks extends Command {
       wiredHooks = true;
     }
 
-    const appended = [
-      "",
-      WireMiseAgentHooks.MARKER + " (generated — see .agents/hooks/README.md)",
-      // PJAN-61: task names use the colon namespace form. A colon is not legal
-      // in a BARE toml key, so every header here MUST stay quoted.
+    const skillsSync = [
       '[tasks."skills:sync"]',
       `description = "Reconcile this project's selected skills"`,
       `tools = ${SKILLS_SYNC_TOOLS}`,
       `run = "skillex sync --scope project --project '${cr}'"`,
       "",
+    ];
+    // PJAN-135: a project whose parity migrate already wrote the managed
+    // skills:sync task keeps it; appending a second table under the same name
+    // wrote a mise.toml nothing could parse.
+    const managedSkillsSync = (parseToml(skillsSync.join("\n")) as { tasks: TomlTable }).tasks["skills:sync"];
+    const keepSkillsSync = existingTasks["skills:sync"] !== undefined
+      && canonicalJson(existingTasks["skills:sync"]) === canonicalJson(managedSkillsSync);
+    const appended = [
+      "",
+      WireMiseAgentHooks.MARKER + " (generated — see .agents/hooks/README.md)",
+      // PJAN-61: task names use the colon namespace form. A colon is not legal
+      // in a BARE toml key, so every header here MUST stay quoted.
+      ...(keepSkillsSync ? [] : skillsSync),
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
       'task = "hooks:sync"',
@@ -190,6 +209,22 @@ export class WireMiseAgentHooks extends Command {
       "",
     ].join("\n");
     content = content.replace(/\n*$/, "\n") + appended;
+
+    // PJAN-135: like every mise.toml rewrite, the result must parse and mean
+    // the original plus exactly these additions, or nothing is written.
+    const expected = deepClone(parsedOriginal);
+    const additions = parseToml(appended) as { tasks?: TomlTable; watch_files?: unknown[] };
+    expected.tasks = { ...existingTasks, ...(additions.tasks ?? {}) };
+    expected.watch_files = [...(Array.isArray(parsedOriginal.watch_files) ? parsedOriginal.watch_files : []), ...(additions.watch_files ?? [])];
+    if (wiredHooks) {
+      const hooks = isTable(expected.hooks) ? expected.hooks : (expected.hooks = {});
+      hooks.enter = [...(Array.isArray(hooks.enter) ? hooks.enter : []), `${cr}/.agents/hooks/sync.py --install --quiet`];
+      hooks.leave = [...(Array.isArray(hooks.leave) ? hooks.leave : []), `${cr}/.agents/hooks/sync.py --uninstall --quiet`];
+    }
+    const verdict = checkRewrite(expected, content);
+    if (!verdict.ok) {
+      return { success: false, message: `⚠️  mise.toml was not rewritten: ${verdict.reason}. Add the agent-hooks tasks by hand.` };
+    }
 
     if (!this.context.dryRun) writeFileSync(misePath, content);
 

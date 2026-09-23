@@ -175,7 +175,7 @@ test("a rename that cannot parse is left for the operator, never written broken"
   assert.match(written, /^\[\[hooks\.leave\]\]\nrun = "echo c"$/m);
 });
 
-test("skills:sync pins 0.1.1 as an approved table; the legacy string still passes; every copy is identical", async () => {
+test("skills:sync pins 0.1.1 as an approved table; the legacy string is fixable drift; every copy is identical", async () => {
   const expected = {
     description: "Reconcile this project's selected skills",
     tools: { "npm:@delorenj/skillex": { version: "0.1.1", allow_low_downloads: true }, node: "24" },
@@ -215,11 +215,17 @@ test("skills:sync pins 0.1.1 as an approved table; the legacy string still passe
     }
   }
 
-  // No forced churn: the legacy plain-string pin of the same version passes.
+  // The legacy plain-string pin of the same version is NOT parity: mise 2026.9
+  // refuses to install it (first published inside its 30-day
+  // minimumPackageAge), so on a cold mise the task cannot run. It is fixable
+  // drift, and migrate writes the approved table (PJAN-135 review).
   const legacy = written.replace(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.1", node = "24" }');
   assert.notEqual(legacy, written);
   writeFileSync(join(repo, "mise.toml"), legacy);
-  assert.equal((await mise.audit(ctx)).status, "pass", "the legacy string pin is still in parity");
+  const legacyFinding = await mise.audit(ctx);
+  assert.equal(legacyFinding.status, "fail", "the legacy string pin is drift");
+  assert.equal(legacyFinding.fixable, true);
+  assert.ok(legacyFinding.details.some((detail) => /allow_low_downloads = true/.test(detail)), JSON.stringify(legacyFinding.details));
   // Any other version, in either form, is drift.
   for (const drift of ['{ "npm:@delorenj/skillex" = "0.1.0", node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.0", allow_low_downloads = true }, node = "24" }']) {
     writeFileSync(join(repo, "mise.toml"), written.replace(SKILLS_SYNC_TOOLS, drift));
