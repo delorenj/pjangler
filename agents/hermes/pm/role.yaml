@@ -19,6 +19,13 @@ profile: pjangler-pm
 telegram:
   bot_username: "pjangler_pm_bot"
 
+# Plane board, as Plane names it. A projection of .project.json, which stays
+# canonical; 80-registry.sh copies plane.identifier into the fleet registry,
+# so an absent block blanks the registry row on the next provision.
+plane:
+  workspace: "33god"
+  identifier: "PJAN"
+
 # Ticket-provider adapter preference (plane | trello).
 # Repo-owned board identity lives in repo-root .project.json, not in this role.
 ticket_provider:
