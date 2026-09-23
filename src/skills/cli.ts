@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -35,27 +35,66 @@ export function bundledSkillex(): BundledSkillex {
   return { bin: resolve(dirname(manifestPath), bin), version: String(manifest.version ?? "unknown") };
 }
 
+/** How the bundled skillex ended: its exit status, or the signal that killed it. */
+export type SkillexOutcome = { code: number } | { signal: NodeJS.Signals };
+
 /**
- * Run the bundled CLI with `args` untouched, stdio inherited. Returns the exit
- * status to propagate; a child killed by a signal maps to 128 + signo, the
- * shell convention, so a Ctrl-C is never reported as success.
+ * The termination signals `pj skills` relays to skillex. PJAN-135 review: the
+ * run used to block in spawnSync with no handlers, so a signal sent to pj's pid
+ * alone (a supervisor, execFile's timeout, a Python subprocess timeout — how
+ * the Hermes PM runs guidance commands) killed pj at once and orphaned skillex,
+ * which kept running and writing while the caller saw 143 and assumed it had
+ * stopped. A terminal Ctrl-C reaches both already; relaying it again is
+ * harmless. SIGKILL cannot be caught, so it cannot be relayed.
  */
-export function runBundledSkillex(args: readonly string[]): number {
+export const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+
+/**
+ * Run the bundled CLI with `args` untouched, stdio inherited, relaying
+ * termination signals to it and waiting for it to end. Resolves with how it
+ * ended, so a Ctrl-C is never reported as success.
+ */
+export async function runBundledSkillex(args: readonly string[]): Promise<SkillexOutcome> {
   let cli: BundledSkillex;
   try {
     cli = bundledSkillex();
   } catch (error) {
     process.stderr.write(`pjangler install is missing its @delorenj/skillex dependency (${error instanceof Error ? error.message : String(error)}); reinstall @delorenj/pjangler\n`);
-    return 1;
+    return { code: 1 };
   }
-  const child = spawnSync(process.execPath, [cli.bin, ...args], { stdio: "inherit" });
-  if (child.error) {
-    process.stderr.write(`could not start the bundled skillex ${cli.version}: ${child.error.message}\n`);
-    return 1;
-  }
-  if (child.status !== null) return child.status;
-  const signo = child.signal ? (constants.signals as Record<string, number>)[child.signal] : undefined;
-  return 128 + (signo ?? 1);
+  return await new Promise<SkillexOutcome>((resolveOutcome) => {
+    const child = spawn(process.execPath, [cli.bin, ...args], { stdio: "inherit" });
+    const relay = (signal: NodeJS.Signals) => {
+      try { child.kill(signal); } catch { /* already gone */ }
+    };
+    for (const signal of FORWARDED_SIGNALS) process.on(signal, relay);
+    let settled = false;
+    const settle = (outcome: SkillexOutcome) => {
+      if (settled) return;
+      settled = true;
+      for (const signal of FORWARDED_SIGNALS) process.off(signal, relay);
+      resolveOutcome(outcome);
+    };
+    child.once("error", (error) => {
+      process.stderr.write(`could not start the bundled skillex ${cli.version}: ${error.message}\n`);
+      settle({ code: 1 });
+    });
+    child.once("exit", (code, signal) => settle(signal ? { signal } : { code: code ?? 1 }));
+  });
+}
+
+/**
+ * End pj the way skillex ended: its exit status, or death by the same signal
+ * (a shell reports 128 + signo either way; a supervisor sees the real signal).
+ */
+export async function endLikeSkillex(outcome: SkillexOutcome, exit: (code: number) => Promise<never> | never): Promise<never> {
+  if ("code" in outcome) return await exit(outcome.code);
+  const signo = (constants.signals as Record<string, number>)[outcome.signal] ?? 1;
+  process.removeAllListeners(outcome.signal);
+  process.kill(process.pid, outcome.signal);
+  // Reached only if the signal did not end this process.
+  await new Promise((done) => setTimeout(done, 100));
+  return await exit(128 + signo);
 }
 
 /** Shell-quote a path for a copy-paste command: double quotes unless unsafe inside them. */
@@ -90,6 +129,6 @@ export function registerSkillsCli(program: Command, exit: (code: number) => Prom
     .allowExcessArguments()
     .passThroughOptions()
     .action(async (args: string[] | undefined) => {
-      await exit(runBundledSkillex(skillsPassthroughArgs(process.argv.slice(2), args ?? [])));
+      await endLikeSkillex(await runBundledSkillex(skillsPassthroughArgs(process.argv.slice(2), args ?? [])), exit);
     });
 }

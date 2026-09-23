@@ -11,8 +11,8 @@
 // dist/) and the REAL bundled @delorenj/skillex, option by option.
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -209,6 +209,57 @@ test("pj skills is the bundled skillex, at the version pjangler depends on, argv
   assert.equal(dashdash.status, 2, "skillex received the literal `--`, so --version is an operand");
   // pjangler's own program options still work before the subcommand.
   assert.match(pj(["--help"]).stdout, /^ {2}skills \[args\.\.\.\] +Run the bundled Skillex/m);
+});
+
+// PJAN-135 review: `pj skills` blocked in spawnSync and installed no signal
+// handlers, so a SIGTERM/SIGINT/SIGHUP/SIGQUIT sent to pj's pid alone (a
+// supervisor, execFile's timeout, a Python subprocess timeout — exactly how
+// the Hermes PM runs guidance commands) killed pj at once and orphaned skillex,
+// which kept running and writing while the caller saw 143 and assumed it had
+// stopped. The child here is the REAL bundled skillex, slowed only by a
+// preload that waits 3s before its CLI runs and records its pid.
+test("pj skills forwards termination signals to skillex, waits for it, and ends the way skillex ended", async () => {
+  const bin = lib.bundledSkillex().bin;
+  const preload = join(work, "slow-skillex.mjs");
+  writeFileSync(preload, [
+    'import { writeFileSync } from "node:fs";',
+    "if (process.argv[1] === process.env.PJ_TEST_SKILLEX_BIN) {",
+    "  writeFileSync(`${process.env.PJ_TEST_MARK}.start`, String(process.pid));",
+    "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);",
+    "  writeFileSync(`${process.env.PJ_TEST_MARK}.late`, 'skillex outlived pj');",
+    "}",
+  ].join("\n"));
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"]) {
+    const mark = join(work, `mark-${signal}`);
+    // No core files: SIGQUIT's default action dumps core.
+    const child = spawn("/bin/sh", ["-c", 'ulimit -c 0; exec "$0" "$@"', process.execPath, join(work, "pj.mjs"), "skills", "--version"], {
+      cwd: work,
+      stdio: "ignore",
+      env: { ...env, NODE_OPTIONS: `--import ${preload}`, PJ_TEST_SKILLEX_BIN: bin, PJ_TEST_MARK: mark },
+    });
+    const exited = new Promise((done) => child.once("exit", (code, sig) => done({ code, signal: sig })));
+    let skillexPid;
+    try {
+      for (let waited = 0; !existsSync(`${mark}.start`); waited += 20) {
+        assert.ok(waited < 15000, `${signal}: skillex never started`);
+        await new Promise((done) => setTimeout(done, 20));
+      }
+      skillexPid = Number(readFileSync(`${mark}.start`, "utf8"));
+      assert.ok(alive(skillexPid));
+      process.kill(child.pid, signal); // pj's pid only, never the group
+      const ended = await exited;
+      assert.ok(!alive(skillexPid), `${signal}: skillex (pid ${skillexPid}) still runs after pj exited`);
+      assert.equal(existsSync(`${mark}.late`), false, `${signal}: skillex kept writing after pj was stopped`);
+      // pj reports the way skillex ended: killed by the same signal.
+      assert.deepEqual(ended, { code: null, signal }, `${signal}: ${JSON.stringify(ended)}`);
+    } finally {
+      if (skillexPid && alive(skillexPid)) process.kill(skillexPid, "SIGKILL");
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }
+  // A normal exit status still propagates unchanged.
+  assert.equal(pj(["skills", "no-such-subcommand"]).status, 2);
 });
 
 test("migrationGuidance names commands that run, and runs as printed", () => {
