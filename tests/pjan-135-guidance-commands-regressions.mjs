@@ -54,24 +54,27 @@ function pj(args, options = {}) {
   return spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], { encoding: "utf8", env, cwd: work, ...options });
 }
 
-const helpCache = new Map();
-/** `pj <words> --help`, parsed: the command path commander (or skillex) resolved. */
-function help(words) {
-  const key = words.join(" ");
-  if (!helpCache.has(key)) {
-    const result = pj([...words, "--help"]);
-    const usage = /^Usage: (pjangler|skillex)((?: [a-z][\w:.-]*)*)/m.exec(result.stdout);
-    const resolved = usage ? usage[2].trim().split(/\s+/).filter(Boolean) : [];
-    helpCache.set(key, {
-      status: result.status,
-      text: result.stdout,
-      program: usage?.[1],
-      path: usage?.[1] === "skillex" ? ["skills", ...resolved] : resolved,
-      stderr: result.stderr,
-    });
-  }
-  return helpCache.get(key);
+/** `pj <words> --help` against the CLI bundled at `bundle`, parsed: the command path commander (or skillex) resolved. */
+function helpFor(bundle) {
+  const helpCache = new Map();
+  return (words) => {
+    const key = words.join(" ");
+    if (!helpCache.has(key)) {
+      const result = spawnSync(process.execPath, [bundle, ...words, "--help"], { encoding: "utf8", env, cwd: work });
+      const usage = /^Usage: (pjangler|skillex)((?: [a-z][\w:.-]*)*)/m.exec(result.stdout);
+      const resolved = usage ? usage[2].trim().split(/\s+/).filter(Boolean) : [];
+      helpCache.set(key, {
+        status: result.status,
+        text: result.stdout,
+        program: usage?.[1],
+        path: usage?.[1] === "skillex" ? ["skills", ...resolved] : resolved,
+        stderr: result.stderr,
+      });
+    }
+    return helpCache.get(key);
+  };
 }
+const help = helpFor(join(work, "pj.mjs"));
 
 const ARG = "\u0000ARG\u0000";
 const WORD = /^[a-z][\w:.-]*$/;
@@ -126,15 +129,32 @@ function mentions(text) {
   return found;
 }
 
-/** Resolve one mention against the real CLI; returns a failure message or null. */
-function unresolved(mention) {
+/**
+ * Resolve one mention against the real CLI; returns a failure message or null.
+ *
+ * Every word must resolve, not only the first. `pj <group> <missing> --help`
+ * makes commander print the GROUP's help with exit 0, so a removed nested
+ * subcommand (`pj recipe describe`, `pj notebook capture retry`) used to stay
+ * green (PJAN-135 review). A word past the resolved path is fine only as a
+ * positional argument of a command that has no subcommands of its own
+ * (`pj add docker`, `pj migrate bmad.version`); under a command that lists
+ * "Commands:" it can only have been an unknown subcommand.
+ */
+function unresolved(mention, show = help) {
   const words = [];
   for (const token of mention.tokens) { if (WORD.test(token)) words.push(token); else break; }
-  const shown = help(words);
+  const shown = show(words);
   if (shown.status !== 0) return `\`${mention.text}\`: \`pj ${words.join(" ")} --help\` exited ${shown.status}: ${shown.stderr}`;
   if (!shown.path.length || shown.path[0] !== words[0]) return `\`${mention.text}\`: "${words[0]}" is not a pj command`;
   if (words[0] === "skills" && words.length > 1 && shown.path[1] !== words[1]) {
     return `\`${mention.text}\`: "${words[1]}" is not a command of the bundled skillex`;
+  }
+  const depth = shown.path.length;
+  if (shown.path.some((word, index) => words[index] !== word)) {
+    return `\`${mention.text}\`: resolved to \`${shown.path.join(" ")}\`, not \`${words.slice(0, depth).join(" ")}\``;
+  }
+  if (words.length > depth && /^Commands:$/m.test(shown.text)) {
+    return `\`${mention.text}\`: "${words[depth]}" is not a subcommand of \`pj ${shown.path.join(" ")}\``;
   }
   for (const option of mention.tokens.filter((token) => token.startsWith("--"))) {
     const name = option.replace(/=.*$/, "");
@@ -307,12 +327,74 @@ test("migrationGuidance names commands that run, and runs as printed", () => {
   assert.doesNotMatch(ran.stderr, /No such command|unknown command|not found/i);
 });
 
+const literalText = (node) => {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map((span) => ARG + span.literal.text).join("");
+  return undefined;
+};
+
+/**
+ * The core's fix text, read with the TypeScript parser from the real dist:
+ * every string or template literal anywhere in a `fix:` property's value, so
+ * both branches of a ternary and every part of a concatenation count. The
+ * regex this replaces needed a literal right after `fix:` and so skipped the
+ * ternary-built fixes (PJAN-135 review: "Run skillex migrate to convert this
+ * manifest…", "Run skillex init for this scope…"). `all` is every literal in
+ * the core, for the completeness check below.
+ */
+function coreLiterals() {
+  const path = join(dirname(createRequire(join(root, "package.json")).resolve("@delorenj/skillex/package.json")), "dist", "index.js");
+  const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const fixes = [];
+  const all = [];
+  const collect = (node, into) => {
+    const text = literalText(node);
+    if (text !== undefined) into.push({ text, line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1 });
+    ts.forEachChild(node, (child) => collect(child, into));
+  };
+  const visit = (node) => {
+    if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === "fix") collect(node.initializer, fixes);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  collect(source, all);
+  return { fixes, all };
+}
+
+test("the fix scan reads every literal of a fix expression, and misses no skillex command the core names", () => {
+  const { fixes, all } = coreLiterals();
+  const texts = fixes.map((fix) => fix.text);
+  // The two ternary-built fixes the regex scan skipped.
+  assert.ok(texts.some((text) => /^Run skillex migrate to convert this manifest/.test(text)), "ternary branch of the manifest fix");
+  assert.ok(texts.some((text) => /^Run skillex init for this scope/.test(text)), "ternary branch of the scope fix");
+  // Completeness: every literal in the core that names a skillex subcommand is
+  // fix text this suite relays and resolves. A new place the core puts such a
+  // command (a positional `fix` argument, say) fails here until it is covered.
+  const commands = skillexCommands();
+  const names = new RegExp(`(?<![\\w/@.:-])skillex\\s+(?:${commands.join("|")})\\b`);
+  const uncovered = all.filter((literal) => names.test(literal.text) && !fixes.some((fix) => fix.line === literal.line && fix.text === literal.text));
+  assert.deepEqual(uncovered, []);
+});
+
+test("the resolver fails a removed nested subcommand instead of accepting its group's help", () => {
+  // A /tmp build of the real CLI with ONE nested subcommand renamed.
+  const source = readFileSync(join(root, "src", "index.ts"), "utf8");
+  const mutated = source.replace(/(recipeCmd\s*\n\s*\.command\()"describe"\)/, '$1"show")');
+  assert.notEqual(mutated, source, "the mutation applies");
+  const bundle = join(work, "pj-mutated.mjs");
+  buildSync({ ...common, stdin: { contents: mutated, resolveDir: join(root, "src"), sourcefile: "index.ts", loader: "ts" }, outfile: bundle });
+  const broken = spawnSync(process.execPath, [bundle, "recipe", "describe", "mise"], { encoding: "utf8", env, cwd: work });
+  assert.notEqual(broken.status, 0, "the mutated CLI really lost `pj recipe describe`");
+  const [mention] = mentions("Run `pj recipe describe <name>` to see its checks");
+  assert.equal(unresolved(mention), null, "the real CLI resolves it");
+  assert.match(unresolved(mention, helpFor(bundle)) ?? "", /"describe" is not a subcommand of `pj recipe`/);
+  // A word-shaped positional argument of a leaf command is still fine.
+  assert.equal(unresolved(mentions("run `pj add docker` next")[0]), null);
+});
+
 test("every skillex command the core's fix text names is relayed as a pj skills command that resolves", () => {
-  const core = readFileSync(join(dirname(createRequire(join(root, "package.json")).resolve("@delorenj/skillex/package.json")), "dist", "index.js"), "utf8");
-  const fixes = [...core.matchAll(/\bfix:\s*("(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`)/g)]
-    .map((match) => match[1].slice(1, -1).replace(/\$\{[^}]*\}/g, ARG))
-    .filter((text) => /\bskillex\s+[a-z]/.test(text));
-  assert.ok(fixes.length >= 10, `the real core names skillex commands in its fix text (${fixes.length})`);
+  const fixes = coreLiterals().fixes.map((fix) => fix.text).filter((text) => /\bskillex\s+[a-z]/.test(text));
+  assert.ok(fixes.length >= 20, `the real core names skillex commands in its fix text (${fixes.length})`);
   const commands = skillexCommands();
   assert.ok(commands.includes("migrate") && commands.includes("sync"), commands.join(","));
   const bare = new RegExp(`(?<![\\w/@.:-])skillex\\s+(?:${commands.join("|")})\\b`);
