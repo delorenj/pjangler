@@ -538,10 +538,16 @@ function describeQuarantine(quarantine: string, label: (path: string) => string)
   if (!runs.length) return [`${label(quarantine)} is an empty leftover of an earlier conversion; remove it: rmdir ${shellQuote(quarantine)}`];
   return runs.map((run) => {
     const path = join(quarantine, run);
-    let progress = "";
-    try { progress = readFileSync(join(path, "progress.log"), "utf8"); } catch { /* no log: never started */ }
-    if (/^committed$/m.test(progress)) {
+    let progress: string | undefined;
+    try { progress = readFileSync(join(path, "progress.log"), "utf8"); } catch { /* not written: no step ever ran */ }
+    if (progress !== undefined && /^committed$/m.test(progress)) {
       return `an earlier conversion completed and was verified, but its quarantine of proven duplicates remains at ${label(path)}; remove it: rm -rf ${shellQuote(path)}`;
+    }
+    if (progress !== undefined && /^rolled-back$/m.test(progress)) {
+      return `an earlier conversion was rolled back, but ${label(join(path, "items"))} still holds entries nothing planned to put there; inspect them, then remove ${shellQuote(path)}`;
+    }
+    if (progress === undefined || !lstatOrUndefined(join(path, "restore.sh"))) {
+      return `an interrupted conversion left ${label(path)} before its first step (no journal), so nothing was changed; remove it: rm -rf ${shellQuote(path)}`;
     }
     return `an interrupted CLI skills-root conversion left ${label(path)}; restore the repository exactly with: sh ${shellQuote(join(path, "restore.sh"))} (it reverses every completed step listed in journal.json, then removes the quarantine)`;
   });
@@ -1115,7 +1121,12 @@ function restoreScript(run: string, quarantine: string, agents: string | undefin
     if (step.step === "symlink") lines.push(`unsymlink ${index} ${shellQuote(step.path)} ${shellQuote(step.text)}`);
     if (step.step === "mkdir") lines.push(`unmkdir ${index} ${shellQuote(step.path)}`);
   }
-  lines.push('rm -rf -- "$RUN"', `rmdir -- ${shellQuote(quarantine)} 2>/dev/null || true`);
+  lines.push(
+    'rmdir -- "$RUN/items" || fail "$RUN/items still holds entries after the reversal; inspect them before removing $RUN"',
+    'rm -f -- "$RUN/journal.json" "$RUN/progress.log" "$RUN/.gitignore" "$RUN/restore.sh"',
+    'rmdir -- "$RUN" || fail "could not remove $RUN"',
+    `rmdir -- ${shellQuote(quarantine)} 2>/dev/null || true`,
+  );
   if (agents) lines.push(`rmdir -- ${shellQuote(agents)} 2>/dev/null || true`);
   lines.push(`echo "skills-root restore: ${repo.replace(/["$`\\]/g, "")} is back to its state before run ${basename(run)}"`, "");
   return lines.join("\n");
@@ -1214,6 +1225,8 @@ export function applySkillRoots(repoRoot: string, options: SkillRootsApplyOption
     if (createdAgents) { try { rmdirSync(agents); } catch { /* keep */ } }
     return failed(`could not write the conversion journal: ${error instanceof Error ? error.message : String(error)}`);
   }
+  // Test seam for the interrupted-run contract: SIGKILL this process after N
+  // completed (and logged) steps, exactly as a crash or ^C at that point would.
   const crashAfter = Number(process.env.PJ_SKILL_ROOTS_CRASH_AFTER ?? Number.NaN);
 
   let done = 0;
@@ -1274,7 +1287,8 @@ export function applySkillRoots(repoRoot: string, options: SkillRootsApplyOption
   // Only now: generated output leaves the index.
   const tracked = plan.operations.flatMap((operation) => operation.kind === "untrack" ? operation.tracked ?? [] : []);
   if (tracked.length) {
-    const removed = spawnSync("git", ["rm", "-r", "--cached", "--quiet", "--", ...tracked], { cwd: facts.repoReal, encoding: "utf8" });
+    const removed = spawnSync("git", ["rm", "-r", "--cached", "--quiet", "--pathspec-from-file=-", "--pathspec-file-nul"],
+      { cwd: facts.repoReal, encoding: "utf8", input: `${tracked.join("\0")}\0` });
     if (removed.status !== 0) return rollback(`git rm --cached failed: ${removed.stderr.trim()}`);
   }
   appendFileSync(log, "committed\n");
