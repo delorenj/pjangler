@@ -414,6 +414,12 @@ test("the first migrate is a fixed point on a file with no [env] and on one whos
       else if (key !== "env") assert.deepEqual(parsed[key], value, `${key} is untouched:\n${written}`);
     }
     assert.equal((await mise.audit(ctxFor(repo))).status, "pass");
+    // Real mise reads the inserted [env] as env, and a root key stays a root setting.
+    const loaded = spawnSync("mise", ["env", "--json"], { cwd: repo, env: miseEnv(freshState(), repo), encoding: "utf8" });
+    assert.equal(loaded.status, 0, loaded.stderr);
+    assert.doesNotMatch(loaded.stderr, /parse_error|Invalid TOML|deprecated/, loaded.stderr);
+    assert.match(JSON.parse(loaded.stdout).PATH, /\.mise\/scripts/, "the _.path entry reached PATH");
+    assert.equal(JSON.parse(loaded.stdout).min_version, undefined, "min_version never became an env var");
   }
 });
 

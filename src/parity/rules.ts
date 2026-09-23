@@ -615,20 +615,6 @@ function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
 }
 
 
-function replaceOrAppendManagedBlock(text: string, startMarker: RegExp, block: string, beforePattern?: RegExp): string {
-  if (startMarker.test(text)) {
-    return text.replace(/# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</, block);
-  }
-  if (beforePattern) {
-    const match = text.match(beforePattern);
-    if (match && typeof match.index === "number") {
-      return `${text.slice(0, match.index).replace(/\s*$/, "\n\n")}${block}\n\n${text.slice(match.index)}`;
-    }
-  }
-  return `${text.replace(/\s*$/, "")}\n\n${block}\n`;
-}
-
-
 const BASE_MISE_PATH_ENTRIES = [".mise/scripts", "agents/hermes/pm"];
 
 
@@ -641,49 +627,6 @@ function requiredMisePathEntries(_ctx: Context): string[] {
 }
 
 
-
-
-function removeTomlSection(text: string, headerPattern: RegExp, marker?: RegExp, options?: { includePrecedingComments?: boolean }): string {
-  const lines = text.split("\n");
-  let start = -1;
-  let end = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (!headerPattern.test(lines[i]!)) continue;
-    if (marker) {
-      let hasMarker = false;
-      for (let j = i + 1; j < lines.length && !/^\[[^\]]+\]/.test(lines[j]!); j++) {
-        if (marker.test(lines[j]!)) {
-          hasMarker = true;
-          break;
-        }
-      }
-      if (!hasMarker) continue;
-    }
-    start = i;
-    for (let j = i + 1; j < lines.length; j++) {
-      if (/^\[[^\]]+\]/.test(lines[j]!)) {
-        end = j;
-        break;
-      }
-    }
-    if (end === -1) end = lines.length;
-    break;
-  }
-  if (start === -1) return text;
-  // Trailing comment/blank lines directly before the next header belong to that
-  // next section (e.g. the `# >>> mise-versioning >>>` marker), so keep them out
-  // of the removed range — otherwise re-running a migrate corrupts them.
-  while (end > start + 1 && (lines[end - 1]!.trim() === "" || lines[end - 1]!.trim().startsWith("#"))) {
-    end--;
-  }
-  if (options?.includePrecedingComments) {
-    while (start > 0 && lines[start - 1]!.trim().startsWith("#")) {
-      start--;
-    }
-  }
-  const result = lines.slice(0, start).concat(lines.slice(end)).join("\n");
-  return result.replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n");
-}
 
 
 /** Strip quoting and the `{{config_root}}/` prefix so hook paths compare. */
@@ -2870,20 +2813,34 @@ function planVersioningBlock(original: string): { text: string; refused?: string
   const base = parseBaseline(original);
   if ("refused" in base) return { text: original, refused: base.refused };
   const managed = (parseToml(VERSIONING_BLOCK) as { tasks: Record<string, TomlTable> }).tasks;
-  const oldBlock = /# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</.exec(base.text)?.[0];
+  const blockPattern = /# >>> mise-versioning >>>[\s\S]*?# <<< mise-versioning <<</;
+  const oldBlock = blockPattern.exec(base.text)?.[0];
+  // The start marker without a whole block (an operator's note that mentions
+  // it, say) is what the audit already accepts; nothing is rewritten.
+  if (base.text.includes("# >>> mise-versioning >>>") && !oldBlock) return { text: base.text };
   let text = base.text;
   let replaced: string[] = [...VERSIONING_TASK_NAMES];
   try {
-    if (base.text.includes("# >>> mise-versioning >>>")) {
-      if (oldBlock) replaced = Object.keys(record(record(parseToml(oldBlock)).tasks));
+    if (oldBlock) {
+      replaced = Object.keys(record(record(parseToml(oldBlock)).tasks));
+      text = text.replace(blockPattern, VERSIONING_BLOCK);
     } else {
+      // Loose version tasks are removed as whole tables, then the block goes
+      // before [tasks.build] (found by the scanner, never inside a string) or
+      // at the end.
       const statements = scanToml(text);
-      const edits = statements.flatMap((statement, index) => statement.type === "header" && !statement.arrayTable
+      const edits: LineEdit[] = statements.flatMap((statement, index) => statement.type === "header" && !statement.arrayTable
         && statement.path.length === 2 && statement.path[0] === "tasks" && VERSIONING_TASK_NAMES.includes(statement.path[1]!)
         ? [{ start: tableSpan(statements, index).start, end: tableSpan(statements, index).end, lines: [] }] : []);
+      const lines = text.split("\n");
+      const build = statements.find((statement) => statement.type === "header" && !statement.arrayTable
+        && statement.path.length === 2 && statement.path[0] === "tasks" && statement.path[1] === "build");
+      const block = VERSIONING_BLOCK.split("\n");
+      if (build) edits.push({ start: build.start, end: build.start, lines: ["", ...block, ""] });
+      else if (lines[lines.length - 1] === "") edits.push({ start: lines.length - 1, end: lines.length - 1, lines: ["", ...block] });
+      else edits.push({ start: lines.length, end: lines.length, lines: ["", ...block, ""] });
       text = applyLineEdits(text, edits);
     }
-    text = replaceOrAppendManagedBlock(text, /# >>> mise-versioning >>>/, VERSIONING_BLOCK, /^\[tasks\.build\]/m);
   } catch (error) {
     return { text: original, refused: `the versioning block could not be laid out (${errorText(error)})` };
   }
