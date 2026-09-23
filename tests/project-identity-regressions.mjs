@@ -703,7 +703,51 @@ check("the surgical writer refuses an edit that would change anything else", () 
 });
 
 check("the abandoned agents are named, not modelled as triage", () => {
-  assert.deepEqual([...DEAD_AGENT_IDS], ["coachingagentframework-pm", "tonnybox-pm"]);
+  assert.deepEqual([...DEAD_AGENT_IDS], ["coachingagentframework-pm"]);
+});
+
+// PJAN-136: tonnybox-pm was listed as dead because its ROLE pointed at a board
+// Plane had hard-deleted, while the project stayed live on TONNY. A live agent
+// in that list is skipped before its board is ever read, so identity repair
+// could never see it again.
+await checkAsync("tonnybox-pm is resolved against its live board, not reported dead", async () => {
+  const dir = makeDir("tonnybox-live");
+  const hermesRegistryPath = join(dir, "agents-registry.yaml");
+  const registryPath = join(dir, "projects.yaml");
+  writeFileSync(registryPath, "schema_version: 1\nprojects: {}\n", "utf8");
+  writeFileSync(
+    hermesRegistryPath,
+    [
+      "schema_version: 1",
+      "agents:",
+      "  tonnybox-pm:",
+      "    repo: tonnybox",
+      "    role: pm",
+      "    project_path: /nonexistent/TonnyBox",
+      "    plane:",
+      "      workspace: 33god",
+      "      project_id: 7e2557f9-861f-4cc7-8929-9b7f514c7fc3",
+      "      identifier: TONNY",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const report = await reconcileProjectIdentity({
+    hermesRegistryPath,
+    registryPath,
+    all: true,
+    fetchBoards: async () =>
+      new Map([
+        [
+          "7e2557f9-861f-4cc7-8929-9b7f514c7fc3",
+          { id: "7e2557f9-861f-4cc7-8929-9b7f514c7fc3", identifier: "TONNY", name: "TonnyBox", workspace: "33god", archived: false },
+        ],
+      ]),
+  });
+  const tonnybox = report.resolutions.find((entry) => entry.agentId === "tonnybox-pm");
+  assert.ok(tonnybox, "tonnybox-pm is examined");
+  assert.equal(tonnybox.status, "ok", `tonnybox-pm resolves against TONNY, got ${tonnybox.status}: ${tonnybox.detail ?? ""}`);
+  assert.equal(tonnybox.liveIdentifier, "TONNY");
 });
 
 console.log("");

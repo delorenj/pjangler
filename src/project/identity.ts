@@ -50,11 +50,18 @@ import { PJANGLER_VERSION } from "../utils/version";
 
 /**
  * Agents whose Plane board 404s in EVERY workspace. These are abandoned, not
- * broken: there is nothing to triage and nothing to re-resolve, so `--apply`
- * deletes their registry entries outright rather than modelling a permanently
- * unresolvable state.
+ * broken: there is nothing to triage and nothing to re-resolve, so they are
+ * reported with the `flume offboard` command that removes them rather than
+ * modelled as a permanently unresolvable state.
+ *
+ * A 404 board alone does not make an agent dead. tonnybox-pm was listed here
+ * on 2026-08-28 because its role pointed at b9016a74 (TONPM), a board Plane
+ * had hard-deleted, while the project itself was live and still bound to
+ * TONNY 7e2557f9 in .project.json. Listing it hid a live PM from identity
+ * repair for four weeks (PJAN-136). Re-bind a live project's role instead;
+ * list an agent here only once its project is actually retired.
  */
-export const DEAD_AGENT_IDS = ["coachingagentframework-pm", "tonnybox-pm"] as const;
+export const DEAD_AGENT_IDS = ["coachingagentframework-pm"] as const;
 
 export interface PlaneBoardFacts {
   id: string;
