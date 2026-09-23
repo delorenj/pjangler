@@ -656,7 +656,12 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
       info.text = text;
       const reached = realpathOrUndefined(real);
       if ((rootReal !== undefined && reached === rootReal) || (rootState === "absent" && resolve(cliRoot, text) === R)) { info.state = "alias"; return info; }
-      if (!reached) { info.state = "dangling"; return info; }
+      if (!reached) {
+        info.state = "dangling";
+        // The dangling link is parked in the quarantine by rename(2), which cannot cross filesystems.
+        if (rootDevice !== undefined && deviceOf(cliRoot) !== rootDevice) info.blocks.push(`${cliName} is on a different filesystem than .agents; refusing to replace ${alias} there`);
+        return info;
+      }
       info.state = "foreign-link";
       info.blocks.push(`${alias} is a symlink to ${text} (resolves to ${reached}), not .agents/skills; refusing to replace it`);
       return info;
