@@ -225,10 +225,14 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
   let conflictResolvable = false;
   if (conflict?.kind === "alias") conflictResolvable = plan.clean;
   if (conflict?.kind === "root") {
-    const decision = await classifyRootCollision(ctx, conflict.path);
-    conflictResolvable = decision.action !== "block";
-    details.push(decision.action === "block" ? `blocked: ${decision.detail}`
-      : `resolvable root collision: ${decision.detail.replace(/^replaced/, "replace")}; further collisions may follow`);
+    // Every collision, not just the one skillex stopped at: migrate replaces
+    // links only when none of them blocks.
+    const predictions = await predictRootCollisions(ctx, []);
+    conflictResolvable = predictions.length > 0 && predictions.every(({ decision }) => decision.action !== "block");
+    for (const { decision } of predictions) {
+      details.push(decision.action === "block" ? `blocked: ${decision.detail}`
+        : `resolvable root collision: ${decision.detail.replace(/^replaced/, "replace")}`);
+    }
   }
   if (result.exit === 2 || result.exit === 3) details.push(migrationGuidance(ctx));
   return {
@@ -293,33 +297,41 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
       const conflict = result.ok ? undefined : activationConflict(ctx, result.findings);
       const deferred = conflict?.kind === "alias"
         && (extra.pendingAliases ?? []).some((alias) => projectPaths(ctx, alias).has(conflict.path));
-      if (ctx.dryRun && (conflict?.kind === "root" || deferred)) {
-        // Apply resolves collisions one refusal at a time; a preview must see
-        // every one, including those the planned root conversion introduces.
+      if (conflict?.kind === "root" || (ctx.dryRun && deferred)) {
+        // Every collision is classified before ANY link is replaced: skillex
+        // refuses the whole plan at its first refusal, so replacing the
+        // resolvable ones while another blocks only hides those names until the
+        // blocker is resolved. A preview sees the same set, including the
+        // entries the planned root conversion moves in.
         if (deferred) details.push(`Sync preview deferred: ${conflict!.path} is converted to the .agents/skills alias first; the root collisions that conversion introduces are classified here.`);
-        const predictions = await predictRootCollisions(ctx, extra.incoming ?? []);
-        for (const { path, decision } of predictions) {
-          if (decision.action === "unlink") {
+        const predictions = await predictRootCollisions(ctx, ctx.dryRun ? extra.incoming ?? [] : []);
+        const blocking = predictions.filter(({ decision }) => decision.action === "block");
+        const replaceable = predictions.filter(({ decision }) => decision.action === "unlink");
+        if (blocking.length) {
+          details.push(...blocking.map(({ decision }) => `blocked: ${decision.detail}`));
+          if (replaceable.length) details.push(`left in place until the blocked collision(s) above are resolved: ${replaceable.map(({ path }) => relative(resolve(ctx.repoRoot), path)).join(", ")}`);
+          details.push(migrationGuidance(ctx));
+          return { ok: false, changedFiles: [...new Set(changedFiles)], details };
+        }
+        if (ctx.dryRun) {
+          for (const { path, decision } of replaceable) {
             changedFiles.push(path);
             details.push(`would ${decision.detail.replace(/^replaced/, "replace")}`);
-          } else details.push(`blocked: ${decision.detail}`);
+          }
+          return { ok: true, changedFiles: [...new Set(changedFiles)], details };
         }
-        const ok = predictions.every(({ decision }) => decision.action !== "block");
-        if (!ok) details.push(migrationGuidance(ctx));
-        return { ok, changedFiles: [...new Set(changedFiles)], details };
-      }
-      if (conflict?.kind === "root") {
-        const decision = await classifyRootCollision(ctx, conflict.path);
-        if (decision.action === "unlink" && !unlinked.has(conflict.path) && round < MAX_ROOT_COLLISION_ROUNDS) {
-          unlinkSync(conflict.path);
-          unlinked.add(conflict.path);
-          changedFiles.push(conflict.path);
-          details.push(decision.detail);
+        const fresh = replaceable.filter(({ path }) => !unlinked.has(path));
+        if (fresh.length && round < MAX_ROOT_COLLISION_ROUNDS) {
+          for (const { path, decision } of fresh) {
+            unlinkSync(path);
+            unlinked.add(path);
+            changedFiles.push(path);
+            details.push(decision.detail);
+          }
           continue;
         }
-        details.push(decision.action === "block" ? `blocked: ${decision.detail}`
-          : unlinked.has(conflict.path) ? `no progress: ${conflict.path} collided again after it was replaced`
-            : `stopped after ${MAX_ROOT_COLLISION_ROUNDS} root collision rounds`);
+        details.push(round >= MAX_ROOT_COLLISION_ROUNDS ? `stopped after ${MAX_ROOT_COLLISION_ROUNDS} root collision rounds`
+          : `no progress: ${conflict?.path ?? "a root collision"} collided again after every classified link was replaced`);
       }
       const changes = ctx.dryRun ? result.data?.changes : result.data?.applied;
       changedFiles.push(...(changes ?? []).map((change) => change.path));

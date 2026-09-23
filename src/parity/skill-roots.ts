@@ -1088,7 +1088,7 @@ function restoreScript(run: string, quarantine: string, agents: string | undefin
     `RUN=${shellQuote(run)}`,
     'LOG="$RUN/progress.log"',
     "DONE=$(grep -c '^done ' \"$LOG\" 2>/dev/null) || DONE=0",
-    'fail() { echo "pjangler restore: $*" >&2; exit 1; }',
+    'fail() { echo "skills-root restore: $*" >&2; exit 1; }',
     'present() { [ -e "$1" ] || [ -L "$1" ]; }',
     'undone() { grep -qx "undone $1" "$LOG" 2>/dev/null; }',
     "unrename() {",
@@ -1117,7 +1117,7 @@ function restoreScript(run: string, quarantine: string, agents: string | undefin
   }
   lines.push('rm -rf -- "$RUN"', `rmdir -- ${shellQuote(quarantine)} 2>/dev/null || true`);
   if (agents) lines.push(`rmdir -- ${shellQuote(agents)} 2>/dev/null || true`);
-  lines.push(`echo "pjangler restore: ${repo.replace(/["$`\\]/g, "")} is back to its state before run ${basename(run)}"`, "");
+  lines.push(`echo "skills-root restore: ${repo.replace(/["$`\\]/g, "")} is back to its state before run ${basename(run)}"`, "");
   return lines.join("\n");
 }
 

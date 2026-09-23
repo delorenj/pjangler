@@ -382,6 +382,31 @@ test("F11/D2: dry run sees every root collision, not only the first", async () =
   } finally { f.close(); }
 });
 
+test("a blocked root collision leaves every other legacy link in place: no name loses its link while the sync is refused", async () => {
+  // Found by the real-data e2e (pjangler, 33GOD): the collision loop replaced
+  // resolvable legacy links one refusal at a time, then stopped at a blocking
+  // one, so those names had neither their old link nor the catalog link.
+  const f = await skillFixture(sources, { tag: "atomic", select: ["alpha", "beta", "gamma"] }); try {
+    mkdirSync(f.R, { recursive: true });
+    const legacy = join(f.base, "other-repo", "skills", "alpha");
+    put(join(legacy, "SKILL.md"), skill("alpha", "older copy in another repository\n"));
+    symlinkSync(legacy, join(f.R, "alpha"));
+    put(join(f.R, "beta", "SKILL.md"), skill("beta", "local fork\n"));
+    for (const alias of SUPPORTED_SKILLS_ALIASES) { mkdirSync(join(f.project, alias.split("/")[0]), { recursive: true }); symlinkSync("../.agents/skills", join(f.project, alias)); }
+    const before = repoState(f.project);
+    const audit = await f.audit();
+    assert.equal(audit.fixable, false, JSON.stringify(audit.details));
+    assert.match(audit.details.join("\n"), /blocked: .*beta is a real directory/);
+    const dry = await f.migrate({ dryRun: true });
+    const applied = await f.migrate();
+    assert.equal(dry.status, applied.status);
+    assert.equal(applied.status, "blocked", JSON.stringify(applied, null, 2));
+    assert.equal(readlinkSync(join(f.R, "alpha")), legacy, "the resolvable legacy link is not replaced while beta blocks");
+    assert.equal(readSafe(join(f.R, "alpha", "SKILL.md")), skill("alpha", "older copy in another repository\n"));
+    assert.deepEqual(repoState(f.project), before);
+  } finally { f.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // High: skillex's absolute aliases (review F15), with the real skillex CLI
 // ---------------------------------------------------------------------------
