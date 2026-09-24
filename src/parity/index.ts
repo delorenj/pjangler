@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recipeRegistry } from "../recipes/catalog";
-import type { LifecycleContext } from "../recipes/types";
+import { gatesProject, type LifecycleContext } from "../recipes/types";
 import type { AuditReport, MigrationReport } from "./rules";
 
 export {
@@ -91,7 +91,9 @@ export async function runAudit(repoArg?: string, registryPath?: string, ruleIds?
   if (unknown.length) throw new Error(`Unknown parity rule id(s): ${unknown.join(", ")}`);
   const wanted = new Set(ruleIds);
   const rules = report.rules.filter((finding) => wanted.has(finding.id));
-  return { ...report, rules, ok: rules.every((finding) => finding.status === "pass" || finding.status === "skip") };
+  // PJAN-84's meaning of ok, for the rules asked about: a warn (e.g. PJAN-141's
+  // receipt-only refresh) or a host-scoped finding does not gate the project.
+  return { ...report, rules, ok: rules.every((finding) => !gatesProject(finding)) };
 }
 
 export async function runMigrationForRules(

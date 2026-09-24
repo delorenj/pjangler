@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { auditCheck, gatesProject, isHostScoped } from "./types";
 import type {
   LifecycleAuditFinding,
@@ -11,6 +13,43 @@ import type {
   RecipeMetadata,
   RuleId,
 } from "./types";
+
+/**
+ * PJAN-145: parity rules a repository waives in `.project.json`, as
+ * `"parity": { "waive": { "<ruleId>": "<reason>" } }`.
+ *
+ * For a fork whose upstream owns a layout pjangler would otherwise rewrite
+ * (cal.diy: upstream cal.com ships `.claude/skills -> ../agents/skills`), a rule
+ * that can never pass without breaking every upstream merge is waived instead
+ * of failing forever. Only an entry with a non-empty string reason counts; a
+ * malformed one waives nothing, so the rule keeps failing where it is seen.
+ */
+export function projectWaivers(repoRoot: string): Map<string, string> {
+  let waive: unknown;
+  try {
+    waive = (JSON.parse(readFileSync(join(repoRoot, ".project.json"), "utf8")) as { parity?: { waive?: unknown } })?.parity?.waive;
+  } catch {
+    return new Map();
+  }
+  if (!waive || typeof waive !== "object" || Array.isArray(waive)) return new Map();
+  return new Map(Object.entries(waive as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim() !== "")
+    .map(([id, reason]) => [id, reason.trim()]));
+}
+
+/** A waived finding: skipped with its reason, the underlying result kept in details (nothing hidden). */
+function waived(finding: LifecycleAuditFinding, reason: string): LifecycleAuditFinding {
+  if (finding.status === "pass" || finding.status === "skip") {
+    return { ...finding, details: [...finding.details, `waived in .project.json (${reason}) but currently ${finding.status}es; the waiver can be removed`] };
+  }
+  return {
+    ...finding,
+    status: "skip",
+    fixable: false,
+    summary: `Waived in .project.json: ${reason}`,
+    details: [`underlying ${finding.status}: ${finding.summary}`, ...finding.details],
+  };
+}
 
 /**
  * The sole lifecycle dispatch and ownership boundary.
@@ -166,9 +205,13 @@ export class RecipeRegistry {
       if (!recipe) throw new Error(`Unknown recipe: ${id}`);
       return recipe;
     }) : [...this.recipes.values()];
+    const waivers = projectWaivers(ctx.repoRoot);
     const rules = (await Promise.all(selected.map(async (recipe) =>
       (await recipe.audit(ctx)).map((finding) => ({ ...finding, recipeId: finding.recipeId ?? recipe.metadata.id }))
-    ))).flat();
+    ))).flat().map((finding) => {
+      const reason = waivers.get(finding.id);
+      return reason === undefined ? finding : waived(finding, reason);
+    });
     return {
       repo: ctx.repoRoot,
       // PJAN-84: `ok` answers "is the audited PROJECT in parity?".
