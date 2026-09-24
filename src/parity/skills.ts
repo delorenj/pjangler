@@ -12,7 +12,7 @@ import {
   type SyncOptions,
 } from "@delorenj/skillex";
 import type { AuditFinding, Context } from "./rules";
-import { planSkillRoots, repoOwnsPath, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, treesIdentical, type SkillRootIncoming } from "./skill-roots";
+import { planSkillRoots, repoOwnsPath, skillContentIdentical, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, type SkillRootIncoming } from "./skill-roots";
 import { shellQuotePath } from "../skills/cli";
 
 /** The bundled Skillex CLI, as an operator types it (src/skills/cli.ts). */
@@ -118,8 +118,8 @@ export interface RootCollisionDecision {
  * points at. A dangling link, or one into another repository (a 33GOD component
  * checkout, an old registry path), is a legacy projection: replace it. A link to
  * this repository's OWN content is a deliberate local override unless that
- * content is byte-identical to the catalog skill. A real directory is never
- * touched.
+ * content is the same skill as the catalog copy (PJAN-142: vendor provenance and
+ * bytecode caches aside, byte-identical). A real directory is never touched.
  */
 export async function classifyRootCollision(ctx: Context, path: string): Promise<RootCollisionDecision> {
   const label = relative(resolve(ctx.repoRoot), path) || path;
@@ -140,7 +140,7 @@ async function classifyCollidingLink(ctx: Context, name: string, label: string, 
   if (real === undefined) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text} (dangling)` };
   if (!repoOwnsPath(ctx.repoRoot, real)) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text}` };
   const canonical = await canonicalSkillPath(ctx, name);
-  if (canonical && treesIdentical(real, canonical)) {
+  if (canonical && skillContentIdentical(real, canonical)) {
     return { action: "unlink", detail: `replaced link ${label} -> ${text}: its repo-owned content is identical to the catalog skill` };
   }
   return { action: "block", detail: `repo-owned skill ${name} shadows a selected catalog skill (${label} -> ${text}); rename it or make it identical to the catalog copy` };
@@ -235,11 +235,24 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
     }
   }
   if (result.exit === 2 || result.exit === 3) details.push(migrationGuidance(ctx));
+  // PJAN-141: the receipt records the catalog commit it was written against, so
+  // ANY commit to all-skills leaves every project's receipt stale while every
+  // link still resolves exactly where it should. One catalog commit turned the
+  // whole fleet red overnight. A plan whose only change is rewriting that
+  // receipt is host bookkeeping, not project drift: warn (fixable; migrate and
+  // the skills:sync enter hook refresh it), never fail.
+  const changes = result.data?.changes ?? [];
+  const receiptOnly = result.exit === 6 && changes.length > 0
+    && changes.every((change) => change.action === "write-receipt")
+    && !result.findings.some((finding) => finding.severity === "error");
+  if (receiptOnly) details.push("advisory: only the activation receipt is stale (the catalog moved); every link already resolves to its selected skill");
   return {
     id: "skills.project-manifest",
     title: "Skillex project skills",
-    status: result.exit === 0 ? "pass" : result.exit === 4 ? "warn" : "fail",
-    summary: result.exit === 0 ? "Skillex declaration and activation are in parity" : `Skillex inspection returned exit ${result.exit}`,
+    status: result.exit === 0 ? "pass" : result.exit === 4 || receiptOnly ? "warn" : "fail",
+    summary: result.exit === 0 ? "Skillex declaration and activation are in parity"
+      : receiptOnly ? "Skillex activation is in parity; its receipt predates the current catalog commit"
+      : `Skillex inspection returned exit ${result.exit}`,
     details,
     fixable: result.exit === 0 || result.exit === 6 || conflictResolvable
       || result.findings.some((finding) => finding.code === "E_NO_PROJECT_MANIFEST"),

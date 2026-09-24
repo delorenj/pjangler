@@ -470,6 +470,43 @@ export function treesIdentical(left: string, right: string): boolean {
   return treeContainmentGap(left, right) === undefined && treeContainmentGap(right, left) === undefined;
 }
 
+/** Provenance `skillex vendor` stamps at the root of every vendored catalog skill. */
+const VENDOR_METADATA = new Set([".source.yaml"]);
+
+/** Bytecode a skill's own scripts leave behind when they run; never authored. */
+function isBytecode(name: string, node: ViewNode): boolean {
+  return (node.t === "dir" && name === "__pycache__") || (node.t === "file" && /\.py[co]$/.test(name));
+}
+
+function authoredOnly(node: ViewNode, atRoot: boolean): ViewNode {
+  if (node.t !== "dir") return node;
+  const children = new Map<string, ViewNode>();
+  for (const [name, child] of node.children) {
+    if ((atRoot && VENDOR_METADATA.has(name)) || isBytecode(name, child)) continue;
+    const kept = authoredOnly(child, false);
+    // A directory holding only bytecode was never authored (git keeps no empty dirs).
+    if (kept.t === "dir" && kept.children.size === 0) continue;
+    children.set(name, kept);
+  }
+  return { t: "dir", children };
+}
+
+/**
+ * PJAN-142: is a component repository's own skill the same SKILL as its
+ * vendored catalog copy? The catalog copy always carries `.source.yaml` and a
+ * locally run skill carries `__pycache__`, so byte identity could never hold
+ * and bloodbank, momo and pjangler stayed blocked on skills identical to the
+ * catalog. Only the root-collision classifier may use this: the lossless root
+ * converter still compares every byte (treesIdentical/treeContainmentGap).
+ */
+export function skillContentIdentical(left: string, right: string): boolean {
+  const all = () => true;
+  const a = viewIn(diskLayout, left, all), b = viewIn(diskLayout, right, all);
+  if (!a?.node || !b?.node) return false;
+  const l = { ...a, node: authoredOnly(a.node, true) }, r = { ...b, node: authoredOnly(b.node, true) };
+  return viewGap(l, r, new Hasher()) === undefined && viewGap(r, l, new Hasher()) === undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Planning
 // ---------------------------------------------------------------------------
