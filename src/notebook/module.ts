@@ -21,9 +21,11 @@ import {
   noteSummary,
   parseNoteEnvelope,
   searchNotesLocally,
+  sha256Hex,
   userNoteLogicalId,
   withNoteEnvelope,
 } from "./notes";
+import { journalNoteOperationId, type JournalPeriod } from "./journal-key";
 import { compileOverviewArtifact, compileOverviewDescriptor, overviewDescriptorDrift, renderOverviewContent } from "./overview";
 import { reconcileManagedNote, reconcileProjectNotebook } from "./reconcile";
 import {
@@ -140,6 +142,7 @@ export class NotebookModule {
   private readonly fetch?: typeof globalThis.fetch;
   private readonly clientFactory?: (config: EffectiveNotebookConfigV1) => OpenNotebookClient;
   private readonly registryStore?: Pick<RegistryStore, "save">;
+  private readonly journalUpserts = new Map<string, Promise<unknown>>();
 
   constructor(options: NotebookModuleOptions = {}) {
     this.registryPath = options.registryPath ?? projectRegistryPath(options.env);
@@ -354,6 +357,57 @@ export class NotebookModule {
     const result = await reconcileManagedNote({ stateRoot: this.stateRoot, projectSlug: ctx.config.project_slug, notebookId, logicalId, title, content, client: ctx.client, inputDigest: operationDigest, operationId });
     commitReconciledRemoteMutation(this.stateRoot, result.journal);
     return { config: ctx.config, data: { note: noteDetail(result.note, ctx.config.limits.note_max_bytes) } };
+  }
+
+  /** Stable, scoped note write for the Infra Dev Journal pipeline. */
+  async upsertInfraJournalNote(period: JournalPeriod, periodKey: string, title: string, text: string): Promise<{
+    note_id: string;
+    content_sha256: string;
+    created: boolean;
+    updated: boolean;
+  }> {
+    const operationId = journalNoteOperationId(period, periodKey);
+    const key = `${period}:${periodKey}`;
+    const previous = this.journalUpserts.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const ctx = this.contextBySlug("infra", true) as ModuleContext & { client: OpenNotebookClient };
+      const { notebookId } = bindingNotebook(ctx.config);
+      ensureTitle(title);
+      ensureText(text, "Note content", ctx.config.limits.note_max_bytes);
+      const contentHash = sha256Hex(text);
+      const logicalId = userNoteLogicalId(operationId);
+      const content = ensureFinalNoteContent(withNoteEnvelope({
+        schema_version: NOTEBOOK_SCHEMA_VERSION,
+        project_slug: "infra",
+        kind: "user-note",
+        logical_id: logicalId,
+        content_sha256: contentHash,
+        policy_version: NOTEBOOK_POLICY_VERSION,
+      }, text), ctx.config.limits.note_max_bytes);
+      const existing = (await ctx.client.listNotes(notebookId)).find((note) => {
+        const envelope = parseNoteEnvelope(note.content)?.envelope;
+        return envelope?.project_slug === "infra" && envelope.logical_id === logicalId;
+      });
+      const result = await reconcileManagedNote({
+        stateRoot: this.stateRoot,
+        projectSlug: "infra",
+        notebookId,
+        logicalId,
+        title,
+        content,
+        client: ctx.client,
+      });
+      commitReconciledRemoteMutation(this.stateRoot, result.journal);
+      return {
+        note_id: result.note.id,
+        content_sha256: contentHash,
+        created: result.created,
+        updated: Boolean(existing && (existing.title !== title || existing.content !== content)),
+      };
+    });
+    this.journalUpserts.set(key, current);
+    try { return await current; }
+    finally { if (this.journalUpserts.get(key) === current) this.journalUpserts.delete(key); }
   }
 
   async getNote(repo: string, noteId: string): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1 } }> {

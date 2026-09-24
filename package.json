@@ -26,7 +26,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/project-registry-service.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outdir=dist && node scripts/export-project-notebook-skill.mjs",
+    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/project-registry-service.ts src/notebook/journal-service-main.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && node scripts/export-project-notebook-skill.mjs",
     "check:audit:prod": "npm audit --omit=dev",
     "check:lock": "node scripts/check-package-lock-parity.mjs",
     "check:submodules": "node scripts/check-submodule-contract.mjs",
@@ -45,6 +45,7 @@
     "coverage:check": "node scripts/coverage-ratchet.mjs",
     "coverage:apply": "node scripts/coverage-ratchet.mjs --apply",
     "registry:serve": "node dist/project-registry-service.js",
+    "journal:serve": "node dist/notebook/journal-service-main.js",
     "registry:install": "node scripts/install-project-registry.mjs"
   },
   "keywords": [

@@ -122,6 +122,7 @@ const SUITES = [
   "tests/pjan-77-notebook-hooks-capture.mjs",
   "tests/pjan-77-notebook-security-isolation.mjs",
   "tests/pjan-77-notebook-release-gates.mjs",
+  "tests/pjan-144-journal-notebook-service.mjs",
 ];
 
 const args = process.argv.slice(2);
