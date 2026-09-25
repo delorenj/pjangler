@@ -868,6 +868,30 @@ const OP_HOOK_POLICY: HookOwnerPolicy = {
   renameLegacy: false,
 };
 
+/**
+ * PJAN-147: the same ownership with no managed hook. A repo that declares
+ * `"secrets": { "materialize_env": false }` in .project.json hand-keeps its
+ * .env, so every hook that would overwrite it is removed and none is installed.
+ *
+ * The comment-only .env.op opt-out does not cover this. IntelliForia keeps live
+ * references in .env.op and resolves them into .env.secrets with its own hook,
+ * so the managed materializer counted it as opted in. The PJAN-137 migrate --all
+ * installed that materializer, and every cd then replaced a 30-key hand-kept .env
+ * with the one-line .env.op. The nightly prod pull failed for two nights before
+ * anyone noticed (INT-283), and the keys that existed only in that .env were lost.
+ */
+const OP_OPT_OUT_POLICY: HookOwnerPolicy = { ...OP_HOOK_POLICY, canonical: undefined };
+
+/** PJAN-147: does .project.json declare that this repo hand-keeps its .env? */
+function envMaterializationOptedOut(ctx: Context): boolean {
+  const secrets = readProjectJson(ctx)?.secrets;
+  return isTable(secrets) && secrets.materialize_env === false;
+}
+
+function opPolicy(ctx: Context): HookOwnerPolicy {
+  return envMaterializationOptedOut(ctx) ? OP_OPT_OUT_POLICY : OP_HOOK_POLICY;
+}
+
 function manualHookLine(entry: HookManual): string {
   return `hooks.${entry.kind} runs \`${shortCommand(entry.command)}\`: ${entry.reason}`;
 }
@@ -1137,7 +1161,7 @@ function expectedLinkModel(base: TomlTable, required: readonly string[]): TomlTa
 }
 
 /** What secrets.env-op's rewrite must mean. */
-function expectedOpModel(base: TomlTable): TomlTable {
+function expectedOpModel(base: TomlTable, policy: HookOwnerPolicy = OP_HOOK_POLICY): TomlTable {
   const model = deepClone(base);
   // PJAN-57: a `script = "op inject … > .env"` outside the hook tables is an
   // orphan an earlier rewrite left behind; it is removed.
@@ -1149,7 +1173,7 @@ function expectedOpModel(base: TomlTable): TomlTable {
   };
   for (const [key, value] of Object.entries(model)) if (key !== "hooks") strip(value);
   if (typeof model.script === "string" && isOpInjectHookEntry(model.script)) delete model.script;
-  model.hooks = decideHookDefs(base.hooks, OP_HOOK_POLICY).expected;
+  model.hooks = decideHookDefs(base.hooks, policy).expected;
   return model;
 }
 
@@ -1230,12 +1254,12 @@ function upsertLinkAgentfilesBlock(text: string, ctx: Context): string {
   return plan.refused ? text : plan.text;
 }
 
-function planOpInjectHook(original: string): MiseTomlPlan {
-  return settleMiseRewrite(original, expectedOpModel, (text) => {
+function planOpInjectHook(original: string, policy: HookOwnerPolicy = OP_HOOK_POLICY): MiseTomlPlan {
+  return settleMiseRewrite(original, (base) => expectedOpModel(base, policy), (text) => {
     const statements = scanToml(text);
     const withoutStrays = applyLineEdits(text, strayOpInjectScriptStatements(statements)
       .map((statement) => ({ start: statement.start, end: statement.end, lines: [] })));
-    const hooks = rewriteMiseHooks(withoutStrays, OP_HOOK_POLICY);
+    const hooks = rewriteMiseHooks(withoutStrays, policy);
     return hooks.refused ? { text, refused: hooks.refused, manual: [] } : { text: hooks.text, manual: [] };
   });
 }
@@ -3178,6 +3202,7 @@ return [
     audit: (ctx) => {
       const details: string[] = [];
       let envOpNeedsHands = false;
+      const optedOut = envMaterializationOptedOut(ctx);
       const envOpPath = join(ctx.repoRoot, ".env.op");
       const envOpExists = existsSync(envOpPath);
       const envOp = envOpExists ? readText(envOpPath) : undefined;
@@ -3214,7 +3239,10 @@ return [
         // rewrite reads them; a text scan took comment text for hook values.
         const mise: string[] = [];
         const parsed = parsedOrUndefined(miseText);
-        if (parsed) {
+        if (parsed && optedOut) {
+          const claimed = decideHookDefs(parsed.hooks, OP_OPT_OUT_POLICY).claimed.filter((claim) => claim.kind === "enter");
+          if (claimed.length) mise.push(`hooks.enter has ${claimed.length} hook(s) that overwrite .env, but .project.json declares secrets.materialize_env: false`);
+        } else if (parsed) {
           const decisions = decideHookDefs(parsed.hooks, OP_HOOK_POLICY);
           const truncating = decisions.claimed.filter((claim) => claim.kind === "enter" && claim.command.trim() !== OP_INJECT_SCRIPT);
           if (truncating.length) mise.push(`hooks.enter has ${truncating.length} unsafe legacy .env op-inject hook(s)`);
@@ -3222,14 +3250,16 @@ return [
           const strayLines = strayOpInjectLines(miseText);
           if (strayLines.length) mise.push(`owned .env materialization appears outside [[hooks.enter]] on line(s): ${strayLines.join(", ")}`);
         }
-        const plan = planOpInjectHook(miseText);
+        const plan = planOpInjectHook(miseText, opPolicy(ctx));
         if (plan.refused) mise.push(`migrate cannot rewrite mise.toml safely: ${plan.refused}`);
         else if (plan.text !== miseText && !mise.length) mise.push(describeRewrite(miseText, plan.text));
         details.push(...mise);
       }
       const materializePath = join(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
       const expectedMaterializer = templateMaterializeEnvScript(ctx);
-      if (!expectedMaterializer) {
+      if (optedOut) {
+        if (existsSync(materializePath)) details.push(`${MATERIALIZE_ENV_SCRIPT_REL} is present, but .project.json declares secrets.materialize_env: false`);
+      } else if (!expectedMaterializer) {
         details.push("pjangler package is missing the managed materialize-env.sh source");
       } else if (safeReadText(materializePath) !== expectedMaterializer) {
         details.push(`${MATERIALIZE_ENV_SCRIPT_REL} missing or drifted`);
@@ -3240,7 +3270,9 @@ return [
         id: "secrets.env-op",
         title: ".env.op + gitignore secrets contract",
         status: details.length === 0 ? "pass" : "fail",
-        summary: details.length === 0 ? "Secret reference file and ignore rules are in parity" : `${details.length} env parity issue(s) detected`,
+        summary: details.length === 0
+          ? optedOut ? "Secret reference file and ignore rules are in parity; .env is hand-kept (secrets.materialize_env: false)" : "Secret reference file and ignore rules are in parity"
+          : `${details.length} env parity issue(s) detected`,
         details,
         fixable: true,
       };
@@ -3323,7 +3355,8 @@ return [
       }
       // PJAN-135: parse-verified; a rewrite that cannot be made safely is not
       // written, and the result is partial with the reason.
-      const opPlan = planOpInjectHook(currentMise);
+      const optedOut = envMaterializationOptedOut(ctx);
+      const opPlan = planOpInjectHook(currentMise, optedOut ? OP_OPT_OUT_POLICY : OP_HOOK_POLICY);
       if (opPlan.refused) {
         details.push(`mise.toml was not rewritten: ${opPlan.refused}`);
       } else if (opPlan.text !== currentMise) {
@@ -3332,10 +3365,14 @@ return [
       }
       const materializePath = join(ctx.repoRoot, MATERIALIZE_ENV_SCRIPT_REL);
       const expectedMaterializer = templateMaterializeEnvScript(ctx);
-      if (!expectedMaterializer) {
+      if (optedOut) {
+        if (existsSync(materializePath)) {
+          changedFiles.push(materializePath);
+          if (!ctx.dryRun) rmSync(materializePath);
+        }
+      } else if (!expectedMaterializer) {
         return { id: finding.id, title: finding.title, status: "blocked", summary: "pjangler package is missing materialize-env.sh", changedFiles: [], details: [] };
-      }
-      if (safeReadText(materializePath) !== expectedMaterializer || (existsSync(materializePath) && (lstatSync(materializePath).mode & 0o111) === 0)) {
+      } else if (safeReadText(materializePath) !== expectedMaterializer || (existsSync(materializePath) && (lstatSync(materializePath).mode & 0o111) === 0)) {
         changedFiles.push(materializePath);
         if (!ctx.dryRun) {
           writeText(materializePath, expectedMaterializer);
