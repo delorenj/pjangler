@@ -1,5 +1,6 @@
 import { encodeNoteEnvelope, sha256Hex } from "./notes";
 import { selectEligibleDocuments } from "./git-evidence";
+import { reconcileNotebookEntropy } from "./entropy";
 import type { NotebookModule } from "./module";
 import { reconcileManagedNote } from "./reconcile";
 import { commitReconciledRemoteMutation, listRemoteMutationJournals, type RemoteMutationJournalV1 } from "./remote-mutation-journal";
@@ -253,6 +254,19 @@ async function processClaimed(module: NotebookModule, receipt: CaptureReceiptV1,
     endStatusDigest: evidence.end_status_digest,
   });
   for (const journal of journals) commitReconciledRemoteMutation(module.stateRoot, journal);
+  try {
+    await reconcileNotebookEntropy({
+      module,
+      projectSlug: active.project_slug,
+      repoPath: linked.config.repo_path,
+      client: linked.client!,
+      notebookId: linked.notebookId,
+      config: linked.config,
+      syncSourcesFlag: false,
+    });
+  } catch {
+    // Best-effort entropy cleanup
+  }
   return completed;
 }
 

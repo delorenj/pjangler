@@ -61,6 +61,7 @@ process.env.SKILLEX_REGISTRY_ROOT = skillRegistry;
 process.env.PJ_SKILLS_REGISTRY_ROOT = skillRegistry;
 process.env.XDG_STATE_HOME = join(tmp, "state");
 process.env.PATH = `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`;
+process.env.MISE_YES = "1";
 try {
   // --- the flag is on the command pjangler actually executes ---
   const planned = JSON.parse(run([

@@ -63,6 +63,7 @@ function enumerate(directory, { packed = false } = {}) {
   function walk(current) {
     for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const path = join(current, entry.name);
+      if (entry.name === "__pycache__" || entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache") continue;
       const rel = relative(directory, path).split(sep).join("/");
       if (!rel.includes("/") && generatedNames.has(rel)) continue;
       const stat = lstatSync(path);

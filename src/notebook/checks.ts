@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LifecycleAuditFinding, LifecycleContext, LifecycleMigrationResult, RecipeCheck } from "../recipes/types";
@@ -272,12 +273,29 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   }
 }
 
+function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
+  if (ctx.dryRun) return result(current, "applied", "Would reconcile drifted Project Overview note");
+  if (!ctx.live) return result(current, "blocked", "Reconciling the remote Overview note requires --live");
+  const pjanglerEntry = ctx.pjanglerRoot ? join(ctx.pjanglerRoot, "dist", "index.js") : null;
+  const entry = pjanglerEntry && existsSync(pjanglerEntry) ? pjanglerEntry : "pj";
+  const cmd = entry === "pj" ? ["pj"] : [process.execPath, entry];
+  const spawned = spawnSync(cmd[0]!, [...cmd.slice(1), "notebook", "overview", ctx.repoRoot], {
+    encoding: "utf8",
+    timeout: 10_000,
+    env: { ...process.env, ...(ctx.registryPath ? { PJ_PROJECT_REGISTRY: ctx.registryPath } : {}) },
+  });
+  if (spawned.status !== 0) {
+    return result(current, "blocked", `Overview reconciliation failed: ${spawned.stderr || spawned.stdout || "unknown error"}`);
+  }
+  return result(current, "applied", "Reconciled Project Overview note with current project references");
+}
+
 export function createNotebookChecks(): readonly RecipeCheck[] {
   return [
     new NotebookCheck("notebook.configuration", "Notebook configuration", configurationAudit),
     new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit),
     new NotebookCheck("notebook.remote-notebook", "Remote notebook", remoteAudit),
-    new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit),
+    new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit, overviewMigrate),
     // PJAN-84: host-scoped. These describe $HOME/.agents/skills and
     // $HOME/.claude/settings.json — the machine's shared agent configuration.
     // No work in the audited repository can change either, and reporting them as

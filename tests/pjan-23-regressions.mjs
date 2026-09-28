@@ -29,6 +29,7 @@ const CONTRACT_OPS = [
   "get_issue",
   "list_issues",
   "resolve",
+  "resolve_state",
   "transition",
 ];
 

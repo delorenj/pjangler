@@ -43,6 +43,7 @@ import { prepareNotebookObservation } from "./observation";
 import { createNotebookChecks } from "./checks";
 import { homedir } from "node:os";
 import { installProjectNotebookIntegration, repairProjectNotebookSkillProjection, type ProjectNotebookHostBlockV1, type ProjectNotebookSkillRepairV1 } from "./hooks";
+import { reconcileNotebookEntropy, type EntropyReconciliationResultV1 } from "./entropy";
 import {
   NOTEBOOK_POLICY_VERSION,
   NOTEBOOK_SCHEMA_VERSION,
@@ -55,6 +56,7 @@ import {
   type NotebookHealth,
   type OpenNotebookNotebookV1,
   type OpenNotebookNoteV1,
+  type OpenNotebookSourceV1,
   type PjanglerNoteEnvelopeV1,
   type ProjectNotebookBindingV1,
 } from "./types";
@@ -315,9 +317,15 @@ export class NotebookModule {
   }
 
   async listNotes(repo = process.cwd(), limit = 50, cursor?: string): Promise<{ config: EffectiveNotebookConfigV1; data: { items: NoteSummaryV1[]; next_cursor: string | null } }> {
-    const { ctx, notes, notebookId } = await this.scoped(repo);
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > ctx.config.limits.list_max_items) throw new NotebookError("INVALID_INPUT", "Note list limit is outside configured bounds");
-    const ordered = sortedNotes(notes);
+    const headers = typeof ctx.client.listNoteHeaders === "function"
+      ? await ctx.client.listNoteHeaders(notebookId)
+      : await ctx.client.listNotes(notebookId);
+    const ordered = sortedNotes(headers as unknown as OpenNotebookNoteV1[]);
     let start = 0;
     if (cursor) {
       const decoded = decodeCursor(cursor);
@@ -326,12 +334,15 @@ export class NotebookModule {
       if (index < 0) throw new NotebookError("INVALID_INPUT", "Notebook cursor is stale or invalid");
       start = index + 1;
     }
-    const page = ordered.slice(start, start + limit);
-    const last = page.at(-1);
-    const nextCursor = start + page.length < ordered.length && last
+    const pageHeaders = ordered.slice(start, start + limit);
+    const pageNotes = typeof ctx.client.hydrateNotes === "function"
+      ? await ctx.client.hydrateNotes(pageHeaders as any)
+      : pageHeaders as unknown as OpenNotebookNoteV1[];
+    const last = pageHeaders.at(-1);
+    const nextCursor = start + pageHeaders.length < ordered.length && last
       ? encodeCursor({ schema_version: 1, notebook_id: notebookId, updated_at: last.updated_at ?? "", id: last.id })
       : null;
-    return { config: ctx.config, data: { items: page.map((item) => noteSummary(item, ctx.config.limits.excerpt_max_chars)), next_cursor: nextCursor } };
+    return { config: ctx.config, data: { items: pageNotes.map((item) => noteSummary(item, ctx.config.limits.excerpt_max_chars)), next_cursor: nextCursor } };
   }
 
   async addNote(repo: string, title: string, text: string): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1 } }> {
@@ -411,13 +422,24 @@ export class NotebookModule {
   }
 
   async getNote(repo: string, noteId: string): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1 } }> {
-    const { ctx, notes, notebookId } = await this.scoped(repo);
-    return { config: ctx.config, data: { note: noteDetail(getScoped(notes, noteId), ctx.config.limits.note_max_bytes) } };
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
+    const note = typeof ctx.client.getOwnedNote === "function"
+      ? await ctx.client.getOwnedNote(notebookId, noteId)
+      : getScoped(await ctx.client.listNotes(notebookId), noteId);
+    return { config: ctx.config, data: { note: noteDetail(note, ctx.config.limits.note_max_bytes) } };
   }
 
   async updateNote(repo: string, noteId: string, input: { title?: string; text: string }): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1 } }> {
-    const { ctx, notes, notebookId } = await this.scoped(repo);
-    const current = getScoped(notes, noteId);
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
+    const current = typeof ctx.client.getOwnedNote === "function"
+      ? await ctx.client.getOwnedNote(notebookId, noteId)
+      : getScoped(await ctx.client.listNotes(notebookId), noteId);
     const parsed = parseNoteEnvelope(current.content);
     if (parsed?.envelope.project_slug !== undefined && parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Managed note envelope belongs to a different project");
     if (parsed?.envelope.kind === "overview") throw new NotebookError("CONFLICT", "Use pj notebook overview --set-file to update the stable Overview note");
@@ -431,12 +453,21 @@ export class NotebookModule {
 
   async deleteNote(repo: string, noteId: string, confirmed: boolean): Promise<{ config: EffectiveNotebookConfigV1; data: { deleted_id: string } }> {
     if (!confirmed) throw new NotebookError("INVALID_INPUT", "Note deletion requires confirmation or --yes");
-    const { ctx, notes, notebookId } = await this.scoped(repo);
-    const note = getScoped(notes, noteId);
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
+    const note = typeof ctx.client.getOwnedNote === "function"
+      ? await ctx.client.getOwnedNote(notebookId, noteId)
+      : getScoped(await ctx.client.listNotes(notebookId), noteId);
     const parsed = parseNoteEnvelope(note.content);
     if (parsed && parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Managed note envelope belongs to a different project");
     if (noteId === ctx.config.binding.overview_note_id || parsed?.envelope.kind === "overview") throw new NotebookError("CONFLICT", "The stable Project Overview note cannot be deleted");
-    await ctx.client.deleteOwnedNote(notebookId, noteId);
+    if (typeof ctx.client.deleteOwnedNote === "function") {
+      await ctx.client.deleteOwnedNote(notebookId, noteId);
+    } else {
+      await (ctx.client as any).deleteNote(noteId);
+    }
     return { config: ctx.config, data: { deleted_id: noteId } };
   }
 
@@ -447,10 +478,14 @@ export class NotebookModule {
   }
 
   async overview(repo: string, setText?: string, deadlineMonotonicMs?: number): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1; updated: boolean; drift: Array<{ path: string; reason: string }> } }> {
-    const { ctx, notes, notebookId } = await this.scoped(repo, deadlineMonotonicMs);
-    const overviewId = ctx.config.binding.overview_note_id;
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config, deadlineMonotonicMs) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId, overviewId } = bindingNotebook(ctx.config);
     if (!overviewId) throw new NotebookError("NOT_CONFIGURED", "Overview note ID is not bound");
-    const current = getScoped(notes, overviewId);
+    const current = typeof ctx.client.getOwnedNote === "function"
+      ? await ctx.client.getOwnedNote(notebookId, overviewId)
+      : getScoped(await ctx.client.listNotes(notebookId), overviewId);
     const parsed = parseNoteEnvelope(current.content);
     if (!parsed || parsed.envelope.kind !== "overview") throw new NotebookError("DRIFT_DETECTED", "Bound Overview note has no valid Overview envelope");
     if (parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Bound Overview envelope belongs to a different project");
@@ -463,6 +498,53 @@ export class NotebookModule {
     const content = ensureFinalNoteContent(withNoteEnvelope(envelope, setText), ctx.config.limits.note_max_bytes);
     const updated = await ctx.client.updateOwnedNote(notebookId, overviewId, { content });
     return { config: ctx.config, data: { note: noteDetail(updated, ctx.config.limits.note_max_bytes), updated: true, drift: [] } };
+  }
+
+  async reconcileOverview(repo = process.cwd()): Promise<{ config: EffectiveNotebookConfigV1; data: { note: NoteDetailV1; updated: boolean } }> {
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId, overviewId } = bindingNotebook(ctx.config);
+    if (!overviewId) throw new NotebookError("NOT_CONFIGURED", "Overview note ID is not bound");
+    const current = typeof ctx.client.getOwnedNote === "function"
+      ? await ctx.client.getOwnedNote(notebookId, overviewId)
+      : getScoped(await ctx.client.listNotes(notebookId), overviewId);
+    const parsed = parseNoteEnvelope(current.content);
+    if (!parsed || parsed.envelope.kind !== "overview") throw new NotebookError("DRIFT_DETECTED", "Bound Overview note has no valid Overview envelope");
+    if (parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Bound Overview envelope belongs to a different project");
+    const compiledOverview = compileOverviewArtifact({ config: ctx.config, projectName: ctx.resolved.project.name, purpose: ctx.resolved.project.description });
+    const content = renderOverviewContent({ config: ctx.config, descriptor: compiledOverview.descriptor, referenceContents: compiledOverview.reference_contents });
+    if (content === current.content) {
+      return { config: ctx.config, data: { note: noteDetail(current, ctx.config.limits.note_max_bytes), updated: false } };
+    }
+    const updated = await ctx.client.updateOwnedNote(notebookId, overviewId, { content });
+    return { config: ctx.config, data: { note: noteDetail(updated, ctx.config.limits.note_max_bytes), updated: true } };
+  }
+
+  async sync(repo = process.cwd(), options: { syncSources?: boolean } = {}): Promise<{ config: EffectiveNotebookConfigV1; data: EntropyReconciliationResultV1 }> {
+    const local = this.context(repo, true);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
+    const result = await reconcileNotebookEntropy({
+      module: this,
+      projectSlug: ctx.config.project_slug,
+      repoPath: ctx.config.repo_path,
+      client: ctx.client,
+      notebookId,
+      config: ctx.config,
+      syncSourcesFlag: options.syncSources ?? true,
+    });
+    return { config: ctx.config, data: result };
+  }
+
+  async listSources(repo = process.cwd()): Promise<{ config: EffectiveNotebookConfigV1; data: { items: OpenNotebookSourceV1[] } }> {
+    const local = this.context(repo, false);
+    requireRemoteNotebookConfig(local.config);
+    const ctx = { ...local, client: this.clientForConfig(local.config) } as ModuleContext & { client: OpenNotebookClient };
+    const { notebookId } = bindingNotebook(ctx.config);
+    const items = await ctx.client.listSources(notebookId);
+    return { config: ctx.config, data: { items } };
   }
 
   async audit(repo = process.cwd(), localOnly = false): Promise<{ config: EffectiveNotebookConfigV1; health: NotebookHealth; data: { rules: NotebookFindingV1[]; audited_at: string; remote_check: "pass" | "fail" | "skip"; capture_admission: CaptureAdmissionSummaryV1 } }> {

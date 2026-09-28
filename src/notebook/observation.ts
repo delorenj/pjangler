@@ -106,9 +106,29 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
     if (!notebook) {
       return { ...base, remote_check: "fail", health: local.config.binding.state === "planned" ? "blocked" : "drifted", notebook_check: notebookCheck, notebook: null, scoped_notes: [], overview: null, error: null };
     }
-    const notes = await client.listNotes(notebook.id);
+    const headers = typeof client.listNoteHeaders === "function"
+      ? await client.listNoteHeaders(notebook.id)
+      : await client.listNotes(notebook.id);
     const overviewId = local.config.binding.overview_note_id;
-    const overviewNote = overviewId ? notes.find((item) => item.id === overviewId) : undefined;
+    let overviewNote: OpenNotebookNoteV1 | undefined;
+    if (overviewId && headers.some((item) => item.id === overviewId)) {
+      if (typeof client.getOwnedNote === "function") {
+        try {
+          overviewNote = await client.getOwnedNote(notebook.id, overviewId);
+        } catch {
+          overviewNote = undefined;
+        }
+      } else {
+        overviewNote = (headers as OpenNotebookNoteV1[]).find((item) => item.id === overviewId && item.content);
+        if (!overviewNote && typeof (client as any).getNote === "function") {
+          try {
+            overviewNote = await (client as any).getNote(overviewId);
+          } catch {
+            overviewNote = undefined;
+          }
+        }
+      }
+    }
     let overview: NotebookObservationV1["overview"] = null;
     if (overviewId) {
       const parsed = overviewNote ? parseNoteEnvelope(overviewNote.content) : null;
@@ -127,13 +147,15 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
       health: healthy ? "healthy" : "drifted",
       notebook_check: notebookCheck,
       notebook,
-      scoped_notes: notes.map((note) => ({
+      scoped_notes: headers.map((note) => ({
         id: note.id,
         title: note.title,
         note_type: note.note_type,
         created_at: note.created_at,
         updated_at: note.updated_at,
-        envelope_logical_id: parseNoteEnvelope(note.content)?.envelope.logical_id ?? null,
+        envelope_logical_id: "content" in note && typeof (note as any).content === "string"
+          ? parseNoteEnvelope((note as any).content)?.envelope.logical_id ?? null
+          : null,
       })),
       overview,
       error: null,

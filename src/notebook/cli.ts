@@ -144,6 +144,14 @@ export function registerNotebookCli(program: Command, module = new NotebookModul
       run: () => module.listNotes(repo, options.limit, options.cursor),
     }));
 
+  list.command("sources")
+    .argument("[repo]", "Registered repository", process.cwd())
+    .option("--json", "Emit JSON v1")
+    .action(async (repo: string, options: CommonOptions) => execute({
+      command: "notebook.sources.list", repo, json: Boolean(options.json), module,
+      run: () => module.listSources(repo),
+    }));
+
   const add = notebook.command("add").description("Add notebook resources");
   add.command("note")
     .argument("[repo]", "Registered repository", process.cwd())
@@ -197,6 +205,16 @@ export function registerNotebookCli(program: Command, module = new NotebookModul
     .option("--limit <n>", "Result limit", (value) => Number(value), 20)
     .option("--json", "Emit JSON v1")
     .action(async (query: string, repo: string, options: CommonOptions & { limit: number }) => execute({ command: "notebook.notes.search", repo, json: Boolean(options.json), module, run: () => module.searchNotes(repo, query, options.limit) }));
+
+  notebook.command("sync")
+    .description("Synchronize project notebook: reconcile overview drift, prune zombie notes, compact session captures, and sync sources")
+    .argument("[repo]", "Registered repository", process.cwd())
+    .option("--no-sources", "Skip synchronizing OpenNotebook sources")
+    .option("--json", "Emit JSON v1")
+    .action(async (repo: string, options: CommonOptions & { sources?: boolean }) => execute({
+      command: "notebook.sync", repo, json: Boolean(options.json), module,
+      run: async () => module.sync(repo, { syncSources: options.sources !== false }),
+    }));
 
   notebook.command("overview")
     .argument("[repo]", "Registered repository", process.cwd())
@@ -304,9 +322,10 @@ export function isNotebookJsonInvocation(args: readonly string[]): boolean {
 function parserCommand(args: readonly string[]): string {
   const primary = args[1];
   const secondary = args[2];
-  if (primary === "status" || primary === "create" || primary === "audit" || primary === "migrate" || primary === "skill") return `notebook.${primary}`;
+  if (primary === "status" || primary === "create" || primary === "audit" || primary === "migrate" || primary === "skill" || primary === "sync") return `notebook.${primary}`;
   if (primary === "overview") return args.includes("--set-file") ? "notebook.overview.set" : "notebook.overview.get";
   if (primary === "list" && secondary === "notes") return "notebook.notes.list";
+  if (primary === "list" && secondary === "sources") return "notebook.sources.list";
   if (primary === "add" && secondary === "note") return "notebook.notes.add";
   if (primary === "get" && secondary === "note") return "notebook.notes.get";
   if (primary === "update" && secondary === "note") return "notebook.notes.update";
@@ -320,7 +339,7 @@ function parserCommand(args: readonly string[]): string {
 function parserRepo(args: readonly string[]): string {
   const primary = args[1];
   const secondary = args[2];
-  const index = primary === "status" || primary === "create" || primary === "audit" || primary === "migrate" || primary === "overview"
+  const index = primary === "status" || primary === "create" || primary === "audit" || primary === "migrate" || primary === "overview" || primary === "sync"
     ? 2
     : (primary === "list" || primary === "add" || (primary === "capture" && secondary === "list")) ? 3 : 4;
   const candidate = args[index];

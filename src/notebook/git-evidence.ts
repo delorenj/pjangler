@@ -161,7 +161,7 @@ export function readSafeEvidenceText(repoPath: string, relativePath: string, max
   } finally { closeSync(fd); }
 }
 
-function looksGenerated(path: string): boolean {
+export function looksGenerated(path: string): boolean {
   return /(^|\/)(dist|build|coverage|node_modules|vendor|\.next|_site)(\/|$)/u.test(path)
     || /(?:\.min\.|\.generated\.|-lock\.)/u.test(path);
 }
@@ -171,7 +171,7 @@ function looksSecret(path: string, content: string): boolean {
   return /(?:BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|(?:api[_-]?key|password|token)\s*[:=]\s*["']?[A-Za-z0-9_+\/-]{16,})/iu.test(content);
 }
 
-function matchesSimpleGlob(path: string, glob: string): boolean {
+export function matchesSimpleGlob(path: string, glob: string): boolean {
   // v1 defaults are suffix globs; support the common bounded subset without a
   // shell or a dependency whose semantics differ by platform.
   if (glob === "**/*.md") return path.toLowerCase().endsWith(".md");

@@ -4,6 +4,7 @@ import {
   type EffectiveNotebookConfigV1,
   type OpenNotebookNotebookV1,
   type OpenNotebookNoteV1,
+  type OpenNotebookSourceV1,
 } from "./types";
 
 export interface OpenNotebookHealthV1 {
@@ -67,7 +68,7 @@ function parseNotebook(value: unknown): OpenNotebookNotebookV1 {
   };
 }
 
-type ScopedNoteListItemV1 = Omit<OpenNotebookNoteV1, "content"> & { content: string | null };
+export type ScopedNoteListItemV1 = Omit<OpenNotebookNoteV1, "content"> & { content: string | null };
 
 function parseNoteRecord(value: unknown, noteMaxBytes: number, allowNullContent: boolean): ScopedNoteListItemV1 {
   if (!isRecord(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned an invalid note");
@@ -180,7 +181,7 @@ export class OpenNotebookClient {
     return parseNotebook(await this.request(`/api/notebooks/${encodeURIComponent(id)}`, { method: "PUT", body: input }));
   }
 
-  async listNotes(notebookId: string): Promise<OpenNotebookNoteV1[]> {
+  async listNoteHeaders(notebookId: string): Promise<ScopedNoteListItemV1[]> {
     const operationDeadline = Math.min(
       this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
       performance.now() + this.config.limits.overall_timeout_ms,
@@ -189,6 +190,14 @@ export class OpenNotebookClient {
     if (!Array.isArray(value) || value.length > this.config.limits.list_max_items) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list is invalid or incomplete under configured limits");
     const members = value.map((item) => parseScopedNoteListItem(item, this.config.limits.note_max_bytes));
     if (new Set(members.map((item) => item.id)).size !== members.length) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook scoped note list contains duplicate IDs");
+    return members;
+  }
+
+  async hydrateNotes(members: ScopedNoteListItemV1[]): Promise<OpenNotebookNoteV1[]> {
+    const operationDeadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      performance.now() + this.config.limits.overall_timeout_ms,
+    );
     const notes = new Array<OpenNotebookNoteV1>(members.length);
     let nextIndex = 0;
     const hydrate = async (): Promise<void> => {
@@ -207,6 +216,11 @@ export class OpenNotebookClient {
     return notes;
   }
 
+  async listNotes(notebookId: string): Promise<OpenNotebookNoteV1[]> {
+    const members = await this.listNoteHeaders(notebookId);
+    return this.hydrateNotes(members);
+  }
+
   async createNote(notebookId: string, input: { title: string; content: string; note_type?: string }, possiblyDispatched?: () => void, definitivelyRejected?: (status: 400 | 422) => void): Promise<OpenNotebookNoteV1> {
     if (Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Note content exceeds the configured ceiling");
     const noteType = normalizeOpenNotebookNoteType(input.note_type);
@@ -219,21 +233,84 @@ export class OpenNotebookClient {
   }
 
   async getOwnedNote(notebookId: string, noteId: string): Promise<OpenNotebookNoteV1> {
-    const notes = await this.listNotes(notebookId);
-    const note = notes.find((item) => item.id === noteId);
-    if (!note) throw new NotebookError("NOT_FOUND", `Note is not a proven member of the bound notebook: ${noteId}`);
-    return note;
+    const operationDeadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      performance.now() + this.config.limits.overall_timeout_ms,
+    );
+    const headers = await this.listNoteHeaders(notebookId);
+    const member = headers.find((item) => item.id === noteId);
+    if (!member) throw new NotebookError("NOT_FOUND", `Note is not a proven member of the bound notebook: ${noteId}`);
+    return parseNote(await this.request(`/api/notes/${encodeURIComponent(noteId)}`, { deadlineMonotonicMs: operationDeadline }), this.config.limits.note_max_bytes);
   }
 
   async updateOwnedNote(notebookId: string, noteId: string, input: { title?: string; content?: string }): Promise<OpenNotebookNoteV1> {
     if (input.content !== undefined && Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Note content exceeds the configured ceiling");
-    await this.getOwnedNote(notebookId, noteId);
-    return parseNote(await this.request(`/api/notes/${encodeURIComponent(noteId)}`, { method: "PUT", body: input }), this.config.limits.note_max_bytes);
+    const operationDeadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      performance.now() + this.config.limits.overall_timeout_ms,
+    );
+    const headers = await this.listNoteHeaders(notebookId);
+    if (!headers.some((item) => item.id === noteId)) throw new NotebookError("NOT_FOUND", `Note is not a proven member of the bound notebook: ${noteId}`);
+    return parseNote(await this.request(`/api/notes/${encodeURIComponent(noteId)}`, { method: "PUT", body: input, deadlineMonotonicMs: operationDeadline }), this.config.limits.note_max_bytes);
   }
 
   async deleteOwnedNote(notebookId: string, noteId: string): Promise<void> {
-    await this.getOwnedNote(notebookId, noteId);
-    await this.request(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE", allowEmpty: true });
+    const operationDeadline = Math.min(
+      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
+      performance.now() + this.config.limits.overall_timeout_ms,
+    );
+    const headers = await this.listNoteHeaders(notebookId);
+    if (!headers.some((item) => item.id === noteId)) throw new NotebookError("NOT_FOUND", `Note is not a proven member of the bound notebook: ${noteId}`);
+    await this.request(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE", allowEmpty: true, deadlineMonotonicMs: operationDeadline });
+  }
+
+  async listSources(notebookId: string): Promise<OpenNotebookSourceV1[]> {
+    const value = await this.request(`/api/sources?notebook_id=${encodeURIComponent(notebookId)}`);
+    if (!Array.isArray(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook sources list is invalid");
+    return value.map((item) => {
+      if (!isRecord(item)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Invalid source record");
+      return {
+        id: boundedString(item.id, "source id", 512),
+        title: boundedString(item.title, "source title", 4_096),
+        type: optionalString(item.type, "source type", 128) ?? undefined,
+        full_text: optionalString(item.full_text, "source full_text", this.config.limits.note_max_bytes) ?? null,
+        embedded: typeof item.embedded === "boolean" ? item.embedded : undefined,
+        embedded_chunks: typeof item.embedded_chunks === "number" ? item.embedded_chunks : undefined,
+        created: optionalString(item.created, "source created", 128),
+        updated: optionalString(item.updated, "source updated", 128),
+        status: optionalString(item.status, "source status", 128),
+      };
+    });
+  }
+
+  async createSource(input: { notebookId: string; title: string; content: string; embed?: boolean }): Promise<OpenNotebookSourceV1> {
+    if (Buffer.byteLength(input.content, "utf8") > this.config.limits.note_max_bytes) throw new NotebookError("INVALID_INPUT", "Source content exceeds the configured ceiling");
+    const value = await this.request("/api/sources/json", {
+      method: "POST",
+      body: {
+        notebooks: [input.notebookId],
+        type: "text",
+        title: input.title,
+        content: input.content,
+        embed: input.embed ?? false,
+      },
+    });
+    if (!isRecord(value)) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook created source is invalid");
+    return {
+      id: boundedString(value.id, "source id", 512),
+      title: boundedString(value.title, "source title", 4_096),
+      type: optionalString(value.type, "source type", 128) ?? undefined,
+      full_text: optionalString(value.full_text, "source full_text", this.config.limits.note_max_bytes) ?? null,
+      embedded: typeof value.embedded === "boolean" ? value.embedded : undefined,
+      embedded_chunks: typeof value.embedded_chunks === "number" ? value.embedded_chunks : undefined,
+      created: optionalString(value.created, "source created", 128),
+      updated: optionalString(value.updated, "source updated", 128),
+      status: optionalString(value.status, "source status", 128),
+    };
+  }
+
+  async deleteSource(sourceId: string): Promise<void> {
+    await this.request(`/api/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE", allowEmpty: true });
   }
 
   private async ensureAuthProbe(): Promise<void> {

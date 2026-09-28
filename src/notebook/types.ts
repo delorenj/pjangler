@@ -136,7 +136,7 @@ export const DEFAULT_NOTEBOOK_LIMITS: Readonly<NotebookLimitsV1> = Object.freeze
   excerpt_max_chars: 320,
   diagnostic_max_chars: 512,
   overall_timeout_ms: 5_000,
-  hook_session_start_timeout_ms: 2_000,
+  hook_session_start_timeout_ms: 4_000,
   hook_session_end_timeout_ms: 250,
   hook_payload_max_bytes: 1_048_576,
   receipt_succeeded_retention_days: 30,
@@ -220,6 +220,18 @@ export interface OpenNotebookNoteV1 {
   note_type: string;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface OpenNotebookSourceV1 {
+  id: string;
+  title: string;
+  type?: string;
+  full_text?: string | null;
+  embedded?: boolean;
+  embedded_chunks?: number;
+  created?: string | null;
+  updated?: string | null;
+  status?: string | null;
 }
 
 export interface NoteSummaryV1 {

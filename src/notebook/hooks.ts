@@ -122,6 +122,7 @@ function assertOwnedSkillTree(source: string): void {
     if (uid !== undefined && directoryStat.uid !== uid) throw new NotebookError("CONFLICT", "Project Notebook skill source is not owned by the current user");
     if (directoryStat.mode & 0o7002) throw new NotebookError("CONFLICT", "Project Notebook skill source has unsafe directory mode bits");
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && (entry.name === "__pycache__" || entry.name === ".git" || entry.name === "node_modules")) continue;
       const path = join(directory, entry.name);
       const stat = lstatSync(path);
       if (stat.isSymbolicLink()) throw new NotebookError("CONFLICT", "Project Notebook skill source contains a symlink");
@@ -140,6 +141,7 @@ function enumerateSkillPayload(source: string): SkillExportManifestV1["files"] {
   const result: SkillExportManifestV1["files"] = [];
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+      if (entry.isDirectory() && (entry.name === "__pycache__" || entry.name === ".git" || entry.name === "node_modules")) continue;
       const path = join(directory, entry.name);
       const rel = relative(source, path).split(sep).join("/");
       // PJAN-84: `.source.yaml` is Skillex's provenance metadata about its own
@@ -822,13 +824,25 @@ export function readHookPayload(input: { payloadFile?: string; stateRoot: string
   } finally { closeSync(fd); }
 }
 
+const ALLOWED_CLIENT_NAMES = new Set([
+  "claude",
+  "claude-code",
+  "gemini",
+  "antigravity",
+  "codex",
+  "opencode",
+  "kimi",
+  "hermes",
+]);
+
 function identity(payload: ClaudeSessionHookPayloadV1): { sessionId: string; repo: string; client: string } | null {
   const sessionId = typeof payload.session_id === "string" ? payload.session_id.trim() : "";
   const repo = typeof payload.cwd === "string" ? payload.cwd.trim() : "";
-  const client = typeof payload.client_name === "string" ? payload.client_name.trim().toLowerCase() : "claude-code";
+  const rawClient = typeof payload.client_name === "string" ? payload.client_name.trim().toLowerCase() : "claude-code";
   if (!sessionId || !repo) return null;
-  if (client !== "claude" && client !== "claude-code") return null;
-  return { sessionId, repo, client: "claude-code" };
+  if (!ALLOWED_CLIENT_NAMES.has(rawClient)) return null;
+  const client = rawClient === "claude" ? "claude-code" : rawClient;
+  return { sessionId, repo, client };
 }
 
 function eventAllowed(payload: ClaudeSessionHookPayloadV1, expected: "SessionStart" | "SessionEnd"): boolean {

@@ -1487,17 +1487,18 @@ export async function executeProjectInitPlan(
       mkdirSync(dirname(action.targetDir), { recursive: true });
       const before = snapshotTree(action.targetDir);
       const copierExecutable = options.trustedCopier?.executable ?? action.command[0]!;
-      const copierEnv = options.trustedCopier ? { ...process.env } : undefined;
-      if (copierEnv) {
+      const copierEnv: NodeJS.ProcessEnv = { ...process.env };
+      if (options.trustedCopier) {
         delete copierEnv.PYTHONHOME;
         delete copierEnv.PYTHONPATH;
         copierEnv.PYTHONNOUSERSITE = "1";
         copierEnv.PYTHONSAFEPATH = "1";
       }
+      copierEnv.MISE_YES = "1";
       const result = spawnSync(copierExecutable, action.command.slice(1), {
         encoding: "utf8",
         cwd: action.cwd,
-        ...(copierEnv ? { env: copierEnv } : {}),
+        env: copierEnv,
       });
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);

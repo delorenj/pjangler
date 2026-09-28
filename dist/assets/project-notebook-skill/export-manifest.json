@@ -19,12 +19,12 @@
     },
     {
       "path": "hooks/session-end.sh",
-      "sha256": "f024d5ff3a3e87bba2994033f3ba6c3d66db5037154a24efa058f9504eb8f2cd",
+      "sha256": "bb37fa22701c93bc02afde2b54be7c34ebc939e52628f4b13f40d9aa55591486",
       "mode": "0755"
     },
     {
       "path": "hooks/session-start.sh",
-      "sha256": "955652cd38f47a216a5baa4a7a364a1c707545109957d7aa39fbdbb45e2e0918",
+      "sha256": "dca8e974513fd3ddaba3d94cd0386f4ac277f548b2af583c7f96b86270655662",
       "mode": "0755"
     },
     {
