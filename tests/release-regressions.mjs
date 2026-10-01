@@ -53,7 +53,9 @@ try {
   const miseVersion = publishWorkflow.indexOf("version: '2026.7.5'", miseSetupStep);
   const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
   const npmTestStep = publishWorkflow.indexOf("npm run test:coverage");
-  const npmPublishStep = publishWorkflow.indexOf("npm publish --provenance");
+  // The publish step's own line, not the first mention: the comments above it
+  // talk about npm publish too.
+  const npmPublishStep = publishWorkflow.search(/^\s+run: npm publish$/m);
   const workflow = YAML.parse(publishWorkflow);
   const publishSteps = workflow.jobs.ci.steps;
   const checkoutStep = publishSteps.find((step) => step.uses === "actions/checkout@v4");
@@ -73,7 +75,9 @@ try {
     (step) => step.name === "Verify CommonProject tag history",
   );
   const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm run test:coverage");
-  const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish --provenance");
+  const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish");
+  assert.notEqual(npmPublishStepIndex, -1, "the publish step must run exactly `npm publish`, with no --provenance (PJAN-161)");
+  assert.notEqual(npmPublishStep, -1, "the publish step's run line must be found in the raw workflow");
   assert.match(
     gitmodules,
     /^\[submodule "templates\/commonproject"\]\n\tpath = templates\/commonproject\n\turl = git@github\.com:delorenj\/CommonProject\.git\n\tbranch = main\n$/,
@@ -123,7 +127,7 @@ try {
   );
   assert.ok(
     transportBridgeStep < npmPublishStepIndex && npmTestStepIndex < npmPublishStepIndex,
-    "OIDC publication must remain behind the transport bridge and structurally verified npm test gate",
+    "publication must remain behind the transport bridge and structurally verified npm test gate",
   );
   assert.ok(miseVersion > miseSetupStep, "publish workflow must request the known-compatible pinned mise version");
   assert.ok(
@@ -134,13 +138,90 @@ try {
   // publishing needs the workflow to push its own release commit and tag,
   // so it is `write` now. That is a real loosening — asserted, not assumed,
   // so widening it further has to be a deliberate edit here.
-  assert.match(publishWorkflow, /permissions:\n\s+id-token: write[^\n]*\n\s+contents: write/);
-  assert.ok(npmTestStep < npmPublishStep, "OIDC publication must remain behind the complete npm test gate");
-  assert.match(
-    publishWorkflow.slice(npmPublishStep),
-    /env:\n\s+NODE_AUTH_TOKEN: ""/,
-    "OIDC publication must retain the explicitly empty npm auth token",
+  //
+  // PJAN-161: npm supports OIDC trusted publishing and provenance only on
+  // GitHub-hosted runners, and rejected both from the self-hosted runner with
+  // E422 (run 36927547374). The operator chose a scoped npm token instead, so
+  // the job no longer asks for an OIDC token at all.
+  assert.deepEqual(workflow.jobs.ci.permissions, { contents: "write" }, "the ci job gets contents: write and nothing else");
+  assert.equal(workflow.permissions, undefined, "no workflow-level permissions may widen the job");
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.ok(!job.permissions || !("id-token" in job.permissions), `job ${name} must not request an OIDC token`);
+  }
+  assert.doesNotMatch(publishWorkflow, /^\s*id-token\s*:/m, "no id-token permission anywhere in the workflow");
+  assert.ok(npmTestStep < npmPublishStep, "publication must remain behind the complete npm test gate");
+
+  // The publish step is plain `npm publish`, authenticated by the scoped
+  // NPM_TOKEN repo secret through setup-node's .npmrc.
+  const publishStep = publishSteps[npmPublishStepIndex];
+  assert.equal(publishStep.name, "Publish to npm");
+  assert.deepEqual(
+    publishStep.env,
+    { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" },
+    "the publish step must authenticate with the NPM_TOKEN secret and nothing else",
   );
+  const setupNode = publishSteps.find((step) => String(step.uses ?? "").startsWith("actions/setup-node@"));
+  assert.equal(
+    setupNode?.with?.["registry-url"],
+    "https://registry.npmjs.org",
+    "setup-node's registry-url is what writes the .npmrc that reads NODE_AUTH_TOKEN",
+  );
+
+  // No provenance, anywhere it could be switched back on: a flag on a step,
+  // npm's env override, package.json publishConfig, or the project .npmrc.
+  for (const step of publishSteps) {
+    assert.doesNotMatch(String(step.run ?? ""), /--provenance/, `${step.name ?? step.uses ?? step.run}: provenance needs a GitHub-hosted runner`);
+  }
+  assert.doesNotMatch(publishWorkflow, /NPM_CONFIG_PROVENANCE/i, "provenance must not come back through npm's env");
+  assert.equal(packageJson.publishConfig?.provenance, undefined, "publishConfig must not re-enable provenance");
+  const npmrcPath = join(root, ".npmrc");
+  if (existsSync(npmrcPath)) {
+    const settings = readFileSync(npmrcPath, "utf8").split("\n").filter((line) => !/^\s*[;#]/.test(line));
+    assert.ok(!settings.some((line) => /^\s*provenance\s*=/.test(line)), ".npmrc must not re-enable provenance");
+  }
+
+  // Every key and scalar in the parsed workflow, with its path. Comments are
+  // not in the parse, so prose about the token cannot trip these checks.
+  const nodes = [];
+  const walk = (node, path) => {
+    if (node && typeof node === "object") {
+      for (const [key, value] of Object.entries(node)) {
+        nodes.push({ path: [...path, key].join("."), key, value });
+        walk(value, [...path, key]);
+      }
+    }
+  };
+  walk(workflow, []);
+  const tokenPath = `jobs.ci.steps.${npmPublishStepIndex}.env.NODE_AUTH_TOKEN`;
+  // NODE_AUTH_TOKEN is never an empty string. That was the OIDC signal; with
+  // token auth an empty value just publishes anonymously and fails ENEEDAUTH.
+  for (const { path, key, value } of nodes.filter((node) => node.key === "NODE_AUTH_TOKEN")) {
+    assert.ok(typeof value === "string" && value.trim() !== "", `${path} must not be an empty npm auth token`);
+    assert.equal(path, tokenPath, `${key} may be set only on the publish step`);
+  }
+  assert.doesNotMatch(publishWorkflow, /NODE_AUTH_TOKEN:\s*(?:""|''|$)/m, "NODE_AUTH_TOKEN must never be set empty");
+  // The token reaches exactly one place: the publish step's env. Not the
+  // workflow or job env, not a `with:` input, not a run script.
+  const tokenMentions = nodes.filter(
+    ({ key, value }) => /NPM_TOKEN|NODE_AUTH_TOKEN/.test(key) || (typeof value === "string" && /NPM_TOKEN|NODE_AUTH_TOKEN/.test(value)),
+  );
+  assert.deepEqual(
+    tokenMentions.map((node) => node.path),
+    [tokenPath],
+    "the npm token must appear only in the publish step's env",
+  );
+
+  // PJAN-161: the release push is atomic, so a rejected main can never leave a
+  // tag on a commit main never got. pjan-160-release-version-regressions owns
+  // the commit step: it pins the exact command and proves it with real git.
+  const pushes = publishSteps.flatMap((step) =>
+    String(step.run ?? "")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#") && /\bgit\s+push\b/.test(line)),
+  );
+  assert.equal(pushes.length, 1, "the workflow pushes exactly once");
+  assert.match(pushes[0], /\bgit push --atomic origin HEAD:refs\/heads\/main "refs\/tags\/v/, "the release push must be atomic");
+  assert.doesNotMatch(pushes[0], /--follow-tags/, "--follow-tags pushes each ref on its own");
   const contractStep = publishWorkflow.indexOf("npm run test:bmad-installer-contract");
   assert.notEqual(contractStep, -1, "publish workflow must run the actual pinned BMAD installer contract");
   assert.ok(

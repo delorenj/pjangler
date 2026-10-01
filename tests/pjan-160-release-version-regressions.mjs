@@ -20,7 +20,9 @@
 //      repository, so this is the layer that shows the script's git commands
 //      actually find the tags it claims to.
 // Plus a structural check that publish.yml calls the script, publishes before
-// it commits and tags, and tags in a form --follow-tags actually pushes.
+// it commits and tags, and pushes main and an annotated tag in one atomic push
+// (PJAN-161), and section 5, which runs that release step against real Git: a
+// rejected main must leave no tag behind on origin.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -533,8 +535,8 @@ test("publish.yml bumps with the script, publishes, and only then commits and ta
   const steps = workflow.jobs.ci.steps;
   const bump = steps.findIndex((s) => s.id === "bump");
   const commit = steps.findIndex((s) => s.name === "Commit the release");
-  // Matched by the command, not its flags, so dropping or adding a flag (the
-  // --provenance E422 is its own ticket) does not hide the step from this check.
+  // Matched by the command, not its flags, so dropping or adding a flag (PJAN-161
+  // dropped --provenance) does not hide the step from this check.
   const publishers = steps.flatMap((s, i) => (/^\s*npm publish\b/m.test(String(s.run ?? "")) ? [i] : []));
   assert.equal(publishers.length, 1, "exactly one step runs npm publish");
   const [publish] = publishers;
@@ -560,10 +562,108 @@ test("publish.yml bumps with the script, publishes, and only then commits and ta
   assert.match(commitRun, /^git add package\.json package-lock\.json \.coverage-floor\.json$/m,
     "the release commit stages the bump and the coverage-floor raise, explicitly");
   assert.match(commitRun, /git tag -a "v\$\{\{ steps\.bump\.outputs\.next \}\}" -m "v\$\{\{ steps\.bump\.outputs\.next \}\}"/,
-    "a lightweight tag is never pushed by --follow-tags");
-  assert.match(commitRun, /git push origin HEAD:main --follow-tags/);
+    "the release tag is annotated");
+  // PJAN-161: main and the tag in one atomic push. --follow-tags pushed each
+  // ref on its own, so a rejected main still landed the tag (section 5).
+  assert.match(commitRun, /^git push --atomic origin HEAD:refs\/heads\/main "refs\/tags\/v\$\{\{ steps\.bump\.outputs\.next \}\}"$/m,
+    "main and the release tag are pushed together, atomically");
+  // The script's commands without its comments, which talk about --follow-tags.
+  const commitCode = commitRun.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  assert.equal(commitCode.match(/\bgit\s+push\b/g)?.length, 1, "the release step pushes exactly once");
+  assert.doesNotMatch(commitCode, /--follow-tags/, "--follow-tags pushes each ref on its own");
   assert.doesNotMatch(commitRun, /git tag (-d|-f|--delete|--force)/, "an existing tag is never moved or deleted");
   assert.doesNotMatch(commitRun, /--force|\bpush\s+-f\b/, "the release push never forces");
+});
+
+// ---- 5. the release push, run against real Git (PJAN-161) ------------------
+
+// publish.yml's 'Commit the release' script, verbatim except for the bump's
+// output, run by bash in a real clone with the release bump in its tree. Only
+// origin is local: a bare repository reached over file://.
+function releaseStepScript(version) {
+  const workflow = YAML.parse(readFileSync(join(ROOT, ".github", "workflows", "publish.yml"), "utf8"));
+  const step = workflow.jobs.ci.steps.find((s) => s.name === "Commit the release");
+  assert.ok(step, "the release commit step must exist");
+  return step.run.replaceAll("${{ steps.bump.outputs.next }}", version);
+}
+
+/** The three files the release step stages, at `version`. */
+function writeReleaseFiles(cwd, version, floor) {
+  writeFileSync(join(cwd, "package.json"), pkgJson(version));
+  writeFileSync(join(cwd, "package-lock.json"), `${JSON.stringify({ name: "@delorenj/pjangler", version, lockfileVersion: 3 })}\n`);
+  writeFileSync(join(cwd, ".coverage-floor.json"), `${JSON.stringify({ lines: floor })}\n`);
+}
+
+/** A bare origin whose main is at 1.5.1, and a full CI clone of it with the bump to 1.5.2 in its tree. */
+function releaseFixture() {
+  fixtureCount += 1;
+  const base = join(dir, `push-${fixtureCount}`);
+  const origin = join(base, "origin.git");
+  const seed = join(base, "seed");
+  mkdirSync(seed, { recursive: true });
+  git(base, "init", "-q", "--bare", "--initial-branch=main", origin);
+  git(seed, "init", "-q", "--initial-branch=main");
+  writeReleaseFiles(seed, "1.5.1", 80);
+  git(seed, "add", ".");
+  git(seed, "commit", "-qm", "chore(release): v1.5.1 [skip ci]");
+  git(seed, "push", "-q", origin, "main");
+  const ci = join(base, "ci");
+  git(base, "clone", "-q", pathToFileURL(origin).href, ci);
+  writeReleaseFiles(ci, "1.5.2", 81);
+  return { base, origin, ci };
+}
+
+/** Someone else lands a commit on origin's main after the CI checkout. */
+function moveMain({ base, origin }) {
+  const other = join(base, "other");
+  git(base, "clone", "-q", pathToFileURL(origin).href, other);
+  writeFileSync(join(other, "README.md"), "moved\n");
+  git(other, "add", "README.md");
+  git(other, "commit", "-qm", "docs: land first");
+  git(other, "push", "-q", "origin", "main");
+  return git(other, "rev-parse", "HEAD");
+}
+
+const runReleaseStep = (ci, script) => spawnSync("bash", ["-c", script], { cwd: ci, env: GIT_ENV, encoding: "utf8" });
+const originTag = (origin, name) => spawnSync("git", ["rev-parse", "--verify", "-q", `refs/tags/${name}`], { cwd: origin, env: GIT_ENV, encoding: "utf8" });
+
+test("release push: on a current main, the release commit and the annotated tag land together", () => {
+  const fixture = releaseFixture();
+  const run = runReleaseStep(fixture.ci, releaseStepScript("1.5.2"));
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const head = git(fixture.ci, "rev-parse", "HEAD");
+  assert.equal(git(fixture.origin, "rev-parse", "refs/heads/main"), head, "origin's main is the release commit");
+  assert.equal(git(fixture.origin, "log", "-1", "--format=%s", "main"), "chore(release): v1.5.2 [skip ci]");
+  assert.equal(git(fixture.origin, "cat-file", "-t", "refs/tags/v1.5.2"), "tag", "the pushed tag is annotated");
+  assert.equal(git(fixture.origin, "rev-parse", "refs/tags/v1.5.2^{commit}"), head, "the tag names the release commit");
+  assert.deepEqual(
+    git(fixture.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", "main").split("\n").sort(),
+    [".coverage-floor.json", "package-lock.json", "package.json"],
+    "the release commit carries exactly the bump and the coverage floor",
+  );
+});
+
+test("release push: when main moved, the push is rejected and origin gets no tag", () => {
+  const fixture = releaseFixture();
+  const moved = moveMain(fixture);
+  const run = runReleaseStep(fixture.ci, releaseStepScript("1.5.2"));
+  assert.notEqual(run.status, 0, "a release push that loses to a moved main must fail the step");
+  assert.match(run.stderr, /atomic push failed|rejected/);
+  assert.equal(git(fixture.origin, "rev-parse", "refs/heads/main"), moved, "origin's main is untouched");
+  assert.notEqual(originTag(fixture.origin, "v1.5.2").status, 0, "no v1.5.2 tag on origin for a commit main never got");
+  assert.equal(git(fixture.ci, "cat-file", "-t", "refs/tags/v1.5.2"), "tag", "the tag stays local, never moved or deleted");
+});
+
+test("release push: control -- the old --follow-tags push leaks the tag onto origin", () => {
+  // Pins why the push is atomic: with the pre-PJAN-161 line and the same moved
+  // main, git lands the tag and rejects only main.
+  const fixture = releaseFixture();
+  moveMain(fixture);
+  const script = releaseStepScript("1.5.2").replace(/^git push .*$/m, "git push origin HEAD:main --follow-tags");
+  assert.match(script, /^git push origin HEAD:main --follow-tags$/m, "the control must replace the release push");
+  const run = runReleaseStep(fixture.ci, script);
+  assert.notEqual(run.status, 0, run.stdout + run.stderr);
+  assert.equal(originTag(fixture.origin, "v1.5.2").status, 0, "the non-atomic push left the tag on origin");
 });
 
 console.log("");
