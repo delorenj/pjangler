@@ -38,7 +38,7 @@ jobs:
     # That is not hypothetical: the commit introducing this file did exactly
     # that and never ran. This actor guard is the half that prose cannot break.
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, delonet]
     environment: release
     permissions:
       id-token: write # OIDC trusted publishing to npm
