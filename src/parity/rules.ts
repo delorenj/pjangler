@@ -1564,7 +1564,10 @@ const BMAD_NPM_PACKAGE = "bmad-method";
 // Installer and Skillex pack are independently pinned artifacts. Do not derive
 // either lifecycle from the other: the installer is advanced only after its
 // real multi-module configuration contract is verified.
-export const BMAD_INSTALLER_VERSION = "6.11.1-next.1";
+// 6.11.1-next.1 -> 6.12.0 (PJAN-149): the old pin fetches the external cis
+// module from its main branch, whose layout moved, so every default install
+// (bmm,bmb,cis) failed. 6.12.0 passes the contract with all four modules.
+export const BMAD_INSTALLER_VERSION = "6.12.0";
 
 // Legacy BMAD currency checks continue to report the moving next channel; fresh
 // bootstrap uses the exact installer pin above so mutation is reproducible.

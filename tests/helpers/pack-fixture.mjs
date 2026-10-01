@@ -5,7 +5,11 @@ import { dirname, join } from "node:path";
 
 export const PACK_FIXTURE_NAME = "pjtest";
 export const PACK_FIXTURE_VERSION = "6.10.1-next.31";
-export const BMAD_INSTALLER_FIXTURE_VERSION = "6.11.1-next.1";
+// The fake installer reports the production pin, read from source, so bumping
+// BMAD_INSTALLER_VERSION cannot leave every hermetic install failing preflight
+// with a "version mismatch" against a stale literal here (PJAN-149).
+export const BMAD_INSTALLER_FIXTURE_VERSION = readFileSync(new URL("../../src/parity/rules.ts", import.meta.url), "utf8")
+  .match(/export const BMAD_INSTALLER_VERSION\s*=\s*"([^"]+)"/)[1];
 
 // A small reference-only pack. Canonical definitions live once in all-skills;
 // pack.toml declares the generated child links consumed by the Node core.

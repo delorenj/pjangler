@@ -113,8 +113,16 @@ function bmadManifests(project, files) {
     `canonicalId,name,description,module,path\n${ids.map((id) => `"${id}","${id}","fixture","core","_bmad/core/${id}/SKILL.md"`).join("\n")}\n`);
 }
 
-test("the six aliases are exactly the ones the bundled skillex core checks", () => {
-  assert.deepEqual([...SUPPORTED_SKILLS_ALIASES], [...PROJECT_CLI_ALIASES]);
+// Aliases pjangler supports that the published skillex predates. skillex source
+// already carries .zcode/skills (177117b); SKRILL-24 publishes it. Once the
+// installed package has an entry, this test fails until it is dropped here.
+const PENDING_SKILLEX = [".zcode/skills"];
+
+test("the CLI aliases are exactly the ones the bundled skillex core checks", () => {
+  for (const alias of PENDING_SKILLEX) {
+    assert.ok(!PROJECT_CLI_ALIASES.includes(alias), `${alias} is in the installed skillex now: drop it from PENDING_SKILLEX`);
+  }
+  assert.deepEqual([...SUPPORTED_SKILLS_ALIASES].filter((a) => !PENDING_SKILLEX.includes(a)), [...PROJECT_CLI_ALIASES]);
   assert.equal(CANONICAL_CLI_SKILLS_ALIAS, "../.agents/skills");
 });
 

@@ -14,7 +14,7 @@ export const SUPPORTED_CLIS: readonly SupportedCli[] = Object.freeze([
   { id: "copilot", name: "Copilot", bmadTool: "github-copilot", projectRoot: ".copilot", skillsRoot: ".copilot/skills" },
   { id: "opencode", name: "OpenCode", bmadTool: "opencode", projectRoot: ".opencode", skillsRoot: ".opencode/skills" },
   { id: "kimi", name: "Kimi", bmadTool: "kimi-code", projectRoot: ".kimi-code", skillsRoot: ".kimi-code/skills" },
-  // ZCode (GLM). BMAD knows it as `zcode` from 6.11.1-next.1, the pinned installer.
+  // ZCode (GLM). BMAD has known it as `zcode` since 6.11.1-next.1.
   { id: "zcode", name: "ZCode", bmadTool: "zcode", projectRoot: ".zcode", skillsRoot: ".zcode/skills" },
 ]);
 
