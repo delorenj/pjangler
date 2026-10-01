@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { basename, delimiter, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 
 
@@ -16,6 +16,22 @@ export interface TrustedCopierResult extends LifecycleEligibilityResult {
   realExecutable?: string;
   layout?: string;
   identity?: TrustedCopierIdentity;
+  /**
+   * PATH entries passed over, never executed, before the candidate that was
+   * attested (or before PATH ran out). Only an inactive mise shim in the OS
+   * account's own shims directory is ever skipped; see preflightTrustedCopier.
+   */
+  skipped?: readonly TrustedCopierSkippedEntry[];
+}
+
+
+/** A `copier` PATH entry the resolver passed over without executing it. */
+export interface TrustedCopierSkippedEntry {
+  /** The PATH entry as resolved (`<shims>/copier`). */
+  path: string;
+  /** Where the symlink points: a binary named `mise`. Never executed. */
+  realPath: string;
+  reason: "inactive-mise-shim";
 }
 
 
@@ -54,7 +70,10 @@ export interface TrustedCopierIdentity {
 export interface TrustedCopierOptions {
   targetDir: string;
   env?: NodeJS.ProcessEnv;
-  /** Test-only dependency injection. MCP callers always use the OS account home. */
+  /**
+   * Test-only dependency injection. MCP callers always use the OS account home,
+   * which anchors both the UV trust root and the mise shims directory.
+   */
   homeDir?: string;
   temporaryDir?: string;
   /** Kept for API compatibility; mutable layout allowlists are no longer trusted. */
@@ -68,20 +87,72 @@ function containedBy(parent: string, candidate: string): boolean {
 }
 
 
-function firstExecutableOnPath(env: NodeJS.ProcessEnv): string | undefined {
+/**
+ * The OS account's mise shims directory. Anchored to the same account home as
+ * the UV attestation and never derived from $HOME, MISE_DATA_DIR, XDG_* or any
+ * other environment variable: an environment that could relocate it could
+ * nominate any directory's `copier` for skipping.
+ */
+function accountMiseShimsDir(home: string): string {
+  return resolve(join(home, ".local", "share", "mise", "shims"));
+}
+
+
+/**
+ * Recognize an inactive mise shim from link metadata alone: a symlink sitting
+ * directly in the account's shims directory whose realpath's basename is
+ * `mise`. A regular file there, or a mise-shaped symlink anywhere else, is not
+ * a shim and stays an ordinary candidate (which then fails closed).
+ */
+function inactiveMiseShim(candidate: string, shimsDir: string): TrustedCopierSkippedEntry | undefined {
+  if (dirname(candidate) !== shimsDir) return undefined;
+  try {
+    if (!lstatSync(candidate).isSymbolicLink()) return undefined;
+    const realPath = realpathSync(candidate);
+    if (basename(realPath) !== "mise") return undefined;
+    return { path: candidate, realPath, reason: "inactive-mise-shim" };
+  } catch {
+    return undefined;
+  }
+}
+
+
+/**
+ * Walk PATH for the first executable `copier` that is a candidate, recording
+ * any inactive mise shims passed over on the way. Nothing here executes:
+ * it is accessSync/lstat/realpath only, because a shadowed program is exactly
+ * what this gate rejects and a shim is exactly what it must not run.
+ */
+function resolveCopierOnPath(
+  env: NodeJS.ProcessEnv,
+  shimsDir: string,
+): { candidate?: string; skipped: TrustedCopierSkippedEntry[] } {
+  const skipped: TrustedCopierSkippedEntry[] = [];
   for (const rawEntry of (env.PATH ?? "").split(delimiter)) {
     const entry = rawEntry || process.cwd();
     const candidate = resolve(entry, process.platform === "win32" ? "copier.exe" : "copier");
     try {
       accessSync(candidate, constants.X_OK);
       const stat = lstatSync(candidate);
-      if (stat.isFile() || stat.isSymbolicLink()) return candidate;
+      if (!stat.isFile() && !stat.isSymbolicLink()) continue;
     } catch {
-      // Continue to the next PATH entry. Resolution itself must never execute a
-      // candidate, because a shadowed program is exactly what this gate rejects.
+      // Continue to the next PATH entry.
+      continue;
     }
+    const shim = inactiveMiseShim(candidate, shimsDir);
+    if (shim) {
+      // A shims directory listed twice on PATH is still one skipped shim.
+      if (!skipped.some((entry) => entry.path === shim.path)) skipped.push(shim);
+      continue;
+    }
+    return { candidate, skipped };
   }
-  return undefined;
+  return { skipped };
+}
+
+
+function describeSkipped(skipped: readonly TrustedCopierSkippedEntry[]): string {
+  return skipped.map((entry) => `${entry.path} -> ${entry.realPath}`).join(", ");
 }
 
 
@@ -320,7 +391,7 @@ export function verifyTrustedCopierIdentity(identity: TrustedCopierIdentity): Li
 /**
  * Resolve and attest Copier without executing it.
  *
- * MCP apply paths accept the first PATH match only when it resolves to the
+ * MCP apply paths accept the first PATH candidate only when it resolves to the
  * canonical Copier UV tool for the operating-system account. Layout or
  * launcher text alone is not provenance: the UV receipt, absolute interpreter,
  * Copier 9 distribution metadata, entry point, PEP-376 RECORD hashes, package
@@ -328,7 +399,26 @@ export function verifyTrustedCopierIdentity(identity: TrustedCopierIdentity): Li
  * pipx, pyenv, Homebrew, and arbitrary system locations remain usable by the
  * interactive CLI but fail closed for MCP apply unless a future implementation
  * can establish an equally strong package identity. An earlier shadow is never
- * skipped in favor of a later executable.
+ * skipped in favor of a later executable, with exactly one exception.
+ *
+ * Inactive mise shim (PJAN-150). A `copier` entry directly in the OS
+ * account's mise shims directory -- `<userInfo().homedir>/.local/share/mise/shims`,
+ * never derived from $HOME, MISE_DATA_DIR, XDG_* or any other environment --
+ * that is a symlink whose realpath's basename is `mise` is not an executable
+ * candidate. It appears when a Python that mise manages, but that is not
+ * active, has Copier pip-installed into it; executed, mise finds no active
+ * tool for it and falls back to the next PATH match. Preflight passes over it
+ * the same way without executing it, and the unchanged UV attestation,
+ * target/temporary containment, identity pin, and pre-exec revalidation apply
+ * to the next PATH match. Skipped entries are reported in `skipped`, are
+ * themselves subject to target/temporary containment (a shims directory under
+ * either is refused, not skipped), and when nothing follows them the
+ * not-found error says a mise shim was skipped and names it.
+ *
+ * Every other earlier Copier still fails closed: a regular file in the shims
+ * directory, a mise-shaped symlink in any other directory, repository-local
+ * PATH entries (mise `_.path`), and target- or temporary-local executables.
+ * Resolution never executes any candidate.
  */
 export function preflightTrustedCopier(options: TrustedCopierOptions): TrustedCopierResult {
   const env = options.env ?? process.env;
@@ -337,23 +427,43 @@ export function preflightTrustedCopier(options: TrustedCopierOptions): TrustedCo
   const home = resolve(options.homeDir ?? userInfo().homedir);
   const temporary = resolve(options.temporaryDir ?? tmpdir());
   const target = resolve(options.targetDir);
-  const candidate = firstExecutableOnPath(env);
-  if (!candidate) return { ok: false, error: "copier not found on PATH" };
+  const { candidate, skipped } = resolveCopierOnPath(env, accountMiseShimsDir(home));
+
+  // Skipped shims precede the candidate on PATH, so they are contained first.
+  for (const shim of skipped) {
+    for (const [label, root] of [["target", target], ["temporary", temporary]] as const) {
+      if (containedBy(root, shim.path) || containedBy(root, shim.realPath)) {
+        return { ok: false, error: `refusing ${label}-local Copier executable: ${shim.path}`, skipped };
+      }
+    }
+  }
+
+  if (!candidate) {
+    return {
+      ok: false,
+      error: skipped.length
+        ? `copier not found on PATH: skipped inactive mise shim ${describeSkipped(skipped)} and no Copier follows it; put the UV tool entry point (~/.local/bin/copier) on PATH`
+        : "copier not found on PATH",
+      skipped,
+    };
+  }
 
   let realCandidate: string;
   try {
     realCandidate = realpathSync(candidate);
   } catch (error) {
-    return { ok: false, error: `cannot resolve Copier launcher: ${error instanceof Error ? error.message : String(error)}` };
+    return { ok: false, error: `cannot resolve Copier launcher: ${error instanceof Error ? error.message : String(error)}`, skipped };
   }
 
   for (const [label, root] of [["target", target], ["temporary", temporary]] as const) {
     if (containedBy(root, candidate) || containedBy(root, realCandidate)) {
-      return { ok: false, error: `refusing ${label}-local Copier executable: ${candidate}` };
+      return { ok: false, error: `refusing ${label}-local Copier executable: ${candidate}`, skipped };
     }
   }
 
-  return attestUvCopier(candidate, realCandidate, home);
+  const attested = attestUvCopier(candidate, realCandidate, home);
+  if (attested.ok || !skipped.length) return { ...attested, skipped };
+  return { ...attested, error: `${attested.error} (after skipping inactive mise shim ${describeSkipped(skipped)})`, skipped };
 }
 
 
@@ -435,7 +545,7 @@ export function preflightMcpLifecycle(options: {
   if (!copier.ok) return copier;
   if (options.commonProject) {
     const common = preflightCommonProjectTemplate(options.pjanglerRoot);
-    if (!common.ok) return { ...common, executable: copier.executable, realExecutable: copier.realExecutable };
+    if (!common.ok) return { ...common, executable: copier.executable, realExecutable: copier.realExecutable, skipped: copier.skipped };
   }
   return copier;
 }

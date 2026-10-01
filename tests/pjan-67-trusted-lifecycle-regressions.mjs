@@ -6,9 +6,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -25,11 +27,17 @@ import {
 } from "./helpers/committed-submodule.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const installed = spawnSync("which", ["copier"], { encoding: "utf8" });
-if (installed.status !== 0 || !installed.stdout.trim()) {
-  console.log("PJAN-67 trusted lifecycle integration: SKIP (Copier is not installed)");
+// Resolve the canonical UV-tool Copier the MCP preflight trusts, anchored to
+// the OS account exactly as src/lifecycle/preflight.ts anchors it -- not
+// `which copier`. The first `copier` on an operator's PATH is frequently an
+// inactive mise shim (PJAN-150), and an ambient PATH must not decide whether
+// this suite can reach the real, metadata-bound Copier.
+const uvCopierLauncher = join(userInfo().homedir, ".local", "share", "uv", "tools", "copier", "bin", "copier");
+if (!existsSync(uvCopierLauncher)) {
+  console.log(`PJAN-67 trusted lifecycle integration: SKIP (no UV-tool Copier at ${uvCopierLauncher}; install with: uv tool install copier)`);
   process.exit(0);
 }
+const uvCopierBin = dirname(realpathSync(uvCopierLauncher));
 
 const temporary = mkdtempSync(join(root, ".pjan-67-trusted-lifecycle-"));
 const skillState = mkdtempSync("/tmp/pjan-67-state-");
@@ -126,9 +134,10 @@ const serverEnv = {
   HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"),
   // Provenance is anchored to the OS account, not ambient HOME. Execute the
-  // actual metadata-bound UV tool while keeping all runtime/host state inside
-  // the isolated HOME fixture.
-  PATH: `${skillMise}:${dirname(installed.stdout.trim())}:${fakeBin}:${process.env.PATH}`,
+  // actual metadata-bound UV tool -- its own bin dir is a canonical entry
+  // point -- while keeping all runtime/host state inside the isolated HOME
+  // fixture.
+  PATH: `${skillMise}:${uvCopierBin}:${fakeBin}:${process.env.PATH}`,
   XDG_STATE_HOME: skillState,
   SKILLEX_REGISTRY_ROOT: fixtureRoot,
   PJ_SKILLS_REGISTRY_ROOT: fixtureRoot,

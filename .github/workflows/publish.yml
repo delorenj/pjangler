@@ -112,7 +112,10 @@ jobs:
 
       # pjangler only trusts a Copier installed as a uv tool: it attests the
       # wheel against its RECORD digests under ~/.local/share/uv/tools/copier
-      # and refuses anything else on PATH as untrusted (src/lifecycle/preflight.ts).
+      # and refuses any other Copier earlier on PATH as untrusted. The one entry
+      # it passes over, unexecuted, is an inactive mise shim: a symlink to mise
+      # at ~/.local/share/mise/shims/copier in the OS account's home (PJAN-150;
+      # contract in src/lifecycle/preflight.ts).
       # A pip install lands in the Python toolcache instead, so the lifecycle
       # tests could never exercise a trusted Copier here.
       # hermes-profile-config.py — the base+delta profile renderer pjangler
