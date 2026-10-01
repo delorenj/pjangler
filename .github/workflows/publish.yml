@@ -109,10 +109,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Set up mise
         uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
@@ -136,11 +132,30 @@ jobs:
       # shells out to during Hermes provisioning — is the one script it invokes
       # with a third-party dependency. Without PyYAML it exits non-zero and
       # hermes.runtime-singleton blocks the whole lifecycle.
-      - run: python -m pip install 'pyyaml==6.0.2' 'uv==0.11.14'
+      #
+      # uv supplies both itself and Python 3.12 (PJAN-153): actions/setup-python
+      # ships no 3.12 build for the self-hosted runner's Ubuntu 25.10. These
+      # steps sit after mise on purpose. mise-action prepends the host's mise
+      # shims to PATH, and a shim ahead of this interpreter answers `python`
+      # with "No version is set" and `python3` with the system 3.13, which has
+      # no PyYAML. Anything added to PATH later wins, so this has to come later.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.11.14'
       # The attestation also requires the tool's INTERPRETER to resolve inside
       # ~/.local/share/uv/python, so uv has to manage the Python too — a tool
-      # installed against the runner's setup-python is rejected.
+      # installed against any other Python is rejected.
       - run: uv python install 3.12
+      - name: Put uv's Python 3.12 on PATH
+        run: |
+          interpreter="$(uv python find --managed-python 3.12)"
+          echo "python 3.12: $interpreter"
+          dirname "$interpreter" >> "$GITHUB_PATH"
+      # uv marks its managed Pythons EXTERNALLY-MANAGED (PEP 668), so a plain
+      # pip install is refused. This interpreter exists to run pjangler's
+      # scripts, and they import PyYAML from its own site-packages (some run
+      # under `python3 -I`, which ignores --user installs).
+      - run: python -m pip install --break-system-packages 'pyyaml==6.0.2'
       - run: uv tool install --python 3.12 'copier==9.14.0'
         env:
           UV_PYTHON_PREFERENCE: only-managed
