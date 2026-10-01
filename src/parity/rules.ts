@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
-import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
+import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLIS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
 import { auditProjectSkills, currentSkillActivations, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
@@ -3622,7 +3622,7 @@ function ensureSupportedCliGitignore(ctx: Context): string[] {
 
 
 /**
- * The six CLI skills roots, through the one shared planner (PJAN-135): create an
+ * The supported CLI skills roots, through the one shared planner (PJAN-135): create an
  * absent alias, relink a non-canonical or dangling one, and losslessly convert a
  * real directory (the BMAD installer recreates one for claude-code whenever the
  * alias is missing, and this rule runs after it). Blocked roots stay untouched.
@@ -3951,7 +3951,7 @@ return [
         status: details.length ? "fail" : "pass",
         summary: details.length
           ? `${supportedIssues.length} supported projection issue(s); ${gitignoreIssues.length} repository-ignore issue(s); ${present.length} unsupported root(s)`
-          : "All six local CLI projections are configured, .agents is canonical, and no unsupported roots are present",
+          : `All ${SUPPORTED_CLIS.length} local CLI projections are configured, .agents is canonical, and no unsupported roots are present`,
         details,
         fixable: attestations.every((entry) => entry.safe) && (!supportedIssues.length || plan.clean),
       };
@@ -3992,7 +3992,7 @@ return [
         title: finding.title,
         status: changedFiles.length ? "applied" : "noop",
         summary: changedFiles.length
-          ? `Reconciled six local projections, the .agents ignore contract, and ${removedRoots.length} attested unsupported root(s)`
+          ? `Reconciled ${SUPPORTED_CLIS.length} local projections, the .agents ignore contract, and ${removedRoots.length} attested unsupported root(s)`
           : "No changes required",
         changedFiles,
         details: [...projectionResult.details, ...attestations.map((entry) => `${entry.name}: ${entry.reason}`)],

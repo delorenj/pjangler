@@ -1,6 +1,7 @@
 import type { CommandContext } from "../commands/Command";
 import { createBmadChecks } from "../parity/rules";
 import { Recipe } from "./Recipe";
+import { SUPPORTED_CLIS } from "./supported-clis";
 import type { LifecycleContext, RecipeInitResult, RecipeMetadata } from "./types";
 
 /** Owns BMAD installation, version currency, and supported CLI projections. */
@@ -9,7 +10,7 @@ export class BmadRecipe extends Recipe {
   readonly metadata: RecipeMetadata = {
     id: "bmad",
     name: "bmad",
-    description: "BMAD methodology and six supported CLI projections",
+    description: "BMAD methodology and the supported CLI projections",
     dependencies: ["agent-hooks"],
     commands: [],
     publicRuleIds: this.checks.map((check) => check.id),
@@ -24,6 +25,6 @@ export class BmadRecipe extends Recipe {
   }
 
   protected printNextSteps(): void {
-    console.log("BMAD lifecycle initialized for the six supported CLIs.");
+    console.log(`BMAD lifecycle initialized for the ${SUPPORTED_CLIS.length} supported CLIs.`);
   }
 }
