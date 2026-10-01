@@ -55,8 +55,12 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
+        # Container port only: Docker picks a free host port. The self-hosted
+        # runner's host already has a native postgres on 0.0.0.0:5432, so a
+        # fixed 5432:5432 fails 'Initialize containers' with `address already
+        # in use` (PJAN-152). The step below exports the mapped port as PGPORT.
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -66,6 +70,16 @@ jobs:
       PGHOST: localhost
       PGUSER: postgres
     steps:
+      # The `job` context is not available in jobs.<id>.env, so the service's
+      # mapped host port is exported here for every later step. pg, psql and
+      # the registry service all read PGPORT from the environment.
+      - name: Point PG clients at the postgres service's mapped port
+        run: |
+          port="${{ job.services.postgres.ports['5432'] }}"
+          test -n "$port"
+          echo "PGPORT=$port" >> "$GITHUB_ENV"
+          echo "postgres service mapped to localhost:$port"
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
