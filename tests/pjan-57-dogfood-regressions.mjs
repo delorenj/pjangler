@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const neutralTemplate = readFileSync(join(root, "templates", "commonproject", "template", ".env.op"), "utf8");
-const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
 const temporary = mkdtempSync(join(tmpdir(), "pjan-57-dogfood-"));
 
 function runCli(args, env = {}, cwd = root) {

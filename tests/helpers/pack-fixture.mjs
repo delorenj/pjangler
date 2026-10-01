@@ -104,6 +104,7 @@ const toolRoots = {
   "github-copilot": ".copilot",
   opencode: ".opencode",
   "kimi-code": ".kimi-code",
+  zcode: ".zcode",
 };
 const installedSkills = ["bmad-agent-pm", "bmad-architecture", "bmad-help"];
 const skillRoots = [

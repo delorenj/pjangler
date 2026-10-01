@@ -2574,7 +2574,6 @@ const UNSUPPORTED_BMAD_ROOTS = {
   ".qoder": "qoder",
   ".qwen": "qwen",
   ".trae": "trae",
-  ".zcode": "zcode",
   ".zencoder": "zencoder",
 } as const;
 

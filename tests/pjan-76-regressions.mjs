@@ -132,7 +132,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   const registry = join(workspace, "registry.yaml");
   const globalIgnore = join(home, ".config", "git", "ignore");
   mkdirSync(join(home, ".config", "git"), { recursive: true });
-  const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+  const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
   writeFileSync(globalIgnore, `${SUPPORTED.map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
 
   const isolatedEnv = {

@@ -17,7 +17,7 @@ const packageSpec = `${packageName}@${requiredVersion}`;
 const requestedProjectName = "PJAN 57 Installer Contract Delta";
 const optionalModules = ["bmm", "bmb", "cis"];
 const enabledModules = ["core", ...optionalModules];
-const supportedTools = ["claude-code", "codex", "gemini", "github-copilot", "opencode", "kimi-code"];
+const supportedTools = ["claude-code", "codex", "gemini", "github-copilot", "opencode", "kimi-code", "zcode"];
 const temporary = mkdtempSync(join(tmpdir(), "pjan-57-real-bmad-contract-"));
 const target = join(temporary, "target-basename-must-not-win");
 

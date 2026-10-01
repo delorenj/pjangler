@@ -31,8 +31,8 @@ const registry = join(temporary, "registry", "projects.yaml");
 const fixtureRoot = join(temporary, "fixtures");
 const selectedBmadPack = createSkillPackFixture(fixtureRoot);
 const selectedBmadInstaller = createBmadInstallerFixture(fixtureRoot);
-const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
-const unsupportedRoots = [".agent", ".adal", ".bob", ".cline", ".codebuddy", ".codewhale", ".cortex", ".cursor", ".factory", ".firebender", ".iflow", ".junie", ".kiro", ".kode", ".neovate", ".ona", ".qoder", ".qwen", ".trae", ".zcode", ".zencoder"];
+const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
+const unsupportedRoots = [".agent", ".adal", ".bob", ".cline", ".codebuddy", ".codewhale", ".cortex", ".cursor", ".factory", ".firebender", ".iflow", ".junie", ".kiro", ".kode", ".neovate", ".ona", ".qoder", ".qwen", ".trae", ".zencoder"];
 let packedCli = "";
 
 function run(command, args, options = {}) {
@@ -235,8 +235,8 @@ try {
     assert.equal(ignored.status, 0, `${cliRoot}/skills/ must be gitignored, not merely untracked`);
   }
   const renderedIgnore = readFileSync(join(target, ".gitignore"), "utf8");
-  assert.doesNotMatch(renderedIgnore, /^!\.(?:claude|codex|gemini|copilot|opencode|kimi-code)\//m);
-  assert.doesNotMatch(renderedIgnore, /^\.(?:claude|codex|gemini|copilot|opencode|kimi-code)\//m, "global client rules must not be copied into the repo contract");
+  assert.doesNotMatch(renderedIgnore, /^!\.(?:claude|codex|gemini|copilot|opencode|kimi-code|zcode)\//m);
+  assert.doesNotMatch(renderedIgnore, /^\.(?:claude|codex|gemini|copilot|opencode|kimi-code|zcode)\//m, "global client rules must not be copied into the repo contract");
   for (const cliRoot of unsupportedRoots) assert.equal(existsSync(join(target, cliRoot)), false, `unsupported generated root ${cliRoot}`);
 
   const configToml = readFileSync(join(target, "_bmad", "config.toml"), "utf8");

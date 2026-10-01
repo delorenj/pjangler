@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const temporary = mkdtempSync(join(tmpdir(), "pjan-126-gitignore-"));
-const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });

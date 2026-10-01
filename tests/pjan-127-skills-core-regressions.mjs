@@ -110,7 +110,7 @@ test("core sync preserves installer real entries and correct foreign links witho
 // written before the sync and independently of its outcome (retiring dead
 // wiring no longer waits on skillex agreeing). A refused selection still writes
 // no manifest, no activation root and no core state.
-const SIX_ALIASES = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code"];
+const CLIENT_ALIASES = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
 function refusedWithoutActivation(f, result, manifest) {
   assert.notEqual(result.exit, 0);
   assert.equal(result.report.results[0].status, "partial", JSON.stringify(result.report));
@@ -119,7 +119,7 @@ function refusedWithoutActivation(f, result, manifest) {
   assert.deepEqual(readdirSync(join(f.project, ".agents")), ["skills.json"]);
   assert.equal(existsSync(join(f.base, "state")), false, "no core receipt or lock state");
   assert.deepEqual([...result.report.changedFiles].sort(), [join(f.project, "mise.toml"),
-    ...SIX_ALIASES.flatMap((cli) => [join(f.project, cli), join(f.project, cli, "skills")])].sort());
+    ...CLIENT_ALIASES.flatMap((cli) => [join(f.project, cli), join(f.project, cli, "skills")])].sort());
 }
 
 test("malformed and legacy selections refuse without activation writes, with migration guidance", () => {
