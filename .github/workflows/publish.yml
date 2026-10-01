@@ -199,31 +199,17 @@ jobs:
 
       # ---- everything below only runs for a green main ----
 
-      # Publishing on every main push needs a version npm has not seen. Bump
-      # from whatever is actually on the registry, not from package.json, so a
-      # hand-edited or reverted version cannot collide.
+      # Publishing on every main push needs a version nobody has used. Bump from
+      # what is actually taken, not from package.json alone, so a hand-edited or
+      # reverted version cannot collide. Taken means npm has it OR a git tag
+      # v<version> exists, locally or on origin (PJAN-160: a hand-cut v1.5.0 tag
+      # with 1.5.0 never on npm failed every release at `git tag`). The decision
+      # lives in scripts/release-version.mjs so it can be tested offline; it
+      # fetches tags itself and reads origin's directly.
       - name: Bump version from the published one
         if: github.ref == 'refs/heads/main'
         id: bump
-        run: |
-          set -euo pipefail
-          name="$(node -p "require('./package.json').name")"
-          local_v="$(node -p "require('./package.json').version")"
-          # Every version npm already has, so a failed publish does not burn one.
-          # A previous run can leave package.json ahead of the registry (release
-          # commit lands, publish fails); republishing that same version is
-          # correct, not a collision.
-          if npm view "$name@$local_v" version >/dev/null 2>&1; then
-            published="$(npm view "$name" version 2>/dev/null || echo "0.0.0")"
-            base="$(printf '%s\n%s\n' "$published" "$local_v" | sort -V | tail -1)"
-            next="$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$base")"
-            npm version "$next" --no-git-tag-version
-            echo "$local_v is taken; bumped to $next"
-          else
-            next="$local_v"
-            echo "$local_v is unpublished; shipping it as-is"
-          fi
-          echo "next=$next" >> "$GITHUB_OUTPUT"
+        run: node scripts/release-version.mjs
 
       - name: Commit the release
         if: github.ref == 'refs/heads/main'
@@ -235,7 +221,10 @@ jobs:
           # [skip ci] keeps this push from retriggering the workflow.
           git commit -m "chore(release): v${{ steps.bump.outputs.next }} [skip ci]" || {
             echo "nothing to commit"; exit 0; }
-          git tag "v${{ steps.bump.outputs.next }}"
+          # Annotated, because --follow-tags pushes only annotated tags. The
+          # lightweight tags v1.4.3-v1.4.6 were created here and never reached
+          # origin, so the next run could not see them as taken.
+          git tag -a "v${{ steps.bump.outputs.next }}" -m "v${{ steps.bump.outputs.next }}"
           git push origin HEAD:main --follow-tags
 
       - name: Publish to npm
