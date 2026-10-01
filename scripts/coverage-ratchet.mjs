@@ -19,6 +19,7 @@
 // immediately traps you is a ratchet you disable.
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { auditCoverageSummary } from "./coverage-audit.mjs";
 
 // Both paths are overridable so the ratchet can be exercised against a scratch
 // tree. A gate nobody can test is a gate nobody trusts.
@@ -40,7 +41,26 @@ if (!existsSync(SUMMARY_PATH)) {
   process.exit(1);
 }
 
-const total = JSON.parse(readFileSync(SUMMARY_PATH, "utf8")).total;
+const report = JSON.parse(readFileSync(SUMMARY_PATH, "utf8"));
+
+// Audit the file list before trusting the total it adds up to. A total that
+// silently counts tests/ or a fixture copy of src is a wrong number, and a
+// wrong number must never be compared against the floor, let alone written
+// into it. See scripts/coverage-audit.mjs.
+const audit = auditCoverageSummary(report, ROOT);
+if (audit.problems.length) {
+  console.error("");
+  console.error(`  coverage-ratchet: the report measures files it must not (${audit.problems.length} finding(s))`);
+  for (const { key, reason } of audit.problems) console.error(`    ${reason}: ${key}`);
+  console.error("");
+  console.error("  The total is not a measurement of src, so it was not gated and no floor was");
+  console.error("  written. Fix the measurement in .c8rc.json (a configured exclude list replaces");
+  console.error("  c8's defaults; restate them), then re-run: npm run test:coverage");
+  console.error("");
+  process.exit(1);
+}
+
+const total = report.total;
 const measured = Object.fromEntries(METRICS.map((m) => [m, total[m].pct]));
 
 // A missing floor file is a first run, not a failure: seed it from what we measured.
@@ -62,8 +82,13 @@ for (const metric of METRICS) {
 }
 
 const pad = (s) => String(s).padEnd(11);
+const measuredFiles = Object.entries(audit.byTop)
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([dir, n]) => `${dir} ${n}`)
+  .join(", ");
 console.log("");
 console.log("  coverage ratchet");
+console.log(`    audited ${audit.files} file(s)${measuredFiles ? `: ${measuredFiles}` : ""}`);
 for (const metric of METRICS) {
   const now = measured[metric];
   const min = typeof floor[metric] === "number" ? floor[metric] : 0;

@@ -95,7 +95,8 @@ pjangler/
 ├── scripts/                      # Node/Python maintenance entry points
 │   ├── run-tests.mjs             # the test runner (every suite attempted, never short-circuits)
 │   ├── check-submodule-contract.mjs        # the one supported submodule + forbidden tracked paths
-│   ├── check-package-lock-parity.mjs / check-tracked-secrets.mjs / coverage-ratchet.mjs
+│   ├── check-package-lock-parity.mjs / check-tracked-secrets.mjs
+│   ├── coverage-ratchet.mjs / coverage-audit.mjs   # floor gate; refuses a report that counts tests/, fixtures, dist/
 │   ├── install-project-registry.mjs / migrate-project-registry.mjs
 │   └── export-project-notebook-skill.mjs   # run by `npm run build`
 │

@@ -1,0 +1,20 @@
+{
+  "//": "c8 config for `npm run test:coverage`. A configured exclude list REPLACES c8's defaults (@istanbuljs/schema/default-exclude) instead of extending them, so every default is restated below verbatim and the last entry, the in-repo .pjan-* test fixtures (PJAN-100), is the only addition. Drop a default and tests/ is counted as source again; scripts/coverage-audit.mjs fails the ratchet when that happens.",
+  "reporter": ["json-summary", "text-summary"],
+  "report-dir": "coverage",
+  "src": "src",
+  "exclude": [
+    "coverage/**",
+    "packages/*/test{,s}/**",
+    "**/*.d.ts",
+    "test{,s}/**",
+    "test{,-*}.{js,cjs,mjs,ts,tsx,jsx}",
+    "**/*{.,-}test.{js,cjs,mjs,ts,tsx,jsx}",
+    "**/__tests__/**",
+    "**/{ava,babel,nyc}.config.{js,cjs,mjs}",
+    "**/jest.config.{js,cjs,mjs,ts}",
+    "**/{karma,rollup,webpack}.config.js",
+    "**/.{eslint,mocha}rc.{js,cjs}",
+    "**/.pjan-*/**"
+  ]
+}

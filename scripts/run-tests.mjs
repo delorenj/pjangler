@@ -70,6 +70,7 @@ const SUITES = [
   "tests/bmad-version-surface-regressions.mjs",
   "tests/bmad-authority-regressions.mjs",
   "tests/coverage-ratchet-regressions.mjs",
+  "tests/coverage-path-audit-regressions.mjs",
   "tests/parity-migrate-regressions.mjs",
   "tests/pjan-127-skills-core-regressions.mjs",
   "tests/pjan-128-skills-wiring-regressions.mjs",
