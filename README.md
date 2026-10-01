@@ -6,7 +6,7 @@ Project subsystem bootstrapper CLI + MCP server.
 
 ## Install
 
-Requires Node 24 or newer. Project skills use `@delorenj/skillex` 0.1.1; see
+Requires Node 24 or newer. Project skills use `@delorenj/skillex` 0.1.2; see
 [the integration contract](docs/skillex-integration.md).
 
 ```bash

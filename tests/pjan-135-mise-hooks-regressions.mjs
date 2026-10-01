@@ -9,9 +9,10 @@
 //    array is joined with newlines into ONE such command, and a table with a
 //    `shell` key is sourced into the operator's shell (not spawned, not
 //    deprecated, and `run` there would execute the text as a file name).
-// 2. mise 2026.9 refuses to install `npm:@delorenj/skillex@0.1.1` (first
-//    published inside its 30-day minimumPackageAge) unless the tool table sets
-//    `allow_low_downloads = true`, so the plain string pin never installed.
+// 2. mise 2026.9 refuses to install `npm:@delorenj/skillex` at any version
+//    (the name was first published inside its 30-day minimumPackageAge) unless
+//    the tool table sets `allow_low_downloads = true`, so the plain string pin
+//    never installed.
 //
 // Real temp repositories, the real rule objects bundled from src/, and the
 // real mise binary with every MISE_* directory isolated under the fixture.
@@ -175,13 +176,13 @@ test("a rename that cannot parse is left for the operator, never written broken"
   assert.match(written, /^\[\[hooks\.leave\]\]\nrun = "echo c"$/m);
 });
 
-test("skills:sync pins 0.1.1 as an approved table; the legacy string is fixable drift; every copy is identical", async () => {
+test("skills:sync pins 0.1.2 as an approved table; the legacy string is fixable drift; every copy is identical", async () => {
   const expected = {
     description: "Reconcile this project's selected skills",
-    tools: { "npm:@delorenj/skillex": { version: "0.1.1", allow_low_downloads: true }, node: "24" },
+    tools: { "npm:@delorenj/skillex": { version: "0.1.2", allow_low_downloads: true }, node: "24" },
     run: "skillex sync --scope project --project '{{config_root}}'",
   };
-  assert.equal(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }');
+  assert.equal(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }');
 
   // (1) what mise.config-root writes
   const repo = repoWith("pin", "[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
@@ -219,17 +220,18 @@ test("skills:sync pins 0.1.1 as an approved table; the legacy string is fixable 
   // refuses to install it (first published inside its 30-day
   // minimumPackageAge), so on a cold mise the task cannot run. It is fixable
   // drift, and migrate writes the approved table (PJAN-135 review).
-  const legacy = written.replace(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.1", node = "24" }');
+  const legacy = written.replace(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.2", node = "24" }');
   assert.notEqual(legacy, written);
   writeFileSync(join(repo, "mise.toml"), legacy);
   const legacyFinding = await mise.audit(ctx);
   assert.equal(legacyFinding.status, "fail", "the legacy string pin is drift");
   assert.equal(legacyFinding.fixable, true);
   assert.ok(legacyFinding.details.some((detail) => /allow_low_downloads = true/.test(detail)), JSON.stringify(legacyFinding.details));
-  // Any other version, in either form, is drift.
-  for (const drift of ['{ "npm:@delorenj/skillex" = "0.1.0", node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.0", allow_low_downloads = true }, node = "24" }']) {
+  // Any other version, in either form, is drift -- including 0.1.1, the
+  // approved table every project carried before SKRILL-24 published 0.1.2.
+  for (const drift of ['{ "npm:@delorenj/skillex" = "0.1.0", node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.0", allow_low_downloads = true }, node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }']) {
     writeFileSync(join(repo, "mise.toml"), written.replace(SKILLS_SYNC_TOOLS, drift));
-    assert.ok((await mise.audit(ctx)).details.some((detail) => /must pin @delorenj\/skillex 0\.1\.1/.test(detail)), drift);
+    assert.ok((await mise.audit(ctx)).details.some((detail) => /must pin @delorenj\/skillex 0\.1\.2/.test(detail)), drift);
   }
 
   // Real mise reads the table form as the tool pin of this task.

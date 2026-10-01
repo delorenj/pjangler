@@ -237,16 +237,18 @@ const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 
 
 /**
- * PJAN-135: the skills:sync tool pin. mise 2026.9 refuses any npm package
- * first published inside its 30-day `minimumPackageAge`, and 0.1.1 is younger
- * than that, so the plain `"npm:@delorenj/skillex" = "0.1.1"` pin never
+ * PJAN-135: the skills:sync tool pin. mise 2026.9 installs npm tools through
+ * aube, which refuses a package whose NAME was first published inside its
+ * 30-day `minimumPackageAge` (@delorenj/skillex: 2026-09-14), whatever the
+ * version, so a plain `"npm:@delorenj/skillex" = "<version>"` string pin never
  * installed and the task could not run. `allow_low_downloads = true` approves
- * this exact version (measured with an isolated MISE_DATA_DIR on 2026.9.12:
- * the string is refused, this table installs and `skillex --version` prints
- * 0.1.1; mise 2026.5.0 parses it too). Keep every copy identical:
+ * it. Measured for 0.1.2 (SKRILL-24) on 2026-10-01, mise 2026.9.12 with every
+ * MISE_* and XDG dir isolated: the string is refused, this table installs and
+ * `skillex --version` prints 0.1.2 (0.1.1 measured the same way; mise 2026.5.0
+ * parses the table too). Keep every copy identical:
  * src/commands/AgentHooksCommands.ts and both CommonProject templates.
  */
-export const SKILLEX_TOOL_VERSION = "0.1.1";
+export const SKILLEX_TOOL_VERSION = "0.1.2";
 
 export const SKILLS_SYNC_TOOLS =
   `{ "npm:@delorenj/skillex" = { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }, node = "24" }`;
@@ -2937,8 +2939,8 @@ function skillsWiringFindings(text: string | null): { fixable: string[]; manual:
   if (typeof run !== "string" || !/^skillex\s+sync\s+--scope\s+project\s+--project\s+(['"])\{\{config_root\}\}\1\s*$/.test(run)) {
     fixable.push("skills:sync must explicitly target {{config_root}} with the Node CLI");
   }
-  // PJAN-135: mise 2026.9 refuses to install npm:@delorenj/skillex@0.1.1
-  // (first published inside its 30-day minimumPackageAge) unless the tool
+  // PJAN-135: mise 2026.9 refuses to install npm:@delorenj/skillex (the name
+  // was first published inside its 30-day minimumPackageAge) unless the tool
   // table approves it, so the plain string pin is drift, not parity: on a cold
   // mise (a new machine, CI, a container) `mise run skills:sync` cannot run.
   const pin = record(task.tools)["npm:@delorenj/skillex"];

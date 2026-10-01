@@ -184,7 +184,7 @@ test("task audit checks the actual run and pin, not comments or other tasks", ()
   const f = fixture(); try {
     put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
     assert.equal(f.migrate().exit, 0);
-    put(join(f.project, "mise.toml"), `# skillex sync --scope project --project '{{config_root}}'\n# "npm:@delorenj/skillex" = "0.1.1"\n[tasks.other]\nrun = "skillex sync --scope project --project '{{config_root}}'"\ntools = { "npm:@delorenj/skillex" = "0.1.1" }\n[tasks."skills:sync"]\nrun = "echo not wired"\n`);
+    put(join(f.project, "mise.toml"), `# skillex sync --scope project --project '{{config_root}}'\n# "npm:@delorenj/skillex" = "0.1.2"\n[tasks.other]\nrun = "skillex sync --scope project --project '{{config_root}}'"\ntools = { "npm:@delorenj/skillex" = "0.1.2" }\n[tasks."skills:sync"]\nrun = "echo not wired"\n`);
     assert.equal(f.audit().status, "fail");
     assert.equal(f.migrate().exit, 0);
     assert.equal(f.audit().status, "pass");

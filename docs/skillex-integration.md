@@ -1,6 +1,6 @@
 # Skillex integration (PJAN-127)
 
-PJangler requires Node 24 or newer and `@delorenj/skillex` 0.1.1. Its project
+PJangler requires Node 24 or newer and `@delorenj/skillex` 0.1.2. Its project
 bootstrap, parity audit and migration use the public Node core. The packaged
 CommonProject template pins the same release.
 
@@ -9,17 +9,17 @@ A generated project has one explicit task, run as `mise run skills:sync`:
 ```toml
 [tasks."skills:sync"]
 description = "Reconcile this project's selected skills"
-tools = { "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }
+tools = { "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }
 run = "skillex sync --scope project --project '{{config_root}}'"
 ```
 
 `allow_low_downloads = true` approves this one exact version past mise's npm
 `minimumPackageAge` gate (30 days by default in mise 2026.9): without it mise
-refuses to install `@delorenj/skillex@0.1.1` at all, and the task never runs.
+refuses to install `@delorenj/skillex@0.1.2` at all, and the task never runs.
 `node = "24"` is the runtime the Node CLI requires. Inside the task `skillex`
 is that pinned Node CLI; do not type bare `skillex sync` in a shell, where it can
 resolve to the retired Python reconciler. The legacy plain-string pin
-(`"npm:@delorenj/skillex" = "0.1.1"`) fails both `mise.config-root` and
+(`"npm:@delorenj/skillex" = "0.1.2"`) fails both `mise.config-root` and
 `skills.project-manifest` as fixable drift: on a cold mise (a new machine, CI,
 a container) mise refuses to install it, so the task could not run. Either
 rule's migrate rewrites it to the table form above.

@@ -168,7 +168,7 @@ let command = ${JSON.stringify(realMise)}, forwarded = args;
 if (args[0] === "run" && args[1] === "skills:sync") {
   command = process.execPath;
   forwarded = [${JSON.stringify(coreCli)}, "sync", "--scope", "project", "--project", process.cwd()];
-} else if (args[0] === "exec" && args[1] === "npm:@delorenj/skillex@0.1.1" && args[2] === "--" && args[3] === "skillex") {
+} else if (args[0] === "exec" && String(args[1]).startsWith("npm:@delorenj/skillex@") && args[2] === "--" && args[3] === "skillex") {
   command = process.execPath;
   forwarded = [${JSON.stringify(coreCli)}, ...args.slice(4)];
 }

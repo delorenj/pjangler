@@ -393,10 +393,14 @@ test("the resolver fails a removed nested subcommand instead of accepting its gr
 });
 
 test("every skillex command the core's fix text names is relayed as a pj skills command that resolves", () => {
-  const fixes = coreLiterals().fixes.map((fix) => fix.text).filter((text) => /\bskillex\s+[a-z]/.test(text));
-  assert.ok(fixes.length >= 20, `the real core names skillex commands in its fix text (${fixes.length})`);
   const commands = skillexCommands();
   assert.ok(commands.includes("migrate") && commands.includes("sync"), commands.join(","));
+  // Only fix text that names a skillex COMMAND is in scope. Prose that merely
+  // mentions the tool ("skillex never clones or fetches this registry cache",
+  // skillex 0.1.2 / SKRILL-22, whose fix is a git command) has nothing to relay.
+  const names = new RegExp(`\\bskillex\\s+(?:${commands.join("|")})\\b`);
+  const fixes = coreLiterals().fixes.map((fix) => fix.text).filter((text) => names.test(text));
+  assert.ok(fixes.length >= 20, `the real core names skillex commands in its fix text (${fixes.length})`);
   const bare = new RegExp(`(?<![\\w/@.:-])skillex\\s+(?:${commands.join("|")})\\b`);
   const failures = [];
   for (const fix of fixes) {

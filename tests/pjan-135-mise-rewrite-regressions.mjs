@@ -429,7 +429,7 @@ test("the legacy string skillex pin is fixable drift in both audits, and migrate
   await mise.migrate(ctx, await mise.audit(ctx));
   assert.equal((await mise.audit(ctx)).status, "pass");
   const table = read(repo);
-  const legacy = table.replace(rules.SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.1", node = "24" }');
+  const legacy = table.replace(rules.SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.2", node = "24" }');
   assert.notEqual(legacy, table);
   writeFileSync(join(repo, "mise.toml"), legacy);
 
@@ -453,11 +453,11 @@ test("the legacy string skillex pin is fixable drift in both audits, and migrate
 
   const { first, written } = await migrateToFixedPoint(mise, repo);
   assert.equal(first.status, "applied");
-  assert.deepEqual(parseToml(written).tasks["skills:sync"].tools["npm:@delorenj/skillex"], { version: "0.1.1", allow_low_downloads: true });
+  assert.deepEqual(parseToml(written).tasks["skills:sync"].tools["npm:@delorenj/skillex"], { version: "0.1.2", allow_low_downloads: true });
   assert.equal((await mise.audit(ctx)).status, "pass");
   const info = spawnSync("mise", ["tasks", "info", "skills:sync", "--json"], { cwd: repo, env: miseEnv(freshState(), repo), encoding: "utf8" });
   assert.equal(info.status, 0, info.stderr);
-  assert.deepEqual(JSON.parse(info.stdout).tools["npm:@delorenj/skillex"], { version: "0.1.1", allow_low_downloads: true });
+  assert.deepEqual(JSON.parse(info.stdout).tools["npm:@delorenj/skillex"], { version: "0.1.2", allow_low_downloads: true });
 });
 
 test("a rewrite that cannot be made safely writes nothing and says why, dry or not", async () => {
