@@ -2,9 +2,9 @@
 // Pick the version a green main push publishes (PJAN-160).
 //
 // Called by the 'Bump version from the published one' step in
-// .github/workflows/publish.yml. Its `next` output names the release commit,
-// the tag and the npm publish that follow, so a wrong answer here fails all
-// three -- or worse, ships under a name that already means something else.
+// .github/workflows/publish.yml. Its `next` output names the npm publish and
+// then the release commit and tag that follow it, so a wrong answer here fails
+// all three -- or worse, ships under a name that already means something else.
 //
 // A version is TAKEN when either of these already has it:
 //   - npm   (`npm view <name>@<version>` succeeds), or
@@ -20,18 +20,19 @@
 // The bump itself is unchanged from the inline step it replaced: when
 // package.json's version is free it ships as-is; otherwise the patch number is
 // bumped past the higher of npm's latest and package.json, and keeps bumping
-// until the candidate is free on BOTH npm and git. One consequence: a release
-// whose commit and tag landed but whose publish failed is now skipped next
-// run (its tag exists), where npm-only checking used to republish it. That
-// burns a patch number, which is cheap; reusing a tagged name is not.
+// until the candidate is free on BOTH npm and git. A tag therefore reserves
+// its version even when npm never got it, which is why publish.yml publishes
+// FIRST and commits and tags only after npm accepted the version: a failed
+// publish leaves nothing behind, so its version is free again next run.
 //
 // Usage:
 //   node scripts/release-version.mjs            # decide, run `npm version`, write `next` to $GITHUB_OUTPUT
 //   node scripts/release-version.mjs --dry-run  # decide and print; change nothing
 //
 // RELEASE_ROOT overrides the package root so the CLI can be exercised against a
-// scratch tree; tests/pjan-160-release-version-regressions.mjs does exactly that
-// with fake `npm` and `git` on PATH.
+// scratch tree; tests/pjan-160-release-version-regressions.mjs does exactly that,
+// once with fake `npm` and `git` on PATH and once in real Git repositories with
+// only `npm` faked.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";

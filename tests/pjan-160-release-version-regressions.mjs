@@ -6,19 +6,27 @@
 // green main push died at 'Commit the release' after that. The decision now
 // lives in scripts/release-version.mjs; this suite pins it.
 //
-// Two layers, both offline:
+// Three layers, all offline:
 //   1. decideReleaseVersion() with injected npm and git lookups -- the four
 //      fixtures (free, npm only, tag only, both) plus the loop and the base.
-//   2. The CLI with fake `npm` and `git` on PATH, proving the wiring: tags are
-//      fetched explicitly, origin is read directly, an unreadable origin stops
-//      the release, and `next` reaches $GITHUB_OUTPUT.
-// Plus a structural check that publish.yml still calls the script and tags in
-// a form --follow-tags actually pushes.
+//   2. The CLI with fake `npm` and `git` on PATH, pinning the exact commands:
+//      tags are fetched explicitly and without --force, origin is read
+//      directly, an unreadable origin stops the release, and `next` reaches
+//      $GITHUB_OUTPUT.
+//   3. The CLI in isolated, real Git repositories: a bare origin carrying
+//      annotated and lightweight tags, and a `--depth 1 --no-tags` clone of it.
+//      Every git call is the real binary; only npm is faked, with controlled
+//      responses. Layer 2's fake git answers by subcommand and never looks at a
+//      repository, so this is the layer that shows the script's git commands
+//      actually find the tags it claims to.
+// Plus a structural check that publish.yml calls the script, publishes before
+// it commits and tags, and tags in a form --follow-tags actually pushes.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { decideReleaseVersion, higherVersion, nextPatch } from "../scripts/release-version.mjs";
 
@@ -297,23 +305,265 @@ test("CLI --dry-run decides but changes nothing", () => {
   assert.ok(!run.calls.some((c) => c.startsWith("npm version")));
 });
 
-// ---- 3. the workflow still uses it ------------------------------------------
+// ---- 3. the CLI in real Git repositories, with only npm faked ---------------
 
-test("publish.yml runs the script as the bump step and tags so --follow-tags pushes", () => {
+// Hermetic git: no user or system config (and so none of the host's global
+// hooks), no inherited GIT_DIR from a hook that happens to run this suite, a
+// fixed identity for the fixture commits and tags, and never a prompt.
+const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+Object.assign(GIT_ENV, {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_AUTHOR_NAME: "Release Fixture",
+  GIT_AUTHOR_EMAIL: "release-fixture@example.invalid",
+  GIT_COMMITTER_NAME: "Release Fixture",
+  GIT_COMMITTER_EMAIL: "release-fixture@example.invalid",
+});
+
+/** Run real git; throw with its stderr on failure. */
+function git(cwd, ...args) {
+  const result = spawnSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed (${result.status}) in ${cwd}:\n${result.stderr}`);
+  return result.stdout.trim();
+}
+
+/** Real git's exit status alone, for a probe that is expected to fail. */
+const gitStatus = (cwd, ...args) => spawnSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).status;
+
+// The only fake on PATH in this layer is npm.
+const npmOnly = join(dir, "npm-only-bin");
+mkdirSync(npmOnly);
+copyFileSync(join(bin, "npm"), join(npmOnly, "npm"));
+chmodSync(join(npmOnly, "npm"), 0o755);
+const REAL_PATH = `${npmOnly}${delimiter}${process.env.PATH}`;
+
+const pkgJson = (version) => `${JSON.stringify({ name: "@delorenj/pjangler", version })}\n`;
+let fixtureCount = 0;
+
+/**
+ * A bare origin whose main is two commits deep: "release 1.4.6" carries every
+ * tag in `tags` ({ name: "annotated" | "lightweight" }), and "start 1.5.0" on
+ * top of it is what a depth-1 clone receives. The tagged commit therefore lies
+ * outside any shallow clone, as an old release tag does on a CI checkout.
+ */
+function makeOrigin(tags) {
+  fixtureCount += 1;
+  const base = join(dir, `real-${fixtureCount}`);
+  const origin = join(base, "origin.git");
+  const seed = join(base, "seed");
+  mkdirSync(seed, { recursive: true });
+  git(base, "init", "-q", "--bare", "--initial-branch=main", origin);
+  git(seed, "init", "-q", "--initial-branch=main");
+  writeFileSync(join(seed, "package.json"), pkgJson("1.4.6"));
+  git(seed, "add", "package.json");
+  git(seed, "commit", "-qm", "release 1.4.6");
+  const tagged = git(seed, "rev-parse", "HEAD");
+  for (const [name, kind] of Object.entries(tags)) {
+    if (kind === "annotated") git(seed, "tag", "-a", name, "-m", name);
+    else if (kind === "lightweight") git(seed, "tag", name);
+    else throw new Error(`unknown tag kind ${kind}`);
+  }
+  writeFileSync(join(seed, "package.json"), pkgJson("1.5.0"));
+  git(seed, "commit", "-qam", "start 1.5.0");
+  git(seed, "push", "-q", origin, "main", "--tags");
+  for (const [name, kind] of Object.entries(tags)) {
+    assert.equal(git(origin, "cat-file", "-t", `refs/tags/${name}`), kind === "annotated" ? "tag" : "commit", `fixture ${name} must be ${kind} on origin`);
+  }
+  return { base, origin, tagged };
+}
+
+/**
+ * A `--depth 1 --no-tags` clone of the fixture's origin. file:// rather than a
+ * plain path, because git ignores --depth on a local-path clone. Asserts the
+ * clone really is shallow, tagless and missing the tagged commit, so every
+ * tag the script sees afterwards came from origin.
+ */
+function shallowClone({ base, origin, tagged }, name = "clone") {
+  const clone = join(base, name);
+  git(base, "clone", "-q", "--depth", "1", "--no-tags", pathToFileURL(origin).href, clone);
+  assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "true", "the clone must be shallow");
+  assert.equal(git(clone, "tag", "--list"), "", "the clone must start with no tags");
+  assert.notEqual(gitStatus(clone, "cat-file", "-e", `${tagged}^{commit}`), 0, "the tagged commit must lie outside the shallow clone");
+  return clone;
+}
+
+const NPM_LIVE = { versions: "1.4.5 1.4.6", latest: "1.4.6" };
+
+/** The release script, run in `clone` with real git and the fake npm. */
+function realCli(clone, { npm = NPM_LIVE, args = [] } = {}) {
+  rmSync(LOG, { force: true });
+  rmSync(OUTPUT, { force: true });
+  const run = spawnSync(process.execPath, [SCRIPT, ...args], {
+    encoding: "utf8",
+    env: {
+      ...GIT_ENV,
+      PATH: REAL_PATH,
+      RELEASE_ROOT: clone,
+      GITHUB_OUTPUT: OUTPUT,
+      FAKE_LOG: LOG,
+      FAKE_NPM_VERSIONS: npm.versions,
+      FAKE_NPM_LATEST: npm.latest,
+    },
+  });
+  const calls = existsSync(LOG) ? readFileSync(LOG, "utf8").trim().split("\n") : [];
+  const output = existsSync(OUTPUT) ? readFileSync(OUTPUT, "utf8") : null;
+  return { ...run, calls, output };
+}
+
+/** The "<version> is taken: ..." lines, in the order the script skipped them. */
+const takenLines = (stdout) => stdout.split("\n").filter((line) => / is taken: /.test(line));
+
+test("real git: the layer runs the real git binary and fakes only npm", () => {
+  assert.deepEqual(readdirSync(npmOnly), ["npm"]);
+  const resolved = spawnSync("sh", ["-c", "command -v git; command -v npm"], { encoding: "utf8", env: { ...GIT_ENV, PATH: REAL_PATH } });
+  const [gitPath, npmPath] = resolved.stdout.trim().split("\n");
+  assert.ok(gitPath && !gitPath.startsWith(dir), `git must be the real binary, got ${gitPath}`);
+  assert.equal(npmPath, join(npmOnly, "npm"));
+});
+
+test("real git: an annotated tag only origin has reserves its version (AC1)", () => {
+  const clone = shallowClone(makeOrigin({ "v1.5.0": "annotated" }));
+  const run = realCli(clone);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(takenLines(run.stdout), ["1.5.0 is taken: git tag v1.5.0 exists (origin)"]);
+  assert.equal(run.output, "next=1.5.1\n");
+  assert.ok(run.calls.includes("npm version 1.5.1 --no-git-tag-version"), run.calls.join("\n"));
+});
+
+test("real git: a lightweight tag only origin has reserves its version (AC1)", () => {
+  const clone = shallowClone(makeOrigin({ "v1.5.0": "lightweight" }));
+  const run = realCli(clone);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(takenLines(run.stdout), ["1.5.0 is taken: git tag v1.5.0 exists (origin)"]);
+  assert.equal(run.output, "next=1.5.1\n");
+});
+
+// The live shape after PJAN-160's first fix: an annotated v1.5.0 cut by hand
+// and a v1.5.1 that a failed release left behind. Both are on origin, neither
+// is on npm, and neither is in a shallow, tagless checkout.
+const LIVE_TAGS = { "v1.4.6": "annotated", "v1.5.0": "annotated", "v1.5.1": "lightweight" };
+
+test("real git: a shallow, tagless clone still sees every one of origin's tags", () => {
+  const fixture = makeOrigin(LIVE_TAGS);
+  const clone = shallowClone(fixture);
+  const run = realCli(clone);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(takenLines(run.stdout), [
+    "1.5.0 is taken: git tag v1.5.0 exists (origin)",
+    "1.5.1 is taken: git tag v1.5.1 exists (origin)",
+  ]);
+  assert.equal(run.output, "next=1.5.2\n");
+  assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "true", "reading tags must not unshallow the checkout");
+});
+
+test("real git: a non-forced fetch leaves a conflicting local tag in place, and it still reserves its version", () => {
+  const fixture = makeOrigin(LIVE_TAGS);
+  const clone = shallowClone(fixture);
+  // Local v1.5.0 is lightweight on the clone's HEAD; origin's is annotated on
+  // an older commit. Only a forced fetch would replace it.
+  git(clone, "tag", "v1.5.0");
+  const before = git(clone, "rev-parse", "refs/tags/v1.5.0");
+  const run = realCli(clone);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^warning: git fetch --tags origin failed/m, "the clobber refusal must be reported, not hidden");
+  assert.equal(git(clone, "rev-parse", "refs/tags/v1.5.0"), before, "the local tag must not be moved");
+  assert.equal(git(clone, "cat-file", "-t", "refs/tags/v1.5.0"), "commit", "the local tag must stay lightweight, not become origin's");
+  // However much of the fetch git kept, origin's v1.5.1 must still count: a
+  // rejected fetch can leave it unfetched, and only ls-remote then sees it.
+  assert.deepEqual(takenLines(run.stdout), [
+    "1.5.0 is taken: git tag v1.5.0 exists (origin)",
+    "1.5.1 is taken: git tag v1.5.1 exists (origin)",
+  ]);
+  assert.equal(run.output, "next=1.5.2\n");
+});
+
+test("real git: a tag only the local clone has reserves its version", () => {
+  const fixture = makeOrigin(LIVE_TAGS);
+  const clone = shallowClone(fixture);
+  git(clone, "tag", "v1.5.2");
+  const run = realCli(clone);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(takenLines(run.stdout), [
+    "1.5.0 is taken: git tag v1.5.0 exists (origin)",
+    "1.5.1 is taken: git tag v1.5.1 exists (origin)",
+    "1.5.2 is taken: git tag v1.5.2 exists (local)",
+  ]);
+  assert.equal(run.output, "next=1.5.3\n");
+  assert.equal(git(fixture.origin, "tag", "--list", "v1.5.2"), "", "deciding must never push a tag");
+});
+
+test("real git: consecutive collisions across origin, local and npm skip to the first free version", () => {
+  const fixture = makeOrigin({ ...LIVE_TAGS, "v1.5.3": "annotated" });
+  const clone = shallowClone(fixture);
+  git(clone, "tag", "-a", "v1.5.2", "-m", "v1.5.2");
+  // 1.5.4 is on npm under a dist-tag other than latest, so `latest` stays low
+  // and the loop, not the base, has to walk past it.
+  const run = realCli(clone, { npm: { versions: "1.4.5 1.4.6 1.5.4", latest: "1.4.6" } });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(takenLines(run.stdout), [
+    "1.5.0 is taken: git tag v1.5.0 exists (origin)",
+    "1.5.1 is taken: git tag v1.5.1 exists (origin)",
+    "1.5.2 is taken: git tag v1.5.2 exists (local)",
+    "1.5.3 is taken: git tag v1.5.3 exists (origin)",
+    "1.5.4 is taken: published on npm",
+  ]);
+  assert.equal(run.output, "next=1.5.5\n");
+  assert.ok(run.calls.includes("npm version 1.5.5 --no-git-tag-version"), run.calls.join("\n"));
+});
+
+test("real git: with origin unreachable the release stops and writes no output", () => {
+  const fixture = makeOrigin(LIVE_TAGS);
+  const clone = shallowClone(fixture);
+  git(clone, "tag", "v1.5.0");
+  git(clone, "remote", "set-url", "origin", pathToFileURL(join(fixture.base, "gone.git")).href);
+  const pkgBefore = readFileSync(join(clone, "package.json"), "utf8");
+  const run = realCli(clone);
+  assert.notEqual(run.status, 0, "unknown taken-ness must not ship, even with local tags in hand");
+  assert.match(run.stderr, /git ls-remote --tags origin failed; cannot tell which versions are taken/);
+  assert.equal(run.output, null, "no next may reach $GITHUB_OUTPUT");
+  assert.ok(!run.calls.some((c) => c.startsWith("npm version")), run.calls.join("\n"));
+  assert.equal(readFileSync(join(clone, "package.json"), "utf8"), pkgBefore, "package.json must be untouched");
+});
+
+// ---- 4. the workflow uses it, and publishes before it tags ------------------
+
+test("publish.yml bumps with the script, publishes, and only then commits and tags", () => {
   const workflow = YAML.parse(readFileSync(join(ROOT, ".github", "workflows", "publish.yml"), "utf8"));
   const steps = workflow.jobs.ci.steps;
   const bump = steps.findIndex((s) => s.id === "bump");
   const commit = steps.findIndex((s) => s.name === "Commit the release");
-  const publish = steps.findIndex((s) => s.run === "npm publish --provenance");
+  // Matched by the command, not its flags, so dropping or adding a flag (the
+  // --provenance E422 is its own ticket) does not hide the step from this check.
+  const publishers = steps.flatMap((s, i) => (/^\s*npm publish\b/m.test(String(s.run ?? "")) ? [i] : []));
+  assert.equal(publishers.length, 1, "exactly one step runs npm publish");
+  const [publish] = publishers;
   assert.notEqual(bump, -1, "the bump step must keep id: bump");
+  assert.notEqual(commit, -1, "the release commit step must exist");
   assert.equal(steps[bump].run, "node scripts/release-version.mjs");
   assert.equal(steps[bump].if, "github.ref == 'refs/heads/main'");
-  assert.ok(bump < commit && commit < publish, "bump, then commit and tag, then publish");
+  assert.ok(bump < publish, "the bump must come before the publish that reads it");
+  assert.ok(publish < commit, "publish must come before the release commit and tag");
+
+  // Nothing between the bump and a successful publish may write to git: a
+  // commit, tag or push there outlives a failed publish and burns its version.
+  const gitWriters = steps.flatMap((s, i) => (/\bgit\s+(?:commit|push)\b|\bgit\s+tag\s+-a\b/.test(String(s.run ?? "")) ? [i] : []));
+  assert.deepEqual(gitWriters, [commit], "only the release step commits, tags or pushes");
+
+  // The release step runs only when the publish succeeded, by name, so a
+  // continue-on-error publish cannot slip a failed one through.
+  assert.equal(steps[publish].id, "publish");
+  assert.equal(steps[commit].if, "github.ref == 'refs/heads/main' && steps.publish.outcome == 'success'");
+  assert.ok(!steps[commit]["continue-on-error"], "a failed release commit must fail the run");
+
   const commitRun = steps[commit].run;
+  assert.match(commitRun, /^git add package\.json package-lock\.json \.coverage-floor\.json$/m,
+    "the release commit stages the bump and the coverage-floor raise, explicitly");
   assert.match(commitRun, /git tag -a "v\$\{\{ steps\.bump\.outputs\.next \}\}" -m "v\$\{\{ steps\.bump\.outputs\.next \}\}"/,
     "a lightweight tag is never pushed by --follow-tags");
   assert.match(commitRun, /git push origin HEAD:main --follow-tags/);
   assert.doesNotMatch(commitRun, /git tag (-d|-f|--delete|--force)/, "an existing tag is never moved or deleted");
+  assert.doesNotMatch(commitRun, /--force|\bpush\s+-f\b/, "the release push never forces");
 });
 
 console.log("");

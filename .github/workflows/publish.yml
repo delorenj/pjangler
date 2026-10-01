@@ -205,14 +205,39 @@ jobs:
       # v<version> exists, locally or on origin (PJAN-160: a hand-cut v1.5.0 tag
       # with 1.5.0 never on npm failed every release at `git tag`). The decision
       # lives in scripts/release-version.mjs so it can be tested offline; it
-      # fetches tags itself and reads origin's directly.
+      # fetches tags itself and reads origin's directly. The bump is left in the
+      # working tree (package.json, package-lock.json) for the publish to read.
       - name: Bump version from the published one
         if: github.ref == 'refs/heads/main'
         id: bump
         run: node scripts/release-version.mjs
 
+      # Publish BEFORE the release commit and tag. A tag names a version npm
+      # has; it is never a promise. When the commit and tag went first, every
+      # failed publish still left a release commit and a v<version> tag on
+      # origin for a version npm never received, and since a tag reserves its
+      # version, the next run skipped it: one burned patch number per green
+      # push for as long as publishing stayed broken (v1.5.1, run 36924931617).
+      # prepublishOnly only reads the tree (lock parity, submodule contract,
+      # build into the ignored dist/, secret scan), so the uncommitted bump is
+      # what it checks and what ships.
+      - name: Publish to npm
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        id: publish
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ""
+
+      # Only a version npm accepted gets a release commit and a tag. The gate
+      # names the publish outcome, not just the implicit success(), so making
+      # the publish continue-on-error can never let a failed one through. The
+      # coverage-floor raise rides along here too: a failed publish defers it,
+      # and the next green run measures and raises it again. A push that loses
+      # to a moved main fails this step, exactly as it did before the reorder;
+      # npm already has the version by then, so the next run bumps past it
+      # rather than reusing the name.
       - name: Commit the release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.publish.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -226,9 +251,3 @@ jobs:
           # origin, so the next run could not see them as taken.
           git tag -a "v${{ steps.bump.outputs.next }}" -m "v${{ steps.bump.outputs.next }}"
           git push origin HEAD:main --follow-tags
-
-      - name: Publish to npm
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-        run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ""
