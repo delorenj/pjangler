@@ -67,6 +67,9 @@ try {
   ]) {
     assert.ok(source.includes(expression), `template must carry the GitHub expression ${expression}`);
   }
+  // Hosted runners are billed and the budget is $0: only self-hosted labels.
+  assert.match(source, /runs-on: \[self-hosted, Linux, delonet\]/, "code-review must run on the self-hosted delonet runners");
+  assert.doesNotMatch(source, /runs-on:\s*(ubuntu|macos|windows)-/, "a GitHub-hosted runner label is billed; use [self-hosted, Linux, delonet]");
   // Strip every raw block; whatever GitHub expression is left would be eaten by
   // Jinja (`{{ ... }}` -> undefined -> empty string) instead of erroring.
   const outsideRawBlocks = source.split(/\{%\s*raw\s*%\}[\s\S]*?\{%\s*endraw\s*%\}/).join("");
