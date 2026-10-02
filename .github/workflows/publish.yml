@@ -201,6 +201,14 @@ jobs:
       # a mise shim ahead of this interpreter answers `python` with "No version
       # is set" (it did on the old self-hosted runner). Anything added to PATH
       # later wins, so this has to come later.
+      # The trust check also pins WHERE the interpreter lives: pjangler accepts
+      # only ~/.local/share/uv/python, uv's default, and never reads
+      # UV_PYTHON_INSTALL_DIR (src/lifecycle/preflight.ts). On a GitHub-hosted
+      # runner setup-uv exports UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python-dir
+      # unless it is already set, so it is set to the default first. (On the
+      # self-hosted runner setup-uv chose the default itself.)
+      - name: Keep uv's managed Pythons where pjangler trusts them
+        run: echo "UV_PYTHON_INSTALL_DIR=$HOME/.local/share/uv/python" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.14'
@@ -237,6 +245,12 @@ jobs:
       # it exercises the built installer, not the sources.
       - run: npm run build
       - run: npm run test:bmad-installer-contract
+        env:
+          # The real installer resolves module tags through the GitHub API,
+          # and reads GITHUB_TOKEN for it. A hosted runner's IP is shared, so
+          # the anonymous 60 requests an hour run out; this job's token is
+          # read-only (contents: read) and raises that limit.
+          GITHUB_TOKEN: ${{ github.token }}
 
       # test:coverage builds (with sourcemaps) and runs the whole suite under
       # c8. 37 of the suites spawn dist/index.js rather than importing src, so

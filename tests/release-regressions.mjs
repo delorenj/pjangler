@@ -254,6 +254,16 @@ try {
   const setupBun = ciSteps.find((step) => String(step.uses ?? "").startsWith("oven-sh/setup-bun@"));
   assert.ok(setupBun, "ci must provide the bun the PG round-trip harness runs under");
   assert.match(setupBun.uses, /^oven-sh\/setup-bun@[0-9a-f]{40}$/, "setup-bun is pinned to a full commit SHA");
+  // pjangler trusts a Copier only when its interpreter is under
+  // ~/.local/share/uv/python; on a hosted runner setup-uv relocates managed
+  // Pythons to $RUNNER_TEMP unless UV_PYTHON_INSTALL_DIR is set first.
+  const uvPythonDir = stepIndex(
+    ciSteps,
+    (step) => String(step.run ?? "").trim() === 'echo "UV_PYTHON_INSTALL_DIR=$HOME/.local/share/uv/python" >> "$GITHUB_ENV"',
+    "ci must keep uv's managed Pythons in the directory pjangler trusts",
+  );
+  const setupUv = stepIndex(ciSteps, (step) => String(step.uses ?? "").startsWith("astral-sh/setup-uv@"), "ci must set up uv");
+  assert.ok(uvPythonDir < setupUv, "UV_PYTHON_INSTALL_DIR is set before setup-uv reads it");
   // pjan-23 and pjan-50 run the Krebs tp adapters, which pjangler never
   // vendors: ci fetches them and points PJ_TICKET_PROVIDER_ADAPTERS at them.
   const adapters = stepIndex(ciSteps, (step) => step.name === "Fetch the Krebs tp adapters", "ci must fetch the Krebs tp adapters");
