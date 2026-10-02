@@ -19,10 +19,11 @@
 //      responses. Layer 2's fake git answers by subcommand and never looks at a
 //      repository, so this is the layer that shows the script's git commands
 //      actually find the tags it claims to.
-// Plus a structural check that publish.yml calls the script, publishes before
-// it commits and tags, and pushes main and an annotated tag in one atomic push
-// (PJAN-161), and section 5, which runs that release step against real Git: a
-// rejected main must leave no tag behind on origin.
+// Plus a structural check that publish.yml's publish job calls the script,
+// publishes before it commits and tags, and pushes main and an annotated tag in
+// one atomic push (PJAN-161), while the ci job releases nothing (PJAN-163); and
+// section 5, which runs that release step against real Git: a rejected main
+// must leave no tag behind on origin.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -532,11 +533,14 @@ test("real git: with origin unreachable the release stops and writes no output",
 
 test("publish.yml bumps with the script, publishes, and only then commits and tags", () => {
   const workflow = YAML.parse(readFileSync(join(ROOT, ".github", "workflows", "publish.yml"), "utf8"));
-  const steps = workflow.jobs.ci.steps;
+  // PJAN-163: the release lives in the publish job, on a GitHub-hosted runner
+  // where npm OIDC works, after the self-hosted ci job has tested the commit.
+  assert.equal(workflow.jobs.publish?.needs, "ci", "the publish job runs only after a green ci");
+  const steps = workflow.jobs.publish.steps;
   const bump = steps.findIndex((s) => s.id === "bump");
   const commit = steps.findIndex((s) => s.name === "Commit the release");
-  // Matched by the command, not its flags, so dropping or adding a flag (PJAN-161
-  // dropped --provenance) does not hide the step from this check.
+  // Matched by the command, not its flags, so adding or dropping a flag does
+  // not hide the step from this check.
   const publishers = steps.flatMap((s, i) => (/^\s*npm publish\b/m.test(String(s.run ?? "")) ? [i] : []));
   assert.equal(publishers.length, 1, "exactly one step runs npm publish");
   const [publish] = publishers;
@@ -546,6 +550,14 @@ test("publish.yml bumps with the script, publishes, and only then commits and ta
   assert.equal(steps[bump].if, "github.ref == 'refs/heads/main'");
   assert.ok(bump < publish, "the bump must come before the publish that reads it");
   assert.ok(publish < commit, "publish must come before the release commit and tag");
+  assert.equal(steps[publish].run, "npm publish --provenance", "OIDC trusted publishing, with provenance (PJAN-163)");
+
+  // The ci job releases nothing: no bump, no publish, no commit, tag or push.
+  for (const step of workflow.jobs.ci.steps) {
+    const run = String(step.run ?? "");
+    assert.ok(step.id !== "bump" && step.id !== "publish" && step.name !== "Commit the release", `ci must not carry a release step: ${step.name ?? run}`);
+    assert.doesNotMatch(run, /release-version\.mjs|\bnpm\s+publish\b|\bgit\s+(?:commit|push)\b|\bgit\s+tag\s+-a\b/, `ci must not release: ${step.name ?? run}`);
+  }
 
   // Nothing between the bump and a successful publish may write to git: a
   // commit, tag or push there outlives a failed publish and burns its version.
@@ -582,7 +594,7 @@ test("publish.yml bumps with the script, publishes, and only then commits and ta
 // origin is local: a bare repository reached over file://.
 function releaseStepScript(version) {
   const workflow = YAML.parse(readFileSync(join(ROOT, ".github", "workflows", "publish.yml"), "utf8"));
-  const step = workflow.jobs.ci.steps.find((s) => s.name === "Commit the release");
+  const step = workflow.jobs.publish.steps.find((s) => s.name === "Commit the release");
   assert.ok(step, "the release commit step must exist");
   return step.run.replaceAll("${{ steps.bump.outputs.next }}", version);
 }

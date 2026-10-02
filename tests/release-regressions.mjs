@@ -53,47 +53,117 @@ try {
   const miseVersion = publishWorkflow.indexOf("version: '2026.7.5'", miseSetupStep);
   const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
   const npmTestStep = publishWorkflow.indexOf("npm run test:coverage");
-  // The publish step's own line, not the first mention: the comments above it
-  // talk about npm publish too.
-  const npmPublishStep = publishWorkflow.search(/^\s+run: npm publish$/m);
   const workflow = YAML.parse(publishWorkflow);
-  const publishSteps = workflow.jobs.ci.steps;
-  const checkoutStep = publishSteps.find((step) => step.uses === "actions/checkout@v4");
-  assert.ok(checkoutStep, "publish workflow must check out the release commit");
+
+  // PJAN-163: two jobs. `ci` tests on the self-hosted runner (free, unlimited
+  // minutes); `publish` runs after it on a GitHub-hosted runner, because npm's
+  // OIDC trusted publishing and provenance work only there. The repository is
+  // public, so that hosted runner is free; the rule is no PAID runners.
+  assert.deepEqual(Object.keys(workflow.jobs), ["ci", "publish"], "the workflow has exactly two jobs: ci, then publish");
+  const ciJob = workflow.jobs.ci;
+  const publishJob = workflow.jobs.publish;
+  const ciSteps = ciJob.steps;
+  const releaseSteps = publishJob.steps;
+  assert.equal(publishJob.needs, "ci", "publish runs only after a green ci");
+  assert.deepEqual(ciJob["runs-on"], ["self-hosted", "Linux", "delonet"], "ci stays on the self-hosted delonet runner");
+  assert.equal(publishJob["runs-on"], "ubuntu-latest", "publish runs on a GitHub-hosted runner, where npm OIDC works");
+
+  // Every key and scalar in the parsed workflow, with its path. Comments are
+  // not in the parse, so prose cannot trip these checks.
+  const nodes = [];
+  const walk = (node, path) => {
+    if (node && typeof node === "object") {
+      for (const [key, value] of Object.entries(node)) {
+        nodes.push({ path: [...path, key].join("."), key, value });
+        walk(value, [...path, key]);
+      }
+    }
+  };
+  walk(workflow, []);
+
+  // Only publish is hosted: every other job is self-hosted, and no hosted
+  // label appears anywhere but publish's runs-on.
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    const labels = [job["runs-on"]].flat();
+    if (name !== "publish") assert.ok(labels.includes("self-hosted"), `job ${name} must run on the self-hosted runner`);
+  }
+  const hostedLabels = nodes.filter(({ value }) => typeof value === "string" && /^(?:ubuntu|macos|windows)-/.test(value));
+  assert.deepEqual(hostedLabels.map((node) => node.path), ["jobs.publish.runs-on"], "only the publish job may run on a GitHub-hosted runner");
+  assert.equal(publishWorkflow.match(/ubuntu-latest/g)?.length, 1, "ubuntu-latest appears once: publish's runs-on");
+
+  // The gate the release steps had inside ci: main pushes and v* tags, with the
+  // actor guard against the bot's own release push.
+  assert.equal(ciJob.if, "github.actor != 'github-actions[bot]'", "ci keeps the actor guard against a publish loop");
+  assert.equal(
+    publishJob.if,
+    "github.actor != 'github-actions[bot]' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
+    "publish runs for main pushes and v* tags, never for the bot's own push",
+  );
+  assert.equal(publishJob.environment, "release", "publish runs in the release environment");
+  assert.equal(ciJob.environment, undefined, "ci publishes nothing, so it is not a release deployment");
+
+  // Permissions, asserted rather than assumed, so widening one has to be a
+  // deliberate edit here. ci only reads; publish gets the OIDC token npm
+  // trusted publishing and provenance need, and contents: write for the
+  // release commit and tag.
+  assert.equal(workflow.permissions, undefined, "no workflow-level permissions may widen a job");
+  assert.deepEqual(ciJob.permissions, { contents: "read" }, "ci only reads the repository");
   assert.deepEqual(
-    checkoutStep.with,
-    { submodules: "recursive", "fetch-depth": 0, "fetch-tags": true },
-    "publish checkout must fetch complete parent history/tags while retaining recursive submodules",
+    publishJob.permissions,
+    { "id-token": "write", contents: "write" },
+    "publish gets id-token: write and contents: write, and nothing else",
   );
-  const fetchSubmoduleTagsStep = publishSteps.findIndex(
-    (step) => step.name === "Fetch recursive submodule history and tags",
-  );
-  const transportBridgeStep = publishSteps.findIndex(
-    (step) => step.name === "Bridge canonical SSH submodule URLs to checkout HTTPS credentials",
-  );
-  const verifyTemplateTagsStep = publishSteps.findIndex(
-    (step) => step.name === "Verify CommonProject tag history",
-  );
-  const npmTestStepIndex = publishSteps.findIndex((step) => step.run === "npm run test:coverage");
-  const npmPublishStepIndex = publishSteps.findIndex((step) => step.run === "npm publish");
-  assert.notEqual(npmPublishStepIndex, -1, "the publish step must run exactly `npm publish`, with no --provenance (PJAN-161)");
-  assert.notEqual(npmPublishStep, -1, "the publish step's run line must be found in the raw workflow");
+  const idTokens = nodes.filter(({ key }) => key === "id-token");
+  assert.deepEqual(idTokens.map((node) => node.path), ["jobs.publish.permissions.id-token"], "id-token: write only on publish");
+
+  // Both jobs check out the same tree and bridge the canonical SSH submodule
+  // URLs: ci for the tests, publish because prepublishOnly runs
+  // check:submodules --remote --recursive --archive --npm.
   assert.match(
     gitmodules,
     /^\[submodule "templates\/commonproject"\]\n\tpath = templates\/commonproject\n\turl = git@github\.com:delorenj\/CommonProject\.git\n\tbranch = main\n$/,
     "canonical submodule metadata must retain the exact SSH URL",
   );
-  assert.notEqual(transportBridgeStep, -1, "publish workflow must bridge canonical SSH URLs to HTTPS");
-  assert.equal(
-    publishSteps[transportBridgeStep].run,
-    [
-      'test -n "$(git config --local --get http.https://github.com/.extraheader)"',
-      'git config --local url."https://github.com/".insteadOf "git@github.com:"',
-      'test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"',
-      "",
-    ].join("\n"),
-    "publish transport bridge must be local, exact, and require checkout's persisted HTTPS credential",
-  );
+  const stepIndex = (steps, predicate, label) => {
+    const index = steps.findIndex(predicate);
+    assert.notEqual(index, -1, label);
+    return index;
+  };
+  const bridgeRun = [
+    'test -n "$(git config --local --get http.https://github.com/.extraheader)"',
+    'git config --local url."https://github.com/".insteadOf "git@github.com:"',
+    'test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"',
+    "",
+  ].join("\n");
+  const submoduleSetup = {};
+  for (const [name, steps] of [["ci", ciSteps], ["publish", releaseSteps]]) {
+    const checkout = stepIndex(steps, (step) => step.uses === "actions/checkout@v4", `${name} must check out the commit`);
+    assert.deepEqual(
+      steps[checkout].with,
+      { submodules: "recursive", "fetch-depth": 0, "fetch-tags": true },
+      `${name} checkout must fetch complete parent history/tags while retaining recursive submodules`,
+    );
+    const bridge = stepIndex(
+      steps,
+      (step) => step.name === "Bridge canonical SSH submodule URLs to checkout HTTPS credentials",
+      `${name} must bridge canonical SSH URLs to HTTPS`,
+    );
+    assert.equal(steps[bridge].run, bridgeRun, `${name} transport bridge must be local, exact, and require checkout's persisted HTTPS credential`);
+    const fetch = stepIndex(
+      steps,
+      (step) => step.name === "Fetch recursive submodule history and tags",
+      `${name} must fetch real recursive submodule tags`,
+    );
+    assert.match(
+      steps[fetch].run,
+      /git submodule foreach --recursive[\s\S]*git fetch --unshallow --tags --force origin/,
+      `${name} must unshallow recursive submodules and fetch their real tag refs`,
+    );
+    assert.ok(checkout < bridge && bridge < fetch, `${name}: checkout, then the transport bridge, then the recursive fetch`);
+    submoduleSetup[name] = { bridge, fetch };
+  }
+
+  // ---- ci: tests, coverage and the ratchet; never a release ----
   // `npm test` delegates to scripts/run-tests.mjs, so the suite manifest lives
   // there. Both halves are checked: package.json must reach the runner, and the
   // runner must still list this suite.
@@ -107,127 +177,167 @@ try {
     /^\s*"tests\/pjan-49-regressions\.mjs",$/m,
     "the post-verification npm test gate must include the PJAN-49 tag-drift regression",
   );
-  assert.notEqual(fetchSubmoduleTagsStep, -1, "publish workflow must fetch real recursive submodule tags");
-  assert.match(
-    publishSteps[fetchSubmoduleTagsStep].run,
-    /git submodule foreach --recursive[\s\S]*git fetch --unshallow --tags --force origin/,
-    "publish workflow must unshallow recursive submodules and fetch their real tag refs",
+  const verifyTemplateTagsStep = stepIndex(
+    ciSteps,
+    (step) => step.name === "Verify CommonProject tag history",
+    "ci must prove CommonProject tags exist",
   );
-  assert.notEqual(verifyTemplateTagsStep, -1, "publish workflow must prove CommonProject tags exist");
   assert.match(
-    publishSteps[verifyTemplateTagsStep].run,
+    ciSteps[verifyTemplateTagsStep].run,
     /git -C templates\/commonproject describe --tags --abbrev=0 HEAD/,
-    "publish workflow must prove a real CommonProject tag is reachable before PJAN-49",
+    "ci must prove a real CommonProject tag is reachable before PJAN-49",
   );
+  const ciInstall = stepIndex(ciSteps, (step) => step.run === "npm ci", "ci must install from the lockfile");
+  const contractStep = stepIndex(
+    ciSteps,
+    (step) => step.run === "npm run test:bmad-installer-contract",
+    "ci must run the actual pinned BMAD installer contract",
+  );
+  const npmTestStepIndex = stepIndex(ciSteps, (step) => step.run === "npm run test:coverage", "ci must run the suite under coverage");
   assert.ok(
-    transportBridgeStep < fetchSubmoduleTagsStep &&
-      fetchSubmoduleTagsStep < verifyTemplateTagsStep &&
+    submoduleSetup.ci.bridge < submoduleSetup.ci.fetch &&
+      submoduleSetup.ci.fetch < verifyTemplateTagsStep &&
       verifyTemplateTagsStep < npmTestStepIndex,
     "the transport bridge must precede recursive fetch, tag verification, and PJAN-49's npm test gate",
   );
   assert.ok(
-    transportBridgeStep < npmPublishStepIndex && npmTestStepIndex < npmPublishStepIndex,
-    "publication must remain behind the transport bridge and structurally verified npm test gate",
+    ciInstall < contractStep && contractStep < npmTestStepIndex,
+    "ci must install dependencies, run the real BMAD contract, then run hermetic npm test",
   );
-  assert.ok(miseVersion > miseSetupStep, "publish workflow must request the known-compatible pinned mise version");
+  assert.ok(miseVersion > miseSetupStep, "ci must request the known-compatible pinned mise version");
   assert.ok(
     miseSetupStep < miseVerificationStep && miseVerificationStep < npmTestStep,
-    "publish workflow must set up and explicitly verify mise before npm test",
+    "ci must set up and explicitly verify mise before npm test",
   );
-  // contents was `read` while publishing only happened on a tag. Main-push
-  // publishing needs the workflow to push its own release commit and tag,
-  // so it is `write` now. That is a real loosening — asserted, not assumed,
-  // so widening it further has to be a deliberate edit here.
-  //
-  // PJAN-161: npm supports OIDC trusted publishing and provenance only on
-  // GitHub-hosted runners, and rejected both from the self-hosted runner with
-  // E422 (run 36927547374). The operator chose a scoped npm token instead, so
-  // the job no longer asks for an OIDC token at all.
-  assert.deepEqual(workflow.jobs.ci.permissions, { contents: "write" }, "the ci job gets contents: write and nothing else");
-  assert.equal(workflow.permissions, undefined, "no workflow-level permissions may widen the job");
-  for (const [name, job] of Object.entries(workflow.jobs)) {
-    assert.ok(!job.permissions || !("id-token" in job.permissions), `job ${name} must not request an OIDC token`);
-  }
-  assert.doesNotMatch(publishWorkflow, /^\s*id-token\s*:/m, "no id-token permission anywhere in the workflow");
-  assert.ok(npmTestStep < npmPublishStep, "publication must remain behind the complete npm test gate");
-
-  // The publish step is plain `npm publish`, authenticated by the scoped
-  // NPM_TOKEN repo secret through setup-node's .npmrc.
-  const publishStep = publishSteps[npmPublishStepIndex];
-  assert.equal(publishStep.name, "Publish to npm");
-  assert.deepEqual(
-    publishStep.env,
-    { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" },
-    "the publish step must authenticate with the NPM_TOKEN secret and nothing else",
-  );
-  const setupNode = publishSteps.find((step) => String(step.uses ?? "").startsWith("actions/setup-node@"));
+  const ratchet = stepIndex(ciSteps, (step) => step.name === "Coverage ratchet", "ci must keep the coverage ratchet");
   assert.equal(
-    setupNode?.with?.["registry-url"],
+    ciSteps[ratchet].run,
+    "${{ github.ref == 'refs/heads/main' && 'npm run coverage:apply' || 'npm run coverage:check' }}",
+    "on main the ratchet raises the floor; elsewhere it only reports",
+  );
+  assert.ok(npmTestStepIndex < ratchet, "the ratchet reads the coverage the suite just measured");
+  for (const step of ciSteps) {
+    const label = step.name ?? step.uses ?? step.run;
+    assert.doesNotMatch(String(step.run ?? ""), /\bnpm\s+publish\b|release-version\.mjs|\bnpm\s+version\b/, `ci must not bump or publish: ${label}`);
+    assert.doesNotMatch(String(step.run ?? ""), /\bgit\s+(?:commit|push)\b|\bgit\s+tag\s+-a\b/, `ci must not commit, tag or push: ${label}`);
+  }
+
+  // ---- the coverage floor, handed from ci to publish ----
+  // The release commit stages .coverage-floor.json; on main, ci's ratchet has
+  // just raised it, and the publish job's checkout still has the old one.
+  const floorUpload = stepIndex(
+    ciSteps,
+    (step) => String(step.uses ?? "").startsWith("actions/upload-artifact@") && step.with?.path === ".coverage-floor.json",
+    "ci must hand the coverage floor to publish as an artifact",
+  );
+  assert.ok(ratchet < floorUpload, "the floor is handed over after the ratchet raised it");
+  assert.equal(ciSteps[floorUpload].with["include-hidden-files"], true, "upload-artifact skips dot-files unless told otherwise");
+  assert.equal(ciSteps[floorUpload].with["if-no-files-found"], "error", "a missing floor must fail ci, not ship the old one");
+  const floorName = ciSteps[floorUpload].with.name;
+  const floorDownload = stepIndex(
+    releaseSteps,
+    (step) => String(step.uses ?? "").startsWith("actions/download-artifact@") && step.with?.name === floorName,
+    "publish must download the coverage floor ci measured",
+  );
+  const floorDir = releaseSteps[floorDownload].with.path;
+  assert.equal(floorDir, "${{ runner.temp }}/coverage-floor", "the floor is downloaded outside the workspace");
+  const floorCopy = stepIndex(
+    releaseSteps,
+    (step) => /^cp "\$RUNNER_TEMP\/coverage-floor\/\.coverage-floor\.json" \.coverage-floor\.json$/m.test(String(step.run ?? "")),
+    "publish must copy the measured floor over the checkout's",
+  );
+  assert.equal(ciSteps[floorUpload].if, "github.ref == 'refs/heads/main'", "the floor is handed over on main, where the ratchet raised it");
+  for (const index of [floorDownload, floorCopy]) {
+    assert.equal(releaseSteps[index].if, "github.ref == 'refs/heads/main'", "the floor is taken over on main, where the release commit is made");
+  }
+
+  // ---- publish: bump, npm publish --provenance over OIDC, commit ----
+  const setupNode = stepIndex(releaseSteps, (step) => String(step.uses ?? "").startsWith("actions/setup-node@"), "publish must set up node");
+  assert.equal(
+    releaseSteps[setupNode].with?.["registry-url"],
     "https://registry.npmjs.org",
-    "setup-node's registry-url is what writes the .npmrc that reads NODE_AUTH_TOKEN",
+    "setup-node's registry-url writes the .npmrc npm publishes through",
+  );
+  const npmUpgrade = stepIndex(
+    releaseSteps,
+    (step) => /\bneed=11\.5\.1\b/.test(String(step.run ?? "")) && /npm install -g "npm@\^\$need"/.test(String(step.run ?? "")),
+    "publish must ensure npm >= 11.5.1, the first npm with trusted publishing",
+  );
+  const releaseInstall = stepIndex(releaseSteps, (step) => step.run === "npm ci", "publish must install from the lockfile");
+  const bump = stepIndex(releaseSteps, (step) => step.id === "bump", "publish must bump the version");
+  const npmPublishStepIndex = stepIndex(
+    releaseSteps,
+    (step) => /^\s*npm publish\b/m.test(String(step.run ?? "")),
+    "publish must run npm publish",
+  );
+  const releaseCommitStep = stepIndex(releaseSteps, (step) => step.name === "Commit the release", "publish must commit the release");
+  assert.ok(
+    submoduleSetup.publish.fetch < setupNode &&
+      setupNode < npmUpgrade &&
+      npmUpgrade < releaseInstall &&
+      releaseInstall < bump &&
+      bump < npmPublishStepIndex &&
+      npmPublishStepIndex < releaseCommitStep,
+    "publish: submodules, node, npm >= 11.5.1, npm ci, bump < publish < commit",
+  );
+  assert.ok(floorDownload < floorCopy && floorCopy < releaseCommitStep, "the measured floor is in the tree before the release commit");
+  assert.equal(
+    releaseSteps[releaseCommitStep].if,
+    "github.ref == 'refs/heads/main' && steps.publish.outcome == 'success'",
+    "the release commit is gated on the publish's own success",
   );
 
-  // No provenance, anywhere it could be switched back on: a flag on a step,
-  // npm's env override, package.json publishConfig, or the project .npmrc.
-  for (const step of publishSteps) {
-    assert.doesNotMatch(String(step.run ?? ""), /--provenance/, `${step.name ?? step.uses ?? step.run}: provenance needs a GitHub-hosted runner`);
+  // OIDC, with provenance, and no token. setup-node's .npmrc reads
+  // NODE_AUTH_TOKEN and setup-node exports a placeholder when it is unset, so
+  // it is set empty on the publish step (as before PJAN-161, when 1.4.6 shipped
+  // with SLSA provenance): npm has nothing to use but the job's id-token.
+  const publishStep = releaseSteps[npmPublishStepIndex];
+  assert.equal(publishStep.name, "Publish to npm");
+  assert.equal(publishStep.id, "publish");
+  assert.equal(publishStep.run, "npm publish --provenance", "publish with provenance, over OIDC");
+  assert.deepEqual(publishStep.env, { NODE_AUTH_TOKEN: "" }, "the publish step carries no npm token");
+  const publishers = Object.values(workflow.jobs).flatMap((job) =>
+    job.steps.filter((step) => /\bnpm\s+publish\b/.test(String(step.run ?? ""))),
+  );
+  assert.equal(publishers.length, 1, "exactly one step in the workflow publishes");
+  const tokenPath = `jobs.publish.steps.${npmPublishStepIndex}.env.NODE_AUTH_TOKEN`;
+  for (const { path, value } of nodes.filter((node) => node.key === "NODE_AUTH_TOKEN")) {
+    assert.equal(path, tokenPath, "NODE_AUTH_TOKEN may be set only on the publish step");
+    assert.equal(value, "", `${path} must be empty: never a token, never from a secret`);
   }
-  assert.doesNotMatch(publishWorkflow, /NPM_CONFIG_PROVENANCE/i, "provenance must not come back through npm's env");
-  assert.equal(packageJson.publishConfig?.provenance, undefined, "publishConfig must not re-enable provenance");
+  // No npm token anywhere: not in a step, not in prose. And no secret at all
+  // in this workflow: publishing authenticates with the id-token alone.
+  assert.doesNotMatch(publishWorkflow, /NPM_TOKEN/, "the workflow must not mention NPM_TOKEN, anywhere");
+  const secretUses = nodes.filter(({ key, value }) => /secrets\./.test(key) || (typeof value === "string" && /secrets\./.test(value)));
+  assert.deepEqual(secretUses.map((node) => node.path), [], "the workflow reads no secret; npm publishing is OIDC");
+  assert.doesNotMatch(publishWorkflow, /_authToken|npm\s+(?:config\s+set|login|adduser)\b/, "nothing writes an npm credential");
+
+  // Provenance cannot be switched off behind the flag's back: not by npm's env
+  // override, package.json publishConfig, or the project .npmrc.
+  assert.doesNotMatch(publishWorkflow, /NPM_CONFIG_PROVENANCE/i, "provenance must not be overridden through npm's env");
+  assert.notEqual(packageJson.publishConfig?.provenance, false, "publishConfig must not turn provenance off");
   const npmrcPath = join(root, ".npmrc");
   if (existsSync(npmrcPath)) {
     const settings = readFileSync(npmrcPath, "utf8").split("\n").filter((line) => !/^\s*[;#]/.test(line));
-    assert.ok(!settings.some((line) => /^\s*provenance\s*=/.test(line)), ".npmrc must not re-enable provenance");
+    assert.ok(!settings.some((line) => /^\s*provenance\s*=\s*false\b/.test(line)), ".npmrc must not turn provenance off");
   }
-
-  // Every key and scalar in the parsed workflow, with its path. Comments are
-  // not in the parse, so prose about the token cannot trip these checks.
-  const nodes = [];
-  const walk = (node, path) => {
-    if (node && typeof node === "object") {
-      for (const [key, value] of Object.entries(node)) {
-        nodes.push({ path: [...path, key].join("."), key, value });
-        walk(value, [...path, key]);
-      }
-    }
-  };
-  walk(workflow, []);
-  const tokenPath = `jobs.ci.steps.${npmPublishStepIndex}.env.NODE_AUTH_TOKEN`;
-  // NODE_AUTH_TOKEN is never an empty string. That was the OIDC signal; with
-  // token auth an empty value just publishes anonymously and fails ENEEDAUTH.
-  for (const { path, key, value } of nodes.filter((node) => node.key === "NODE_AUTH_TOKEN")) {
-    assert.ok(typeof value === "string" && value.trim() !== "", `${path} must not be an empty npm auth token`);
-    assert.equal(path, tokenPath, `${key} may be set only on the publish step`);
-  }
-  assert.doesNotMatch(publishWorkflow, /NODE_AUTH_TOKEN:\s*(?:""|''|$)/m, "NODE_AUTH_TOKEN must never be set empty");
-  // The token reaches exactly one place: the publish step's env. Not the
-  // workflow or job env, not a `with:` input, not a run script.
-  const tokenMentions = nodes.filter(
-    ({ key, value }) => /NPM_TOKEN|NODE_AUTH_TOKEN/.test(key) || (typeof value === "string" && /NPM_TOKEN|NODE_AUTH_TOKEN/.test(value)),
-  );
-  assert.deepEqual(
-    tokenMentions.map((node) => node.path),
-    [tokenPath],
-    "the npm token must appear only in the publish step's env",
-  );
 
   // PJAN-161: the release push is atomic, so a rejected main can never leave a
   // tag on a commit main never got. pjan-160-release-version-regressions owns
   // the commit step: it pins the exact command and proves it with real git.
-  const pushes = publishSteps.flatMap((step) =>
-    String(step.run ?? "")
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("#") && /\bgit\s+push\b/.test(line)),
+  const pushes = Object.entries(workflow.jobs).flatMap(([name, job]) =>
+    job.steps.flatMap((step) =>
+      String(step.run ?? "")
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("#") && /\bgit\s+push\b/.test(line))
+        .map((line) => ({ name, step: step.name, line })),
+    ),
   );
   assert.equal(pushes.length, 1, "the workflow pushes exactly once");
-  assert.match(pushes[0], /\bgit push --atomic origin HEAD:refs\/heads\/main "refs\/tags\/v/, "the release push must be atomic");
-  assert.doesNotMatch(pushes[0], /--follow-tags/, "--follow-tags pushes each ref on its own");
-  const contractStep = publishWorkflow.indexOf("npm run test:bmad-installer-contract");
-  assert.notEqual(contractStep, -1, "publish workflow must run the actual pinned BMAD installer contract");
-  assert.ok(
-    publishWorkflow.indexOf("npm ci") < contractStep && contractStep < publishWorkflow.indexOf("npm run test:coverage"),
-    "publish workflow must install dependencies, run the real BMAD contract, then run hermetic npm test",
-  );
+  assert.equal(pushes[0].name, "publish", "only the publish job pushes");
+  assert.equal(pushes[0].step, "Commit the release", "only the release commit step pushes");
+  assert.match(pushes[0].line, /\bgit push --atomic origin HEAD:refs\/heads\/main "refs\/tags\/v/, "the release push must be atomic");
+  assert.doesNotMatch(pushes[0].line, /--follow-tags/, "--follow-tags pushes each ref on its own");
   assert.ok(
     indexOf("require_clean_tree") < indexOf("versioning.sh\" bump"),
     "clean-tree gate must precede the version bump",

@@ -1,16 +1,36 @@
 name: CI
 
-# The FILENAME was load-bearing while this published over OIDC: npm's trusted
-# publisher for @delorenj/pjangler names this workflow file, and renaming it to
-# ci.yml made `npm publish` fail with ENEEDAUTH while every test passed. It now
-# publishes with a token (PJAN-161, see 'Publish to npm'), so the name no longer
-# gates publishing, but the trusted publisher on npmjs.com still names it. Keep
-# the name, so OIDC works again the day it moves to a runner that supports it.
+# Two jobs on two kinds of runner, on purpose (PJAN-163):
 #
-# One workflow, not two. The environment setup below (a uv-managed Copier that
-# passes pjangler's own attestation, PyYAML for the profile renderer) is what
-# the TESTS need, not just the publish. Splitting it across two files would
-# mean two copies of that setup, and they would drift.
+#   ci       self-hosted [self-hosted, Linux, delonet]: tests, coverage, and
+#            the coverage ratchet. Never publishes.
+#   publish  GitHub-hosted, after a green ci: the version bump, npm publish
+#            --provenance over OIDC, then the release commit and tag.
+#
+# The self-hosted runner is there for free, unlimited test minutes: the suite
+# is the long part of every run, and the environment it needs (below) is set up
+# there once. The publish job is GitHub-hosted because npm's OIDC trusted
+# publishing and provenance work only on GitHub-hosted runners; npm's docs say
+# "Self-hosted runners are not currently supported", and npm rejected both from
+# the self-hosted runner with E422 (run 36927547374). This repository is public,
+# so a standard GitHub-hosted runner costs nothing. The rule is no PAID runners,
+# not no hosted ones. Publishing over OIDC means there is no npm token in this
+# workflow at all: the publish job's id-token is what proves to npm who is
+# publishing, and the same id-token signs the SLSA provenance attestation.
+#
+# The FILENAME is load-bearing: npm's trusted publisher for @delorenj/pjangler
+# names this workflow file, and the OIDC token is only honoured when it matches.
+# Renaming this to ci.yml made `npm publish` fail with ENEEDAUTH (npm never
+# even attempted OIDC) while every test passed. Rename it only after updating
+# the trusted publisher on npmjs.com, or the pipeline goes green and ships
+# nothing.
+#
+# One workflow file, two jobs. The publish job has to run after the tests pass
+# (needs: ci) and has to receive the coverage floor the ci job measured (an
+# artifact, below); both work only within one run. The environment setup in the
+# ci job (a uv-managed Copier that passes pjangler's own attestation, PyYAML for
+# the profile renderer) is what the TESTS need, so it lives there alone; the
+# publish job only builds and packs, and needs none of it.
 #
 # Publishing is deliberately optimistic: green on main ships, immediately. The
 # fleet running from main trunk should have the latest features; a bug reaching
@@ -32,19 +52,20 @@ concurrency:
 
 jobs:
   ci:
-    # Belt and braces against a publish loop. The release commit below carries a
-    # skip marker, but that marker is matched anywhere in the commit MESSAGE —
-    # body included — so any commit that merely writes about it skips itself.
-    # That is not hypothetical: the commit introducing this file did exactly
-    # that and never ran. This actor guard is the half that prose cannot break.
+    # Belt and braces against a publish loop. The release commit (publish job)
+    # carries a skip marker, but that marker is matched anywhere in the commit
+    # MESSAGE — body included — so any commit that merely writes about it skips
+    # itself. That is not hypothetical: the commit introducing this file did
+    # exactly that and never ran. This actor guard is the half that prose cannot
+    # break, and the publish job needs this one, so it is skipped with it.
     if: github.actor != 'github-actions[bot]'
+    # Self-hosted, for free and unlimited test minutes. It only tests and
+    # ratchets coverage: no bump, no publish, no commit. It has no use for an
+    # OIDC token (npm would refuse one from here anyway) and never pushes, so it
+    # only reads the repository.
     runs-on: [self-hosted, Linux, delonet]
-    environment: release
-    # No id-token: npm's OIDC trusted publishing and provenance only work on
-    # GitHub-hosted runners, so this self-hosted one publishes with a token and
-    # has no use for an OIDC token (PJAN-161).
     permissions:
-      contents: write # the release commit + tag on main
+      contents: read
     # pjan-80-consumer-concurrency and pjan-80-registry-regressions talk to a
     # real PostgreSQL — the registry service is Postgres-backed and there is no
     # fake worth trusting for concurrency behaviour. They default PGHOST to the
@@ -186,7 +207,8 @@ jobs:
         run: npm run test:coverage
 
       # On a PR the ratchet only reports. On main it raises the floor, and the
-      # raise rides along in the release commit below.
+      # raise rides along in the publish job's release commit (handed over
+      # below).
       - name: Coverage ratchet
         run: ${{ github.ref == 'refs/heads/main' && 'npm run coverage:apply' || 'npm run coverage:check' }}
 
@@ -199,7 +221,102 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # ---- everything below only runs for a green main ----
+      # The publish job's release commit stages .coverage-floor.json, and on
+      # main the ratchet above has just raised it. Jobs share no workspace: the
+      # publish job checks out the pushed commit, whose floor is the old one, so
+      # the measured floor travels as an artifact or the raise is lost.
+      # include-hidden-files because upload-artifact skips dot-files by default,
+      # and this is one. overwrite lets a re-run of this job replace it.
+      - name: Hand the coverage floor to the publish job
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-floor
+          path: .coverage-floor.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  publish:
+    # GitHub-hosted, because npm's OIDC trusted publishing and provenance work
+    # only on GitHub-hosted runners, and free, because this repository is
+    # public. This is the one job that may run on a hosted runner
+    # (tests/release-regressions.mjs pins that).
+    needs: ci
+    # The gate the release steps had when they lived in the ci job: green main
+    # pushes and v* tags, never the bot's own release push. `needs` already
+    # skips this when ci was skipped or failed; the actor guard is repeated so
+    # that stays true if ci's gate ever changes.
+    if: github.actor != 'github-actions[bot]' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC trusted publishing to npm, and the provenance attestation
+      contents: write # the release commit + tag on main
+    steps:
+      # Full history and tags: the bump reads which v* tags are taken, and the
+      # release commit is pushed on top of this checkout. The persisted
+      # GITHUB_TOKEN credential is what that push uses.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      # prepublishOnly runs check:submodules --remote --recursive --archive
+      # --npm, then build, then check:tracked-secrets. --remote resolves each
+      # submodule's canonical SSH URL, so it needs the same HTTPS bridge and the
+      # same submodule history as the ci job has.
+      - name: Bridge canonical SSH submodule URLs to checkout HTTPS credentials
+        run: |
+          test -n "$(git config --local --get http.https://github.com/.extraheader)"
+          git config --local url."https://github.com/".insteadOf "git@github.com:"
+          test "$(git config --local --get url.https://github.com/.insteadof)" = "git@github.com:"
+
+      - name: Fetch recursive submodule history and tags
+        run: >-
+          git submodule foreach --recursive
+          'if test "$(git rev-parse --is-shallow-repository)" = true;
+          then git fetch --unshallow --tags --force origin;
+          else git fetch --tags --force origin; fi'
+
+      # registry-url writes the .npmrc npm publishes through.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer. Upgrade only when the
+      # runner's Node ships an older one, then prove the result.
+      - name: Use an npm that supports trusted publishing
+        run: |
+          set -euo pipefail
+          need=11.5.1
+          older() { [ "$(printf '%s\n%s\n' "$1" "$need" | sort -V | head -1)" != "$need" ]; }
+          if older "$(npm --version)"; then npm install -g "npm@^$need"; fi
+          npm --version
+          if older "$(npm --version)"; then echo "npm $(npm --version) is older than $need" >&2; exit 1; fi
+
+      - run: npm ci
+
+      # The floor the ci job measured and raised (see 'Hand the coverage floor
+      # to the publish job'), copied over the checkout's so the release commit
+      # carries the raise. Downloaded outside the workspace and copied by name,
+      # so nothing else can land in the release tree.
+      - name: Download the coverage floor the ci job measured
+        if: github.ref == 'refs/heads/main'
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-floor
+          path: ${{ runner.temp }}/coverage-floor
+
+      - name: Put the measured coverage floor in the release tree
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/coverage-floor/.coverage-floor.json" .coverage-floor.json
+          git diff --stat -- .coverage-floor.json
 
       # Publishing on every main push needs a version nobody has used. Bump from
       # what is actually taken, not from package.json alone, so a hand-edited or
@@ -224,24 +341,20 @@ jobs:
       # build into the ignored dist/, secret scan), so the uncommitted bump is
       # what it checks and what ships.
       #
-      # A token, not OIDC, and no --provenance (PJAN-161). npm supports trusted
-      # publishing and provenance only on GitHub-hosted runners, and rejected
-      # both from this self-hosted one with E422 (run 36927547374); hosted
-      # minutes are not an option here. Publishing with a token is the
-      # operator's choice. NPM_TOKEN is a repo secret holding a granular npm
-      # token with write on @delorenj/pjangler only, bypass-2FA, expiring
-      # 2026-12-30; the same token is 1Password DeLoSecrets item
-      # xdpa2j73r2lpe7bey4adjutghq. Rotating it is not the whole story: npm
-      # plans to remove direct publishing from bypass-2FA tokens around January
-      # 2027, so this step needs a new answer before then.
-      # setup-node's registry-url writes the .npmrc that reads NODE_AUTH_TOKEN.
-      # The token is set on this step alone so no other step's env carries it.
+      # OIDC trusted publishing, with provenance (PJAN-163). npm exchanges this
+      # job's id-token for a short-lived publish credential, and --provenance
+      # signs a SLSA attestation from the same id-token, linking the tarball to
+      # this workflow run. There is no npm token: NODE_AUTH_TOKEN is set empty,
+      # as it was before PJAN-161 (1.4.6 shipped this way, with provenance),
+      # because setup-node's .npmrc reads it and setup-node exports a
+      # placeholder when it is unset. Never put a token back here: if OIDC
+      # broke, a token would quietly take over and ship without provenance.
       - name: Publish to npm
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         id: publish
-        run: npm publish
+        run: npm publish --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ""
 
       # Only a version npm accepted gets a release commit and a tag. The gate
       # names the publish outcome, not just the implicit success(), so making
